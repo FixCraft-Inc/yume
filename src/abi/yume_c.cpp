@@ -7,6 +7,7 @@
 #include "yume/yume.h"
 
 #include "abi/service_open_wait.hpp"
+#include "abi/service_open_transaction.hpp"
 #include "abi/service_status.hpp"
 #include "client/packet/channel.hpp"
 #include "client/relay/secret.hpp"
@@ -541,6 +542,73 @@ private:
     std::shared_ptr<std::atomic<bool>> cancel_requested_;
 };
 
+struct ClientServiceOpenRollbackContext {
+    yume::client::Tunnel* tunnel{nullptr};
+    std::shared_ptr<yume::runtime::ServiceStream>* stream{nullptr};
+    std::uint8_t stream_id{0};
+};
+
+void rollback_client_service_open(
+        void* opaque,
+        yume::abi::detail::ServiceOpenTransaction::Phase phase) noexcept {
+    using Phase = yume::abi::detail::ServiceOpenTransaction::Phase;
+    auto* context = static_cast<ClientServiceOpenRollbackContext*>(opaque);
+    if (!context || !context->tunnel || context->stream_id == 0) {
+        return;
+    }
+
+    // A ServiceStream destructor normally invokes its transport close
+    // callback. Disconnect it first so this transaction remains the only
+    // owner of rollback and cannot send a second CLOSE during stack unwind.
+    if (context->stream && *context->stream) {
+        try {
+            (*context->stream)->set_callbacks({}, {}, {});
+            (*context->stream)->receive_close("stream OPEN rolled back");
+        } catch (...) {
+            // Transport ownership below is the essential cleanup. A failure
+            // to update the already-unpublished local object must not skip it.
+        }
+    }
+
+    const auto action =
+        yume::abi::detail::ServiceOpenTransaction::ActionFor(phase);
+    using RollbackAction =
+        yume::abi::detail::ServiceOpenTransaction::RollbackAction;
+    if (action == RollbackAction::release_reservation) {
+        try {
+            context->tunnel->release_reserved_stream(context->stream_id);
+        } catch (...) {
+        }
+        return;
+    }
+    if (action == RollbackAction::unregister) {
+        try {
+            context->tunnel->unregister_stream(context->stream_id);
+        } catch (...) {
+        }
+        return;
+    }
+    if (action == RollbackAction::none) {
+        return;
+    }
+
+    // Once OPEN construction starts, conservatively assume it may have been
+    // queued. Retire the id even if sending CLOSE fails so a late ACK or DATA
+    // frame can never alias a later stream on this transport.
+    try {
+        context->tunnel->send_close(
+            context->stream_id,
+            phase == Phase::accepted
+                ? "stream handle publication failed"
+                : "stream open aborted");
+    } catch (...) {
+    }
+    try {
+        context->tunnel->retire_stream_id(context->stream_id);
+    } catch (...) {
+    }
+}
+
 }  // namespace
 
 struct yume_server {
@@ -1064,14 +1132,20 @@ int yume_client_open_stream(yume_client* client,
                              "client tunnel is not running");
         }
 
+        std::shared_ptr<yume::runtime::ServiceStream> stream;
+        ClientServiceOpenRollbackContext rollback_context{
+            tunnel.get(), &stream, 0};
         const uint8_t stream_id = tunnel->reserve_stream_id();
         if (stream_id == 0) {
             return set_error(&client->base,
                              YUME_STATUS_RESOURCE_EXHAUSTED,
                              "no stream ids available");
         }
+        rollback_context.stream_id = stream_id;
+        yume::abi::detail::ServiceOpenTransaction open_transaction(
+            &rollback_context, rollback_client_service_open);
 
-        auto stream = std::make_shared<yume::runtime::ServiceStream>(
+        stream = std::make_shared<yume::runtime::ServiceStream>(
             service_name,
             "server");
         auto open_wait = std::make_shared<yume::abi::detail::ServiceOpenWait>();
@@ -1147,7 +1221,7 @@ int yume_client_open_stream(yume_client* client,
                 }
             });
 
-        tunnel->register_stream(
+        const bool registered = tunnel->register_stream(
             stream_id,
             [stream, weak_tunnel, lifetime_gate, stream_id](
                 const yume::client::Tunnel::Bytes& data,
@@ -1190,7 +1264,19 @@ int yume_client_open_stream(yume_client* client,
             [stream](const std::string& reason) {
                 stream->receive_fin(reason);
             });
+        if (!registered) {
+            if (!tunnel->is_alive()) {
+                return set_error(&client->base,
+                                 YUME_STATUS_NOT_RUNNING,
+                                 "client tunnel stopped while registering stream");
+            }
+            return set_error(&client->base,
+                             YUME_STATUS_INTERNAL_ERROR,
+                             "reserved stream registration failed");
+        }
+        open_transaction.MarkRegistered();
 
+        open_transaction.MarkOpenStarted();
         tunnel->open_relay_stream(
             stream_id,
             nlohmann::json{{"proto", "service.v1"}, {"service", service_name}},
@@ -1204,38 +1290,33 @@ int yume_client_open_stream(yume_client* client,
             yume::abi::detail::ServiceOpenWait::Outcome::accepted) {
             using Outcome = yume::abi::detail::ServiceOpenWait::Outcome;
             if (open_result.outcome == Outcome::timed_out) {
-                // OPEN was already admitted to the ordered transport. Send a
-                // matching CLOSE before removing local state, and never reuse
-                // this id on the connection: a late OPEN_ACK or DATA frame
-                // otherwise could be mistaken for a subsequent stream.
-                tunnel->send_close(stream_id, "stream open timed out");
-                tunnel->retire_stream_id(stream_id);
-                stream->set_callbacks({}, {}, {});
-                stream->receive_close("stream open timed out");
                 return set_error(&client->base,
                                  YUME_STATUS_TIMEOUT,
                                  "stream open timed out");
             }
-            tunnel->unregister_stream(stream_id);
-            stream->set_callbacks({}, {}, {});
+            open_transaction.MarkRejected();
             if (open_result.outcome == Outcome::cancelled) {
                 const std::string reason = open_result.reason.empty()
                     ? "client tunnel closed while opening stream"
                     : open_result.reason;
-                stream->receive_close(reason);
                 return set_error(&client->base, YUME_STATUS_NOT_RUNNING, reason);
             }
 
             const std::string reason = open_result.reason.empty()
                 ? "stream open rejected"
                 : open_result.reason;
-            stream->receive_close(reason);
             return set_error(&client->base,
                              YUME_STATUS_PERMISSION_DENIED,
                              reason);
         }
 
-        *out_stream = new yume_stream(std::move(stream));
+        open_transaction.MarkAccepted();
+        // Keep `stream` populated until Publish(): rollback_context points to
+        // it so an allocation failure here can detach the unpublished stream
+        // before the transport is closed and retired.
+        auto published_stream = std::make_unique<yume_stream>(stream);
+        *out_stream = published_stream.release();
+        open_transaction.Publish();
         return clear_error(&client->base);
     } catch (std::bad_alloc const&) {
         return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");

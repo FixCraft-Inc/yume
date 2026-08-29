@@ -150,6 +150,59 @@ class MetadataTests(unittest.TestCase):
         vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         self.assertEqual(vcpkg["version-string"], "0.2.0-dev6")
 
+    def test_debian_daemon_bootstrap_contract_is_complete(self) -> None:
+        config = json.loads(
+            (ROOT / "debian/yumed.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["obfs_secret_file"], "/etc/yume/obfs.hex")
+        self.assertEqual(config["inner_psk_file"], "/etc/yume/inner.hex")
+        self.assertRegex(
+            config["real_backend"],
+            r"^loopback://(?:127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$",
+        )
+
+        unit = (ROOT / "debian/yume-daemon.yumed.service").read_text(
+            encoding="utf-8")
+        for path in (config["obfs_secret_file"], config["inner_psk_file"]):
+            self.assertIn(f"ConditionPathExists={path}", unit)
+
+        readme = (ROOT / "debian/yume-daemon.README.Debian").read_text(
+            encoding="utf-8")
+        for required in (
+                config["obfs_secret_file"], config["inner_psk_file"],
+                config["real_backend"], "exactly 64 lowercase hexadecimal",
+                "owned by yume, mode 0600"):
+            self.assertIn(required, readme)
+
+    def test_installed_documentation_keeps_authoritative_links(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        for document in (
+                "CONTRIBUTING.md", "docs/CONTROL_API.md",
+                "docs/CODE_HEALTH.md", "docs/BASEFWX_REQUIREMENTS.md",
+                "docs/YUME_2_0_STABILIZATION.md"):
+            self.assertIn(document, cmake)
+        self.assertIn("install(DIRECTORY docs/", cmake)
+        self.assertIn("install(DIRECTORY docs/protocol/", cmake)
+
+        documentation_map = (ROOT / "docs/README.md").read_text(
+            encoding="utf-8")
+        self.assertIn("CODE_HEALTH.md", documentation_map)
+        self.assertIn("BASEFWX_REQUIREMENTS.md", documentation_map)
+
+    def test_audited_cli_help_and_man_options_are_synchronized(self) -> None:
+        client_man = (ROOT / "docs/man/yume.1").read_text(encoding="utf-8")
+        for option in (
+                "--cluster ", "--packet-tun ", "--quick-bench",
+                "--outer-carrier-evidence ", "--tls-name "):
+            self.assertIn(option, client_man)
+
+        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+            encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        self.assertIn("--admin-keys <path>", server_help)
+        self.assertIn("--keys-admin", server_help)
+        self.assertIn("--admin-keys ", server_man)
+        self.assertIn("--keys-admin", server_man)
+
     def test_native_openssl_runtime_contract_is_fail_closed(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertRegex(

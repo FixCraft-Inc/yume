@@ -170,10 +170,23 @@ downgrade mode exists.
   the project version.
 
 - **Hardened BaseFWX dependency pin.** The pinned BaseFWX revision is now
-  `5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`. It retains repeat-safe Argon2
-  discovery and adds fail-closed crypto/format limits, safer caller-buffer
-  primitives, peer KDF policy coverage, and corrected Java streaming-test
-  nonce discipline. YUME's consumed wire contracts are unchanged.
+  `e6ffbb79daa02bf62c31c3ae6513d5c603ec8dcd`. It retains repeat-safe Argon2
+  discovery, fail-closed crypto/format limits, safer caller-buffer primitives,
+  peer KDF policy coverage, and corrected Java streaming-test nonce discipline.
+  It also supplies the owned explicit-nonce ChaCha20-Poly1305 operation used by
+  YUME's existing relay-history format, propagates Java benchmark worker
+  failures, bounds whole-file benchmark concurrency, and defaults retired
+  compatibility performance rows off. YUME's consumed wire contracts are
+  unchanged.
+
+- **Bounded operator-proof HTTPS.** External proof URLs now use one strict
+  HTTPS authority/target grammar across the in-process and static-Linux curl
+  transports. The native path verifies the configured DNS name or IP literal,
+  applies a 30-second end-to-end request deadline, constructs and parses HTTP
+  with bounded Beast messages, and rejects bearer-token controls before any
+  connection is attempted. Remote responses require an object containing a
+  bounded canonical signature; untrusted API error text is not reflected into
+  daemon errors.
 
 - **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
   retained duplicate copies of the child-side IPC and connected TCP

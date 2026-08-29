@@ -10,6 +10,8 @@ add or repair the test that states the intended contract.
 | Component ownership | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Current high-level support boundary | [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) |
 | Current development and release gates | [`YUME_2_0_STABILIZATION.md`](YUME_2_0_STABILIZATION.md) |
+| Code health and remediation | [`CODE_HEALTH.md`](CODE_HEALTH.md) |
+| Cross-repository BaseFWX requirements | [`BASEFWX_REQUIREMENTS.md`](BASEFWX_REQUIREMENTS.md) |
 | Public C ABI | [`ABI.md`](ABI.md) |
 | JSON operation API | [`CONTROL_API.md`](CONTROL_API.md) |
 | Wire contracts | [`protocol/`](protocol/) |

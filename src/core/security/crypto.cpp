@@ -9,6 +9,10 @@
 #include "core/security/secret_file.hpp"
 #include "core/security/secure_erase.hpp"
 
+#if YUME_USE_BASEFWX
+#include <basefwx/crypto.hpp>
+#endif
+
 #include <openssl/err.h>
 #include <openssl/hmac.h>
 #include <openssl/kdf.h>
@@ -19,6 +23,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 
@@ -27,6 +32,7 @@ namespace yume::crypto {
 namespace {
 
 constexpr std::size_t kSha256Bytes = 32U;
+constexpr std::size_t kChaCha20Poly1305TagBytes = 16U;
 
 std::string DigestHex(std::span<const std::uint8_t> digest) {
     static constexpr char kHex[] = "0123456789abcdef";
@@ -194,26 +200,36 @@ bool has_exact_pem_sequence(const Bytes& bundle, std::string_view label,
 }
 }  // namespace
 
+EVP_PKEY_ptr load_private_key(const std::string& path_priv) {
+    if (path_priv.empty()) {
+        throw std::runtime_error("private key path is empty");
+    }
+    // Ownership and mode are an invariant of loading, not a hint: an
+    // identity file another account can read or replace must never be able to
+    // sign an AUTH transcript.
+    Bytes pem = security::ReadPrivateKeyFileStrict(path_priv);
+    std::unique_ptr<BIO, decltype(&BIO_free)> private_bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
+    if (!private_bio) {
+        security::secure_erase(pem);
+        throw ssl_error("failed to open private key");
+    }
+    EVP_PKEY_ptr private_key(
+        PEM_read_bio_PrivateKey(
+            private_bio.get(), nullptr, nullptr, nullptr),
+        EVP_PKEY_free);
+    security::secure_erase(pem);
+    if (!private_key) {
+        throw ssl_error("failed to read private key");
+    }
+    return private_key;
+}
+
 KeyPair load_keypair(const std::string& path_priv, const std::string& path_pub) {
     KeyPair kp;
 
     if (!path_priv.empty()) {
-        // Ownership and mode are an invariant of loading, not a hint: an
-        // identity file another account can read or replace must never be able
-        // to sign an AUTH transcript.
-        Bytes pem = security::ReadPrivateKeyFileStrict(path_priv);
-        BIO* priv_bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-        if (!priv_bio) {
-            security::secure_erase(pem);
-            throw ssl_error("failed to open private key");
-        }
-        EVP_PKEY* priv = PEM_read_bio_PrivateKey(priv_bio, nullptr, nullptr, nullptr);
-        BIO_free(priv_bio);
-        security::secure_erase(pem);
-        if (!priv) {
-            throw ssl_error("failed to read private key");
-        }
-        kp.private_key.reset(priv);
+        kp.private_key = load_private_key(path_priv);
     }
 
     if (!path_pub.empty()) {
@@ -471,115 +487,179 @@ Bytes hkdf_sha256(const Bytes& key_material,
 }
 
 Bytes encrypt_chacha20(const Bytes& data, const Bytes& key, const Bytes& nonce) {
+#if YUME_USE_BASEFWX
+    return basefwx::crypto::ChaCha20Poly1305EncryptWithIv(
+        key, nonce, data, {});
+#else
     if (key.size() != 32) {
         throw std::runtime_error("encrypt_chacha20: key must be 32 bytes");
     }
     if (nonce.size() != 12) {
         throw std::runtime_error("encrypt_chacha20: nonce must be 12 bytes");
     }
+    if (data.size() > static_cast<std::size_t>(
+                          std::numeric_limits<int>::max())) {
+        throw std::runtime_error("encrypt_chacha20: plaintext is too large");
+    }
 
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(
+        EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     if (!ctx) {
         throw ssl_error("cipher ctx alloc failed");
     }
 
-    if (EVP_EncryptInit_ex(ctx, EVP_chacha20_poly1305(), nullptr, nullptr, nullptr) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_EncryptInit_ex(ctx.get(), EVP_chacha20_poly1305(), nullptr,
+                           nullptr, nullptr) != 1) {
         throw ssl_error("encrypt init failed");
     }
 
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, nonce.size(), nullptr) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_IVLEN, nonce.size(),
+                            nullptr) != 1) {
         throw ssl_error("set ivlen failed");
     }
 
-    if (EVP_EncryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data()) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_EncryptInit_ex(ctx.get(), nullptr, nullptr, key.data(),
+                           nonce.data()) != 1) {
         throw ssl_error("encrypt key init failed");
     }
 
-    Bytes out(data.size() + 16);
+    Bytes out(data.size() + kChaCha20Poly1305TagBytes);
     int out_len = 0;
-    if (EVP_EncryptUpdate(ctx, out.data(), &out_len, data.data(), data.size()) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        throw ssl_error("encrypt update failed");
+    std::size_t total_len = 0;
+    const auto advance = [&out, &total_len](int produced,
+                                            const char* message) {
+        if (produced < 0 ||
+            static_cast<std::size_t>(produced) > out.size() - total_len) {
+            throw std::runtime_error(message);
+        }
+        total_len += static_cast<std::size_t>(produced);
+    };
+    if (!data.empty()) {
+        if (EVP_EncryptUpdate(ctx.get(), out.data(), &out_len, data.data(),
+                              static_cast<int>(data.size())) != 1) {
+            throw ssl_error("encrypt update failed");
+        }
+        advance(out_len, "encrypt update overran its buffer");
     }
 
-    int final_len = 0;
-    if (EVP_EncryptFinal_ex(ctx, out.data() + out_len, &final_len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_EncryptFinal_ex(ctx.get(), out.data() + total_len, &out_len) != 1) {
         throw ssl_error("encrypt final failed");
     }
-    out_len += final_len;
+    advance(out_len, "encrypt final overran its buffer");
 
-    unsigned char tag[16] = {0};
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, sizeof(tag), tag) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    unsigned char tag[kChaCha20Poly1305TagBytes] = {0};
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_GET_TAG, sizeof(tag),
+                            tag) != 1) {
         throw ssl_error("get tag failed");
     }
 
-    EVP_CIPHER_CTX_free(ctx);
-
-    out.resize(out_len + sizeof(tag));
-    std::memcpy(out.data() + out_len, tag, sizeof(tag));
+    if (total_len > out.size() - sizeof(tag)) {
+        throw std::runtime_error("encrypt output has no room for its tag");
+    }
+    std::memcpy(out.data() + total_len, tag, sizeof(tag));
+    total_len += sizeof(tag);
+    out.resize(total_len);
     return out;
+#endif
 }
 
 Bytes decrypt_chacha20(const Bytes& data, const Bytes& key, const Bytes& nonce) {
+#if YUME_USE_BASEFWX
+    return basefwx::crypto::ChaCha20Poly1305DecryptWithIvOwned(
+        key, nonce, data.data(), data.size(), {});
+#else
     if (key.size() != 32) {
         throw std::runtime_error("decrypt_chacha20: key must be 32 bytes");
     }
     if (nonce.size() != 12) {
         throw std::runtime_error("decrypt_chacha20: nonce must be 12 bytes");
     }
-    if (data.size() < 16) {
+    if (data.size() < kChaCha20Poly1305TagBytes) {
         throw std::runtime_error("decrypt_chacha20: data too short");
     }
 
-    const size_t cipher_len = data.size() - 16;
+    const size_t cipher_len = data.size() - kChaCha20Poly1305TagBytes;
+    if (cipher_len > static_cast<std::size_t>(
+                         std::numeric_limits<int>::max())) {
+        throw std::runtime_error("decrypt_chacha20: ciphertext is too large");
+    }
     const unsigned char* tag = data.data() + cipher_len;
 
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(
+        EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
     if (!ctx) {
         throw ssl_error("cipher ctx alloc failed");
     }
 
-    if (EVP_DecryptInit_ex(ctx, EVP_chacha20_poly1305(), nullptr, nullptr, nullptr) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_DecryptInit_ex(ctx.get(), EVP_chacha20_poly1305(), nullptr,
+                           nullptr, nullptr) != 1) {
         throw ssl_error("decrypt init failed");
     }
 
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, nonce.size(), nullptr) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_IVLEN, nonce.size(),
+                            nullptr) != 1) {
         throw ssl_error("set ivlen failed");
     }
 
-    if (EVP_DecryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data()) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_DecryptInit_ex(ctx.get(), nullptr, nullptr, key.data(),
+                           nonce.data()) != 1) {
         throw ssl_error("decrypt key init failed");
     }
 
-    Bytes out(cipher_len);
+    // OpenSSL publishes ChaCha20 plaintext from DecryptUpdate before the
+    // Poly1305 tag is checked by DecryptFinal. Keep an armed wipe tied to the
+    // staging buffer across every exceptional path and release it only after
+    // authentication succeeds.
+    // Give Final tag-sized slack before asking OpenSSL to write. The cipher is
+    // specified to emit no final plaintext, but that invariant is safe to
+    // verify only when the callee has room to violate it.
+    Bytes out(data.size());
+    struct UnauthenticatedPlaintextWiper {
+        Bytes& bytes;
+        bool armed{true};
+        ~UnauthenticatedPlaintextWiper() {
+            if (armed) security::secure_erase(bytes);
+        }
+        void Release() noexcept { armed = false; }
+    } out_wiper{out};
     int out_len = 0;
-    if (EVP_DecryptUpdate(ctx, out.data(), &out_len, data.data(), cipher_len) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
-        throw ssl_error("decrypt update failed");
+    std::size_t total_len = 0;
+    const auto advance = [&out, &total_len](int produced,
+                                            const char* message) {
+        if (produced < 0 ||
+            static_cast<std::size_t>(produced) > out.size() - total_len) {
+            throw std::runtime_error(message);
+        }
+        total_len += static_cast<std::size_t>(produced);
+    };
+    if (cipher_len > 0) {
+        if (EVP_DecryptUpdate(ctx.get(), out.data(), &out_len, data.data(),
+                              static_cast<int>(cipher_len)) != 1) {
+            throw ssl_error("decrypt update failed");
+        }
+        advance(out_len, "decrypt update overran its buffer");
     }
 
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, const_cast<unsigned char*>(tag)) != 1) {
-        EVP_CIPHER_CTX_free(ctx);
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG,
+                            static_cast<int>(kChaCha20Poly1305TagBytes),
+                            const_cast<unsigned char*>(tag)) != 1) {
         throw ssl_error("set tag failed");
     }
 
-    int final_len = 0;
-    int rc = EVP_DecryptFinal_ex(ctx, out.data() + out_len, &final_len);
-    EVP_CIPHER_CTX_free(ctx);
+    const int rc = EVP_DecryptFinal_ex(
+        ctx.get(), out.data() + total_len, &out_len);
     if (rc != 1) {
         throw std::runtime_error("decrypt failed: authentication check failed");
     }
+    advance(out_len, "decrypt final overran its buffer");
+    if (total_len != cipher_len) {
+        throw std::runtime_error("decrypt plaintext length mismatch");
+    }
 
-    out.resize(out_len + final_len);
+    out.resize(total_len);
+    out_wiper.Release();
     return out;
+#endif
 }
 
 Bytes hmac_sha256(const Bytes& data, const Bytes& key) {

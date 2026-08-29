@@ -80,6 +80,8 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 | `protocol/` | Wire format, frames, control protocol, runtime policy |
 | `stealth/` | TLS fingerprint shaping, HTTP/2 obfs carrier, disguise |
 | `app_codec/` | Codec-neutral envelope and registry; `builtin/` holds one unit per codec |
+| `diagnostics/` | Bounded runtime diagnostics and developer-only instrumentation |
+| `release/` | Version/build reports and release-facing runtime metadata |
 | `runtime/` | Local IPC / runtime socket helpers |
 
 `src/core/version.hpp` holds the current development `kVersion` and its
@@ -91,9 +93,11 @@ schema versions remain independent in their owning modules.
 | Directory | Responsibility |
 | --- | --- |
 | `cli/` | Argument parsing, config, connect handshake, commands |
+| `packet/` | Client-side packet-bulk/TUN data plane |
 | `transport/` | TLS tunnel, crypto, dispatch, tunnel pool |
 | `proxy/` | SOCKS5, port forward, outbound proxy (incl. Tor) |
 | `relay/` | Relay runtime, secrets, history |
+| `transfer/` | Share/import/export transfer workflows |
 | `codec/` | Client-side app codec shims (e.g. Monero RPC) |
 | `runtime/` | Local runtime socket for attach/GUI |
 
@@ -110,6 +114,8 @@ Entry: `main_client.cpp` → `client/cli/entry.cpp`.
 | `filter/` | IP / robots filtering, optional GeoIP |
 | `packet/` | TUN egress for packet-bulk mode |
 | `auth/` | Composite Ed25519 + ML-DSA-87 verification plus immutable regular/operator/admin snapshots |
+| `config/` | Server configuration types and defaults |
+| `host/` | Loopback cover backend, routes, and host-controller plumbing |
 
 Entry: `main_server.cpp` → `server/cli/entry.cpp`.
 
@@ -155,8 +161,16 @@ secure/core + reduced transport
 ```
 
 `core` must not include headers from `client/`, `server/`, `facade/`, or
-`gui/`. Crypto primitives come from BaseFWX (`basefwx/`) when
-`YUME_USE_BASEFWX=ON`; YUME owns wire format and transport behavior.
+`gui/`. BaseFWX (`basefwx/`) owns the default one-shot cryptographic
+primitives when `YUME_USE_BASEFWX=ON`, including the explicit-nonce
+ChaCha20-Poly1305 operation used by protected relay history. YUME owns its wire
+formats, transport behavior, AUTH, and ratchet policy. A YUME-local
+compatibility/security helper still contains SHA-256 identity hashing plus
+residual X25519/HKDF/HMAC/RNG operations and the BaseFWX-disabled history
+fallback. Live callers must not expand that raw-OpenSSL surface. The
+cross-repository primitive and frozen-record migration boundary are recorded
+in `docs/BASEFWX_REQUIREMENTS.md`; other dead legacy helpers remain tracked in
+`docs/CODE_HEALTH.md` rather than being described as BaseFWX-owned.
 
 ## Trust boundary
 

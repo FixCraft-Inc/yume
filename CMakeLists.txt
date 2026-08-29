@@ -626,7 +626,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     install(FILES
         README.md
+        CONTRIBUTING.md
         docs/ABI.md
+        docs/BASEFWX_REQUIREMENTS.md
+        docs/CODE_HEALTH.md
+        docs/CONTROL_API.md
         docs/DIAGNOSTICS.md
         docs/EXPLAINED.md
         docs/ARCHITECTURE.md
@@ -645,10 +649,27 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/PACKET_NATIVE_BULK.md
         docs/FILTERING_SELF_DPI.md
         docs/YUME_2_0_WAN_BEHAVIOR.md
+        docs/YUME_2_0_STABILIZATION.md
         docs/release/CHANGELOG.md
         docs/release/RELEASE-NOTES-1.1.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
         COMPONENT yume_cli
+    )
+
+    # Keep the complete Markdown hierarchy as well as the established flat
+    # install paths above. docs/README.md and nested protocol/release links are
+    # authored relative to that hierarchy and must remain usable after install.
+    install(DIRECTORY docs/
+        DESTINATION "${YUME_DOC_INSTALL_DIR}/docs"
+        COMPONENT yume_cli
+        FILES_MATCHING
+        PATTERN "*.md"
+        PATTERN "man" EXCLUDE
+    )
+    install(DIRECTORY docs/protocol/
+        DESTINATION "${YUME_DOC_INSTALL_DIR}/protocol"
+        COMPONENT yume_cli
+        FILES_MATCHING PATTERN "*.md"
     )
 
     install(FILES

@@ -92,6 +92,7 @@ void print_help() {
         << "  --key <path>             TLS private key\n"
         << "  --auth-keys <path>       Override auth_keys\n"
         << "  --auth-keys-meta <path>  Override per-key permissions JSON\n"
+        << "  --admin-keys <path>      Separate composite admin second-factor store\n"
         << "  --operator-keys <path>   Separate composite operator identities\n"
         << "  --operator-keys-meta <p> Operator-key permissions JSON\n"
         << "  --threads <n>            Worker thread count (0 = auto)\n"

@@ -482,6 +482,19 @@ Attach to a controlled client.
 .TP
 .B --attach-local
 Attach to a local running YUME instance.
+.TP
+.BI "--packet-tun " ifname
+Attach packet-bulk mode to an operator-created Linux TUN interface. YUME does
+not create routes, NAT rules, or the interface, and this exclusive data-plane
+mode cannot be combined with SOCKS, forwards, relay, benchmark, or control
+modes.
+.TP
+.B --quick-bench
+Run the bounded local device benchmark smoke profile.
+.TP
+.B --full-bench
+Run the extended local device benchmark profile. These local profiles are not
+WAN, stealth, classifier, or release-qualification evidence.
 .SH CONNECTION OPTIONS
 .TP
 .BI "--server " host
@@ -490,6 +503,14 @@ Server hostname or IP address.
 .BI "--port " port
 Server port. If omitted, the client uses the configured/default server
 port.
+.TP
+.BI "--cluster " host[:port]
+Cluster entry-point short form for
+.B --server
+and
+.BR --port .
+Bracket IPv6 literals as
+.BR [2001:db8::1]:443 .
 .TP
 .BI "-i, --auth " path
 Composite Ed25519 + ML-DSA-87 identity used to authenticate this client to the
@@ -596,6 +617,11 @@ is selected. Other backends reject this option. The launcher requires a regular
 executable owned by root or the current user and rejects group/world-writable
 files.
 .TP
+.BI "--tls-name " host
+Set the TLS SNI, certificate-verification name, and HTTP Host identity
+independently from the dial address. This is required when connecting by IP to
+a certificate issued for a DNS name.
+.TP
 .B "--hide-in-the-crowd chrome"
 Explicit spelling for the same pinned Chrome 151 HTTP User-Agent profile.
 Other HTTP profiles are rejected for 0.2.0-dev6.
@@ -615,6 +641,13 @@ backend. Chrome backends use the emitted-byte wire gates instead.
 .TP
 .BI "--tls-fingerprint-test-endpoint " host
 Host used for fingerprint verification tests.
+.TP
+.BI "--outer-carrier-evidence " absolute-path
+Write the exact-policy one-flow outer-carrier evidence bundle. This option is
+admitted only for the documented pinned Chrome 151 H2 benchmark geometry and
+does not by itself prove browser parity, classifier resistance, or release
+qualification. See
+.BR TRANSPORT_PROFILES.md .
 .SH RELAY OPTIONS
 .TP
 .BI "--name " slug

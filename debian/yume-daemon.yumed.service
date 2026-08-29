@@ -8,6 +8,8 @@ ConditionPathExists=/etc/yume/yumed.json
 ConditionPathExists=/etc/yume/server.crt
 ConditionPathExists=/etc/yume/server.key
 ConditionPathExists=/etc/yume/authorized_keys
+ConditionPathExists=/etc/yume/obfs.hex
+ConditionPathExists=/etc/yume/inner.hex
 
 [Service]
 Type=simple

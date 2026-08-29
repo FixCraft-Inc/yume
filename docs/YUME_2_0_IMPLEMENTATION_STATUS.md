@@ -53,8 +53,9 @@ relay v2, C ABI v1, and helper IPC v1 as independent version axes.
   consumers accept additive row fields as required by the ABI-v1 JSON
   compatibility rule.
 
-The in-tree GUI has only the compile-time facade adaptation needed for this
-typed history result. That is not a new GUI synchronization or behavior gate.
+The in-tree GUI presents the typed availability, error, and truncation state at
+runtime, but that consumer path has only compile-level qualification in this
+checkpoint. It is not a completed GUI synchronization or behavior gate.
 The separate Android checkout has not been synchronized or qualified against
 this signed continuation. Consumer work resumes only after the exact native
 checkpoint is complete and its full optimized build/test matrix passes.
@@ -98,6 +99,12 @@ steps, `ldd -r`, and its help-path smoke; that is only a compile/link gate. A
 checksum-pinned liboqs 0.16.0 archive was built from the declared source,
 selected by exact cache and link path, reported as 0.16.0 by the CLI, and
 passed 102/102 Release tests.
+
+### 2026-08-27 native TLS addendum
+
+The backend state below was introduced after the August 23 baseline. It is
+retained here as a labelled later addendum, not as evidence that the older
+checkpoint built or qualified this native implementation.
 
 The default backend is now `openssl-chrome151`. It opts into YUME's additive,
 default-off OpenSSL 3.5.7 patch through an existing `SSL_CTX_ctrl` symbol, so a
@@ -274,9 +281,12 @@ tray behavior, Windows, and macOS remain separate qualification gates.
   `config/dependencies.json` and consumed by CMake, build scripts, CI, CodeQL,
   and release tooling; a floating branch is rejected. The repeated Argon2
   discovery cache-reset correction and subsequent crypto/format hardening are
-  separately signed, pushed, and pinned at
-  `5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`, so the YUME candidate no longer
-  depends on an unpublished BaseFWX worktree.
+  separately signed and published. The current pin is
+  `e6ffbb79daa02bf62c31c3ae6513d5c603ec8dcd`; it additionally provides the
+  owned explicit-nonce ChaCha20-Poly1305 helper required to preserve YUME's
+  relay-history record format, bounds whole-file benchmark concurrency, and
+  keeps retired compatibility performance rows default-off. The YUME candidate
+  no longer depends on an unpublished BaseFWX worktree.
 - Full builds now require both OpenSSL 3.5 and YUME's additive ClientHello
   patch instead of discovering a missing ML-DSA-87 provider or native-emitter
   capability at runtime. The official revision and patch series are recorded

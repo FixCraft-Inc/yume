@@ -607,6 +607,16 @@ List authorized keys.
 .BI "--keys-add " pub.pem
 Add an authorized public key.
 .TP
+.B --keys-admin
+With
+.B --keys-add
+or
+.BR --keys-gen-add ,
+enrol the public identity into the separate
+.B --admin-keys
+second-factor store instead of the regular visitor store. An admin session
+still requires a distinct regular visitor identity as its first factor.
+.TP
 .BI "--keys-remove " id
 Remove an authorized key by fingerprint or alias.
 .TP

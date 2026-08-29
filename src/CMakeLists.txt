@@ -642,6 +642,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yumed
         main_server.cpp
         server/cli/anonym.cpp
+        server/cli/curl_json_transport.cpp
         server/cli/args.cpp
         server/cli/cluster.cpp
         server/cli/config_load.cpp
@@ -666,6 +667,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             WINVER=0x0600
             _WIN32_WINNT=0x0600
         )
+    endif()
+
+    if(YUME_BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(yume_anonym_curl_transport_test
+            server/cli/curl_json_transport.cpp
+            server/cli/curl_json_transport_test.cpp)
+        target_include_directories(yume_anonym_curl_transport_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(yume_anonym_curl_transport_test PRIVATE yume_core)
+        target_compile_definitions(yume_anonym_curl_transport_test PRIVATE
+            YUME_CURL_TRANSPORT_TESTING=1)
+        yume_apply_warnings(yume_anonym_curl_transport_test)
+        add_test(NAME yume_anonym_curl_transport_test
+            COMMAND yume_anonym_curl_transport_test)
     endif()
 
     # ------------------------------------------------------------------
@@ -1850,6 +1865,14 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 endif()
 
 if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
+    add_executable(yume_abi_stream_open_transaction_test
+        abi/service_open_transaction_test.cpp)
+    target_include_directories(yume_abi_stream_open_transaction_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    yume_apply_warnings(yume_abi_stream_open_transaction_test)
+    add_test(NAME yume_abi_stream_open_transaction_test
+        COMMAND yume_abi_stream_open_transaction_test)
+
     add_executable(yume_abi_test abi/yume_c_test.cpp)
     target_include_directories(yume_abi_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR})

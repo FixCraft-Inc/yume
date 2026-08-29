@@ -20,6 +20,17 @@ YUME raises the cost of blocking and can reduce metadata exposure depending on
 the route. It should not be described as impossible to block, impossible to
 trace, or a replacement for a full anonymity network by itself.
 
+The public code-health findings and their resolved/open state are maintained in
+`docs/CODE_HEALTH.md`. In particular, packaging startability, strict operator
+signing-key loading, history authentication-failure wiping, anonym refresh
+thread ownership, C ABI stream-open rollback ownership, and the optional
+static-Linux curl proof boundary are fixed in the current source. The common
+operator-proof HTTPS boundary now rejects ambiguous endpoints, binds CA
+verification to the configured DNS name or IP literal, and applies a bounded
+request deadline and response limits. The live
+tunnel rollback coverage gap, large coordinator decomposition, and
+exact-candidate release qualification remain open.
+
 ## Masquerade and authorization hardening
 
 Status: transport AUTH/permission gates and the relay-v2 authorization,

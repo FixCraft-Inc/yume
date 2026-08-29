@@ -89,6 +89,38 @@ private:
     std::vector<std::uint8_t>& value_;
 };
 
+template <typename Function>
+bool Throws(Function&& function) {
+    try {
+        function();
+        return false;
+    } catch (...) {
+        return true;
+    }
+}
+
+yume::crypto::Bytes FromHex(std::string_view hex) {
+    if (hex.size() % 2U != 0U) {
+        throw std::invalid_argument("odd-length relay-history hex fixture");
+    }
+    const auto nibble = [](char value) -> std::uint8_t {
+        if (value >= '0' && value <= '9') {
+            return static_cast<std::uint8_t>(value - '0');
+        }
+        if (value >= 'a' && value <= 'f') {
+            return static_cast<std::uint8_t>(value - 'a' + 10);
+        }
+        throw std::invalid_argument("invalid relay-history hex fixture");
+    };
+    yume::crypto::Bytes result;
+    result.reserve(hex.size() / 2U);
+    for (std::size_t offset = 0; offset < hex.size(); offset += 2U) {
+        result.push_back(static_cast<std::uint8_t>(
+            (nibble(hex[offset]) << 4U) | nibble(hex[offset + 1U])));
+    }
+    return result;
+}
+
 void write_authenticated_history_record(
         const std::filesystem::path& key_path,
         const std::filesystem::path& log_path,
@@ -148,6 +180,51 @@ int main() {
     return 0;
 #else
     TempDirectory temp;
+    crypto::Bytes history_test_key(32U, 0x11U);
+    TestBytesWiper history_test_key_wiper{history_test_key};
+    const crypto::Bytes history_test_nonce(12U, 0x22U);
+    crypto::Bytes history_test_plain{'h', 'i', 's', 't', 'o', 'r', 'y'};
+    TestBytesWiper history_test_plain_wiper{history_test_plain};
+    auto history_test_blob = crypto::encrypt_chacha20(
+        history_test_plain, history_test_key, history_test_nonce);
+    auto history_test_opened = crypto::decrypt_chacha20(
+        history_test_blob, history_test_key, history_test_nonce);
+    TestBytesWiper history_test_opened_wiper{history_test_opened};
+    assert(history_test_opened == history_test_plain);
+    history_test_blob.back() ^= 0x01U;
+    assert(Throws([&] {
+        (void)crypto::decrypt_chacha20(
+            history_test_blob, history_test_key, history_test_nonce);
+    }));
+    const crypto::Bytes empty_history_plain;
+    const auto empty_history_blob = crypto::encrypt_chacha20(
+        empty_history_plain, history_test_key, history_test_nonce);
+    assert(crypto::decrypt_chacha20(
+               empty_history_blob, history_test_key, history_test_nonce)
+               .empty());
+
+    // This fixed record predates the BaseFWX delegation. It proves the
+    // default caller still reads the frozen empty-AAD storage format and that
+    // newly written ciphertext remains byte-identical, rather than merely
+    // proving that one implementation can round-trip itself.
+    crypto::Bytes compatibility_key(32U, 0x2aU);
+    TestBytesWiper compatibility_key_wiper{compatibility_key};
+    const crypto::Bytes compatibility_nonce(12U, 0x19U);
+    crypto::Bytes compatibility_plaintext{
+        'y', 'u', 'm', 'e', ' ', 'r', 'e', 'l', 'a', 'y', ' ', 'h', 'i',
+        's', 't', 'o', 'r', 'y', ' ', 'r', 'e', 'c', 'o', 'r', 'd'};
+    TestBytesWiper compatibility_plaintext_wiper{compatibility_plaintext};
+    const crypto::Bytes compatibility_blob = FromHex(
+        "7d2f5037e54628bb740a597621203cc4f639a2ce0584401f9ab315dd0f"
+        "c4c635c1589234ff3c5b4f02");
+    auto opened_compatibility = crypto::decrypt_chacha20(
+        compatibility_blob, compatibility_key, compatibility_nonce);
+    TestBytesWiper opened_compatibility_wiper{opened_compatibility};
+    assert(opened_compatibility == compatibility_plaintext);
+    assert(crypto::encrypt_chacha20(
+               compatibility_plaintext, compatibility_key,
+               compatibility_nonce) == compatibility_blob);
+
     const std::string secret_b64 =
         util::base64_encode(std::string(32, static_cast<char>(0x42)));
     std::string error;

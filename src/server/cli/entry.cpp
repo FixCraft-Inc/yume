@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <cerrno>
 #include <mutex>
+#include <stop_token>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -401,21 +402,30 @@ int Server::run(int argc, char** argv) {
     int threads = cfg.threads > 0 ? cfg.threads : static_cast<int>(hw > 0 ? hw : 1);
     boost::asio::io_context io(threads);
     yume::server::Manager manager(io, cfg);
-    std::atomic<bool> stop_refresh{false};
     std::mutex refresh_mu;
     std::condition_variable refresh_cv;
-    std::thread refresh_thread;
+    // Scope ownership starts before signal registration and privilege-drop
+    // preparation, both of which may throw. jthread therefore requests stop
+    // and joins the refresher during every later stack-unwind path.
+    std::jthread refresh_thread;
     auto local_runtime = std::make_shared<yume::server::LocalRuntime>(
         local_runtime_path,
         &manager,
         [&]() {
             manager.stop();
             io.stop();
-            stop_refresh.store(true);
+            refresh_thread.request_stop();
             refresh_cv.notify_all();
         });
     if (cfg.anonym) {
-        refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts, &refresh_mu, &refresh_cv, anonym_local_sign]() {
+        refresh_thread = std::jthread(
+            [&manager, &cfg, &anonym_last_ts, &refresh_mu, &refresh_cv,
+             anonym_local_sign](std::stop_token stop_token) {
+            // request_stop() alone does not wake std::condition_variable.
+            // Bind notification to the token so jthread destruction cannot
+            // wait for the normal refresh interval.
+            std::stop_callback wake_refresh_wait(
+                stop_token, [&refresh_cv]() { refresh_cv.notify_all(); });
             auto compute_delay = [&]() -> int {
                 const long long now = static_cast<long long>(std::time(nullptr));
                 const long long last = anonym_last_ts.load(std::memory_order_relaxed);
@@ -435,11 +445,12 @@ int Server::run(int argc, char** argv) {
                 return static_cast<int>(delay);
             };
 
-            while (!stop_refresh.load()) {
+            while (!stop_token.stop_requested()) {
                 const int delay_s = compute_delay();
                 std::unique_lock<std::mutex> lock(refresh_mu);
-                if (refresh_cv.wait_for(lock, std::chrono::seconds(delay_s), [&stop_refresh]() {
-                        return stop_refresh.load();
+                if (refresh_cv.wait_for(lock, std::chrono::seconds(delay_s),
+                                        [&stop_token]() {
+                        return stop_token.stop_requested();
                     })) {
                     break;
                 }
@@ -485,7 +496,7 @@ int Server::run(int argc, char** argv) {
         }
         local_runtime->stop();
         manager.stop();
-        stop_refresh.store(true);
+        refresh_thread.request_stop();
         refresh_cv.notify_all();
         // Keep the deadline owned by Server::run. A detached thread capturing
         // io could otherwise outlive this stack frame when the manager drains
@@ -532,11 +543,8 @@ int Server::run(int argc, char** argv) {
         } else {
             std::cerr << "\033[1;31mserver start failed: " << ex.what() << "\033[0m\n";
         }
-        stop_refresh.store(true);
+        refresh_thread.request_stop();
         refresh_cv.notify_all();
-        if (refresh_thread.joinable()) {
-            refresh_thread.join();
-        }
         return 1;
     }
 
@@ -548,9 +556,8 @@ int Server::run(int argc, char** argv) {
         for (auto& worker : workers) {
             if (worker.joinable()) worker.join();
         }
-        stop_refresh.store(true);
+        refresh_thread.request_stop();
         refresh_cv.notify_all();
-        if (refresh_thread.joinable()) refresh_thread.join();
     };
     auto report_worker_start_error = [&](const std::string& message) {
         if (yume::util::is_logging_enabled()) {
@@ -580,11 +587,8 @@ int Server::run(int argc, char** argv) {
     for (auto& t : workers) {
         t.join();
     }
-    stop_refresh.store(true);
+    refresh_thread.request_stop();
     refresh_cv.notify_all();
-    if (refresh_thread.joinable()) {
-        refresh_thread.join();
-    }
     local_runtime->stop();
 
     return 0;

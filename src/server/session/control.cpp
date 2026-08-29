@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,6 +34,55 @@
 #include "server/session/internal.hpp"
 
 namespace yume::server {
+
+namespace {
+
+class ControlRequestContext final {
+public:
+    using Sender = std::function<void(const nlohmann::json&)>;
+
+    ControlRequestContext(const nlohmann::json& request, Sender sender)
+        : request_(request), sender_(std::move(sender)) {
+        if (request_.contains("request_id") &&
+            request_["request_id"].is_string()) {
+            const auto& request_id =
+                request_["request_id"].get_ref<const std::string&>();
+            if (!request_id.empty() &&
+                request_id.size() <= control::kMaxDirectoryRequestIdBytes) {
+                request_id_ = request_id;
+            }
+        }
+    }
+
+    std::optional<std::string> read_bounded_text(
+        const char* key,
+        std::size_t max_bytes) const {
+        if (!request_.contains(key)) return std::string{};
+        if (!request_[key].is_string()) return std::nullopt;
+        const auto& value = request_[key].get_ref<const std::string&>();
+        if (value.size() > max_bytes ||
+            !std::all_of(value.begin(), value.end(), [](unsigned char byte) {
+                return byte >= 0x20U && byte != 0x7fU;
+            })) {
+            return std::nullopt;
+        }
+        return value;
+    }
+
+    void send(nlohmann::json response) const {
+        if (request_id_ && !response.contains("request_id")) {
+            response["request_id"] = *request_id_;
+        }
+        sender_(response);
+    }
+
+private:
+    const nlohmann::json& request_;
+    Sender sender_;
+    std::optional<std::string> request_id_;
+};
+
+}  // namespace
 
 void Session::handle_control(const protocol::Frame& frame) noexcept {
     try {
@@ -127,34 +177,19 @@ void Session::handle_control_impl(const protocol::Frame& frame) {
         return;
     }
 
-    auto send_json = [&](const nlohmann::json& resp) {
-        nlohmann::json payload_json = resp;
-        if (json.contains("request_id") &&
-            json["request_id"].is_string() &&
-            !json["request_id"].get_ref<const std::string&>().empty() &&
-            json["request_id"].get_ref<const std::string&>().size() <=
-                control::kMaxDirectoryRequestIdBytes &&
-            !payload_json.contains("request_id")) {
-            payload_json["request_id"] = json["request_id"];
-        }
-        std::string out = payload_json.dump();
-        crypto::Bytes bytes(out.begin(), out.end());
-        send_control_frame(protocol::CONTROL, frame.header.stream_id, bytes);
+    ControlRequestContext request(
+        json, [&](const nlohmann::json& response) {
+            std::string out = response.dump();
+            crypto::Bytes bytes(out.begin(), out.end());
+            send_control_frame(
+                protocol::CONTROL, frame.header.stream_id, bytes);
+        });
+    auto send_json = [&request](nlohmann::json response) {
+        request.send(std::move(response));
     };
-
-    auto read_bounded_text = [&json](const char* key,
-                                     std::size_t max_bytes)
-            -> std::optional<std::string> {
-        if (!json.contains(key)) return std::string{};
-        if (!json[key].is_string()) return std::nullopt;
-        const auto& value = json[key].get_ref<const std::string&>();
-        if (value.size() > max_bytes ||
-            !std::all_of(value.begin(), value.end(), [](unsigned char byte) {
-                return byte >= 0x20U && byte != 0x7fU;
-            })) {
-            return std::nullopt;
-        }
-        return value;
+    auto read_bounded_text = [&request](const char* key,
+                                        std::size_t max_bytes) {
+        return request.read_bounded_text(key, max_bytes);
     };
 
     if (cmd == "presence.announce") {

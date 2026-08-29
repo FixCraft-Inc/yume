@@ -28,8 +28,37 @@ static-Linux curl proof boundary are fixed in the current source. The common
 operator-proof HTTPS boundary now rejects ambiguous endpoints, binds CA
 verification to the configured DNS name or IP literal, and applies a bounded
 request deadline and response limits. The live
-tunnel rollback coverage gap, large coordinator decomposition, and
-exact-candidate release qualification remain open.
+tunnel rollback coverage gap and exact-candidate release qualification remain
+open. The current source has behavior-preserving seams for parser domains,
+local attach, AUTH state commit, TCP/UDP result classification, write
+settlement, bounded control requests, and server worker/operator-proof
+ownership; remaining large functions are not open defects solely because of
+their line count.
+
+## Local configuration and secure-material persistence
+
+Status: the supported POSIX facade/CLI paths are bounded, no-follow,
+owner-protected, transaction-locked, and atomically published with focused
+failure/concurrency tests. Platforms that cannot provide equivalent guarantees
+fail closed for the affected operation.
+
+- Secure-material imports cap PEM input at 64 KiB, metadata at 16 MiB, records
+  at 1,024, and labels at 256 bytes. Metadata JSON types, IDs, fingerprints,
+  material types, and regular-file status are validated before use. New IDs
+  are 128-bit random lowercase hex; legacy timestamp IDs remain readable, but
+  persisted paths are ignored and the next mutation writes schema-v1 path-free
+  metadata.
+- Profile IDs accept only 1--64 ASCII lowercase alphanumeric/hyphen bytes.
+  Profile JSON is capped at 1 MiB, display names at 159 bytes, and invalid or
+  unsafe active pointers, including pointers to missing or unsafe profile
+  entries, are not returned. Save, collision selection, active pointer updates,
+  and removal share the profile transaction lock.
+- Encrypted `.yss` share files are capped at 16 MiB before parsing or password
+  KDF work. CLI and GUI use the same bounded read and exclusive mode-0600
+  publication path; exports refuse overwrite, symlinks, and non-regular
+  destinations. Bundle copies, moves, assignment, destruction, cancellation,
+  and GUI dismissal wipe the private key, obfuscation secret, inner PSK,
+  password, plaintext, and preview buffers they own.
 
 ## Masquerade and authorization hardening
 

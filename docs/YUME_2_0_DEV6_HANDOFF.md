@@ -119,8 +119,9 @@ Confirmed and fixed in the working tree:
   alternate slot was reset; it now wipes the outgoing key and moves. The client
   `TransportCore::set_inner_key` now wipes before assigning. Both types are
   `std::optional<crypto::Bytes>`, so nothing was clearing them.
-- The raw ECDH shared secret in `crypto.cpp generate_session_key` outlived its
-  use. It is now wiped on scope exit, which also covers the throwing paths.
+- The raw ECDH shared secret in the then-live session-key helper outlived its
+  use. It was changed to wipe on scope exit; the now-uncalled helper itself was
+  later removed after exact reference checks.
 - `anonym.cpp` used `util::random_hex(16)` for a proof nonce without checking
   the result. It now fails instead of shipping an empty replay binding.
 

@@ -48,6 +48,12 @@ evidence.
 
 ## C++, API, and naming
 
+- For new or meaningfully touched YUME code, use `PascalCase` for types, enums,
+  and enum values; `snake_case` for functions and methods; `kPascalCase` for
+  constants; `ALL_CAPS` for macros; and a trailing underscore for members.
+  Preserve constructors, external overrides/APIs, C ABI names, CLI/JSON/wire
+  fields, and coherent untouched interfaces. Do not use this rule to justify a
+  mass rename or full-tree formatting pass.
 - Prefer clear subsystem names over generic `Manager`/`Runtime` names at public
   boundaries; within an existing namespace, follow the established type name.
 - Use `std::size_t` for counts, fixed-width integers for wire fields, and

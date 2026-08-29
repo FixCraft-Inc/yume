@@ -366,6 +366,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/stealth/outer_carrier_observer.cpp
         core/security/identity.cpp
         core/runtime/atomic_file.cpp
+        core/runtime/bounded_file.cpp
         core/runtime/file_transaction_lock.cpp
         core/runtime/local_runtime.cpp
         core/runtime/service_stream.cpp
@@ -501,10 +502,10 @@ endif()
 add_library(yume_transport_core
     client/packet/engine.cpp
     client/transport/chrome_tls_protocol.cpp
-    client/transport/core.cpp
-    client/transport/write.cpp
-    client/transport/dispatch.cpp
-    client/transport/crypto.cpp
+    outbound/core.cpp
+    outbound/write.cpp
+    outbound/dispatch.cpp
+    outbound/crypto.cpp
 )
 
 target_include_directories(yume_transport_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -550,11 +551,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # code across the server boundary and also compiled outbound_proxy.cpp in
     # both archives.
     add_library(yume_outbound_transport STATIC
-        client/transport/client_stream.cpp
-        client/transport/tunnel.cpp
-        client/proxy/forward.cpp
-        client/proxy/outbound_proxy.cpp
-        client/cli/connect/auth.cpp
+        outbound/stream.cpp
+        outbound/tunnel.cpp
+        outbound/forward.cpp
+        outbound/proxy.cpp
+        outbound/auth.cpp
     )
     target_include_directories(yume_outbound_transport
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -721,7 +722,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/config/config.cpp
         client/cli/connect/diagnostics.cpp
         client/cli/connect/outer_carrier_capture.cpp
-        client/cli/config/files.cpp
         client/cli/config/input.cpp
         client/cli/config/platform.cpp
         client/cli/commands/proxy.cpp
@@ -1078,12 +1078,27 @@ else()
     add_compile_options(-UNDEBUG)
 endif()
 
+add_executable(yume_hex_test core/encoding/hex_test.cpp)
+target_link_libraries(yume_hex_test PRIVATE yume_core)
+yume_apply_perf_opts(yume_hex_test)
+add_test(NAME yume_hex_test COMMAND yume_hex_test)
+
 add_executable(yume_secure_materials_test
     facade/security/secure_materials_test.cpp
 )
 target_link_libraries(yume_secure_materials_test PRIVATE yume_facade)
 yume_apply_perf_opts(yume_secure_materials_test)
 add_test(NAME yume_secure_materials_test COMMAND yume_secure_materials_test)
+
+add_executable(yume_profiles_test facade/config/profiles_test.cpp)
+target_link_libraries(yume_profiles_test PRIVATE yume_facade Threads::Threads)
+yume_apply_perf_opts(yume_profiles_test)
+add_test(NAME yume_profiles_test COMMAND yume_profiles_test)
+
+add_executable(yume_client_args_test client/cli/config/args_test.cpp)
+target_link_libraries(yume_client_args_test PRIVATE yume_client_lib)
+yume_apply_perf_opts(yume_client_args_test)
+add_test(NAME yume_client_args_test COMMAND yume_client_args_test)
 
 add_executable(yume_facade_lifecycle_test
     facade/session/lifecycle_test.cpp

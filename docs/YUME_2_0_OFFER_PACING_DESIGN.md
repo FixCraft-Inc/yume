@@ -29,7 +29,7 @@ sealed application frames are delivered too. Preparation depth then tracks the
 negotiated window (1, 1, 3, 4, 12 prepared at windows 1, 2, 4, 8, 16) and
 delivered bytes rise 13.8x from window 1 to window 16, with zero refusals. The
 per-round-trip serialisation is gone. Production's call-site ordering — both
-`client/transport/write.cpp` and `server/session/streams.cpp` test
+`outbound/write.cpp` and `server/session/streams.cpp` test
 `ApplicationWriteBlocked` first and break before reaching `ShouldStartRekey` —
 was tested as a separate variant and changed the result by 0.3%.
 

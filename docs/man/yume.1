@@ -26,6 +26,20 @@ yume \- stealth post-quantum transport client
 .B bash
 .PP
 .B yume
+.B export
+.I file.yss
+[
+.B --password-stdin
+]
+.PP
+.B yume
+.B import
+.I file.yss
+[
+.B --password-stdin
+]
+.PP
+.B yume
 .B --help
 .br
 .B yume
@@ -427,6 +441,25 @@ full-session HTTP/2 tunnel.
 |  stream 3  OPEN api.site:443  -> another independent connection      |
 +----------------------------------------------------------------------+
 .fi
+.SH SHARE FILES
+.TP
+.BI "export " file.yss
+Encrypt the merged client configuration, composite identity, and selected trust
+material into a password-protected YUME secure-store file. The destination is
+created exclusively with mode 0600; existing paths, symlinks, and non-regular
+entries are refused. Output is capped at 16 MiB and a partial publication is
+removed on failure.
+.TP
+.BI "import " file.yss
+Read and decrypt a YUME secure-store file, then publish its extracted private
+files and ready-to-use configuration beneath the imported-profile directory.
+Input is limited to 16 MiB before parsing or password-KDF work. Plaintext,
+password, and bundled secret buffers are wiped on success and failure.
+.TP
+.B --password-stdin
+Read the share password from standard input for non-interactive export or
+import. Avoid command-line password arguments, which can be visible in process
+listings.
 .SH MODES
 .TP
 .BI "--socks " [addr:]port

@@ -66,7 +66,11 @@ sources twice. `yume_transport_core` is always built, so Android and embedders
 can link the reduced transport slice without pulling the full CLI or server
 stacks. `yume_outbound_transport` owns the small client/server-common dial,
 tunnel, forwarding, outbound-proxy, and authenticated-connect slice used by
-both the CLI and federation. The server does not link `yume_client_lib`.
+both the CLI and federation. Its implementation and server-consumed headers
+live under `src/outbound/`; compatibility headers under `src/client/` retain
+existing client include spellings without giving the client ownership of the
+shared implementation. The server does not link `yume_client_lib` or include
+client/CLI production headers.
 
 ## Source layout
 
@@ -88,14 +92,23 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 authenticated `kTransportVersion` alias. AUTH, relay, ABI, and helper IPC
 schema versions remain independent in their owning modules.
 
+### `src/outbound/` — neutral outbound transport
+
+Owned by `yume_outbound_transport` and used by both client and server paths.
+It contains the transport core, stream, tunnel, socket-protection callback,
+SOCKS5 outbound dialer, timeout/cancellation I/O, forwarding adapter, bounded
+UDP queue, and AUTH carrier establishment. Compatibility headers retain older
+client include spellings. CLI-only fatal errors, option wording, and
+interactive policy remain under `src/client/cli/`.
+
 ### `src/client/` — CLI client
 
 | Directory | Responsibility |
 | --- | --- |
 | `cli/` | Argument parsing, config, connect handshake, commands |
 | `packet/` | Client-side packet-bulk/TUN data plane |
-| `transport/` | TLS tunnel, crypto, dispatch, tunnel pool |
-| `proxy/` | SOCKS5, port forward, outbound proxy (incl. Tor) |
+| `transport/` | Client-owned TLS-helper/pool integration and compatibility headers for neutral outbound types |
+| `proxy/` | Local SOCKS5 runtime plus compatibility headers for neutral forwarding and queue types |
 | `relay/` | Relay runtime, secrets, history |
 | `transfer/` | Share/import/export transfer workflows |
 | `codec/` | Client-side app codec shims (e.g. Monero RPC) |

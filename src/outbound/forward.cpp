@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "client/proxy/forward.hpp"
+#include "outbound/forward.hpp"
 
 #include "util.hpp"
 
@@ -41,7 +41,7 @@
 #include <libproc.h>
 #endif
 
-namespace yume::client {
+namespace yume::outbound {
 
 namespace {
 constexpr int64_t kUdpQueueWarningIntervalMs = 30000;
@@ -1194,4 +1194,4 @@ void ReverseForwardSession::close() {
     local_.close(ec);
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

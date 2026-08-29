@@ -7,8 +7,8 @@
  * and priority-ordered batched dispatch.
  */
 
-#include "client/transport/core.hpp"
-#include "client/transport/internal.hpp"
+#include "outbound/core.hpp"
+#include "outbound/internal.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -16,7 +16,7 @@
 
 #include "core/security/inner_crypto.hpp"
 
-namespace yume::client {
+namespace yume::outbound {
 
 using namespace detail;
 
@@ -291,6 +291,144 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(
         pad_multiple));
 }
 
+TransportCore::WriteSelection TransportCore::select_write_item_locked(
+    std::size_t current_batch_bytes,
+    const std::unordered_set<uint8_t>& batch_streams,
+    bool collect_timing) {
+#if !YUME_ENABLE_DEV_DIAGNOSTICS
+    (void)collect_timing;
+#endif
+    if (stopped_) {
+        write_in_flight_ = false;
+        return {WriteSelectionStatus::Empty, std::nullopt};
+    }
+    if (write_queues_empty_locked()) {
+        return {WriteSelectionStatus::Empty, std::nullopt};
+    }
+
+    const auto stream_id =
+        select_next_write_locked(current_batch_bytes, batch_streams);
+    if (!stream_id.has_value()) {
+        return {WriteSelectionStatus::Empty, std::nullopt};
+    }
+
+    auto& head = write_queues_[*stream_id].front();
+    const auto now = std::chrono::steady_clock::now();
+    if (ratchet_ && !head.already_protected &&
+        ratchet_->ApplicationWriteBlocked(head.frame, now)) {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (collect_timing) {
+            if (!outbound_application_blocked_) {
+                outbound_application_block_wait_.start_if(true, now);
+                outbound_application_blocked_ = true;
+                ++ratchet_flow_stats_.application_block_count;
+            }
+            const std::size_t pending = ratchet_->outbound_rekeys_in_flight();
+            const std::size_t prepared = ratchet_->prepared_outbound_epochs();
+            ratchet_flow_stats_.max_pending_epochs = std::max(
+                ratchet_flow_stats_.max_pending_epochs, pending);
+            ratchet_flow_stats_.max_prepared_epochs = std::max(
+                ratchet_flow_stats_.max_prepared_epochs, prepared);
+            ratchet_flow_stats_.max_total_depth = std::max(
+                ratchet_flow_stats_.max_total_depth, pending + prepared);
+        }
+#endif
+        // Leave the application head queued until the ACK prepares the next
+        // send epoch. Re-queueing its stream preserves the scheduler order.
+        mark_stream_ready_locked(*stream_id);
+        return {WriteSelectionStatus::Blocked, std::nullopt};
+    }
+
+    if (ratchet_ && !head.already_protected &&
+        ratchet_->ShouldStartRekey(head.frame, now)) {
+        PendingWrite rekey;
+        rekey.frame = ratchet_->BeginOutboundRekey(now);
+        rekey.already_protected = true;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        outbound_rekey_wait_.start_if(collect_timing, now);
+        if (collect_timing) {
+            ++ratchet_flow_stats_.offer_count;
+            const std::size_t pending = ratchet_->outbound_rekeys_in_flight();
+            const std::size_t prepared = ratchet_->prepared_outbound_epochs();
+            ratchet_flow_stats_.max_pending_epochs = std::max(
+                ratchet_flow_stats_.max_pending_epochs, pending);
+            ratchet_flow_stats_.max_prepared_epochs = std::max(
+                ratchet_flow_stats_.max_prepared_epochs, prepared);
+            ratchet_flow_stats_.max_total_depth = std::max(
+                ratchet_flow_stats_.max_total_depth, pending + prepared);
+        }
+#endif
+        mark_stream_ready_locked(*stream_id);
+        return {WriteSelectionStatus::Selected, std::move(rekey)};
+    }
+
+    return {WriteSelectionStatus::Selected,
+            pop_stream_head_locked(*stream_id)};
+}
+
+void TransportCore::fail_write_batch(std::vector<PendingWrite> batch,
+                                     const std::string& error,
+                                     const std::string& close_prefix) {
+    {
+        std::lock_guard<std::mutex> write_lock(write_mu_);
+        for (const auto& item : batch) {
+            release_write_reservation_locked(item);
+        }
+        write_in_flight_ = false;
+    }
+    for (auto& item : batch) {
+        if (!item.handler) continue;
+        try {
+            item.handler(false, 0, error);
+        } catch (...) {
+            // Completion code is outside the scheduler trust boundary.
+        }
+    }
+    request_transport_close(close_prefix + error);
+}
+
+void TransportCore::settle_write_batch(
+    std::vector<PendingWrite> completed_batch,
+    std::vector<std::size_t> completed_sizes,
+    bool ok,
+    std::size_t bytes,
+    const std::string& error) {
+    bool dispatch = false;
+    const bool stopped = is_stopped();
+    {
+        std::lock_guard<std::mutex> write_lock(write_mu_);
+        for (const auto& item : completed_batch) {
+            release_write_reservation_locked(item);
+        }
+        if (!ok || stopped || write_queues_empty_locked()) {
+            write_in_flight_ = false;
+        } else {
+            write_in_flight_ = true;
+            dispatch = true;
+        }
+    }
+    for (std::size_t i = 0; i < completed_batch.size(); ++i) {
+        auto& item = completed_batch[i];
+        if (!item.handler) continue;
+        const bool completion_ok = ok && !stopped;
+        const std::size_t item_bytes =
+            completion_ok && i < completed_sizes.size()
+                ? completed_sizes[i]
+                : bytes;
+        try {
+            item.handler(completion_ok, item_bytes,
+                         stopped ? "transport stopped" : error);
+        } catch (...) {
+            // Settle sibling writes even when an embedder callback fails.
+        }
+    }
+    if (!ok) {
+        request_transport_close("write failed: " + error);
+    } else if (dispatch) {
+        dispatch_next_write();
+    }
+}
+
 void TransportCore::dispatch_next_write() {
     std::vector<PendingWrite> batch;
     auto encoded = std::make_shared<Bytes>();
@@ -323,89 +461,23 @@ void TransportCore::dispatch_next_write() {
 #endif
     std::unordered_set<uint8_t> batch_streams;
     while (batch.size() < kMaxWriteBatchFrames) {
-        std::optional<PendingWrite> selected;
-        std::optional<protocol::Frame> rekey;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch selector_timer(collect_timing);
 #endif
+        WriteSelection selection;
         try {
             std::scoped_lock lock(state_mu_, write_mu_);
-            if (stopped_) {
+            selection = select_write_item_locked(
+                total_bytes, batch_streams,
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                collect_timing
+#else
+                false
+#endif
+            );
+            if (selection.status_ != WriteSelectionStatus::Selected &&
+                batch.empty()) {
                 write_in_flight_ = false;
-                break;
-            }
-            if (write_queues_empty_locked()) {
-                if (batch.empty()) {
-                    write_in_flight_ = false;
-                }
-                break;
-            }
-            const bool ratchet_active = ratchet_ != nullptr;
-            const auto stream_id = select_next_write_locked(
-                total_bytes, batch_streams);
-            if (!stream_id.has_value()) {
-                if (batch.empty()) {
-                    write_in_flight_ = false;
-                }
-                break;
-            }
-            auto& head = write_queues_[*stream_id].front();
-            const auto now = std::chrono::steady_clock::now();
-            if (ratchet_active && !head.already_protected &&
-                ratchet_->ApplicationWriteBlocked(head.frame, now)) {
-#if YUME_ENABLE_DEV_DIAGNOSTICS
-                if (collect_timing) {
-                    if (!outbound_application_blocked_) {
-                        outbound_application_block_wait_.start_if(true, now);
-                        outbound_application_blocked_ = true;
-                        ++ratchet_flow_stats_.application_block_count;
-                    }
-                    const std::size_t pending =
-                        ratchet_->outbound_rekeys_in_flight();
-                    const std::size_t prepared =
-                        ratchet_->prepared_outbound_epochs();
-                    ratchet_flow_stats_.max_pending_epochs = std::max(
-                        ratchet_flow_stats_.max_pending_epochs, pending);
-                    ratchet_flow_stats_.max_prepared_epochs = std::max(
-                        ratchet_flow_stats_.max_prepared_epochs, prepared);
-                    ratchet_flow_stats_.max_total_depth = std::max(
-                        ratchet_flow_stats_.max_total_depth,
-                        pending + prepared);
-                }
-#endif
-                // The pipelined exchange may use the remaining authenticated
-                // old-epoch allowance, but never cross its hard boundary. Keep
-                // the head queued until the ACK prepares the next send epoch;
-                // Seal() commits it at the hard boundary.
-                mark_stream_ready_locked(*stream_id);
-                if (batch.empty()) {
-                    write_in_flight_ = false;
-                }
-                break;
-            }
-            if (ratchet_active && !head.already_protected &&
-                ratchet_->ShouldStartRekey(head.frame, now)) {
-                rekey = ratchet_->BeginOutboundRekey(now);
-#if YUME_ENABLE_DEV_DIAGNOSTICS
-                outbound_rekey_wait_.start_if(collect_timing, now);
-                if (collect_timing) {
-                    ++ratchet_flow_stats_.offer_count;
-                    const std::size_t pending =
-                        ratchet_->outbound_rekeys_in_flight();
-                    const std::size_t prepared =
-                        ratchet_->prepared_outbound_epochs();
-                    ratchet_flow_stats_.max_pending_epochs = std::max(
-                        ratchet_flow_stats_.max_pending_epochs, pending);
-                    ratchet_flow_stats_.max_prepared_epochs = std::max(
-                        ratchet_flow_stats_.max_prepared_epochs, prepared);
-                    ratchet_flow_stats_.max_total_depth = std::max(
-                        ratchet_flow_stats_.max_total_depth,
-                        pending + prepared);
-                }
-#endif
-                mark_stream_ready_locked(*stream_id);
-            } else {
-                selected = pop_stream_head_locked(*stream_id);
             }
         } catch (const std::exception& ex) {
             selection_error = ex.what();
@@ -415,15 +487,11 @@ void TransportCore::dispatch_next_write() {
         selector_timing.record(selector_timer);
 #endif
 
-        PendingWrite write;
-        if (rekey.has_value()) {
-            write.frame = std::move(*rekey);
-            write.already_protected = true;
-        } else if (selected.has_value()) {
-            write = std::move(*selected);
-        } else {
+        if (selection.status_ != WriteSelectionStatus::Selected ||
+            !selection.write_.has_value()) {
             break;
         }
+        PendingWrite write = std::move(*selection.write_);
 
         try {
             auto part = encode_outgoing_frame(
@@ -445,41 +513,36 @@ void TransportCore::dispatch_next_write() {
                 break;
             }
         } catch (const std::exception& ex) {
-            if (write.handler) {
-                write.handler(false, 0, ex.what());
-            }
             {
                 std::lock_guard<std::mutex> write_lock(write_mu_);
                 release_write_reservation_locked(write);
+            }
+            if (write.handler) {
+                try {
+                    write.handler(false, 0, ex.what());
+                } catch (...) {
+                }
             }
             selection_error = ex.what();
             break;
         } catch (...) {
-            if (write.handler) {
-                write.handler(false, 0, "unknown error");
-            }
             {
                 std::lock_guard<std::mutex> write_lock(write_mu_);
                 release_write_reservation_locked(write);
+            }
+            if (write.handler) {
+                try {
+                    write.handler(false, 0, "unknown error");
+                } catch (...) {
+                }
             }
             selection_error = "unknown error";
             break;
         }
     }
     if (!selection_error.empty()) {
-        {
-            std::lock_guard<std::mutex> write_lock(write_mu_);
-            for (const auto& item : batch) {
-                release_write_reservation_locked(item);
-            }
-            write_in_flight_ = false;
-        }
-        for (auto& item : batch) {
-            if (item.handler) {
-                item.handler(false, 0, selection_error);
-            }
-        }
-        request_transport_close("rekey start failed: " + selection_error);
+        fail_write_batch(std::move(batch), selection_error,
+                         "rekey start failed: ");
         return;
     }
 
@@ -524,68 +587,19 @@ void TransportCore::dispatch_next_write() {
     }
 #endif
 
-    auto finish_batch = [this](std::vector<PendingWrite> completed_batch,
-                               std::vector<std::size_t> completed_sizes,
-                               bool ok,
-                               std::size_t bytes,
-                               const std::string& error) {
-        bool dispatch = false;
-        const bool stopped = is_stopped();
-        {
-            std::lock_guard<std::mutex> write_lock(write_mu_);
-            for (const auto& item : completed_batch) {
-                release_write_reservation_locked(item);
-            }
-            if (!ok || stopped || write_queues_empty_locked()) {
-                write_in_flight_ = false;
-            } else {
-                write_in_flight_ = true;
-                dispatch = true;
-            }
-        }
-        for (std::size_t i = 0; i < completed_batch.size(); ++i) {
-            auto& item = completed_batch[i];
-            if (item.handler) {
-                const bool completion_ok = ok && !stopped;
-                const std::size_t item_bytes =
-                    completion_ok && i < completed_sizes.size()
-                        ? completed_sizes[i] : bytes;
-                try {
-                    item.handler(completion_ok, item_bytes,
-                                 stopped ? "transport stopped" : error);
-                } catch (...) {
-                    // User completions cannot be allowed to strand the
-                    // scheduler or suppress settlement of sibling writes.
-                }
-            }
-        }
-        if (!ok) {
-            request_transport_close("write failed: " + error);
-            return;
-        }
-        if (dispatch) {
-            dispatch_next_write();
-        }
-    };
-
-    struct CompletionState {
-        bool settled{false};  // protected by TransportCore::write_mu_
-        std::vector<PendingWrite> batch;
-        std::vector<std::size_t> encoded_sizes;
-    };
-
-    std::shared_ptr<CompletionState> completion_state;
+    std::shared_ptr<WriteCompletionState> completion_state;
     try {
-        completion_state = std::make_shared<CompletionState>();
+        completion_state = std::make_shared<WriteCompletionState>();
     } catch (...) {
-        finish_batch(std::move(batch), std::move(encoded_sizes), false, 0,
-                     "unable to allocate transport write completion state");
+        settle_write_batch(
+            std::move(batch), std::move(encoded_sizes), false, 0,
+            "unable to allocate transport write completion state");
         return;
     }
-    completion_state->batch = std::move(batch);
-    completion_state->encoded_sizes = std::move(encoded_sizes);
+    completion_state->batch_ = std::move(batch);
+    completion_state->encoded_sizes_ = std::move(encoded_sizes);
 
-    auto completion = [this, completion_state, finish_batch](
+    auto completion = [this, completion_state](
                           bool ok,
                           std::size_t bytes,
                           const std::string& error) mutable {
@@ -593,15 +607,15 @@ void TransportCore::dispatch_next_write() {
         std::vector<std::size_t> owned_sizes;
         {
             std::lock_guard<std::mutex> write_lock(write_mu_);
-            if (completion_state->settled) {
+            if (completion_state->settled_) {
                 return;
             }
-            completion_state->settled = true;
-            owned_batch = std::move(completion_state->batch);
-            owned_sizes = std::move(completion_state->encoded_sizes);
+            completion_state->settled_ = true;
+            owned_batch = std::move(completion_state->batch_);
+            owned_sizes = std::move(completion_state->encoded_sizes_);
         }
-        finish_batch(std::move(owned_batch), std::move(owned_sizes), ok,
-                     bytes, error);
+        settle_write_batch(std::move(owned_batch), std::move(owned_sizes),
+                           ok, bytes, error);
     };
 
     try {
@@ -660,4 +674,4 @@ void TransportCore::resume_writes_after_rekey() {
     if (dispatch) dispatch_next_write();
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

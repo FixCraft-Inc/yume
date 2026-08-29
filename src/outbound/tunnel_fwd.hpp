@@ -6,12 +6,14 @@
 
 #pragma once
 
-#include "outbound/stream.hpp"
+namespace yume::outbound {
+
+class Tunnel;
+
+}  // namespace yume::outbound
 
 namespace yume::client {
 
-using HelperProcessLifetime = outbound::HelperProcessLifetime;
-using TlsConnectionMetadata = outbound::TlsConnectionMetadata;
-using ClientTransportStream = outbound::ClientTransportStream;
+using Tunnel = outbound::Tunnel;
 
 }  // namespace yume::client

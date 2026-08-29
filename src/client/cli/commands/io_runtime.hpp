@@ -16,6 +16,8 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include "outbound/tunnel_fwd.hpp"
+
 namespace yume::util {
 class SignalHandlerRegistration;
 }
@@ -23,7 +25,6 @@ class SignalHandlerRegistration;
 namespace yume::client {
 
 class RelayRuntime;
-class Tunnel;
 
 int resolve_io_threads(int requested);
 bool parse_env_bool(const char* name, bool fallback);

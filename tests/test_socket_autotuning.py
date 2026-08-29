@@ -48,7 +48,7 @@ class Scope:
 # inherit an exemption.
 DIRECT_PIN_SCOPES = (
     Scope(
-        "client/transport/client_stream.cpp",
+        "outbound/stream.cpp",
         "ClientTransportStream::set_socket_buffers",
         re.compile(
             r"\bvoid\s+ClientTransportStream::set_socket_buffers\s*"
@@ -241,13 +241,13 @@ class SocketAutotuningTest(unittest.TestCase):
             )
 
     def test_proxy_connection_sources_do_not_pin_buffers(self) -> None:
-        for path in ("client/proxy/socks.cpp", "client/proxy/forward.cpp"):
+        for path in ("client/proxy/socks.cpp", "outbound/forward.cpp"):
             code = self.sources[path]
             self.assertIsNone(DIRECT_PIN.search(code), f"src/{path} pins buffers")
             self.assertIsNone(HELPER_CALL.search(code), f"src/{path} calls a pinning helper")
 
     def test_helper_declaration_documents_the_hazard(self) -> None:
-        header = (SCAN_ROOT / "client/transport/client_stream.hpp").read_text(
+        header = (SCAN_ROOT / "outbound/stream.hpp").read_text(
             encoding="utf-8"
         )
         self.assertIn("set_socket_buffers", header)

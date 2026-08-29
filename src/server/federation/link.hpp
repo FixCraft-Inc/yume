@@ -19,7 +19,7 @@
 #include <boost/asio.hpp>
 #include <nlohmann/json.hpp>
 
-#include "client/transport/tunnel.hpp"
+#include "outbound/tunnel.hpp"
 #include "core/protocol/control_protocol.hpp"
 #include "core/security/secret_file.hpp"
 #include "server/config/config.hpp"
@@ -66,8 +66,8 @@ public:
                        const std::string& reason);
     void send_data(std::uint8_t remote_stream,
                    const std::string& channel_id,
-                   const client::Tunnel::Bytes& payload,
-                   client::Tunnel::InboundCredit inbound_credit);
+                   const outbound::Tunnel::Bytes& payload,
+                   outbound::Tunnel::InboundCredit inbound_credit);
 
 private:
     struct LinkChannel {
@@ -85,11 +85,11 @@ private:
     // AuthOk. Returns a started-ready-to-start Tunnel; throws on failure.
     // The io_context is owned by the caller's attempt scope and must outlive
     // the returned Tunnel.
-    std::shared_ptr<client::Tunnel> dial_v2(boost::asio::io_context& io);
+    std::shared_ptr<outbound::Tunnel> dial_v2(boost::asio::io_context& io);
     void send_hello();
     void handle_control(
         const nlohmann::json& json,
-        const std::shared_ptr<client::Tunnel>& source_tunnel);
+        const std::shared_ptr<outbound::Tunnel>& source_tunnel);
     void request_directory();
     void handle_disconnect(const std::string& reason);
     void complete_channel_open(std::uint8_t remote_stream,
@@ -136,7 +136,7 @@ private:
     // Shared ownership on purpose: senders grab a copy under mutex_ so a
     // concurrent reset_transport can never leave them holding a dangling raw
     // pointer into a destroyed transport.
-    std::shared_ptr<client::Tunnel> tunnel_;
+    std::shared_ptr<outbound::Tunnel> tunnel_;
 
     friend struct FederationLinkLifecycleTestPeer;
 };

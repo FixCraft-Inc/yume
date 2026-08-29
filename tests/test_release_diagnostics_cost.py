@@ -35,9 +35,9 @@ HOT_PATH = (
     "server/session/reverse_listener.cpp",
     "server/session/internal.hpp",
     "client/proxy/socks.cpp",
-    "client/proxy/forward.cpp",
-    "client/transport/write.cpp",
-    "client/transport/core.cpp",
+    "outbound/forward.cpp",
+    "outbound/write.cpp",
+    "outbound/core.cpp",
 )
 
 CLOCK = re.compile(r"\butil::now_ms\s*\(")

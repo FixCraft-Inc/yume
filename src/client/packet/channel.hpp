@@ -18,10 +18,9 @@
 
 #include "client/packet/engine.hpp"
 #include "client/transport/runtime_lifetime.hpp"
+#include "outbound/tunnel_fwd.hpp"
 
 namespace yume::client {
-
-class Tunnel;
 
 namespace packet {
 

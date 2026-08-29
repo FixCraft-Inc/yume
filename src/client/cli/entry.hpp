@@ -22,13 +22,13 @@
 #include "core/security/secret_file.hpp"
 #include "core/version.hpp"
 #include "client/transport/socket_protection.hpp"
+#include "outbound/tunnel_fwd.hpp"
 
 namespace yume::client {
 
 // Forward declarations so the in-process embedder gets handles to the
 // constructed network primitives without dragging tunnel.hpp /
 // relay_runtime.hpp into every TU that includes cli.hpp.
-class Tunnel;
 class RelayRuntime;
 struct ParsedArgs;
 

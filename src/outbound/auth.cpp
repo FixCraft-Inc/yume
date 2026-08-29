@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "client/cli/connect/auth.hpp"
+#include "outbound/auth.hpp"
 #include "core/security/secure_erase.hpp"
 
 #include <algorithm>
@@ -20,7 +20,6 @@
 #include <basefwx/x25519.hpp>
 #endif
 
-#include "client/cli/connect/io.hpp"
 #include "core/stealth/obfs.hpp"
 #include "core/stealth/obfs_signal.hpp"
 #include "core/stealth/http_profile.hpp"
@@ -29,7 +28,7 @@
 #include "core/security/channel_binding.hpp"
 #include "util.hpp"
 
-namespace yume::client {
+namespace yume::outbound {
 namespace {
 
 class WipeBytesOnExit {
@@ -61,7 +60,7 @@ protocol::Frame read_auth_challenge(ClientTransportStream& stream,
                                   "AUTH challenge", server_host, server_port,
                                   true, prefetched, should_stop);
     if (challenge.header.type != protocol::AUTH) {
-        throw FatalError("this endpoint is not a yume server (server did not send AUTH challenge); please check the origin and try again");
+        throw TransportError("outbound peer did not send an AUTH challenge");
     }
     return challenge;
 }
@@ -80,7 +79,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     const StopPredicate& should_stop) {
     WipeBytesOnExit wipe_channel_binding(channel_binding);
     if (channel_binding.size() != auth_v2::kChannelBindingLen) {
-        throw FatalError("YUME 2.0 requires an exact TLS exporter binding");
+        throw TransportError("YUME 2.0 requires an exact TLS exporter binding");
     }
 #if YUME_USE_BASEFWX
     const auth_v2::Challenge challenge =
@@ -91,7 +90,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     const std::uint16_t send_window =
         std::min(local_window, challenge.rekey_window);
     if (!ratchet::IsRatchetPolicyValid(ratchet_policy)) {
-        throw FatalError("invalid local YUME 2.0 ratchet policy");
+        throw TransportError("invalid local YUME 2.0 ratchet policy");
     }
     const ratchet::RatchetPolicy send_policy =
         ratchet::NegotiateRatchetPolicy(
@@ -113,7 +112,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
         // point, and catching it here gives the operator a clear error instead
         // of an opaque server rejection.
         if (admin_public == identity) {
-            throw FatalError(
+            throw TransportError(
                 "admin identity must differ from the visitor identity; "
                 "using one key for both factors defeats the dual-key requirement");
         }
@@ -196,7 +195,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     (void)carrier;
     (void)rekey_window;
     (void)ratchet_policy;
-    throw FatalError("YUME 2.0 requires a BaseFWX crypto build");
+    throw TransportError("YUME 2.0 requires a BaseFWX crypto build");
 #endif
 }
 
@@ -207,7 +206,7 @@ protocol::Frame open_auth_ok_v2(ratchet::SessionRatchet& ratchet,
     if (!opened.application_frame.has_value() ||
         opened.application_frame->header.type != protocol::ANON ||
         opened.control_response.has_value()) {
-        throw FatalError("invalid encrypted AUTH_OK response");
+        throw TransportError("invalid encrypted AUTH_OK response");
     }
     protocol::Frame frame = std::move(*opened.application_frame);
     frame.payload = auth_v2::ParseAuthOk(frame.payload);
@@ -227,12 +226,12 @@ void send_frame_over_h2_with_timeout(
         static_cast<protocol::FrameType>(frame.header.type),
         frame.header.stream_id, frame.header.flags, frame.payload);
     if (!carrier.SendBinary(encoded)) {
-        throw FatalError(std::string("failed to queue ") + what +
+        throw TransportError(std::string("failed to queue ") + what +
                          " on H2 carrier: " + carrier.error());
     }
     crypto::Bytes wire = carrier.TakeOutbound();
     if (wire.empty() || carrier.queued_output_bytes() != 0) {
-        throw FatalError(std::string("H2 flow control stalled while sending ") + what);
+        throw TransportError(std::string("H2 flow control stalled while sending ") + what);
     }
     auto cancel = [&]() {
         stream.cancel_and_close();
@@ -240,13 +239,13 @@ void send_frame_over_h2_with_timeout(
     const IoOpResult result = write_all_with_timeout(
         stream, io, boost::asio::buffer(wire), timeout, cancel, should_stop);
     if (result.cancelled) {
-        throw FatalError(std::string("operation cancelled while sending ") + what);
+        throw TransportError(std::string("operation cancelled while sending ") + what);
     }
     if (result.timed_out) {
-        throw FatalError(std::string("timed out sending ") + what + " over H2");
+        throw TransportError(std::string("timed out sending ") + what + " over H2");
     }
     if (result.ec) {
-        throw FatalError(std::string("failed sending ") + what + " over H2: " +
+        throw TransportError(std::string("failed sending ") + what + " over H2: " +
                          result.ec.message());
     }
 }
@@ -274,13 +273,13 @@ protocol::Frame read_frame_over_h2_with_timeout(
             stream, io, boost::asio::buffer(replies), timeout, cancel,
             should_stop);
         if (result.cancelled) {
-            throw FatalError(std::string("operation cancelled while reading ") + what);
+            throw TransportError(std::string("operation cancelled while reading ") + what);
         }
         if (result.timed_out) {
-            throw FatalError(std::string("timed out sending H2 reply while reading ") + what);
+            throw TransportError(std::string("timed out sending H2 reply while reading ") + what);
         }
         if (result.ec) {
-            throw FatalError(std::string("failed sending H2 reply while reading ") + what +
+            throw TransportError(std::string("failed sending H2 reply while reading ") + what +
                              ": " + result.ec.message());
         }
     };
@@ -290,7 +289,7 @@ protocol::Frame read_frame_over_h2_with_timeout(
             decoded.insert(decoded.end(), ready.begin(), ready.end());
             if (decoded.size() >= needed) break;
             if (carrier.failed() || carrier.carrier_closed()) {
-                throw FatalError(std::string("H2 carrier closed while reading ") + what +
+                throw TransportError(std::string("H2 carrier closed while reading ") + what +
                                  (carrier.error().empty() ? std::string{} :
                                   ": " + carrier.error()));
             }
@@ -298,22 +297,22 @@ protocol::Frame read_frame_over_h2_with_timeout(
                 stream, io, boost::asio::buffer(scratch), timeout, cancel,
                 should_stop);
             if (result.cancelled) {
-                throw FatalError(std::string("operation cancelled while reading ") + what);
+                throw TransportError(std::string("operation cancelled while reading ") + what);
             }
             if (result.timed_out) {
-                throw FatalError(std::string("timed out waiting for ") + what + " (" +
+                throw TransportError(std::string("timed out waiting for ") + what + " (" +
                                  server_host + ":" + std::to_string(server_port) + ")");
             }
             if (result.ec) {
-                throw FatalError(std::string("failed reading ") + what + " over H2: " +
+                throw TransportError(std::string("failed reading ") + what + " over H2: " +
                                  result.ec.message());
             }
             if (result.bytes == 0) {
-                throw FatalError(std::string("empty H2 read while waiting for ") + what);
+                throw TransportError(std::string("empty H2 read while waiting for ") + what);
             }
             carrier.Feed(scratch.data(), result.bytes);
             if (carrier.failed()) {
-                throw FatalError(std::string("invalid H2 while reading ") + what + ": " +
+                throw TransportError(std::string("invalid H2 while reading ") + what + ": " +
                                  carrier.error());
             }
             write_protocol_replies();
@@ -324,7 +323,7 @@ protocol::Frame read_frame_over_h2_with_timeout(
     std::array<uint8_t, 8> header{};
     std::copy_n(decoded.begin(), header.size(), header.begin());
     if (!looks_like_yume_header(header)) {
-        throw FatalError(std::string("unexpected ") + what + " inside H2 carrier");
+        throw TransportError(std::string("unexpected ") + what + " inside H2 carrier");
     }
     const std::uint32_t payload_size =
         (static_cast<std::uint32_t>(header[0]) << 24) |
@@ -341,7 +340,7 @@ protocol::Frame read_frame_over_h2_with_timeout(
     // Authentication consumes only the frame it decoded; any prefetched tail
     // remains charged until Tunnel takes ownership and drains it.
     if (!carrier.ConsumeTunnelBytes(encoded.size())) {
-        throw FatalError(std::string("failed to retire H2 receive credit for ") +
+        throw TransportError(std::string("failed to retire H2 receive credit for ") +
                          what + ": " + carrier.error());
     }
     // Manual credit can make nghttp2 queue connection/stream WINDOW_UPDATEs.
@@ -358,7 +357,7 @@ void require_h2_carrier_alpn(ClientTransportStream& stream,
     const std::string label = negotiated.empty() ? std::string("(none)") : negotiated;
     util::log_info("TLS ALPN selected: " + label);
     if (negotiated != "h2") {
-        throw FatalError("HTTPS h2 carrier requires TLS ALPN h2; negotiated " + label +
+        throw TransportError("HTTPS h2 carrier requires TLS ALPN h2; negotiated " + label +
                          " with " + server_host + ":" + std::to_string(server_port));
     }
 }
@@ -386,7 +385,7 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
     std::string authority = server_host;
     if (server_port != 443) authority += ":" + std::to_string(server_port);
     if (!carrier->StartClient(authority)) {
-        throw FatalError("failed to start H2 carrier: " + carrier->error());
+        throw TransportError("failed to start H2 carrier: " + carrier->error());
     }
 
     auto cancel = [&]() {
@@ -399,9 +398,9 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
         IoOpResult wr = write_all_with_timeout(
             stream, io, boost::asio::buffer(wire), kAuthChallengeTimeout,
             cancel, should_stop);
-        if (wr.cancelled) throw FatalError("H2 carrier write cancelled");
-        if (wr.timed_out) throw FatalError("H2 carrier write timed out");
-        if (wr.ec) throw FatalError("H2 carrier write failed: " + wr.ec.message());
+        if (wr.cancelled) throw TransportError("H2 carrier write cancelled");
+        if (wr.timed_out) throw TransportError("H2 carrier write timed out");
+        if (wr.ec) throw TransportError("H2 carrier write failed: " + wr.ec.message());
     };
     flush();
 
@@ -410,23 +409,29 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
         IoOpResult rr = read_some_with_timeout(
             stream, io, boost::asio::buffer(scratch), kAuthChallengeTimeout,
             cancel, should_stop);
-        if (rr.cancelled) throw FatalError("H2 carrier read cancelled");
+        if (rr.cancelled) throw TransportError("H2 carrier read cancelled");
         if (rr.timed_out) {
-            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                             std::to_string(server_port) + "; h2 server reply timed out)");
+            throw TransportError("H2 carrier reply timed out for " +
+                                 server_host + ":" +
+                                 std::to_string(server_port));
         }
         if (rr.ec) {
-            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                             std::to_string(server_port) + "; h2 server reply failed: " + rr.ec.message() + ")");
+            throw TransportError("H2 carrier reply failed for " +
+                                 server_host + ":" +
+                                 std::to_string(server_port) + ": " +
+                                 rr.ec.message());
         }
         if (rr.bytes == 0) {
-            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                             std::to_string(server_port) + "; h2 server reply was empty)");
+            throw TransportError("H2 carrier reply was empty for " +
+                                 server_host + ":" +
+                                 std::to_string(server_port));
         }
         carrier->Feed(scratch.data(), rr.bytes);
         if (carrier->failed()) {
-            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                             std::to_string(server_port) + "; h2 decode failed: " + carrier->error() + ")");
+            throw TransportError("H2 carrier decode failed for " +
+                                 server_host + ":" +
+                                 std::to_string(server_port) + ": " +
+                                 carrier->error());
         }
         flush();
     };
@@ -435,15 +440,17 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
         receive();
     }
     if (!carrier->peer_extended_connect_enabled()) {
-        throw FatalError("HTTPS endpoint did not enable RFC 8441 extended CONNECT");
+        throw TransportError(
+            "outbound peer did not enable RFC 8441 extended CONNECT");
     }
     if (!carrier->SubmitExtendedConnect(path)) {
-        throw FatalError("failed to submit RFC 8441 carrier: " + carrier->error());
+        throw TransportError("failed to submit RFC 8441 carrier: " + carrier->error());
     }
     flush();
     while (!carrier->carrier_active()) {
         if (carrier->carrier_closed()) {
-            throw FatalError("endpoint responded as ordinary HTTPS; carrier admission was not accepted");
+            throw TransportError(
+                "outbound peer returned ordinary HTTPS instead of carrier admission");
         }
         receive();
     }
@@ -456,4 +463,4 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
     }
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

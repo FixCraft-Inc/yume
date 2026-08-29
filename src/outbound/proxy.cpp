@@ -4,8 +4,8 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "client/proxy/outbound_proxy.hpp"
-#include "client/cli/connect/io.hpp"
+#include "outbound/proxy.hpp"
+#include "outbound/io.hpp"
 
 #include <array>
 #include <cstring>
@@ -17,7 +17,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/write.hpp>
 
-namespace yume::client::outbound_proxy {
+namespace yume::outbound::proxy {
 
 namespace {
 
@@ -53,12 +53,12 @@ bool write_all(boost::asio::ip::tcp::socket& sock,
                std::chrono::milliseconds timeout,
                std::string& err,
                bool& cancelled,
-               const StopPredicate& should_stop) {
+               const yume::outbound::StopPredicate& should_stop) {
     auto cancel = [&]() {
         boost::system::error_code ignored;
         sock.cancel(ignored);
     };
-    const auto result = write_all_with_timeout(
+    const auto result = yume::outbound::write_all_with_timeout(
         sock, io, boost::asio::buffer(data, len), timeout, cancel, should_stop);
     cancelled = result.cancelled;
     if (result.cancelled) { err = "proxy operation cancelled"; return false; }
@@ -76,12 +76,12 @@ bool read_exact(boost::asio::ip::tcp::socket& sock,
                 std::chrono::milliseconds timeout,
                 std::string& err,
                 bool& cancelled,
-                const StopPredicate& should_stop) {
+                const yume::outbound::StopPredicate& should_stop) {
     auto cancel = [&]() {
         boost::system::error_code ignored;
         sock.cancel(ignored);
     };
-    const auto result = read_exact_with_timeout(
+    const auto result = yume::outbound::read_exact_with_timeout(
         sock, io, boost::asio::buffer(data, len), timeout, cancel, should_stop);
     cancelled = result.cancelled;
     if (result.cancelled) { err = "proxy operation cancelled"; return false; }
@@ -116,7 +116,7 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
 
     // ---- TCP connect to the proxy itself ----------------------------------
     boost::asio::ip::tcp::resolver resolver(io);
-    const auto resolved = resolve_with_timeout(
+    const auto resolved = yume::outbound::resolve_with_timeout(
         resolver, io, cfg.host, std::to_string(cfg.port), timeout, should_stop);
     if (resolved.cancelled) {
         res.cancelled = true;
@@ -134,7 +134,7 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
         return res;
     }
 
-    auto connect_result = connect_with_timeout(
+    auto connect_result = yume::outbound::connect_with_timeout(
         sock, resolved.endpoints, io, timeout, protect_socket, should_stop);
     if (connect_result.cancelled) {
         res.cancelled = true;
@@ -306,4 +306,4 @@ bool parse_proxy_url(std::string const& url, Config& out, std::string* err) {
     return true;
 }
 
-}  // namespace yume::client::outbound_proxy
+}  // namespace yume::outbound::proxy

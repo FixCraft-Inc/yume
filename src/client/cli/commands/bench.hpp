@@ -12,10 +12,11 @@
 #include <string>
 #include <vector>
 
+#include "outbound/tunnel_fwd.hpp"
+
 namespace yume::client {
 
 struct ClientConfig;
-class Tunnel;
 
 struct EndpointBenchOptions {
     int bench_mib{256};

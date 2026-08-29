@@ -4,13 +4,13 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "client/transport/tunnel.hpp"
+#include "outbound/tunnel.hpp"
 
 #include <chrono>
 #include <limits>
 #include <utility>
 
-#include "client/proxy/forward.hpp"
+#include "outbound/forward.hpp"
 #include "util.hpp"
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/buffer.hpp>
@@ -18,7 +18,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/write.hpp>
 
-namespace yume::client {
+namespace yume::outbound {
 
 Tunnel::Tunnel(ClientTransportStream&& stream,
                std::unique_ptr<obfs::H2Carrier> carrier,
@@ -97,7 +97,8 @@ Tunnel::Tunnel(ClientTransportStream&& stream,
             }
             return false;
         }
-        auto session = std::make_shared<ReverseForwardSession>(shared_from_this(), stream_id, host, port);
+        auto session = std::make_shared<ReverseForwardSession>(
+            shared_from_this(), stream_id, host, port);
         if (!session->start()) {
             if (reason) {
                 *reason = "stream id registration failed";
@@ -701,4 +702,4 @@ void Tunnel::schedule_ratchet_check() {
         }));
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

@@ -179,6 +179,93 @@ void repair_pq_key_ownership_for_drop(const yume::server::ServerConfig& cfg, boo
     repair_drop_target_file(pub_path, uid, gid, 0644, "PQ public key");
 }
 #endif
+
+struct OperatorProofState final {
+    std::atomic<long long> last_timestamp_{0};
+    bool local_sign_{false};
+};
+
+struct OperatorProofRuntime final {
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::jthread thread_;
+
+    void request_stop() noexcept {
+        thread_.request_stop();
+        condition_.notify_all();
+    }
+};
+
+class ServerWorkerPool final {
+public:
+    ServerWorkerPool(boost::asio::io_context& io,
+                     yume::server::Manager& manager,
+                     yume::server::LocalRuntime& local_runtime,
+                     OperatorProofRuntime& operator_proof)
+        : io_(io),
+          manager_(manager),
+          local_runtime_(local_runtime),
+          operator_proof_(operator_proof) {}
+
+    ServerWorkerPool(const ServerWorkerPool&) = delete;
+    ServerWorkerPool& operator=(const ServerWorkerPool&) = delete;
+
+    ~ServerWorkerPool() noexcept {
+        if (active_) rollback();
+    }
+
+    bool start(int thread_count, std::string* error) noexcept {
+        active_ = true;
+        try {
+            workers_.reserve(static_cast<std::size_t>(thread_count));
+            for (int index = 0; index < thread_count; ++index) {
+                workers_.emplace_back([this]() { io_.run(); });
+            }
+            return true;
+        } catch (const std::exception& ex) {
+            rollback();
+            if (error) {
+                *error = std::string("server worker start failed: ") +
+                         ex.what();
+            }
+        } catch (...) {
+            rollback();
+            if (error) {
+                *error = "server worker start failed: unknown error";
+            }
+        }
+        return false;
+    }
+
+    void wait() {
+        for (auto& worker : workers_) {
+            worker.join();
+        }
+        active_ = false;
+    }
+
+private:
+    void rollback() noexcept {
+        try { local_runtime_.stop(); } catch (...) {}
+        try { manager_.stop(); } catch (...) {}
+        try { io_.stop(); } catch (...) {}
+        for (auto& worker : workers_) {
+            try {
+                if (worker.joinable()) worker.join();
+            } catch (...) {
+            }
+        }
+        operator_proof_.request_stop();
+        active_ = false;
+    }
+
+    boost::asio::io_context& io_;
+    yume::server::Manager& manager_;
+    yume::server::LocalRuntime& local_runtime_;
+    OperatorProofRuntime& operator_proof_;
+    std::vector<std::thread> workers_;
+    bool active_{false};
+};
 }  // namespace
 
 namespace yume::server {
@@ -278,10 +365,12 @@ int Server::run(int argc, char** argv) {
         return 1;
     }
 
-    std::atomic<long long> anonym_last_ts{0};
+    OperatorProofState operator_proof_state;
+    auto& anonym_last_ts = operator_proof_state.last_timestamp_;
     const char* anonym_local_sign_env = std::getenv("YUME_ANONYM_LOCAL_SIGN");
-    const bool anonym_local_sign =
+    operator_proof_state.local_sign_ =
         parse_env_bool("YUME_ANONYM_LOCAL_SIGN", anonym_local_sign_default());
+    const bool anonym_local_sign = operator_proof_state.local_sign_;
 
     if (cfg.anonym) {
         if (!anonym_local_sign && (!cfg.anonym_ca_key.empty() || !cfg.anonym_sub_key.empty())) {
@@ -402,20 +491,22 @@ int Server::run(int argc, char** argv) {
     int threads = cfg.threads > 0 ? cfg.threads : static_cast<int>(hw > 0 ? hw : 1);
     boost::asio::io_context io(threads);
     yume::server::Manager manager(io, cfg);
-    std::mutex refresh_mu;
-    std::condition_variable refresh_cv;
+    // The refresher is constructed after Manager, so its jthread always joins
+    // before Manager is destroyed on normal return or stack unwinding.
+    OperatorProofRuntime operator_proof;
+    auto& refresh_mu = operator_proof.mutex_;
+    auto& refresh_cv = operator_proof.condition_;
+    auto& refresh_thread = operator_proof.thread_;
     // Scope ownership starts before signal registration and privilege-drop
     // preparation, both of which may throw. jthread therefore requests stop
     // and joins the refresher during every later stack-unwind path.
-    std::jthread refresh_thread;
     auto local_runtime = std::make_shared<yume::server::LocalRuntime>(
         local_runtime_path,
         &manager,
         [&]() {
             manager.stop();
             io.stop();
-            refresh_thread.request_stop();
-            refresh_cv.notify_all();
+            operator_proof.request_stop();
         });
     if (cfg.anonym) {
         refresh_thread = std::jthread(
@@ -496,8 +587,7 @@ int Server::run(int argc, char** argv) {
         }
         local_runtime->stop();
         manager.stop();
-        refresh_thread.request_stop();
-        refresh_cv.notify_all();
+        operator_proof.request_stop();
         // Keep the deadline owned by Server::run. A detached thread capturing
         // io could otherwise outlive this stack frame when the manager drains
         // early. The pending wait also keeps io.run() alive long enough for
@@ -543,22 +633,10 @@ int Server::run(int argc, char** argv) {
         } else {
             std::cerr << "\033[1;31mserver start failed: " << ex.what() << "\033[0m\n";
         }
-        refresh_thread.request_stop();
-        refresh_cv.notify_all();
+        operator_proof.request_stop();
         return 1;
     }
 
-    std::vector<std::thread> workers;
-    auto rollback_worker_start = [&]() noexcept {
-        try { local_runtime->stop(); } catch (...) {}
-        try { manager.stop(); } catch (...) {}
-        try { io.stop(); } catch (...) {}
-        for (auto& worker : workers) {
-            if (worker.joinable()) worker.join();
-        }
-        refresh_thread.request_stop();
-        refresh_cv.notify_all();
-    };
     auto report_worker_start_error = [&](const std::string& message) {
         if (yume::util::is_logging_enabled()) {
             yume::util::log_error(message);
@@ -566,29 +644,14 @@ int Server::run(int argc, char** argv) {
             std::cerr << message << '\n';
         }
     };
-    try {
-        workers.reserve(static_cast<size_t>(threads));
-        for (int i = 0; i < threads; ++i) {
-            workers.emplace_back([&]() { io.run(); });
-        }
-    } catch (const std::exception& ex) {
-        // A later thread can fail after earlier workers entered io.run().
-        // Stop every producer before joining so vector destruction never
-        // encounters a joinable thread.
-        rollback_worker_start();
-        report_worker_start_error(
-            std::string("server worker start failed: ") + ex.what());
-        return 1;
-    } catch (...) {
-        rollback_worker_start();
-        report_worker_start_error("server worker start failed: unknown error");
+    ServerWorkerPool workers(io, manager, *local_runtime, operator_proof);
+    std::string worker_start_error;
+    if (!workers.start(threads, &worker_start_error)) {
+        report_worker_start_error(worker_start_error);
         return 1;
     }
-    for (auto& t : workers) {
-        t.join();
-    }
-    refresh_thread.request_stop();
-    refresh_cv.notify_all();
+    workers.wait();
+    operator_proof.request_stop();
     local_runtime->stop();
 
     return 0;

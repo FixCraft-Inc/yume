@@ -91,6 +91,131 @@ std::string TransferInviteSummary(const nlohmann::json& invite) {
     return " metadata=invalid";
 }
 
+std::optional<int> run_one_shot_attach(const std::string& socket_path,
+                                       const ParsedArgs& args,
+                                       const ClientConfig& cfg) {
+    std::string error;
+    auto require_ok = [&](const nlohmann::json& response,
+                          const char* fallback) -> bool {
+        if (error.empty() && response.is_object()) {
+            const auto ok = response.find("ok");
+            if (ok != response.end() && ok->is_boolean() && ok->get<bool>()) {
+                return true;
+            }
+        }
+        std::string message = error.empty() ? fallback : error;
+        if (error.empty() && response.is_object()) {
+            const auto response_error = response.find("error");
+            if (response_error != response.end() &&
+                response_error->is_string()) {
+                message = response_error->get<std::string>();
+            }
+        }
+        util::log_error(message);
+        return false;
+    };
+
+    if (args.directory_mode) {
+        auto response = request_local_client_runtime(
+            socket_path, "directory.list", nlohmann::json::object(), &error);
+        if (!require_ok(response, "directory request failed")) return 1;
+        if (!response.contains("result") || !response["result"].is_array()) {
+            util::log_error("directory response was malformed");
+            return 1;
+        }
+        for (const auto& entry : response["result"]) {
+            if (!entry.is_object()) {
+                util::log_error("directory response contained a malformed entry");
+                return 1;
+            }
+            try {
+                std::cout << entry.value("endpoint_id", "")
+                          << " " << entry.value("display_name", "")
+                          << " kind=" << entry.value("endpoint_kind", "")
+                          << " relay=" << entry.value("relay_mode", "")
+                          << " platform=" << entry.value("client_platform", "unknown")
+                          << " variant=" << entry.value("client_variant", "unknown")
+                          << " chat=" << (entry.value("allow_chat", true) ? "yes" : "no")
+                          << " file=" << (entry.value("allow_file", true) ? "yes" : "no")
+                          << " bytes=" << (entry.value("allow_bytes", true) ? "yes" : "no")
+                          << "\n";
+            } catch (const nlohmann::json::exception&) {
+                util::log_error(
+                    "directory response contained a malformed entry");
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    auto send_with_secret = [&](const std::string& op,
+                                const std::string& peer,
+                                const std::string& purpose,
+                                nlohmann::json request_args,
+                                const char* fallback) -> int {
+        std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
+        if (!resolve_relay_secret(
+                cfg, "", purpose, &relay_secret_b64, &error)) {
+            util::log_error(error);
+            return 1;
+        }
+        request_args["peer"] = peer;
+        request_args["relay_secret"] = relay_secret_b64;
+        auto response = request_local_client_runtime(
+            socket_path, op, std::move(request_args), &error);
+        return require_ok(response, fallback) ? 0 : 1;
+    };
+
+    if (!args.chat_target.empty()) {
+        return send_with_secret(
+            "chat.open", args.chat_target, "chat with " + args.chat_target,
+            nlohmann::json::object(), "chat open failed");
+    }
+    if (!args.file_target.empty()) {
+        return send_with_secret(
+            "file.send", args.file_target,
+            "file send to " + args.file_target,
+            {{"path", args.file_path}}, "file send failed");
+    }
+    if (!args.bytes_target.empty()) {
+        return send_with_secret(
+            "bytes.send", args.bytes_target,
+            "bytes send to " + args.bytes_target,
+            {{"path", args.bytes_path}}, "bytes send failed");
+    }
+    if (!args.admin_target.empty()) {
+        auto response = request_local_client_runtime(
+            socket_path, "admin.attach", {{"peer", args.admin_target}},
+            &error);
+        return require_ok(response, "admin attach failed") ? 0 : 1;
+    }
+    if (cfg.non_interactive || !is_tty_stdin()) {
+        auto response = request_local_client_runtime(
+            socket_path, "runtime.status", nlohmann::json::object(), &error);
+        if (!require_ok(response, "status failed")) return 1;
+        if (!response.contains("result")) {
+            util::log_error("status response was malformed");
+            return 1;
+        }
+        std::cout << response["result"].dump(2) << std::endl;
+        return 0;
+    }
+    return std::nullopt;
+}
+
+class AttachedClientConsole {
+public:
+    AttachedClientConsole(std::string socket_path, const ClientConfig& cfg)
+        : socket_path_(std::move(socket_path)), cfg_(cfg) {}
+
+    int run();
+
+private:
+    std::string socket_path_;
+    const ClientConfig& cfg_;
+};
+
 }  // namespace
 
 bool prompt_attach_existing(const std::string& kind) {
@@ -120,93 +245,10 @@ std::string effective_client_instance_key(const ClientConfig& cfg, const ParsedA
         cfg.server + "|" + std::to_string(cfg.port) + "|" + cfg.identity + "|" + args.config_path);
 }
 
-int run_local_client_attach(const std::string& socket_path, const ParsedArgs& args, const ClientConfig& cfg) {
+int AttachedClientConsole::run() {
+    const std::string& socket_path = socket_path_;
+    const ClientConfig& cfg = cfg_;
     std::string error;
-
-    if (args.directory_mode) {
-        auto resp = request_local_client_runtime(socket_path, "directory.list", nlohmann::json::object(), &error);
-        if (!error.empty() || !resp.value("ok", false)) {
-            util::log_error(error.empty() ? resp.value("error", "directory request failed") : error);
-            return 1;
-        }
-        for (const auto& entry : resp["result"]) {
-            std::cout << entry.value("endpoint_id", "")
-                      << " " << entry.value("display_name", "")
-                      << " kind=" << entry.value("endpoint_kind", "")
-                      << " relay=" << entry.value("relay_mode", "")
-                      << " platform=" << entry.value("client_platform", "unknown")
-                      << " variant=" << entry.value("client_variant", "unknown")
-                      << " chat=" << (entry.value("allow_chat", true) ? "yes" : "no")
-                      << " file=" << (entry.value("allow_file", true) ? "yes" : "no")
-                      << " bytes=" << (entry.value("allow_bytes", true) ? "yes" : "no")
-                      << "\n";
-        }
-        return 0;
-    }
-    if (!args.chat_target.empty()) {
-        std::string relay_secret_b64;
-        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
-        if (!resolve_relay_secret(cfg, "", "chat with " + args.chat_target, &relay_secret_b64, &error)) {
-            util::log_error(error);
-            return 1;
-        }
-        auto resp = request_local_client_runtime(socket_path, "chat.open",
-                                                 {{"peer", args.chat_target}, {"relay_secret", relay_secret_b64}}, &error);
-        if (!error.empty() || !resp.value("ok", false)) {
-            util::log_error(error.empty() ? resp.value("error", "chat open failed") : error);
-            return 1;
-        }
-        return 0;
-    }
-    if (!args.file_target.empty()) {
-        std::string relay_secret_b64;
-        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
-        if (!resolve_relay_secret(cfg, "", "file send to " + args.file_target, &relay_secret_b64, &error)) {
-            util::log_error(error);
-            return 1;
-        }
-        auto resp = request_local_client_runtime(socket_path, "file.send",
-                                                 {{"peer", args.file_target}, {"path", args.file_path}, {"relay_secret", relay_secret_b64}}, &error);
-        if (!error.empty() || !resp.value("ok", false)) {
-            util::log_error(error.empty() ? resp.value("error", "file send failed") : error);
-            return 1;
-        }
-        return 0;
-    }
-    if (!args.bytes_target.empty()) {
-        std::string relay_secret_b64;
-        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
-        if (!resolve_relay_secret(cfg, "", "bytes send to " + args.bytes_target, &relay_secret_b64, &error)) {
-            util::log_error(error);
-            return 1;
-        }
-        auto resp = request_local_client_runtime(socket_path, "bytes.send",
-                                                 {{"peer", args.bytes_target}, {"path", args.bytes_path}, {"relay_secret", relay_secret_b64}}, &error);
-        if (!error.empty() || !resp.value("ok", false)) {
-            util::log_error(error.empty() ? resp.value("error", "bytes send failed") : error);
-            return 1;
-        }
-        return 0;
-    }
-    if (!args.admin_target.empty()) {
-        auto resp = request_local_client_runtime(socket_path, "admin.attach",
-                                                 {{"peer", args.admin_target}}, &error);
-        if (!error.empty() || !resp.value("ok", false)) {
-            util::log_error(error.empty() ? resp.value("error", "admin attach failed") : error);
-            return 1;
-        }
-        return 0;
-    }
-
-    if (cfg.non_interactive || !is_tty_stdin()) {
-        auto resp = request_local_client_runtime(socket_path, "runtime.status", nlohmann::json::object(), &error);
-        if (!error.empty() || !resp.value("ok", false)) {
-            util::log_error(error.empty() ? resp.value("error", "status failed") : error);
-            return 1;
-        }
-        std::cout << resp["result"].dump(2) << std::endl;
-        return 0;
-    }
 
     util::log_info("Attached to existing yume runtime");
     print_local_client_attach_help();
@@ -590,6 +632,15 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
         }
         util::log_warn("unknown command: " + line);
     }
+}
+
+int run_local_client_attach(const std::string& socket_path,
+                            const ParsedArgs& args,
+                            const ClientConfig& cfg) {
+    if (auto result = run_one_shot_attach(socket_path, args, cfg)) {
+        return *result;
+    }
+    return AttachedClientConsole(socket_path, cfg).run();
 }
 
 }  // namespace yume::client

@@ -8,22 +8,23 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
-#include <fstream>
-#include <random>
-#include <sstream>
+#include <cstdint>
+#include <span>
 #include <system_error>
-
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
-#include <openssl/sha.h>
 #include <openssl/x509.h>
 
+#include "core/encoding/hex.hpp"
+#include "core/runtime/atomic_file.hpp"
+#include "core/runtime/bounded_file.hpp"
+#include "core/runtime/file_transaction_lock.hpp"
+#include "core/security/crypto.hpp"
+#include "core/security/secret_file.hpp"
+#include "core/security/secure_erase.hpp"
 #include "facade/config/config_io.hpp"
 
 namespace yume::facade::secure_materials {
@@ -73,6 +74,28 @@ std::filesystem::path metadata_path() {
     return store_dir() / "materials.json";
 }
 
+constexpr int kMetadataSchema = 1;
+constexpr std::size_t kRandomIdBytes = 16;
+constexpr unsigned kIdCreateAttempts = 128;
+
+class StringWiper {
+public:
+    explicit StringWiper(std::string& value) noexcept : value_(value) {}
+    ~StringWiper() { security::secure_erase(value_); }
+
+    StringWiper(const StringWiper&) = delete;
+    StringWiper& operator=(const StringWiper&) = delete;
+
+private:
+    std::string& value_;
+};
+
+void append_error(std::string* error, std::string_view detail) {
+    if (!error) return;
+    if (!error->empty()) error->append("; ");
+    error->append(detail);
+}
+
 std::string normalize_pem(std::string text) {
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r' ||
                              text.back() == ' ' || text.back() == '\t')) {
@@ -91,27 +114,58 @@ std::string wire_type(MaterialType type) {
     }
 }
 
-MaterialType parse_type(std::string const& value) {
-    if (value == "auth_key")      return MaterialType::AuthKey;
+std::optional<MaterialType> parse_type(std::string_view value) {
+    if (value == "auth_key") return MaterialType::AuthKey;
     if (value == "anonym_pubkey") return MaterialType::AnonymPubkey;
-    if (value == "tls_ca")        return MaterialType::TlsCa;
-    return MaterialType::AnonymCa;
+    if (value == "tls_ca") return MaterialType::TlsCa;
+    if (value == "anonym_ca") return MaterialType::AnonymCa;
+    return std::nullopt;
 }
 
-std::string hex_lower(unsigned char const* data, std::size_t n) {
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out(n * 2, '0');
-    for (std::size_t i = 0; i < n; ++i) {
-        out[i * 2] = kHex[(data[i] >> 4) & 0x0f];
-        out[i * 2 + 1] = kHex[data[i] & 0x0f];
+const char* extension_for_type(MaterialType type) {
+    switch (type) {
+        case MaterialType::AuthKey: return ".key.pem";
+        case MaterialType::AnonymPubkey: return ".pub.pem";
+        case MaterialType::TlsCa: return ".tls.pem";
+        case MaterialType::AnonymCa: return ".ca.pem";
     }
-    return out;
+    return ".pem";
+}
+
+std::filesystem::path path_for(std::string_view id, MaterialType type) {
+    return store_dir() /
+           (std::string(id) + std::string(extension_for_type(type)));
+}
+
+bool is_lower_hex(std::string_view value) {
+    return std::all_of(value.begin(), value.end(), [](char character) {
+        return (character >= '0' && character <= '9') ||
+               (character >= 'a' && character <= 'f');
+    });
+}
+
+bool valid_material_id(std::string_view id) {
+    if (id.size() == kRandomIdBytes * 2U && is_lower_hex(id)) return true;
+
+    const std::size_t separator = id.find('-');
+    if (separator == std::string_view::npos || separator == 0 ||
+        separator > 16U || id.size() - separator - 1U != 16U) {
+        return false;
+    }
+    return is_lower_hex(id.substr(0, separator)) &&
+           is_lower_hex(id.substr(separator + 1U));
+}
+
+bool valid_fingerprint(std::string_view fingerprint) {
+    return fingerprint.size() == 12U && is_lower_hex(fingerprint);
+}
+
+bool valid_label(std::string_view label) {
+    return label.size() <= kMaximumMaterialLabelBytes;
 }
 
 std::string short_fingerprint(std::string const& text) {
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(reinterpret_cast<unsigned char const*>(text.data()), text.size(), digest);
-    return hex_lower(digest, 6);
+    return crypto::sha256_hex(text).substr(0, 12U);
 }
 
 bool validate_ca(std::string const& pem, std::string* err) {
@@ -167,24 +221,23 @@ bool validate_material(MaterialType type, std::string const& pem, std::string* e
         if (err) *err = std::string(type_label(type)) + " PEM is empty";
         return false;
     }
+    if (pem.size() > kMaximumPemBytes) {
+        if (err) *err = std::string(type_label(type)) + " PEM exceeds 64 KiB";
+        return false;
+    }
     switch (type) {
         case MaterialType::AnonymCa:
         case MaterialType::TlsCa:        return validate_ca(pem, err);
         case MaterialType::AuthKey:      return validate_auth_key(pem, err);
         case MaterialType::AnonymPubkey: return validate_pubkey(pem, err);
     }
+    if (err) *err = "secure material type is invalid";
     return false;
 }
 
 std::string make_id() {
-    auto now = std::chrono::system_clock::now().time_since_epoch().count();
-    std::random_device rd;
-    unsigned int r0 = rd();
-    unsigned int r1 = rd();
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%llx-%08x%08x",
-                  static_cast<unsigned long long>(now), r0, r1);
-    return buf;
+    const crypto::Bytes random = crypto::random_bytes(kRandomIdBytes);
+    return encoding::hex_lower(random);
 }
 
 long long now_ms() {
@@ -193,91 +246,481 @@ long long now_ms() {
 }
 
 struct MaterialStoreState {
-    std::vector<MaterialSummary> materials;
-    bool embedded_anonym_ca_enabled{true};
+    std::vector<MaterialSummary> materials_;
+    bool embedded_anonym_ca_enabled_{true};
 };
 
-MaterialStoreState read_store_state(std::string* err) {
-    MaterialStoreState state;
-    std::ifstream in(metadata_path());
-    if (!in) return state;
+struct MetadataSnapshot {
+    bool existed_{false};
+    std::string serialized_;
+};
+
+bool read_string(const json& object,
+                 const char* field,
+                 bool required,
+                 std::size_t maximum_bytes,
+                 std::string* value,
+                 std::string* error) {
+    const auto iterator = object.find(field);
+    if (iterator == object.end()) {
+        if (required) {
+            if (error) *error = std::string("missing material field: ") + field;
+            return false;
+        }
+        value->clear();
+        return true;
+    }
+    if (!iterator->is_string()) {
+        if (error) *error = std::string("material field must be a string: ") + field;
+        return false;
+    }
+    try {
+        *value = iterator->get<std::string>();
+    } catch (const json::exception& exception) {
+        if (error) {
+            *error = std::string("invalid material field ") + field + ": " +
+                     exception.what();
+        }
+        return false;
+    }
+    if (value->size() > maximum_bytes) {
+        if (error) *error = std::string("material field is too long: ") + field;
+        return false;
+    }
+    return true;
+}
+
+bool parse_material_record(const json& item,
+                           MaterialSummary* summary,
+                           std::string* error) {
+    if (!item.is_object()) {
+        if (error) *error = "secure material record must be an object";
+        return false;
+    }
+
+    std::string type_value;
+    if (!read_string(item, "id", true, 64U, &summary->id, error) ||
+        !read_string(item, "display_name", false,
+                     kMaximumMaterialLabelBytes, &summary->display_name, error) ||
+        !read_string(item, "type", true, 32U, &type_value, error) ||
+        !read_string(item, "source_label", false,
+                     kMaximumMaterialLabelBytes, &summary->source_label, error) ||
+        !read_string(item, "fingerprint", true, 12U,
+                     &summary->fingerprint, error)) {
+        return false;
+    }
+    if (!valid_material_id(summary->id)) {
+        if (error) *error = "secure material id is invalid";
+        return false;
+    }
+    const auto parsed_type = parse_type(type_value);
+    if (!parsed_type) {
+        if (error) *error = "secure material type is invalid";
+        return false;
+    }
+    summary->type = *parsed_type;
+    if (!valid_fingerprint(summary->fingerprint)) {
+        if (error) *error = "secure material fingerprint is invalid";
+        return false;
+    }
+
+    if (const auto path = item.find("path"); path != item.end() &&
+        !path->is_string()) {
+        if (error) *error = "legacy secure material path must be a string";
+        return false;
+    }
+    if (const auto encrypted = item.find("imported_encrypted");
+        encrypted != item.end()) {
+        if (!encrypted->is_boolean()) {
+            if (error) *error = "imported_encrypted must be a boolean";
+            return false;
+        }
+        summary->imported_encrypted = encrypted->get<bool>();
+    }
+    if (const auto created = item.find("created_at_epoch_ms");
+        created != item.end()) {
+        if (!created->is_number_integer() && !created->is_number_unsigned()) {
+            if (error) *error = "created_at_epoch_ms must be an integer";
+            return false;
+        }
+        try {
+            summary->created_at_epoch_ms = created->get<long long>();
+        } catch (const json::exception& exception) {
+            if (error) {
+                *error = std::string("created_at_epoch_ms is out of range: ") +
+                         exception.what();
+            }
+            return false;
+        }
+        if (summary->created_at_epoch_ms < 0) {
+            if (error) *error = "created_at_epoch_ms must not be negative";
+            return false;
+        }
+    }
+    summary->path = path_for(summary->id, summary->type);
+    return true;
+}
+
+bool read_store_state(MaterialStoreState* state, std::string* error) {
+    if (error) error->clear();
+    *state = MaterialStoreState{};
+    if (!security::ensure_private_directory(store_dir(), error)) {
+        return false;
+    }
+
+    std::error_code status_error;
+    const auto status = std::filesystem::symlink_status(
+        metadata_path(), status_error);
+    if (status_error == std::errc::no_such_file_or_directory ||
+        status.type() == std::filesystem::file_type::not_found) {
+        return true;
+    }
+    if (status_error) {
+        if (error) {
+            *error = "cannot inspect secure material metadata: " +
+                     status_error.message();
+        }
+        return false;
+    }
+
+    std::string serialized;
+    if (!runtime::read_text_file_bounded(
+            metadata_path(), kMaximumMetadataBytes, &serialized, error)) {
+        if (error && !error->empty()) {
+            *error = "invalid secure material metadata: " + *error;
+        }
+        return false;
+    }
 
     json root;
     try {
-        in >> root;
-    } catch (std::exception const& e) {
-        if (err) *err = std::string("invalid secure material metadata: ") + e.what();
-        return state;
+        root = json::parse(serialized);
+    } catch (const json::exception& exception) {
+        if (error) {
+            *error = std::string("invalid secure material metadata: ") +
+                     exception.what();
+        }
+        return false;
     }
-
-    state.embedded_anonym_ca_enabled =
-        root.value("embedded_anonym_ca_enabled", true);
+    if (!root.is_object()) {
+        if (error) *error = "secure material metadata root must be an object";
+        return false;
+    }
+    if (const auto schema = root.find("schema"); schema != root.end()) {
+        if (!schema->is_number_integer() && !schema->is_number_unsigned()) {
+            if (error) *error = "unsupported secure material metadata schema";
+            return false;
+        }
+        try {
+            if (schema->get<std::int64_t>() != kMetadataSchema) {
+                if (error) {
+                    *error = "unsupported secure material metadata schema";
+                }
+                return false;
+            }
+        } catch (const json::exception&) {
+            if (error) *error = "unsupported secure material metadata schema";
+            return false;
+        }
+    }
+    if (const auto embedded = root.find("embedded_anonym_ca_enabled");
+        embedded != root.end()) {
+        if (!embedded->is_boolean()) {
+            if (error) *error = "embedded_anonym_ca_enabled must be a boolean";
+            return false;
+        }
+        state->embedded_anonym_ca_enabled_ = embedded->get<bool>();
+    }
 
     auto items = root.find("materials");
-    if (items == root.end() || !items->is_array()) return state;
+    if (items == root.end()) return true;
+    if (!items->is_array()) {
+        if (error) *error = "secure material records must be an array";
+        return false;
+    }
+    if (items->size() > kMaximumMaterialRecords) {
+        if (error) *error = "secure material record limit exceeded";
+        return false;
+    }
+
+    std::unordered_set<std::string> ids;
+    state->materials_.reserve(items->size());
     for (auto const& item : *items) {
         MaterialSummary s;
-        s.id = item.value("id", "");
-        if (s.id.empty()) continue;
-        s.display_name = item.value("display_name", "");
-        s.type = parse_type(item.value("type", ""));
-        s.source_label = item.value("source_label", "");
-        s.fingerprint = item.value("fingerprint", "");
-        s.path = item.value("path", "");
-        s.imported_encrypted = item.value("imported_encrypted", false);
-        s.created_at_epoch_ms = item.value("created_at_epoch_ms", 0LL);
-        state.materials.push_back(std::move(s));
+        if (!parse_material_record(item, &s, error)) return false;
+        if (!ids.insert(s.id).second) {
+            if (error) *error = "duplicate secure material id";
+            return false;
+        }
+        std::vector<std::uint8_t> contents;
+        if (!runtime::read_file_bounded(
+                s.path, kMaximumPemBytes, &contents, error)) {
+            security::secure_erase(contents);
+            if (error && !error->empty()) {
+                *error = "invalid secure material file: " + *error;
+            }
+            return false;
+        }
+        security::secure_erase(contents);
+        state->materials_.push_back(std::move(s));
     }
-    return state;
+    return true;
 }
 
 bool write_store_state(MaterialStoreState const& state, std::string* err) {
-    std::error_code ec;
-    std::filesystem::create_directories(store_dir(), ec);
+    try {
+        if (state.materials_.size() > kMaximumMaterialRecords) {
+            if (err) *err = "secure material record limit exceeded";
+            return false;
+        }
+        if (!security::ensure_private_directory(store_dir(), err)) {
+            return false;
+        }
 
-    json arr = json::array();
-    for (auto const& s : state.materials) {
-        if (s.is_default) continue;
-        arr.push_back({
-            {"id", s.id},
-            {"display_name", s.display_name},
-            {"type", wire_type(s.type)},
-            {"source_label", s.source_label},
-            {"fingerprint", s.fingerprint},
-            {"path", s.path.string()},
-            {"imported_encrypted", s.imported_encrypted},
-            {"created_at_epoch_ms", s.created_at_epoch_ms},
-        });
-    }
-    json root = {
-        {"embedded_anonym_ca_enabled", state.embedded_anonym_ca_enabled},
-        {"materials", arr},
-    };
-    std::ofstream out(metadata_path());
-    if (!out) {
-        if (err) *err = "cannot write " + metadata_path().string();
+        json arr = json::array();
+        for (auto const& material : state.materials_) {
+            if (material.is_default) continue;
+            arr.push_back({
+                {"id", material.id},
+                {"display_name", material.display_name},
+                {"type", wire_type(material.type)},
+                {"source_label", material.source_label},
+                {"fingerprint", material.fingerprint},
+                {"imported_encrypted", material.imported_encrypted},
+                {"created_at_epoch_ms", material.created_at_epoch_ms},
+            });
+        }
+        json root = {
+            {"schema", kMetadataSchema},
+            {"embedded_anonym_ca_enabled",
+             state.embedded_anonym_ca_enabled_},
+            {"materials", std::move(arr)},
+        };
+        const std::string serialized = root.dump(2);
+        return runtime::AtomicWriteFile(
+            metadata_path(), serialized, err,
+            runtime::ParentDirectoryPolicy::RequireExisting,
+            runtime::FileProtection::OwnerOnly);
+    } catch (const std::exception& exception) {
+        if (err) {
+            *err = std::string("cannot serialize secure material metadata: ") +
+                   exception.what();
+        }
         return false;
     }
-    out << root.dump(2);
-    return out.good();
 }
 
-std::vector<MaterialSummary> read_user_materials(std::string* err) {
-    return read_store_state(err).materials;
+bool capture_metadata_snapshot(MetadataSnapshot* snapshot,
+                               std::string* error) {
+    *snapshot = MetadataSnapshot{};
+    std::error_code status_error;
+    const auto status = std::filesystem::symlink_status(
+        metadata_path(), status_error);
+    if (status_error == std::errc::no_such_file_or_directory ||
+        status.type() == std::filesystem::file_type::not_found) {
+        return true;
+    }
+    if (status_error) {
+        if (error) {
+            *error = "cannot inspect secure material metadata: " +
+                     status_error.message();
+        }
+        return false;
+    }
+    if (!runtime::read_text_file_bounded(
+            metadata_path(), kMaximumMetadataBytes,
+            &snapshot->serialized_, error)) {
+        return false;
+    }
+    snapshot->existed_ = true;
+    return true;
 }
 
-bool write_user_materials(std::vector<MaterialSummary> const& items, std::string* err) {
-    auto state = read_store_state(err);
-    state.materials = items;
-    return write_store_state(state, err);
+bool restore_metadata_snapshot(const MetadataSnapshot& snapshot,
+                               std::string* error) {
+    if (!snapshot.existed_) {
+        return runtime::DurableRemoveFile(metadata_path(), error);
+    }
+    return runtime::AtomicWriteFile(
+        metadata_path(), snapshot.serialized_, error,
+        runtime::ParentDirectoryPolicy::RequireExisting,
+        runtime::FileProtection::OwnerOnly);
 }
 
-void chmod_private(std::filesystem::path const& path) {
-#ifndef _WIN32
-    ::chmod(path.c_str(), S_IRUSR | S_IWUSR);
-#else
-    (void)path;
-#endif
+bool state_contains_material(const MaterialStoreState& state,
+                             std::string_view id) {
+    return std::any_of(state.materials_.begin(), state.materials_.end(),
+                       [&](const MaterialSummary& material) {
+                           return material.id == id;
+                       });
+}
+
+bool acquire_store_lock(runtime::FileTransactionLock* lock,
+                        const std::vector<std::filesystem::path>& resources,
+                        std::string* error) {
+    if (!security::ensure_private_directory(store_dir(), error)) return false;
+    return lock->Acquire(resources, error);
+}
+
+const char* default_display_name(MaterialType type) {
+    switch (type) {
+        case MaterialType::AuthKey: return "Imported auth key";
+        case MaterialType::AnonymPubkey: return "Imported external proof key";
+        case MaterialType::TlsCa: return "Imported TLS CA";
+        case MaterialType::AnonymCa: return "Imported operator CA";
+    }
+    return "Imported material";
+}
+
+bool import_material(MaterialType type,
+                     std::string const& display_name,
+                     std::string const& source_label,
+                     std::string pem,
+                     MaterialSummary* out,
+                     std::string* error) {
+    StringWiper pem_wiper(pem);
+    if (!valid_label(display_name) || !valid_label(source_label)) {
+        if (error) *error = "secure material label exceeds 256 bytes";
+        return false;
+    }
+    if (!validate_material(type, pem, error)) return false;
+
+    runtime::FileTransactionLock lock;
+    if (!acquire_store_lock(&lock, {metadata_path()}, error)) return false;
+
+    MetadataSnapshot metadata_before;
+    if (!capture_metadata_snapshot(&metadata_before, error)) return false;
+
+    MaterialStoreState state;
+    if (!read_store_state(&state, error)) return false;
+    if (state.materials_.size() >= kMaximumMaterialRecords) {
+        if (error) *error = "secure material record limit exceeded";
+        return false;
+    }
+
+    MaterialSummary summary;
+    summary.display_name =
+        display_name.empty() ? default_display_name(type) : display_name;
+    summary.type = type;
+    summary.source_label = source_label;
+    summary.fingerprint = short_fingerprint(pem);
+    summary.created_at_epoch_ms = now_ms();
+
+    const auto bytes = std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(pem.data()), pem.size());
+    std::string create_error;
+    bool created = false;
+    for (unsigned attempt = 0; attempt < kIdCreateAttempts; ++attempt) {
+        try {
+            summary.id = make_id();
+        } catch (const std::exception& exception) {
+            if (error) {
+                *error = std::string("cannot generate secure material id: ") +
+                         exception.what();
+            }
+            return false;
+        }
+        summary.path = path_for(summary.id, type);
+        if (security::WriteFileExclusive0600(
+                summary.path, bytes, &create_error)) {
+            created = true;
+            break;
+        }
+        std::error_code status_error;
+        const auto status = std::filesystem::symlink_status(
+            summary.path, status_error);
+        const bool missing =
+            status.type() == std::filesystem::file_type::not_found ||
+            status_error == std::errc::no_such_file_or_directory;
+        if (missing || status_error) {
+            if (error) *error = create_error;
+            return false;
+        }
+        if (status.type() != std::filesystem::file_type::regular) {
+            if (error) *error = "secure material destination is not a regular file";
+            return false;
+        }
+    }
+    if (!created) {
+        if (error) *error = "secure material id collision attempts exhausted";
+        return false;
+    }
+
+    try {
+        state.materials_.insert(state.materials_.begin(), summary);
+    } catch (const std::exception& exception) {
+        if (error) {
+            *error = std::string("cannot stage secure material metadata: ") +
+                     exception.what();
+        }
+        std::string cleanup_error;
+        if (!runtime::DurableRemoveFile(summary.path, &cleanup_error)) {
+            append_error(error, "cannot clean up unpublished material: " +
+                                    cleanup_error);
+        }
+        return false;
+    }
+    if (!write_store_state(state, error)) {
+        const std::string publication_error = error ? *error : std::string{};
+        std::string rollback_error;
+        bool metadata_rolled_back =
+            restore_metadata_snapshot(metadata_before, &rollback_error);
+        if (!metadata_rolled_back) {
+            MaterialStoreState observed;
+            std::string inspect_error;
+            if (read_store_state(&observed, &inspect_error) &&
+                !state_contains_material(observed, summary.id)) {
+                metadata_rolled_back = true;
+            }
+        }
+        if (error) *error = publication_error;
+        if (metadata_rolled_back) {
+            std::string cleanup_error;
+            if (!runtime::DurableRemoveFile(summary.path, &cleanup_error)) {
+                append_error(error, "cannot clean up unpublished material: " +
+                                        cleanup_error);
+            }
+        } else {
+            append_error(error,
+                         "cannot restore prior metadata: " + rollback_error +
+                             "; retained material to avoid a metadata record "
+                             "that references a missing file");
+        }
+        return false;
+    }
+    if (out) *out = std::move(summary);
+    return true;
+}
+
+std::filesystem::path ensure_default_anonym_ca_locked(std::string* err) {
+    const auto path = store_dir() / "default_anonym_ca.pem";
+    const std::string pem = normalize_pem(kDefaultAnonymCaPem);
+    std::error_code status_error;
+    const auto status = std::filesystem::symlink_status(path, status_error);
+    const bool missing =
+        status.type() == std::filesystem::file_type::not_found ||
+        status_error == std::errc::no_such_file_or_directory;
+    if (!missing && !status_error) {
+        std::string existing;
+        if (!runtime::read_text_file_bounded(
+                path, kMaximumPemBytes, &existing, err)) {
+            return {};
+        }
+        if (normalize_pem(std::move(existing)) == pem) return path;
+
+        if (err) *err = "embedded operator CA file has unexpected contents";
+        return {};
+    }
+    if (!missing && status_error) {
+        if (err) *err = "cannot inspect embedded operator CA: " +
+                        status_error.message();
+        return {};
+    }
+
+    const auto bytes = std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(pem.data()), pem.size());
+    if (!security::WriteFileExclusive0600(path, bytes, err)) return {};
+    return path;
 }
 
 }  // namespace
@@ -287,37 +730,31 @@ std::filesystem::path store_dir() {
 }
 
 std::filesystem::path ensure_default_anonym_ca(std::string* err) {
-    auto path = store_dir() / "default_anonym_ca.pem";
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec) {
-        if (err) *err = "cannot create secure material directory: " + ec.message();
-        return {};
-    }
+    const auto path = store_dir() / "default_anonym_ca.pem";
+    if (!security::ensure_private_directory(store_dir(), err)) return {};
 
-    const std::string pem = normalize_pem(kDefaultAnonymCaPem);
-    std::ifstream existing(path);
-    if (existing) {
-        std::stringstream ss;
-        ss << existing.rdbuf();
-        if (normalize_pem(ss.str()) == pem) return path;
-    }
-
-    std::ofstream out(path);
-    if (!out) {
-        if (err) *err = "cannot write embedded operator CA to " + path.string();
-        return {};
-    }
-    out << pem;
-    return out.good() ? path : std::filesystem::path{};
+    runtime::FileTransactionLock lock;
+    if (!lock.Acquire({metadata_path(), path}, err)) return {};
+    return ensure_default_anonym_ca_locked(err);
 }
 
 std::vector<MaterialSummary> list(MaterialType type, std::string* err) {
+    if (err) err->clear();
     std::vector<MaterialSummary> out;
+    runtime::FileTransactionLock lock;
     if (type == MaterialType::AnonymCa &&
-        read_store_state(err).embedded_anonym_ca_enabled) {
+        !acquire_store_lock(
+            &lock,
+            {metadata_path(), store_dir() / "default_anonym_ca.pem"}, err)) {
+        return out;
+    }
+    MaterialStoreState state;
+    if (!read_store_state(&state, err)) return out;
+
+    if (type == MaterialType::AnonymCa &&
+        state.embedded_anonym_ca_enabled_) {
         std::string ca_err;
-        auto ca_path = ensure_default_anonym_ca(&ca_err);
+        auto ca_path = ensure_default_anonym_ca_locked(&ca_err);
         if (ca_path.empty()) {
             if (err && err->empty()) *err = ca_err;
         } else {
@@ -333,16 +770,14 @@ std::vector<MaterialSummary> list(MaterialType type, std::string* err) {
         }
     }
 
-    std::string load_err;
-    auto user = read_user_materials(&load_err);
-    if (!load_err.empty() && err) *err = load_err;
-    for (auto& s : user) {
+    for (auto& s : state.materials_) {
         if (s.type == type) out.push_back(std::move(s));
     }
     return out;
 }
 
 std::optional<MaterialSummary> get(std::string const& id, std::string* err) {
+    if (err) err->clear();
     if (id == kDefaultAnonymCaId) {
         auto items = list(MaterialType::AnonymCa, err);
         for (auto const& s : items) {
@@ -350,8 +785,13 @@ std::optional<MaterialSummary> get(std::string const& id, std::string* err) {
         }
         return std::nullopt;
     }
-    auto user = read_user_materials(err);
-    for (auto const& s : user) {
+    if (!valid_material_id(id)) {
+        if (err) *err = "secure material id is invalid";
+        return std::nullopt;
+    }
+    MaterialStoreState state;
+    if (!read_store_state(&state, err)) return std::nullopt;
+    for (auto const& s : state.materials_) {
         if (s.id == id) return s;
     }
     if (err) *err = "secure material not found: " + id;
@@ -361,10 +801,12 @@ std::optional<MaterialSummary> get(std::string const& id, std::string* err) {
 std::optional<std::filesystem::path> material_path(std::string const& id, std::string* err) {
     auto item = get(id, err);
     if (!item) return std::nullopt;
-    if (!std::filesystem::is_regular_file(item->path)) {
-        if (err) *err = "secure material file missing: " + item->path.string();
+    std::vector<std::uint8_t> contents;
+    if (!runtime::read_file_bounded(
+            item->path, kMaximumPemBytes, &contents, err)) {
         return std::nullopt;
     }
+    security::secure_erase(contents);
     return item->path;
 }
 
@@ -373,59 +815,12 @@ bool import_text(MaterialType type,
                  std::string const& pem_text,
                  MaterialSummary* out,
                  std::string* err) {
-    std::string pem = normalize_pem(pem_text);
-    if (!validate_material(type, pem, err)) return false;
-
-    auto id = make_id();
-    auto ext = [&]() -> char const* {
-        switch (type) {
-            case MaterialType::AuthKey:      return ".key.pem";
-            case MaterialType::AnonymPubkey: return ".pub.pem";
-            case MaterialType::TlsCa:        return ".tls.pem";
-            case MaterialType::AnonymCa:
-            default:                         return ".ca.pem";
-        }
-    }();
-    auto path = store_dir() / (id + ext);
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-
-    std::ofstream file(path);
-    if (!file) {
-        if (err) *err = "cannot write " + path.string();
+    if (pem_text.size() > kMaximumPemBytes) {
+        if (err) *err = std::string(type_label(type)) + " PEM exceeds 64 KiB";
         return false;
     }
-    file << pem;
-    file.close();
-    if (!file) {
-        if (err) *err = "cannot finish writing " + path.string();
-        return false;
-    }
-    if (type == MaterialType::AuthKey) chmod_private(path);
-
-    auto default_name = [&]() -> char const* {
-        switch (type) {
-            case MaterialType::AuthKey:      return "Imported auth key";
-            case MaterialType::AnonymPubkey: return "Imported external proof key";
-            case MaterialType::TlsCa:        return "Imported TLS CA";
-            case MaterialType::AnonymCa:
-            default:                         return "Imported operator CA";
-        }
-    };
-    MaterialSummary s;
-    s.id = id;
-    s.display_name = display_name.empty() ? default_name() : display_name;
-    s.type = type;
-    s.source_label = "Imported";
-    s.fingerprint = short_fingerprint(pem);
-    s.path = path;
-    s.created_at_epoch_ms = now_ms();
-
-    auto items = read_user_materials(err);
-    items.insert(items.begin(), s);
-    if (!write_user_materials(items, err)) return false;
-    if (out) *out = std::move(s);
-    return true;
+    return import_material(type, display_name, "Imported",
+                           normalize_pem(pem_text), out, err);
 }
 
 bool import_file(MaterialType type,
@@ -433,50 +828,153 @@ bool import_file(MaterialType type,
                  std::filesystem::path const& source_path,
                  MaterialSummary* out,
                  std::string* err) {
-    std::ifstream in(source_path);
-    if (!in) {
-        if (err) *err = "cannot open " + source_path.string();
+    std::string pem;
+    if (!runtime::read_text_file_bounded(
+            source_path, kMaximumPemBytes, &pem, err)) {
         return false;
     }
-    std::stringstream ss;
-    ss << in.rdbuf();
-    bool ok = import_text(type, display_name, ss.str(), out, err);
-    if (ok && out) out->source_label = source_path.filename().string();
-    if (ok && out) {
-        auto items = read_user_materials(err);
-        for (auto& item : items) {
-            if (item.id == out->id) item.source_label = out->source_label;
-        }
-        (void)write_user_materials(items, err);
-    }
-    return ok;
+    return import_material(type, display_name,
+                           source_path.filename().string(),
+                           normalize_pem(std::move(pem)), out, err);
 }
 
 bool remove(std::string const& id, std::string* err) {
+    if (err) err->clear();
+    runtime::FileTransactionLock lock;
+    std::vector<std::filesystem::path> resources{metadata_path()};
     if (id == kDefaultAnonymCaId) {
-        auto state = read_store_state(err);
-        if (!state.embedded_anonym_ca_enabled) {
+        resources.push_back(store_dir() / "default_anonym_ca.pem");
+    }
+    if (!acquire_store_lock(&lock, resources, err)) return false;
+
+    MetadataSnapshot metadata_before;
+    if (!capture_metadata_snapshot(&metadata_before, err)) return false;
+
+    MaterialStoreState state;
+    if (!read_store_state(&state, err)) return false;
+
+    auto restore_metadata_after_failure =
+        [&](const std::string& primary_error) {
+            std::string rollback_error;
+            const bool restored =
+                restore_metadata_snapshot(metadata_before, &rollback_error);
+            if (err) *err = primary_error;
+            if (!restored) {
+                append_error(err, "cannot restore prior metadata: " +
+                                      rollback_error);
+            }
+            return restored;
+        };
+
+    auto restore_removed_file =
+        [&](const std::filesystem::path& path,
+            std::span<const std::uint8_t> bytes,
+            std::string* restore_error) {
+            std::error_code status_error;
+            const auto status =
+                std::filesystem::symlink_status(path, status_error);
+            const bool missing =
+                status.type() == std::filesystem::file_type::not_found ||
+                status_error == std::errc::no_such_file_or_directory;
+            if (missing) {
+                return security::WriteFileExclusive0600(
+                    path, bytes, restore_error);
+            }
+            if (status_error) {
+                if (restore_error) {
+                    *restore_error = "cannot inspect removed material: " +
+                                     status_error.message();
+                }
+                return false;
+            }
+            if (status.type() != std::filesystem::file_type::regular) {
+                if (restore_error) {
+                    *restore_error =
+                        "removed material path is no longer a regular file";
+                }
+                return false;
+            }
+            return true;
+        };
+
+    if (id == kDefaultAnonymCaId) {
+        if (!state.embedded_anonym_ca_enabled_) {
             if (err) *err = "embedded operator CA is already removed";
             return false;
         }
-        state.embedded_anonym_ca_enabled = false;
-        if (!write_store_state(state, err)) return false;
-        std::error_code ec;
-        std::filesystem::remove(store_dir() / "default_anonym_ca.pem", ec);
-        return true;
+        const std::string default_pem = normalize_pem(kDefaultAnonymCaPem);
+        const auto default_bytes = std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(default_pem.data()),
+            default_pem.size());
+        state.embedded_anonym_ca_enabled_ = false;
+        std::string publication_error;
+        if (!write_store_state(state, &publication_error)) {
+            restore_metadata_after_failure(publication_error);
+            return false;
+        }
+
+        const auto default_path = store_dir() / "default_anonym_ca.pem";
+        std::string remove_error;
+        if (runtime::DurableRemoveFile(default_path, &remove_error)) return true;
+
+        const std::string primary_error =
+            "cannot remove embedded operator CA: " + remove_error;
+        std::string material_restore_error;
+        if (!restore_removed_file(default_path, default_bytes,
+                                  &material_restore_error)) {
+            if (err) *err = primary_error;
+            append_error(err, "cannot restore embedded operator CA: " +
+                                  material_restore_error);
+            return false;
+        }
+        restore_metadata_after_failure(primary_error);
+        return false;
     }
-    auto items = read_user_materials(err);
-    auto it = std::find_if(items.begin(), items.end(), [&](auto const& s) {
+    if (!valid_material_id(id)) {
+        if (err) *err = "secure material id is invalid";
+        return false;
+    }
+    auto it = std::find_if(state.materials_.begin(), state.materials_.end(),
+                           [&](auto const& s) {
         return s.id == id;
     });
-    if (it == items.end()) {
+    if (it == state.materials_.end()) {
         if (err) *err = "secure material not found: " + id;
         return false;
     }
-    std::error_code ec;
-    std::filesystem::remove(it->path, ec);
-    items.erase(it);
-    return write_user_materials(items, err);
+    const auto material_file = path_for(it->id, it->type);
+    std::string serialized;
+    if (!runtime::read_text_file_bounded(
+            material_file, kMaximumPemBytes, &serialized, err)) {
+        return false;
+    }
+    StringWiper serialized_wiper(serialized);
+
+    state.materials_.erase(it);
+    std::string publication_error;
+    if (!write_store_state(state, &publication_error)) {
+        restore_metadata_after_failure(publication_error);
+        return false;
+    }
+
+    std::string remove_error;
+    if (runtime::DurableRemoveFile(material_file, &remove_error)) return true;
+
+    const auto bytes = std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(serialized.data()),
+        serialized.size());
+    const std::string primary_error =
+        "cannot remove secure material: " + remove_error;
+    std::string material_restore_error;
+    if (!restore_removed_file(material_file, bytes,
+                              &material_restore_error)) {
+        if (err) *err = primary_error;
+        append_error(err, "cannot restore secure material: " +
+                              material_restore_error);
+        return false;
+    }
+    restore_metadata_after_failure(primary_error);
+    return false;
 }
 
 char const* type_label(MaterialType type) {

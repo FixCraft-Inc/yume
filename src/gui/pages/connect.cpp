@@ -14,6 +14,7 @@
 #include <imgui.h>
 
 #include "client/transfer/share_file.hpp"
+#include "core/security/secure_erase.hpp"
 #include "core/stealth/http_profile.hpp"
 #include "facade/session/client_session.hpp"
 #include "facade/config/config_io.hpp"
@@ -23,17 +24,30 @@
 #include "ui/design.hpp"
 
 #include <filesystem>
-#include <fstream>
-
-#ifndef _WIN32
-#include <sys/stat.h>
-#endif
-
 namespace yume::gui {
 
 namespace {
 
 namespace sm = facade::secure_materials;
+
+void wipe_buffer(char* buffer, std::size_t size) noexcept {
+    volatile char* cursor = buffer;
+    for (std::size_t index = 0; index < size; ++index) {
+        cursor[index] = 0;
+    }
+}
+
+class SensitiveStringGuard {
+public:
+    explicit SensitiveStringGuard(std::string& value) noexcept : value_(value) {}
+    ~SensitiveStringGuard() { security::secure_erase(value_); }
+
+    SensitiveStringGuard(const SensitiveStringGuard&) = delete;
+    SensitiveStringGuard& operator=(const SensitiveStringGuard&) = delete;
+
+private:
+    std::string& value_;
+};
 
 // width=0 means "take the full content region". Pass an explicit width
 // when these helpers are placed side-by-side (e.g. host + port) so the
@@ -73,6 +87,11 @@ ImVec4 state_color(facade::ConnectionState s) {
 
 class ConnectPage : public Page {
 public:
+    ~ConnectPage() override {
+        clear_export_sensitive();
+        clear_import_sensitive();
+    }
+
     std::string_view title() const override { return "Connection"; }
 
     void on_show(AppContext& ctx) override {
@@ -81,6 +100,11 @@ public:
             cfg_ = ctx.client->config();
             loaded_ = true;
         }
+    }
+
+    void on_hide(AppContext&) override {
+        clear_export_sensitive();
+        clear_import_sensitive();
     }
 
     void render(AppContext& ctx) override {
@@ -410,18 +434,16 @@ private:
         ImGui::SameLine(0.0f, 10 * sc);
         ImGui::BeginDisabled(cfg_.server.empty() || cfg_.identity.empty());
         if (ui::quiet_button("Export...", ImVec2(96 * sc, 40 * sc))) {
-            export_pwd_[0] = 0;
-            export_pwd2_[0] = 0;
+            clear_export_sensitive();
             export_status_.clear();
             ImGui::OpenPopup("##share_export");
         }
         ImGui::EndDisabled();
         ImGui::SameLine(0.0f, 6 * sc);
         if (ui::quiet_button("Import...", ImVec2(96 * sc, 40 * sc))) {
-            import_pwd_[0] = 0;
+            clear_import_sensitive();
             import_path_.clear();
             import_status_.clear();
-            import_summary_ = std::nullopt;
             ImGui::OpenPopup("##share_import");
         }
 
@@ -525,6 +547,7 @@ private:
                 &err);
             if (!dest) {
                 export_status_ = err.empty() ? std::string("cancelled") : err;
+                clear_export_sensitive();
             } else {
                 std::string werr;
                 if (do_export(dest->string(), export_pwd_, &werr)) {
@@ -532,19 +555,18 @@ private:
                     last_error_ = false;
                     // Wipe password buffers so a screenshot of the next
                     // popup doesn't expose them.
-                    std::memset(export_pwd_, 0, sizeof(export_pwd_));
-                    std::memset(export_pwd2_, 0, sizeof(export_pwd2_));
+                    clear_export_sensitive();
                     ImGui::CloseCurrentPopup();
                 } else {
                     export_status_ = werr;
+                    clear_export_sensitive();
                 }
             }
         }
         ImGui::EndDisabled();
         ImGui::SameLine(0.0f, 8 * sc);
         if (ui::secondary_button("Cancel", ImVec2(100 * sc, 38 * sc))) {
-            std::memset(export_pwd_, 0, sizeof(export_pwd_));
-            std::memset(export_pwd2_, 0, sizeof(export_pwd2_));
+            clear_export_sensitive();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -565,10 +587,11 @@ private:
                 std::string err;
                 auto src = platform::open_file_dialog("Open yume share file", &err);
                 if (src) {
+                    clear_import_sensitive();
                     import_path_ = src->string();
                     import_status_.clear();
-                    import_summary_ = std::nullopt;
                 } else {
+                    clear_import_sensitive();
                     import_status_ = err.empty() ? std::string("cancelled") : err;
                 }
             }
@@ -608,10 +631,11 @@ private:
                                        ImVec2(300 * sc, 38 * sc))) {
                     std::string err;
                     if (do_apply_preview(&err)) {
-                        std::memset(import_pwd_, 0, sizeof(import_pwd_));
+                        clear_import_sensitive();
                         ImGui::CloseCurrentPopup();
                     } else {
                         import_status_ = err;
+                        clear_import_sensitive();
                     }
                 }
             }
@@ -623,13 +647,14 @@ private:
         }
         ImGui::Dummy(ImVec2(0, 6 * sc));
         if (ui::secondary_button("Close", ImVec2(100 * sc, 38 * sc))) {
-            std::memset(import_pwd_, 0, sizeof(import_pwd_));
+            clear_import_sensitive();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
-    bool do_export(const std::string& dest, const std::string& password, std::string* err) {
+    bool do_export(const std::string& dest, std::string password, std::string* err) {
+        SensitiveStringGuard password_guard(password);
         yume::share::BackupInputs in;
         in.label = cfg_.server + (cfg_.port > 0 ? ":" + std::to_string(cfg_.port) : std::string());
         in.created_by = std::string("yume-gui");
@@ -662,30 +687,20 @@ private:
         auto bytes = yume::share::encode_share(bundle, password, err);
         if (bytes.empty()) return false;
 
-#ifndef _WIN32
-        const mode_t prior = ::umask(0077);
-#endif
-        std::ofstream f(dest, std::ios::binary | std::ios::trunc);
-#ifndef _WIN32
-        ::umask(prior);
-#endif
-        if (!f) { if (err) *err = "cannot write " + dest; return false; }
-        f.write(reinterpret_cast<const char*>(bytes.data()),
-                static_cast<std::streamsize>(bytes.size()));
-        if (!f) { if (err) *err = "write failed: " + dest; return false; }
-        f.close();
-#ifndef _WIN32
-        (void)::chmod(dest.c_str(), 0600);
-#endif
-        return true;
+        return yume::share::write_share_file_exclusive(dest, bytes, err);
     }
 
     bool do_decrypt_preview(std::string* err) {
-        std::ifstream f(import_path_, std::ios::binary);
-        if (!f) { if (err) *err = "cannot open " + import_path_; return false; }
-        std::vector<std::uint8_t> blob((std::istreambuf_iterator<char>(f)),
-                                        std::istreambuf_iterator<char>());
-        auto bundle_opt = yume::share::decode_share(blob, import_pwd_, err);
+        import_summary_.reset();
+        std::vector<std::uint8_t> blob;
+        if (!yume::share::read_share_file(import_path_, &blob, err)) {
+            wipe_buffer(import_pwd_, sizeof(import_pwd_));
+            return false;
+        }
+        std::string password(import_pwd_);
+        SensitiveStringGuard password_guard(password);
+        wipe_buffer(import_pwd_, sizeof(import_pwd_));
+        auto bundle_opt = yume::share::decode_share(blob, password, err);
         if (!bundle_opt) return false;
         import_summary_ = std::move(*bundle_opt);
         return true;
@@ -699,6 +714,16 @@ private:
                         " — connect with: yume --config " + applied.config_path;
         last_error_ = false;
         return true;
+    }
+
+    void clear_export_sensitive() noexcept {
+        wipe_buffer(export_pwd_, sizeof(export_pwd_));
+        wipe_buffer(export_pwd2_, sizeof(export_pwd2_));
+    }
+
+    void clear_import_sensitive() noexcept {
+        wipe_buffer(import_pwd_, sizeof(import_pwd_));
+        import_summary_.reset();
     }
 
     client::ClientConfig cfg_{};

@@ -8,8 +8,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -37,6 +39,7 @@ constexpr std::uint8_t kFormatVersion = 1;
 // BaseFWX FwxAES currently enforces the same minimum. Kept public so every
 // YUME exporter can reject weak/invalid input before starting the KDF.
 constexpr std::size_t kPasswordMin = 12;
+constexpr std::size_t kMaxShareFileBytes = 16U * 1024U * 1024U;
 
 enum class BundleType : std::uint8_t {
     Backup = 0,  // personal backup / device migration; contains the
@@ -52,6 +55,15 @@ using RelayPeerPins = std::map<std::string, std::string>;
 // Anything not set at export time is omitted from the bundle JSON so
 // older or future fields don't pollute. Importer ignores unknown fields.
 struct ShareBundle {
+    ShareBundle() = default;
+    ShareBundle(const ShareBundle& other);
+    ShareBundle& operator=(const ShareBundle& other);
+    ShareBundle(ShareBundle&& other);
+    ShareBundle& operator=(ShareBundle&& other);
+    ~ShareBundle();
+
+    void clear_secrets() noexcept;
+
     BundleType type{BundleType::Backup};
     std::string created_at_iso8601;          // e.g. "2026-05-25T10:39:10Z"
     std::string created_by;                  // e.g. "yume 1.1 (linux-x86_64)"
@@ -120,6 +132,16 @@ struct ShareFileHeader {
 bool peek_share_header(const std::vector<std::uint8_t>& blob,
                        ShareFileHeader* out);
 
+// Shared CLI/GUI persistence boundary. Reads are bounded before allocation and
+// never follow the final path component. Writes create a new owner-only file,
+// refuse overwrite/reparse targets, flush before success, and clean partials.
+bool read_share_file(const std::filesystem::path& path,
+                     std::vector<std::uint8_t>* contents,
+                     std::string* error);
+bool write_share_file_exclusive(const std::filesystem::path& path,
+                                std::span<const std::uint8_t> contents,
+                                std::string* error);
+
 // ─── orchestration helpers (no UI, sync; shared by CLI + GUI) ──────────────
 
 // Inputs to build_backup_bundle: client-side config fields that map
@@ -128,6 +150,13 @@ bool peek_share_header(const std::vector<std::uint8_t>& blob,
 // that doesn't apply. Caller fills this from ClientConfig (CLI) or
 // from the GUI's working state.
 struct BackupInputs {
+    BackupInputs() = default;
+    BackupInputs(const BackupInputs&) = delete;
+    BackupInputs& operator=(const BackupInputs&) = delete;
+    BackupInputs(BackupInputs&&) = delete;
+    BackupInputs& operator=(BackupInputs&&) = delete;
+    ~BackupInputs();
+
     // Display label + provenance (optional but nice in the summary)
     std::string label;
     std::string created_by;       // e.g. "yume 1.1 (linux-x86_64)"

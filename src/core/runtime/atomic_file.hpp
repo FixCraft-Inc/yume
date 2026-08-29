@@ -17,6 +17,11 @@ enum class ParentDirectoryPolicy {
     Create,
 };
 
+enum class FileProtection {
+    Inherit,
+    OwnerOnly,
+};
+
 // Durably replace path with content through an exclusive temporary file in the
 // same directory. A failure before the rename leaves an existing destination
 // untouched; temporary files are removed on every reported failure path.
@@ -24,7 +29,8 @@ bool AtomicWriteFile(const std::filesystem::path& path,
                      std::string_view content,
                      std::string* error = nullptr,
                      ParentDirectoryPolicy parent_policy =
-                         ParentDirectoryPolicy::RequireExisting);
+                         ParentDirectoryPolicy::RequireExisting,
+                     FileProtection protection = FileProtection::Inherit);
 
 // Remove one file and durably publish the directory-entry change where the
 // platform exposes that primitive. A missing path is already the requested

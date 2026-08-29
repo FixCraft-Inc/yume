@@ -8,16 +8,10 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <fstream>
 #include <iostream>
-#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
-
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#endif
 
 #include "client/cli/entry.hpp"
 #include "client/cli/config/input.hpp"
@@ -28,32 +22,6 @@
 
 namespace yume::client {
 namespace {
-
-bool write_with_owner_only_mode(const std::string& path,
-                                const std::vector<std::uint8_t>& data,
-                                std::string* error) {
-#ifndef _WIN32
-    mode_t prior = ::umask(0077);
-#endif
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-#ifndef _WIN32
-    ::umask(prior);
-#endif
-    if (!f) {
-        if (error) *error = "cannot write " + path;
-        return false;
-    }
-    f.write(reinterpret_cast<const char*>(data.data()),
-            static_cast<std::streamsize>(data.size()));
-    if (!f) {
-        if (error) *error = "write to " + path + " failed";
-        return false;
-    }
-#ifndef _WIN32
-    (void)::chmod(path.c_str(), 0600);
-#endif
-    return true;
-}
 
 bool prompt_share_password(const std::string& purpose,
                            bool from_stdin,
@@ -170,7 +138,7 @@ int run_export_share(const std::string& out_path,
         util::log_error("export: " + err);
         return 1;
     }
-    if (!write_with_owner_only_mode(out_path, bytes, &err)) {
+    if (!yume::share::write_share_file_exclusive(out_path, bytes, &err)) {
         util::log_error("export: " + err);
         return 1;
     }
@@ -180,13 +148,12 @@ int run_export_share(const std::string& out_path,
 }
 
 int run_import_share(const std::string& in_path, bool password_stdin) {
-    std::ifstream in(in_path, std::ios::binary);
-    if (!in) {
-        util::log_error("import: cannot open " + in_path);
+    std::string err;
+    std::vector<std::uint8_t> blob;
+    if (!yume::share::read_share_file(in_path, &blob, &err)) {
+        util::log_error("import: " + err);
         return 1;
     }
-    std::vector<std::uint8_t> blob((std::istreambuf_iterator<char>(in)),
-                                    std::istreambuf_iterator<char>());
     yume::share::ShareFileHeader hdr{};
     if (!yume::share::peek_share_header(blob, &hdr)) {
         util::log_error("import: " + in_path + " is not a .yss file (bad magic or unsupported version)");
@@ -195,7 +162,6 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
     util::log_info("import: detected .yss format v" + std::to_string(hdr.version) +
                    " (type=" + (hdr.type == yume::share::BundleType::Backup ? "backup" : "?") + ").");
 
-    std::string err;
     std::string password;
     RelaySecretWiper password_wiper(password);
     if (!prompt_share_password("import", password_stdin, &password, &err)) {

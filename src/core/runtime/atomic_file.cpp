@@ -17,6 +17,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <sddl.h>
 #else
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -105,7 +106,11 @@ std::string errno_message(int value) {
 bool AtomicWriteFile(const std::filesystem::path& path,
                      std::string_view content,
                      std::string* error,
-                     ParentDirectoryPolicy parent_policy) {
+                     ParentDirectoryPolicy parent_policy,
+                     FileProtection protection) {
+#ifndef _WIN32
+    (void)protection;
+#endif
     if (error) error->clear();
     if (path.empty() || path.filename().empty()) {
         set_error(error, path, "cannot atomically write", "invalid destination path");
@@ -125,22 +130,43 @@ bool AtomicWriteFile(const std::filesystem::path& path,
     }
 
 #ifdef _WIN32
+    PSECURITY_DESCRIPTOR security_descriptor = nullptr;
+    SECURITY_ATTRIBUTES security_attributes{};
+    SECURITY_ATTRIBUTES* create_attributes = nullptr;
+    if (protection == FileProtection::OwnerOnly) {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                L"D:P(A;;FA;;;SY)(A;;FA;;;OW)", SDDL_REVISION_1,
+                &security_descriptor, nullptr)) {
+            set_error(error, path, "cannot prepare private config security",
+                      windows_error(GetLastError()));
+            return false;
+        }
+        security_attributes.nLength = sizeof(security_attributes);
+        security_attributes.lpSecurityDescriptor = security_descriptor;
+        security_attributes.bInheritHandle = FALSE;
+        create_attributes = &security_attributes;
+    }
     HANDLE file = INVALID_HANDLE_VALUE;
     std::filesystem::path temporary;
     for (unsigned attempt = 0; attempt < kCreateAttempts; ++attempt) {
         temporary = temp_candidate(path, GetCurrentProcessId());
         file = CreateFileW(
-            temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+            temporary.c_str(), GENERIC_WRITE, 0, create_attributes, CREATE_NEW,
             FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
             nullptr);
         if (file != INVALID_HANDLE_VALUE) break;
         const DWORD create_error = GetLastError();
         if (create_error != ERROR_FILE_EXISTS &&
             create_error != ERROR_ALREADY_EXISTS) {
+            if (security_descriptor) LocalFree(security_descriptor);
             set_error(error, temporary, "cannot create temporary config",
                       windows_error(create_error));
             return false;
         }
+    }
+    if (security_descriptor) {
+        LocalFree(security_descriptor);
+        security_descriptor = nullptr;
     }
     if (file == INVALID_HANDLE_VALUE) {
         set_error(error, path, "cannot atomically write",

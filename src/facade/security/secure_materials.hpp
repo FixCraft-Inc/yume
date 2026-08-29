@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -14,6 +15,10 @@
 namespace yume::facade::secure_materials {
 
 inline constexpr char kDefaultAnonymCaId[] = "embedded-anonym-ca";
+inline constexpr std::size_t kMaximumPemBytes = 64U * 1024U;
+inline constexpr std::size_t kMaximumMetadataBytes = 16U * 1024U * 1024U;
+inline constexpr std::size_t kMaximumMaterialRecords = 1024U;
+inline constexpr std::size_t kMaximumMaterialLabelBytes = 256U;
 
 enum class MaterialType {
     AnonymCa,       // X.509 operator root CA (serialized as "anonym_ca")

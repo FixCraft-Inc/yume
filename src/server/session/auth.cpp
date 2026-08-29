@@ -47,6 +47,47 @@ private:
     crypto::Bytes& bytes_;
 };
 
+struct AuthCandidate {
+    std::string fingerprint_;
+    std::string admin_fingerprint_;
+    bool signature_valid_{false};
+    bool regular_authorized_{false};
+    bool operator_authorized_{false};
+    bool admin_authenticated_{false};
+
+    bool visitor_authorized() const noexcept {
+        return regular_authorized_ || operator_authorized_;
+    }
+};
+
+struct AuthDecision {
+    std::string fingerprint_;
+    std::string admin_fingerprint_;
+    std::string client_auth_pubkey_b64_;
+    std::string client_id_;
+    std::string bandwidth_fair_key_;
+    std::string federation_peer_id_;
+    AuthKeyPolicy policy_;
+    AuthKeyType key_type_{AuthKeyType::Individual};
+    std::unordered_set<std::string> allowed_codecs_;
+    std::unordered_set<std::string> allowed_services_;
+    std::unique_ptr<ratchet::SessionRatchet> ratchet_;
+    double bandwidth_weight_{1.0};
+    std::uint32_t identity_session_limit_{1};
+    bool preauth_{false};
+    bool operator_authenticated_{false};
+    bool admin_authenticated_{false};
+    bool allow_exec_{false};
+    bool allow_local_ip_{false};
+    bool control_full_{false};
+    bool allow_monero_rpc_{false};
+    bool allow_inbound_admin_{false};
+    bool allow_outbound_admin_{false};
+    bool allow_chat_{true};
+    bool allow_file_{true};
+    bool allow_bytes_{true};
+};
+
 }  // namespace
 
 void Session::send_auth_challenge() {
@@ -159,13 +200,14 @@ bool Session::handle_auth(const protocol::Frame& frame) {
     auth_fingerprint_.clear();
     admin_fingerprint_.clear();
     auth_key_type_ = AuthKeyType::Individual;
+    AuthCandidate candidate;
+    AuthDecision decision;
     try {
         if (!auth_v2_ephemeral_ || !cfg_.inner_psk_material) {
             auth_error_ = "access denied: invalid authentication state";
             return false;
         }
         const auth_v2::Response response = auth_v2::ParseResponse(frame.payload);
-
         const crypto::CompositePublicKey visitor_identity =
             crypto::parse_composite_identity(response.identity);
         if (!visitor_identity.valid()) {
@@ -198,25 +240,27 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
             challenge_, unsigned_response, channel_binding);
         WipeBytesOnExit wipe_signature_input(signature_input);
-        bool sig_ok = crypto::verify_composite(
+        candidate.signature_valid_ = crypto::verify_composite(
             visitor_identity.classical.get(), visitor_identity.pq.get(),
             signature_input, response.signature);
-        const bool regular_auth_ok =
+        candidate.regular_authorized_ =
             authorized_keys_ &&
             is_composite_authorized(visitor_identity, *authorized_keys_);
-        const bool operator_auth_ok =
+        candidate.operator_authorized_ =
             operator_keys_ &&
             is_composite_authorized(visitor_identity, *operator_keys_);
-        const bool auth_ok = regular_auth_ok || operator_auth_ok;
-        std::string fingerprint = crypto::composite_fingerprint(visitor_identity);
+        candidate.fingerprint_ =
+            crypto::composite_fingerprint(visitor_identity);
 
         // An admin claim is a second factor for an already authorized visitor,
         // never an alternate route out of the deliberately narrower preauth
         // tier. Reject before parsing or verifying the admin credential so no
         // preauth session can retain privileged internal state.
         if (response.claims_admin() &&
-            !authorization::admin_claim_eligible(sig_ok, auth_ok)) {
-            auth_error_ = !sig_ok
+            !authorization::admin_claim_eligible(
+                candidate.signature_valid_,
+                candidate.visitor_authorized())) {
+            auth_error_ = !candidate.signature_valid_
                 ? "access denied: bad signature"
                 : "access denied: admin requires an authorized visitor key";
             return false;
@@ -234,11 +278,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 auth_error_ = "access denied: invalid admin key";
                 return false;
             }
-            const std::string admin_fingerprint =
+            candidate.admin_fingerprint_ =
                 crypto::composite_fingerprint(admin_identity);
             // Two keys means two *different* keys. Without this, presenting the
             // same key twice would satisfy a naive "two factors" check.
-            if (admin_fingerprint == fingerprint) {
+            if (candidate.admin_fingerprint_ == candidate.fingerprint_) {
                 auth_error_ = "access denied: admin key must differ from visitor key";
                 return false;
             }
@@ -258,27 +302,30 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 auth_error_ = "access denied: admin signature is invalid";
                 return false;
             }
-            admin_authenticated_ = true;
-            admin_fingerprint_ = admin_fingerprint;
+            candidate.admin_authenticated_ = true;
         }
-        auth_fingerprint_ = fingerprint;
-        client_auth_pubkey_b64_ = yume::util::base64_encode(
+        decision.fingerprint_ = candidate.fingerprint_;
+        decision.admin_fingerprint_ = candidate.admin_fingerprint_;
+        decision.admin_authenticated_ = candidate.admin_authenticated_;
+        decision.client_auth_pubkey_b64_ = yume::util::base64_encode(
             std::string(response.identity.begin(), response.identity.end()));
 
         const bool preauth_ok =
-            sig_ok && !auth_ok && !cfg_.preauth_services.empty();
+            candidate.signature_valid_ && !candidate.visitor_authorized() &&
+            !cfg_.preauth_services.empty();
 
-        if (!sig_ok || (!auth_ok && !preauth_ok)) {
+        if (!candidate.signature_valid_ ||
+            (!candidate.visitor_authorized() && !preauth_ok)) {
             if (!cfg_.anonym || auth_debug_enabled()) {
                 const std::size_t loaded_keys = authorized_keys_ ? authorized_keys_->size() : 0;
                 util::log_warn("session " + std::to_string(session_id_) +
-                               ": auth rejected fingerprint=" + (fingerprint.empty() ? std::string("<unknown>") : fingerprint) +
-                               " signature=" + (sig_ok ? "ok" : "bad") +
-                               " authorized=" + (auth_ok ? "yes" : "no") +
+                               ": auth rejected fingerprint=" + (candidate.fingerprint_.empty() ? std::string("<unknown>") : candidate.fingerprint_) +
+                               " signature=" + (candidate.signature_valid_ ? "ok" : "bad") +
+                               " authorized=" + (candidate.visitor_authorized() ? "yes" : "no") +
                                " loaded_keys=" + std::to_string(loaded_keys) +
                                " auth_keys=" + (cfg_.auth_keys.empty() ? std::string("<unset>") : cfg_.auth_keys));
             }
-            if (!sig_ok) {
+            if (!candidate.signature_valid_) {
                 auth_error_ = "access denied: bad signature";
             } else {
                 auth_error_ = "access denied: invalid key";
@@ -286,132 +333,127 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
 
-        const bool preauth_session = preauth_ok;
-        AuthKeyPolicy auth_policy;
-        operator_authenticated_ = !preauth_session && operator_auth_ok;
-        const auto& policy_store = operator_authenticated_
+        decision.preauth_ = preauth_ok;
+        decision.operator_authenticated_ =
+            !decision.preauth_ && candidate.operator_authorized_;
+        const auto& policy_store = decision.operator_authenticated_
             ? operator_policies_
             : auth_policies_;
-        if (!preauth_session && policy_store) {
-            const auto it = policy_store->find(fingerprint);
+        if (!decision.preauth_ && policy_store) {
+            const auto it = policy_store->find(candidate.fingerprint_);
             if (it != policy_store->end()) {
-                auth_policy = it->second;
+                decision.policy_ = it->second;
             }
         }
-        auth_key_type_ = operator_authenticated_
+        decision.key_type_ = decision.operator_authenticated_
             ? AuthKeyType::Individual
-            : auth_policy.key_type;
-        std::uint32_t identity_session_limit = 1;
-        if (auth_key_type_ == AuthKeyType::Bulk) {
-            identity_session_limit = auth_policy.max_sessions.value_or(
+            : decision.policy_.key_type;
+        if (decision.key_type_ == AuthKeyType::Bulk) {
+            decision.identity_session_limit_ =
+                decision.policy_.max_sessions.value_or(
                 std::max<std::uint32_t>(1, cfg_.bulk_key_max_sessions));
         }
-        if (!preauth_session && manager_) {
-            std::string admission_error;
-            if (!manager_->admit_authenticated_identity(
-                    session_id_, fingerprint, identity_session_limit,
-                    &admission_error)) {
-                auth_error_ = "access denied: key session limit reached";
-                util::log_warn(
-                    "session " + std::to_string(session_id_) +
-                    ": authenticated identity refused fingerprint=" + fingerprint +
-                    " limit=" + std::to_string(identity_session_limit));
-                return false;
-            }
-        }
-        if (auth_key_type_ == AuthKeyType::Bulk) {
+        if (decision.key_type_ == AuthKeyType::Bulk) {
             const std::string session_suffix = std::to_string(session_id_);
-            client_id_ = fingerprint + "-" + session_suffix;
-            bandwidth_fair_key_ = "bulk:" + fingerprint + ":" + session_suffix;
+            decision.client_id_ =
+                candidate.fingerprint_ + "-" + session_suffix;
+            decision.bandwidth_fair_key_ =
+                "bulk:" + candidate.fingerprint_ + ":" + session_suffix;
         } else {
-            client_id_ = fingerprint;
-            bandwidth_fair_key_ = operator_authenticated_
-                ? "operator:" + fingerprint
-                : "individual:" + fingerprint;
+            decision.client_id_ = candidate.fingerprint_;
+            decision.bandwidth_fair_key_ = decision.operator_authenticated_
+                ? "operator:" + candidate.fingerprint_
+                : "individual:" + candidate.fingerprint_;
         }
-        bandwidth_weight_ = auth_policy.effective_weight();
-        const bool key_exec = auth_policy.allow_exec.value_or(false);
-        const bool key_local_ip = auth_policy.allow_local_ip.value_or(false);
+        decision.bandwidth_weight_ = decision.policy_.effective_weight();
+        const bool key_exec = decision.policy_.allow_exec.value_or(false);
+        const bool key_local_ip =
+            decision.policy_.allow_local_ip.value_or(false);
         // Full control and admin no longer come from the visitor key's policy --
         // load_auth_policies refuses those flags outright now. They come from a
         // verified second factor: a distinct key in the separate admin store
         // that signed this transcript under the admin domain. That is the only
         // route, so a misedited policy file cannot produce an admin session.
-        const bool key_control_full = admin_authenticated_;
-        const bool key_monero_rpc = auth_policy.allow_monero_rpc.value_or(false);
-        session_allowed_codecs_.clear();
-        for (const auto& codec : auth_policy.allowed_codecs) {
+        const bool key_control_full = decision.admin_authenticated_;
+        const bool key_monero_rpc =
+            decision.policy_.allow_monero_rpc.value_or(false);
+        for (const auto& codec : decision.policy_.allowed_codecs) {
             const std::string id = app_codec::canonical_codec_id(codec);
             if (app_codec::contains_codec(cfg_.allowed_codecs, id)) {
-                session_allowed_codecs_.insert(id);
+                decision.allowed_codecs_.insert(id);
             }
         }
-        session_allowed_services_.clear();
         const auto& service_policy =
-            preauth_session ? cfg_.preauth_services : auth_policy.allowed_services;
+            decision.preauth_ ? cfg_.preauth_services
+                              : decision.policy_.allowed_services;
         for (const auto& service : service_policy) {
             if (std::find(cfg_.allowed_services.begin(), cfg_.allowed_services.end(),
                           service) != cfg_.allowed_services.end()) {
-                session_allowed_services_.insert(service);
+                decision.allowed_services_.insert(service);
             }
         }
         if (key_monero_rpc && app_codec::contains_codec(cfg_.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) {
-            session_allowed_codecs_.insert(std::string(app_codec::builtin::kMoneroRpcCodecId));
+            decision.allowed_codecs_.insert(
+                std::string(app_codec::builtin::kMoneroRpcCodecId));
         }
 #if YUME_FEATURE_EXEC
-        session_allow_exec_policy_ = key_exec && cfg_.allow_exec;
+        decision.allow_exec_ = key_exec && cfg_.allow_exec;
 #else
-        session_allow_exec_policy_ = false;
+        decision.allow_exec_ = false;
         if (key_exec || cfg_.allow_exec) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": exec requested but YUME_FEATURE_EXEC is OFF at build time");
         }
 #endif
 #if YUME_FEATURE_LAN_BRIDGE
-        session_allow_local_ip_ = key_local_ip && cfg_.allow_local_ip;
+        decision.allow_local_ip_ = key_local_ip && cfg_.allow_local_ip;
 #else
-        session_allow_local_ip_ = false;
+        decision.allow_local_ip_ = false;
         if (key_local_ip || cfg_.allow_local_ip) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": LAN bridging requested but YUME_FEATURE_LAN_BRIDGE is OFF at build time");
         }
 #endif
 #if YUME_FEATURE_FULL_CONTROL
-        session_control_full_ = key_control_full && cfg_.control_full;
+        decision.control_full_ = key_control_full && cfg_.control_full;
 #else
-        session_control_full_ = false;
+        decision.control_full_ = false;
         if (key_control_full || cfg_.control_full) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": full control requested but YUME_FEATURE_FULL_CONTROL is OFF at build time");
         }
 #endif
-        session_allow_monero_rpc_policy_ =
-            session_allowed_codecs_.count(std::string(app_codec::builtin::kMoneroRpcCodecId)) != 0;
+        decision.allow_monero_rpc_ = decision.allowed_codecs_.count(
+            std::string(app_codec::builtin::kMoneroRpcCodecId)) != 0;
         if ((key_monero_rpc ||
-             app_codec::contains_codec(auth_policy.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) &&
+             app_codec::contains_codec(decision.policy_.allowed_codecs,
+                                       app_codec::builtin::kMoneroRpcCodecId)) &&
             !app_codec::contains_codec(cfg_.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": Monero RPC codec requested by key but server has not enabled --codec-allow monero-rpc");
         }
-        session_allow_inbound_admin_policy_ = admin_authenticated_;
-        session_allow_outbound_admin_policy_ =
-            operator_authenticated_ && admin_authenticated_;
-        const bool shared_key = auth_key_type_ == AuthKeyType::Bulk;
-        session_allow_chat_policy_ = auth_policy.allow_chat.value_or(!shared_key);
-        session_allow_file_policy_ = auth_policy.allow_file.value_or(!shared_key);
-        session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(!shared_key);
-        federation_peer_id_ = auth_policy.federation_peer_id;
-        if (preauth_session) {
+        decision.allow_inbound_admin_ = decision.admin_authenticated_;
+        decision.allow_outbound_admin_ =
+            decision.operator_authenticated_ && decision.admin_authenticated_;
+        const bool shared_key = decision.key_type_ == AuthKeyType::Bulk;
+        decision.allow_chat_ =
+            decision.policy_.allow_chat.value_or(!shared_key);
+        decision.allow_file_ =
+            decision.policy_.allow_file.value_or(!shared_key);
+        decision.allow_bytes_ =
+            decision.policy_.allow_bytes.value_or(!shared_key);
+        decision.federation_peer_id_ = decision.policy_.federation_peer_id;
+        if (decision.preauth_) {
             util::log_info("session " + std::to_string(session_id_) +
                            ": preauth services enabled for fingerprint=" +
-                           fingerprint);
-        } else if (operator_authenticated_) {
+                           candidate.fingerprint_);
+        } else if (decision.operator_authenticated_) {
             util::log_info("session " + std::to_string(session_id_) +
                            ": operator key authenticated policy=" +
-                           summarize_auth_policy(auth_policy));
-        } else if (!auth_policy.empty()) {
+                           summarize_auth_policy(decision.policy_));
+        } else if (!decision.policy_.empty()) {
             util::log_info("session " + std::to_string(session_id_) + ": auth policy " +
-                           summarize_auth_policy(auth_policy));
+                           summarize_auth_policy(decision.policy_));
         }
 
 #if YUME_USE_BASEFWX
@@ -425,9 +467,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             basefwx::x25519::DeriveSharedSecret(
                 auth_v2_ephemeral_->x25519.private_key,
                 response.x25519_public_key)};
-        const auto& selected_psk = auth_policy.federation_peer_id.empty()
+        const auto& selected_psk = decision.policy_.federation_peer_id.empty()
             ? cfg_.inner_psk_material
-            : auth_policy.federation_psk_material;
+            : decision.policy_.federation_psk_material;
         if (!selected_psk) {
             auth_error_ = "access denied: federation PSK unavailable";
             return false;
@@ -456,7 +498,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         const ratchet::RatchetPolicy send_policy =
             ratchet::NegotiateRatchetPolicy(
                 *local_policy, response.ratchet_policy);
-        ratchet_ = std::make_unique<ratchet::SessionRatchet>(
+        decision.ratchet_ = std::make_unique<ratchet::SessionRatchet>(
             ratchet::EndpointRole::Server, std::move(initial_root),
             std::move(psk_key), send_window, local_window, send_policy,
             send_policy);
@@ -474,9 +516,6 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             std::to_string(local_policy->epoch_byte_limit) + " frames=" +
             std::to_string(local_policy->epoch_frame_limit) + " active_ms=" +
             std::to_string(local_policy->epoch_active_limit.count()));
-        auth_v2_ephemeral_.reset();
-        inner_mode_ = "ratchet";
-        inner_kdf_ = "hkdf";
         YUME_TIMING_LOG("server.auth", "v2_hybrid",
                          "session=" + std::to_string(session_id_) +
                          " ms=" + std::to_string(
@@ -486,28 +525,74 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         return false;
 #endif
 
-        if (!cfg_.anonym && !preauth_session) {
+        // Identity admission is the final fallible gate. Everything above was
+        // assembled in local candidate/decision state, so a rejection cannot
+        // leave a partially privileged Session behind.
+        if (!decision.preauth_ && manager_) {
+            std::string admission_error;
+            if (!manager_->admit_authenticated_identity(
+                    session_id_, decision.fingerprint_,
+                    decision.identity_session_limit_, &admission_error)) {
+                auth_error_ = "access denied: key session limit reached";
+                util::log_warn(
+                    "session " + std::to_string(session_id_) +
+                    ": authenticated identity refused fingerprint=" +
+                    decision.fingerprint_ + " limit=" +
+                    std::to_string(decision.identity_session_limit_));
+                return false;
+            }
+        }
+
+        auth_fingerprint_ = std::move(decision.fingerprint_);
+        admin_fingerprint_ = std::move(decision.admin_fingerprint_);
+        client_auth_pubkey_b64_ = std::move(decision.client_auth_pubkey_b64_);
+        client_id_ = std::move(decision.client_id_);
+        bandwidth_fair_key_ = std::move(decision.bandwidth_fair_key_);
+        federation_peer_id_ = std::move(decision.federation_peer_id_);
+        auth_key_type_ = decision.key_type_;
+        bandwidth_weight_ = decision.bandwidth_weight_;
+        operator_authenticated_ = decision.operator_authenticated_;
+        admin_authenticated_ = decision.admin_authenticated_;
+        session_allowed_codecs_ = std::move(decision.allowed_codecs_);
+        session_allowed_services_ = std::move(decision.allowed_services_);
+        session_allow_exec_policy_ = decision.allow_exec_;
+        session_allow_local_ip_ = decision.allow_local_ip_;
+        session_control_full_ = decision.control_full_;
+        session_allow_monero_rpc_policy_ = decision.allow_monero_rpc_;
+        session_allow_inbound_admin_policy_ = decision.allow_inbound_admin_;
+        session_allow_outbound_admin_policy_ = decision.allow_outbound_admin_;
+        session_allow_chat_policy_ = decision.allow_chat_;
+        session_allow_file_policy_ = decision.allow_file_;
+        session_allow_bytes_policy_ = decision.allow_bytes_;
+        ratchet_ = std::move(decision.ratchet_);
+        auth_v2_ephemeral_.reset();
+        inner_mode_ = "ratchet";
+        inner_kdf_ = "hkdf";
+        authorization_tier_ = decision.preauth_
+            ? authorization::SessionTier::PreauthServiceOnly
+            : authorization::SessionTier::Authorized;
+
+        if (!cfg_.anonym && !decision.preauth_) {
             std::string metadata_error;
             if (!update_auth_meta(operator_authenticated_
                                       ? cfg_.operator_keys_meta
                                       : cfg_.auth_keys_meta,
-                                  fingerprint, "", &metadata_error)) {
+                                  auth_fingerprint_, "", &metadata_error)) {
                 util::log_warn(
                     "session " + std::to_string(session_id_) +
                     ": could not persist auth last_seen: " + metadata_error);
             }
         }
-        authorization_tier_ = preauth_session
-            ? authorization::SessionTier::PreauthServiceOnly
-            : authorization::SessionTier::Authorized;
         return true;
     } catch (const std::exception& ex) {
         const std::string detail = ex.what();
-        const bool post_key_auth = !auth_fingerprint_.empty();
+        const bool post_key_auth = !candidate.fingerprint_.empty();
         if (!cfg_.anonym || auth_debug_enabled()) {
             util::log_warn("session " + std::to_string(session_id_) +
                            ": auth exception fingerprint=" +
-                           (auth_fingerprint_.empty() ? std::string("<unknown>") : auth_fingerprint_) +
+                           (candidate.fingerprint_.empty()
+                                ? std::string("<unknown>")
+                                : candidate.fingerprint_) +
                            " detail=" + detail);
         }
         if (post_key_auth && looks_like_inner_auth_exception(detail)) {

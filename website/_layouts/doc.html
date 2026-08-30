@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ page.title }} | YUME</title>
-    <meta name="description" content="{{ page.title }} - YUME 0.2.0-dev6 documentation, generated from the repository.">
+    <meta name="description" content="{{ page.title }} documentation generated from the YUME repository.">
     <link rel="icon" type="image/svg+xml" href="{{ '/assets/yume-white.svg' | relative_url }}">
     <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
     <script src="{{ '/assets/site.js' | relative_url }}" defer></script>
@@ -18,8 +18,8 @@
             <span class="brand-cutout" aria-hidden="true"></span>
           </span>
           <span>
-            <span class="brand-name">FixCraft</span>
-            <span class="brand-sub">YUME stealth transport</span>
+            <span class="brand-name">YUME</span>
+            <span class="brand-sub">A FixCraft protected transport</span>
           </span>
         </a>
         <nav class="doc-nav">
@@ -33,11 +33,17 @@
           <a href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">GitHub</a>
         </nav>
       </header>
-      <article class="doc-article">
-        {{ content }}
-      </article>
+      <main class="doc-shell">
+        <details class="doc-toc" open>
+          <summary>On this page</summary>
+          <nav id="doc-toc-list" aria-label="On this page"></nav>
+        </details>
+        <article class="doc-article">
+          {{ content }}
+        </article>
+      </main>
       <footer>
-        Generated from <code>docs/</code> on <code>main</code> &middot; YUME 0.2.0-dev6 &middot; AGPL-3.0-or-later
+        Published from the YUME source tree on <code>main</code> &middot; experimental development software &middot; AGPL-3.0-or-later
       </footer>
     </div>
   </body>

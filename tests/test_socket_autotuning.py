@@ -7,7 +7,7 @@ loopback/AF_UNIX endpoint and a remote connection, as the proxy sources do.
 This test therefore permits only named function bodies and separately audits
 every call to the helpers that contain the permitted pins.
 
-See docs/YUME_2_0_WAN_BEHAVIOR.md, "Root cause: pinned socket buffers".
+See docs/IMPLEMENTATION_STATUS.md, "Performance and network qualification".
 """
 
 from __future__ import annotations

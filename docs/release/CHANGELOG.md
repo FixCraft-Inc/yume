@@ -259,8 +259,8 @@ compatibility mode exists or is planned.
   500 ms of activity — and the receiver still enforces the byte and frame
   limits on authenticated plaintext. Gaps, duplicates, reordered ACKs, and
   offers past the advertised depth stay fatal. Offers are paced by application
-  progress so a filling window does not emit a burst of rekey records.
-  `docs/YUME_2_0_WAN_BEHAVIOR.md` records what remains unmeasured.
+  progress so a filling window does not emit a burst of rekey records. The
+  public implementation status records what remains unmeasured.
 
 ### Changed
 
@@ -478,7 +478,8 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
   - Static-link assertion on every `*-static` artifact (`file` must not say "dynamically linked"; `readelf -d` must show no `NEEDED` entries).
   - `--version` self-test on every published binary (native amd64 directly, ARM via `qemu-aarch64-static`/`qemu-arm-static`, MIPS via `qemu-mips-static`, PE via wine if available else PE32 header check, tar.xz CLI bundles extracted and tested).
   - GPG-signed `*.sig` per artifact plus aggregate `SHA256SUMS.txt`, `MD5SUMS.txt`, `release-manifest.json`.
-- Project documentation: `README.md`, `docs/QUICKSTART.md`, `docs/STEALTH.md`, `docs/EXPLAINED.md` (protocol internals + routing diagrams for federation, Tor egress, Tor-over-YUME, YUME-Tor-YUME, Android), `docs/PERFORMANCE.md`, `docs/OPERATIONS.md`, `docs/PACKAGING.md`, `docs/PERMISSIONS.md`, release notes, and the project website at <https://yume.fixcraft.jp>.
+- Project documentation included the main README, setup, security, routing,
+  operations, packaging, permissions, release notes, and project website.
 
 ### Changed
 - Wire format, authentication key file format, anonym CA / sub-key file format, and the `yume-obfs-v2` HTTP/2 token format were test-published in 1.0 and are treated as the compatibility base for the 1.1 stable line.
@@ -495,6 +496,9 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
 - **OpenWRT MIPS** is intentionally **not** built in CI because cross-builds against the OpenWRT SDK are slow and brittle on hosted runners; maintainers attach the MIPS artifacts manually when a release is cut. The static BusyBox builds cover most embedded use.
 - **Intel macOS** is not built in 1.0. The `build-macos` workflow is matrix-ized so an Intel entry is a one-line uncomment in `.github/workflows/release.yml`. Rosetta 2 covers Intel Macs running the arm64 binary.
 - **Windows GUI cross-build is best-effort** in 1.0: marked `continue-on-error: true` because the GUI-specific vcpkg packages (Freetype, GLFW3) on a fresh runner can take significantly longer than the CLI path and may time out. If the cross-build fails the CLI tarball still ships and the GUI lands in a follow-up.
-- **Performance**: one April 2026 WAN run measured about 234 Mbps download and 36 Mbps upload on the SOCKS path; full methodology and limitations are in `docs/PERFORMANCE.md`. CPU cost was not isolated, so the prior "<1 % typical, <5 % always" wording was not supported by that dataset. The inner-crypto hot path also inherited BaseFWX 3.6.4 performance work; see `../../basefwx/RELEASE-NOTES-3.6.4.md`.
+- **Performance**: one April 2026 WAN run measured about 234 Mbps download and
+  36 Mbps upload on the 1.x SOCKS path. CPU cost was not isolated, so the prior
+  "<1 % typical, <5 % always" wording was not supported by that dataset. This
+  historical result does not describe the current transport.
 - **Compatibility policy for the 1.x line**: authorised-key files (`--auth-keys`), anonym CA / sub-key files, and the `yume-obfs-v2` token format carry forward unchanged. The BaseFWX inner format is byte-compatible across the 3.6.x and 3.7.x lines for non-plugin-tagged blobs per BaseFWX's own compatibility policy.
 - **License**: AGPL-3.0-or-later across YUME binaries, source, and libyume. Bundled BaseFWX code follows its own split policy: LGPL library/API/runtime, GPL standalone tools, MIT OR Apache-2.0 example plugin templates. See `LICENSE`.

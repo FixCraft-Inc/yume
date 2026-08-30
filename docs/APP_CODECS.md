@@ -103,12 +103,12 @@ HTTP request bytes on the Yume data path.
 
 ## Codec layout
 
-- `src/core/app_codec/codec.{hpp,cpp}` — codec-neutral envelope, HTTP parsing,
+- `src/core/app_codec/codec.{hpp,cpp}`: codec-neutral envelope, HTTP parsing,
   lookup behavior, and the explicit built-in registry assembly point.
-- `src/core/app_codec/builtin/` — one unit per built-in codec. Each owns its
+- `src/core/app_codec/builtin/`: one unit per built-in codec. Each owns its
   constants, its request policy, and its descriptor.
-- `src/client/codec/` — local client-side service shims.
-- `src/server/session/codecs.cpp` — server-side trusted reconstruction. Request
+- `src/client/codec/`: local client-side service shims.
+- `src/server/session/codecs.cpp`: server-side trusted reconstruction. Request
   validation, limits, and loopback policy come from the descriptor. A small
   adapter maps current codec-specific configuration fields to an endpoint.
 
@@ -122,13 +122,13 @@ Codecs are C++ units compiled into the binary. There is deliberately no
 `dlopen()` path: a codec plugin would run inside `yumed`, which holds identity
 and session key material, so in-process third-party code is not an acceptable
 trade. Untrusted third-party codecs are planned as a sandboxed out-of-process
-runner instead — see `docs/IMPLEMENTATION_STATUS.md`.
+runner instead. See `docs/IMPLEMENTATION_STATUS.md`.
 
 To add one:
 
 1. Create `src/core/app_codec/builtin/<name>.{hpp,cpp}` in namespace
    `yume::app_codec::builtin`. Keep every codec-specific constant there.
-2. Implement a `RequestValidator`. Allow-list what you accept — method, path,
+2. Implement a `RequestValidator`. Allow-list the accepted method, path,
    body size, and any payload rules. Returning `false` with a reason denies.
 3. Expose a `const CodecDescriptor& <name>_descriptor()` carrying the id,
    aliases, permission key, display name, default endpoint, body caps, the

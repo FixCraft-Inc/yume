@@ -113,5 +113,6 @@ bins/
 # .github/workflows/pages.yml on every deploy; a committed copy is stale by
 # definition. website/docs/index.html is hand-written and stays tracked.
 website/docs/*.md
+website/docs/**/*.md
 website/.jekyll-cache/
 website/_site/

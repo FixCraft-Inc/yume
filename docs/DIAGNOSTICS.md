@@ -74,9 +74,9 @@ targets or `SYSTEM` includes and never receive it, so any warning printed here
 is about code this tree owns and can fix. Do not silence one with a blanket
 `-Wno-`; either fix it or add a narrowly scoped, commented suppression.
 
-Flags deliberately still off — `-Wconversion`, `-Wsign-conversion`, `-Wshadow`,
-`-Wcast-qual`, `-Wold-style-cast` — each need a dedicated cleanup pass rather
-than a suppression, and are enabled one at a time as that work is done.
+The deliberately disabled flags are `-Wconversion`, `-Wsign-conversion`,
+`-Wshadow`, `-Wcast-qual`, and `-Wold-style-cast`. Each needs a dedicated
+cleanup pass instead of a suppression and is enabled as that work is done.
 
 ## Sanitizers
 
@@ -101,8 +101,8 @@ with compilers other than GCC/Clang. UBSan builds add
 `-fno-sanitize-recover=all` so a violation aborts instead of printing and
 continuing, which is what makes it usable as a CI gate.
 
-`address` and `thread` are mutually exclusive by construction — run them as
-separate configurations. **Never distribute a sanitized binary.**
+`address` and `thread` are mutually exclusive by construction. Run them as
+separate configurations. Never distribute a sanitized binary.
 
 ## Verification
 

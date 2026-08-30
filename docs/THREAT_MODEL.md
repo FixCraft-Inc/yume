@@ -1,4 +1,4 @@
-# YUME 2.0 desktop threat model
+# YUME threat model
 
 This page describes the fixed Linux desktop 2.0 slice. Read it with
 `docs/STEALTH.md`, `docs/protocol/YUME_2_0_WIRE.md`, and
@@ -88,12 +88,13 @@ folded into the establishment root, so the two sides of a relay would not share
 keys even if the transcript check were bypassed.
 
 This closes live cross-connection forwarding of a client's identity. It does
-not make the terminating node trustworthy — see the endpoint sections below —
+not make the terminating node trustworthy. See the endpoint sections below,
 and it is not an independent-audit claim.
 
 ## Carrier admission boundary
 
-The HMAC admission token covers exact version `0.2.0-dev6`, normalized SNI, UTC hour,
+The HMAC admission token covers the exact transport version recorded in source,
+normalized SNI, UTC hour,
 and a 32-byte nonce. SNI and HTTP/2 authority must match. The server accepts only
 the bounded clock window and stores authenticated nonces in a bounded replay
 cache.
@@ -227,7 +228,7 @@ key and both shared secret files.
 
 The global tracked-session cap defaults to 256, the per-bulk-key cap defaults
 to 64, and one accept-rate budget covers all listeners. Queues and protected
-frame sizes are bounded. Administrators can additionally place aggregate
+frame sizes are bounded. Administrators can also place aggregate
 weighted egress below the physical link rate and apply service-manager CPU,
 memory, task, and file-descriptor ceilings. These controls bound supported
 work; they do not make the public TLS socket available against an attacker who
@@ -248,7 +249,7 @@ capacity before authenticated admission.
   or all configured connection limits.
 - Byte-identical Chrome sessions. The default `openssl-chrome151` backend now
   implements the six pinned ClientHello structure rows through an additive,
-  default-off patch on the exact OpenSSL 3.5.7 source pin. That is still
+  default-off patch on the exact OpenSSL source pin. That is still
   narrower than indistinguishable Chrome: certificate-compression value
   recapture, resumed/PSK handshakes, same-session Chrome comparison, complete
   H2/WebSocket behavior, traffic timing/volume, classifier/active-probe,
@@ -269,13 +270,13 @@ runtime settings, and per-key metadata as documented in
 Preauth service lanes, admin attach, federation, the legacy-named `anonym`
 privacy/operator-identity mode, and packet egress
 retain their existing authorization boundaries and are outside this focused
-wire change. They must not be described as 2.0-validated without their own
+wire change. They must not be described as release-qualified without their own
 integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `0.2.0-dev6` or a later development/RC version until the release gates in
-`docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
+The transport stays on a development or release-candidate version until the
+release gates in `docs/IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate
 implemented behavior from those pending validations.

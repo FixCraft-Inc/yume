@@ -81,9 +81,9 @@ reads a bounded HTTP/1.x request, and proxies it to the backend.
 
 Use existing filter lists plus `client_deny_action`:
 
-- `close` — graceful FIN (default)
-- `reset` — TCP RST via `SO_LINGER`
-- `drop` — immediate close without response body
+- `close`: graceful FIN (default)
+- `reset`: TCP RST via `SO_LINGER`
+- `drop`: immediate close without response body
 
 Reload filters without restart:
 
@@ -113,9 +113,10 @@ orange-cloud HTTP mode.
 
 Do not bind backends on `0.0.0.0`. Prefer:
 
-1. **App codecs** — typed protocol shims (`monero-rpc-v1`, future mail codecs)
-2. **`service.v1`** — in-process registration via `yume_server_register_service`
-3. **Loopback TCP** — `loopback://127.0.0.1:PORT` host-controller routes
+1. App codecs provide typed protocol shims (`monero-rpc-v1`, future mail codecs).
+2. `service.v1` provides in-process registration through
+   `yume_server_register_service`.
+3. Loopback TCP uses `loopback://127.0.0.1:PORT` host-controller routes.
 
 See `docs/APP_CODECS.md` for the Monero pattern. Host-controller route
 backends currently use loopback TCP; direct `service://` and `codec://`

@@ -6,6 +6,8 @@ on:
     paths:
       - "website/**"
       - "docs/**"
+      - "CONTRIBUTING.md"
+      - "scripts/sync_website_docs.sh"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -30,27 +32,7 @@ jobs:
 
       - name: Sync docs into website
         run: |
-          set -euo pipefail
-          mkdir -p website/docs
-          rm -f website/docs/*.md
-          for src in docs/*.md; do
-            [[ -f "$src" ]] || continue
-            name="$(basename "$src")"
-            dst="website/docs/$name"
-            title="$(head -n1 "$src" | sed 's/^#\s*//')"
-            permalink="/docs/$(basename "$name" .md)/"
-            {
-              echo "---"
-              echo "layout: doc"
-              echo "title: $title"
-              echo "permalink: $permalink"
-              echo "---"
-              echo
-              # Sibling doc links are written for GitHub (FOO.md). On the site
-              # each doc lives at /docs/FOO/, so rewrite them or they 404.
-              sed -E 's@\]\(([A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/\1/\2)@g' "$src"
-            } > "$dst"
-          done
+          bash scripts/sync_website_docs.sh
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

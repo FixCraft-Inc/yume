@@ -177,16 +177,35 @@ class MetadataTests(unittest.TestCase):
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         for document in (
                 "CONTRIBUTING.md", "docs/CONTROL_API.md",
-                "docs/CODE_HEALTH.md", "docs/BASEFWX_REQUIREMENTS.md",
-                "docs/YUME_2_0_STABILIZATION.md"):
+                "docs/IMPLEMENTATION_STATUS.md"):
             self.assertIn(document, cmake)
         self.assertIn("install(DIRECTORY docs/", cmake)
         self.assertIn("install(DIRECTORY docs/protocol/", cmake)
 
         documentation_map = (ROOT / "docs/README.md").read_text(
             encoding="utf-8")
-        self.assertIn("CODE_HEALTH.md", documentation_map)
-        self.assertIn("BASEFWX_REQUIREMENTS.md", documentation_map)
+        self.assertIn("IMPLEMENTATION_STATUS.md", documentation_map)
+        self.assertIn("docs/agents/", documentation_map)
+
+    def test_website_documentation_uses_one_sync_path(self) -> None:
+        sync_script = (ROOT / "scripts/sync_website_docs.sh").read_text(
+            encoding="utf-8")
+        for workflow_name in ("ci.yml", "pages.yml"):
+            workflow = (ROOT / ".github/workflows" / workflow_name).read_text(
+                encoding="utf-8")
+            self.assertIn("bash scripts/sync_website_docs.sh", workflow)
+
+        pages_workflow = (ROOT / ".github/workflows/pages.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"CONTRIBUTING.md"', pages_workflow)
+        self.assertIn('"scripts/sync_website_docs.sh"', pages_workflow)
+
+        self.assertIn('docs/protocol/*.md', sync_script)
+        self.assertIn('CONTRIBUTING.md', sync_script)
+        self.assertIn('github.com/FixCraft-Inc/yume/blob/main', sync_script)
+
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("website/docs/**/*.md", gitignore)
 
     def test_audited_cli_help_and_man_options_are_synchronized(self) -> None:
         client_man = (ROOT / "docs/man/yume.1").read_text(encoding="utf-8")

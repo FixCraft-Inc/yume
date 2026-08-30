@@ -1,4 +1,4 @@
-# Packet-Native Bulk Mode
+# Packet-native bulk mode
 
 This is the v1 packet-native path for making Yume behave more like a
 packet VPN under load without giving up the current DPI profile.
@@ -16,7 +16,7 @@ packet VPN under load without giving up the current DPI profile.
 - The stream payload is a `YBP1` batch: header, monotonic 63-bit sequence,
   packet count, then raw IP packets as length-prefixed byte strings.
 
-## Why This Fixes The Native-Direct Ceiling
+## Why this fixes the native-direct ceiling
 
 The old native-direct route created one Yume stream per lwIP TCP flow. Many
 browser flows therefore meant many coroutine loops, JNI reads/writes, server
@@ -36,7 +36,7 @@ Packet-bulk mode moves the TUN boundary into Yume:
 This preserves the "looks like Chrome talking to nginx" outer traffic shape
 while removing per-application-stream work from the hot path.
 
-## Server Egress V1
+## Server egress v1
 
 `yumed` only enables packet mode when explicitly configured:
 
@@ -89,7 +89,7 @@ Use `--firewall none` only when another firewall manager already supplies the
 required input and forwarding policy. These changes remain opt-in and are not
 performed by normal `yumed` startup.
 
-## Linux Client TUN
+## Linux client TUN
 
 The CLI can attach the authenticated packet channel directly to an existing
 Linux TUN without starting a SOCKS listener:
@@ -124,7 +124,7 @@ itself qualify the Android always-on VPN path.
 `yume_client_open_packet`, status JSON, caller-owned batched reads/writes,
 close, and destroy. No library-owned packet buffer or C++ type crosses the ABI.
 
-## Public-ABI Throughput Adapter
+## Public ABI throughput adapter
 
 `yume-abi-tun` is an optional Linux diagnostic adapter. Its source includes
 only `<yume/yume.h>` and moves whole packets between an operator-created TUN
@@ -177,7 +177,7 @@ options, direction, server, carrier build, and physical route identical. Do
 not compare these packet results with `yume --bench`; that endpoint benchmark
 explicitly excludes the packet ABI and TUN path.
 
-## Security Invariants
+## Security invariants
 
 - No change to the v1 top-level frame header.
 - No plaintext packet payloads: packet batches are sent only after the current

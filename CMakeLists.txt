@@ -628,15 +628,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         README.md
         CONTRIBUTING.md
         docs/ABI.md
-        docs/BASEFWX_REQUIREMENTS.md
-        docs/CODE_HEALTH.md
         docs/CONTROL_API.md
         docs/DIAGNOSTICS.md
         docs/EXPLAINED.md
         docs/ARCHITECTURE.md
         docs/OPERATIONS.md
         docs/PACKAGING.md
-        docs/PERFORMANCE.md
         docs/PERMISSIONS.md
         docs/QUICKSTART.md
         docs/STEALTH.md
@@ -648,8 +645,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/LEAK_TIGHT.md
         docs/PACKET_NATIVE_BULK.md
         docs/FILTERING_SELF_DPI.md
-        docs/YUME_2_0_WAN_BEHAVIOR.md
-        docs/YUME_2_0_STABILIZATION.md
         docs/release/CHANGELOG.md
         docs/release/RELEASE-NOTES-1.1.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"

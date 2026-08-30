@@ -84,7 +84,7 @@ profile. Its default 64 KiB upload DATA size is taken from
 `YUME_RELAY_READ_BUF`, as are client SOCKS and forward reads. Server target and
 benchmark-source reads are capped at 32 KiB so one 256 KiB directional epoch
 is delivered incrementally instead of becoming one head-of-line-blocking DATA
-record. This path includes the live YUME 2.0 carrier, server, and network, but
+record. This path includes the live YUME transport v2 carrier, server, and network, but
 does not include the local SOCKS socket, the server target TCP socket, a
 browser, public cover site, or CDN.
 
@@ -133,7 +133,7 @@ throughput. A packet result is publishable only after a live
 `yume-abi-tun`/`iperf3` test uses the public `yume_packet_*` symbols and the
 real `packet-bulk-v1`/TUN path; see `PACKET_NATIVE_BULK.md`.
 
-Security layers are not benchmark toggles in YUME 2.0. The hybrid
+Security layers are not benchmark toggles in YUME transport v2. The hybrid
 ML-KEM-1024/X25519/PSK ratchet, AES-256-GCM, TLS 1.3, H2, and WebSocket carrier
 remain enabled. Legacy time-key hopping is absent (therefore already off), and
 padding/jitter are off in the pinned Chrome profile. Change workload size,
@@ -212,7 +212,7 @@ sudo python3 scripts/yume_bench_wan.py \
 
 Results are written under `yume-bench-results/<UTC timestamp>/` by default:
 
-- `endpoint.pcap` contains the authenticated YUME 2.0 carrier.
+- `endpoint.pcap` contains the authenticated YUME transport v2 carrier.
 - `cover-chromium.pcap` contains a real browser page load through `yumed` to
   the loopback Node site.
 - `endpoint.log`, `yumed.log`, and `node.log` retain the corresponding output.
@@ -223,22 +223,23 @@ Results are written under `yume-bench-results/<UTC timestamp>/` by default:
 
 The WAN harness defaults to `openssl-chrome151`, which requires the pinned
 patched OpenSSL and does not launch the helper. Pass `--tls-backend chrome151`
-only to reproduce the older helper-qualified dev6 measurements, or
+only to reproduce the older helper measurements, or
 `--tls-backend openssl-diagnostic` for the stock negative control. The selected
 backend is recorded in `report.json`; never combine backend results in one
 median, and do not transfer the helper's qualification evidence to the native
 backend.
 
-The cover profile requires Node 24.18.x. When the system
-Node is older and `npx` is available, it resolves the exact pinned runtime in
-the invoking user's npm cache automatically. Pass `--no-node-bootstrap` to
+The cover profile requires the Node version named by the active registry entry.
+When the system Node is older and `npx` is available, it resolves the pinned
+runtime in the invoking user's npm cache automatically. Pass
+`--no-node-bootstrap` to
 forbid that download, or `--allow-node-version-mismatch` for a functional-only
 run with the system Node.
 Likewise, the browser version recorded in `report.json` must match the pinned
 Chrome fixture before its PCAP is used as fingerprint evidence.
 
 `scripts/yume_bench_localhost.py` is now only a convenience wrapper for the
-canonical built-in local benchmark. It additionally samples the benchmark
+canonical built-in local benchmark. It also samples the benchmark
 process from the outside and writes a resource report under
 `yume-bench-results/local-<UTC>/resources.json`:
 
@@ -268,7 +269,7 @@ scripts/yume_bench_lan.py prepare \
   --output ~/yume-lan-kit
 
 scp -r ~/yume-lan-kit/server \
-  f1xgod@build-host.example:~/yume-lan-server
+  operator@build-host.example:~/yume-lan-server
 ```
 
 The existing `~/yume` checkout on remote-builder may contain benchmark work or

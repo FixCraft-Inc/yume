@@ -230,7 +230,7 @@ jobs:
             --helper-rebuild build-helper-b/bin/yume-chrome-tls-helper \
             --license LICENSE \
             --notices docs/release/THIRD-PARTY-NOTICES.md \
-            --quick-start docs/release/LINUX-2.0-QUICKSTART.md \
+            --quick-start docs/release/LINUX-QUICKSTART.md \
             --output-dir dist \
             --version "${VERSION}" \
             --source-commit "$(git rev-parse HEAD)"

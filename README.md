@@ -1,65 +1,46 @@
-# YUME — 夢
+# YUME
 
-**yume** *(Japanese: 夢)*: a dream.
+YUME is an experimental transport for carrying TCP and UDP through one
+authenticated TLS 1.3 and HTTP/2 connection. It has a client (`yume`), a
+server (`yumed`), a C API, and an optional desktop GUI.
 
-Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
+There is no stable product release yet. Linux x86-64 command-line builds are
+the first qualification target. Other platforms, the GUI, and external
+consumers still have open release gates. The current version comes from
+`src/core/version.hpp` and the synchronized package metadata.
 
-YUME 0.2.0-dev6 is experimental software implementing its incompatible dev6
-transport contract. It tunnels TCP and UDP through a persistent TLS 1.3 +
-HTTP/2 + WebSocket connection. The focused Linux desktop slice uses mandatory
-ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
-keys, and independent directional epochs. The default Extreme policy retains
-the 256 KiB, 512-DATA-frame, or 500 ms sender-active limits; authenticated
-Normal, Soft, and bounded Ultimate policies trade a wider active epoch for less
-hybrid-rekey overhead. The client (`yume`) and daemon
-(`yumed`) are AGPL-3.0-or-later and build from this tree. Other platforms and
-the optional GUI have not yet passed the 0.2.0 release gates.
+- Website: <https://yume.fixcraft.jp>
+- Source: <https://github.com/FixCraft-Inc/yume>
+- Issues: <https://github.com/FixCraft-Inc/yume/issues>
 
-- Website: https://yume.fixcraft.jp
-- Source: https://github.com/FixCraft-Inc/yume
-- Issues: https://github.com/FixCraft-Inc/yume/issues
+## What YUME does
 
-For the current implementation / testing boundary, including host-controller,
-codec, federation, plugin, and browser status, see
-[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
-For the exact dev6 integration lane and the separate stable-ish RC/stable gates,
-see [docs/YUME_2_0_STABILIZATION.md](docs/YUME_2_0_STABILIZATION.md).
-Contributors and automated agents should start with
-[CONTRIBUTING.md](CONTRIBUTING.md) and the
-[documentation map](docs/README.md). A machine-local
-`.private/ai/AGENTS.md`, when present, is an optional navigation overlay and
-never overrides the tracked source, tests, or documentation.
+A local application connects to `yume` through SOCKS, a port forward, packet
+routing, or an embedded API. The client multiplexes those connections over one
+carrier to `yumed`. The daemon opens the requested destination sockets and
+returns the traffic on the same carrier.
 
-## Why YUME
+The development transport currently uses:
 
-Many conventional VPN deployments can be classified from handshake and
-transport behavior, although the exact visibility depends on protocol,
-configuration, and camouflage features. YUME explores a different tradeoff:
-browser-oriented TLS presets, keyed active-probe admission, an ordinary HTTPS
-decoy path, hybrid post-quantum key establishment, and an implementation that
-is open for audit and self-hosting. These layers reduce obvious signatures;
-they do not make YUME identical to Chrome or immune to stateful DPI. FixCraft
-plans to run free public endpoints, but they use the same `yumed` that builds
-from this tree.
+- TLS 1.3, HTTP/2, and WebSocket framing for the outer carrier
+- keyed admission before client authentication
+- composite Ed25519 and ML-DSA-87 client identities
+- ML-KEM-1024, X25519, a random pre-shared key, and the TLS exporter for
+  session key establishment
+- one-use AES-256-GCM message keys with independent directional epochs
 
-## Compared to other tools
+The default transport profile follows one committed browser and cover-server
+capture. It closes the currently pinned ClientHello structure checks. It has
+not passed the full browser-parity, classifier, wide-area, resumption, and
+long-running soak gates. YUME should not be described as identical to the
+target browser, impossible to block, or anonymous by itself.
 
-|                             | YUME            | WireGuard      | OpenVPN                  | Tor (with bridges) | Shadowsocks     |
-| --------------------------- | --------------- | -------------- | ------------------------ | ------------------ | --------------- |
-| Hybrid post-quantum inner channel | ML-KEM-1024 + X25519 + AES-GCM | no | no | no | no |
-| Directional epoch ratchet   | Authenticated modes; Extreme is 256 KiB / 512 frames / 500 ms active | no | no | no | no |
-| HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | distinctive UDP handshake | deployment-dependent TLS/UDP shape | obfs4 bridge | random-prefix |
-| Privacy-minimizing policy + operator identity proof | built in | n/a | per-provider | relay policy differs | n/a |
-| Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
-| First 0.2.0 target          | Linux x86-64 CLI | broad          | broad                    | broad              | broad           |
-| Self-hostable, fully open   | yes (AGPL-v3+)  | yes            | yes                      | bridge only        | yes             |
-| Published 0.2.0 transport measurement | release gate pending | — | — | — | — |
-| License                     | AGPL-v3+        | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
+`yumed` is a terminating proxy. It knows which authenticated client opened a
+stream and which destination it exits to. Application TLS can still protect
+content end to end. Direct federation is implemented, but transit is limited to
+one hop and is not onion routing.
 
-The older WAN run in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) used 1.x and is
-not a 0.2.0 release measurement.
-
-## Quick start
+## Build
 
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
@@ -67,728 +48,90 @@ cd yume
 ./ezbuild.sh
 ```
 
-`ezbuild.sh` creates a pinned BaseFWX dependency checkout when `basefwx/` is
-absent. If `basefwx/` is already an attached developer checkout, the build uses
-that worktree without fetching, detaching its branch, or discarding changes.
-Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` when you explicitly need the clean
-commit recorded once in `config/dependencies.json`.
+The build creates `build/bin/yume` and `build/bin/yumed`. On a fresh clone,
+`ezbuild.sh` checks out the exact BaseFWX revision recorded in
+`config/dependencies.json`. It also prepares the checksum-pinned OpenSSL build
+required by the native Chrome-shaped TLS backend.
 
-Full YUME builds use the checksum-pinned, patched OpenSSL 3.5.7: composite
-client identities need ML-DSA-87 and the default native Chrome ClientHello
-emitter needs YUME's additive capability. On native Linux, `ezbuild.sh` builds
-and selects that source under the user's YUME cache after verifying its
-SHA-256; normal binaries embed it instead of resolving a system libssl at
-runtime. Direct CMake builds must activate the same patched installation.
+An existing `basefwx/` developer checkout is left on its current branch and is
+not cleaned or detached. Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` only when
+you explicitly want the recorded dependency commit.
 
-Browser identities are also centralized. See
-[docs/TRANSPORT_PROFILES.md](docs/TRANSPORT_PROFILES.md): installed Chrome may
-update normally, while qualified wire profiles remain immutable and new
-browser versions are added through captured evidence plus one registry entry.
+Direct CMake builds must activate the same patched OpenSSL installation. See
+[the contributor guide](CONTRIBUTING.md) before using a direct build as release
+evidence.
 
-The build produces `build/bin/yume` and `build/bin/yumed`.
+## Set up a server and client
 
-`yume --version` and `yumed --version` are offline by default. Set
-`YUME_UPDATE_CHECK=1` for an explicit one-shot GitHub release check;
-`YUME_NO_UPDATE_CHECK=1` remains a hard disable for managed environments.
-
-Server:
+The setup helper generates TLS material, composite identities, the admission
+secret, the inner pre-shared key, owner-only configuration, and launch scripts:
 
 ```bash
-sudo ./build/bin/yumed \
-    --listen 443 \
-    --cert certs/server.crt --key certs/server.key \
-    --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret-file /etc/yume/secrets/admission.hex \
-    --inner-psk-file /etc/yume/secrets/inner.hex \
-    --real-backend loopback://127.0.0.1:3000
-```
-
-The Node.js 24 LTS cover site is a separate supervised process bound only to
-loopback. Both secret files contain exactly 64 lowercase hex characters (32
-random bytes), have no group/world permission bits, and must be distributed to
-clients out of band. There is no public-key-only 2.0 mode.
-
-Client:
-
-```bash
-./build/bin/yume \
-    --server yume.example.com \
-    --auth ~/.yume/id_ed25519 \
-    --obfs-secret-file ~/.config/yume/admission.hex \
-    --inner-psk-file ~/.config/yume/inner.hex \
-    --profile chrome \
-    --socks 127.0.0.1:1080
-```
-
-Cluster entry-point short form (translates to `--server` + `--port`):
-
-```bash
-./build/bin/yume --cluster yume.example.com:443 \
-    --auth ~/.yume/id_ed25519 \
-    --obfs-secret-file ~/.config/yume/admission.hex \
-    --inner-psk-file ~/.config/yume/inner.hex \
-    --profile chrome \
-    --socks 1080
-```
-
-Client disguise profiles are registry-backed across the core, CLI, and GUI.
-Chrome 151 on Linux with a Node 24 cover is the only configured target fixture
-today. The native backend passes its six-row ClientHello structural gate, but
-whole-session, resumed-handshake, classifier, and release parity remain open.
-Firefox or another profile belongs in the registry only after its TLS and
-HTTP/2 capture passes the same conformance gates, not after a User-Agent-only
-change.
-
-For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
-
-## Optional desktop GUI (`yume-gui`)
-
-A Dear ImGui + GLFW desktop application is available in the same tree and is
-**off** by default. It uses the shared facade library and drives the same linked,
-in-process client runtime as the CLI; no client subprocess or local IPC round
-trip is required. The shared facade has serialized, generation-scoped
-start/stop and prompt pre-ready cancellation, and the Linux/X11 headless path
-has passed connect -> stop -> reconnect -> stop against a real dev6 daemon.
-The GUI remains a development preview: human-window interaction, tray behavior,
-Windows/macOS behavior, and polling-oriented incoming-chat discovery are not
-qualified. The CLI remains the supported automation surface.
-
-### Build
-
-```bash
-cmake -B build-gui -DYUME_BUILD_GUI=ON
-cmake --build build-gui -j$(nproc)
-./build-gui/bin/yume-gui          # main window
-./build-gui/bin/yume-gui --help   # CLI options
-./build-gui/bin/yume-gui --headless   # lifecycle diagnostic; nonzero if nothing runs or a leg fails
-```
-
-`YUME_BUILD_GUI=ON` pulls Dear ImGui, GLFW, and ImPlot via CMake `FetchContent` (pinned tags). On Linux the system tray (minimise-to-tray) is enabled automatically when `libayatana-appindicator3-dev` is present; without it the GUI builds normally but the tray icon is disabled.
-
-System dev packages (Debian/Ubuntu):
-
-```bash
-sudo apt install libgl-dev libglfw3-dev libxkbcommon-dev \
-                 libfreetype-dev libfontconfig-dev \
-                 libayatana-appindicator3-dev
-```
-
-### What's in it
-
-- **Client** page for the main connect/disconnect workflow and saved server profile
-- **Security** page for trusted operator CAs and imported client auth keys; the built-in FixCraft CA is optional and removable
-- **Overview** with larger crisp desktop typography, connection status, local server status, byte counters, and a 60-second traffic graph (ImPlot)
-- **Server** page that hosts a local server with the same controls as `yumed`
-- **Tools** area for key generation, authorized-key management, logs, appearance, relay directory, and chat
-
-GUI profile, trust material, generated keys, and runtime data live under `~/.yume/`.
-
-### Debian packaging
-
-`yume-gui` ships as a separate binary package alongside `yume`. The build is gated by the `nogui` build profile — setting `DEB_BUILD_PROFILES=nogui` produces only the CLI .deb (matching the stock GitHub release flow). The default build produces both packages.
-
-### Limitations of the current MVP
-
-- `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager; start/stop work is separately owned so a caller-side stop does not join blocking startup on the UI thread. Privileged ports still require root or `cap_net_bind_service`.
-- `ClientSession::start()` hosts the CLI connection runtime in-process. Shared start/stop/restart/destructor races, stalled pre-ready TLS cancellation, and callback exception/reentrancy have focused regression coverage. The headless path has real lifecycle evidence; human-window interaction remains a separate gate.
-- `--headless` exits 2 when no valid configuration can be exercised, 1 when an attempted lifecycle leg fails, and 0 only when every attempted leg succeeds. The live Linux/X11 fixture passed connect -> stop -> reconnect -> stop 5/5; this is not cross-platform or tray qualification.
-- Chat / directory pages depend on a connected background client. Open/send/close and history polling use real channel/endpoint identities; history storage unavailability and newest-row truncation are displayed separately from an empty history or a failed control request. Incoming chat discovery is polling-oriented and no live-message callback is promised.
-- The tray code path is present but only assembles when `libayatana-appindicator3-dev` is installed; the rest of the GUI works without it.
-
-## Install, man pages, and Debian packages
-
-Install from a build tree:
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
 sudo cmake --install build
-sudo mandb
+yume-setup init \
+  --output ~/yume-kit \
+  --host yume.example.com \
+  --port 443 \
+  --tls-name yume.example.com \
+  --client-name laptop
 ```
 
-Build a Debian package:
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-cmake --build build -j$(nproc)
-(cd build && cpack -G DEB)
-```
-
-Or use the helper:
-
-```bash
-./ezbuild.sh --deb
-```
-
-The package installs `yume(1)`, `yumed(8)`, and the Markdown docs. See
-[docs/PACKAGING.md](docs/PACKAGING.md) for cross-architecture package
-notes, BaseFWX package dependency details, and manual man-page installation.
-
-### Embedded build
-
-```bash
-cmake -B build -DYUME_MINIMAL=ON -DYUME_USE_BASEFWX=ON
-cmake --build build -j$(nproc)
-```
-
-`ezbuild.sh` cross-compiles for Linux x86_64 / x86 / ARMv7 / ARMv8, MIPS OpenWRT, BusyBox flavours, macOS x86_64 / arm64, and Windows x86_64. Prebuilt vendor toolchains live in [`vendor/`](vendor/).
-
-## Free public endpoints (coming soon)
-
-FixCraft will operate a small fleet of public `yumed` endpoints. They will:
-
-- be free to use without an account, payment, or rate-limiting beyond fairness
-- run the unmodified daemon you can build from this tree
-- serve a real HTML page on `/` so that a browser hitting the same hostname sees something normal
-- publish TLS certificate/pin and operator-proof trust material in advance so
-  clients can authenticate the endpoint
-
-Specific hostnames will land here once the fleet is up.
-
-## Stealth and obfuscation
-
-The first 2.0 target is a captured Chrome 151 client and Node.js 24 LTS cover.
-One immutable Chrome 151/Debian 13 + Node 24 profile now supplies the TLS
-selection, User-Agent/client hints, H2 settings/priorities/header order, asset
-sequence, and cover-server identity. After a normal priming page load, the
-client opens an RFC 8441 extended CONNECT stream. Encrypted YUME records remain
-WebSocket binary messages inside valid HTTP/2 DATA frames for the entire
-connection.
-
-`yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
-to the configured loopback Node process. Admission failures follow the normal
-cover path and never receive AUTH. Node never sees tunnel data, identities, or
-secret material.
-
-This removes the earlier Chrome-version/platform contradiction and raises the
-cost of custom-protocol matching and casual active probing; it does not make
-YUME identical to Chrome or immune to traffic analysis. The default
-`openssl-chrome151` backend opts into a default-off patch carried on the exact
-OpenSSL 3.5.7 source pin. It adds Chrome-shaped per-connection GREASE, shuffles
-custom and built-in extensions together, emits `ec_point_formats == [0]`, and
-keeps both real key shares plus brotli-only certificate compression. Selection
-fails closed against stock libssl or a build without Brotli; the release lane
-statically embeds the pinned patched OpenSSL, so normal runtime does not launch
-or load the Go helper.
-
-The older `chrome151` uTLS helper is temporarily retained as qualification
-evidence and an explicit optional comparison backend. Its five complete flows, bounded
-failure/lifecycle matrix, process ramps, 1,000 reconnects, and segmented
-30-minute full-speed soak pass. Those results do not transfer automatically to
-the new native backend: full handshake, exporter, certificate/hostname/pin,
-reconnect, resumption, soak, reproducibility, same-session, classifier, and
-independent-review gates still apply before helper retirement or a broad
-"looks exactly like Chrome" claim. The six-of-six native result is structural:
-the committed fixture records only the three-byte `0x001b` body length, not its
-algorithm value, so a fresh Chrome capture must still confirm Brotli.
-See [docs/STEALTH.md](docs/STEALTH.md)
-for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
-for unfinished release gates.
-
-The hybrid-ratchet compromise/performance budget is selectable through
-`extreme` (default), `normal`, `soft`, or bounded expert-managed `ultimate`
-configuration. Algorithms and per-frame one-use AES-GCM keys remain mandatory;
-see [docs/SECURITY_MODES.md](docs/SECURITY_MODES.md).
-
-### Headless carrier diagnosis
-
-`scripts/yume_carrier_diagnose.py` now provisions an ephemeral 2.0 server,
-protected admission/inner secrets, and the real loopback Node cover, then drives
-Chromium through the resulting SOCKS tunnel. It can run an unprivileged
-functional audit or capture raw YUME and direct-Chromium flows for JA3/JA4
-comparison when `dumpcap` or `tcpdump` access is available. A successful
-functional audit, ALPN match, or coarse JA4 overlap is not proof of Chrome TLS
-parity; use the reproducible gates in [docs/STEALTH.md](docs/STEALTH.md).
-
-## Routing through Tor (or any SOCKS5 proxy)
-
-The CLI can hide the outbound connection behind a SOCKS5 proxy. Hostnames are sent as ATYP_DOMAIN, so `.onion` targets resolve on the proxy side and direct DNS never leaves the client.
-
-```text
-+--------------------------------+
-|  HUMAN APP                     |
-|  browser / curl                |
-+--------------------------------+
-        |
-        | local SOCKS / --run
-        v
-+--------------------------------+
-|  YUME CLIENT                   |
-|  --tor or --proxy              |
-+--------------------------------+
-        |
-        | SOCKS5 to <onion>:443
-        v
-+--------------------------------+
-|  LOCAL TOR                     |
-|  127.0.0.1:9050                |
-+--------------------------------+
-        |
-        | encrypted Tor cells
-        v
-+--------------------------------+
-|  TOR CIRCUIT                   |
-|  hidden-service rendezvous     |
-+--------------------------------+
-        |
-        | rendezvous on server
-        v
-+--------------------------------+
-|  SERVER TOR                    |
-|  publishes .onion              |
-+--------------------------------+
-        |
-        | TLS 1.3 + YUME frames
-        v
-+--------------------------------+
-|  YUMED SERVER                  |
-|  binds 127.0.0.1 only          |
-+--------------------------------+
-        |
-        | outbound socket
-        v
-+--------------------------------+
-|  TARGET SITE                   |
-|  sees yumed egress IP          |
-+--------------------------------+
-```
-
-Diagram source: [docs/diagrams/tor_pipeline.spec](docs/diagrams/tor_pipeline.spec) — regenerate with `scripts/draw_pipeline.py docs/diagrams/tor_pipeline.spec`. Widths are enforced by `scripts/check_ascii_diagrams.py`.
-
-**Client side.** Add to `config/yume.json`:
-```json
-{ "outbound_proxy": "socks5://127.0.0.1:9050",
-  "server": "abcdefghijklmnop.onion",
-  "port": 443 }
-```
-Or on the command line:
-```
-yume --tor --server abcdefghijklmnop.onion --port 443 -i id_ed25519
-yume --proxy socks5://user:pass@10.0.0.5:1080 --server gateway.example --port 443 -i id
-yume --no-proxy ...                # one-shot override that ignores config
-```
-
-**Server side.** No code change. Bind `yumed` to loopback and let Tor publish a hidden service. In `/etc/tor/torrc`:
-```
-HiddenServiceDir /var/lib/tor/yume/
-HiddenServicePort 443 127.0.0.1:443
-```
-After Tor starts, `cat /var/lib/tor/yume/hostname` gives you the `.onion` to point clients at. `yumed` doesn't know it's reachable through Tor — it only sees `127.0.0.1` connections.
-
-The proxy applies to the outer transport (TCP → SOCKS5 → TLS → Yume). Inner PQ crypto, operator identity proof, HTTP/2 carrier obfuscation, and TLS stealth still apply on top — Tor adds an extra circuit hop, not a replacement for any of those layers.
-
-## Operator identity and privacy policy
-
-The `--operator-identity` flag asks `yumed` to minimize identifying logs (no client hostname, no IP, no authentication line) and publish an operator identity proof. The proof establishes that the endpoint is authorized by a CA selected by the client; it cannot prove that the host does not inspect, retain, or correlate traffic. The related flags are `--operator-ca-cert`, `--operator-delegated-cert`, and `--operator-proof-mode`. The serialized config keys still spell this family `anonym_*`.
-
-`--operator-proof-mode {auto|local|fixcraft}` selects the proof source:
-
-- `auto`: use every available proof source; only fail to start if none are usable
-- `local`: operator-CA or delegated-server-certificate proof only, no remote API
-- `fixcraft`: require a remote FixCraft Verity API call; local proofs may also be attached
-
-Local proof setup is in [scripts/gen_anonym_sub.sh](scripts/gen_anonym_sub.sh). The CA certificate names the operator in its subject. The delegated leaf certificate (CA:FALSE) names the server/alias in its subject and carries the operator CA as issuer. Admins should publish both SHA-256 fingerprints and the delegated certificate serial; names are descriptive, while the signed chain and fingerprints are authoritative.
-
-Clients may remove or leave the built-in operator CA unselected. With no custom operator CA, normal system TLS trust and optional leaf pinning still protect the server connection, but operator authorization cannot be required; the profile must explicitly allow a monitored server. Selecting an operator CA never proves a no-logging policy.
-
-## Inner crypto
-
-Inner encryption is mandatory in the 2.0 tunnel path:
-
-- ML-KEM-1024 and X25519 contributions are combined with a random 32-byte PSK
-  using versioned salted HKDF-SHA256 labels.
-- AES-256-GCM uses a derived, one-use key for every protected frame.
-- Client-to-server and server-to-client chains advance independently before
-  their authenticated byte/frame/active-time policy; Extreme retains the
-  256 KiB, 512 DATA frame, and 500 ms limits.
-- Rekeys perform fresh ML-KEM-1024 and X25519 exchanges. Application data waits
-  behind the boundary and the retired root is erased after the first valid
-  new-epoch record.
-
-Argon2id is not used at establishment or per epoch: the required PSK is already
-uniform high-entropy key material, not a human password.
-
-### Client identity, forward secrecy, and server trust
-
-Client authorization uses a composite Ed25519 + ML-DSA-87 identity. The 2.0
-client loads both private halves locally and sends only the two public keys plus
-both signatures over the complete
-server challenge and unsigned client response. That transcript includes both
-ephemeral key exchanges, negotiated rekey window, and accepted ratchet policies. A server that records
-it cannot derive the private key or turn the signature into a reusable
-impersonation unless both signature assumptions fail. Generated private-key
-files are created exclusively at mode `0600` and strict loading rejects
-symlinks, foreign ownership, group/world access, and oversized files.
-Protecting the client host and key file remains the client's responsibility.
-
-Establishment and every directional epoch transition use fresh ML-KEM-1024 and
-X25519 key pairs. Their private components and derived secrets are held in
-move-only/self-wiping containers and retired after use. This provides a
-forward-secrecy design: a later theft of the server's long-term TLS material,
-admission secret, or inner PSK is not sufficient by itself to reconstruct
-recorded past YUME session keys. This is conditional, not an absolute PFS
-guarantee—an operator can record plaintext or session state while the endpoint
-is live, erasure is best-effort rather than locked-memory proof, and a live
-compromise exposes current plus prepared ratchet state.
-
-YUME is a **single-hop terminating proxy**, not onion routing. `yumed` derives
-the inner session keys, decrypts YUME frames, sees the requested destination,
-and handles the outbound stream. It can read or modify plaintext application
-protocols. Application HTTPS/TLS remains independently end-to-end between the
-application and target and can protect those bytes from the YUME server. Do not
-call a volunteer node “untrusted” if the intended guarantee is that it cannot
-observe or alter non-end-to-end-encrypted application data; YUME does not
-provide that property.
-
-The composite AUTH transcript is carried inside hostname-verified TLS and is
-bound to it: the signature covers a 32-byte TLS 1.3 exporter that each endpoint
-computes from its own live connection and never puts on the wire. A malicious
-endpoint that terminates TLS with a client can therefore no longer forward that
-live exchange to another compatible endpoint, even with matching admission and
-inner PSK material — the two connections have independent exporters, so the
-relayed signature does not verify. This closes cross-connection identity
-forwarding; it does not make the terminating node trustworthy.
-
-Client identity files are owner-only by contract. Generated pairs are created
-exclusively at mode `0600` and never overwrite an existing path, and loading
-refuses a key that is a symlink, is owned by another account, or carries group
-or world permission bits. That enforcement is Linux/POSIX; on Windows identity
-loading fails closed rather than trusting an arbitrary ACL.
-
-```jsonc
-// client config
-{
-  "obfs_secret_file": "/home/alice/.config/yume/admission.hex",
-  "inner_psk_file": "/home/alice/.config/yume/inner.hex",
-  "tls_stealth_profile": "chrome"
-}
-```
-
-```jsonc
-// server config
-{
-  "obfs_secret_file": "/etc/yume/secrets/admission.hex",
-  "inner_psk_file": "/etc/yume/secrets/inner.hex",
-  "real_backend": "loopback://127.0.0.1:3000",
-  "allow_exec": false
-}
-```
-
-## Performance
-
-The 2.0 tools report MiB/s at three different layers:
-
-- `yume --full-bench`: local `yume` ↔ `yumed` process path through the complete
-  H2/WebSocket carrier and hybrid ratchet.
-- `yume --bench` or `--bench-full`: authenticated upload/download against a
-  real server started with `yumed --bench`.
-- `yume-basefwx-bench`: in-memory key establishment, rekey, and ratchet ceiling;
-  it intentionally excludes TLS, H2, WebSocket, sockets, and process overhead.
-
-See [docs/SELFTEST.md](docs/SELFTEST.md) for commands and how to compare the
-numbers. The older WAN results in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
-describe 1.x and are not evidence for the 0.2.0 release gates.
-
-## Cluster federation
-
-Federation uses the same admitted H2 carrier, TLS-exporter-bound AUTH v2, and
-directional ratchet as a normal client. Generate a separate composite identity
-for each node with `yumed --keys-gen`; each peer enrolls the remote public
-identity in `--auth-keys` and assigns it a unique `federation_peer_id` in
-`--auth-keys-meta`. The same entry must set `federation_psk_file` to that
-link's pairwise secret; relative paths are resolved from the metadata file
-(see [docs/PERMISSIONS.md](docs/PERMISSIONS.md)). The ordinary
-`--inner-psk-file` remains the server-wide client PSK and is not reused for
-federation identities.
-
-Every outbound `--peer` JSON requires a pairwise `psk_file` and the remote
-node's `carrier_secret_file`. Secret files are exact 64-hex-character values
-with owner-only permissions. A missing or malformed file fails startup instead
-of entering the reconnect loop.
-
-Bootstrap node (cluster entry point, accepts incoming peer dials):
-
-```bash
-sudo yumed --listen 443 \
-    --cluster-bootstrap \
-    --federation-identity /etc/yume/federation.key \
-    --federation-operator-ca /etc/yume/fed-ca.pem \
-    --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret-file /etc/yume/secrets/admission.hex \
-    --inner-psk-file /etc/yume/secrets/inner.hex \
-    --real-backend loopback://127.0.0.1:3000 \
-    --public-node
-```
-
-Joining node (dials the bootstrap):
-
-```bash
-sudo yumed --listen 443 \
-    --federation-enable \
-    --peer '{"id":"bootstrap","url":"yume://bootstrap.example.com:443","psk_file":"/etc/yume/secrets/bootstrap.psk","carrier_secret_file":"/etc/yume/secrets/bootstrap-admission.hex"}' \
-    --federation-identity /etc/yume/federation.key \
-    --federation-operator-ca /etc/yume/fed-ca.pem \
-    --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret-file /etc/yume/secrets/admission.hex \
-    --inner-psk-file /etc/yume/secrets/inner.hex \
-    --real-backend loopback://127.0.0.1:3000 \
-    --public-node
-```
-
-Add one `--peer` object per outbound link. `tls_pin`, when present, is exactly
-64 lowercase hexadecimal characters (the SHA-256 of the TLS leaf DER); it is
-optional when the configured federation CA and hostname validation are
-sufficient. IPv6 peer URLs use `yume://[address]:port`.
-
-ASCII cluster map from any node:
-
-```text
-$ yume-net-map
-                      ┌──────────────┐
-                      │* alice       │
-                      │local:443     │
-                      │5 endpoints   │
-                      └───────┴──────┘
-          ┌───────────────────┬───────────────────┐
-          │                   │                   │
-  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-  │bob           │    │carol         │    │dave          │
-  │bob.example:4…│    │carol.example…│    │dave.example:…│
-  │3 ch ready    │    │2 ch ready    │    │0 ch error    │
-  └──────────────┘    └──────────────┘    └──────────────┘
-```
-
-`yume-net-map --ascii` falls back to `+--+` `|` chars for terminals without box-drawing support; `yume-net-map --json` emits the daemon's `federation.topology` document verbatim for downstream tooling. An attached `yumed` console draws the same map with `topology`, and `federation` prints per-peer link state.
-
-Federation is **single-hop**: a node advertises only its own local endpoints to a peer, so every federated endpoint it knows is exactly one authenticated link away and traffic never transits a third node. Two spokes on a hub-and-spoke cluster therefore cannot reach each other — give every pair that must communicate a direct `--peer` entry. The [federation transit design](docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md) records what would have to change and the gates it must pass first; it is not implemented.
-
-## Modes
-
-SOCKS proxy (default):
-
-```bash
-yume --server yume.example.com --auth id_ed25519 --socks 1080
-```
-
-Port-forward, SSH-style:
-
-```bash
-yume --lport 2222 --rhost fw-main.fixcraft.jp --rport 22
-```
-
-Reverse forward (server listens, tunnels back to the client's local port):
-
-```bash
-yume -R 7437:127.0.0.1:22
-```
-
-Local run. Every TCP/UDP socket the command opens is routed through YUME:
-
-```bash
-yume --server yume.example.com --auth id_ed25519 --run "curl https://1.1.1.1"
-```
-
-Force IPv4 for `--run` (adds `-4 --http1.1` to curl/wget):
-
-```bash
-yume --server yume.example.com --auth id_ed25519 --run-ipv4 --run "curl https://ifconfig.me"
-```
-
-SSH (auto-wrapped to route via local SOCKS when `nc`, `ncat`, or `connect-proxy` is available):
-
-```bash
-yume --server yume.example.com --auth id_ed25519 --run "ssh user@host"
-```
-
-Command execution is disabled in both directions for safety. Use SOCKS or port
-forwarding.
-
-Application codec, Monero RPC:
-
-```bash
-# server: monerod stays loopback-only
-yumed --listen 443 --codec-allow monero-rpc --monero-rpc-backend 127.0.0.1:18089
-
-# client: wallet sees a normal local monerod-compatible endpoint
-yume --server yume.example.com --auth id_ed25519 --monero-rpc
-monero-wallet-cli --daemon-address 127.0.0.1:18089
-```
-
-The Monero codec is protocol-aware: it parses local Monero HTTP/RPC, carries
-typed Yume codec frames in transit, and reconstructs restricted HTTP only on the
-trusted server side. Server-side codec enablement uses the modular
-`--codec-allow <name>` path; per-key authorization uses `allow_codecs` or the
-legacy `allow_monero_rpc` permission, not LAN/private-IP bridging. See
-[docs/APP_CODECS.md](docs/APP_CODECS.md). Current codec and plugin-loader
-status is tracked in
-[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
-
-## Permissions and key management
-
-Authentication and authorization use separate regular-user and operator trust
-stores, each split into public keys and policy metadata:
-
-- `authorized_keys` lists composite Ed25519 + ML-DSA-87 identities that may
-  **connect**; each logical identity is two consecutive public-key PEM blocks.
-- `auth_keys.meta` maps each regular-key fingerprint to its permissions,
-  identity type, per-key session cap, and fair-egress weight.
-- `operator_keys` is a physically separate set of controller identities.
-- `operator_keys.meta` holds their non-admin policy; operator keys cannot be
-  bulk keys.
-- `admin_keys` holds only distinct second-factor composite identities. A client
-  is admin only when its enrolled visitor/operator identity and its separate
-  admin identity both sign the same bound AUTH exchange. An unenrolled
-  preauth-only visitor cannot be upgraded by an admin factor.
-
-Regular keys default to `key_type: "individual"` and one authenticated session.
-An administrator may explicitly mark a regular key as `bulk` for many users who
-must share one credential. Each bulk connection is still counted and shaped as
-a separate session; the server-wide and per-key caps remain enforced. Bulk keys
-cannot receive exec, LAN/private access, full control, privileged codecs or
-services, administration, or federation identity. Their chat/file/bytes
-permissions also default to deny.
-
-App codecs use `permissions.allow_codecs`, for example `["monero-rpc"]`.
-Every dangerous permission defaults to **deny**; a regular key without a meta
-entry can connect but cannot exec, reach LAN, use privileged codecs, or
-administer other clients. See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the
-full schema and privilege matrix.
-
-An explicitly configured `preauth_services` peer is not a normally authorized key. It remains in a persisted `PreauthServiceOnly` tier that admits only registered named-service OPEN/DATA/CLOSE plus PING/PONG. Admin attach separately requires trusted relay mode, caller outbound policy and opt-in, and target inbound policy and opt-in; the legacy attach form uses the same predicate.
-
-LAN bridging and unrestricted address bridging sit behind a **three-layer
-gate** that all must agree:
-
-1. **Build switch**: `cmake -DYUME_FEATURE_LAN_BRIDGE=ON` (also
-   `_FULL_CONTROL`). Stock builds ship with both OFF.
-2. **Runtime flag**: `--allow-local-ip` or `--control-full` on `yumed`.
-3. **Per-key meta**: `"allow_local_ip": true` in `auth_keys.meta` for the
-   specific key; unrestricted control additionally requires the distinct admin
-   identity and directional opt-ins.
-
-EXEC policy inputs remain reserved, but command execution is deliberately
-unavailable in `0.2.0-dev6`: the server rejects direct EXEC and clients reject
-`--allow-exec`, persisted `allow_exec=true`, and every inbound EXEC request.
-The outbound `--exec <command>` request syntax remains distinct from inbound
-permission and receives the server's explicit safety denial.
-
-Removing any one layer is enough to keep bridging off. The bridge/admin matrix
-and full meta JSON schema are documented in
-[docs/PERMISSIONS.md](docs/PERMISSIONS.md).
-
-```bash
-./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-list
-./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-add /path/to/user.pub --keys-alias <fingerprint> alice
-./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-remove alice
-./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-gen ./keys/user1 --keys-gen-add
-```
-
-Prefer `yume-setup issue-key`. The `--keys-gen` path creates both files
-exclusively at mode `0600`, refuses to overwrite either path, and removes the
-private half if it cannot complete the pair.
-
-The five key/policy files are parsed into immutable snapshots at startup.
-Authenticated runtime reload atomically replaces all five together; a parse,
-validation, or duplicate-store failure leaves the previous complete snapshot
-active. Restarting `yumed` is the fallback when runtime reload is unavailable.
-Both composite signatures are verified with OpenSSL `EVP_DigestVerify`.
-
-## Real HTTP facade examples
-
-Serve a real HTML page on `/` and a profile 404 for anything else:
-
-```bash
-sudo ./build/bin/yumed \
-    --listen 443 \
-    --cert certs/server.crt --key certs/server.key \
-    --auth-keys /etc/yume/authorized_keys \
-    --real --real-index certs/index.html \
-    --real-secret "change-me"
-```
-
-Serve a full static site (assets, not just an index) as the cover, with
-nginx-shaped responses:
-
-```bash
-sudo ./build/bin/yumed \
-    --listen 443 \
-    --cert certs/server.crt --key certs/server.key \
-    --auth-keys /etc/yume/authorized_keys \
-    --real-root /var/www/site \
-    --hide-in-the-crowd nginx
-```
-
-Auto-generate and persist the HTML hidden-blob secret:
-
-```bash
-sudo ./build/bin/yumed \
-    --listen 443 \
-    --cert certs/server.crt --key certs/server.key \
-    --auth-keys /etc/yume/authorized_keys \
-    --real --real-index certs/index.html \
-    --real-secret-file ./.secrets/html_secret
-```
-
-`--real` and the mandatory HTTP/2 carrier share port 443 and are demuxed by the first cleartext bytes after TLS.
-
-## Security posture
-
-- AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
-- BaseFWX repository, commit, and minimum compatible version come from
-  `config/dependencies.json`; release CI fails if mandatory crypto support is missing
-- Authorized keys are verified by `yume::crypto::verify_composite` with OpenSSL
-  `EVP_DigestVerify` ([src/core/security/crypto.cpp](src/core/security/crypto.cpp))
-- Client AUTH transmits both composite public keys and signatures, never the
-  private halves. The signatures are bound to the live TLS 1.3 exporter, so they
-  cannot be forwarded to authenticate a second TLS connection; this does not
-  make the terminating server trustworthy or blind to plaintext
-- Inner-frame AEAD is verified before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
-- Mandatory ML-KEM-1024 + X25519 + random-PSK establishment; no 1.x downgrade or public-key-only mode
-- Command execution is fail-closed in both directions; LAN bridging and
-  unrestricted bridging are off at compile time by default and require their
-  build, runtime, per-key, and admin gates (see
-  [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
-- Preauth service peers are centrally confined to the named-service frame family
-- Admin attach requires caller outbound and target inbound permission/opt-in; both default to deny
-- Admission and inner secrets are separate owner-only files; wrong, malformed,
-  expired, replayed, or authority-mismatched admission follows the cover path
-  instead of receiving AUTH
-- Session close has a five-second deadline, pending service queues are capped,
-  packet senders are joined, and the unsafe detached inbound-EXEC worker was
-  removed with the feature left explicitly unavailable. Current
-  native sanitizer and segmented loopback soak gates pass; deployed WAN,
-  disk/log-pressure, and adversarial operational soak remain outstanding
-- Protected application payloads are capped at 256 KiB so one frame cannot
-  cross a directional epoch byte limit
-- The admission path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))
-- No independent security audit or production-scale adversarial soak is documented yet. The implementation and threat boundary are open for review, but that is not equivalent to a completed audit.
-
-## Scalability notes
-
-- Server sessions are fully async on a shared `io_context` thread pool (no per-connection threads)
-- Regular/operator keys and policies are immutable shared snapshots, so AUTH
-  does not reread policy JSON for every connection
-- Global sessions default to a bounded 256; individual keys default to one
-  session and bulk keys default to 64, with explicit administrator overrides
-- `--accept-rate-limit` bounds aggregate connection admission across listeners
-- Optional `--egress-mbps` weighted fairness divides an administrator-chosen
-  link cap among active identities without adding shaping work when unset
-- Protected DATA frames are capped at 256 KiB and carrier/proxy queues are bounded
-- Every authenticated record remains inside H2/WebSocket and uses a one-use AEAD key
-- Hard process CPU and memory containment belongs to the service manager; see
-  [docs/OPERATIONS.md](docs/OPERATIONS.md) for systemd examples
-
-## Release guarantees
-
-- Release workflows run preflight validation against the pinned BaseFWX commit
-- Release artifacts are inspected after build for linkage / runtime expectations
-- Missing mandatory BaseFWX crypto support is a release failure, not a degraded release
-- The 2.0 Linux desktop transport embeds the checksum-pinned, YUME-patched
-  OpenSSL 3.5.7 build with Brotli and ML-DSA-87; release validation rejects
-  runtime `libssl`/`libcrypto` dependencies
-- nghttp2 >= 1.64 and ML-KEM-1024 support come from the pinned
-  BaseFWX/liboqs 0.16.0 path
+For a real deployment, provide an existing operator CA with `--ca-key` and
+`--ca-cert`. Otherwise the helper creates a bootstrap CA for testing. Move its
+private key off the server.
+
+The generated kit prints the server and client paths without printing secret
+values. The admission and inner-PSK files each contain 32 random bytes encoded
+as 64 lowercase hexadecimal characters. Distribute both files through a secure
+out-of-band channel.
+
+Read the [quick start](docs/QUICKSTART.md) for a local manual setup, the cover
+server, and the exact client command. Read [operations](docs/OPERATIONS.md)
+before exposing a daemon to the internet.
+
+## Main components
+
+| Component | Purpose |
+| --- | --- |
+| `yume` | Client, SOCKS endpoint, forwards, packet routing, and attached tools |
+| `yumed` | TLS/H2 endpoint, authentication, policy enforcement, and proxy exit |
+| `libyume.so.1` | Stable C ABI v1 for embedded native clients |
+| `yume-gui` | Optional Dear ImGui desktop client and server UI, still a preview |
+| `yume-setup` | Server and device-kit provisioning helper |
+
+The static site under `website/` publishes project and release information. It
+does not control a local YUME process and never handles runtime configuration
+or keys.
+
+## Documentation
+
+Start with the [documentation map](docs/README.md). The main reader paths are:
+
+- [YUME explained](docs/EXPLAINED.md) for the traffic path and trust model
+- [quick start](docs/QUICKSTART.md) and [operations](docs/OPERATIONS.md) for use
+- [implementation status](docs/IMPLEMENTATION_STATUS.md) for the current
+  support and release boundary
+- [threat model](docs/THREAT_MODEL.md) and [stealth transport](docs/STEALTH.md)
+  for security claims and known residuals
+- [architecture](docs/ARCHITECTURE.md), [C ABI](docs/ABI.md), and
+  [control API](docs/CONTROL_API.md) for integration work
+- [transport wire](docs/protocol/YUME_2_0_WIRE.md) for the normative protocol
+
+Wire, AUTH, relay, ABI, helper, and product versions are separate. A `2.0` in a
+protocol filename or cryptographic domain does not mean the product has a 2.0
+release.
+
+## Project status
+
+No stable release artifact or public endpoint is available today. Current
+source includes focused unit and integration coverage for the carrier, AUTH,
+ratchet, permissions, ABI, services, and direct federation. Exact-candidate
+release builds, sanitizer reconciliation, sustained lifecycle and network
+tests, browser comparison, independent review, and platform qualification are
+still required. The [implementation status](docs/IMPLEMENTATION_STATUS.md)
+keeps that boundary in one place.
 
 ## License
 
-YUME source, apps, daemon, proxy, GUI, and libyume are licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
+YUME is licensed under the GNU Affero General Public License, version 3 or
+later. See [LICENSE](LICENSE).

@@ -1,9 +1,8 @@
 # YUME 1.1 — First Stable Release
 
 > **Historical plan:** this document records the superseded 1.x release plan.
-> The current source is the incompatible `0.2.0-dev6` development line. Use
-> [`../YUME_2_0_IMPLEMENTATION_STATUS.md`](../YUME_2_0_IMPLEMENTATION_STATUS.md)
-> and [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
+> Use [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md) and
+> [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
 > implementation and protocol truth.
 
 YUME is a **post-quantum stealth transport** that tunnels TCP and UDP
@@ -283,7 +282,8 @@ attach the MIPS artifacts manually.
 One April 2026 WAN run measured about 234 Mbps download and 36 Mbps upload
 through YUME. It did not record CPU utilization or provide a same-path bypass,
 so it does not establish a CPU-overhead percentage or an "always" bound. The
-methodology and per-link numbers are in [`../PERFORMANCE.md`](../PERFORMANCE.md).
+methodology and per-link numbers remain in the
+[signed pre-consolidation snapshot](https://github.com/FixCraft-Inc/yume/blob/8142837c72cbf152b5ec03d54d24cecce24243b8/docs/PERFORMANCE.md).
 
 The hot inner-crypto path benefits directly from BaseFWX 3.7.0: Java now
 supports Argon2id through BouncyCastle, C++ KEM paths use RAII secret wiping,

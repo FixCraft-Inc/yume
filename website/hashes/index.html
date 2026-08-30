@@ -18,11 +18,11 @@
             <span class="brand-cutout" aria-hidden="true"></span>
           </div>
           <div>
-            <div class="brand-name">FixCraft</div>
-            <div class="brand-sub">YUME stealth transport</div>
+            <div class="brand-name">YUME</div>
+            <div class="brand-sub">A FixCraft protected transport</div>
           </div>
         </div>
-        <nav>
+        <nav aria-label="Primary navigation">
           <a href="../">Overview</a>
           <a href="../#install">Install</a>
           <a href="../#verify">Verify</a>
@@ -31,27 +31,31 @@
         </nav>
       </header>
 
+      <main>
       <section class="hero">
         <div>
-          <div class="chip">Release integrity</div>
+          <div class="hero-status"><span aria-hidden="true"></span>Release integrity</div>
           <h1>Checksums</h1>
           <p>
             Digests are read live from the SHA-256 sidecars attached to the latest GitHub release.
             Click a digest to expand it. The full machine-readable record is
-            <a data-asset-link="release-manifest.json" href="#">release-manifest.json</a>.
+            <a class="disabled" data-asset-link="release-manifest.json" aria-disabled="true" tabindex="-1">release-manifest.json</a>.
           </p>
           <div class="link-row">
-            <a class="btn secondary" data-asset-link="SHA256SUMS.txt" href="#">SHA256SUMS.txt</a>
-            <a class="btn secondary" data-asset-link="release-manifest.json" href="#">release-manifest.json</a>
+            <a class="btn secondary disabled" data-asset-link="SHA256SUMS.txt" aria-disabled="true" tabindex="-1">SHA256SUMS.txt</a>
+            <a class="btn secondary disabled" data-asset-link="release-manifest.json" aria-disabled="true" tabindex="-1">release-manifest.json</a>
             <a class="btn secondary" id="release-link" href="https://github.com/FixCraft-Inc/yume/releases" target="_blank" rel="noopener">Releases on GitHub</a>
           </div>
         </div>
+        <noscript>
+          <div class="notice">Live checksums require JavaScript and a current stable release. Use GitHub Releases to inspect historical files.</div>
+        </noscript>
         <div class="hero-panel">
           <div>
             <div class="meta">Release channel</div>
             <div class="panel-title" id="release-version">No published release yet</div>
             <div class="meta-row">
-              <span id="release-date">Nothing to verify until 0.2.0 ships</span>
+              <span id="release-date">Nothing to verify until a stable release ships</span>
               <span id="release-assets"></span>
             </div>
           </div>
@@ -62,9 +66,9 @@
       </section>
 
       <section id="linux">
-        <div class="section-title">Linux x86-64</div>
+        <h2 class="section-title">Linux x86-64</h2>
         <p class="section-lead">
-          These two artifacts are the entire 0.2.0 release surface. Anything else claiming to be a
+          These two artifacts are the expected first stable CLI release surface. Anything else claiming to be a
           YUME build did not come from this workflow.
         </p>
         <div class="table-scroll">
@@ -80,15 +84,15 @@
             <tbody>
               <tr>
                 <td class="mono">yume-amd64-linux.tar.xz</td>
-                <td class="mono hash-digest" data-hash-file="yume-amd64-linux.tar.xz.sha256">Loading...</td>
-                <td class="mono"><a data-asset="yume-linux-amd64.sha256" href="#">sha256</a> / <a data-asset="yume-linux-amd64.sig" href="#">sig</a></td>
-                <td><a data-download="yume-linux-amd64" href="#">download</a></td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-linux.tar.xz.sha256">No published release</td>
+                <td class="mono"><a class="disabled" data-asset="yume-linux-amd64.sha256" aria-disabled="true" tabindex="-1">sha256</a> / <a class="disabled" data-asset="yume-linux-amd64.sig" aria-disabled="true" tabindex="-1">sig</a></td>
+                <td><a class="disabled" data-download="yume-linux-amd64" aria-disabled="true" tabindex="-1">download</a></td>
               </tr>
               <tr>
                 <td class="mono">yumed-amd64-linux</td>
-                <td class="mono hash-digest" data-hash-file="yumed-amd64-linux.sha256">Loading...</td>
-                <td class="mono"><a data-asset="yumed-linux-amd64.sha256" href="#">sha256</a> / <a data-asset="yumed-linux-amd64.sig" href="#">sig</a></td>
-                <td><a data-download="yumed-linux-amd64" href="#">download</a></td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-linux.sha256">No published release</td>
+                <td class="mono"><a class="disabled" data-asset="yumed-linux-amd64.sha256" aria-disabled="true" tabindex="-1">sha256</a> / <a class="disabled" data-asset="yumed-linux-amd64.sig" aria-disabled="true" tabindex="-1">sig</a></td>
+                <td><a class="disabled" data-download="yumed-linux-amd64" aria-disabled="true" tabindex="-1">download</a></td>
               </tr>
             </tbody>
           </table>
@@ -102,33 +106,34 @@
       </section>
 
       <section id="verify">
-        <div class="section-title">Verifying</div>
+        <h2 class="section-title">Verifying</h2>
         <div class="grid">
           <div class="card">
-            <h4>Both artifacts at once</h4>
+            <h3>Both artifacts at once</h3>
             <p>Download <code>SHA256SUMS.txt</code> alongside the artifacts and check them together.</p>
-            <div class="hash-block" style="margin-top:12px;">
+            <div class="hash-block hash-block-spaced">
               <div class="hash-title">Shell</div>
               <div class="hash-value">sha256sum -c SHA256SUMS.txt</div>
             </div>
           </div>
           <div class="card">
-            <h4>Signatures</h4>
+            <h3>Signatures</h3>
             <p>When the workflow has signing secrets, both artifacts, the checksum list, and the manifest each get a detached armored signature.</p>
-            <div class="hash-block" style="margin-top:12px;">
+            <div class="hash-block hash-block-spaced">
               <div class="hash-title">GPG</div>
               <div class="hash-value">gpg --verify SHA256SUMS.txt.sig SHA256SUMS.txt</div>
             </div>
           </div>
           <div class="card">
-            <h4>No MD5</h4>
+            <h3>No MD5</h3>
             <p>MD5 sidecars are not produced. A page or mirror offering YUME MD5 sums is not reproducing this release workflow.</p>
           </div>
         </div>
       </section>
+      </main>
 
       <footer>
-        FixCraft YUME &middot; 0.2.0-dev6 development line &middot; AGPL-3.0-or-later
+        FixCraft YUME &middot; experimental development software &middot; AGPL-3.0-or-later
       </footer>
     </div>
   </body>

@@ -88,8 +88,26 @@ payload meaning is not additive even while the product is pre-1.0.
 
 Update comments and operator-facing docs in the same patch as behavior. Put
 normative wire requirements under `docs/protocol/`; current support boundaries
-in `docs/IMPLEMENTATION_STATUS.md`; release evidence/gates in the stabilization
-and release pages; and historical evidence only in clearly labelled history.
+in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
+Dated handoffs, machine evidence, rejected experiments, dirty-tree inventories,
+and task queues belong in the ignored `.private/ai/` overlay or Git history.
+Public automation context belongs under `docs/agents/` and must contain no
+secrets, private paths, or dated machine state.
+
+The `website/` tree is the static publication site, not a browser control panel
+for YUME. Edit canonical Markdown under `docs/`, not generated
+`website/docs/*.md`, and keep website claims within the implementation,
+threat, stealth, packaging, and release documents. Preserve
+accurate no-release and no-JavaScript defaults; enable artifact links only
+after the release API returns each exact expected asset.
+
+Keep the site usable with a keyboard, narrow viewport, zoomed text, reduced
+motion, failed JavaScript, and unavailable GitHub metadata. Do not add secrets,
+captures, private paths, analytics, telemetry, remote fonts, or third-party
+scripts. Validate the CI and Pages documentation transformations, Jekyll build,
+internal links, generated routes, browser behavior, and accessibility affected
+by the change. A website build qualifies only the static publication surface,
+not runtime or security behavior.
 
 Before handoff, review the complete diff, confirm no secrets or generated
 machine state are present, record tests actually run (not intended), and list

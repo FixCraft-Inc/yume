@@ -73,7 +73,7 @@ void Session::start() {
     // 83 KB per round trip with zero packet loss. Autotuning grows the window
     // toward the real BDP instead. It also matches what a browser's sockets do,
     // since Chrome does not pin these either.
-    // See docs/YUME_2_0_WAN_BEHAVIOR.md, "Root cause: pinned socket buffers".
+    // See docs/IMPLEMENTATION_STATUS.md, "Performance and network qualification".
 
     // Arm the TLS-handshake deadline before kicking off async_handshake.
     // If the timer fires before on_handshake completes, we close the

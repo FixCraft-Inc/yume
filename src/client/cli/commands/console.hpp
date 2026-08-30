@@ -14,11 +14,11 @@
 
 #include "client/cli/entry.hpp"
 #include "client/cli/config/args.hpp"
+#include "outbound/tunnel_fwd.hpp"
 
 namespace yume::client {
 
 class RelayRuntime;
-class Tunnel;
 
 class InteractiveConsoleSession {
 public:

@@ -30,13 +30,14 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/write.hpp>
 
-#include "client/cli/connect/auth.hpp"
-#include "client/cli/connect/io.hpp"
-#include "client/proxy/outbound_proxy.hpp"
+#include "outbound/proxy.hpp"
+#include "core/encoding/hex.hpp"
 #include "core/security/channel_binding.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/ratchet.hpp"
 #include "core/stealth/obfs.hpp"
+#include "outbound/auth.hpp"
+#include "outbound/io.hpp"
 #include "server/federation/manager.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"
@@ -86,17 +87,6 @@ std::string public_link_error(std::string_view error,
     return sanitize_federation_public_error(redacted);
 }
 
-std::string hex_encode(const unsigned char* data, std::size_t len) {
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(len * 2);
-    for (std::size_t i = 0; i < len; ++i) {
-        out.push_back(kHex[(data[i] >> 4) & 0xF]);
-        out.push_back(kHex[data[i] & 0xF]);
-    }
-    return out;
-}
-
 std::string peer_cert_sha256(SSL* ssl) {
     if (!ssl) {
         return {};
@@ -117,7 +107,8 @@ std::string peer_cert_sha256(SSL* ssl) {
     unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
     SHA256(der, static_cast<std::size_t>(len), hash);
     OPENSSL_free(der);
-    return hex_encode(hash, SHA256_DIGEST_LENGTH);
+    return encoding::hex_lower(std::span<const std::uint8_t>(
+        hash, SHA256_DIGEST_LENGTH));
 }
 
 }  // namespace
@@ -166,7 +157,7 @@ void FederationLink::close() {
     closing_.store(true);
     attempt_alive_.store(false);
     close_wait_cv_.notify_all();
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         tunnel = tunnel_;
@@ -226,7 +217,7 @@ void FederationLink::set_state(std::string state, std::string error) {
 }
 
 void FederationLink::reset_transport() {
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     std::vector<LinkChannel> closed_channels;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -287,7 +278,7 @@ void FederationLink::run_loop() {
             });
             tunnel->set_control_handler(
                 [weak = weak_from_this(),
-                 source_tunnel = std::weak_ptr<client::Tunnel>(tunnel)](
+                 source_tunnel = std::weak_ptr<outbound::Tunnel>(tunnel)](
                     const nlohmann::json& json) {
                 if (auto self = weak.lock()) {
                     if (auto source = source_tunnel.lock()) {
@@ -323,7 +314,7 @@ void FederationLink::run_loop() {
                 if (!hello_timeout_requested && !is_ready() &&
                     std::chrono::steady_clock::now() >= hello_deadline) {
                     hello_timeout_requested = true;
-                    std::shared_ptr<client::Tunnel> active_tunnel;
+                    std::shared_ptr<outbound::Tunnel> active_tunnel;
                     {
                         std::lock_guard<std::mutex> lock(mutex_);
                         active_tunnel = tunnel_;
@@ -356,19 +347,19 @@ void FederationLink::run_loop() {
     reset_transport();
 }
 
-std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context& io) {
+std::shared_ptr<outbound::Tunnel> FederationLink::dial_v2(boost::asio::io_context& io) {
 #if YUME_USE_BASEFWX
-    const client::StopPredicate should_stop =
+    const outbound::StopPredicate should_stop =
         [this] { return closing_.load(); };
     // ---- TCP dial (optionally through the outbound SOCKS proxy) ----------
     boost::asio::ip::tcp::socket socket(io);
     if (!cfg_.outbound_proxy_url.empty()) {
-        client::outbound_proxy::Config proxy_cfg;
+        outbound::proxy::Config proxy_cfg;
         std::string parse_error;
-        if (!client::outbound_proxy::parse_proxy_url(cfg_.outbound_proxy_url, proxy_cfg, &parse_error)) {
+        if (!outbound::proxy::parse_proxy_url(cfg_.outbound_proxy_url, proxy_cfg, &parse_error)) {
             throw std::runtime_error("outbound proxy: " + parse_error);
         }
-        auto result = client::outbound_proxy::socks5_dial(socket,
+        auto result = outbound::proxy::socks5_dial(socket,
                                                           io,
                                                           proxy_cfg,
                                                           peer_.host,
@@ -388,7 +379,7 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
         }
     } else {
         boost::asio::ip::tcp::resolver resolver(io);
-        auto resolved = client::resolve_with_timeout(
+        auto resolved = outbound::resolve_with_timeout(
             resolver, io, peer_.host, std::to_string(peer_.port),
             kConnectTimeout, should_stop);
         if (resolved.cancelled) {
@@ -400,7 +391,7 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
         if (resolved.ec) {
             throw boost::system::system_error(resolved.ec);
         }
-        auto connected = client::connect_with_timeout(
+        auto connected = outbound::connect_with_timeout(
             socket, resolved.endpoints, io, kConnectTimeout, {}, should_stop);
         if (connected.cancelled) {
             throw std::runtime_error("federation link closing");
@@ -429,10 +420,10 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
     if (!cfg_.federation_operator_ca.empty()) {
         ctx.load_verify_file(cfg_.federation_operator_ca);
     }
-    client::ClientTransportStream::OpenSslStream tls_stream(std::move(socket), ctx);
+    outbound::ClientTransportStream::OpenSslStream tls_stream(std::move(socket), ctx);
     SSL_set_tlsext_host_name(tls_stream.native_handle(), peer_.host.c_str());
     SSL_set1_host(tls_stream.native_handle(), peer_.host.c_str());
-    auto handshake = client::handshake_with_timeout(
+    auto handshake = outbound::handshake_with_timeout(
         tls_stream, io, kConnectTimeout, should_stop);
     if (handshake.cancelled) {
         throw std::runtime_error("federation link closing");
@@ -450,7 +441,7 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
         throw std::runtime_error("TLS pin mismatch");
     }
 
-    client::TlsConnectionMetadata metadata;
+    outbound::TlsConnectionMetadata metadata;
     metadata.alpn = obfs::selected_alpn(tls_stream.native_handle());
     metadata.leaf_fingerprint_sha256 = fingerprint;
     // Channel binding comes from our own live connection and never crosses
@@ -458,22 +449,22 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
     // there is no second secret-bearing vector to wipe on exceptional paths.
     metadata.exporter =
         security::ExportChannelBinding(tls_stream.native_handle());
-    client::ClientTransportStream stream(std::move(tls_stream));
+    outbound::ClientTransportStream stream(std::move(tls_stream));
     stream.set_metadata(std::move(metadata));
 
     // ---- Carrier admission ------------------------------------------------
     // A YUME 2.0 AUTH challenge is only issued behind the admitted H2
     // carrier, so a federating dial passes the same gate as any client.
-    client::require_h2_carrier_alpn(stream, peer_.host, peer_.port);
+    outbound::require_h2_carrier_alpn(stream, peer_.host, peer_.port);
     std::vector<uint8_t> prefetched;
     std::unique_ptr<obfs::H2Carrier> carrier;
-    client::perform_h2_carrier_handshake(stream, io, peer_.host, peer_.port,
+    outbound::perform_h2_carrier_handshake(stream, io, peer_.host, peer_.port,
                                  carrier_secret_, &prefetched, &carrier, {},
                                  should_stop);
 
     // ---- AUTH v2 ----------------------------------------------------------
     set_state("authenticating");
-    protocol::Frame challenge = client::read_auth_challenge(
+    protocol::Frame challenge = outbound::read_auth_challenge(
         stream, io, peer_.host, peer_.port, &prefetched, carrier.get(),
         should_stop);
     const auto ratchet_policy =
@@ -481,17 +472,17 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
     if (!ratchet_policy.has_value()) {
         throw std::runtime_error("invalid local security profile for federation");
     }
-    auto ratchet = client::send_auth_v2_response(
+    auto ratchet = outbound::send_auth_v2_response(
         stream, io, cfg_.federation_identity, challenge, psk_,
         stream.take_exporter(), *carrier,
         ratchet::ClampRekeyWindow(cfg_.rekey_window), *ratchet_policy, {},
         should_stop);
 
-    protocol::Frame sealed_info = client::read_frame_over_h2_with_timeout(
+    protocol::Frame sealed_info = outbound::read_frame_over_h2_with_timeout(
         stream, io, *carrier, &prefetched,
-        client::kServerInfoTimeout, "federation server info",
+        outbound::kServerInfoTimeout, "federation server info",
         peer_.host, peer_.port, should_stop);
-    protocol::Frame anon = client::open_auth_ok_v2(*ratchet, sealed_info);
+    protocol::Frame anon = outbound::open_auth_ok_v2(*ratchet, sealed_info);
     if (anon.header.type != protocol::ANON) {
         throw std::runtime_error("federation peer did not send server info");
     }
@@ -503,7 +494,7 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
     }
 
     // ---- Hand the established session to its Tunnel -----------------------
-    auto tunnel = std::make_shared<client::Tunnel>(
+    auto tunnel = std::make_shared<outbound::Tunnel>(
         std::move(stream), std::move(carrier), std::move(prefetched),
         std::move(ratchet));
     return tunnel;
@@ -515,7 +506,7 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
 
 void FederationLink::handle_control(
     const nlohmann::json& json,
-    const std::shared_ptr<client::Tunnel>& source_tunnel) {
+    const std::shared_ptr<outbound::Tunnel>& source_tunnel) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!source_tunnel || tunnel_ != source_tunnel) {
@@ -549,7 +540,7 @@ void FederationLink::handle_control(
             util::log_warn(
                 "federation peer " + peer_.id +
                 " returned an invalid or rejected hello");
-            std::shared_ptr<client::Tunnel> tunnel;
+            std::shared_ptr<outbound::Tunnel> tunnel;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 ready_ = false;
@@ -566,7 +557,7 @@ void FederationLink::handle_control(
             json["your_peer_id"].get<std::string>();
         bool became_ready = false;
         bool namespace_changed = false;
-        std::shared_ptr<client::Tunnel> tunnel;
+        std::shared_ptr<outbound::Tunnel> tunnel;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             tunnel = tunnel_;
@@ -608,7 +599,7 @@ void FederationLink::handle_control(
         return;
     }
     bool command_before_hello = false;
-    std::shared_ptr<client::Tunnel> pre_hello_tunnel;
+    std::shared_ptr<outbound::Tunnel> pre_hello_tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!ready_) {
@@ -638,7 +629,7 @@ void FederationLink::handle_control(
                 " sent an invalid directory response: " +
                 (parse_error.empty() ? "policy violation" : parse_error));
             if (owner_) owner_->clear_directory(peer_.id);
-            std::shared_ptr<client::Tunnel> tunnel;
+            std::shared_ptr<outbound::Tunnel> tunnel;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 tunnel = tunnel_;
@@ -683,7 +674,7 @@ void FederationLink::handle_control(
 }
 
 void FederationLink::send_hello() {
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         tunnel = tunnel_;
@@ -697,7 +688,7 @@ void FederationLink::send_hello() {
 }
 
 void FederationLink::request_directory() {
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!ready_) {
@@ -714,7 +705,7 @@ void FederationLink::request_directory() {
 bool FederationLink::send_invite_request(const control::PendingInvite& invite,
                                          const std::string& raw_remote_id,
                                          std::string* error) {
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!ready_ || !tunnel_) {
@@ -737,7 +728,7 @@ bool FederationLink::open_channel(const std::shared_ptr<Session>& origin,
                                   const control::PendingInvite& invite,
                                   const nlohmann::json& open_json,
                                   std::string* error) {
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!ready_ || !tunnel_) {
@@ -826,8 +817,8 @@ bool FederationLink::open_channel(const std::shared_ptr<Session>& origin,
             remote_stream,
             [weak = weak_from_this(), remote_stream,
              channel_id = invite.invite_id](
-                const client::Tunnel::Bytes& payload,
-                client::Tunnel::InboundCredit inbound_credit) {
+                const outbound::Tunnel::Bytes& payload,
+                outbound::Tunnel::InboundCredit inbound_credit) {
                 if (auto self = weak.lock()) {
                     std::weak_ptr<Session> origin_session;
                     std::uint8_t origin_stream = 0;
@@ -908,7 +899,7 @@ void FederationLink::complete_channel_open(
     const std::string& reason) {
     std::weak_ptr<Session> origin_session;
     std::uint8_t origin_stream = 0;
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = channels_.find(remote_stream);
@@ -952,7 +943,7 @@ void FederationLink::handle_remote_channel_close(
     const std::string& channel_id,
     const std::string& reason) {
     LinkChannel channel;
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = channels_.find(remote_stream);
@@ -995,7 +986,7 @@ void FederationLink::fail_channel(std::uint8_t remote_stream,
                                   const std::string& channel_id,
                                   const std::string& reason) {
     LinkChannel channel;
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = channels_.find(remote_stream);
@@ -1041,7 +1032,7 @@ void FederationLink::fail_channel(std::uint8_t remote_stream,
 void FederationLink::close_channel(std::uint8_t remote_stream,
                                    const std::string& channel_id,
                                    const std::string& reason) {
-    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<outbound::Tunnel> tunnel;
     bool removed = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1066,9 +1057,9 @@ void FederationLink::close_channel(std::uint8_t remote_stream,
 void FederationLink::send_data(
     std::uint8_t remote_stream,
     const std::string& channel_id,
-    const client::Tunnel::Bytes& payload,
-    client::Tunnel::InboundCredit inbound_credit) {
-    std::shared_ptr<client::Tunnel> tunnel;
+    const outbound::Tunnel::Bytes& payload,
+    outbound::Tunnel::InboundCredit inbound_credit) {
+    std::shared_ptr<outbound::Tunnel> tunnel;
     bool invalid_channel = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1088,9 +1079,9 @@ void FederationLink::send_data(
 
     try {
         auto retained_credit =
-            std::make_shared<client::Tunnel::InboundCredit>(
+            std::make_shared<outbound::Tunnel::InboundCredit>(
                 std::move(inbound_credit));
-        client::Tunnel::Bytes forwarded(payload);
+        outbound::Tunnel::Bytes forwarded(payload);
         auto completion_credit = retained_credit;
         (void)tunnel->try_send_data(
             remote_stream, std::move(forwarded),

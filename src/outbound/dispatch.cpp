@@ -6,8 +6,8 @@
  * TransportCore inbound frame dispatch (handle_frame).
  */
 
-#include "client/transport/core.hpp"
-#include "client/transport/internal.hpp"
+#include "outbound/core.hpp"
+#include "outbound/internal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,7 +19,7 @@
 
 #include "core/security/inner_crypto.hpp"
 
-namespace yume::client {
+namespace yume::outbound {
 
 using namespace detail;
 
@@ -405,4 +405,4 @@ void TransportCore::handle_frame(const protocol::Frame& frame,
     }
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

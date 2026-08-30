@@ -38,6 +38,11 @@ std::optional<client::ClientConfig> parse_client_json(
 bool save_client(client::ClientConfig const& cfg,
                  std::filesystem::path const& path,
                  std::string* err);
+bool serialize_client_json(
+    client::ClientConfig const& cfg,
+    std::optional<std::string_view> display_name,
+    std::string* serialized,
+    std::string* err);
 ValidationReport validate(client::ClientConfig const& cfg);
 
 // JSON ↔ ServerConfig. Same conventions as load_client/save_client.

@@ -92,7 +92,7 @@ flattened evidence files that installed diagnostics consume.
    | `cipher_suites` | Offered suites, in order. Split across `SSL_CTX_set_ciphersuites` (TLS 1.3) and `SSL_CTX_set_cipher_list` (TLS 1.2); both preserve order. |
    | `signature_algorithms` | Offered schemes, in order. JA4 hashes these in order, so the sequence is load-bearing, not just the set. |
    | `supported_groups` | Offered groups, in order. |
-   | `key_share_groups` | Subset of `supported_groups` that must carry a `key_share`. OpenSSL generates a share only for groups whose name carries a `*` prefix in `SSL_CTX_set1_groups_list`, and defaults to the first group alone — a browser offering a hybrid *and* a classical share needs both named here. Every entry must appear in `supported_groups`. |
+   | `key_share_groups` | Subset of `supported_groups` that must carry a `key_share`. OpenSSL generates a share only for groups whose name carries a `*` prefix in `SSL_CTX_set1_groups_list`, and defaults to the first group alone. A browser offering a hybrid and a classical share needs both named here. Every entry must appear in `supported_groups`. |
    | `cert_compression` | RFC 8879 algorithms for `compress_certificate` (`0x001b`), in preference order, by name (`zlib`, `brotli`, `zstd`). OpenSSL can only advertise an algorithm compiled into the library. `openssl-chrome151` therefore requires Brotli and fails closed without it; `openssl-diagnostic` may log its declared degradation. |
    | `extensions` | The target extension set. Not an emission order: see below. |
    | `injected_extensions` | Extensions OpenSSL will not emit itself, each with a body shape. In `openssl-diagnostic`, `"GREASE"` allocates a type when the `SSL_CTX` is configured. `openssl-chrome151` skips those two registrations because the patched library supplies distinct first/last values per connection. |
@@ -100,7 +100,7 @@ flattened evidence files that installed diagnostics consume.
    | `ech_grease_lengths` | Permitted total lengths for the injected `0xfe0d` GREASE ECH body, taken from the capture. |
    | `no_encrypt_then_mac` | Suppresses `0x0016`, which OpenSSL offers by default and browsers generally do not. |
    | `status_request` | `"ocsp"` emits `0x0005`, which `add_custom_ext` cannot because OpenSSL owns that number internally. |
-   | `min_version` / `max_version` | The offered range. Browser-shaped, so usually TLS 1.2 through 1.3 — offering only 1.3 silently drops the TLS 1.2 half of the cipher list and extension `0xff01`. |
+   | `min_version` / `max_version` | The offered range. Browser-shaped profiles usually offer TLS 1.2 through 1.3. Offering only 1.3 silently drops the TLS 1.2 half of the cipher list and extension `0xff01`. |
    | `require_negotiated_version` | The version the handshake must actually end on. Keeps a browser-shaped offer from becoming a carrier downgrade; enforced in `handshake_with_timeout` and fails closed. |
 
    Stock extension emission order is not configurable. The
@@ -121,7 +121,7 @@ flattened evidence files that installed diagnostics consume.
    re-derives those plus the `ec_point_formats` and `key_share` geometry from
    the bytes the production backend actually emits, and asserts that JA3 still
    fails to match. Both fail if the gap widens, so a divergence cannot be
-   introduced silently — and note that closing all four set fields buys an
+   introduced silently. Closing all four set fields buys an
    exact JA4 and nothing wider, because sets are all JA4 hashes.
 7. Regenerate and validate:
 
@@ -136,8 +136,9 @@ flattened evidence files that installed diagnostics consume.
    performance, sanitizer, classifier/active-probe, soak, packaging, and
    independent-review gates.
 
-The registry can hold several immutable profiles, but dev6 intentionally
-activates exactly `chrome151-node24-v1`. Runtime negotiation or accepting a
+The registry can hold several immutable profiles, but the current transport
+activates exactly the profile named by `src/core/version.hpp`. Runtime
+negotiation or accepting a
 second ID is not a cosmetic configuration change and is not introduced by this
 registry refactor.
 
@@ -167,4 +168,4 @@ existing BaseFWX checkout.
 
 This removes update choreography without weakening reproducibility: updating
 BaseFWX is one reviewed manifest change followed by its own compatibility,
-security, ABI, and build validation—not an unbounded floating dependency.
+security, ABI, and build validation, not an unbounded floating dependency.

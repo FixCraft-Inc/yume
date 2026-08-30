@@ -13,14 +13,18 @@
 #include <array>
 #include <cassert>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef _WIN32
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -86,6 +90,47 @@ void expect_decode_rejected(const nlohmann::json& document,
     const auto encoded = encode_document(document, password);
     assert(!yume::share::decode_share(encoded, password, &error));
     assert(!error.empty());
+}
+
+void test_bundle_sensitive_lifecycle() {
+    yume::share::ShareBundle source;
+    source.server_host = "lifecycle.example.test";
+    source.auth_private_key_pem = "private-key-material";
+    source.obfs_secret = std::string(64, 'a');
+    source.inner_psk = std::string(64, 'b');
+
+    yume::share::ShareBundle copied(source);
+    assert(copied.auth_private_key_pem == source.auth_private_key_pem);
+    assert(copied.obfs_secret == source.obfs_secret);
+    assert(copied.inner_psk == source.inner_psk);
+
+    yume::share::ShareBundle assigned;
+    assigned.auth_private_key_pem = "old-private-key";
+    assigned.obfs_secret = "old-secret";
+    assigned.inner_psk = "old-psk";
+    assigned = source;
+    assert(assigned.auth_private_key_pem == source.auth_private_key_pem);
+    assert(assigned.obfs_secret == source.obfs_secret);
+    assert(assigned.inner_psk == source.inner_psk);
+
+    yume::share::ShareBundle moved(std::move(copied));
+    assert(copied.auth_private_key_pem.empty());
+    assert(copied.obfs_secret.empty());
+    assert(copied.inner_psk.empty());
+    assert(moved.auth_private_key_pem == source.auth_private_key_pem);
+
+    yume::share::ShareBundle move_assigned;
+    move_assigned.auth_private_key_pem = "replaced-private-key";
+    move_assigned.obfs_secret = "replaced-secret";
+    move_assigned.inner_psk = "replaced-psk";
+    move_assigned = std::move(moved);
+    assert(moved.auth_private_key_pem.empty());
+    assert(moved.obfs_secret.empty());
+    assert(moved.inner_psk.empty());
+    move_assigned.clear_secrets();
+    assert(move_assigned.auth_private_key_pem.empty());
+    assert(move_assigned.obfs_secret.empty());
+    assert(move_assigned.inner_psk.empty());
 }
 
 void set_test_home(const std::filesystem::path& home) {
@@ -166,6 +211,67 @@ void expect_apply_rejected(const yume::share::ShareBundle& bundle,
     assert(result.target_dir == "unchanged-sentinel");
 }
 
+void test_share_file_boundaries(const std::filesystem::path& root) {
+    const auto destination = root / "exclusive.yss";
+    const std::vector<std::uint8_t> contents{'y', 's', 's'};
+    std::string error;
+    assert(yume::share::write_share_file_exclusive(
+        destination, contents, &error));
+    assert(error.empty());
+    assert_private_regular(destination);
+
+    const std::vector<std::uint8_t> replacement{'x'};
+    assert(!yume::share::write_share_file_exclusive(
+        destination, replacement, &error));
+    std::vector<std::uint8_t> read_back;
+    assert(yume::share::read_share_file(destination, &read_back, &error));
+    assert(read_back == contents);
+
+    const auto victim = root / "share-victim";
+    write_text(victim, "unchanged");
+    const auto link = root / "share-link.yss";
+    std::filesystem::create_symlink(victim, link);
+    assert(!yume::share::write_share_file_exclusive(
+        link, replacement, &error));
+    assert(!yume::share::read_share_file(link, &read_back, &error));
+    assert(read_text(victim) == "unchanged");
+
+    const auto oversized = root / "oversized.yss";
+    write_text(oversized,
+               std::string(yume::share::kMaxShareFileBytes + 1U, 'x'));
+    assert(!yume::share::read_share_file(oversized, &read_back, &error));
+    assert(error.find("size limit") != std::string::npos);
+    assert(read_back.empty());
+
+    const auto refused_output = root / "oversized-output.yss";
+    const std::vector<std::uint8_t> oversized_contents(
+        yume::share::kMaxShareFileBytes + 1U, 0U);
+    assert(!yume::share::write_share_file_exclusive(
+        refused_output, oversized_contents, &error));
+    assert(!std::filesystem::exists(refused_output));
+
+    const auto partial_output = root / "partial-output.yss";
+    const pid_t child = ::fork();
+    assert(child >= 0);
+    if (child == 0) {
+        (void)std::signal(SIGXFSZ, SIG_IGN);
+        const rlimit limit{1, 1};
+        if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) ::_exit(2);
+        std::string child_error;
+        const std::vector<std::uint8_t> child_contents(4096U, 0x5aU);
+        const bool written = yume::share::write_share_file_exclusive(
+            partial_output, child_contents, &child_error);
+        ::_exit(!written && !child_error.empty() &&
+                       !std::filesystem::exists(partial_output)
+                   ? 0
+                   : 3);
+    }
+    int status = 0;
+    assert(::waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(!std::filesystem::exists(partial_output));
+}
+
 #endif
 
 }  // namespace
@@ -173,6 +279,8 @@ void expect_apply_rejected(const yume::share::ShareBundle& bundle,
 int main() {
     namespace fs = std::filesystem;
     using namespace yume::share;
+
+    test_bundle_sensitive_lifecycle();
 
     ShareBundle bundle;
     bundle.server_host = "192.0.2.10";
@@ -340,6 +448,7 @@ int main() {
     fs::remove_all(root, ignored);
     return 0;
 #else
+    test_share_file_boundaries(root);
     const fs::path home = make_private_home(root, "home");
     set_test_home(home);
 

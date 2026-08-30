@@ -66,11 +66,15 @@ sources twice. `yume_transport_core` is always built, so Android and embedders
 can link the reduced transport slice without pulling the full CLI or server
 stacks. `yume_outbound_transport` owns the small client/server-common dial,
 tunnel, forwarding, outbound-proxy, and authenticated-connect slice used by
-both the CLI and federation. The server does not link `yume_client_lib`.
+both the CLI and federation. Its implementation and server-consumed headers
+live under `src/outbound/`; compatibility headers under `src/client/` retain
+existing client include spellings without giving the client ownership of the
+shared implementation. The server does not link `yume_client_lib` or include
+client/CLI production headers.
 
 ## Source layout
 
-### `src/core/` — shared transport kernel
+### `src/core/`: shared transport kernel
 
 Used by client, server, facade, and ABI. No UI, no `main()`.
 
@@ -88,14 +92,23 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 authenticated `kTransportVersion` alias. AUTH, relay, ABI, and helper IPC
 schema versions remain independent in their owning modules.
 
-### `src/client/` — CLI client
+### `src/outbound/`: neutral outbound transport
+
+Owned by `yume_outbound_transport` and used by both client and server paths.
+It contains the transport core, stream, tunnel, socket-protection callback,
+SOCKS5 outbound dialer, timeout/cancellation I/O, forwarding adapter, bounded
+UDP queue, and AUTH carrier establishment. Compatibility headers retain older
+client include spellings. CLI-only fatal errors, option wording, and
+interactive policy remain under `src/client/cli/`.
+
+### `src/client/`: CLI client
 
 | Directory | Responsibility |
 | --- | --- |
 | `cli/` | Argument parsing, config, connect handshake, commands |
 | `packet/` | Client-side packet-bulk/TUN data plane |
-| `transport/` | TLS tunnel, crypto, dispatch, tunnel pool |
-| `proxy/` | SOCKS5, port forward, outbound proxy (incl. Tor) |
+| `transport/` | Client-owned TLS-helper/pool integration and compatibility headers for neutral outbound types |
+| `proxy/` | Local SOCKS5 runtime plus compatibility headers for neutral forwarding and queue types |
 | `relay/` | Relay runtime, secrets, history |
 | `transfer/` | Share/import/export transfer workflows |
 | `codec/` | Client-side app codec shims (e.g. Monero RPC) |
@@ -103,7 +116,7 @@ schema versions remain independent in their owning modules.
 
 Entry: `main_client.cpp` → `client/cli/entry.cpp`.
 
-### `src/server/` — daemon
+### `src/server/`: daemon
 
 | Directory | Responsibility |
 | --- | --- |
@@ -119,17 +132,26 @@ Entry: `main_client.cpp` → `client/cli/entry.cpp`.
 
 Entry: `main_server.cpp` → `server/cli/entry.cpp`.
 
-### `src/facade/` — embedder API
+### `src/facade/`: embedder API
 
 Static library over core + client + server. Used by `yume-gui` and
 automation. No Dear ImGui dependency. Its chat-history result preserves
 messages, storage availability, truncation, and the storage diagnostic as
 typed state; transport/envelope/schema failures remain a separate error path.
 
-### `src/gui/` — desktop UI
+### `src/gui/`: desktop UI
 
 Dear ImGui + GLFW + ImPlot. Pages call facade sessions; does not
 duplicate the transport stack.
+
+### `website/`: static publication site
+
+The Jekyll/GitHub Pages site presents project documentation, status, and
+release metadata. It does not link YUME libraries, control a local runtime, or
+own protocol behavior. CI copies tracked `docs/*.md` into ignored generated
+pages during the site build; `website/docs/index.html` remains a hand-written
+landing page. Website contribution and validation rules live in
+`CONTRIBUTING.md`.
 
 ### Other
 
@@ -168,9 +190,10 @@ formats, transport behavior, AUTH, and ratchet policy. A YUME-local
 compatibility/security helper still contains SHA-256 identity hashing plus
 residual X25519/HKDF/HMAC/RNG operations and the BaseFWX-disabled history
 fallback. Live callers must not expand that raw-OpenSSL surface. The
-cross-repository primitive and frozen-record migration boundary are recorded
-in `docs/BASEFWX_REQUIREMENTS.md`; other dead legacy helpers remain tracked in
-`docs/CODE_HEALTH.md` rather than being described as BaseFWX-owned.
+required BaseFWX revision is recorded in `config/dependencies.json`; its public
+C++ contract and regression tests own the explicit-nonce primitive. Dead or
+unused helpers should be removed with reference checks and focused tests, not
+preserved as a second public status register.
 
 ## Trust boundary
 
@@ -205,5 +228,4 @@ man pages. `scripts/check_ascii_diagrams.py` enforces fixed box widths.
 | JSON control API | `docs/CONTROL_API.md` |
 | Federation transit (design only) | `docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md` |
 | Current implementation boundary | `docs/IMPLEMENTATION_STATUS.md` |
-| Stabilization gates | `docs/YUME_2_0_STABILIZATION.md` |
 | Contributor entry point | `AGENTS.md`, `CONTRIBUTING.md`, `docs/README.md` |

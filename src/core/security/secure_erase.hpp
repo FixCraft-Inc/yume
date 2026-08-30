@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace yume::security {
@@ -21,6 +22,14 @@ inline void secure_erase(std::vector<std::uint8_t>& bytes) noexcept {
         cursor[i] = 0;
     }
     bytes.clear();
+}
+
+inline void secure_erase(std::string& text) noexcept {
+    volatile char* cursor = text.data();
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        cursor[i] = 0;
+    }
+    text.clear();
 }
 
 }  // namespace yume::security

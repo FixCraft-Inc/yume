@@ -6,12 +6,12 @@
  * TransportCore legacy inner-crypto AEAD seal/open.
  */
 
-#include "client/transport/core.hpp"
-#include "client/transport/internal.hpp"
+#include "outbound/core.hpp"
+#include "outbound/internal.hpp"
 
 #include "core/security/inner_crypto.hpp"
 
-namespace yume::client {
+namespace yume::outbound {
 
 using namespace detail;
 
@@ -53,4 +53,4 @@ bool TransportCore::decrypt_inner_payload(uint8_t frame_type,
     return false;
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

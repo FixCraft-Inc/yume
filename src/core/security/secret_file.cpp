@@ -42,10 +42,21 @@ namespace {
 #if !defined(_WIN32)
 class FileDescriptor {
 public:
-    explicit FileDescriptor(int fd) : fd_(fd) {}
+    explicit FileDescriptor(int fd = -1) noexcept : fd_(fd) {}
     FileDescriptor(const FileDescriptor&) = delete;
     FileDescriptor& operator=(const FileDescriptor&) = delete;
-    ~FileDescriptor() { if (fd_ >= 0) ::close(fd_); }
+    FileDescriptor(FileDescriptor&& other) noexcept : fd_(other.fd_) {
+        other.fd_ = -1;
+    }
+    FileDescriptor& operator=(FileDescriptor&& other) noexcept {
+        if (this != &other) {
+            if (fd_ >= 0) (void)::close(fd_);
+            fd_ = other.fd_;
+            other.fd_ = -1;
+        }
+        return *this;
+    }
+    ~FileDescriptor() { if (fd_ >= 0) (void)::close(fd_); }
     int get() const noexcept { return fd_; }
 private:
     int fd_;
@@ -91,6 +102,96 @@ void AppendCleanupError(std::string* error,
 }
 
 #if defined(_WIN32)
+
+class LocalSecurityDescriptor {
+public:
+    LocalSecurityDescriptor() = default;
+    ~LocalSecurityDescriptor() {
+        if (value_) (void)::LocalFree(value_);
+    }
+
+    LocalSecurityDescriptor(const LocalSecurityDescriptor&) = delete;
+    LocalSecurityDescriptor& operator=(const LocalSecurityDescriptor&) = delete;
+
+    PSECURITY_DESCRIPTOR* out() noexcept { return &value_; }
+    PSECURITY_DESCRIPTOR get() const noexcept { return value_; }
+
+private:
+    PSECURITY_DESCRIPTOR value_{nullptr};
+};
+
+bool ensure_private_directory_windows(const std::filesystem::path& path,
+                                      std::string* error) {
+    LocalSecurityDescriptor descriptor;
+    if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;FA;;;SY)(A;;FA;;;OW)", SDDL_REVISION_1,
+            descriptor.out(), nullptr) == 0) {
+        SetWriteError(error, "create private directory security descriptor",
+                      static_cast<int>(::GetLastError()),
+                      std::system_category());
+        return false;
+    }
+
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor.get();
+    attributes.bInheritHandle = FALSE;
+
+    std::filesystem::path current = path.root_path();
+    std::vector<std::filesystem::path> components;
+    for (const auto& part : path.relative_path()) {
+        if (part.empty()) continue;
+        if (part == "." || part == "..") {
+            if (error) {
+                *error = "private directory path contains an unsafe component";
+            }
+            return false;
+        }
+        components.push_back(part);
+    }
+    if (components.empty()) {
+        if (error) *error = "private directory path has no components";
+        return false;
+    }
+
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        current /= components[index];
+        bool created = false;
+        if (::CreateDirectoryW(current.c_str(), &attributes) != 0) {
+            created = true;
+        } else {
+            const DWORD create_error = ::GetLastError();
+            if (create_error != ERROR_ALREADY_EXISTS) {
+                SetWriteError(error, "create private directory",
+                              static_cast<int>(create_error),
+                              std::system_category());
+                return false;
+            }
+        }
+
+        const DWORD attributes_value = ::GetFileAttributesW(current.c_str());
+        if (attributes_value == INVALID_FILE_ATTRIBUTES ||
+            (attributes_value & FILE_ATTRIBUTE_DIRECTORY) == 0 ||
+            (attributes_value & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            if (error) {
+                *error = "private directory path must contain only "
+                         "non-reparse directories";
+            }
+            return false;
+        }
+
+        const bool final_component = index + 1U == components.size();
+        if ((created || final_component) &&
+            ::SetFileSecurityW(current.c_str(), DACL_SECURITY_INFORMATION,
+                               descriptor.get()) == 0) {
+            SetWriteError(error, "protect private directory",
+                          static_cast<int>(::GetLastError()),
+                          std::system_category());
+            return false;
+        }
+    }
+    return true;
+}
 
 bool RemovePartialFile(const std::filesystem::path& path,
                        std::string* error) noexcept {
@@ -175,6 +276,11 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
         offset += static_cast<std::size_t>(written);
     }
 
+    if (::FlushFileBuffers(handle) == 0) {
+        const DWORD flush_error = ::GetLastError();
+        return close_and_remove("flush private file", flush_error);
+    }
+
     if (::CloseHandle(handle) == 0) {
         const DWORD close_error = ::GetLastError();
         SetWriteError(
@@ -198,6 +304,155 @@ bool RemovePartialFile(const std::filesystem::path& path,
         error, "remove partial private file", errno,
         std::generic_category());
     return false;
+}
+
+bool flush_parent_directory(const std::filesystem::path& path,
+                            std::string* error) {
+    const std::filesystem::path parent =
+        path.parent_path().empty() ? std::filesystem::path(".")
+                                   : path.parent_path();
+    int flags = O_RDONLY;
+#if defined(O_CLOEXEC)
+    flags |= O_CLOEXEC;
+#endif
+#if defined(O_DIRECTORY)
+    flags |= O_DIRECTORY;
+#endif
+    const int descriptor = ::open(parent.c_str(), flags);
+    if (descriptor < 0) {
+        SetWriteError(error, "open private file directory", errno,
+                      std::generic_category());
+        return false;
+    }
+    if (::fsync(descriptor) != 0) {
+        const int flush_error = errno;
+        (void)::close(descriptor);
+        SetWriteError(error, "flush private file directory", flush_error,
+                      std::generic_category());
+        return false;
+    }
+    if (::close(descriptor) != 0) {
+        SetWriteError(error, "close private file directory", errno,
+                      std::generic_category());
+        return false;
+    }
+    return true;
+}
+
+bool ensure_private_directory_posix(const std::filesystem::path& path,
+                                    std::string* error) {
+#if !defined(O_NOFOLLOW) || !defined(O_DIRECTORY)
+    if (error) {
+        *error = "private directory creation requires O_NOFOLLOW and "
+                 "O_DIRECTORY";
+    }
+    return false;
+#else
+    std::vector<std::string> components;
+    const std::filesystem::path relative =
+        path.is_absolute() ? path.relative_path() : path;
+    for (const auto& part : relative) {
+        const std::string component = part.string();
+        if (component.empty()) continue;
+        if (component == "." || component == ".." ||
+            component.find('\0') != std::string::npos) {
+            if (error) {
+                *error = "private directory path contains an unsafe component";
+            }
+            return false;
+        }
+        components.push_back(component);
+    }
+    if (components.empty()) {
+        if (error) *error = "private directory path has no components";
+        return false;
+    }
+
+    int directory_flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
+#if defined(O_CLOEXEC)
+    directory_flags |= O_CLOEXEC;
+#endif
+    FileDescriptor current(::open(path.is_absolute() ? "/" : ".",
+                                  directory_flags));
+    if (current.get() < 0) {
+        SetWriteError(error, "open private directory root", errno,
+                      std::generic_category());
+        return false;
+    }
+#if !defined(O_CLOEXEC)
+    if (::fcntl(current.get(), F_SETFD, FD_CLOEXEC) != 0) {
+        SetWriteError(error, "protect private directory root descriptor", errno,
+                      std::generic_category());
+        return false;
+    }
+#endif
+
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        const std::string& component = components[index];
+        bool created = false;
+        if (::mkdirat(current.get(), component.c_str(), S_IRWXU) == 0) {
+            created = true;
+        } else if (errno != EEXIST) {
+            SetWriteError(error, "create private directory component", errno,
+                          std::generic_category());
+            return false;
+        }
+
+        FileDescriptor next(::openat(current.get(), component.c_str(),
+                                     directory_flags));
+        if (next.get() < 0) {
+            const int open_error = errno;
+            if (created) {
+                (void)::unlinkat(current.get(), component.c_str(),
+                                 AT_REMOVEDIR);
+            }
+            SetWriteError(error,
+                          "open private directory component without following links",
+                          open_error, std::generic_category());
+            return false;
+        }
+#if !defined(O_CLOEXEC)
+        if (::fcntl(next.get(), F_SETFD, FD_CLOEXEC) != 0) {
+            SetWriteError(error, "protect private directory descriptor", errno,
+                          std::generic_category());
+            return false;
+        }
+#endif
+
+        struct stat status {};
+        if (::fstat(next.get(), &status) != 0) {
+            SetWriteError(error, "inspect private directory component", errno,
+                          std::generic_category());
+            return false;
+        }
+        const bool final_component = index + 1U == components.size();
+        if (!S_ISDIR(status.st_mode)) {
+            if (error) *error = "private directory path contains a non-directory";
+            return false;
+        }
+        if (final_component && status.st_uid != ::geteuid()) {
+            if (error) {
+                *error = "private directory must be owned by the current user";
+            }
+            return false;
+        }
+        if ((created || final_component) &&
+            ::fchmod(next.get(), S_IRWXU) != 0) {
+            SetWriteError(error, "protect private directory", errno,
+                          std::generic_category());
+            return false;
+        }
+        if (created) {
+            if (::fsync(next.get()) != 0 || ::fsync(current.get()) != 0) {
+                SetWriteError(error, "flush private directory creation", errno,
+                              std::generic_category());
+                return false;
+            }
+        }
+        current = std::move(next);
+    }
+    return true;
+#endif
 }
 
 bool WriteNewPrivateFile(const std::filesystem::path& path,
@@ -256,11 +511,19 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
         offset += static_cast<std::size_t>(count);
     }
 
+    if (::fsync(fd) != 0) {
+        return close_and_remove("flush private file", errno);
+    }
+
     if (::close(fd) != 0) {
         const int close_error = errno;
         SetWriteError(
             error, "close private file", close_error,
             std::generic_category());
+        RemovePartialFile(path, error);
+        return false;
+    }
+    if (!flush_parent_directory(path, error)) {
         RemovePartialFile(path, error);
         return false;
     }
@@ -271,6 +534,21 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
 #endif
 
 }  // namespace
+
+bool ensure_private_directory(const std::filesystem::path& path,
+                              std::string* error) {
+    if (error) error->clear();
+    if (path.empty() || path.filename().empty()) {
+        if (error) *error = "private directory path is invalid";
+        return false;
+    }
+
+#if defined(_WIN32)
+    return ensure_private_directory_windows(path, error);
+#else
+    return ensure_private_directory_posix(path, error);
+#endif
+}
 
 Secret32::Secret32(std::array<std::uint8_t, 32>&& bytes) noexcept
     : bytes_(bytes) {
@@ -304,19 +582,38 @@ void Secret32::Wipe() noexcept {
 
 bool WriteFileExclusive0600(const std::filesystem::path& path,
                             std::span<const std::uint8_t> contents,
-                            std::string* error) {
+                            std::string* error,
+                            PrivateParentPolicy parent_policy) {
+    if (error) error->clear();
     if (path.empty()) {
         if (error) *error = "private file path is empty";
         return false;
     }
 
-    std::error_code directory_error;
     if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path(), directory_error);
-        if (directory_error) {
+        std::error_code status_error;
+        const auto parent_status = std::filesystem::symlink_status(
+            path.parent_path(), status_error);
+        const bool missing =
+            parent_status.type() == std::filesystem::file_type::not_found ||
+            status_error == std::errc::no_such_file_or_directory;
+        if (missing && parent_policy == PrivateParentPolicy::CreateOwnerOnly) {
+            if (!ensure_private_directory(path.parent_path(), error)) {
+                return false;
+            }
+        } else if (missing) {
+            if (error) *error = "private file parent directory does not exist";
+            return false;
+        } else if (status_error) {
             if (error) {
-                *error = "create private file directory: " +
-                    directory_error.message();
+                *error = "inspect private file parent directory: " +
+                    status_error.message();
+            }
+            return false;
+        } else if (parent_status.type() !=
+                   std::filesystem::file_type::directory) {
+            if (error) {
+                *error = "private file parent must be a real directory";
             }
             return false;
         }

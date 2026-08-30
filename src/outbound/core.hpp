@@ -1,0 +1,312 @@
+/*
+ * YUME - Yume Universal Multiprotocol Engine
+ * Copyright (C) 2020-2026  FixCraft Inc.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
+ */
+
+#pragma once
+
+#include <array>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "core/protocol/protocol.hpp"
+#include "core/diagnostics/timing.hpp"
+#include "core/runtime/inbound_credit.hpp"
+#include "core/security/session_ratchet.hpp"
+
+namespace yume::outbound {
+
+class TransportCore {
+public:
+    using Bytes = std::vector<uint8_t>;
+    using InboundCredit = runtime::InboundCredit;
+    using WriteCompletion = std::function<void(bool, std::size_t, const std::string&)>;
+    using WriteHandler = std::function<void(std::shared_ptr<Bytes>, WriteCompletion)>;
+    using OpenHandler = std::function<void(bool, const std::string&)>;
+    // DATA callbacks own the matching H2 receive-window credit. Asynchronous
+    // consumers keep the token until their local write completes; synchronous
+    // consumers simply let it fall out of scope.
+    using DataHandler = std::function<void(const Bytes&, InboundCredit)>;
+    using CloseHandler = std::function<void(const std::string&)>;
+    using HalfCloseHandler = std::function<void(const std::string&)>;
+    // Peer-open handlers run outside state_mu_ and must synchronously consume
+    // the dispatcher's reservation with register_stream before returning true.
+    using ReverseOpenHandler = std::function<bool(uint8_t listen_id,
+                                                  uint8_t stream_id,
+                                                  std::string* reason)>;
+    using ControlHandler = std::function<void(const nlohmann::json&)>;
+    using InboundOpenHandler = std::function<bool(uint8_t stream_id,
+                                                  const nlohmann::json&,
+                                                  std::string* reason)>;
+    using ActivityHandler = std::function<void()>;
+    enum class DataWriteAdmission {
+        accepted,
+        would_block,
+        timeout,
+        stopped,
+        invalid,
+    };
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    using TimingHandler = std::function<void(const std::string&,
+                                             const std::string&,
+                                             const std::string&)>;
+    struct RatchetFlowStats {
+        std::uint64_t application_block_count{0};
+        std::uint64_t application_block_us{0};
+        std::uint64_t offer_count{0};
+        std::size_t max_pending_epochs{0};
+        std::size_t max_prepared_epochs{0};
+        std::size_t max_total_depth{0};
+    };
+#endif
+    using ServerStreamOpenHandler = std::function<bool(uint8_t stream_id,
+                                                       const std::string& host,
+                                                       int port,
+                                                       std::string* reason)>;
+    using ExecHandler = std::function<void(uint8_t stream_id, const std::string& command)>;
+
+    TransportCore();
+    explicit TransportCore(WriteHandler write_handler,
+                           std::function<void(const std::string&)> close_transport_handler);
+
+    void set_write_handler(WriteHandler handler);
+    void set_close_transport_handler(std::function<void(const std::string&)> handler);
+
+    void start(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    bool handle_keepalive_tick(std::chrono::steady_clock::time_point now, std::string* close_reason);
+    bool rekey_timed_out(std::chrono::steady_clock::time_point now) const;
+    std::vector<CloseHandler> shutdown();
+    bool is_stopped() const;
+
+    void set_inner_key(const Bytes& key);
+    void set_ratchet(std::unique_ptr<ratchet::SessionRatchet> ratchet);
+    // Send-side traffic-shape obfuscation. `pad_multiple` (clamped to
+    // [0, 256]) rounds every outbound frame payload up to that multiple
+    // via trailing pad bytes + a length byte (kFlagPadded). 0 = off.
+    // `jitter_ms_max` is wired by the writer (Tunnel) — TransportCore
+    // only stores it for inspection. Wire compatibility: the peer must
+    // know about kFlagPadded too, so enabling padding against an old
+    // server is a hard break.
+    void set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max);
+    std::uint16_t obfs_pad_multiple() const;
+    std::uint32_t obfs_jitter_ms_max() const;
+    void set_server_in_charge(bool enabled);
+    void set_allow_exec(bool enabled);
+    void set_reverse_handler(ReverseOpenHandler handler);
+    void set_control_handler(ControlHandler handler);
+    void set_inbound_open_handler(InboundOpenHandler handler);
+    void set_activity_handler(ActivityHandler handler);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    void set_timing_handler(TimingHandler handler);
+    RatchetFlowStats ratchet_flow_stats();
+#endif
+    void set_server_stream_open_handler(ServerStreamOpenHandler handler);
+    void set_exec_handler(ExecHandler handler);
+
+    uint8_t reserve_stream_id();
+    // Atomically consumes an existing reservation or registers a genuinely
+    // unused id. It never replaces callbacks or any pending/retired owner.
+    bool register_stream(uint8_t stream_id,
+                         DataHandler on_data,
+                         CloseHandler on_close,
+                         HalfCloseHandler on_half_close = {});
+    void unregister_stream(uint8_t stream_id);
+    // Remove callbacks and pending OPEN state while permanently withholding
+    // the id for this transport lifetime. A timed-out OPEN has no protocol
+    // acknowledgement that proves all late replies are drained, so immediate
+    // reuse could alias a stale reply or DATA frame onto a new stream.
+    void retire_stream_id(uint8_t stream_id);
+    void release_reserved_stream(uint8_t stream_id);
+
+    void open_stream(uint8_t stream_id,
+                     const std::string& host,
+                     int port,
+                     OpenHandler handler,
+                     const std::string& proto = "tcp");
+    void open_relay_stream(uint8_t stream_id, const nlohmann::json& json, OpenHandler handler);
+    void request_remote_listen(uint8_t listen_id,
+                               const std::string& bind_host,
+                               int port,
+                               OpenHandler handler,
+                               bool reclaim = true,
+                               int min_port = 0,
+                               int max_port = 0);
+    void send_data(uint8_t stream_id, const Bytes& data);
+    void send_data(uint8_t stream_id, Bytes&& data);
+    void send_data(uint8_t stream_id, Bytes&& data, WriteCompletion handler);
+    // Packet and benchmark producers use this overload to receive immediate,
+    // explicit backpressure instead of growing the transport queue without a
+    // bound. A rejected completion is invoked exactly once before return.
+    bool try_send_data(uint8_t stream_id, Bytes&& data, WriteCompletion handler = {});
+    // Atomically waits for bounded DATA queue capacity and consumes `data`
+    // only after admission succeeds. The completion belongs only to an
+    // accepted write. This never closes the transport merely because the
+    // application queue is full.
+    DataWriteAdmission wait_send_data(
+        uint8_t stream_id,
+        Bytes&& data,
+        std::chrono::milliseconds timeout,
+        WriteCompletion handler = {});
+    void send_close(uint8_t stream_id, const std::string& reason);
+    void send_stream_fin(uint8_t stream_id, const std::string& reason);
+    void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
+    void send_exec(uint8_t stream_id, const std::string& command);
+    void send_control_json(const nlohmann::json& json);
+
+    void feed_tls_bytes(const uint8_t* data, std::size_t size);
+    void feed_tls_bytes(const Bytes& data);
+    // `credited_size` is either zero for a direct TLS transport or exactly
+    // `size` for decoded H2 carrier bytes. Credit is divided at protocol frame
+    // boundaries and follows each frame through DATA dispatch.
+    void feed_tls_bytes(const uint8_t* data,
+                        std::size_t size,
+                        std::size_t credited_size);
+    void set_inbound_credit_release_handler(
+        InboundCredit::ReleaseHandler handler);
+
+private:
+    struct PendingWrite {
+        protocol::Frame frame;
+        WriteCompletion handler;
+        bool already_protected{false};
+        bool bulk_reservation{false};
+        std::size_t reserved_bytes{0};
+        std::uint64_t enqueue_order{0};
+    };
+
+    enum class WriteSelectionStatus {
+        Selected,
+        Empty,
+        Blocked,
+    };
+
+    struct WriteSelection {
+        WriteSelectionStatus status_{WriteSelectionStatus::Empty};
+        std::optional<PendingWrite> write_;
+    };
+
+    struct WriteCompletionState {
+        bool settled_{false};  // protected by write_mu_
+        std::vector<PendingWrite> batch_;
+        std::vector<std::size_t> encoded_sizes_;
+    };
+
+    struct StreamCallbacks {
+        DataHandler on_data;
+        CloseHandler on_close;
+        HalfCloseHandler on_half_close;
+    };
+
+    bool has_stream_id_locked(uint8_t stream_id) const;
+    bool try_reserve_peer_stream_id(uint8_t stream_id);
+    bool peer_stream_registration_complete(uint8_t stream_id);
+    bool queue_frame(protocol::Frame frame, WriteCompletion handler = {},
+                     bool already_protected = false);
+    void dispatch_next_write();
+    WriteSelection select_write_item_locked(
+        std::size_t current_batch_bytes,
+        const std::unordered_set<uint8_t>& batch_streams,
+        bool collect_timing);
+    void fail_write_batch(std::vector<PendingWrite> batch,
+                          const std::string& error,
+                          const std::string& close_prefix);
+    void settle_write_batch(std::vector<PendingWrite> completed_batch,
+                            std::vector<std::size_t> completed_sizes,
+                            bool ok,
+                            std::size_t bytes,
+                            const std::string& error);
+    std::optional<uint8_t> select_next_write_locked(
+        std::size_t current_batch_bytes,
+        const std::unordered_set<uint8_t>& batch_streams);
+    void mark_stream_ready_locked(uint8_t stream_id);
+    bool write_queues_empty_locked() const noexcept;
+    PendingWrite pop_stream_head_locked(uint8_t stream_id);
+    void release_write_reservation_locked(const PendingWrite& write) noexcept;
+    std::shared_ptr<Bytes> encode_outgoing_frame(
+        const protocol::Frame& frame, bool already_protected
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        , diagnostics::SampleAccumulator* seal_timing
+#endif
+    );
+    void resume_writes_after_rekey();
+    void handle_frame(const protocol::Frame& frame,
+                      InboundCredit inbound_credit = {});
+    Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
+    bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
+    void request_transport_close(const std::string& reason);
+
+    mutable std::mutex state_mu_;
+    std::mutex write_mu_;
+    std::condition_variable write_capacity_cv_;
+    WriteHandler write_handler_;
+    std::function<void(const std::string&)> close_transport_handler_;
+    std::array<std::deque<PendingWrite>, 256> write_queues_;
+    std::array<std::deque<uint8_t>, 5> ready_streams_;
+    std::array<std::int8_t, 256> ready_priority_{};
+    std::size_t queued_frames_{0};
+    std::size_t outstanding_bulk_frames_{0};
+    std::size_t outstanding_bulk_bytes_{0};
+    std::size_t outstanding_control_frames_{0};
+    std::size_t outstanding_control_bytes_{0};
+    std::uint64_t next_enqueue_order_{0};
+    bool write_in_flight_{false};
+    // Mirrors terminal transport state under write_mu_. Capacity waiters must
+    // not consult stopped_ without state_mu_, and a notification alone is not
+    // durable when shutdown races the transition into condition_variable::wait.
+    bool write_admission_stopped_{false};
+
+    std::unordered_map<uint8_t, StreamCallbacks> streams_;
+    std::unordered_map<uint8_t, OpenHandler> pending_open_;
+    std::unordered_map<uint8_t, OpenHandler> pending_rlisten_;
+    std::unordered_set<uint8_t> reserved_streams_;
+    // Tombstones for OPENs that crossed the wire but timed out locally. They
+    // survive every late callback/unregister race until terminal shutdown, so
+    // a delayed ACK/DATA frame can never alias a new logical stream.
+    std::unordered_set<uint8_t> retired_streams_;
+    ReverseOpenHandler reverse_handler_;
+    ControlHandler control_handler_;
+    InboundOpenHandler inbound_open_handler_;
+    ActivityHandler activity_handler_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    TimingHandler timing_handler_;
+#endif
+    ServerStreamOpenHandler server_stream_open_handler_;
+    ExecHandler exec_handler_;
+    uint8_t next_stream_id_{1};
+    bool stopped_{false};
+    std::optional<Bytes> inner_key_;
+    std::unique_ptr<ratchet::SessionRatchet> ratchet_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    diagnostics::IntervalTimer outbound_rekey_wait_;
+    diagnostics::IntervalTimer outbound_application_block_wait_;
+    diagnostics::SampleAccumulator timing_open_;
+    RatchetFlowStats ratchet_flow_stats_;
+    bool outbound_application_blocked_{false};
+#endif
+    bool server_in_charge_{false};
+    bool allow_exec_{false};
+    std::uint16_t obfs_pad_multiple_{0};
+    std::uint32_t obfs_jitter_ms_max_{0};
+    std::chrono::steady_clock::time_point last_pong_{};
+    std::array<std::uint8_t, 8> incoming_header_{};
+    std::size_t incoming_header_bytes_{0};
+    std::optional<protocol::Frame> incoming_frame_;
+    std::size_t incoming_payload_bytes_{0};
+    std::size_t incoming_frame_credit_bytes_{0};
+    InboundCredit::ReleaseHandler inbound_credit_release_handler_;
+};
+
+}  // namespace yume::outbound

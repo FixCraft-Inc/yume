@@ -6,89 +6,23 @@
 
 #pragma once
 
-#include <chrono>
-#include <cstdint>
-#include <memory>
-#include <string>
-#include <string_view>
-#include <vector>
-
-#include <boost/asio/io_context.hpp>
-#include "client/transport/client_stream.hpp"
 #include "client/cli/connect/io.hpp"
-#include "core/security/crypto.hpp"
-#include "core/security/secret_file.hpp"
-#include "core/protocol/protocol.hpp"
-#include "core/stealth/h2_carrier.hpp"
-#include "core/security/session_ratchet.hpp"
+#include "outbound/auth.hpp"
 
 namespace yume::client {
 
-inline constexpr std::chrono::milliseconds kConnectTimeout{10000};
-inline constexpr std::chrono::milliseconds kHandshakeTimeout{12000};
-inline constexpr std::chrono::milliseconds kAuthChallengeTimeout{6000};
-inline constexpr std::chrono::milliseconds kServerInfoTimeout{6000};
-inline constexpr std::chrono::milliseconds kServerInfoTimeoutInner{20000};
-inline constexpr std::chrono::milliseconds kServerInfoTimeoutInnerHeavy{45000};
-
-protocol::Frame read_auth_challenge(ClientTransportStream& stream,
-                                    boost::asio::io_context& io,
-                                    const std::string& server_host,
-                                    int server_port,
-                                    std::vector<uint8_t>* prefetched = nullptr,
-                                    obfs::H2Carrier* carrier = nullptr,
-                                    const StopPredicate& should_stop = {});
-
-std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
-    ClientTransportStream& stream,
-    boost::asio::io_context& io,
-    const std::string& identity_path,
-    const protocol::Frame& challenge,
-    const security::Secret32& inner_psk,
-    crypto::Bytes channel_binding,
-    obfs::H2Carrier& carrier,
-    std::uint16_t rekey_window,
-    const ratchet::RatchetPolicy& ratchet_policy,
-    // Empty for an ordinary visitor session. Supplying a path is what claims
-    // admin; the server verifies the key against its own separate admin list.
-    const std::string& admin_identity_path = {},
-    const StopPredicate& should_stop = {});
-
-protocol::Frame open_auth_ok_v2(ratchet::SessionRatchet& ratchet,
-                                const protocol::Frame& protected_frame);
-
-protocol::Frame read_frame_over_h2_with_timeout(
-    ClientTransportStream& stream,
-    boost::asio::io_context& io,
-    obfs::H2Carrier& carrier,
-    std::vector<uint8_t>* prefetched,
-    std::chrono::milliseconds timeout,
-    const char* what,
-    const std::string& server_host,
-    int server_port,
-    const StopPredicate& should_stop = {});
-
-void send_frame_over_h2_with_timeout(
-    ClientTransportStream& stream,
-    boost::asio::io_context& io,
-    obfs::H2Carrier& carrier,
-    const protocol::Frame& frame,
-    std::chrono::milliseconds timeout,
-    const char* what,
-    const StopPredicate& should_stop = {});
-
-void require_h2_carrier_alpn(ClientTransportStream& stream,
-                             const std::string& server_host,
-                             int server_port);
-
-void perform_h2_carrier_handshake(ClientTransportStream& stream,
-                                  boost::asio::io_context& io,
-                                  const std::string& server_host,
-                                  int server_port,
-                                  const security::Secret32& obfs_secret,
-                                  std::vector<uint8_t>* prefetched = nullptr,
-                                  std::unique_ptr<obfs::H2Carrier>* carrier_out = nullptr,
-                                  std::shared_ptr<obfs::OuterCarrierTrace> outer_trace = {},
-                                  const StopPredicate& should_stop = {});
+using outbound::kAuthChallengeTimeout;
+using outbound::kConnectTimeout;
+using outbound::kHandshakeTimeout;
+using outbound::kServerInfoTimeout;
+using outbound::kServerInfoTimeoutInner;
+using outbound::kServerInfoTimeoutInnerHeavy;
+using outbound::open_auth_ok_v2;
+using outbound::perform_h2_carrier_handshake;
+using outbound::read_auth_challenge;
+using outbound::read_frame_over_h2_with_timeout;
+using outbound::require_h2_carrier_alpn;
+using outbound::send_auth_v2_response;
+using outbound::send_frame_over_h2_with_timeout;
 
 }  // namespace yume::client

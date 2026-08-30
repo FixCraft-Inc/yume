@@ -38,6 +38,7 @@
 #include <openssl/x509.h>
 #include <nlohmann/json.hpp>
 
+#include "core/encoding/hex.hpp"
 #include "core/security/crypto.hpp"
 #include "core/runtime/atomic_file.hpp"
 #include "core/runtime/file_transaction_lock.hpp"
@@ -323,17 +324,6 @@ bool restore_snapshot(const std::filesystem::path& path,
     return runtime::DurableRemoveFile(path, error);
 }
 
-std::string hex_lower(const unsigned char* data, std::size_t n) {
-    static const char kHex[] = "0123456789abcdef";
-    std::string out;
-    out.resize(n * 2);
-    for (std::size_t i = 0; i < n; ++i) {
-        out[2 * i] = kHex[(data[i] >> 4) & 0xF];
-        out[2 * i + 1] = kHex[data[i] & 0xF];
-    }
-    return out;
-}
-
 // An authorized identity is a composite: two consecutive PEM blocks, classical
 // then post-quantum. Fingerprinting a single block yields the classical value,
 // which is not what the server authorizes on and does not commit to the
@@ -382,7 +372,8 @@ std::optional<std::string> fingerprint_composite_pem(const std::string& bundle,
 
     unsigned char digest[SHA256_DIGEST_LENGTH];
     SHA256(der, static_cast<std::size_t>(der_len), digest);
-    return hex_lower(digest, SHA256_DIGEST_LENGTH);
+    return encoding::hex_lower(std::span<const std::uint8_t>(
+        digest, SHA256_DIGEST_LENGTH));
 }
 
 #ifndef _WIN32

@@ -23,6 +23,7 @@
 
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/encoding/hex.hpp"
 #include "core/runtime/atomic_file.hpp"
 #include "core/runtime/file_transaction_lock.hpp"
 #include "server/auth/auth_metadata_json.hpp"
@@ -594,14 +595,8 @@ std::string fingerprint_pubkey(EVP_PKEY* pubkey) {
     unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
     SHA256(der.data(), der.size(), hash);
 
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(SHA256_DIGEST_LENGTH * 2);
-    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        out.push_back(kHex[(hash[i] >> 4) & 0xF]);
-        out.push_back(kHex[hash[i] & 0xF]);
-    }
-    return out;
+    return encoding::hex_lower(std::span<const std::uint8_t>(
+        hash, SHA256_DIGEST_LENGTH));
 }
 
 const char* auth_key_type_name(AuthKeyType type) {

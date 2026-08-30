@@ -32,9 +32,9 @@
 #include "client/cli/entry.hpp"
 #include "core/runtime/operation_status.hpp"
 #include "client/transport/runtime_lifetime.hpp"
+#include "outbound/tunnel_fwd.hpp"
 
 namespace yume::client {
-class Tunnel;
 class RelayRuntime;
 }
 

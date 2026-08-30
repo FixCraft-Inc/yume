@@ -4,7 +4,7 @@ This page covers the release, deployment, and service workflows that operators n
 
 ## Release verification
 
-The 0.2.0 release surface is Linux x86-64 only. A release publishes:
+The first stable release surface is Linux x86-64 only. A release publishes:
 
 - `yume-amd64-linux.tar.xz`, the client bundle (`yume`, the optional temporarily
   retained Chrome TLS helper, license, third-party notices, quick start, and a
@@ -135,11 +135,12 @@ The matching CLI flags are `--threads`, `--max-sessions`,
 `--egress-mbps`, and `--filter-memory-mib`. `rekey_window` is the number of
 concurrent directional epoch offers accepted from one session and the ceiling
 on the server's own sending window (1..64, default 8). It is what lifts
-per-round-trip throughput on high-latency links — under Extreme each prepared
-epoch adds 256 KiB per rekey round trip — and it bounds how much ML-KEM work
+per-round-trip throughput on high-latency links. Under Extreme, each prepared
+epoch adds 256 KiB per rekey round trip. It also bounds how much ML-KEM work
 one peer can request. Under the default Extreme security mode, the 256 KiB,
 512-frame, and 500 ms per-epoch limits are the same at every depth. See
-`docs/YUME_2_0_WAN_BEHAVIOR.md`. The daemon defaults to 256
+`docs/IMPLEMENTATION_STATUS.md` for the public network qualification boundary.
+The daemon defaults to 256
 live sessions and 64 authenticated sessions per bulk key. An administrator can
 explicitly use `--max-sessions 0` to remove the global cap, but should normally
 raise a finite limit instead.
@@ -180,7 +181,7 @@ times the share of a simultaneously active `1.0` identity. Individual and
 operator keys form one identity each. Every authenticated bulk-key session is
 counted separately and receives its own fair-share slot. See
 `docs/PERMISSIONS.md` for safe bulk/operator examples and restrictions. The
-packet-native TUN uplink must additionally be capped on its TUN/physical
+packet-native TUN uplink must also be capped on its TUN/physical
 interface with Linux `tc`; it does not traverse every socket-shaper hook.
 
 For an optional, reversible TUN/NAT/UFW setup, review and apply the separate
@@ -264,8 +265,8 @@ verification, ratcheting, replay protection, or fail-closed behavior.
 On overload, the desired behavior is bounded rejection and recovery. An OOM
 kill, swap storm, process storm, silent fallback to the diagnostic TLS
 backend, or a cover identity that changes with machine size fails the tier.
-See `docs/YUME_2_0_WAN_BEHAVIOR.md` for the separate high-latency design and
-validation boundary.
+See `docs/IMPLEMENTATION_STATUS.md` for the current high-latency validation
+boundary.
 
 ## Key and permission operations
 
@@ -319,26 +320,18 @@ Public endpoints should publish:
 
 Do not advertise a public endpoint until users can pin enough metadata to detect replacement or downgrade.
 
-## Website documentation mirror
+## Website documentation
 
-The GitHub Pages site at `website/` publishes a subset of `docs/` for
-browser reading. The canonical copies live in the repository root
-`docs/` tree; `website/docs/` is a curated mirror, not a second source
-of truth.
+The GitHub Pages site at `website/` publishes the tracked top-level documents
+under `docs/`, the protocol documents, and `CONTRIBUTING.md`. The canonical
+Markdown stays in the repository root. Generated files under
+`website/docs/` are ignored and must not be edited by hand.
 
-Current mirrored pages (under `website/docs/`):
-
-- `QUICKSTART.md`
-- `STEALTH.md`
-- `PERFORMANCE.md`
-- `OPERATIONS.md`
-- `PERMISSIONS.md`
-
-When you change an operator-facing doc that appears on the site, update
-the matching file under `website/docs/` in the same commit, or remove
-the page from the site index until it is synced. Release and packaging
-docs (`PACKAGING.md`, man pages, `ARCHITECTURE.md`) stay repo-only
-unless explicitly added to the mirror list.
+Run `bash scripts/sync_website_docs.sh` before a local site build. The same
+script runs in CI and the Pages workflow, so generated routes and link rewrites
+have one implementation. `website/docs/index.html` remains the hand-written
+human documentation index. Public automation notes under `docs/agents/` are
+deliberately outside the website reader path.
 
 ## Troubleshooting
 

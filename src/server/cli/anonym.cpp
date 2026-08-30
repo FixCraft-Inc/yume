@@ -23,7 +23,7 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 
-#include "client/proxy/outbound_proxy.hpp"
+#include "outbound/proxy.hpp"
 #include "core/security/crypto.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "server/cli/misc.hpp"
@@ -149,16 +149,16 @@ nlohmann::json post_json_https(const detail::HttpsEndpoint& endpoint,
     const auto deadline =
         std::chrono::steady_clock::now() + kRequestTimeout;
     if (!outbound_proxy_url.empty()) {
-        yume::client::outbound_proxy::Config proxy_cfg;
+        yume::outbound::proxy::Config proxy_cfg;
         std::string parse_error;
-        if (!yume::client::outbound_proxy::parse_proxy_url(outbound_proxy_url, proxy_cfg, &parse_error)) {
+        if (!yume::outbound::proxy::parse_proxy_url(outbound_proxy_url, proxy_cfg, &parse_error)) {
             throw std::runtime_error("outbound proxy: " + parse_error);
         }
         const auto remaining = remaining_until(deadline);
         if (remaining == std::chrono::milliseconds::zero()) {
             throw std::runtime_error("operator proof connection timed out");
         }
-        auto dial = yume::client::outbound_proxy::socks5_dial(
+        auto dial = yume::outbound::proxy::socks5_dial(
             stream.next_layer(), io, proxy_cfg, endpoint.host,
             std::stoi(endpoint.port), std::min(
                 std::chrono::duration_cast<std::chrono::milliseconds>(

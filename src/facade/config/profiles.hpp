@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -14,6 +15,10 @@
 #include "client/cli/entry.hpp"
 
 namespace yume::facade::profiles {
+
+inline constexpr std::size_t kMaximumProfileIdBytes = 64U;
+inline constexpr std::size_t kMaximumProfileBytes = 1U * 1024U * 1024U;
+inline constexpr std::size_t kMaximumDisplayNameBytes = 159U;
 
 // A named saved ClientConfig. Multiple profiles can exist side-by-side;
 // one is "active" and gets used by ClientSession when start is invoked.
@@ -27,12 +32,12 @@ struct ProfileSummary {
 std::filesystem::path profiles_dir();
 std::filesystem::path active_pointer_path();
 
-std::vector<ProfileSummary> list();
+std::vector<ProfileSummary> list(std::string* err = nullptr);
 
 // Returns the id of the currently active profile, or empty if none is
 // set. When empty the GUI falls back to ~/.yume/client.json.
-std::string active_id();
-bool set_active(std::string const& id);
+std::string active_id(std::string* err = nullptr);
+bool set_active(std::string const& id, std::string* err = nullptr);
 
 // Read / write a profile by id. load returns nullopt if the file is
 // missing or malformed.

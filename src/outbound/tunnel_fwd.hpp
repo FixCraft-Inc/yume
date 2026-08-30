@@ -6,11 +6,14 @@
 
 #pragma once
 
-#include <string>
+namespace yume::outbound {
+
+class Tunnel;
+
+}  // namespace yume::outbound
 
 namespace yume::client {
 
-bool write_file_bytes(const std::string& path, const std::string& data, std::string* err);
-bool read_file_bytes(const std::string& path, std::string* out, std::string* err);
+using Tunnel = outbound::Tunnel;
 
 }  // namespace yume::client

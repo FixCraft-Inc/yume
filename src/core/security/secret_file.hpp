@@ -16,6 +16,18 @@
 
 namespace yume::security {
 
+// Creates or tightens the final directory to an owner-only, non-reparse
+// directory. Existing ancestors are not re-permissioned. The final component
+// is rejected if it is a symlink/reparse point or is not owned by the current
+// POSIX user.
+bool ensure_private_directory(const std::filesystem::path& path,
+                              std::string* error = nullptr);
+
+enum class PrivateParentPolicy {
+    RequireExisting,
+    CreateOwnerOnly,
+};
+
 class Secret32 {
 public:
     explicit Secret32(std::array<std::uint8_t, 32>&& bytes) noexcept;
@@ -41,7 +53,9 @@ private:
 // a partial file (including any cleanup failure in the diagnostic).
 bool WriteFileExclusive0600(const std::filesystem::path& path,
                             std::span<const std::uint8_t> contents,
-                            std::string* error);
+                            std::string* error,
+                            PrivateParentPolicy parent_policy =
+                                PrivateParentPolicy::CreateOwnerOnly);
 
 // Linux/POSIX v2 secret-file contract: a regular non-symlink file, no group or
 // world permission bits, and exactly 64 lowercase hex bytes with no newline.

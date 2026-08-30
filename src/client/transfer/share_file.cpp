@@ -28,6 +28,9 @@
 #include <utility>
 #include <vector>
 
+#include "core/runtime/bounded_file.hpp"
+#include "core/security/secret_file.hpp"
+
 #ifndef _WIN32
 #include <dirent.h>
 #include <fcntl.h>
@@ -49,6 +52,101 @@
 #endif
 
 namespace yume::share {
+
+ShareBundle::ShareBundle(const ShareBundle& other) try {
+    *this = other;
+} catch (...) {
+    clear_secrets();
+    throw;
+}
+ShareBundle& ShareBundle::operator=(const ShareBundle& other) {
+    if (this == &other) return *this;
+    clear_secrets();
+    type = other.type;
+    created_at_iso8601 = other.created_at_iso8601;
+    created_by = other.created_by;
+    label = other.label;
+    server_host = other.server_host;
+    server_port = other.server_port;
+    auth_private_key_pem = other.auth_private_key_pem;
+    obfuscation = other.obfuscation;
+    obfs_secret = other.obfs_secret;
+    inner_psk = other.inner_psk;
+    obfs_pad_multiple = other.obfs_pad_multiple;
+    obfs_jitter_ms = other.obfs_jitter_ms;
+    tls_pin_sha256 = other.tls_pin_sha256;
+    tls_stealth_profile = other.tls_stealth_profile;
+    tls_ca_cert_pem = other.tls_ca_cert_pem;
+    tls_server_name = other.tls_server_name;
+    anonym_ca_cert_pem = other.anonym_ca_cert_pem;
+    anonym_pubkey = other.anonym_pubkey;
+    pq_public_key_pem = other.pq_public_key_pem;
+    inner_crypto = other.inner_crypto;
+    inner_heavy = other.inner_heavy;
+    tunnel_count = other.tunnel_count;
+    require_operator_identity = other.require_operator_identity;
+    allow_udp = other.allow_udp;
+    allow_local_ip = other.allow_local_ip;
+    relay_trust_mode = other.relay_trust_mode;
+    relay_peer_pins = other.relay_peer_pins;
+    return *this;
+}
+
+ShareBundle::ShareBundle(ShareBundle&& other) try {
+    *this = std::move(other);
+} catch (...) {
+    clear_secrets();
+    throw;
+}
+
+ShareBundle& ShareBundle::operator=(ShareBundle&& other) {
+    if (this == &other) return *this;
+    clear_secrets();
+    type = other.type;
+    created_at_iso8601 = std::move(other.created_at_iso8601);
+    created_by = std::move(other.created_by);
+    label = std::move(other.label);
+    server_host = std::move(other.server_host);
+    server_port = other.server_port;
+    // Copy the three sensitive strings, then wipe their original storage.
+    // A conforming std::string move may leave short-string bytes in the
+    // moved-from object where clear() can no longer reach them.
+    auth_private_key_pem = other.auth_private_key_pem;
+    obfuscation = other.obfuscation;
+    obfs_secret = other.obfs_secret;
+    inner_psk = other.inner_psk;
+    other.clear_secrets();
+    obfs_pad_multiple = other.obfs_pad_multiple;
+    obfs_jitter_ms = other.obfs_jitter_ms;
+    tls_pin_sha256 = std::move(other.tls_pin_sha256);
+    tls_stealth_profile = std::move(other.tls_stealth_profile);
+    tls_ca_cert_pem = std::move(other.tls_ca_cert_pem);
+    tls_server_name = std::move(other.tls_server_name);
+    anonym_ca_cert_pem = std::move(other.anonym_ca_cert_pem);
+    anonym_pubkey = std::move(other.anonym_pubkey);
+    pq_public_key_pem = std::move(other.pq_public_key_pem);
+    inner_crypto = other.inner_crypto;
+    inner_heavy = other.inner_heavy;
+    tunnel_count = other.tunnel_count;
+    require_operator_identity = other.require_operator_identity;
+    allow_udp = other.allow_udp;
+    allow_local_ip = other.allow_local_ip;
+    relay_trust_mode = std::move(other.relay_trust_mode);
+    relay_peer_pins = std::move(other.relay_peer_pins);
+    return *this;
+}
+
+ShareBundle::~ShareBundle() { clear_secrets(); }
+
+void ShareBundle::clear_secrets() noexcept {
+    basefwx::crypto::SecureClear(auth_private_key_pem);
+    basefwx::crypto::SecureClear(obfs_secret);
+    basefwx::crypto::SecureClear(inner_psk);
+}
+
+BackupInputs::~BackupInputs() {
+    basefwx::crypto::SecureClear(obfs_secret);
+}
 
 namespace {
 
@@ -132,35 +230,29 @@ bool normalize_relay_trust_policy(const std::string& mode,
     return true;
 }
 
-void wipe_json_string(nlohmann::json& parent,
-                      const char* name) noexcept {
+void wipe_json_strings(nlohmann::json& value) noexcept {
     try {
-        auto it = parent.find(name);
-        if (it != parent.end() && it->is_string()) {
-            basefwx::crypto::SecureClear(it->get_ref<std::string&>());
+        if (value.is_string()) {
+            basefwx::crypto::SecureClear(value.get_ref<std::string&>());
+            return;
+        }
+        if (value.is_array()) {
+            for (auto& item : value) wipe_json_strings(item);
+            return;
+        }
+        if (value.is_object()) {
+            for (auto& item : value.items()) {
+                wipe_json_strings(item.value());
+            }
         }
     } catch (...) {
-        // Destructors must not throw. The encrypted/plaintext byte buffers are
-        // independently guarded even if a malformed JSON shape reaches here.
+        // Cleanup must not throw. The decrypted byte buffer is independently
+        // guarded even if a malformed JSON shape reaches here.
     }
 }
 
 void wipe_bundle_json_secrets(nlohmann::json& document) noexcept {
-    try {
-        auto auth = document.find("auth");
-        if (auth != document.end() && auth->is_object()) {
-            wipe_json_string(*auth, "private_key_pem");
-        }
-        auto stealth = document.find("stealth");
-        if (stealth != document.end() && stealth->is_object()) {
-            wipe_json_string(*stealth, "obfs_secret");
-        }
-        auto settings = document.find("client_settings");
-        if (settings != document.end() && settings->is_object()) {
-            wipe_json_string(*settings, "inner_psk");
-        }
-    } catch (...) {
-    }
+    wipe_json_strings(document);
 }
 
 class JsonSecretWiper {
@@ -176,9 +268,7 @@ private:
 };
 
 void wipe_bundle_secrets(ShareBundle& bundle) noexcept {
-    basefwx::crypto::SecureClear(bundle.auth_private_key_pem);
-    basefwx::crypto::SecureClear(bundle.obfs_secret);
-    basefwx::crypto::SecureClear(bundle.inner_psk);
+    bundle.clear_secrets();
 }
 
 class BundleSecretWiper {
@@ -418,6 +508,10 @@ std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
         if (error) *error = std::string("serialise failed: ") + ex.what();
         return {};
     }
+    if (serialised.size() > kMaxShareFileBytes - kHeaderLen) {
+        if (error) *error = "share payload exceeds 16 MiB limit";
+        return {};
+    }
 
     basefwx::crypto::SecureBytes plaintext{
         std::vector<std::uint8_t>(serialised.begin(), serialised.end())};
@@ -437,6 +531,11 @@ std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
     out.push_back(0);
     out.push_back(0);
     out.insert(out.end(), encrypted.begin(), encrypted.end());
+    if (out.size() > kMaxShareFileBytes) {
+        basefwx::crypto::SecureClear(out);
+        if (error) *error = "encrypted share file exceeds 16 MiB limit";
+        return {};
+    }
     return out;
 }
 
@@ -455,22 +554,30 @@ bool peek_share_header(const std::vector<std::uint8_t>& blob, ShareFileHeader* o
     return true;
 }
 
+bool read_share_file(const std::filesystem::path& path,
+                     std::vector<std::uint8_t>* contents,
+                     std::string* error) {
+    return runtime::read_file_bounded(
+        path, kMaxShareFileBytes, contents, error);
+}
+
+bool write_share_file_exclusive(const std::filesystem::path& path,
+                                std::span<const std::uint8_t> contents,
+                                std::string* error) {
+    if (contents.size() > kMaxShareFileBytes) {
+        if (error) *error = "share file exceeds 16 MiB limit";
+        return false;
+    }
+    return security::WriteFileExclusive0600(
+        path, contents, error,
+        security::PrivateParentPolicy::RequireExisting);
+}
+
 namespace {
 std::string slurp_text_file(const std::string& path, std::string* error) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        if (error) *error = "cannot open " + path;
-        return {};
-    }
-    // Read directly into the returned allocation. A stringstream would retain
-    // a second complete plaintext copy of imported private-key/PSK material.
-    std::string contents{std::istreambuf_iterator<char>(f),
-                         std::istreambuf_iterator<char>()};
-    if (f.bad()) {
-        basefwx::crypto::SecureClear(contents);
-        if (error) *error = "read failed: " + path;
-        return {};
-    }
+    std::string contents;
+    (void)runtime::read_text_file_bounded(
+        path, security::kMaxPrivateKeyFileBytes, &contents, error);
     return contents;
 }
 
@@ -1092,6 +1199,8 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
         if (error) *error = "build_backup_bundle: out is null";
         return false;
     }
+    out->clear_secrets();
+    BundleSecretWiper output_wiper(*out);
     if (!valid_server_host_component(in.server_host) ||
         in.server_port < 1 || in.server_port > 65535) {
         if (error) *error = "server endpoint missing or invalid";
@@ -1183,6 +1292,7 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
     out->allow_local_ip      = in.allow_local_ip;
     out->relay_trust_mode    = in.relay_trust_mode;
     out->relay_peer_pins     = std::move(normalized_pins);
+    output_wiper.dismiss();
     return true;
 }
 
@@ -1351,6 +1461,10 @@ bool apply_imported_bundle(const ShareBundle& bundle,
 std::optional<ShareBundle> decode_share(const std::vector<std::uint8_t>& blob,
                                         const std::string& password,
                                         std::string* error) {
+    if (blob.size() > kMaxShareFileBytes) {
+        if (error) *error = "share file exceeds 16 MiB limit";
+        return std::nullopt;
+    }
     ShareFileHeader hdr{};
     if (!peek_share_header(blob, &hdr)) {
         if (error) *error = "not a .yss file (bad magic or unsupported version)";

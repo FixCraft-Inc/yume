@@ -1,6 +1,6 @@
-# YUME 2.0 desktop wire contract
+# YUME transport v2 wire contract
 
-Status: current `0.2.0-dev6` development contract for the first Linux x86-64 desktop slice.
+Status: normative development contract for the current transport v2 source.
 The release version remains gated on exact-Chrome same-session capture,
 external conformance/classification, matched WAN, an uninterrupted deployed
 soak, and independent review. Bounded lifecycle, scale, reconnect, and
@@ -137,7 +137,7 @@ u32(32) || channel_binding
 ```
 
 The admin second factor, when present, signs the same transcript under a
-different domain and is additionally bound to the visitor identity that
+different domain and is also bound to the visitor identity that
 presented it:
 
 ```
@@ -298,8 +298,8 @@ Nothing else about the exchange changes:
 
 Depth `w` therefore permits up to `w * epoch_bytes` per rekey round trip while
 every negotiated per-epoch limit remains enforced. It also bounds what a peer
-can force — at most `w` ML-KEM
-encapsulations and `w` retained epoch roots per session — and it bounds the
+can force: at most `w` ML-KEM
+encapsulations and `w` retained epoch roots per session. It also bounds the
 break-in recovery gap: an endpoint compromise exposes at most `w` prepared
 future epochs.
 

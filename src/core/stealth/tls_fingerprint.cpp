@@ -19,6 +19,7 @@
 #include <cstring>
 #include <vector>
 
+#include "core/encoding/hex.hpp"
 #include "core/stealth/cover_profile.hpp"
 
 namespace yume::tls_fingerprint {
@@ -36,11 +37,8 @@ std::string digest_hex(const std::string& input, const EVP_MD* algorithm) {
                    nullptr) != 1) {
         throw std::runtime_error("EVP_Digest failed");
     }
-    std::ostringstream oss;
-    for (unsigned int i = 0; i < digest_len; ++i) {
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[i]);
-    }
-    return oss.str();
+    return encoding::hex_lower(
+        std::span<const std::uint8_t>(digest, digest_len));
 }
 
 std::string md5_hash(const std::string& input) {
@@ -569,11 +567,8 @@ FingerprintData parse_client_hello(const uint8_t* data, size_t length) {
         return result;
     }
 
-    std::ostringstream oss;
-    for (size_t i = 0; i < std::min(length, size_t(256)); ++i) {
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]);
-    }
-    result.client_hello_hex = oss.str();
+    result.client_hello_hex = encoding::hex_lower(
+        std::span<const std::uint8_t>(data, std::min(length, size_t(256))));
 
     std::vector<uint8_t> handshake = extract_handshake_bytes(data, length);
     if (handshake.size() < 4) {

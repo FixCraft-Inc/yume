@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "client/transport/core.hpp"
+#include "outbound/core.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -14,9 +14,9 @@
 
 #include "core/security/inner_crypto.hpp"
 #include "core/security/secure_erase.hpp"
-#include "client/transport/internal.hpp"
+#include "outbound/internal.hpp"
 
-namespace yume::client {
+namespace yume::outbound {
 
 using namespace detail;
 
@@ -895,4 +895,4 @@ void TransportCore::request_transport_close(const std::string& reason) {
     }
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

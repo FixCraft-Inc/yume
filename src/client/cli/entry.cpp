@@ -15,7 +15,6 @@
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/config/config.hpp"
 #include "client/cli/connect/diagnostics.hpp"
-#include "client/cli/config/files.hpp"
 #include "client/cli/config/input.hpp"
 #include "client/cli/connect/io.hpp"
 #include "client/cli/connect/outer_carrier_capture.hpp"

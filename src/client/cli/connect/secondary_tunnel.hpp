@@ -18,10 +18,9 @@
 #include "client/cli/entry.hpp"
 #include "client/proxy/outbound_proxy.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
+#include "outbound/tunnel_fwd.hpp"
 
 namespace yume::client {
-
-class Tunnel;
 
 std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  boost::asio::ssl::context& ctx,

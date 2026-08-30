@@ -57,7 +57,7 @@ constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
 // peer stalls at this bounded window instead of filling application queues.
 // Increasing it would still enlarge retained protocol/parser state and change
 // WINDOW_UPDATE timing; that belongs with separate WAN and classifier evidence.
-// See docs/YUME_2_0_WAN_BEHAVIOR.md.
+// See docs/IMPLEMENTATION_STATUS.md, "Performance and network qualification".
 constexpr std::int32_t kAuthenticatedReceiveWindow = 8 * 1024 * 1024;
 
 nghttp2_nv Nv(std::string& name, std::string& value) {

@@ -28,24 +28,7 @@ jobs:
 
       - name: Sync docs into website
         run: |
-          set -euo pipefail
-          mkdir -p website/docs
-          for src in docs/*.md; do
-            [[ -f "$src" ]] || continue
-            name="$(basename "$src")"
-            dst="website/docs/$name"
-            title="$(head -n1 "$src" | sed 's/^#\s*//')"
-            permalink="/docs/$(basename "$name" .md)/"
-            {
-              echo "---"
-              echo "layout: doc"
-              echo "title: $title"
-              echo "permalink: $permalink"
-              echo "---"
-              echo
-              cat "$src"
-            } > "$dst"
-          done
+          bash scripts/sync_website_docs.sh
 
       - name: Build website
         uses: actions/jekyll-build-pages@v1

@@ -236,10 +236,17 @@ std::optional<client::ClientConfig> parse_client_json(
     }
 }
 
-bool save_client(client::ClientConfig const& c,
-                 std::filesystem::path const& path,
-                 std::string* err) {
+bool serialize_client_json(
+    client::ClientConfig const& c,
+    std::optional<std::string_view> display_name,
+    std::string* serialized,
+    std::string* err) {
     if (err) err->clear();
+    if (!serialized) {
+        if (err) *err = "client config serialization destination is null";
+        return false;
+    }
+    serialized->clear();
     json j = {
         {cfg_key::server, c.server},
         {cfg_key::port, c.port},
@@ -314,15 +321,27 @@ bool save_client(client::ClientConfig const& c,
             c.app_codec_listen_host, c.app_codec_listen_port);
     }
     yume::config::WriteSecurityProfile(j, c.security_profile);
+    if (display_name.has_value()) {
+        j["display_name"] = *display_name;
+    }
 
-    std::string serialized;
     try {
-        serialized = j.dump(2);
+        *serialized = j.dump(2);
     } catch (const std::exception& ex) {
         if (err) {
             *err = "cannot serialize client config: " +
                    std::string(ex.what());
         }
+        return false;
+    }
+    return true;
+}
+
+bool save_client(client::ClientConfig const& c,
+                 std::filesystem::path const& path,
+                 std::string* err) {
+    std::string serialized;
+    if (!serialize_client_json(c, std::nullopt, &serialized, err)) {
         return false;
     }
     return yume::runtime::AtomicWriteFile(

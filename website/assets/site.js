@@ -2,7 +2,7 @@ const repo = "FixCraft-Inc/yume";
 const releaseApi = `https://api.github.com/repos/${repo}/releases/latest`;
 let latestReleaseData = null;
 
-// The 0.2.0 release workflow attaches exactly these two artifacts, plus a
+// The first stable CLI release workflow attaches exactly these two artifacts, plus a
 // .sha256 sidecar for each, an aggregate SHA256SUMS.txt, and
 // release-manifest.json. Detached .sig files appear only when the workflow has
 // signing secrets. MD5 sidecars are no longer produced.
@@ -15,6 +15,20 @@ Object.values(assetMap).forEach((entry) => {
   entry.sha256 = `${entry.bin}.sha256`;
   entry.sig = `${entry.bin}.sig`;
 });
+
+const currentReleaseAssets = (data) => {
+  const assets = Array.isArray(data?.assets) ? data.assets : [];
+  const lookup = new Map(assets.map((asset) => [asset.name, asset]));
+  const required = [
+    ...Object.values(assetMap).flatMap((entry) => [entry.bin, entry.sha256]),
+    "SHA256SUMS.txt",
+    "release-manifest.json"
+  ];
+  if (!required.every((name) => lookup.has(name))) {
+    throw new Error("latest release does not match the current artifact contract");
+  }
+  return { assets, lookup };
+};
 
 const setText = (id, value) => {
   const el = document.getElementById(id);
@@ -49,11 +63,21 @@ const setAssetLinkElement = (el, url) => {
     el.setAttribute("rel", "noopener");
     el.classList.remove("disabled");
     el.removeAttribute("aria-disabled");
+    el.removeAttribute("tabindex");
   } else {
-    el.href = "#";
+    el.removeAttribute("href");
+    el.removeAttribute("target");
+    el.removeAttribute("rel");
     el.classList.add("disabled");
     el.setAttribute("aria-disabled", "true");
+    el.setAttribute("tabindex", "-1");
   }
+};
+
+const initDisabledLinks = () => {
+  document.querySelectorAll('a[aria-disabled="true"]').forEach((el) => {
+    setAssetLinkElement(el, null);
+  });
 };
 
 const setLinks = (selector, url) => {
@@ -93,16 +117,33 @@ const showHash = (node, text) => {
     node.classList.remove("truncated");
     node.style.cursor = "default";
     node.onclick = null;
+    node.onkeydown = null;
+    node.removeAttribute("role");
+    node.removeAttribute("tabindex");
+    node.removeAttribute("aria-expanded");
     return;
   }
   node.classList.add("truncated");
   node.style.cursor = "pointer";
-  node.onclick = function (event) {
-    event.preventDefault();
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.setAttribute("aria-expanded", "false");
+  const toggle = function () {
     const expanded = this.classList.toggle("expanded");
+    this.setAttribute("aria-expanded", String(expanded));
     this.textContent = expanded
       ? this.dataset.fullHash
       : this.dataset.fullHash.slice(0, HASH_COLLAPSED_LEN);
+  };
+  node.onclick = function (event) {
+    event.preventDefault();
+    toggle.call(this);
+  };
+  node.onkeydown = function (event) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggle.call(this);
+    }
   };
 };
 
@@ -126,15 +167,15 @@ const applyReleaseLinks = (assetLookup) => {
 const loadRelease = async () => {
   try {
     const data = await fetchLatestRelease();
-    const assets = Array.isArray(data.assets) ? data.assets : [];
+    const { assets, lookup } = currentReleaseAssets(data);
     setText("release-version", data.name || data.tag_name || "Latest release");
     setText("release-date", formatDate(data.published_at));
     setText("release-assets", `${assets.length} assets`);
     setLinks("#release-link", data.html_url || "");
-    applyReleaseLinks(new Map(assets.map((asset) => [asset.name, asset])));
+    applyReleaseLinks(lookup);
   } catch (_err) {
     // No published release, or GitHub is unreachable. The markup already
-    // states the honest default, so only overwrite it when it is stale.
+    // states the no-release default, so only overwrite it when it is stale.
     setText("release-assets", "");
     applyReleaseLinks(new Map());
   }
@@ -153,8 +194,7 @@ const loadHashFiles = async () => {
   let assetLookup = new Map();
   try {
     const data = await fetchLatestRelease();
-    const assets = Array.isArray(data.assets) ? data.assets : [];
-    assetLookup = new Map(assets.map((asset) => [asset.name, asset]));
+    assetLookup = currentReleaseAssets(data).lookup;
   } catch (_err) {
     nodes.forEach((node) => showHash(node, "No published release"));
     return;
@@ -214,12 +254,51 @@ const initNavScrollSpy = () => {
   );
 
   sections.forEach(({ section }) => observer.observe(section));
-  setActive(sections[0].section.id);
+};
+
+const initDocToc = () => {
+  const article = document.querySelector(".doc-article");
+  const toc = document.getElementById("doc-toc-list");
+  if (!article || !toc) return;
+
+  const details = toc.closest(".doc-toc");
+  if (window.matchMedia("(max-width: 920px)").matches) {
+    details?.removeAttribute("open");
+  }
+
+  const headings = Array.from(article.querySelectorAll("h2, h3"));
+  if (!headings.length) {
+    details?.setAttribute("hidden", "");
+    return;
+  }
+
+  const usedIds = new Set(Array.from(document.querySelectorAll("[id]"), (el) => el.id));
+  headings.forEach((heading, index) => {
+    if (!heading.id) {
+      const base = heading.textContent
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || `section-${index + 1}`;
+      let id = base;
+      let suffix = 2;
+      while (usedIds.has(id)) id = `${base}-${suffix++}`;
+      heading.id = id;
+      usedIds.add(id);
+    }
+    const link = document.createElement("a");
+    link.href = `#${heading.id}`;
+    link.dataset.level = heading.tagName.slice(1);
+    link.textContent = heading.textContent;
+    toc.appendChild(link);
+  });
 };
 
 document.addEventListener("DOMContentLoaded", () => {
   initBrandMask();
+  initDisabledLinks();
   initNavScrollSpy();
+  initDocToc();
   const run = async () => {
     if (document.getElementById("release-version") || document.querySelector("[data-download]")) {
       await loadRelease();

@@ -28,7 +28,7 @@ namespace yume::server {
 struct FederationLinkLifecycleTestPeer {
     static void InstallTunnel(
         FederationLink& link,
-        const std::shared_ptr<client::Tunnel>& tunnel) {
+        const std::shared_ptr<outbound::Tunnel>& tunnel) {
         std::lock_guard<std::mutex> lock(link.mutex_);
         link.tunnel_ = tunnel;
         link.ready_ = false;
@@ -38,7 +38,7 @@ struct FederationLinkLifecycleTestPeer {
 
     static void HandleControl(FederationLink& link,
                               const nlohmann::json& json,
-                              const std::shared_ptr<client::Tunnel>& tunnel) {
+                              const std::shared_ptr<outbound::Tunnel>& tunnel) {
         link.handle_control(json, tunnel);
     }
 
@@ -88,13 +88,13 @@ void Require(bool condition, const char* message) {
     }
 }
 
-std::shared_ptr<yume::client::Tunnel> MakeTestTunnel(
+std::shared_ptr<yume::outbound::Tunnel> MakeTestTunnel(
     boost::asio::io_context& io,
     boost::asio::ssl::context& ssl_context) {
-    yume::client::ClientTransportStream::OpenSslStream stream(
+    yume::outbound::ClientTransportStream::OpenSslStream stream(
         boost::asio::ip::tcp::socket(io), ssl_context);
-    return std::make_shared<yume::client::Tunnel>(
-        yume::client::ClientTransportStream(std::move(stream)));
+    return std::make_shared<yume::outbound::Tunnel>(
+        yume::outbound::ClientTransportStream(std::move(stream)));
 }
 
 void CheckHelloAndChannelLifecycle() {
@@ -146,8 +146,8 @@ void CheckHelloAndChannelLifecycle() {
     Require(rejected_stream != 0, "test stream reservation failed");
     tunnel->register_stream(
         rejected_stream,
-        [](const yume::client::Tunnel::Bytes&,
-           yume::client::Tunnel::InboundCredit) {},
+        [](const yume::outbound::Tunnel::Bytes&,
+           yume::outbound::Tunnel::InboundCredit) {},
         [](const std::string&) {});
     yume::server::FederationLinkLifecycleTestPeer::AddChannel(
         *link, rejected_stream, "rejected-open", true);
@@ -179,8 +179,8 @@ void CheckHelloAndChannelLifecycle() {
     Require(data_stream != 0, "DATA test stream reservation failed");
     tunnel->register_stream(
         data_stream,
-        [](const yume::client::Tunnel::Bytes&,
-           yume::client::Tunnel::InboundCredit) {},
+        [](const yume::outbound::Tunnel::Bytes&,
+           yume::outbound::Tunnel::InboundCredit) {},
         [](const std::string&) {});
     yume::server::FederationLinkLifecycleTestPeer::AddChannel(
         *link, data_stream, "bounded-data", false);
@@ -189,8 +189,8 @@ void CheckHelloAndChannelLifecycle() {
         16U * 1024U * 1024U + 1U;
     link->send_data(
         data_stream, "bounded-data",
-        yume::client::Tunnel::Bytes(kRejectedPayloadBytes, 0x5a),
-        yume::client::Tunnel::InboundCredit(
+        yume::outbound::Tunnel::Bytes(kRejectedPayloadBytes, 0x5a),
+        yume::outbound::Tunnel::InboundCredit(
             17U, [&released_bytes](std::size_t bytes) {
                 released_bytes += bytes;
             }));

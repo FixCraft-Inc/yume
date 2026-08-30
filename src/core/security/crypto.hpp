@@ -156,23 +156,6 @@ std::string composite_fingerprint(const CompositePublicKey& key);
 // classical and composite fingerprints drifted apart in the first place.
 std::string composite_fingerprint_from_canonical(const Bytes& canonical);
 
-// ECDH shared secret collapsed through HKDF-SHA256. The caller owns the info
-// label: it names the protocol role of the derived key, so two derivations can
-// never collide across purposes. Labels are versioned (Rule: every HKDF info
-// string carries a version suffix) and bump together with their schedule.
-// The raw ECDH output is wiped before this returns.
-Bytes generate_session_key(EVP_PKEY* ecdh_local,
-                           EVP_PKEY* ecdh_remote,
-                           std::string_view info,
-                           size_t out_len = 32);
-EVP_PKEY_ptr generate_x25519_key();
-EVP_PKEY_ptr import_x25519_public_key(const Bytes& raw_public_key);
-Bytes export_raw_public_key(EVP_PKEY* key);
-Bytes hkdf_sha256(const Bytes& key_material,
-                  std::string_view info,
-                  size_t out_len,
-                  const Bytes& salt = {});
-
 Bytes encrypt_chacha20(const Bytes& data, const Bytes& key, const Bytes& nonce);
 Bytes decrypt_chacha20(const Bytes& data, const Bytes& key, const Bytes& nonce);
 

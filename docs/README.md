@@ -1,29 +1,59 @@
-# YUME documentation map
+# YUME documentation
 
-Documents have different authority. Source and executable tests are the final
-authority for implemented behavior; when prose disagrees, update the prose and
-add or repair the test that states the intended contract.
+These pages describe the current source tree. Source code and executable tests
+are the final authority for implemented behavior. If a document disagrees with
+them, fix the document and the test that states the intended contract.
 
-| Need | Authoritative document |
-| --- | --- |
-| Contributor/agent workflow | [`CONTRIBUTING.md`](../CONTRIBUTING.md); optional machine-local `.private/ai/AGENTS.md` |
-| Component ownership | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
-| Current high-level support boundary | [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) |
-| Current development and release gates | [`YUME_2_0_STABILIZATION.md`](YUME_2_0_STABILIZATION.md) |
-| Code health and remediation | [`CODE_HEALTH.md`](CODE_HEALTH.md) |
-| Cross-repository BaseFWX requirements | [`BASEFWX_REQUIREMENTS.md`](BASEFWX_REQUIREMENTS.md) |
-| Public C ABI | [`ABI.md`](ABI.md) |
-| JSON operation API | [`CONTROL_API.md`](CONTROL_API.md) |
-| Wire contracts | [`protocol/`](protocol/) |
-| Threat and trust model | [`THREAT_MODEL.md`](THREAT_MODEL.md) |
-| Stealth claims and residuals | [`STEALTH.md`](STEALTH.md), [`TRANSPORT_PROFILES.md`](TRANSPORT_PROFILES.md) |
-| Deployment | [`QUICKSTART.md`](QUICKSTART.md), [`OPERATIONS.md`](OPERATIONS.md) |
+## Start and operate YUME
 
-Files named `YUME_2_0_*` retain the transport-generation terminology and some
-historical filenames. The product itself is `0.2.0-dev6` on the path to
-`0.2.0`; AUTH v2, relay v2, ABI v1, and helper IPC v1 are independent version
-axes. Do not infer product maturity from a wire-generation number.
+- [YUME explained](EXPLAINED.md) describes the traffic path and who can see
+  what.
+- [Quick start](QUICKSTART.md) builds a local server and client.
+- [Operations](OPERATIONS.md) covers services, public deployment, endpoint
+  policy, and troubleshooting.
+- [Preventing SOCKS bypass](LEAK_TIGHT.md) explains the browser and operating
+  system routing boundary.
+- [Permissions](PERMISSIONS.md) documents client keys and privileged features.
+- [Packaging](PACKAGING.md) covers installation and Debian packages.
 
-`YUME_2_0_DEV6_HANDOFF.md` is historical provenance, not a current task list.
-Machine-local `.private/ai/` notes, when present, are ignored overlays and are
-never required to understand a fresh clone.
+## Understand the design
+
+- [Architecture](ARCHITECTURE.md) maps components and ownership.
+- [Threat model](THREAT_MODEL.md) states the trust and attacker boundaries.
+- [Stealth transport](STEALTH.md) records the browser-shaped carrier and its
+  known residuals.
+- [Security modes](SECURITY_MODES.md) explains the rekey policies.
+- [Transport profiles](TRANSPORT_PROFILES.md) explains how captured browser
+  identities enter the registry.
+- [Filtering and self-DPI](FILTERING_SELF_DPI.md) describes probe and cover
+  behavior.
+
+## Integrate and test
+
+- [C ABI](ABI.md) is the public native interface.
+- [Control API](CONTROL_API.md) defines JSON operations and responses.
+- [Application codecs](APP_CODECS.md), [host controller](HOST_CONTROLLER.md),
+  and [packet-native bulk mode](PACKET_NATIVE_BULK.md) cover optional surfaces.
+- [Benchmarks and self-test](SELFTEST.md) and [diagnostics](DIAGNOSTICS.md)
+  explain validation tools and their limits.
+- [Transport v2 wire](protocol/YUME_2_0_WIRE.md) and the
+  [federation transit design](protocol/YUME_2_0_FEDERATION_TRANSIT.md) are the
+  protocol documents. Federation transit is design-only.
+
+## Current support
+
+[Implementation status](IMPLEMENTATION_STATUS.md) is the single public status
+page. It records what exists, what has focused tests, and what still blocks a
+stable release. Dated handoffs, lab transcripts, rejected experiments, dirty
+tree inventories, and agent task queues are private working material. They do
+not belong in the public reader path.
+
+Contributors should also read [CONTRIBUTING.md](../CONTRIBUTING.md). Public
+automation context is isolated under
+[docs/agents/](https://github.com/FixCraft-Inc/yume/tree/main/docs/agents) and
+is not required to use YUME.
+
+The product version recorded in source, transport v2, AUTH v2, relay v2, C ABI
+v1, and helper IPC v1 are independent identifiers. Protocol filenames and
+cryptographic domains keep their version numbers until a reviewed protocol
+migration changes them.

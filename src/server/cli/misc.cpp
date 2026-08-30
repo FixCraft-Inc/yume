@@ -16,6 +16,7 @@
 #include <openssl/sha.h>
 #include <openssl/x509.h>
 
+#include "core/encoding/hex.hpp"
 #include "platform/platform.hpp"
 #include "util.hpp"
 
@@ -55,27 +56,15 @@ std::string cert_fingerprint_sha256(const std::string& cert_path) {
     unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
     SHA256(der, static_cast<size_t>(len), hash);
     OPENSSL_free(der);
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(SHA256_DIGEST_LENGTH * 2);
-    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        out.push_back(kHex[(hash[i] >> 4) & 0xF]);
-        out.push_back(kHex[hash[i] & 0xF]);
-    }
-    return out;
+    return encoding::hex_lower(std::span<const std::uint8_t>(
+        hash, SHA256_DIGEST_LENGTH));
 }
 
 std::string sha256_hex(const std::string& data) {
     unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
     SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), hash);
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(SHA256_DIGEST_LENGTH * 2);
-    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        out.push_back(kHex[(hash[i] >> 4) & 0xF]);
-        out.push_back(kHex[hash[i] & 0xF]);
-    }
-    return out;
+    return encoding::hex_lower(std::span<const std::uint8_t>(
+        hash, SHA256_DIGEST_LENGTH));
 }
 
 std::string get_self_path(const char* argv0) {

@@ -2,7 +2,7 @@
 # so nothing outside it needs excluding.
 title: YUME
 description: >-
-  YUME 0.2.0-dev6 - an open-source post-quantum stealth transport that carries
+  YUME is an open-source hybrid post-quantum transport that carries
   TCP and UDP through a browser-shaped TLS 1.3 + HTTP/2 connection.
 markdown: kramdown
 theme: null

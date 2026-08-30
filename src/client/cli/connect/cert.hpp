@@ -22,7 +22,6 @@ namespace yume::client {
 
 using X509_ptr = std::unique_ptr<X509, decltype(&X509_free)>;
 
-std::string hex_encode(const unsigned char* data, size_t len);
 void warn_security_disabled(const std::string& what, bool boring);
 std::string get_peer_cert_fingerprint(EVP_PKEY* key, SSL* ssl);
 crypto::EVP_PKEY_ptr load_pubkey_from_cert(const std::string& path);

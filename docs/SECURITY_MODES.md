@@ -1,7 +1,7 @@
 # YUME security modes
 
-YUME 0.2.0-dev6 supports four ratchet-policy modes. `extreme` remains the
-default and exactly preserves the dev4 epoch limits. The mode changes how much
+The current YUME transport supports four ratchet-policy modes. `extreme` remains
+the default and preserves the original transport-v2 epoch limits. The mode changes how much
 traffic may share one hybrid ML-KEM-1024 + X25519 epoch; it does not disable
 TLS 1.3, the random PSK, HKDF, AES-256-GCM, or the fresh one-use key derived
 for every protected frame.
@@ -28,8 +28,8 @@ on a busy connection.
 Both endpoints advertise their accepted limits inside the authenticated AUTH
 transcript. Each sending direction uses the component-wise stricter values, so
 one endpoint can constrain a peer but cannot make the peer accept a wider
-compromise budget. This negotiation is why dev6 intentionally does not
-interoperate with dev4.
+compromise budget. This negotiation is one reason current transport revisions
+fail closed instead of interoperating with older revisions.
 
 ## Why legacy hop was removed
 
@@ -141,7 +141,7 @@ fails closed.
 `normal` and `soft` do not use weaker algorithms and do not reuse an AES-GCM
 message key. They retain one hybrid epoch root/chain for more traffic. A live
 endpoint compromise can therefore expose a larger active-epoch window than in
-`extreme`; the configured rekey window additionally bounds prepared future
+`extreme`; the configured rekey window also bounds prepared future
 epochs. Use `extreme` unless measured hybrid-rekey overhead justifies a wider
 policy.
 

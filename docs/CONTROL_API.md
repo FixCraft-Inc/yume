@@ -202,7 +202,7 @@ string `endpoint_id`, `endpoint_kind`, `display_name`, `hostname`,
 `allow_outbound_admin`, `allow_chat`, `allow_file`,
 `allow_bytes`, and `online`; and string arrays `controller_ids` and
 `controlled_target_ids`. `server_name` and `auth_pubkey_b64` are
-optional. A direct-federation row additionally has `remote:true` plus string
+optional. A direct-federation row also has `remote:true` plus string
 `federation_peer_id` and `remote_endpoint_id`.
 
 `invite.list` rows always contain integer `relay_protocol_version` and
@@ -224,7 +224,7 @@ The `yume_server_request_json` allowlist is:
 | `federation.status` | `{}` | redacted configuration/link document |
 | `federation.topology` | `{}` | single-hop topology document |
 
-Unknown arguments are rejected. The owner-only server IPC socket additionally
+Unknown arguments are rejected. The owner-only server IPC socket also
 exposes these mutations; none is available through
 `yume_server_request_json`:
 
@@ -309,7 +309,7 @@ explicitly unimplemented in
 
 ## Compatibility
 
-### Stabilization migrations
+### Compatibility migrations
 
 The current pre-GUI/Android synchronization snapshot intentionally replaces
 four earlier, unqualified development shapes:

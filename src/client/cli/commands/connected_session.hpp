@@ -26,11 +26,11 @@
 #include "core/stealth/tls_fingerprint.hpp"
 #include "core/stealth/h2_carrier.hpp"
 #include "core/security/session_ratchet.hpp"
+#include "outbound/tunnel_fwd.hpp"
 
 namespace yume::client {
 
 class RelayRuntime;
-class Tunnel;
 
 struct ConnectedSessionOptions {
     using RuntimeReadyCallback = Cli::RuntimeReadyCallback;

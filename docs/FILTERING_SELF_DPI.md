@@ -1,13 +1,13 @@
-# Filtering, Robots, And Self-DPI
+# Filtering, robots, and self-DPI
 
-## Stealth Boundary
+## Stealth boundary
 
 `--robots-deny`, IP filtering, and self-DPI do not change the TLS profile,
 ALPN, HTTP/2 carrier preface, obfs token, or YUME frame format. Robots is a
 normal HTTP-facade response for `GET`/`HEAD /robots.txt`; packet and stream
 traffic still rides inside the existing encrypted YUME `DATA` frames.
 
-## Server Filters
+## Server filters
 
 Two independent planes are available:
 
@@ -44,7 +44,7 @@ GeoLite2-Country `.mmdb`; both are loaded into memory without a runtime
 MaxMind library dependency. Committing a copy requires a deliberate license
 review and `.gitignore` exception.
 
-## Client Self-DPI
+## Client self-DPI
 
 Desktop: `--self-dpi` enables warning-only checks of local carrier metadata.
 Android: Diagnostics -> Self-DPI warnings.

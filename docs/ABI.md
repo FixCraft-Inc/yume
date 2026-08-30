@@ -1,4 +1,4 @@
-# YUME ABI Policy
+# YUME ABI policy
 
 YUME exposes a stable C ABI through `libyume.so.1` when configured with
 `-DYUME_BUILD_SHARED_ABI=ON`.
@@ -16,7 +16,7 @@ External projects must include only `<yume/yume.h>`. They must not include
 `server::RuntimeController`, Boost.Asio types, OpenSSL handles, STL types, or
 any other private C++ implementation header.
 
-## Project-Neutral Boundary
+## Project-neutral boundary
 
 This ABI belongs to YUME and is not tied to any application that embeds it.
 Service names and payload schemas are defined by each embedder; YUME provides
@@ -25,14 +25,14 @@ meaning to them. Examples in this document use `example-service-v1` only as a
 placeholder. No external project's names, message schemas, or authorization
 rules are part of the YUME ABI contract.
 
-## Why C ABI First
+## Why C ABI first
 
 The CLI, GUI, facade, and transport internals can keep evolving without
 freezing compiler, standard library, exception, allocator, or object-layout
 details. A C ABI gives C and C++ embedders a stable link target while YUME keeps
 its internal transport code private.
 
-## ABI v1 Runtime Surface
+## ABI v1 runtime surface
 
 `libyume.so.1` supports:
 
@@ -161,7 +161,7 @@ it. For batch reads and writes, zero timeout means poll, saturation returns
 The TLS fingerprint field is the actual negotiated server leaf certificate
 fingerprint. It is present as an empty string before the client is connected.
 
-## Start JSON Schema
+## Start JSON schema
 
 `yume_client_start_json` and `yume_server_start_json` parse the same JSON keys
 as the facade config files. Relative path fields are resolved against the
@@ -193,10 +193,10 @@ generation before configuration parsing or file I/O, so a concurrent
 start. The lifecycle suite covers a stalled TLS peer, while the ABI suite uses
 a FIFO config fixture to cover cancellation before runtime handoff.
 
-Android integrations targeting dev6 should use the client-only ABI build
-profile. The separate Android checkout has earlier `0.2.0-dev6` ABI-v1 ARM64
+Android integrations should use the client-only ABI build
+profile. The separate Android checkout has earlier ABI-v1 ARM64
 device evidence, but it has not been synchronized or qualified against the
-current native stabilization candidate, and its connected VPN/routing/release
+current native tree, and its connected VPN/routing/release
 path is not qualified. In particular, matched
 server credentials/routed traffic, IPv6/DNS/leak behavior, dependency
 provenance, and connected lifecycle/backpressure remain open. The client-only
@@ -323,7 +323,7 @@ client key fingerprint:
 }
 ```
 
-## Named Service Streams
+## Named service streams
 
 Native service streams are not raw TCP forwards and do not expose `Tunnel`.
 Clients open an authenticated `OPEN` payload with:
@@ -369,7 +369,7 @@ stable field to use for device binding.
 the server's internal numeric session id serialized as a string for log
 correlation only.
 
-## Compatibility Rules
+## Compatibility rules
 
 - `YUME_ABI_VERSION` tracks the source-level C ABI line.
 - `libyume.so.1` tracks binary runtime compatibility.
@@ -388,7 +388,7 @@ correlation only.
   the Handle Lifetime section below.
 - Do not expose internal C++ headers from `src/`.
 
-## Symbol Control
+## Symbol control
 
 `src/abi/yume.map` is the canonical list of exported symbols. Everything else
 that needs to know the public surface derives from it, so the platforms cannot
@@ -408,17 +408,17 @@ an embedder bind to an internal implementation.
 
 Two CTest cases enforce it:
 
-- `yume_abi_header_matches_map` — pure text, no compiler needed. Catches a
+- `yume_abi_header_matches_map` is pure text and needs no compiler. It catches a
   function declared `YUME_API` in the header but missing from the version
   script (hidden at link time, fails only for the embedder) and the reverse.
-- `yume_abi_exports` — inspects the built library with `nm` and requires the
+- `yume_abi_exports` inspects the built library with `nm` and requires the
   exported set to equal the declared set exactly. Runs on ELF and Mach-O.
 
 Both run in CI, which also builds `libyume` with `-DYUME_BUILD_SHARED_ABI=ON`.
 Adding a public function therefore means editing `include/yume/yume.h` and
 `src/abi/yume.map` together; the build fails otherwise.
 
-## Handle Lifetime
+## Handle lifetime
 
 Handle arguments must be live objects of the correct type returned by this ABI.
 Destroy functions accept `NULL`; no other call probes arbitrary or stale
@@ -444,7 +444,7 @@ Free functions that can produce a detailed diagnostic, such as
 pointer remains valid until the next free-function error update on the same
 thread.
 
-## Build Behavior
+## Build behavior
 
 Source builds keep the ABI library off by default:
 
@@ -470,7 +470,7 @@ surface plus package metadata:
   configuration/runtime directories.
 - `yume-gui`: optional GUI, omitted by `DEB_BUILD_PROFILES=nogui`.
 
-## Future Expansion
+## Future expansion
 
 New public runtime features should extend the opaque C handles first. Do not
 export C++ transport classes, GUI models, raw tunnel streams, or broad LAN

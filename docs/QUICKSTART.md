@@ -1,4 +1,4 @@
-# YUME 2.0 desktop quick start
+# YUME quick start
 
 This starts the focused Linux desktop client/server slice on one machine. It
 uses the real HTTP/2 carrier, mandatory hybrid ratchet, and a separate Node.js
@@ -19,8 +19,9 @@ and is never fetched or detached automatically. Set
 `BASEFWX_SYNC_MODE=worktree` to require the current checkout.
 
 `ezbuild.sh` always selects the pinned, checksum-verified and patched OpenSSL
-3.5.7 because the default native ClientHello emitter requires that capability;
-it also requires nghttp2 1.64 or newer and builds pinned 1.69.0 when needed.
+source because the default native ClientHello emitter requires that capability.
+It also prepares the supported nghttp2 revision when the system copy is too
+old.
 Direct CMake builds must first source `scripts/ensure-openssl.sh` and call
 `yume_openssl_ensure`; stock OpenSSL is rejected. The normal build embeds the
 patched library. The default is a portable Release build with `-O3`, LTO,
@@ -74,7 +75,7 @@ Each client directory includes a desktop config,
 `DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
 `~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
 containing both required YUME transport-v2 secrets. The separate Android client
-has earlier `0.2.0-dev6` import evidence but must be re-synchronized to the
+has earlier import evidence but must be re-synchronized to the
 current native candidate; its connected VPN/routing and release path is also
 not qualified. Share passwords must be at least 12 characters, matching
 BaseFWX itself.
@@ -119,11 +120,12 @@ chmod 0600 certs/server.key
 Run the pinned development cover in one terminal:
 
 ```bash
-npx --yes node@24.18.0 tools/cover-node/backend.mjs
+node tools/cover-node/backend.mjs
 ```
 
-It listens on `127.0.0.1:3000`. In production, supervise the Node process
-separately and never expose its port publicly.
+Use the Node version named by the active transport profile. It listens on
+`127.0.0.1:3000`. In production, supervise the Node process separately and
+never expose its port publicly.
 
 Start `yumed` in another terminal:
 
@@ -183,9 +185,9 @@ The full benchmark is intentionally heavy. Use an approved benchmark host, not
 a daily-driver laptop. See [SELFTEST.md](SELFTEST.md) for the local transport,
 real endpoint, and crypto-only benchmark boundaries.
 
-The dev2 one-stream LAN result does not establish high-RTT performance. Read
-[YUME_2_0_WAN_BEHAVIOR.md](YUME_2_0_WAN_BEHAVIOR.md) before interpreting LAN
-line rate as a WAN support claim.
+One-stream LAN results do not establish high-latency performance. The
+[implementation status](IMPLEMENTATION_STATUS.md#performance-and-network-qualification)
+lists the remaining network qualification work.
 
 ## Production notes
 
@@ -203,6 +205,6 @@ line rate as a WAN support claim.
 - Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
   the original TLS connection. Use TCP passthrough when a fronting layer is
   required.
-- `0.2.0-dev6` is not release-complete. Check
-  [YUME_2_0_IMPLEMENTATION_STATUS.md](YUME_2_0_IMPLEMENTATION_STATUS.md) before
-  treating a test result as a production support claim.
+- The development tree is not release-complete. Check the
+  [implementation status](IMPLEMENTATION_STATUS.md) before treating a test
+  result as a production support claim.

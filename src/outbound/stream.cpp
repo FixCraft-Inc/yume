@@ -4,11 +4,11 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "client/transport/client_stream.hpp"
+#include "outbound/stream.hpp"
 
 #include "core/security/secure_erase.hpp"
 
-namespace yume::client {
+namespace yume::outbound {
 
 ClientTransportStream::ClientTransportStream(OpenSslStream&& stream)
     : stream_(std::make_unique<OpenSslStream>(std::move(stream))) {}
@@ -93,4 +93,4 @@ void ClientTransportStream::shutdown_and_close() noexcept {
     }, stream_);
 }
 
-}  // namespace yume::client
+}  // namespace yume::outbound

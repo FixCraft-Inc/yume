@@ -42,7 +42,7 @@ agrees.
 
 `YUME_FEATURE_EXEC`, the server `--allow-exec` setting, and the metadata
 `allow_exec` field remain parsed as reserved policy inputs, but they do not
-enable command execution in `0.2.0-dev6`. Direct client-to-server EXEC receives
+enable command execution in the current development tree. Direct client-to-server EXEC receives
 `EXEC disabled for safety`; clients never advertise or accept inbound EXEC,
 and `--allow-exec` / persisted `allow_exec=true` fail clearly on the client.
 This fail-closed state remains until child processes have portable bounded
@@ -134,7 +134,7 @@ Start the daemon with `--operator-keys /etc/yume/operator_keys` and
 `--operator-keys-meta /etc/yume/operator_keys.meta`. Operator keys are
 individual-only and default to one concurrent authenticated session. Merely
 placing an identity in `operator_keys` does not silently grant reserved EXEC, LAN,
-full-control, or admin permission. Admin additionally requires a different
+full-control, or admin permission. Admin also requires a different
 identity in `--admin-keys` and `--admin-auth` on the client.
 
 ## Individual and bulk regular keys
@@ -160,7 +160,7 @@ abuse.
 
 ## Permission fields
 
-> **Development warning (`0.2.0-dev6`):** the current tree accepts exact relay
+> **Development warning:** the current tree accepts exact relay
 > protocol version 2 only. It fails closed on channel kind, endpoint role,
 > message-state transition, record schema/order, transcript identity/context,
 > and target `allow_chat/file/bytes` policy. Canonical Ed25519 + ML-DSA-87 peer
@@ -181,7 +181,7 @@ abuse.
 
 | Field | Default | What it grants | Server flag required |
 | --- | --- | --- | --- |
-| `allow_exec` | deny | Reserved EXEC policy bit. The current runtime never grants it: yumed rejects direct EXEC and clients never advertise or accept inbound EXEC. | none; deliberately unavailable in `0.2.0-dev6` |
+| `allow_exec` | deny | Reserved EXEC policy bit. The current runtime never grants it: yumed rejects direct EXEC and clients never advertise or accept inbound EXEC. | none; deliberately unavailable |
 | `allow_local_ip` | deny | Open TCP/UDP streams to RFC1918 / loopback addresses through the server | `--allow-local-ip` and `YUME_FEATURE_LAN_BRIDGE=ON` |
 | `control_full` | invalid in metadata | Open TCP/UDP streams to *any* address only after a distinct admin factor | `--control-full`, `YUME_FEATURE_FULL_CONTROL=ON`, and verified admin identity |
 | `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
@@ -248,7 +248,7 @@ An admin channel is admitted only when all of these are true:
 3. the target also proved a distinct `admin_keys` identity and enabled its
    inbound runtime opt-in.
 
-Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and additionally requires the target's `--accept-server-control` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
+Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and requires the target's `--accept-server-control` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
 
 ## Pre-authenticated service-only tier
 

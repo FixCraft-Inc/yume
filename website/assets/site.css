@@ -1,7 +1,7 @@
 /* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5 */
 /* Hallmark · genre: atmospheric · tone: soft dream · palette: pink-plum 337 · macrostructure: Map / Diagram · nav: N10 · footer: Ft5 · design-system: DESIGN.md */
 /* Hallmark · slop: pass (58 gates) · contrast: pass (40–41) · honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive/mobile: pass (34, 49–57) · icons: pass (30) */
-@import url("tokens.css?v=9");
+@import url("tokens.css?v=10");
 
 *,
 *::before,
@@ -136,8 +136,11 @@ code {
   position: sticky;
   z-index: var(--z-sticky);
   inset-block-start: 0;
-  min-height: 6.5rem;
+  min-width: 0;
   isolation: isolate;
+  transform: translateY(0) scale(1);
+  transform-origin: top center;
+  transition: transform var(--dur-morph) var(--ease-out);
 }
 
 .site-header-inner {
@@ -149,12 +152,10 @@ code {
   justify-content: space-between;
   gap: var(--space-md);
   padding: var(--space-md) var(--space-lg);
-  transform: translateY(0) scale(1);
-  transition: transform var(--dur-morph) var(--ease-out);
 }
 
-.site-header-inner::before,
-.site-header-inner::after {
+.site-header::before,
+.site-header::after {
   position: absolute;
   z-index: -1;
   content: "";
@@ -162,8 +163,8 @@ code {
   transition: opacity var(--dur-morph) var(--ease-out);
 }
 
-.site-header-inner::before {
-  inset: var(--space-xs) 0;
+.site-header::before {
+  inset: var(--space-xs) 0 0;
   border: var(--rule-hairline) solid var(--color-rule-soft);
   border-radius: var(--radius-cloud);
   background: var(--color-cloud);
@@ -171,22 +172,22 @@ code {
   opacity: 0;
 }
 
-.site-header-inner::after {
-  inset: auto 0 0;
+.site-header::after {
+  inset: 6.5rem 0 auto;
   height: var(--rule-hairline);
   background: var(--color-rule-soft);
   opacity: 1;
 }
 
-.site-header.is-floating .site-header-inner {
+.site-header.is-floating {
   transform: translateY(var(--space-xs)) scale(0.985);
 }
 
-.site-header.is-floating .site-header-inner::before {
+.site-header.is-floating::before {
   opacity: 1;
 }
 
-.site-header.is-floating .site-header-inner::after {
+.site-header.is-floating::after {
   opacity: 0;
 }
 
@@ -239,14 +240,14 @@ code {
   line-height: 1.25;
 }
 
-.site-header nav,
+.site-header-inner > nav,
 .doc-nav {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
 }
 
-.site-header nav a,
+.site-header-inner > nav a,
 .doc-nav a {
   display: inline-flex;
   min-height: 2.75rem;
@@ -259,18 +260,18 @@ code {
   white-space: nowrap;
 }
 
-.site-header nav a:nth-of-type(n + 2) {
+.site-header-inner > nav a:nth-of-type(n + 2) {
   display: none;
 }
 
-.site-header nav a:hover,
+.site-header-inner > nav a:hover,
 .doc-nav a:hover,
-.site-header nav a[aria-current="page"] {
+.site-header-inner > nav a[aria-current="page"] {
   background: var(--color-paper-soft);
   color: var(--color-ink);
 }
 
-.site-header nav a:active,
+.site-header-inner > nav a:active,
 .doc-nav a:active,
 .section-nav a:active {
   background: var(--color-paper-deep);
@@ -324,20 +325,23 @@ code {
 }
 
 .section-nav {
-  position: sticky;
-  z-index: var(--z-sticky);
-  inset-block-start: 6rem;
+  position: relative;
   display: flex;
-  width: max-content;
+  width: 100%;
   max-width: 100%;
   gap: var(--space-2xs);
   overflow-x: auto;
-  margin-block-start: var(--space-xs);
+  margin-block-start: 0;
   padding: var(--space-2xs);
   border-radius: var(--radius-cloud);
   background: var(--color-cloud);
   box-shadow: var(--shadow-whisper);
   scrollbar-width: none;
+}
+
+.site-header.is-floating .section-nav {
+  background: transparent;
+  box-shadow: none;
 }
 
 .section-nav::-webkit-scrollbar {
@@ -1415,7 +1419,7 @@ tbody tr:last-child td {
 }
 
 @media (min-width: 40rem) {
-  .site-header nav a:nth-of-type(n + 2),
+  .site-header-inner > nav a:nth-of-type(n + 2),
   .doc-catalog-action {
     display: inline-flex;
   }

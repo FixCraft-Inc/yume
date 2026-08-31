@@ -72,7 +72,7 @@ and response records are carried directly in AUTH frames. AUTH_OK is carried
 inside a ratchet-sealed ANON frame; REKEY_INIT and REKEY_ACK records are also
 ratchet-sealed before their respective frames are emitted.
 
-```
+```text
 u8  schema = 3
 u8  record_kind
 u16 field_count
@@ -132,7 +132,7 @@ bounds in `docs/SECURITY_MODES.md` are fatal on build and parse.
 
 The signature input is:
 
-```
+```text
 "yume/2.0/auth-signature/v4" ||
 u32(len(challenge_record)) || challenge_record ||
 u32(len(response_without_signature)) || response_without_signature ||
@@ -143,7 +143,7 @@ The admin second factor, when present, signs the same transcript under a
 different domain and is also bound to the visitor identity that
 presented it:
 
-```
+```text
 "yume/2.0/auth-admin/v1" ||
 u32(len(challenge_record)) || challenge_record ||
 u32(len(response_without_signature)) || response_without_signature ||
@@ -176,7 +176,7 @@ exact profile before carrying the server information.
 `channel_binding` is a 32-byte RFC 8446 section 7.5 exporter that each
 endpoint computes from its own live TLS object:
 
-```
+```text
 channel_binding = TLS-Exporter(
   label   = "EXPORTER-yume/2.0/auth-channel-binding/v1",
   context = none,
@@ -217,7 +217,7 @@ characters. The hour bucket is never transmitted: each side derives it from its
 own clock, and the server accepts the current or previous UTC hour. The token
 is:
 
-```
+```text
 HMAC-SHA256(obfs_secret,
   u16(len("0.2.0-dev6")) || "0.2.0-dev6" ||
   u16(len("chrome151-node24-v1")) || "chrome151-node24-v1" ||
@@ -239,7 +239,7 @@ The mandatory PSK is a uniformly random 32-byte file secret. Argon2 is not used
 in this protocol: it adds no brute-force resistance to a 256-bit random value
 and would add an avoidable admission and memory-exhaustion surface.
 
-```
+```text
 psk_key = HKDF-SHA256(file_psk, psk_salt,
                       "yume/2.0/psk/v1", 32)       # once per connection
 root_0 = HKDF-SHA256(
@@ -254,7 +254,7 @@ root_0 = HKDF-SHA256(
 Independent directional roots and chains use distinct versioned labels. Every
 message derives and erases a one-use AES-256-GCM key. AAD is:
 
-```
+```text
 "yume/2.0/aad/v2" ||
 u32(len("chrome151-node24-v1")) || "chrome151-node24-v1" ||
 direction_u8 || epoch_u64 || sequence_u64 ||
@@ -325,7 +325,7 @@ responder's fresh X25519 public key.
 
 For direction `d` and epoch `e+1`:
 
-```
+```text
 epoch_psk = HKDF-SHA256(psk_key, d || u64(e+1),
                         "yume/2.0/epoch-psk/v1", 32)
 root_e+1 = HKDF-SHA256(

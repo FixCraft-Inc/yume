@@ -7,15 +7,18 @@ path.
 
 ## The docs here are generated, not written
 
-`scripts/sync_website_docs.sh` runs before every build. It deletes
-`website/docs/*.md` along with `docs/agents`, `docs/protocol`, and
-`docs/release`, then regenerates them from the repository's own `docs/` tree,
-adding front matter and rewriting cross-references into site links.
+`scripts/sync_website_docs.sh` publishes `docs/*.md`, `docs/protocol/*.md`,
+`docs/release/*.md`, and `CONTRIBUTING.md`. It adds Jekyll front matter and
+rewrites repository links. Each generated page records its canonical source.
 
 **Edit `docs/` at the repository root, never `website/docs/*.md`.** Anything
 written directly into the generated files is lost on the next build.
 `website/docs/index.html` is hand-written and is not touched by the sync, so the
 docs landing page is safe to edit here.
+
+Use a language tag on every fenced block in canonical Markdown. Use `bash` or
+`sh` for commands, `text` for wire layouts and file trees, and the matching data
+language for structured examples. The catalog check rejects untagged fences.
 
 ## Where things live
 
@@ -41,10 +44,9 @@ docs landing page is safe to edit here.
 header link as current), `footer_statement` (the one line that differs between
 page footers), and `section_nav` (the on-page anchor strip).
 
-**Add a documentation page.** Add the Markdown to the repository's root `docs/`
-directory. Add its title, summary, route, source, groups, and order once in
-`_data/docs.json` if it belongs in an index. The sync script publishes the page,
-and `scripts/check_website_catalog.py` rejects missing sources or routes.
+**Add a documentation page.** Add the canonical Markdown under `docs/`. If it
+belongs in an index, add one entry to `_data/docs.json`. The checker validates
+its source, generated route, source marker, group, order, and fenced blocks.
 
 **Change a colour.** Edit `assets/tokens.css`. Light values sit on `:root` and
 the dark palette is defined once in the `--dark-*` block and mapped onto the same
@@ -79,13 +81,14 @@ is experimental because it is.
 
 ```sh
 bash scripts/sync_website_docs.sh
+bash scripts/sync_website_docs.sh --check
 python3 scripts/check_website_catalog.py
-jekyll build -s website -d /tmp/yume-site
+jekyll build -s website -d /tmp/yume-site --baseurl /yume
 python3 -m http.server 8000 -d /tmp/yume-site
 ```
 
-To check the project-page mount that Pages actually serves, add
-`--baseurl /yume` to the build.
+`--check` does not write files. It fails when the generated Markdown differs
+from the canonical sources. The base URL matches the GitHub project-page mount.
 
 Before pushing, confirm there is no horizontal scroll at 320, 375, 414, and 768
 pixels, and that the theme toggle round-trips and survives a reload.

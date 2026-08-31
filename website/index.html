@@ -112,7 +112,7 @@ section_nav:
     tree and keeps unsupported paths explicit.
   </p>
   <div class="notice">
-    <div class="status-pill warn">Development line: no stable release published</div>
+    <div class="status-pill warn">Development line {{ site.product_version }}: no stable release published</div>
     <p>
       The release workflow refuses to publish unless an independent security review is
       complete and the documented lifecycle, scale, soak, WAN, and same-session gates are
@@ -133,7 +133,7 @@ section_nav:
     </div>
     <div class="card">
       <h3>In progress</h3>
-      <p>The desktop GUI has earlier Linux/X11 lifecycle evidence but the current native candidate still needs a fresh consumer gate. Android has earlier non-connected ARM64 evidence, but it is not synchronized to the current candidate; its connected VPN, routing, leak-policy, and release gates remain open.</p>
+      <p>The desktop GUI has headless Linux checks for connect, stop, and reconnect. Its interactive window, tray, accessibility, and cross-platform behavior remain unqualified. Android has earlier non-connected ARM64 evidence, but it is not synchronized to the current candidate; its connected VPN, routing, leak-policy, and release gates remain open.</p>
     </div>
     <div class="card">
       <h3>Not qualified</h3>
@@ -149,8 +149,9 @@ section_nav:
 <section id="install">
   <h2 class="section-title">Install</h2>
   <p class="section-lead">
-    YUME builds from source on Linux x86-64. Full builds use the checksum-pinned, patched
-    OpenSSL and nghttp2 revisions selected by the build scripts.
+    YUME builds from source on Linux x86-64. Full builds use the checksum-pinned,
+    patched OpenSSL source and prepare the supported nghttp2 revision when the system
+    copy is too old.
   </p>
   <div class="download-grid">
     <article class="download-card download-card-wide">
@@ -379,7 +380,7 @@ cd yume
     </div>
     <div class="card">
       <h3>Manifest</h3>
-      <p><a class="disabled" data-asset-link="release-manifest.json" aria-disabled="true" tabindex="-1">release-manifest.json</a> records each artifact's component, OS, architecture, size, SHA-256, and signature sidecar.</p>
+      <p><a class="disabled" data-asset-link="release-manifest.json" aria-disabled="true" tabindex="-1">release-manifest.json</a> records each artifact's component, OS, architecture, size, linkage, and SHA-256. Its signature fields remain empty because the current workflow creates it before signing.</p>
       <div class="card-meta"><a href="{{ '/hashes/' | relative_url }}">Live checksums for the current release</a></div>
     </div>
   </div>

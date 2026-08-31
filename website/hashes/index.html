@@ -5,9 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>YUME release checksums</title>
     <meta name="description" content="SHA-256 digests, detached signatures, and the release manifest for YUME release artifacts.">
-    <link rel="icon" type="image/svg+xml" href="../assets/yume-plain.svg?v=5">
-    <link rel="stylesheet" href="../assets/site.css?v=5">
-    <script src="../assets/site.js?v=5" defer></script>
+    <link rel="icon" type="image/svg+xml" href="../assets/yume-plain.svg?v=6">
+    <meta name="theme-color" content="#fffafd" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#170f15" media="(prefers-color-scheme: dark)">
+    <script>
+      // Applied before first paint so a stored choice never flashes the other theme.
+      try {
+        var t = localStorage.getItem("yume-theme");
+        if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="../assets/site.css?v=6">
+    <script src="../assets/site.js?v=6" defer></script>
   </head>
   <body class="hashes-page">
     <a class="skip-link" href="#content">Skip to content</a>
@@ -15,7 +24,7 @@
       <header class="site-header">
         <a class="brand" href="../" aria-label="YUME home">
           <svg class="brand-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
-            <use href="../assets/yume-plain.svg?v=5#yume-mark"></use>
+            <use href="../assets/yume-plain.svg?v=6#yume-mark"></use>
           </svg>
           <span>
             <span class="brand-name">YUME</span>
@@ -25,6 +34,12 @@
         <nav aria-label="Primary navigation">
           <a href="../docs/">Docs</a>
           <a href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">GitHub</a>
+          <button class="theme-toggle" type="button" id="theme-toggle" aria-pressed="false" aria-label="Switch the theme" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"></path>
+            </svg>
+          </button>
         </nav>
       </header>
 

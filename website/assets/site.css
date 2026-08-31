@@ -1,4 +1,4 @@
-@import url("tokens.css?v=5");
+@import url("tokens.css?v=6");
 
 *,
 *::before,
@@ -204,6 +204,44 @@ code {
   color: var(--color-ink);
 }
 
+.theme-toggle {
+  display: inline-flex;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: var(--rule-hairline) solid transparent;
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-short) var(--ease-out),
+    border-color var(--dur-short) var(--ease-out),
+    color var(--dur-short) var(--ease-out);
+}
+
+.theme-toggle[hidden] {
+  display: none;
+}
+
+.theme-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.theme-toggle:hover {
+  background: var(--color-paper-soft);
+  color: var(--color-ink);
+}
+
+.theme-toggle[aria-pressed="true"] {
+  border-color: var(--color-rule);
+  background: var(--color-cloud);
+  color: var(--color-accent-strong);
+}
+
 .section-nav {
   position: sticky;
   z-index: var(--z-sticky);
@@ -328,7 +366,7 @@ section {
   border-radius: var(--radius-pill);
   background: var(--color-button);
   box-shadow: var(--shadow-whisper);
-  color: var(--color-ink);
+  color: var(--color-button-ink);
   font-size: var(--text-sm);
   font-weight: 600;
   line-height: 1;
@@ -347,10 +385,11 @@ section {
   color: var(--color-ink);
 }
 
+/* Both variants take the pink fill on hover, so both take the fill's ink. */
 .btn:hover {
   border-color: transparent;
   background: var(--color-button-hover);
-  color: var(--color-ink);
+  color: var(--color-button-ink);
   transform: translateY(-1px);
 }
 
@@ -567,6 +606,12 @@ a.disabled {
   color: var(--color-ink-soft);
 }
 
+.subsection-title + .grid,
+.subsection-title + .download-grid,
+.subsection-title + .command-stack {
+  margin-block-start: var(--space-md);
+}
+
 .subsection-title {
   margin-block: var(--space-2xl) var(--space-sm);
   color: var(--color-ink);
@@ -609,6 +654,17 @@ a.disabled {
   content: "";
 }
 
+.status-pill.warn {
+  margin-block-end: var(--space-md);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-pill);
+  background: var(--color-warn-soft);
+}
+
+.status-pill.warn::before {
+  background: var(--color-warn);
+}
+
 .grid,
 .download-grid {
   display: grid;
@@ -643,6 +699,7 @@ a.card:hover {
 }
 
 .card h3,
+.card h4,
 .download-card h3,
 .workflow-step h3,
 .command-block h3 {
@@ -686,6 +743,10 @@ table {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--text-sm);
+}
+
+.compare-table {
+  min-width: 30rem;
 }
 
 th,
@@ -745,14 +806,17 @@ tbody tr:last-child td {
 .command-block {
   min-width: 0;
   overflow: hidden;
+  border: var(--rule-hairline) solid var(--color-code-rule);
   border-radius: var(--radius-cloud);
   background: var(--color-code);
+  box-shadow: var(--shadow-whisper);
   color: var(--color-code-ink);
 }
 
 .command-block h3 {
   padding: var(--space-md) var(--space-lg);
-  border-block-end: var(--rule-hairline) solid var(--color-ink-soft);
+  border-block-end: var(--rule-hairline) solid var(--color-code-rule);
+  background: var(--color-code-head);
   color: var(--color-code-ink);
 }
 
@@ -879,12 +943,20 @@ tbody tr:last-child td {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-xs);
-  padding-inline: var(--space-xs);
 }
 
 .docs-page .card h3 {
   font-family: var(--font-display);
   font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+/* Group labels on the index are peers of each other, so they share one weight
+   instead of the subsection reading louder than the section above it. */
+.docs-page .subsection-title {
+  margin-block-end: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-md);
   font-weight: 600;
 }
 
@@ -926,13 +998,36 @@ tbody tr:last-child td {
 }
 
 .doc-toc summary {
+  display: flex;
   min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
   cursor: pointer;
   color: var(--color-ink);
   font-family: var(--font-body);
   font-size: var(--text-sm);
   font-weight: 600;
-  line-height: 2.75rem;
+  list-style: none;
+}
+
+.doc-toc summary::-webkit-details-marker {
+  display: none;
+}
+
+.doc-toc summary::after {
+  width: 0.4rem;
+  height: 0.4rem;
+  flex: 0 0 auto;
+  border-inline-end: 1.5px solid var(--color-muted);
+  border-block-end: 1.5px solid var(--color-muted);
+  content: "";
+  transform: translateY(-0.1em) rotate(45deg);
+  transition: transform var(--dur-short) var(--ease-out);
+}
+
+.doc-toc[open] summary::after {
+  transform: translateY(0.1em) rotate(-135deg);
 }
 
 .doc-toc nav {
@@ -1015,7 +1110,7 @@ tbody tr:last-child td {
 .doc-article code {
   padding: 0.1em 0.3em;
   border-radius: var(--radius-sm);
-  background: var(--color-paper-soft);
+  background: var(--color-code-inline);
   color: var(--color-ink);
   overflow-wrap: anywhere;
 }
@@ -1025,8 +1120,10 @@ tbody tr:last-child td {
   margin-block: var(--space-xl);
   overflow-x: auto;
   padding: var(--space-lg);
+  border: var(--rule-hairline) solid var(--color-code-rule);
   border-radius: var(--radius-md);
   background: var(--color-code);
+  box-shadow: var(--shadow-whisper);
   color: var(--color-code-ink);
   font-size: var(--text-sm);
   line-height: 1.65;
@@ -1177,16 +1274,6 @@ tbody tr:last-child td {
 
   .home-page .grid > .card {
     grid-column: span 6;
-  }
-
-  .home-page .grid > .card:nth-child(4n + 1),
-  .home-page .grid > .card:nth-child(4n + 4) {
-    grid-column: span 7;
-  }
-
-  .home-page .grid > .card:nth-child(4n + 2),
-  .home-page .grid > .card:nth-child(4n + 3) {
-    grid-column: span 5;
   }
 
   .download-grid {

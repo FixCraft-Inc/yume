@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "client/cli/entry.hpp"
 #include "facade/model/status.hpp"

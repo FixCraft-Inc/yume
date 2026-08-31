@@ -327,11 +327,13 @@ under `docs/`, the protocol documents, and `CONTRIBUTING.md`. The canonical
 Markdown stays in the repository root. Generated files under
 `website/docs/` are ignored and must not be edited by hand.
 
-Run `bash scripts/sync_website_docs.sh` before a local site build. The same
-script runs in CI and the Pages workflow, so generated routes and link rewrites
-have one implementation. `website/docs/index.html` remains the hand-written
-human documentation index. Public automation notes under `docs/agents/` are
-deliberately outside the website reader path.
+Run `bash scripts/sync_website_docs.sh`, then
+`bash scripts/sync_website_docs.sh --check` and
+`python3 scripts/check_website_catalog.py`. The check mode compares every
+generated page with its canonical source without writing files. The catalog
+check validates source routes, source markers, and fenced-code language tags.
+`website/docs/index.html` remains hand-written, and `docs/agents/` stays outside
+the website reader path.
 
 ## Troubleshooting
 

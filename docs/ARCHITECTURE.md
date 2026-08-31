@@ -149,10 +149,11 @@ duplicate the transport stack.
 
 The Jekyll/GitHub Pages site presents project documentation, status, and
 release metadata. It does not link YUME libraries, control a local runtime, or
-own protocol behavior. CI copies tracked `docs/*.md` into ignored generated
-pages during the site build; `website/docs/index.html` remains a hand-written
-landing page. Website contribution and validation rules live in
-`CONTRIBUTING.md`.
+own protocol behavior. The sync script publishes tracked `docs/*.md`,
+`docs/protocol/*.md`, `docs/release/*.md`, and `CONTRIBUTING.md` into ignored
+generated pages. CI checks that generated tree before building it.
+`website/docs/index.html` remains a hand-written landing page. Website
+contribution and validation rules live in `CONTRIBUTING.md`.
 
 ### Other
 

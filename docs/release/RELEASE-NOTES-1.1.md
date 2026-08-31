@@ -80,7 +80,7 @@ a specific browser profile. The project checks emitted JA3 against pinned
 build-host baselines, but stock OpenSSL does not reproduce every browser
 ClientHello detail (notably all GREASE positions).
 
-```
+```bash
 --profile chrome    # default — Chrome 131
 --profile firefox   # Firefox 126
 --profile safari    # Safari 18
@@ -453,7 +453,7 @@ cmake --build build -j$(nproc)
 
 Optional flags:
 
-```
+```bash
 -DYUME_BUILD_GUI=ON           # build yume-gui (needs glfw / freetype)
 -DYUME_STATIC=ON              # fully static binary (use musl toolchain)
 -DBASEFWX_REQUIRE_OQS=ON      # fail build if liboqs missing

@@ -34,6 +34,7 @@ jobs:
       - name: Sync docs into website
         run: |
           bash scripts/sync_website_docs.sh
+          bash scripts/sync_website_docs.sh --check
 
       - name: Validate website catalog
         run: |

@@ -50,7 +50,7 @@ cancellation and join semantics.
 
 ## File layout
 
-```
+```text
 /etc/yume/
   authorized_keys           # pairs of public PEM blocks; regular visitors
   auth_keys.meta            # JSON mapping fingerprint → permissions; "what each may do"

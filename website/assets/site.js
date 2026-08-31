@@ -1,5 +1,5 @@
 const repo = "FixCraft-Inc/yume";
-const releaseApi = `https://api.github.com/repos/${repo}/releases/latest`;
+const releaseApi = `https://api.github.com/repos/${repo}/releases?per_page=1`;
 let latestReleaseData = null;
 
 // The first stable CLI release workflow attaches exactly these two artifacts, plus a
@@ -81,7 +81,11 @@ const fetchLatestRelease = async () => {
   if (!response.ok) {
     throw new Error(`release fetch failed: ${response.status}`);
   }
-  latestReleaseData = await response.json();
+  const releases = await response.json();
+  if (!Array.isArray(releases) || releases.length === 0) {
+    throw new Error("no published release");
+  }
+  latestReleaseData = releases[0];
   return latestReleaseData;
 };
 

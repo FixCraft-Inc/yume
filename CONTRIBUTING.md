@@ -14,8 +14,11 @@ verify its claims against tracked source and tests.
 The normal developer build is:
 
 ```bash
-./ezbuild.sh
+./ezbuild.sh --tests
 ```
+
+Tests are off by default; omit `--tests` only when you do not intend to run
+`ctest`.
 
 This prepares the exact BaseFWX revision and YUME's checksum-pinned,
 default-off patched OpenSSL build. A normal full CMake configuration rejects
@@ -89,6 +92,10 @@ payload meaning is not additive even while the product is pre-1.0.
 Update comments and operator-facing docs in the same patch as behavior. Put
 normative wire requirements under `docs/protocol/`; current support boundaries
 in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
+Search CLI help, man pages, release material, and manually maintained website
+pages for duplicate claims. Regenerate website documentation with
+`scripts/sync_website_docs.sh`; do not leave a corrected contract only in a
+private review note.
 Dated handoffs, machine evidence, rejected experiments, dirty-tree inventories,
 and task queues belong in the ignored `.private/ai/` overlay or Git history.
 Public automation context belongs under `docs/agents/` and must contain no

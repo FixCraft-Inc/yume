@@ -42,4 +42,8 @@ wire domains or protocol files to match the product version.
 Preserve unrelated dirty work. Validate untrusted JSON before reading typed
 fields, keep queues bounded, contain all C ABI errors, and use explicit
 ownership and nonthrowing cleanup. Update tests and human documentation with
-behavior changes. Finish with focused checks and `git diff --check`.
+behavior changes in the same patch. Search for duplicate claims in CLI help,
+man pages, release material, and manually maintained website pages; regenerate
+website documentation through `scripts/sync_website_docs.sh` rather than
+editing its ignored output. A private handoff does not close a tracked
+documentation obligation. Finish with focused checks and `git diff --check`.

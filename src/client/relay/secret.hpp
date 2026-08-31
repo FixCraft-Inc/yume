@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <string>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 namespace yume::client {
 

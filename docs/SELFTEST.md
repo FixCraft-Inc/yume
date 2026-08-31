@@ -107,8 +107,9 @@ yume --config config/yume.json --bench \
   --bench-mib 1024 --bench-streams 32 --bench-chunk-kib 256
 ```
 
-The server rejects synthetic benchmark streams unless `--bench`, its
-`--full-bench` compatibility alias, or `"benchmark_enable": true` is enabled.
+The server rejects synthetic benchmark streams unless `--bench` or
+`"benchmark_enable": true` is enabled. `--full-bench` is a client flag; `yumed`
+does not accept it.
 The client prints total, upload, download, and server-drain rates in MiB/s and
 Mbit/s. It also prints the measured boundary, frame profile, and immutable
 security/carrier features so a custom 256 KiB run cannot be mistaken for a

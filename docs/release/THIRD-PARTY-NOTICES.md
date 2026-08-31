@@ -4,9 +4,10 @@ YUME is distributed under the GNU Affero General Public License version 3 or
 later; see `LICENSE` in the bundle. The Linux binaries also use or incorporate
 the following projects under their respective licenses:
 
-- BaseFWX: GPL-3.0-or-later. Its pinned source revision is recorded in
-  the `basefwx` entry in `config/dependencies.json` in the matching YUME source
-  release.
+- BaseFWX: LGPL-3.0-or-later for the core library, public API, and runtime,
+  which is what YUME links. Its standalone CLIs, tools, and release scripts are
+  GPL-3.0-or-later. The pinned source revision is recorded in the `basefwx`
+  entry in `config/dependencies.json` in the matching YUME source release.
 - Boost: Boost Software License 1.0.
 - OpenSSL: Apache License 2.0.
 - YUME's downstream OpenSSL patch overlay: AGPL-3.0-or-later. The underlying

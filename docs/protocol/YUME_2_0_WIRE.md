@@ -67,8 +67,10 @@ claim boundary and required acceptance evidence.
 ## Integers and envelopes
 
 All integers are unsigned big-endian. All lengths count bytes. Integer wrap is
-fatal. `record` below is the payload of a YUME AUTH, AUTH_OK, REKEY_INIT, or
-REKEY_ACK frame:
+fatal. `record` below is the canonical plaintext record format. AUTH challenge
+and response records are carried directly in AUTH frames. AUTH_OK is carried
+inside a ratchet-sealed ANON frame; REKEY_INIT and REKEY_ACK records are also
+ratchet-sealed before their respective frames are emitted.
 
 ```
 u8  schema = 3
@@ -83,7 +85,8 @@ repeat field_count:
 
 Fields are emitted in strictly increasing `field_id` order. Duplicate fields,
 out-of-order fields, an unknown critical field, unknown flag bits, oversized
-lengths, truncated values, and trailing bytes are fatal. AUTH records are
+lengths, truncated values, and trailing bytes are fatal. A record carries at
+most 64 fields and field id 0 is reserved; both are fatal. AUTH records are
 limited to 64 KiB before allocation.
 
 ### AUTH challenge (`record_kind = 1`)
@@ -209,22 +212,26 @@ Both secret files contain exactly 64 lowercase hexadecimal characters (no
 newline), decode to 32 random bytes, and must have no group/world permission
 bits.
 
-The carrier request carries a 32-byte random nonce and an hour bucket. Its
-token is:
+The carrier request path is `/<token>/<nonce>`, each 64 lowercase hex
+characters. The hour bucket is never transmitted: each side derives it from its
+own clock, and the server accepts the current or previous UTC hour. The token
+is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("0.2.0-dev6") || "0.2.0-dev6" ||
-  len("chrome151-node24-v1") || "chrome151-node24-v1" ||
-  len(lowercase_sni) || lowercase_sni ||
+  u16(len("0.2.0-dev6")) || "0.2.0-dev6" ||
+  u16(len("chrome151-node24-v1")) || "chrome151-node24-v1" ||
+  u16(len(lowercase_sni)) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```
 
 SNI and `:authority` must match after the configured listener-port rules. The
 server accepts the current or previous UTC hour and records the authenticated
 nonce in a bounded expiry cache before emitting AUTH. Missing, wrong,
-malformed, expired, replayed, or authority-mismatched attempts take the ordinary
-captured Node cover path.
+malformed, expired, replayed, or authority-mismatched attempts never receive
+AUTH. The current extended-`CONNECT` rejection is a bounded synthetic 404; it
+is not byte- or header-identical to the reference Node server's 405 response
+and remains an active-probe residual.
 
 ## Initial key schedule
 
@@ -236,11 +243,11 @@ and would add an avoidable admission and memory-exhaustion surface.
 psk_key = HKDF-SHA256(file_psk, psk_salt,
                       "yume/2.0/psk/v1", 32)       # once per connection
 root_0 = HKDF-SHA256(
-  len(mlkem_ss) || mlkem_ss ||
-  len(x25519_ss) || x25519_ss ||
-  len(psk_key) || psk_key ||
-  len(channel_binding) || channel_binding ||
-  len("chrome151-node24-v1") || "chrome151-node24-v1",
+  u32(len(mlkem_ss)) || mlkem_ss ||
+  u32(len(x25519_ss)) || x25519_ss ||
+  u32(len(psk_key)) || psk_key ||
+  u32(len(channel_binding)) || channel_binding ||
+  u32(len("chrome151-node24-v1")) || "chrome151-node24-v1",
   transcript_salt, "yume/2.0/root/v3", 32)
 ```
 
@@ -249,7 +256,7 @@ message derives and erases a one-use AES-256-GCM key. AAD is:
 
 ```
 "yume/2.0/aad/v2" ||
-len("chrome151-node24-v1") || "chrome151-node24-v1" ||
+u32(len("chrome151-node24-v1")) || "chrome151-node24-v1" ||
 direction_u8 || epoch_u64 || sequence_u64 ||
 frame_type_u8 || stream_id_u8 || flags_u16
 ```

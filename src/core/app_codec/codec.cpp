@@ -678,6 +678,12 @@ bool decode_envelope(const Bytes& payload,
         }
         return false;
     }
+    if (payload[6] != 0 || payload[7] != 0) {
+        if (error) {
+            *error = "codec frame reserved bytes are nonzero";
+        }
+        return false;
+    }
     const auto kind = static_cast<EnvelopeKind>(payload[5]);
     const std::uint32_t meta_len = read_u32(payload, 8);
     const std::uint32_t body_len = read_u32(payload, 12);

@@ -54,7 +54,11 @@ its internal transport code private.
   `yume_client_open_stream`, `yume_server_register_service`,
   `yume_server_accept_stream`, `yume_stream_peer_json`,
   `yume_stream_read`, `yume_stream_write`, `yume_stream_shutdown_write`,
-  and `yume_stream_close`.
+  `yume_stream_close`, and `yume_stream_destroy`. As with packet handles,
+  `close` reports transport cleanup status and retains the handle for error
+  inspection. `destroy` accepts `NULL`, closes if needed, and frees the handle;
+  its cleanup is best-effort because it cannot return a status. A prior
+  `close` is optional.
 - One negotiated packet-native channel with `yume_client_open_packet`,
   `yume_packet_status_json`, `yume_packet_write_batch`,
   `yume_packet_read_batch`, `yume_packet_close`, and `yume_packet_destroy`.
@@ -95,6 +99,9 @@ are not rounded to whole seconds. For stream and packet operations:
 - A stream read that returns `YUME_STATUS_OK` with `bytes_read == 0` is clean
   peer EOF. A reset, local close, or transport close returns
   `YUME_STATUS_NOT_RUNNING` and preserves the close reason in the handle error.
+- A single `yume_stream_write` is limited to 256 KiB. A larger call returns
+  `YUME_STATUS_INVALID_ARGUMENT` and admits nothing, so callers must chunk.
+  This is the first limit a bulk writer meets, before any queue bound below.
 - Stream writes are all-or-none admissions to a bounded transport queue.
   `bytes_written` is set to the complete input size only after admission.
   Server-accepted streams use a per-session FIFO capped at 64 complete writes
@@ -192,6 +199,13 @@ generation before configuration parsing or file I/O, so a concurrent
 `yume_client_stop` cannot complete and then be followed by a late runtime
 start. The lifecycle suite covers a stalled TLS peer, while the ABI suite uses
 a FIFO config fixture to cover cancellation before runtime handoff.
+
+Android omits the CMake `VERSION` and `SOVERSION` properties and packages an
+unversioned `libyume.so` with an unversioned SONAME. `YUME_ABI_VERSION` is still
+1, so check it at runtime rather than expecting an Android `libyume.so.1`.
+Non-Android builds retain the ABI-version properties and use platform-native
+artifact naming; Linux ELF builds provide the `libyume.so.1` SONAME and normal
+versioned symlink chain.
 
 Android integrations should use the client-only ABI build
 profile. The separate Android checkout has earlier ABI-v1 ARM64
@@ -406,17 +420,23 @@ argon2. Without symbol control, implementation symbols can leak into the
 public namespace, which breaks the "exactly these functions" contract and lets
 an embedder bind to an internal implementation.
 
-Two CTest cases enforce it:
+Linux CI runs four CTest cases; other platforms register the applicable subset:
 
 - `yume_abi_header_matches_map` is pure text and needs no compiler. It catches a
   function declared `YUME_API` in the header but missing from the version
   script (hidden at link time, fails only for the embedder) and the reverse.
 - `yume_abi_exports` inspects the built library with `nm` and requires the
   exported set to equal the declared set exactly. Runs on ELF and Mach-O.
+- `yume_abi_debian_symbols_match_map` diffs the version script against
+  `debian/libyume1.symbols` for exact set equality.
+- `yume_abi_installed_consumer` compiles and links against the installed
+  library to prove the published surface is usable.
 
-Both run in CI, which also builds `libyume` with `-DYUME_BUILD_SHARED_ABI=ON`.
-Adding a public function therefore means editing `include/yume/yume.h` and
-`src/abi/yume.map` together; the build fails otherwise.
+All four run in Linux CI, which also builds `libyume` with
+`-DYUME_BUILD_SHARED_ABI=ON`.
+Adding a public function therefore means editing `include/yume/yume.h`,
+`src/abi/yume.map`, and `debian/libyume1.symbols` together; the build fails
+otherwise. Document it here in the same change.
 
 ## Handle lifetime
 
@@ -446,18 +466,17 @@ thread.
 
 ## Build behavior
 
-Source builds keep the ABI library off by default:
+The normal build prepares the pinned BaseFWX and patched OpenSSL dependencies;
+it keeps the ABI library off by default:
 
 ```bash
-cmake -B build
-cmake --build build
+./ezbuild.sh
 ```
 
 Enable it explicitly when building SDK/install artifacts:
 
 ```bash
-cmake -B build -DYUME_BUILD_SHARED_ABI=ON
-cmake --build build --target yume_abi
+YUME_CMAKE_ARGS="-DYUME_BUILD_SHARED_ABI=ON" ./ezbuild.sh
 ```
 
 Debian packaging enables the ABI library by default and installs only the C ABI

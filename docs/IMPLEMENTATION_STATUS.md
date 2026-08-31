@@ -69,8 +69,8 @@ identities, and secrets do not go to the cover process.
 
 Individual, bounded bulk, and separate administrator identities are
 implemented. Bulk identities cannot receive administrator, controller,
-unrestricted network, federation, or privileged codec permissions. Session
-admission is counted and released through one controller.
+unrestricted network, federation, execution, service, or privileged codec
+permissions. Session admission is counted and released through one controller.
 
 On POSIX, secure-material and profile operations use bounded input, no-follow
 file checks, owner-only permissions, transaction locks, and atomic publication.
@@ -106,9 +106,10 @@ can control its lifetime.
 ## Federation and relay
 
 AUTH v2 direct federation is implemented. A two-node integration test starts
-two real daemons and clients, exchanges the directory, relays exact data in
-both directions, and closes the channel. A three-node line test proves direct
-links while keeping the far endpoint absent and unroutable.
+two real daemons and clients, exchanges the directory in both directions,
+relays exact data from one endpoint to the other, and closes the channel. A
+three-node line test proves direct links while keeping the far endpoint absent
+and unroutable.
 
 The runtime reports `transit.supported=false` and `transit.max_hops=1`.
 Multi-hop relay-channel transit is design-only. SOCKS, forward, packet, and

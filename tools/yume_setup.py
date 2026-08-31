@@ -265,8 +265,6 @@ def copy_client_material(server_dir: Path, client_dir: Path, identity: Path,
         "inner_psk_file": "inner-psk.hex",
         "inner_crypto": True,
         "inner_heavy": True,
-        "inner_hop": True,
-        "hop_interval_ms": 500,
         "tunnels": 1,
         "tls_ca_cert": "operator-ca.pem",
         "tls_server_name": tls_name,
@@ -295,7 +293,7 @@ else
   echo "yume not found; run ~/yume/ezbuild.sh or set YUME_BIN" >&2
   exit 1
 fi
-exec "$yume_bin" --config yume.json --socks "${YUME_SOCKS_PORT:-1080}"
+exec "$yume_bin" --config yume.json --socks "127.0.0.1:${YUME_SOCKS_PORT:-1080}"
 """
     export_runner = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -542,7 +540,7 @@ def init_kit(args: argparse.Namespace) -> None:
             "operator_keys": "operator_keys", "operator_keys_meta": "operator_keys.json",
             "obfuscation": True, "obfs_secret_file": "admission.hex",
             "inner_psk_file": "inner-psk.hex", "inner_crypto": True,
-            "inner_heavy": True, "inner_hop": True, "hop_interval_ms": 500,
+            "inner_heavy": True,
             "real_backend": "loopback://127.0.0.1:3000",
             "anonym": True, "anonym_proof_mode": "local",
             "anonym_sub_key": "operator-delegated.key",

@@ -157,7 +157,7 @@ runtime, socket buffers, and plugins. Use systemd/cgroup controls for hard
 process limits:
 
 ```ini
-# systemctl edit yume-daemon.service (unit name may be yumed.service)
+# systemctl edit yumed.service   (package yume-daemon installs yumed.service)
 [Service]
 # At most eight logical CPUs.
 CPUQuota=800%
@@ -169,8 +169,8 @@ TasksMax=1024
 LimitNOFILE=65536
 ```
 
-Run `systemctl daemon-reload && systemctl restart yume-daemon`, then confirm
-with `systemctl show yume-daemon -p CPUQuotaPerSecUSec -p MemoryHigh -p
+Run `systemctl daemon-reload && systemctl restart yumed`, then confirm
+with `systemctl show yumed -p CPUQuotaPerSecUSec -p MemoryHigh -p
 MemoryMax -p TasksMax`. Keep `MemoryMax` comfortably above expected
 session/socket, TLS, and runtime-library memory; setting it too tightly can
 cause the kernel to terminate the daemon rather than gently reject work.

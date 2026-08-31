@@ -119,8 +119,7 @@ and keep the main window visible, or use the CLI binaries directly.
 The GUI is optional:
 .PP
 .nf
-cmake -B build -DYUME_BUILD_GUI=ON
-cmake --build build -j$(nproc)
+\&./ezbuild.sh --gui
 .fi
 .PP
 Requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake. Debian

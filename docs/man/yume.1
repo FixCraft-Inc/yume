@@ -492,8 +492,55 @@ The optional
 .I bind
 must be an IP literal on the server side.
 .TP
+.BI "--lport " port ", --rhost " host ", --rport " port
+Long-form spelling of a local forward. Local connections to
+.I lport
+are relayed through YUME to
+.IR host : port .
+All three must be given together.
+.B -L
+is the compact spelling and also accepts a bind address. Without one,
+the listener keeps the historical wildcard bind.
+.TP
 .BI "--run " command
 Run a local command with its TCP/UDP sockets routed through YUME.
+.TP
+.B --proxycmd
+Act as a one-shot SOCKS5 client for another program's proxy hook. YUME connects
+to a SOCKS listener on 127.0.0.1 at the
+.B --socks
+port, or 1080 when
+.B --socks
+is absent, issues a CONNECT for
+.B --dest
+and
+.BR --dport ,
+then relays standard input and output over that stream. This is the form
+.B --run
+generates as a
+.BR ssh (1)
+ProxyCommand. It is not supported on Windows.
+.TP
+.BI "--dest " host
+Destination host for
+.BR --proxycmd .
+.TP
+.BI "--dport " port
+Destination port for
+.BR --proxycmd .
+.TP
+.BI "--exec " command
+Send an outbound EXEC request for
+.I command
+through the controlled-client mode selected by
+.BR --control .
+The request syntax is retained, but the current server answers it with an
+explicit safety denial, so no command runs. The value is refused if it begins with
+.BR - .
+.TP
+.B --allow-exec
+Rejected. Inbound remote command execution is disabled until child processes
+have bounded shutdown support, so passing this option fails argument parsing.
 .TP
 .B --directory
 List visible relay endpoints from the authenticated server.
@@ -513,6 +560,13 @@ Open a trusted admin channel to a relay endpoint when both sides permit it.
 .BI "--control " [id]
 Attach to a controlled client.
 .TP
+.BI "--id " id
+Controlled-client identifier for
+.BR --control .
+.TP
+.B --list-controlled
+List the controlled clients registered with the server.
+.TP
 .B --attach-local
 Attach to a local running YUME instance.
 .TP
@@ -522,12 +576,154 @@ not create routes, NAT rules, or the interface, and this exclusive data-plane
 mode cannot be combined with SOCKS, forwards, relay, benchmark, or control
 modes.
 .TP
+.B --monero-rpc
+Start the built-in Monero RPC application codec and listen on
+.BR 127.0.0.1:18089 .
+A wallet reaches it with
+.BR "--daemon-address 127.0.0.1:18089" .
+Application codecs are protocol-aware local service shims, not raw TCP
+forwards. The server must also permit the codec for this key.
+.TP
+.BI "--monero-rpc-listen " addr:port
+Start the Monero RPC codec on an explicit listener. Equivalent to
+.B --monero-rpc
+together with
+.BR --codec-listen .
+.TP
+.BI "--codec " name
+Select an application codec by registry name. In 0.2.0-dev6 the only built-in
+codec is
+.BR monero-rpc-v1 ,
+which is also accepted as
+.B monero-rpc
+or
+.BR monero .
+.TP
+.BI "--codec-listen " addr:port
+Override the codec listener. The address must be a loopback IP literal and the
+port must be 1-65535. The default is
+.BR 127.0.0.1:18089 .
+.TP
 .B --quick-bench
 Run the bounded local device benchmark smoke profile.
 .TP
 .B --full-bench
 Run the extended local device benchmark profile. These local profiles are not
 WAN, stealth, classifier, or release-qualification evidence.
+.SH BENCHMARK OPTIONS
+Two independent benchmark families exist. The endpoint benchmark runs against a
+live server started with
+.BR "yumed --bench" .
+The local device profiles
+.B --quick-bench
+and
+.B --full-bench
+are listed under MODES. They need no server, identity, or configuration, and
+they require a binary built with the selftest harness. Neither family is WAN,
+stealth, classifier, or release-qualification evidence.
+.TP
+.B --bench
+Run the authenticated endpoint upload/download benchmark against the server,
+then exit. This also selects non-interactive output.
+.TP
+.B --bench-full
+Run the longer endpoint profile. Unless overridden it uses 1024 MiB per
+direction and 64 concurrent streams.
+.TP
+.BI "--bench-mib " n
+Benchmark payload per direction in MiB. Non-positive values select the default
+of 256; values above 16384 are clamped to 16384.
+.TP
+.BI "--bench-chunk-kib " n
+Upload DATA chunk size in KiB. The default matches the SOCKS/relay read buffer,
+currently 64 KiB. Non-positive values select that default; values above 256 are
+clamped to 256.
+Only the default chunk size reports a production stream shape.
+.TP
+.BI "--bench-streams " n
+Concurrent benchmark streams. Default
+.BR 1 ,
+clamped to
+.BR 1 - 240 .
+.TP
+.BI "--bench-direction " direction
+Measured direction:
+.BR both ,
+.BR up ,
+or
+.BR down .
+Default
+.BR both .
+.PP
+The remaining options tune the local device benchmark and are forwarded to it.
+They have no effect without
+.B --quick-bench
+or
+.BR --full-bench .
+.TP
+.BI "--configs " list
+Comma-separated config subset, or
+.BR all .
+The default runs the direct baseline and the mandatory yume-v2 stack.
+.TP
+.B --list-configs
+Print the local benchmark config names and exit.
+.TP
+.BI "--duration-sec " n
+Full-mode target duration hint in seconds. Range
+.BR 30 - 600 ,
+default
+.BR 180 .
+It scales the payload size.
+.TP
+.BI "--latency-iters " n
+Echo round trips per config. Default 120. Full mode uses 360.
+.TP
+.BI "--bulk-mib " n
+Bulk echo size per config in MiB. Quick mode defaults to 32. Full mode computes
+a duration/config-count value and clamps it to 512-8192.
+.TP
+.BI "--streams " n
+Concurrent bulk streams per config. Quick mode defaults to 1; full mode uses 64.
+.TP
+.BI "--client-threads " n
+Client I/O threads. Use
+.B 0
+for automatic selection.
+.TP
+.BI "--server-threads " n
+Server I/O threads. Quick mode defaults to 2. Full mode defaults to one quarter
+of the detected logical CPUs, clamped to 4-16.
+.TP
+.BI "--cooldown-ms " n
+Pause between configs for fairer sweeps. Quick mode defaults to 500; full mode
+uses 1000.
+.TP
+.BI "--repeat " n
+Run each config
+.I n
+times and report the median-throughput trial. Quick mode defaults to 1; full
+mode uses 3.
+.TP
+.B --one-way
+Measure one-way upload with sink and acknowledgement instead of echo.
+Quick mode defaults to echo; full mode enables one-way measurement.
+.TP
+.BI "--json " path
+Write the JSON result file to
+.IR path .
+.TP
+.B --json-stdout
+Print the JSON result to standard output after the table.
+.TP
+.B --dev
+Show raw component tables, phase timings, and row details.
+.TP
+.B "--color, --no-color"
+Force or disable ANSI colors in benchmark output.
+.TP
+.B --keep-workdir
+Keep the temporary logs and generated keys the run creates.
 .SH CONNECTION OPTIONS
 .TP
 .BI "--server " host
@@ -544,6 +740,10 @@ and
 .BR --port .
 Bracket IPv6 literals as
 .BR [2001:db8::1]:443 .
+.TP
+.B --no-proxy
+Ignore any outbound proxy carried by the configuration and dial the server
+directly.
 .TP
 .BI "-i, --auth " path
 Composite Ed25519 + ML-DSA-87 identity used to authenticate this client to the
@@ -563,6 +763,11 @@ the server's admin store; presenting this key is the admin claim.
 .TP
 .BI "--config " path
 Read client configuration from a JSON file.
+.TP
+.B --save-server
+Write the effective merged client configuration back to the
+.B --config
+file before connecting, creating or updating that file.
 .TP
 .BI "--threads " n
 I/O thread count. Use
@@ -616,6 +821,17 @@ This authenticates the operator; it does not prove no logging or anonymity.
 .TP
 .BI "--operator-ca-cert " path
 Operator CA certificate used to verify endpoint authorization.
+.TP
+.B --accept-monitoring
+Answer the privacy-risk consent prompt in advance for a server that presents no
+operator identity proof. An ordinary non-interactive connection must set this
+or require an authorized operator, otherwise the connection is refused. The
+endpoint benchmark is the deliberate prompt-free exception. On the CLI,
+.B --require-operator-identity
+takes precedence if both flags are supplied; the stricter facade JSON contract
+rejects that redundant combination.
+Consenting records an acknowledgement. It does not reduce what the operator can
+observe.
 .TP
 .BI "--tls-ca " path
 TLS CA certificate.
@@ -674,6 +890,14 @@ backend. Chrome backends use the emitted-byte wire gates instead.
 .TP
 .BI "--tls-fingerprint-test-endpoint " host
 Host used for fingerprint verification tests.
+.TP
+.B --self-dpi
+Warn when local carrier metadata stops matching the selected disguise profile.
+The checks are warning-only observations of this client's own traffic and are
+not a filtering-resistance claim.
+.TP
+.B --no-self-dpi
+Disable the self-DPI warnings.
 .TP
 .BI "--outer-carrier-evidence " absolute-path
 Write the exact-policy one-flow outer-carrier evidence bundle. This option is
@@ -765,8 +989,51 @@ option is unavailable.
 .B --boring
 Use minimal output.
 .TP
+.BI "--accept-server-control " [port]
+Opt in to server-initiated bounded TCP stream opens. The client publishes a
+reverse listener for
+.B 127.0.0.1:22
+and the server picks its own listen port automatically. An explicit
+.I port
+pins the server-side listener and must be
+.BR 3000 - 30000 .
+Command execution is not part of this contract.
+.TP
+.BI "--accept-server-control-min-port " port ", --accept-server-control-max-port " port
+Bound the automatically chosen server-side listener range used when no explicit
+.B --accept-server-control
+port is pinned. The default range is
+.BR 4100 - 8600 .
+Positive values are clamped to 1-65535; a non-positive value keeps that side's
+default. An inverted pair is swapped. Passing either option also enables
+.BR --accept-server-control .
+.TP
+.B --service-streams-only
+Embedder mode: keep only the ABI service streams. The session stays up without
+a local-attach runtime, an interactive console, or any listener of its own.
+.TP
 .B --
 Service-safe launch separator.
+.SH INFORMATIONAL OPTIONS
+.TP
+.B "-h, --help"
+Print the built-in option summary and exit.
+.TP
+.B --version
+Print local component versions and crypto capabilities, then exit. Setting
+.B YUME_UPDATE_CHECK=1
+also enables the GitHub release check.
+.TP
+.B --credits
+Print authorship credits and the bundled open-source component
+acknowledgements.
+.TP
+.BI "--completion " shell
+Print a shell completion script and exit. The only supported value is
+.BR bash .
+The subcommand form
+.B "yume completion bash"
+is equivalent.
 .SH INTERACTIVE CONSOLE
 When a session stays attached, the console accepts commands such as:
 .PP
@@ -797,7 +1064,7 @@ configuration rather than from the console.
 .TP
 Start a local SOCKS5 proxy:
 .nf
-yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 1080
+yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 127.0.0.1:1080
 .fi
 .TP
 Use curl with remote DNS through the proxy:
@@ -817,7 +1084,7 @@ yume --server origin.example.net -i ~/.yume/id_ed25519 -L 2222:127.0.0.1:22
 .TP
 Require operator identity proof:
 .nf
-yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 1080 \
+yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 127.0.0.1:1080 \
      --require-operator-identity --operator-ca-cert /etc/yume/operator-ca.pem
 .fi
 .SH SECURITY NOTES
@@ -853,8 +1120,7 @@ Installed documentation in packaged builds.
 From a build tree:
 .PP
 .nf
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+\&./ezbuild.sh
 sudo cmake --install build
 .fi
 .PP

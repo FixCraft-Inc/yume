@@ -203,6 +203,11 @@ YUME_API int yume_packet_read_batch(yume_packet* packet,
                                     size_t* packet_count,
                                     size_t* required_storage,
                                     uint32_t timeout_ms);
+/*
+ * close reports transport cleanup status and leaves the handle usable for
+ * error inspection. destroy accepts NULL, closes if needed, and frees the
+ * handle; cleanup is best-effort because destroy cannot report an error.
+ */
 YUME_API int yume_packet_close(yume_packet* packet);
 YUME_API void yume_packet_destroy(yume_packet* packet);
 
@@ -272,6 +277,7 @@ YUME_API int yume_stream_write(yume_stream* stream,
                                size_t* bytes_written,
                                uint32_t timeout_ms);
 YUME_API int yume_stream_shutdown_write(yume_stream* stream);
+/* Same close/destroy ownership contract as yume_packet. */
 YUME_API int yume_stream_close(yume_stream* stream);
 YUME_API void yume_stream_destroy(yume_stream* stream);
 

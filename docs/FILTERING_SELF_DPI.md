@@ -46,10 +46,15 @@ review and `.gitignore` exception.
 
 ## Client self-DPI
 
-Desktop: `--self-dpi` enables warning-only checks of local carrier metadata.
-Android: Diagnostics -> Self-DPI warnings.
+The native client option `--self-dpi` enables warning-only checks of local
+carrier metadata. The separate Android packet client does not expose this
+switch; its diagnostics report packet-session facts instead.
 
-Self-DPI v1 inspects local configuration and runtime metadata only: TLS
-profile, HTTPS masking, port, padding/jitter, packet-native batch settings,
-and raw versus smoothed throughput. It does not inspect application payloads
-and does not auto-tune the connection.
+Self-DPI v1 inspects local configuration and runtime metadata only. The
+desktop client logs the TLS stealth switch, the resolved profile name, the
+HTTP/2 carrier state, the server port, the TLS handshake time, and the frame
+padding and jitter settings. It warns when TLS stealth or HTTPS masking is
+off, when the port is not 443, and when the selected profile does not resolve
+to a known browser fingerprint locally. It does not inspect application
+payloads, packet-native batch settings, or throughput, and it does not
+auto-tune the connection.

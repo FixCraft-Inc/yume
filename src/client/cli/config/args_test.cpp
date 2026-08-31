@@ -60,6 +60,15 @@ void CheckOptionalValuesAndAliases() {
     assert(proxy.outbound_proxy_url.empty());
 }
 
+void CheckStandaloneBenchmarkInfo() {
+    auto args = parse({"yume", "--list-configs"});
+    assert(args.parse_error.empty());
+    assert(args.local_benchmark && !args.local_benchmark_full);
+    assert(args.non_interactive);
+    assert(args.local_benchmark_args ==
+           std::vector<std::string>{"--list-configs"});
+}
+
 void CheckFirstErrorAndDiagnostics() {
     auto first = parse(
         {"yume", "--server", "example", "--unknown", "--port", "bad"});
@@ -81,6 +90,7 @@ void CheckFirstErrorAndDiagnostics() {
 int main() {
     CheckDomainDispatch();
     CheckOptionalValuesAndAliases();
+    CheckStandaloneBenchmarkInfo();
     CheckFirstErrorAndDiagnostics();
     return 0;
 }

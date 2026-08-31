@@ -8,6 +8,7 @@ on:
       - "docs/**"
       - "CONTRIBUTING.md"
       - "scripts/sync_website_docs.sh"
+      - "scripts/check_website_catalog.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -33,6 +34,10 @@ jobs:
       - name: Sync docs into website
         run: |
           bash scripts/sync_website_docs.sh
+
+      - name: Validate website catalog
+        run: |
+          python3 scripts/check_website_catalog.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

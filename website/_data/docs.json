@@ -1,0 +1,163 @@
+[
+  {
+    "title": "Quick start",
+    "summary": "Build the tree, create a server and device kit, and connect a first client.",
+    "url": "/docs/QUICKSTART/",
+    "source": "docs/QUICKSTART.md",
+    "home_group": "Start here",
+    "landing_group": "Start here",
+    "order": 10
+  },
+  {
+    "title": "YUME explained",
+    "summary": "How the transport works, who can see traffic, and where another egress fits.",
+    "url": "/docs/EXPLAINED/",
+    "source": "docs/EXPLAINED.md",
+    "home_group": "Start here",
+    "landing_group": "Start here",
+    "order": 20
+  },
+  {
+    "title": "Stealth transport",
+    "summary": "Browser-shaped TLS, the HTTP/2 carrier, the cover site, and the remaining differences.",
+    "url": "/docs/STEALTH/",
+    "source": "docs/STEALTH.md",
+    "home_group": "Start here",
+    "landing_group": "Security and transport",
+    "order": 30
+  },
+  {
+    "title": "Threat model",
+    "summary": "The attacker, operator, endpoint, and metadata boundaries.",
+    "url": "/docs/THREAT_MODEL/",
+    "source": "docs/THREAT_MODEL.md",
+    "home_group": "Start here",
+    "landing_group": "Security and transport",
+    "order": 40
+  },
+  {
+    "title": "Security modes",
+    "summary": "Rekey policies and the exposure, work, and network tradeoffs.",
+    "url": "/docs/SECURITY_MODES/",
+    "source": "docs/SECURITY_MODES.md",
+    "home_group": "Start here",
+    "landing_group": "Security and transport",
+    "order": 50
+  },
+  {
+    "title": "Permissions",
+    "summary": "Key admission, per-key metadata, and the checks around privileged features.",
+    "url": "/docs/PERMISSIONS/",
+    "source": "docs/PERMISSIONS.md",
+    "home_group": "Start here",
+    "landing_group": "Security and transport",
+    "order": 60
+  },
+  {
+    "title": "Operations",
+    "summary": "Deployment, services, release verification, limits, and troubleshooting.",
+    "url": "/docs/OPERATIONS/",
+    "source": "docs/OPERATIONS.md",
+    "home_group": "Operating",
+    "landing_group": "Start here",
+    "order": 70
+  },
+  {
+    "title": "Packaging",
+    "summary": "Local installs, man pages, and the Debian package split.",
+    "url": "/docs/PACKAGING/",
+    "source": "docs/PACKAGING.md",
+    "home_group": "Operating",
+    "landing_group": "Reference and development",
+    "order": 80
+  },
+  {
+    "title": "Preventing SOCKS bypass",
+    "summary": "Browser settings, route checks, and the system kill-switch boundary.",
+    "url": "/docs/LEAK_TIGHT/",
+    "source": "docs/LEAK_TIGHT.md",
+    "home_group": "Operating",
+    "landing_group": "Operating",
+    "order": 90
+  },
+  {
+    "title": "Filtering and probe behavior",
+    "summary": "What the public listener returns to ordinary requests and failed admission.",
+    "url": "/docs/FILTERING_SELF_DPI/",
+    "source": "docs/FILTERING_SELF_DPI.md",
+    "home_group": "Operating",
+    "landing_group": "Security and transport",
+    "order": 100
+  },
+  {
+    "title": "Diagnostics",
+    "summary": "Developer timing hooks and what their results can support.",
+    "url": "/docs/DIAGNOSTICS/",
+    "source": "docs/DIAGNOSTICS.md",
+    "home_group": "Operating",
+    "landing_group": "Operating",
+    "order": 110
+  },
+  {
+    "title": "Transport profiles",
+    "summary": "How a captured browser and server identity enter the immutable registry.",
+    "url": "/docs/TRANSPORT_PROFILES/",
+    "source": "docs/TRANSPORT_PROFILES.md",
+    "home_group": "Operating",
+    "landing_group": "Security and transport",
+    "order": 120
+  },
+  {
+    "title": "Architecture",
+    "summary": "Component ownership, dependency direction, and runtime boundaries.",
+    "url": "/docs/ARCHITECTURE/",
+    "source": "docs/ARCHITECTURE.md",
+    "home_group": "Internals and status",
+    "landing_group": "Reference and development",
+    "order": 130
+  },
+  {
+    "title": "C ABI",
+    "summary": "The native embed interface, lifetime rules, statuses, and symbol policy.",
+    "url": "/docs/ABI/",
+    "source": "docs/ABI.md",
+    "home_group": "Internals and status",
+    "landing_group": "Reference and development",
+    "order": 140
+  },
+  {
+    "title": "Control API",
+    "summary": "JSON operations, validation, response envelopes, and error boundaries.",
+    "url": "/docs/CONTROL_API/",
+    "source": "docs/CONTROL_API.md",
+    "home_group": "Internals and status",
+    "landing_group": "Reference and development",
+    "order": 150
+  },
+  {
+    "title": "Implementation status",
+    "summary": "What exists, what has focused tests, and what still blocks a stable release.",
+    "url": "/docs/IMPLEMENTATION_STATUS/",
+    "source": "docs/IMPLEMENTATION_STATUS.md",
+    "home_group": "Internals and status",
+    "landing_group": "Start here",
+    "order": 160
+  },
+  {
+    "title": "Tests and benchmarks",
+    "summary": "How to run focused checks and what each result can establish.",
+    "url": "/docs/SELFTEST/",
+    "source": "docs/SELFTEST.md",
+    "home_group": "Internals and status",
+    "landing_group": "Reference and development",
+    "order": 170
+  },
+  {
+    "title": "Full documentation map",
+    "summary": "Optional features, protocol documents, and contributor references.",
+    "url": "/docs/README/",
+    "source": "docs/README.md",
+    "landing_group": "Reference and development",
+    "order": 180
+  }
+]

@@ -30,6 +30,10 @@ jobs:
         run: |
           bash scripts/sync_website_docs.sh
 
+      - name: Validate website catalog
+        run: |
+          python3 scripts/check_website_catalog.py
+
       - name: Build website
         uses: actions/jekyll-build-pages@v1
         with:

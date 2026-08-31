@@ -1,5 +1,14 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Nunito+Sans:wght@400;500;600;700&family=Quicksand:wght@500;600;700&display=swap");
 
+/*
+ * Every surface, ink, and accent below sits on one plum axis (OKLCH hue 330-342).
+ * The dark theme is the same axis at low lightness: paper stays plum rather than
+ * black, and elevation is carried by lightness steps because shadows do not read
+ * on a dark ground. Light values live on :root. Dark values live once in the
+ * --dark-* block and are mapped onto the same names by preference or by
+ * data-theme.
+ */
+
 :root {
   color-scheme: light;
 
@@ -18,10 +27,49 @@
   --color-accent-soft: #f7dcef;
   --color-button: #f2c2e3;
   --color-button-hover: #edb2db;
+  --color-button-ink: #443641;
   --color-focus: #a8518d;
-  --color-code: #443a42;
-  --color-code-ink: #fff8fc;
-  --color-code-muted: #ddced9;
+  --color-code: #f9e7f3;
+  --color-code-head: #f3daec;
+  --color-code-ink: #3f303c;
+  --color-code-rule: #eacee2;
+  --color-code-inline: #fdeef8;
+  --color-warn: #bb7b56;
+  --color-warn-soft: #ffeddc;
+
+  --shadow-whisper: 0 0.75rem 2rem rgb(128 82 113 / 0.06);
+  --shadow-cloud: 0 2rem 6rem rgb(157 91 137 / 0.12);
+  --shadow-logo: 0 1rem 2rem rgb(158 86 137 / 0.14);
+
+  /* Dark palette source values. Mapped below, never referenced directly. */
+  --dark-paper: #170f15;
+  --dark-paper-soft: #392b35;
+  --dark-paper-deep: #211524;
+  --dark-cloud: #2d2029;
+  --dark-ink: #efe4eb;
+  --dark-ink-soft: #ccc0c8;
+  --dark-muted: #9d8f99;
+  --dark-rule: #4c3d48;
+  --dark-rule-soft: #352a32;
+  --dark-logo: #eda1d9;
+  --dark-accent: #e49cd1;
+  --dark-accent-strong: #ffb3e9;
+  --dark-accent-soft: #482940;
+  --dark-button: #e7aed6;
+  --dark-button-hover: #febcea;
+  --dark-button-ink: #271624;
+  --dark-focus: #ffb3e9;
+  --dark-code: #0d070c;
+  --dark-code-head: #1c121a;
+  --dark-code-ink: #ede3e9;
+  --dark-code-rule: #31242e;
+  --dark-code-inline: #322530;
+  --dark-warn: #e9ac7d;
+  --dark-warn-soft: #412615;
+
+  --dark-shadow-whisper: 0 0.75rem 2rem rgb(0 0 0 / 0.45);
+  --dark-shadow-cloud: 0 2rem 5rem rgb(0 0 0 / 0.35);
+  --dark-shadow-logo: 0 0 2.75rem rgb(237 161 217 / 0.22);
 
   --font-display: "Quicksand", "Arial Rounded MT Bold", ui-rounded, sans-serif;
   --font-body: "Nunito Sans", "Avenir Next", ui-sans-serif, sans-serif;
@@ -54,10 +102,6 @@
   --radius-cloud: 1.75rem;
   --radius-pill: 999px;
 
-  --shadow-whisper: 0 0.75rem 2rem rgb(128 82 113 / 0.06);
-  --shadow-cloud: 0 2rem 6rem rgb(157 91 137 / 0.12);
-  --shadow-logo: 0 1rem 2rem rgb(158 86 137 / 0.14);
-
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
@@ -72,4 +116,72 @@
   --z-modal: 400;
   --z-toast: 500;
   --z-tooltip: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --color-paper: var(--dark-paper);
+    --color-paper-soft: var(--dark-paper-soft);
+    --color-paper-deep: var(--dark-paper-deep);
+    --color-cloud: var(--dark-cloud);
+    --color-ink: var(--dark-ink);
+    --color-ink-soft: var(--dark-ink-soft);
+    --color-muted: var(--dark-muted);
+    --color-rule: var(--dark-rule);
+    --color-rule-soft: var(--dark-rule-soft);
+    --color-logo: var(--dark-logo);
+    --color-accent: var(--dark-accent);
+    --color-accent-strong: var(--dark-accent-strong);
+    --color-accent-soft: var(--dark-accent-soft);
+    --color-button: var(--dark-button);
+    --color-button-hover: var(--dark-button-hover);
+    --color-button-ink: var(--dark-button-ink);
+    --color-focus: var(--dark-focus);
+    --color-code: var(--dark-code);
+    --color-code-head: var(--dark-code-head);
+    --color-code-ink: var(--dark-code-ink);
+    --color-code-rule: var(--dark-code-rule);
+    --color-code-inline: var(--dark-code-inline);
+    --color-warn: var(--dark-warn);
+    --color-warn-soft: var(--dark-warn-soft);
+
+    --shadow-whisper: var(--dark-shadow-whisper);
+    --shadow-cloud: var(--dark-shadow-cloud);
+    --shadow-logo: var(--dark-shadow-logo);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-paper: var(--dark-paper);
+  --color-paper-soft: var(--dark-paper-soft);
+  --color-paper-deep: var(--dark-paper-deep);
+  --color-cloud: var(--dark-cloud);
+  --color-ink: var(--dark-ink);
+  --color-ink-soft: var(--dark-ink-soft);
+  --color-muted: var(--dark-muted);
+  --color-rule: var(--dark-rule);
+  --color-rule-soft: var(--dark-rule-soft);
+  --color-logo: var(--dark-logo);
+  --color-accent: var(--dark-accent);
+  --color-accent-strong: var(--dark-accent-strong);
+  --color-accent-soft: var(--dark-accent-soft);
+  --color-button: var(--dark-button);
+  --color-button-hover: var(--dark-button-hover);
+  --color-button-ink: var(--dark-button-ink);
+  --color-focus: var(--dark-focus);
+  --color-code: var(--dark-code);
+  --color-code-head: var(--dark-code-head);
+  --color-code-ink: var(--dark-code-ink);
+  --color-code-rule: var(--dark-code-rule);
+  --color-code-inline: var(--dark-code-inline);
+  --color-warn: var(--dark-warn);
+  --color-warn-soft: var(--dark-warn-soft);
+
+  --shadow-whisper: var(--dark-shadow-whisper);
+  --shadow-cloud: var(--dark-shadow-cloud);
+  --shadow-logo: var(--dark-shadow-logo);
 }

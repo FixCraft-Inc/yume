@@ -5,9 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>YUME: protected transport through browser-shaped HTTPS</title>
     <meta name="description" content="YUME carries TCP and UDP through one persistent browser-shaped connection with hybrid session keys and per-message encryption.">
-    <link rel="icon" type="image/svg+xml" href="assets/yume-plain.svg?v=5">
-    <link rel="stylesheet" href="assets/site.css?v=5">
-    <script src="assets/site.js?v=5" defer></script>
+    <link rel="icon" type="image/svg+xml" href="assets/yume-plain.svg?v=6">
+    <meta name="theme-color" content="#fffafd" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#170f15" media="(prefers-color-scheme: dark)">
+    <script>
+      // Applied before first paint so a stored choice never flashes the other theme.
+      try {
+        var t = localStorage.getItem("yume-theme");
+        if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+    <link rel="stylesheet" href="assets/site.css?v=6">
+    <script src="assets/site.js?v=6" defer></script>
   </head>
   <body class="home-page">
     <a class="skip-link" href="#content">Skip to content</a>
@@ -15,7 +24,7 @@
       <header class="site-header">
         <a class="brand" href="#top" aria-label="YUME home">
           <svg class="brand-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
-            <use href="assets/yume-plain.svg?v=5#yume-mark"></use>
+            <use href="assets/yume-plain.svg?v=6#yume-mark"></use>
           </svg>
           <span>
             <span class="brand-name">YUME</span>
@@ -25,6 +34,12 @@
         <nav aria-label="Primary navigation">
           <a href="docs/">Docs</a>
           <a href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">GitHub</a>
+          <button class="theme-toggle" type="button" id="theme-toggle" aria-pressed="false" aria-label="Switch the theme" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
+              <path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"></path>
+            </svg>
+          </button>
         </nav>
       </header>
 
@@ -35,6 +50,7 @@
         <a href="#run">Run</a>
         <a href="#verify">Verify</a>
         <a href="#docs">Docs</a>
+        <a href="#support">Support</a>
       </nav>
 
       <main id="content">
@@ -57,7 +73,7 @@
           <div class="yume-visual" aria-hidden="true">
             <span class="cloud-shape"></span>
             <svg class="yume-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
-              <use href="assets/yume-plain.svg?v=5#yume-mark"></use>
+              <use href="assets/yume-plain.svg?v=6#yume-mark"></use>
             </svg>
           </div>
           <div class="release-copy">
@@ -171,7 +187,7 @@
           OpenSSL and nghttp2 revisions selected by the build scripts.
         </p>
         <div class="download-grid">
-          <article class="download-card">
+          <article class="download-card download-card-wide">
             <span class="chip">Recommended</span>
             <h3>Build from source</h3>
             <p class="section-lead">
@@ -406,77 +422,78 @@ cd yume
       <section id="docs">
         <h2 class="section-title">Docs</h2>
         <p class="section-lead">The reference pages are generated from canonical repository Markdown. This hand-maintained index links those pages without replacing their authority.</p>
+        <h3 class="subsection-title">Start here</h3>
         <div class="grid">
           <a class="card" href="docs/QUICKSTART/">
-            <h3>Quick start</h3>
+            <h4>Quick start</h4>
             <p>Build the tree, generate a server and device kit, and connect a first client.</p>
           </a>
           <a class="card" href="docs/EXPLAINED/">
-            <h3>YUME explained</h3>
+            <h4>YUME explained</h4>
             <p>What the transport does and why it is built this way.</p>
           </a>
           <a class="card" href="docs/STEALTH/">
-            <h3>Stealth transport</h3>
+            <h4>Stealth transport</h4>
             <p>Browser-shaped TLS, the HTTP/2 carrier, the cover site, and the residuals that remain.</p>
           </a>
           <a class="card" href="docs/THREAT_MODEL/">
-            <h3>Threat model</h3>
+            <h4>Threat model</h4>
             <p>What YUME defends against, what it does not, and the trust an operator still holds.</p>
           </a>
           <a class="card" href="docs/SECURITY_MODES/">
-            <h3>Security modes</h3>
+            <h4>Security modes</h4>
             <p>The rekey policies and what each one trades away.</p>
           </a>
           <a class="card" href="docs/PERMISSIONS/">
-            <h3>Permissions</h3>
+            <h4>Permissions</h4>
             <p>Key admission, per-key metadata, and the gates in front of dangerous features.</p>
           </a>
         </div>
 
-        <div class="subsection-title">Operating</div>
+        <h3 class="subsection-title">Operating</h3>
         <div class="grid">
           <a class="card" href="docs/OPERATIONS/">
-            <h3>Operations</h3>
+            <h4>Operations</h4>
             <p>Deployment, services, verification, and troubleshooting.</p>
           </a>
           <a class="card" href="docs/PACKAGING/">
-            <h3>Packaging</h3>
+            <h4>Packaging</h4>
             <p>Local installs, man pages, and the Debian package split.</p>
           </a>
           <a class="card" href="docs/LEAK_TIGHT/">
-            <h3>Preventing SOCKS bypass</h3>
+            <h4>Preventing SOCKS bypass</h4>
             <p>Browser settings, route checks, and the system kill-switch boundary.</p>
           </a>
           <a class="card" href="docs/FILTERING_SELF_DPI/">
-            <h3>Filtering and self-DPI</h3>
+            <h4>Filtering and self-DPI</h4>
             <p>What the daemon shows a probe, a robot, and a real browser.</p>
           </a>
           <a class="card" href="docs/DIAGNOSTICS/">
-            <h3>Diagnostics</h3>
+            <h4>Diagnostics</h4>
             <p>Developer timing hooks and what they are safe to conclude.</p>
           </a>
           <a class="card" href="docs/TRANSPORT_PROFILES/">
-            <h3>Transport profiles</h3>
+            <h4>Transport profiles</h4>
             <p>Why the profile registry is immutable and how a new browser identity gets added.</p>
           </a>
         </div>
 
-        <div class="subsection-title">Internals and status</div>
+        <h3 class="subsection-title">Internals and status</h3>
         <div class="grid">
           <a class="card" href="docs/ARCHITECTURE/">
-            <h3>Architecture</h3>
+            <h4>Architecture</h4>
             <p>How the client, daemon, core, and facade fit together.</p>
           </a>
           <a class="card" href="docs/ABI/">
-            <h3>ABI policy</h3>
+            <h4>ABI policy</h4>
             <p>The stable C embed ABI and its compatibility rules.</p>
           </a>
           <a class="card" href="docs/IMPLEMENTATION_STATUS/">
-            <h3>Implementation status</h3>
+            <h4>Implementation status</h4>
             <p>Implemented, tested, and planned, stated conservatively.</p>
           </a>
           <a class="card" href="docs/SELFTEST/">
-            <h3>Benchmarks and self-test</h3>
+            <h4>Benchmarks and self-test</h4>
             <p>How the tree measures itself, and what those numbers do and do not establish.</p>
           </a>
         </div>

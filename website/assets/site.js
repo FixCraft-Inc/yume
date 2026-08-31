@@ -199,6 +199,56 @@ const loadHashFiles = async () => {
   }));
 };
 
+const THEME_KEY = "yume-theme";
+const THEME_COLORS = { light: "#fffafd", dark: "#170f15" };
+
+const darkMedia = () => window.matchMedia("(prefers-color-scheme: dark)");
+
+const effectiveTheme = () => {
+  const forced = document.documentElement.dataset.theme;
+  if (forced === "dark" || forced === "light") {
+    return forced;
+  }
+  return darkMedia().matches ? "dark" : "light";
+};
+
+const initThemeToggle = () => {
+  const button = document.getElementById("theme-toggle");
+  const media = darkMedia();
+
+  const sync = () => {
+    const theme = effectiveTheme();
+    // Both authored meta tags carry the resolved colour, so an explicit
+    // override still reaches the browser chrome.
+    document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
+      meta.setAttribute("content", THEME_COLORS[theme]);
+    });
+    if (!button) {
+      return;
+    }
+    const next = theme === "dark" ? "light" : "dark";
+    button.hidden = false;
+    button.setAttribute("aria-pressed", String(theme === "dark"));
+    button.setAttribute("aria-label", `Switch to the ${next} theme`);
+    button.title = `Switch to the ${next} theme`;
+  };
+
+  media.addEventListener("change", sync);
+
+  button?.addEventListener("click", () => {
+    const next = effectiveTheme() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem(THEME_KEY, next);
+    } catch (_err) {
+      // Storage is blocked, so the choice lasts for this page only.
+    }
+    sync();
+  });
+
+  sync();
+};
+
 const initNavScrollSpy = () => {
   const nav = document.querySelector(".section-nav");
   if (!nav) {
@@ -277,6 +327,7 @@ const initDocToc = () => {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  initThemeToggle();
   initDisabledLinks();
   initNavScrollSpy();
   initDocToc();

@@ -1,0 +1,21 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{%- if page.layout == 'doc' %}
+<title>{{ page.title }} | YUME</title>
+<meta name="description" content="{{ page.title }} documentation generated from the YUME repository.">
+{%- else %}
+<title>{{ page.title }}</title>
+<meta name="description" content="{{ page.description | default: site.description | strip_newlines | strip }}">
+{%- endif %}
+<link rel="icon" type="image/svg+xml" href="{{ '/assets/yume-plain.svg' | relative_url }}?v={{ site.asset_version }}">
+<meta name="theme-color" content="#fffafd" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#170f15" media="(prefers-color-scheme: dark)">
+<script>
+  // Runs before first paint so a stored choice never flashes the other theme.
+  try {
+    var t = localStorage.getItem("yume-theme");
+    if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
+<link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}?v={{ site.asset_version }}">
+<script src="{{ '/assets/site.js' | relative_url }}?v={{ site.asset_version }}" defer></script>

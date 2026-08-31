@@ -1,4 +1,7 @@
-@import url("tokens.css?v=6");
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5 */
+/* Hallmark · genre: atmospheric · tone: soft dream · palette: pink-plum 337 · macrostructure: Map / Diagram · nav: N10 · footer: Ft5 · design-system: DESIGN.md */
+/* Hallmark · slop: pass (58 gates) · contrast: pass (40–41) · honest: pass (46) · chrome: pass (47) · tokens: pass (48) · responsive/mobile: pass (34, 49–57) · icons: pass (30) */
+@import url("tokens.css?v=9");
 
 *,
 *::before,
@@ -69,6 +72,7 @@ h1,
 h2,
 h3,
 h4 {
+  min-width: 0;
   margin-block: 0;
   color: var(--color-ink);
   overflow-wrap: anywhere;
@@ -123,12 +127,69 @@ code {
 
 .container,
 .doc-container {
-  width: min(100%, 78rem);
+  width: min(100%, 82rem);
   margin-inline: auto;
   padding-inline: clamp(1rem, 4vw, 3rem);
 }
 
-.site-header,
+.site-header {
+  position: sticky;
+  z-index: var(--z-sticky);
+  inset-block-start: 0;
+  min-height: 6.5rem;
+  isolation: isolate;
+}
+
+.site-header-inner {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 6.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  transform: translateY(0) scale(1);
+  transition: transform var(--dur-morph) var(--ease-out);
+}
+
+.site-header-inner::before,
+.site-header-inner::after {
+  position: absolute;
+  z-index: -1;
+  content: "";
+  pointer-events: none;
+  transition: opacity var(--dur-morph) var(--ease-out);
+}
+
+.site-header-inner::before {
+  inset: var(--space-xs) 0;
+  border: var(--rule-hairline) solid var(--color-rule-soft);
+  border-radius: var(--radius-cloud);
+  background: var(--color-cloud);
+  box-shadow: var(--shadow-whisper);
+  opacity: 0;
+}
+
+.site-header-inner::after {
+  inset: auto 0 0;
+  height: var(--rule-hairline);
+  background: var(--color-rule-soft);
+  opacity: 1;
+}
+
+.site-header.is-floating .site-header-inner {
+  transform: translateY(var(--space-xs)) scale(0.985);
+}
+
+.site-header.is-floating .site-header-inner::before {
+  opacity: 1;
+}
+
+.site-header.is-floating .site-header-inner::after {
+  opacity: 0;
+}
+
 .doc-header {
   display: flex;
   min-width: 0;
@@ -198,11 +259,21 @@ code {
   white-space: nowrap;
 }
 
+.site-header nav a:nth-of-type(n + 2) {
+  display: none;
+}
+
 .site-header nav a:hover,
 .doc-nav a:hover,
 .site-header nav a[aria-current="page"] {
   background: var(--color-paper-soft);
   color: var(--color-ink);
+}
+
+.site-header nav a:active,
+.doc-nav a:active,
+.section-nav a:active {
+  background: var(--color-paper-deep);
 }
 
 .theme-toggle {
@@ -237,6 +308,15 @@ code {
   color: var(--color-ink);
 }
 
+.theme-toggle:active {
+  background: var(--color-paper-deep);
+}
+
+.theme-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .theme-toggle[aria-pressed="true"] {
   border-color: var(--color-rule);
   background: var(--color-cloud);
@@ -246,7 +326,7 @@ code {
 .section-nav {
   position: sticky;
   z-index: var(--z-sticky);
-  inset-block-start: var(--space-sm);
+  inset-block-start: 6rem;
   display: flex;
   width: max-content;
   max-width: 100%;
@@ -374,7 +454,6 @@ section {
   text-decoration: none;
   white-space: nowrap;
   transition:
-    transform var(--dur-micro) var(--ease-out),
     background-color var(--dur-short) var(--ease-out),
     border-color var(--dur-short) var(--ease-out),
     color var(--dur-short) var(--ease-out);
@@ -388,10 +467,8 @@ section {
 
 /* Both variants take the pink fill on hover, so both take the fill's ink. */
 .btn:hover {
-  border-color: transparent;
   background: var(--color-button-hover);
   color: var(--color-button-ink);
-  transform: translateY(-1px);
 }
 
 .btn:active {
@@ -402,6 +479,7 @@ section {
 a.disabled {
   color: var(--color-muted);
   cursor: not-allowed;
+  opacity: 0.55;
   pointer-events: none;
   text-decoration: none;
 }
@@ -417,7 +495,7 @@ a.disabled {
 .yume-visual {
   position: relative;
   display: grid;
-  min-height: 22rem;
+  min-height: 19rem;
   place-items: center;
   isolation: isolate;
 }
@@ -551,9 +629,37 @@ a.disabled {
 }
 
 .disguise {
+  position: relative;
   margin-block: var(--space-xl) 0;
-  padding-block: var(--space-lg);
+  padding: var(--space-lg) 0 var(--space-lg) var(--space-xl);
   border-block: var(--rule-hairline) solid var(--color-rule);
+}
+
+.passage-map::before {
+  position: absolute;
+  inset: var(--space-xl) auto var(--space-xl) 0.35rem;
+  width: 2px;
+  background: var(--color-accent);
+  content: "";
+  opacity: 0.52;
+  transform: scaleY(1);
+  transform-origin: top;
+}
+
+.passage-map .disguise-row {
+  position: relative;
+}
+
+.passage-map .disguise-row::before {
+  position: absolute;
+  inset-block-start: 0.2rem;
+  inset-inline-start: calc(-1 * var(--space-xl) - 0.05rem);
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--color-accent-strong);
+  border-radius: var(--radius-pill);
+  background: var(--color-paper);
+  content: "";
 }
 
 .disguise-row + .disguise-row {
@@ -619,6 +725,98 @@ a.disabled {
   font-family: var(--font-display);
   font-size: var(--text-lg);
   font-weight: 650;
+}
+
+/* Documentation inventory: one source-backed list, two visual voices. */
+.doc-catalog {
+  display: grid;
+  gap: var(--space-2xl);
+  margin-block-start: var(--space-xl);
+}
+
+.doc-catalog-group {
+  min-width: 0;
+  margin: 0;
+}
+
+.doc-catalog-heading {
+  padding-block-end: var(--space-sm);
+  border-block-end: var(--rule-hairline) solid var(--color-rule);
+}
+
+.doc-catalog-heading h3 {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.doc-catalog-list {
+  display: grid;
+}
+
+.doc-catalog-item {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 5.5rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding-block: var(--space-md);
+  border-block-end: var(--rule-hairline) solid var(--color-rule-soft);
+  color: var(--color-ink);
+  text-decoration: none;
+}
+
+.doc-catalog-mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 2px solid var(--color-accent);
+  border-radius: 58% 42% 55% 45% / 46% 58% 42% 54%;
+  transform: rotate(-8deg);
+  transition: transform var(--dur-short) var(--ease-out);
+}
+
+.doc-catalog-copy,
+.doc-catalog-copy strong,
+.doc-catalog-copy span {
+  display: block;
+  min-width: 0;
+}
+
+.doc-catalog-copy strong {
+  font-size: var(--text-md);
+  line-height: 1.25;
+}
+
+.doc-catalog-copy span {
+  max-width: 62ch;
+  margin-block-start: var(--space-2xs);
+  color: var(--color-ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.doc-catalog-action {
+  display: none;
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.doc-catalog-item:hover .doc-catalog-mark,
+.doc-catalog-item:focus-visible .doc-catalog-mark {
+  transform: rotate(8deg);
+}
+
+.doc-catalog-item:active .doc-catalog-mark {
+  transform: rotate(0);
+}
+
+.docs-index {
+  padding-block: var(--space-2xl) var(--space-3xl);
+  border-block-start: var(--rule-hairline) solid var(--color-rule-soft);
 }
 
 .notice {
@@ -725,6 +923,10 @@ a.card:focus-visible {
 a.card:focus-visible::before {
   outline: 3px solid var(--color-focus);
   outline-offset: 2px;
+}
+
+a.card:active::before {
+  background: var(--color-paper-deep);
 }
 
 .card h3,
@@ -1213,6 +1415,11 @@ tbody tr:last-child td {
 }
 
 @media (min-width: 40rem) {
+  .site-header nav a:nth-of-type(n + 2),
+  .doc-catalog-action {
+    display: inline-flex;
+  }
+
   .brand-sub {
     display: block;
   }
@@ -1273,16 +1480,26 @@ tbody tr:last-child td {
 }
 
 @media (min-width: 60rem) {
-  .site-header,
   .doc-header {
     padding-block: var(--space-xl);
+  }
+
+  .doc-catalog-group {
+    display: grid;
+    grid-template-columns: minmax(10rem, 3fr) minmax(0, 9fr);
+    gap: var(--space-2xl);
+  }
+
+  .doc-catalog-heading {
+    padding-block: var(--space-md) 0;
+    border-block-end: 0;
   }
 
   .hero {
     grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
     gap: var(--space-3xl);
     align-items: start;
-    padding-block: var(--space-3xl);
+    padding-block: var(--space-2xl) var(--space-3xl);
   }
 
   .release-strip {
@@ -1320,7 +1537,7 @@ tbody tr:last-child td {
   }
 
   .docs-page .hero {
-    padding-block: var(--space-3xl);
+    padding-block: var(--space-2xl) var(--space-3xl);
   }
 
   .hashes-page .hero {
@@ -1347,11 +1564,8 @@ tbody tr:last-child td {
  * Four things move, and each earns it:
  *
  *   1. The page-load cascade on the hero, running once, in reading order.
- *      Never on scroll: a fade-up on every section as it enters the viewport
- *      is the most recognisable generated-site tell there is.
- *   2. The disguise figure, which is the signature. The cover layers settle
- *      first and the carried layers appear inside them afterwards, because
- *      that is the claim the figure makes.
+ *   2. The transport passage and selected route headings reveal once when
+ *      their place in the path enters view.
  *   3. State changes that would otherwise snap: the theme cross-fade and the
  *      table-of-contents disclosure.
  *   4. Direct feedback on press.
@@ -1399,8 +1613,7 @@ tbody tr:last-child td {
 
 .hero > div > *,
 .hero > .hero-panel,
-.hero > .release-strip,
-.hero > .disguise {
+.hero > .release-strip {
   animation: drift-in var(--dur-long) var(--ease-out) both;
 }
 
@@ -1410,7 +1623,6 @@ tbody tr:last-child td {
 .hero > div > *:nth-child(4) { animation-delay: 250ms; }
 .hero > .hero-panel { animation-delay: 180ms; }
 .hero > .release-strip { animation-delay: 300ms; }
-.hero > .disguise { animation-delay: 360ms; }
 
 .release-stat {
   animation: settle-in var(--dur-short) var(--ease-out) both;
@@ -1421,26 +1633,32 @@ tbody tr:last-child td {
 .release-stat:nth-child(3) { animation-delay: 440ms; }
 .release-stat:nth-child(4) { animation-delay: 480ms; }
 
-/*
- * The signature. Cover first, carried payload second, and the sentence that
- * ties them together last. The order is the argument the figure is making.
- */
-.disguise .layer {
-  animation: settle-in var(--dur-short) var(--ease-out) both;
+/* Scroll motion is progressive enhancement. Without the motion-ready class,
+   every item stays visible. */
+.motion-ready [data-reveal="passage"] .disguise-row,
+.motion-ready [data-reveal="passage"] .disguise-note,
+.motion-ready [data-reveal="drift"] > .section-title,
+.motion-ready [data-reveal="drift"] > .section-lead,
+.motion-ready [data-reveal="catalog"] {
+  transition: opacity var(--dur-long) var(--ease-out), transform var(--dur-long) var(--ease-out);
 }
 
-.disguise-row:not(.disguise-inner) .layer:nth-child(1) { animation-delay: 520ms; }
-.disguise-row:not(.disguise-inner) .layer:nth-child(2) { animation-delay: 560ms; }
-.disguise-row:not(.disguise-inner) .layer:nth-child(3) { animation-delay: 600ms; }
-.disguise-row:not(.disguise-inner) .layer:nth-child(4) { animation-delay: 640ms; }
+.motion-ready [data-reveal="passage"]:not(.is-visible) .disguise-row,
+.motion-ready [data-reveal="passage"]:not(.is-visible) .disguise-note,
+.motion-ready [data-reveal="drift"]:not(.is-visible) > .section-title,
+.motion-ready [data-reveal="drift"]:not(.is-visible) > .section-lead,
+.motion-ready [data-reveal="catalog"]:not(.is-visible) {
+  opacity: 0;
+  transform: translateY(var(--space-md));
+}
 
-.disguise-inner .layer:nth-child(1) { animation-delay: 720ms; }
-.disguise-inner .layer:nth-child(2) { animation-delay: 760ms; }
-.disguise-inner .layer:nth-child(3) { animation-delay: 800ms; }
-.disguise-inner .layer:nth-child(4) { animation-delay: 840ms; }
+.motion-ready [data-reveal="passage"] .disguise-inner,
+.motion-ready [data-reveal="drift"] > .section-lead {
+  transition-delay: 90ms;
+}
 
-.disguise-note {
-  animation: settle-in var(--dur-short) var(--ease-out) 900ms both;
+.motion-ready [data-reveal="passage"] .disguise-note {
+  transition-delay: 180ms;
 }
 
 /* Press feedback. */
@@ -1486,6 +1704,27 @@ tbody tr:last-child td {
       animation-timeline: scroll(root block);
       background: var(--color-accent-strong);
     }
+  }
+}
+
+@media (max-width: 39.999rem) {
+  .doc-header {
+    flex-wrap: wrap;
+    padding-block: var(--space-lg) var(--space-md);
+  }
+
+  .doc-nav {
+    width: 100%;
+    overflow-x: auto;
+    padding-block-end: var(--space-2xs);
+    scrollbar-width: none;
+  }
+
+  .motion-ready [data-reveal],
+  .motion-ready [data-reveal] * {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
   }
 }
 

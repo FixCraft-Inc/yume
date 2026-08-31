@@ -6,104 +6,19 @@ body_class: docs-page
 nav_current: Docs
 footer_statement: Read the trust boundaries before you operate a public daemon.
 ---
-  <section class="hero">
-    <div>
-      <h1>YUME documentation</h1>
-      <p>
-        Start with the setup guide, then read the threat model before putting a daemon on
-        a public network. The implementation status is the one public page for current
-        support and release limits.
-      </p>
-      <div class="cta-row">
-        <a class="btn" href="QUICKSTART/">Set up YUME</a>
-        <a class="btn secondary" href="IMPLEMENTATION_STATUS/">Check current support</a>
-      </div>
+<section class="hero docs-hero">
+  <div class="hero-copy">
+    <div class="hero-status"><span aria-hidden="true"></span>Canonical docs, published from the source tree</div>
+    <h1>Build, operate, or integrate YUME.</h1>
+    <p>Build YUME, check its trust boundaries, or open the public contracts. Current support and release limits live in implementation status.</p>
+    <div class="cta-row">
+      <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Build from source</a>
+      <a class="btn secondary" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">Check support</a>
     </div>
-    <div class="hero-panel">
-      <div>
-        <div class="meta">Reading path</div>
-        <div class="panel-title">Setup, trust, then reference</div>
-        <div class="meta-row">
-          <span>Planning a public deployment? Read the threat model and operations guide first.</span>
-        </div>
-      </div>
-    </div>
-  </section>
+  </div>
+</section>
 
-  <section>
-    <h2 class="section-title">Start here</h2>
-    <div class="grid">
-      <a class="card" href="EXPLAINED/">
-        <h3>YUME explained</h3>
-        <p>How traffic moves, who can see it, and what changes when you add Tor or another egress.</p>
-      </a>
-      <a class="card" href="QUICKSTART/">
-        <h3>Quick start</h3>
-        <p>Build the client and daemon, create a local kit, and connect through SOCKS.</p>
-      </a>
-      <a class="card" href="OPERATIONS/">
-        <h3>Operations</h3>
-        <p>Services, public deployment, release verification, limits, and troubleshooting.</p>
-      </a>
-      <a class="card" href="IMPLEMENTATION_STATUS/">
-        <h3>Implementation status</h3>
-        <p>What exists, what has focused tests, and what still blocks a stable release.</p>
-      </a>
-    </div>
-
-    <h2 class="subsection-title">Security and transport</h2>
-    <div class="grid">
-      <a class="card" href="THREAT_MODEL/">
-        <h3>Threat model</h3>
-        <p>The attacker, operator, endpoint, and metadata boundaries.</p>
-      </a>
-      <a class="card" href="STEALTH/">
-        <h3>Stealth transport</h3>
-        <p>The browser-shaped carrier, its tested scope, and the differences that remain visible.</p>
-      </a>
-      <a class="card" href="SECURITY_MODES/">
-        <h3>Security modes</h3>
-        <p>Rekey policies and the exposure, work, and network tradeoffs.</p>
-      </a>
-      <a class="card" href="PERMISSIONS/">
-        <h3>Permissions</h3>
-        <p>Client key types and the checks around privileged features.</p>
-      </a>
-      <a class="card" href="TRANSPORT_PROFILES/">
-        <h3>Transport profiles</h3>
-        <p>How a captured browser and server identity enter the immutable registry.</p>
-      </a>
-      <a class="card" href="FILTERING_SELF_DPI/">
-        <h3>Filtering and probe behavior</h3>
-        <p>What the public listener returns to ordinary requests and failed admission.</p>
-      </a>
-    </div>
-
-    <h2 class="subsection-title">Reference and development</h2>
-    <div class="grid">
-      <a class="card" href="ARCHITECTURE/">
-        <h3>Architecture</h3>
-        <p>Component ownership and dependency direction.</p>
-      </a>
-      <a class="card" href="ABI/">
-        <h3>C ABI</h3>
-        <p>The native embed interface, lifetime rules, statuses, and symbol policy.</p>
-      </a>
-      <a class="card" href="CONTROL_API/">
-        <h3>Control API</h3>
-        <p>JSON operations, validation, response envelopes, and error boundaries.</p>
-      </a>
-      <a class="card" href="SELFTEST/">
-        <h3>Tests and benchmarks</h3>
-        <p>How to run focused checks and what each result can support.</p>
-      </a>
-      <a class="card" href="PACKAGING/">
-        <h3>Packaging</h3>
-        <p>Install layouts, man pages, and Debian packages.</p>
-      </a>
-      <a class="card" href="README/">
-        <h3>Full documentation map</h3>
-        <p>Optional features, protocol documents, and contributor references.</p>
-      </a>
-    </div>
-  </section>
+<section class="docs-index" aria-labelledby="docs-index-title">
+  <h2 class="section-title" id="docs-index-title">Documentation</h2>
+  {% include doc-catalog.html groups="Start here|Security and transport|Operating|Reference and development" group_field="landing_group" %}
+</section>

@@ -21,18 +21,18 @@ section_nav:
     url: "#support"
 ---
 <section class="hero" id="top">
-  <div>
+  <div class="hero-copy">
     <div class="hero-status"><span aria-hidden="true"></span>Experimental development software</div>
     <h1>YUME <small>Protected passage for TCP and UDP</small></h1>
     <p>
-      Yume Universal Multiprotocol Engine carries TCP and UDP inside one persistent,
-      browser-shaped connection. Hybrid session keys, per-message encryption, and
-      directional epochs protect the inner tunnel. The client and daemon build from one tree.
+      YUME carries TCP and UDP inside one persistent, browser-shaped connection. Hybrid
+      session keys, per-message encryption, and directional epochs protect the inner
+      tunnel. Client and daemon build from the same tree.
     </p>
     <div class="cta-row">
-      <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Build and run</a>
-      <a class="btn secondary" href="{{ '/docs/STEALTH/' | relative_url }}">Stealth model</a>
-      <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">Source</a>
+      <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Build from source</a>
+      <a class="btn secondary" href="{{ '/docs/STEALTH/' | relative_url }}">Read stealth model</a>
+      <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">View source</a>
     </div>
   </div>
   <aside class="hero-panel" id="release-card" aria-label="Release status">
@@ -82,7 +82,7 @@ section_nav:
     </div>
   </div>
 
-  <figure class="disguise" aria-label="What the network sees versus what the tunnel carries">
+  <figure class="disguise passage-map" data-reveal="passage" aria-label="What the network sees versus what the tunnel carries">
     <div class="disguise-row">
       <figcaption class="disguise-label">What the network sees</figcaption>
       <div class="disguise-track">
@@ -105,8 +105,8 @@ section_nav:
   </figure>
 </section>
 
-<section id="status">
-  <h2 class="section-title">Where this actually stands</h2>
+<section id="status" data-reveal="drift">
+  <h2 class="section-title">Current boundary</h2>
   <p class="section-lead">
     YUME is experimental development software. This page describes what exists in the
     tree and keeps unsupported paths explicit.
@@ -223,8 +223,8 @@ section_nav:
   </div>
 </section>
 
-<section id="security">
-  <h2 class="section-title">What protects the tunnel</h2>
+<section id="security" data-reveal="drift">
+  <h2 class="section-title">Tunnel protection</h2>
   <p class="section-lead">
     Every layer below is mandatory in the current transport. There is no public-key-only mode, no
     plaintext fallback, and no flag that downgrades the wire.
@@ -286,8 +286,8 @@ section_nav:
   </div>
 </section>
 
-<section id="run">
-  <h2 class="section-title">Running it</h2>
+<section id="run" data-reveal="drift">
+  <h2 class="section-title">Build, provision, connect</h2>
   <p class="section-lead">
     Both secret files hold exactly 64 lowercase hex characters (32 random bytes), carry no
     group or world permission bits, and must be distributed out of band. <code>yume-setup
@@ -354,7 +354,7 @@ cd yume
 </section>
 
 <section id="verify">
-  <h2 class="section-title">Verifying a release</h2>
+  <h2 class="section-title">Verify release files</h2>
   <p class="section-lead">
     Published artifacts carry SHA-256 sidecars, an aggregate <code>SHA256SUMS.txt</code>, and
     a machine-readable manifest. Detached GPG signatures are attached when signing secrets
@@ -385,88 +385,14 @@ cd yume
   </div>
 </section>
 
-<section id="docs">
-  <h2 class="section-title">Docs</h2>
-  <p class="section-lead">The reference pages are generated from canonical repository Markdown. This hand-maintained index links those pages without replacing their authority.</p>
-  <h3 class="subsection-title">Start here</h3>
-  <div class="grid">
-    <a class="card" href="{{ '/docs/QUICKSTART/' | relative_url }}">
-      <h4>Quick start</h4>
-      <p>Build the tree, generate a server and device kit, and connect a first client.</p>
-    </a>
-    <a class="card" href="{{ '/docs/EXPLAINED/' | relative_url }}">
-      <h4>YUME explained</h4>
-      <p>What the transport does and why it is built this way.</p>
-    </a>
-    <a class="card" href="{{ '/docs/STEALTH/' | relative_url }}">
-      <h4>Stealth transport</h4>
-      <p>Browser-shaped TLS, the HTTP/2 carrier, the cover site, and the residuals that remain.</p>
-    </a>
-    <a class="card" href="{{ '/docs/THREAT_MODEL/' | relative_url }}">
-      <h4>Threat model</h4>
-      <p>What YUME defends against, what it does not, and the trust an operator still holds.</p>
-    </a>
-    <a class="card" href="{{ '/docs/SECURITY_MODES/' | relative_url }}">
-      <h4>Security modes</h4>
-      <p>The rekey policies and what each one trades away.</p>
-    </a>
-    <a class="card" href="{{ '/docs/PERMISSIONS/' | relative_url }}">
-      <h4>Permissions</h4>
-      <p>Key admission, per-key metadata, and the gates in front of dangerous features.</p>
-    </a>
-  </div>
-
-  <h3 class="subsection-title">Operating</h3>
-  <div class="grid">
-    <a class="card" href="{{ '/docs/OPERATIONS/' | relative_url }}">
-      <h4>Operations</h4>
-      <p>Deployment, services, verification, and troubleshooting.</p>
-    </a>
-    <a class="card" href="{{ '/docs/PACKAGING/' | relative_url }}">
-      <h4>Packaging</h4>
-      <p>Local installs, man pages, and the Debian package split.</p>
-    </a>
-    <a class="card" href="{{ '/docs/LEAK_TIGHT/' | relative_url }}">
-      <h4>Preventing SOCKS bypass</h4>
-      <p>Browser settings, route checks, and the system kill-switch boundary.</p>
-    </a>
-    <a class="card" href="{{ '/docs/FILTERING_SELF_DPI/' | relative_url }}">
-      <h4>Filtering and self-DPI</h4>
-      <p>What the daemon shows a probe, a robot, and a real browser.</p>
-    </a>
-    <a class="card" href="{{ '/docs/DIAGNOSTICS/' | relative_url }}">
-      <h4>Diagnostics</h4>
-      <p>Developer timing hooks and what they are safe to conclude.</p>
-    </a>
-    <a class="card" href="{{ '/docs/TRANSPORT_PROFILES/' | relative_url }}">
-      <h4>Transport profiles</h4>
-      <p>Why the profile registry is immutable and how a new browser identity gets added.</p>
-    </a>
-  </div>
-
-  <h3 class="subsection-title">Internals and status</h3>
-  <div class="grid">
-    <a class="card" href="{{ '/docs/ARCHITECTURE/' | relative_url }}">
-      <h4>Architecture</h4>
-      <p>How the client, daemon, core, and facade fit together.</p>
-    </a>
-    <a class="card" href="{{ '/docs/ABI/' | relative_url }}">
-      <h4>ABI policy</h4>
-      <p>The stable C embed ABI and its compatibility rules.</p>
-    </a>
-    <a class="card" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">
-      <h4>Implementation status</h4>
-      <p>Implemented, tested, and planned, stated conservatively.</p>
-    </a>
-    <a class="card" href="{{ '/docs/SELFTEST/' | relative_url }}">
-      <h4>Benchmarks and self-test</h4>
-      <p>How the tree measures itself, and what those numbers do and do not establish.</p>
-    </a>
-  </div>
+<section id="docs" data-reveal="drift">
+  <h2 class="section-title">Read by task</h2>
+  <p class="section-lead">Website pages are generated from the repository’s canonical Markdown.</p>
+  {% include doc-catalog.html groups="Start here|Operating|Internals and status" group_field="home_group" %}
 </section>
 
 <section id="support">
-  <h2 class="section-title">Support</h2>
+  <h2 class="section-title">Get help</h2>
   <div class="grid">
     <a class="card" href="https://github.com/FixCraft-Inc/yume/issues" target="_blank" rel="noopener">
       <h3>Issues</h3>

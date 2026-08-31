@@ -23,12 +23,14 @@ docs landing page is safe to edit here.
 | --- | --- |
 | `_config.yml` | Site settings. `asset_version` is the cache buster for CSS and JS. |
 | `_data/nav.yml` | The header link list. Edit here, not in the pages. |
+| `_data/docs.json` | Titles, summaries, routes, and groups for both documentation indexes. |
 | `_includes/` | Shared chrome: `head`, `brand`, `site-header`, `section-nav`, `site-footer`, `theme-toggle`. |
 | `_layouts/page.html` | Wrapper for the hand-written pages. |
 | `_layouts/doc.html` | Wrapper for the generated Markdown docs. |
 | `assets/tokens.css` | Colour, type, spacing, and motion tokens for both themes. |
 | `assets/site.css` | Everything else. |
 | `assets/site.js` | Release metadata, hashes, theme toggle, scroll spy, doc contents. |
+| `DESIGN.md` | The locked visual and motion rules for every website route. |
 
 ## Common edits
 
@@ -40,8 +42,9 @@ header link as current), `footer_statement` (the one line that differs between
 page footers), and `section_nav` (the on-page anchor strip).
 
 **Add a documentation page.** Add the Markdown to the repository's root `docs/`
-directory. The sync script picks it up, and the on-page table of contents builds
-itself from the `h2` and `h3` headings.
+directory. Add its title, summary, route, source, groups, and order once in
+`_data/docs.json` if it belongs in an index. The sync script publishes the page,
+and `scripts/check_website_catalog.py` rejects missing sources or routes.
 
 **Change a colour.** Edit `assets/tokens.css`. Light values sit on `:root` and
 the dark palette is defined once in the `--dark-*` block and mapped onto the same
@@ -60,10 +63,10 @@ also keeps the `fill: currentColor` tinting that an `img` would lose.
 Hover and focus states should not change an element's box, so that content does
 not reflow under the pointer.
 
-Motion is limited to the four cases documented at the top of the Motion section
-in `site.css`. Scroll-triggered reveals on ordinary sections are deliberately
-absent. This site is the soft half of the FixCraft pair, so its travel is longer
-and its settle slower than the BaseFWX portal's.
+Motion follows the rules in `DESIGN.md`. The header compresses after a deliberate
+scroll, and selected transport-path elements reveal once through
+`IntersectionObserver`. Content remains visible when JavaScript fails. Reduced
+motion removes spatial travel.
 
 Colour identity is the boundary against BaseFWX. YUME is plum at OKLCH hue 337
 to 341 with generous rounding. BaseFWX is violet at hue 305 to 306 with
@@ -76,6 +79,7 @@ is experimental because it is.
 
 ```sh
 bash scripts/sync_website_docs.sh
+python3 scripts/check_website_catalog.py
 jekyll build -s website -d /tmp/yume-site
 python3 -m http.server 8000 -d /tmp/yume-site
 ```

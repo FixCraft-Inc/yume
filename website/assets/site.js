@@ -202,19 +202,16 @@ const loadHashFiles = async () => {
 const THEME_KEY = "yume-theme";
 const THEME_COLORS = { light: "#fffafd", dark: "#170f15" };
 
-const darkMedia = () => window.matchMedia("(prefers-color-scheme: dark)");
-
 const effectiveTheme = () => {
   const forced = document.documentElement.dataset.theme;
   if (forced === "dark" || forced === "light") {
     return forced;
   }
-  return darkMedia().matches ? "dark" : "light";
+  return "light";
 };
 
 const initThemeToggle = () => {
   const button = document.getElementById("theme-toggle");
-  const media = darkMedia();
 
   const sync = () => {
     const theme = effectiveTheme();
@@ -232,8 +229,6 @@ const initThemeToggle = () => {
     button.setAttribute("aria-label", `Switch to the ${next} theme`);
     button.title = `Switch to the ${next} theme`;
   };
-
-  media.addEventListener("change", sync);
 
   const applyTheme = (next) => {
     document.documentElement.dataset.theme = next;
@@ -300,6 +295,56 @@ const initNavScrollSpy = () => {
   sections.forEach(({ section }) => observer.observe(section));
 };
 
+const initScrollMorph = () => {
+  const header = document.querySelector("[data-scroll-morph]");
+  if (!header || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return;
+  }
+
+  const threshold = 80;
+  let floating = false;
+  let ticking = false;
+  const update = () => {
+    const next = window.scrollY > threshold;
+    if (next !== floating) {
+      floating = next;
+      header.classList.toggle("is-floating", floating);
+    }
+  };
+
+  window.addEventListener("scroll", () => {
+    if (ticking) return;
+    ticking = true;
+    window.requestAnimationFrame(() => {
+      update();
+      ticking = false;
+    });
+  }, { passive: true });
+  update();
+};
+
+const initScrollReveals = () => {
+  const nodes = Array.from(document.querySelectorAll("[data-reveal]"));
+  if (!nodes.length) return;
+
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduced || !("IntersectionObserver" in window)) {
+    nodes.forEach((node) => node.classList.add("is-visible"));
+    return;
+  }
+
+  document.documentElement.classList.add("motion-ready");
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add("is-visible");
+      observer.unobserve(entry.target);
+    });
+  }, { rootMargin: "0px 0px -12%", threshold: 0.14 });
+
+  nodes.forEach((node) => observer.observe(node));
+};
+
 const initDocToc = () => {
   const article = document.querySelector(".doc-article");
   const toc = document.getElementById("doc-toc-list");
@@ -342,6 +387,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initThemeToggle();
   initDisabledLinks();
   initNavScrollSpy();
+  initScrollMorph();
+  initScrollReveals();
   initDocToc();
   const run = async () => {
     if (document.getElementById("release-version") || document.querySelector("[data-download]")) {

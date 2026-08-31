@@ -87,6 +87,7 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 | `diagnostics/` | Bounded runtime diagnostics and developer-only instrumentation |
 | `release/` | Version/build reports and release-facing runtime metadata |
 | `runtime/` | Local IPC / runtime socket helpers |
+| `encoding/` | Shared hex encoding and decoding |
 
 `src/core/version.hpp` holds the current development `kVersion` and its
 authenticated `kTransportVersion` alias. AUTH, relay, ABI, and helper IPC
@@ -158,6 +159,7 @@ landing page. Website contribution and validation rules live in
 | Path | Role |
 | --- | --- |
 | `src/abi/` | `libyume` C ABI (`yume_c.cpp`) |
+| `src/config/` | Shared ratchet/security profile JSON parsing |
 | `src/platform/` | Per-OS executable path helpers |
 | `src/tools/` | `yume-net-map`, selftest benches (optional targets) |
 

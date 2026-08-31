@@ -6,7 +6,7 @@ site_docs="${repo_root}/website/docs"
 
 mkdir -p "${site_docs}"
 rm -f "${site_docs}"/*.md
-rm -rf "${site_docs}/protocol"
+rm -rf "${site_docs}/agents" "${site_docs}/protocol" "${site_docs}/release"
 
 render_doc() {
     local source_path="$1"
@@ -25,8 +25,14 @@ render_doc() {
         printf '%s\n\n' '---'
         sed -E \
             -e 's@\]\(\.\./\.\./((src|tests)/[^)#]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/\1\3)@g' \
+            -e 's@\]\(\.\./\.\./basefwx/([^)#]+)(#[^)]*)?\)@](https://github.com/F1xGOD/basefwx/blob/main/\1\2)@g' \
+            -e 's@\]\(\.\./\.\./([^#)]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/\1\2)@g' \
             -e 's@\]\(docs/protocol/([A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/protocol/\1/\2)@g' \
+            -e 's@\]\(\.\./protocol/([A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/protocol/\1/\2)@g' \
             -e 's@\]\(protocol/([A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/protocol/\1/\2)@g' \
+            -e 's@\]\(release/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@](/docs/release/\1/\2)@g' \
+            -e 's@\]\(agents/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/agents/\1.md\2)@g' \
+            -e 's@\]\(man/([A-Za-z0-9_.-]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/man/\1\2)@g' \
             -e 's@\]\((YUME_2_0_[A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/protocol/\1/\2)@g' \
             -e 's@\]\(docs/([A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/\1/\2)@g' \
             -e 's@\]\(\.\./([A-Z0-9_]+)\.md(#[^)]*)?\)@](/docs/\1/\2)@g' \
@@ -51,4 +57,12 @@ for source_path in "${repo_root}"/docs/protocol/*.md; do
         "${source_path}" \
         "${site_docs}/protocol/${name}.md" \
         "/docs/protocol/${name}/"
+done
+
+for source_path in "${repo_root}"/docs/release/*.md; do
+    name="$(basename "${source_path}" .md)"
+    render_doc \
+        "${source_path}" \
+        "${site_docs}/release/${name}.md" \
+        "/docs/release/${name}/"
 done

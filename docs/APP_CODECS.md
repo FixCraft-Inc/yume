@@ -79,8 +79,9 @@ encrypted `OPEN` payload:
 {"proto":"app-codec-v1","codec":"monero-rpc-v1"}
 ```
 
-Each `DATA` payload is a Yume app-codec envelope with magic `YAC1`, version,
-kind, metadata length, body length, JSON metadata, then the original HTTP body.
+Each `DATA` payload is a Yume app-codec envelope: magic `YAC1`, a version byte,
+a kind byte, two reserved zero bytes, a `u32` metadata length, a `u32` body
+length, the JSON metadata, then the original HTTP body. The header is 16 bytes.
 This keeps the v1 implementation compatible and inspectable without putting raw
 HTTP request bytes on the Yume data path.
 
@@ -140,7 +141,7 @@ To add one:
 Users who want a local codec follow the same steps and rebuild; the compiler
 enforces the contract.
 
-Stable registry contract (since 1.1):
+Stable registry contract:
 
 - A codec has a canonical id such as `monero-rpc-v1` plus stable user aliases
   such as `monero-rpc`.

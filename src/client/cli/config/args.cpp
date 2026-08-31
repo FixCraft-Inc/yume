@@ -278,8 +278,12 @@ OptionResult parse_benchmark_option(ParseCursor& cursor, const std::string& arg)
                arg == "--configs" || arg == "--json") {
         if (!cursor.pass_local_benchmark_value(arg)) return OptionResult::Error;
     } else if (arg == "--one-way" || arg == "--json-stdout" ||
-               arg == "--keep-workdir" || arg == "--list-configs" ||
-               arg == "--dev" || arg == "--color" || arg == "--no-color") {
+               arg == "--keep-workdir" || arg == "--dev" ||
+               arg == "--color" || arg == "--no-color") {
+        args.local_benchmark_args.push_back(arg);
+    } else if (arg == "--list-configs") {
+        args.local_benchmark = true;
+        args.non_interactive = true;
         args.local_benchmark_args.push_back(arg);
     } else if (arg == "--bench-mib") {
         if (!cursor.parse_int_value(arg, args.bench_mib)) return OptionResult::Error;

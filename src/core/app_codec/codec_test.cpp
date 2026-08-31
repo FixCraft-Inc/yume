@@ -33,6 +33,22 @@ Bytes raw_request_envelope(nlohmann::json metadata) {
     return out;
 }
 
+void test_rejects_nonzero_reserved_bytes() {
+    auto payload = raw_request_envelope({
+        {"method", "POST"},
+        {"target", "/json_rpc"},
+        {"path", "/json_rpc"},
+        {"query", ""},
+        {"headers", nlohmann::json::array()},
+    });
+    payload[6] = 1;
+    yume::app_codec::Envelope envelope;
+    std::string error;
+    assert(!yume::app_codec::decode_envelope(
+        payload, 1024, &envelope, &error));
+    assert(error.find("reserved") != std::string::npos);
+}
+
 void test_rejects_target_metadata_mismatch() {
     auto payload = raw_request_envelope({
         {"method", "POST"},
@@ -140,6 +156,7 @@ void test_generic_endpoint_has_no_codec_defaults() {
 }  // namespace
 
 int main() {
+    test_rejects_nonzero_reserved_bytes();
     test_rejects_target_metadata_mismatch();
     test_rejects_target_injection_and_response_reason_injection();
     test_strips_connection_nominated_headers();

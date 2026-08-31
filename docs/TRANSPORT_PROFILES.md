@@ -115,6 +115,14 @@ flattened evidence files that installed diagnostics consume.
    `ec_point_formats`; the native Chrome patch emits only uncompressed (`[0]`)
    when its default-off control is enabled.
 
+   The native emitted-byte gate groups the patch-only behavior into six pinned
+   structure rows: per-connection GREASE, first/last GREASE extension placement,
+   per-connection middle-extension shuffling, uncompressed-only point format,
+   both captured non-GREASE key shares, and Brotli-only certificate compression.
+   `ChromeNativeWireTests` checks those rows across 12 fresh SSL objects on one
+   context, plus exact capture-selected fields and JA4. This is a ClientHello
+   structure gate, not a six-test-method count or a whole-session parity claim.
+
 6. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
    `scripts/generate_transport_profiles.py` compares the four declared
    *set* fields against the capture, and `tests/test_yume_native_tls_wire.py`

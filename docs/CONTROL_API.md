@@ -98,7 +98,18 @@ exact-id-or-unambiguous-display-name selectors as the CLI.
 | `chat.close` | exactly `{"channel_id": string}` | `true` |
 | `file.send`, `bytes.send` | `{"peer": string, "path": string}` plus optional one-of string `relay_secret`/`password` | `true` once the outgoing invite is queued |
 | `admin.attach` | exactly `{"peer": string}` | `true` after the request is sent |
-| `admin.status`, `admin.sessions`, `admin.stop` | `{}` | remote admin result |
+| `admin.status` | `{}` | `{self, server_id, server_name, directory_size, pending_invites, active_channels}` from the administered peer |
+| `admin.sessions` | `{}` | `{channels[], pending_invites[]}`, each channel `{stream_id, channel_id, channel_kind, peer_id, peer_name}` |
+| `admin.stop` | `{}` | `{"stopping": true}` |
+
+The three `admin.*` operations above are answered by the remote peer, so their
+`result` is peer-controlled JSON and carries a second failure layer. A local
+transport or internal remote-admin deadline failure gives `ok=false` as usual,
+but an operation the remote peer does not implement returns `ok=true` with
+`{"error": "unsupported op"}` inside `result`. Before use, require `result` to
+be an object, check for an `error` member, and validate every required field and
+element type against the shapes above. The outer C ABI caller deadline remains
+a typed `YUME_STATUS_TIMEOUT`, not a JSON operation failure.
 
 Operations that use a relay secret accept either `relay_secret` (the canonical
 base64 encoding of a 32-byte derived secret) or `password` (which the local

@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -201,6 +202,9 @@ class MetadataTests(unittest.TestCase):
         self.assertIn('"scripts/sync_website_docs.sh"', pages_workflow)
 
         self.assertIn('docs/protocol/*.md', sync_script)
+        self.assertIn('docs/release/*.md', sync_script)
+        self.assertIn('docs/agents/', sync_script)
+        self.assertIn('docs/man/', sync_script)
         self.assertIn('CONTRIBUTING.md', sync_script)
         self.assertIn('github.com/FixCraft-Inc/yume/blob/main', sync_script)
 
@@ -208,19 +212,42 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("website/docs/**/*.md", gitignore)
 
     def test_audited_cli_help_and_man_options_are_synchronized(self) -> None:
+        client_args = (ROOT / "src/client/cli/config/args.cpp").read_text(
+            encoding="utf-8")
+        parser_options = set(re.findall(
+            r'"(--[a-z][a-z0-9-]*)', client_args))
+        help_source = (ROOT / "src/client/cli/display/help.cpp").read_text(
+            encoding="utf-8")
+        help_body = help_source.split("void print_help()", 1)[1]
+        help_options = set(re.findall(
+            r'(--[a-z][a-z0-9-]*)', help_body))
+        self.assertFalse(
+            parser_options - help_options,
+            f"client help is missing parser options: "
+            f"{sorted(parser_options - help_options)}",
+        )
+
         client_man = (ROOT / "docs/man/yume.1").read_text(encoding="utf-8")
-        for option in (
-                "--cluster ", "--packet-tun ", "--quick-bench",
-                "--outer-carrier-evidence ", "--tls-name "):
-            self.assertIn(option, client_man)
+        for option in parser_options:
+            self.assertRegex(
+                client_man,
+                rf"{re.escape(option)}(?![a-z0-9-])",
+                f"client man page is missing option token {option}",
+            )
 
         server_help = (ROOT / "src/server/cli/help.cpp").read_text(
             encoding="utf-8")
         server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
         self.assertIn("--admin-keys <path>", server_help)
         self.assertIn("--keys-admin", server_help)
+        self.assertIn("--tls_cert <path>", server_help)
+        self.assertIn("--tls_key <path>", server_help)
+        self.assertIn("--allow-exec", server_help)
         self.assertIn("--admin-keys ", server_man)
         self.assertIn("--keys-admin", server_man)
+        self.assertIn("--tls_cert ", server_man)
+        self.assertIn("--tls_key ", server_man)
+        self.assertIn("--allow-exec", server_man)
 
     def test_native_openssl_runtime_contract_is_fail_closed(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")

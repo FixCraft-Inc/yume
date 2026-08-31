@@ -5,35 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>YUME documentation</title>
     <meta name="description" content="Setup, operation, security, integration, and current support documentation for YUME.">
-    <link rel="icon" type="image/svg+xml" href="../assets/yume-white.svg">
-    <link rel="stylesheet" href="../assets/site.css">
-    <script src="../assets/site.js" defer></script>
+    <link rel="icon" type="image/svg+xml" href="../assets/yume-plain.svg?v=5">
+    <link rel="stylesheet" href="../assets/site.css?v=5">
+    <script src="../assets/site.js?v=5" defer></script>
   </head>
-  <body>
+  <body class="docs-page">
+    <a class="skip-link" href="#content">Skip to content</a>
     <div class="container">
       <header class="site-header">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">
-            <span class="brand-icon" aria-hidden="true"></span>
-            <span class="brand-cutout" aria-hidden="true"></span>
-          </div>
-          <div>
-            <div class="brand-name">YUME</div>
-            <div class="brand-sub">A FixCraft protected transport</div>
-          </div>
-        </div>
+        <a class="brand" href="../" aria-label="YUME home">
+          <svg class="brand-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
+            <use href="../assets/yume-plain.svg?v=5#yume-mark"></use>
+          </svg>
+          <span>
+            <span class="brand-name">YUME</span>
+            <span class="brand-sub">A FixCraft protected transport</span>
+          </span>
+        </a>
         <nav aria-label="Primary navigation">
-          <a href="../">Overview</a>
-          <a href="../#install">Install</a>
-          <a href="../hashes/">Checksums</a>
+          <a href="./" aria-current="page">Docs</a>
           <a href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">GitHub</a>
         </nav>
       </header>
 
-      <main>
+      <main id="content">
         <section class="hero">
           <div>
-            <h1>Use and understand YUME</h1>
+            <h1>YUME documentation</h1>
             <p>
               Start with the setup guide, then read the threat model before putting a daemon on
               a public network. The implementation status is the one public page for current
@@ -134,8 +132,13 @@
         </section>
       </main>
 
-      <footer>
-        FixCraft YUME &middot; experimental development software &middot; AGPL-3.0-or-later
+      <footer class="site-footer">
+        <p class="footer-statement">Read the trust boundaries before you operate a public daemon.</p>
+        <p class="footer-meta">
+          <span>FixCraft YUME</span>
+          <span>Experimental development software</span>
+          <a href="https://github.com/FixCraft-Inc/yume/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
+        </p>
       </footer>
     </div>
   </body>

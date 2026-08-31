@@ -35,6 +35,8 @@ class YumeSetupTests(unittest.TestCase):
             config = json.loads((kit / "clients" / "phone" / "yume.json").read_text())
             self.assertEqual(config["obfs_secret_file"], "admission.hex")
             self.assertEqual(config["inner_psk_file"], "inner-psk.hex")
+            self.assertNotIn("inner_hop", config)
+            self.assertNotIn("hop_interval_ms", config)
             self.assertEqual(config["tunnels"], 1)
             self.assertTrue(config["require_anonym"])
             self.assertEqual(
@@ -47,6 +49,10 @@ class YumeSetupTests(unittest.TestCase):
                 path = kit / "clients" / "phone" / launcher
                 self.assertTrue(path.stat().st_mode & stat.S_IXUSR)
                 self.assertIn("$HOME/yume/build/bin/yume", path.read_text())
+            self.assertIn(
+                '--socks "127.0.0.1:${YUME_SOCKS_PORT:-1080}"',
+                (kit / "clients" / "phone" / "start-socks").read_text(),
+            )
             self.assertIn(
                 "$HOME/yume/build/bin/yumed",
                 (kit / "server" / "start-yumed").read_text(),

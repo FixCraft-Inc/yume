@@ -22,6 +22,7 @@ namespace {
 // implicit profile.
 constexpr std::uint8_t kSchema = 3;
 constexpr std::uint8_t kCritical = 0x01;
+constexpr std::size_t kMaxFields = 64;
 // v3 appends the locally computed TLS exporter to records that explicitly
 // carry the dev6 profile. Older signers derive a different input and fail
 // loudly instead of downgrading silently.
@@ -188,7 +189,7 @@ void RequireWindow(std::uint16_t window) {
 }  // namespace
 
 Bytes EncodeRecord(RecordKind kind, const std::vector<Field>& fields) {
-    if (fields.size() > std::numeric_limits<std::uint16_t>::max()) {
+    if (fields.size() > kMaxFields) {
         throw std::runtime_error("AUTH v2 has too many fields");
     }
     Bytes out{kSchema, static_cast<std::uint8_t>(kind)};
@@ -223,7 +224,9 @@ Record DecodeRecord(const Bytes& encoded,
     }
     std::size_t offset = 2;
     const std::uint16_t field_count = ReadU16(encoded, &offset);
-    if (field_count > 64) throw std::runtime_error("AUTH v2 field count exceeds cap");
+    if (field_count > kMaxFields) {
+        throw std::runtime_error("AUTH v2 field count exceeds cap");
+    }
     Record record{expected_kind, {}};
     record.fields.reserve(field_count);
     std::uint8_t previous = 0;

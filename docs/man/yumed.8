@@ -68,6 +68,16 @@ TLS certificate.
 .BI "--key " path
 TLS private key.
 .TP
+.BI "--tls_cert " path
+Alias for
+.BR --cert ;
+matches the JSON configuration key.
+.TP
+.BI "--tls_key " path
+Alias for
+.BR --key ;
+matches the JSON configuration key.
+.TP
 .BI "--auth-keys " path
 Authorized composite client identities. Each identity is an Ed25519 public key
 followed by an ML-DSA-87 public key.
@@ -220,6 +230,14 @@ DNS names, redirects, and non-loopback targets are rejected.
 .TP
 .B --allow-local-ip
 Allow private and loopback destinations when key policy permits it.
+.TP
+.B --allow-exec
+Enable server-side command execution when the binary was built with
+.BR YUME_FEATURE_EXEC .
+Default builds warn and ignore this flag. Per-key policy must also permit
+execution, and
+.B --public-node
+rejects the flag.
 .TP
 .B --control-full
 Allow unrestricted server-side network control when compile-time and
@@ -715,8 +733,7 @@ Installed documentation in packaged builds.
 From a build tree:
 .PP
 .nf
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
+\&./ezbuild.sh
 sudo cmake --install build
 .fi
 .PP

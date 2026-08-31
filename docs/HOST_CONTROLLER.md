@@ -104,7 +104,8 @@ accept requires firewall/eBPF/nftables integration outside the daemon.
 
 `exposure_check_hostname` (or `--exposure-check`) probes whether the hostname
 is direct TCP or behind a Cloudflare HTTP proxy. `runtime.info` includes
-`host.exposure` with `direct_tcp`, `cf_http_proxy`, `blocked`, or `unknown`.
+`host.exposure` as `{hostname, kind, detail}`, where `kind` is `direct_tcp`,
+`cf_http_proxy`, `blocked`, or `unknown`.
 
 YUME stealth requires true TCP passthrough (e.g. Cloudflare Spectrum), not
 orange-cloud HTTP mode.

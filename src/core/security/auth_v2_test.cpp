@@ -251,6 +251,15 @@ int main() {
                            {{1, true, Bytes{'a'}}, {1, true, Bytes{'b'}}});
     }));
 
+    std::vector<Field> too_many_fields;
+    for (std::uint16_t id = 1; id <= 65; ++id) {
+        too_many_fields.push_back(
+            Field{static_cast<std::uint8_t>(id), false, {}});
+    }
+    assert(Throws([&] {
+        (void)EncodeRecord(RecordKind::Challenge, too_many_fields);
+    }));
+
     const Bytes unknown_critical = EncodeRecord(RecordKind::Challenge, {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, challenge}, {3, true, kem_public}, {4, true, x_public},

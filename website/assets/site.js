@@ -37,24 +37,6 @@ const setText = (id, value) => {
   }
 };
 
-const getAssetBase = () => document.documentElement.dataset.assetBase || "assets/";
-
-const initBrandMask = () => {
-  if (!window.CSS || !CSS.supports) {
-    return;
-  }
-  const maskUrl = new URL(`${getAssetBase()}yume-white.svg`, window.location.href).toString();
-  const supportsMask =
-    CSS.supports("mask-image", `url("${maskUrl}")`) ||
-    CSS.supports("-webkit-mask-image", `url("${maskUrl}")`);
-  if (!supportsMask) {
-    return;
-  }
-  const img = new Image();
-  img.onload = () => document.documentElement.classList.add("mask-ready");
-  img.src = maskUrl;
-};
-
 const setAssetLinkElement = (el, url) => {
   if (!el) return;
   if (url) {
@@ -218,7 +200,7 @@ const loadHashFiles = async () => {
 };
 
 const initNavScrollSpy = () => {
-  const nav = document.querySelector(".site-header nav");
+  const nav = document.querySelector(".section-nav");
   if (!nav) {
     return;
   }
@@ -295,7 +277,6 @@ const initDocToc = () => {
 };
 
 document.addEventListener("DOMContentLoaded", () => {
-  initBrandMask();
   initDisabledLinks();
   initNavScrollSpy();
   initDocToc();

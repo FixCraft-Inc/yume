@@ -11,7 +11,7 @@ or other out-of-scope subsystems to 2.0 status.
 | --- | --- |
 | Path observer | Sees the TLS ClientHello, server certificate metadata, encrypted record sizes, timing, and volume. |
 | Local evidence reader | May obtain an explicitly requested outer-carrier behavior report, but not payloads, secrets, carrier paths, peer addresses, or opaque PING bytes. |
-| Active prober | Can open TLS/H1/H2 requests to the public endpoint and sees the genuine Node cover path unless it proves admission. |
+| Active prober | Can open TLS/H1/H2 requests to the public endpoint. Ordinary GET/HEAD reaches the genuine Node cover path; a failed tunnel admission receives a bounded synthetic cover-style response that is not claimed to be byte-identical to Node. |
 | YUME server operator | Terminates TLS and the inner YUME channel; holds TLS material, admission and inner PSK files, and public-key stores; sees requested targets and decrypted YUME stream bytes unless the application independently encrypts them. |
 | Loopback Node process | Receives bounded ordinary GET/HEAD cover requests only; it must never receive tunnel records, client identities, or YUME secrets. |
 | Client host | Holds both shared secret files and the client's composite private identity (plus a distinct admin identity when configured); compromise exposes local plaintext and live session state. |
@@ -93,16 +93,18 @@ and it is not an independent-audit claim.
 
 ## Carrier admission boundary
 
-The HMAC admission token covers the exact transport version recorded in source,
-normalized SNI, UTC hour,
-and a 32-byte nonce. SNI and HTTP/2 authority must match. The server accepts only
-the bounded clock window and stores authenticated nonces in a bounded replay
-cache.
+The HMAC admission token covers the exact transport version and transport
+profile recorded in source, normalized SNI, UTC hour, and a 32-byte nonce. SNI
+and HTTP/2 authority must match. The server accepts only the bounded clock
+window and stores authenticated nonces in a bounded replay cache.
 
 Missing, malformed, expired, replayed, wrong-secret, version-mismatched, or
 authority-mismatched requests do not cross the admission boundary and never
-receive AUTH. They render the ordinary captured Node cover path. A 1.x client
-receives cover behavior, not a downgrade offer or recognizable protocol error.
+receive AUTH. Ordinary GET/HEAD requests use the captured Node cover backend,
+while a rejected extended `CONNECT` receives a bounded synthetic 404. That
+response differs from the reference Node server's 405 response and remains an
+active-probe residual. A 1.x client receives cover behavior, not a downgrade
+offer or plaintext YUME diagnostic.
 
 After admission, the server verifies both the Ed25519 and ML-DSA-87 signatures
 over the complete canonical AUTH transcript before KEM decapsulation or other
@@ -118,9 +120,9 @@ memory/CPU denial-of-service surface.
 
 Each direction has independent root, chain, epoch, and sequence state. Every
 encrypted frame derives one AES-256-GCM key, uses it once, and erases it. AAD
-binds the protocol version, direction, epoch, sequence, frame type, stream ID,
-and flags. Replays, gaps, old epochs, altered metadata, and counter wrap are
-fatal.
+binds a versioned domain string, the exact transport profile, direction, epoch,
+sequence, frame type, stream ID, and flags. Replays, gaps, old epochs, altered
+metadata, and counter wrap are fatal.
 
 Before another application frame would cross the authenticated ratchet policy's
 byte/frame budget, or its sender-active time budget expires, that direction
@@ -241,8 +243,8 @@ capacity before authenticated admission.
   already exposed on the client or server.
 - Reading or modification by the terminating YUME server when the application
   itself provides no end-to-end encryption/authentication.
-- Traffic volume and timing analysis; shaping is capture-derived and bounded by
-  the 5% bulk-overhead gate, not constant-rate padding.
+- Traffic volume and timing analysis. Shaping is capture-derived and bounded,
+  not constant-rate padding, and no overhead figure has been qualified.
 - Application traffic that bypasses the local tunnel.
 - The target from the direct YUME server operator.
 - Availability against an attacker who can exhaust the network, TLS handshakes,

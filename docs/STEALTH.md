@@ -61,9 +61,9 @@ Each file contains exactly 64 lowercase hexadecimal characters and has no group
 or world permission bits. Both are distributed out of band. The current
 transport has no public-key-only or empty-secret public-node mode.
 
-Admission binds the transport version, normalized SNI, an hour bucket, and a
-random nonce with HMAC-SHA256. The nonce enters a bounded replay cache. TLS SNI
-and HTTP/2 `:authority` must agree.
+Admission binds the transport version, the transport profile, normalized SNI,
+an hour bucket, and a random nonce with HMAC-SHA256. The nonce enters a bounded
+replay cache. TLS SNI and HTTP/2 `:authority` must agree.
 
 Malformed, expired, replayed, wrong-secret, or authority-mismatched requests do
 not receive an AUTH message. They take a bounded ordinary cover path. A later

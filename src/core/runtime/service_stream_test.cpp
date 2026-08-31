@@ -321,6 +321,14 @@ int main() {
         [](std::string) {},
         [](std::string) {});
 
+    ServiceStream::Bytes oversized_write(
+        yume::runtime::kMaxServiceWriteBytes + 1U, 0x50);
+    assert(outbound.write(
+               oversized_write.data(), oversized_write.size(), 0U, &error) ==
+           ServiceStream::WriteResult::Invalid);
+    assert(error.find("256 KiB") != std::string::npos);
+    assert(admitted_bytes == 0U);
+
     const std::uint8_t first_write = 0x51;
     assert(outbound.write(&first_write, 1U, 0U, &error) ==
            ServiceStream::WriteResult::Accepted);

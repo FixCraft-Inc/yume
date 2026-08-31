@@ -144,6 +144,7 @@ code {
   min-width: 0;
   align-items: center;
   gap: var(--space-sm);
+  border-radius: var(--radius-sm);
   color: var(--color-ink);
   text-decoration: none;
 }
@@ -685,17 +686,45 @@ a.disabled {
 }
 
 a.card {
+  position: relative;
   display: block;
   color: var(--color-ink);
   text-decoration: none;
-  transition:
-    background-color var(--dur-short) var(--ease-out),
-    color var(--dur-short) var(--ease-out);
+  transition: color var(--dur-short) var(--ease-out);
 }
 
-a.card:hover {
-  background: var(--color-paper-soft);
+/* The highlight bleeds past the text box on every side, so the card keeps its
+   alignment with the rule above it and with the group label while still
+   showing an even margin around what it highlights. */
+a.card::before {
+  position: absolute;
+  inset: var(--space-sm) calc(-1 * var(--space-sm));
+  border-radius: var(--radius-md);
+  content: "";
+  transition: background-color var(--dur-short) var(--ease-out);
+}
+
+a.card > * {
+  position: relative;
+}
+
+a.card:hover,
+a.card:focus-visible {
   color: var(--color-ink);
+}
+
+a.card:hover::before,
+a.card:focus-visible::before {
+  background: var(--color-paper-soft);
+}
+
+a.card:focus-visible {
+  outline: none;
+}
+
+a.card:focus-visible::before {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 .card h3,
@@ -842,6 +871,7 @@ tbody tr:last-child td {
 
 .hash-value {
   margin-block-start: var(--space-xs);
+  border-radius: var(--radius-sm);
   color: var(--color-ink-soft);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -854,6 +884,13 @@ tbody tr:last-child td {
   content: "expand";
   font-family: var(--font-body);
   font-size: var(--text-xs);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color var(--dur-short) var(--ease-out);
+}
+
+.hash-value.truncated:hover::after {
+  text-decoration-color: currentcolor;
 }
 
 .hash-value.expanded::after {
@@ -864,6 +901,7 @@ tbody tr:last-child td {
   display: inline-flex;
   min-height: 2.75rem;
   align-items: center;
+  border-radius: var(--radius-sm);
   font-size: var(--text-sm);
   font-weight: 600;
   white-space: nowrap;
@@ -1003,6 +1041,7 @@ tbody tr:last-child td {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--color-ink);
   font-family: var(--font-body);

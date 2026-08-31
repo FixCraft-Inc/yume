@@ -1,45 +1,18 @@
 <!doctype html>
-<html lang="en" data-asset-base="{{ '/assets/' | relative_url }}">
+<html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ page.title }} | YUME</title>
-    <meta name="description" content="{{ page.title }} documentation generated from the YUME repository.">
-    <link rel="icon" type="image/svg+xml" href="{{ '/assets/yume-plain.svg' | relative_url }}?v=6">
-    <meta name="theme-color" content="#fffafd" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#170f15" media="(prefers-color-scheme: dark)">
-    <script>
-      // Applied before first paint so a stored choice never flashes the other theme.
-      try {
-        var t = localStorage.getItem("yume-theme");
-        if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
-      } catch (e) {}
-    </script>
-    <link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}?v=6">
-    <script src="{{ '/assets/site.js' | relative_url }}?v=6" defer></script>
+    {%- include head.html -%}
   </head>
   <body class="document-page">
     <a class="skip-link" href="#content">Skip to content</a>
+    <div class="doc-progress" aria-hidden="true"></div>
     <div class="doc-container">
       <header class="doc-header">
-        <a class="doc-brand" href="{{ '/' | relative_url }}">
-          <svg class="brand-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
-            <use href="{{ '/assets/yume-plain.svg' | relative_url }}?v=6#yume-mark"></use>
-          </svg>
-          <span>
-            <span class="brand-name">YUME</span>
-            <span class="brand-sub">A FixCraft protected transport</span>
-          </span>
-        </a>
+        {% include brand.html class="doc-brand" %}
         <nav class="doc-nav">
           <a href="{{ '/docs/' | relative_url }}">All docs</a>
-          <a href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">GitHub</a>
-          <button class="theme-toggle" type="button" id="theme-toggle" aria-pressed="false" aria-label="Switch the theme" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
-              <path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"></path>
-            </svg>
-          </button>
+          <a href="{{ site.repo_url }}" target="_blank" rel="noopener">GitHub</a>
+          {% include theme-toggle.html %}
         </nav>
       </header>
       <main class="doc-shell" id="content">
@@ -51,13 +24,7 @@
           {{ content }}
         </article>
       </main>
-      <footer class="site-footer">
-        <p class="footer-statement">Published from the YUME source tree on <code>main</code>.</p>
-        <p class="footer-meta">
-          <span>Experimental development software</span>
-          <a href="https://github.com/FixCraft-Inc/yume/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-        </p>
-      </footer>
+      {% include site-footer.html statement="Published from the YUME source tree on main." %}
     </div>
   </body>
 </html>

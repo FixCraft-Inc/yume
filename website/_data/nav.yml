@@ -1,0 +1,10 @@
+# The site chrome reads these lists. Adding a nav entry means editing this
+# file, not four HTML pages.
+primary:
+  - label: Docs
+    url: /docs/
+  - label: Hashes
+    url: /hashes/
+  - label: GitHub
+    url: https://github.com/FixCraft-Inc/yume
+    external: true

@@ -1,160 +1,109 @@
-<!doctype html>
-<html lang="en" data-asset-base="../assets/">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>YUME documentation</title>
-    <meta name="description" content="Setup, operation, security, integration, and current support documentation for YUME.">
-    <link rel="icon" type="image/svg+xml" href="../assets/yume-plain.svg?v=6">
-    <meta name="theme-color" content="#fffafd" media="(prefers-color-scheme: light)">
-    <meta name="theme-color" content="#170f15" media="(prefers-color-scheme: dark)">
-    <script>
-      // Applied before first paint so a stored choice never flashes the other theme.
-      try {
-        var t = localStorage.getItem("yume-theme");
-        if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
-      } catch (e) {}
-    </script>
-    <link rel="stylesheet" href="../assets/site.css?v=6">
-    <script src="../assets/site.js?v=6" defer></script>
-  </head>
-  <body class="docs-page">
-    <a class="skip-link" href="#content">Skip to content</a>
-    <div class="container">
-      <header class="site-header">
-        <a class="brand" href="../" aria-label="YUME home">
-          <svg class="brand-logo" viewBox="0 0 256 256" aria-hidden="true" focusable="false">
-            <use href="../assets/yume-plain.svg?v=6#yume-mark"></use>
-          </svg>
-          <span>
-            <span class="brand-name">YUME</span>
-            <span class="brand-sub">A FixCraft protected transport</span>
-          </span>
-        </a>
-        <nav aria-label="Primary navigation">
-          <a href="./" aria-current="page">Docs</a>
-          <a href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">GitHub</a>
-          <button class="theme-toggle" type="button" id="theme-toggle" aria-pressed="false" aria-label="Switch the theme" hidden>
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"></circle>
-              <path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor"></path>
-            </svg>
-          </button>
-        </nav>
-      </header>
-
-      <main id="content">
-        <section class="hero">
-          <div>
-            <h1>YUME documentation</h1>
-            <p>
-              Start with the setup guide, then read the threat model before putting a daemon on
-              a public network. The implementation status is the one public page for current
-              support and release limits.
-            </p>
-            <div class="cta-row">
-              <a class="btn" href="QUICKSTART/">Set up YUME</a>
-              <a class="btn secondary" href="IMPLEMENTATION_STATUS/">Check current support</a>
-            </div>
-          </div>
-          <div class="hero-panel">
-            <div>
-              <div class="meta">Reading path</div>
-              <div class="panel-title">Setup, trust, then reference</div>
-              <div class="meta-row">
-                <span>Planning a public deployment? Read the threat model and operations guide first.</span>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section>
-          <h2 class="section-title">Start here</h2>
-          <div class="grid">
-            <a class="card" href="EXPLAINED/">
-              <h3>YUME explained</h3>
-              <p>How traffic moves, who can see it, and what changes when you add Tor or another egress.</p>
-            </a>
-            <a class="card" href="QUICKSTART/">
-              <h3>Quick start</h3>
-              <p>Build the client and daemon, create a local kit, and connect through SOCKS.</p>
-            </a>
-            <a class="card" href="OPERATIONS/">
-              <h3>Operations</h3>
-              <p>Services, public deployment, release verification, limits, and troubleshooting.</p>
-            </a>
-            <a class="card" href="IMPLEMENTATION_STATUS/">
-              <h3>Implementation status</h3>
-              <p>What exists, what has focused tests, and what still blocks a stable release.</p>
-            </a>
-          </div>
-
-          <h2 class="subsection-title">Security and transport</h2>
-          <div class="grid">
-            <a class="card" href="THREAT_MODEL/">
-              <h3>Threat model</h3>
-              <p>The attacker, operator, endpoint, and metadata boundaries.</p>
-            </a>
-            <a class="card" href="STEALTH/">
-              <h3>Stealth transport</h3>
-              <p>The browser-shaped carrier, its tested scope, and the differences that remain visible.</p>
-            </a>
-            <a class="card" href="SECURITY_MODES/">
-              <h3>Security modes</h3>
-              <p>Rekey policies and the exposure, work, and network tradeoffs.</p>
-            </a>
-            <a class="card" href="PERMISSIONS/">
-              <h3>Permissions</h3>
-              <p>Client key types and the checks around privileged features.</p>
-            </a>
-            <a class="card" href="TRANSPORT_PROFILES/">
-              <h3>Transport profiles</h3>
-              <p>How a captured browser and server identity enter the immutable registry.</p>
-            </a>
-            <a class="card" href="FILTERING_SELF_DPI/">
-              <h3>Filtering and probe behavior</h3>
-              <p>What the public listener returns to ordinary requests and failed admission.</p>
-            </a>
-          </div>
-
-          <h2 class="subsection-title">Reference and development</h2>
-          <div class="grid">
-            <a class="card" href="ARCHITECTURE/">
-              <h3>Architecture</h3>
-              <p>Component ownership and dependency direction.</p>
-            </a>
-            <a class="card" href="ABI/">
-              <h3>C ABI</h3>
-              <p>The native embed interface, lifetime rules, statuses, and symbol policy.</p>
-            </a>
-            <a class="card" href="CONTROL_API/">
-              <h3>Control API</h3>
-              <p>JSON operations, validation, response envelopes, and error boundaries.</p>
-            </a>
-            <a class="card" href="SELFTEST/">
-              <h3>Tests and benchmarks</h3>
-              <p>How to run focused checks and what each result can support.</p>
-            </a>
-            <a class="card" href="PACKAGING/">
-              <h3>Packaging</h3>
-              <p>Install layouts, man pages, and Debian packages.</p>
-            </a>
-            <a class="card" href="README/">
-              <h3>Full documentation map</h3>
-              <p>Optional features, protocol documents, and contributor references.</p>
-            </a>
-          </div>
-        </section>
-      </main>
-
-      <footer class="site-footer">
-        <p class="footer-statement">Read the trust boundaries before you operate a public daemon.</p>
-        <p class="footer-meta">
-          <span>FixCraft YUME</span>
-          <span>Experimental development software</span>
-          <a href="https://github.com/FixCraft-Inc/yume/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0-or-later</a>
-        </p>
-      </footer>
+---
+layout: page
+title: YUME documentation
+description: Setup, operation, security, integration, and current support documentation for YUME.
+body_class: docs-page
+nav_current: Docs
+footer_statement: Read the trust boundaries before you operate a public daemon.
+---
+  <section class="hero">
+    <div>
+      <h1>YUME documentation</h1>
+      <p>
+        Start with the setup guide, then read the threat model before putting a daemon on
+        a public network. The implementation status is the one public page for current
+        support and release limits.
+      </p>
+      <div class="cta-row">
+        <a class="btn" href="QUICKSTART/">Set up YUME</a>
+        <a class="btn secondary" href="IMPLEMENTATION_STATUS/">Check current support</a>
+      </div>
     </div>
-  </body>
-</html>
+    <div class="hero-panel">
+      <div>
+        <div class="meta">Reading path</div>
+        <div class="panel-title">Setup, trust, then reference</div>
+        <div class="meta-row">
+          <span>Planning a public deployment? Read the threat model and operations guide first.</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="section-title">Start here</h2>
+    <div class="grid">
+      <a class="card" href="EXPLAINED/">
+        <h3>YUME explained</h3>
+        <p>How traffic moves, who can see it, and what changes when you add Tor or another egress.</p>
+      </a>
+      <a class="card" href="QUICKSTART/">
+        <h3>Quick start</h3>
+        <p>Build the client and daemon, create a local kit, and connect through SOCKS.</p>
+      </a>
+      <a class="card" href="OPERATIONS/">
+        <h3>Operations</h3>
+        <p>Services, public deployment, release verification, limits, and troubleshooting.</p>
+      </a>
+      <a class="card" href="IMPLEMENTATION_STATUS/">
+        <h3>Implementation status</h3>
+        <p>What exists, what has focused tests, and what still blocks a stable release.</p>
+      </a>
+    </div>
+
+    <h2 class="subsection-title">Security and transport</h2>
+    <div class="grid">
+      <a class="card" href="THREAT_MODEL/">
+        <h3>Threat model</h3>
+        <p>The attacker, operator, endpoint, and metadata boundaries.</p>
+      </a>
+      <a class="card" href="STEALTH/">
+        <h3>Stealth transport</h3>
+        <p>The browser-shaped carrier, its tested scope, and the differences that remain visible.</p>
+      </a>
+      <a class="card" href="SECURITY_MODES/">
+        <h3>Security modes</h3>
+        <p>Rekey policies and the exposure, work, and network tradeoffs.</p>
+      </a>
+      <a class="card" href="PERMISSIONS/">
+        <h3>Permissions</h3>
+        <p>Client key types and the checks around privileged features.</p>
+      </a>
+      <a class="card" href="TRANSPORT_PROFILES/">
+        <h3>Transport profiles</h3>
+        <p>How a captured browser and server identity enter the immutable registry.</p>
+      </a>
+      <a class="card" href="FILTERING_SELF_DPI/">
+        <h3>Filtering and probe behavior</h3>
+        <p>What the public listener returns to ordinary requests and failed admission.</p>
+      </a>
+    </div>
+
+    <h2 class="subsection-title">Reference and development</h2>
+    <div class="grid">
+      <a class="card" href="ARCHITECTURE/">
+        <h3>Architecture</h3>
+        <p>Component ownership and dependency direction.</p>
+      </a>
+      <a class="card" href="ABI/">
+        <h3>C ABI</h3>
+        <p>The native embed interface, lifetime rules, statuses, and symbol policy.</p>
+      </a>
+      <a class="card" href="CONTROL_API/">
+        <h3>Control API</h3>
+        <p>JSON operations, validation, response envelopes, and error boundaries.</p>
+      </a>
+      <a class="card" href="SELFTEST/">
+        <h3>Tests and benchmarks</h3>
+        <p>How to run focused checks and what each result can support.</p>
+      </a>
+      <a class="card" href="PACKAGING/">
+        <h3>Packaging</h3>
+        <p>Install layouts, man pages, and Debian packages.</p>
+      </a>
+      <a class="card" href="README/">
+        <h3>Full documentation map</h3>
+        <p>Optional features, protocol documents, and contributor references.</p>
+      </a>
+    </div>
+  </section>

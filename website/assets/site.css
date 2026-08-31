@@ -1342,6 +1342,153 @@ tbody tr:last-child td {
   }
 }
 
+/* Motion
+ *
+ * Four things move, and each earns it:
+ *
+ *   1. The page-load cascade on the hero, running once, in reading order.
+ *      Never on scroll: a fade-up on every section as it enters the viewport
+ *      is the most recognisable generated-site tell there is.
+ *   2. The disguise figure, which is the signature. The cover layers settle
+ *      first and the carried layers appear inside them afterwards, because
+ *      that is the claim the figure makes.
+ *   3. State changes that would otherwise snap: the theme cross-fade and the
+ *      table-of-contents disclosure.
+ *   4. Direct feedback on press.
+ *
+ * This site is the soft half of the family, so the travel is longer and the
+ * settle slower than on the BaseFWX portal. Nothing overshoots. Everything
+ * collapses under prefers-reduced-motion in the block below.
+ */
+
+@keyframes drift-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes settle-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.375rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes sweep-in {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+
+  to {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+.hero > div > *,
+.hero > .hero-panel,
+.hero > .release-strip,
+.hero > .disguise {
+  animation: drift-in var(--dur-long) var(--ease-out) both;
+}
+
+.hero > div > *:nth-child(1) { animation-delay: 40ms; }
+.hero > div > *:nth-child(2) { animation-delay: 110ms; }
+.hero > div > *:nth-child(3) { animation-delay: 180ms; }
+.hero > div > *:nth-child(4) { animation-delay: 250ms; }
+.hero > .hero-panel { animation-delay: 180ms; }
+.hero > .release-strip { animation-delay: 300ms; }
+.hero > .disguise { animation-delay: 360ms; }
+
+.release-stat {
+  animation: settle-in var(--dur-short) var(--ease-out) both;
+}
+
+.release-stat:nth-child(1) { animation-delay: 360ms; }
+.release-stat:nth-child(2) { animation-delay: 400ms; }
+.release-stat:nth-child(3) { animation-delay: 440ms; }
+.release-stat:nth-child(4) { animation-delay: 480ms; }
+
+/*
+ * The signature. Cover first, carried payload second, and the sentence that
+ * ties them together last. The order is the argument the figure is making.
+ */
+.disguise .layer {
+  animation: settle-in var(--dur-short) var(--ease-out) both;
+}
+
+.disguise-row:not(.disguise-inner) .layer:nth-child(1) { animation-delay: 520ms; }
+.disguise-row:not(.disguise-inner) .layer:nth-child(2) { animation-delay: 560ms; }
+.disguise-row:not(.disguise-inner) .layer:nth-child(3) { animation-delay: 600ms; }
+.disguise-row:not(.disguise-inner) .layer:nth-child(4) { animation-delay: 640ms; }
+
+.disguise-inner .layer:nth-child(1) { animation-delay: 720ms; }
+.disguise-inner .layer:nth-child(2) { animation-delay: 760ms; }
+.disguise-inner .layer:nth-child(3) { animation-delay: 800ms; }
+.disguise-inner .layer:nth-child(4) { animation-delay: 840ms; }
+
+.disguise-note {
+  animation: settle-in var(--dur-short) var(--ease-out) 900ms both;
+}
+
+/* Press feedback. */
+.btn:active {
+  transform: translateY(1px);
+}
+
+.doc-toc[open] > nav {
+  animation: settle-in var(--dur-short) var(--ease-out) both;
+}
+
+/*
+ * Theme cross-fade. site.js routes the toggle through startViewTransition
+ * where the browser has it, so the page dissolves between palettes instead of
+ * snapping. Browsers without the API get the plain swap that shipped before.
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 280ms;
+  animation-timing-function: var(--ease-in-out);
+}
+
+/*
+ * Reading progress on documentation pages, driven by scroll position rather
+ * than by a timer. The @supports guard matters: without scroll-driven
+ * animation the rule would fall back to the time timeline and sweep the bar
+ * once on load, which would be a lie about where the reader is.
+ */
+.doc-progress {
+  display: none;
+}
+
+@supports (animation-timeline: scroll()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .doc-progress {
+      position: fixed;
+      z-index: var(--z-sticky);
+      display: block;
+      height: 2px;
+      inset: 0 0 auto;
+      transform-origin: 0 50%;
+      animation: sweep-in auto linear;
+      animation-timeline: scroll(root block);
+      background: var(--color-accent-strong);
+    }
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -1350,9 +1497,21 @@ tbody tr:last-child td {
   *,
   *::before,
   *::after {
+    /* The delay matters as much as the duration: the load cascade would
+       otherwise hold each element invisible for its delay and then pop it in. */
+    animation-delay: -1ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .btn:active {
+    transform: none;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
   }
 }

@@ -83,7 +83,6 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::obfs_pad_multiple, c.obfs_pad_multiple);
     read_opt(j, cfg_key::obfs_jitter_ms, c.obfs_jitter_ms);
     read_opt(j, cfg_key::inner_crypto, c.inner_crypto);
-    read_opt(j, cfg_key::inner_heavy, c.inner_heavy);
     read_opt(j, cfg_key::rekey_window, c.rekey_window);
     c.security_profile = yume::config::ParseSecurityProfile(
         j, c.security_profile);
@@ -263,7 +262,6 @@ bool serialize_client_json(
         {cfg_key::obfs_pad_multiple, c.obfs_pad_multiple},
         {cfg_key::obfs_jitter_ms, c.obfs_jitter_ms},
         {cfg_key::inner_crypto, c.inner_crypto},
-        {cfg_key::inner_heavy, c.inner_heavy},
         {cfg_key::rekey_window, c.rekey_window},
         {cfg_key::udp, c.allow_udp},
         {cfg_key::allow_local_ip, c.allow_local_ip},

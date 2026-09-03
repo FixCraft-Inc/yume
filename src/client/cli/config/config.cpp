@@ -112,7 +112,7 @@ bool validate_client_config_json_types(const nlohmann::json& document,
         return false;
     }
     if (!require_all(
-            {"obfuscation", "inner_crypto", "inner_heavy", "udp",
+            {"obfuscation", "inner_crypto", "udp",
              "allow_udp", "allow_local_ip", "server_in_charge",
              "allow_exec", "allow_embedded_master", "require_anonym",
              "accept_monitoring", "service_streams_only", "boring",
@@ -176,13 +176,32 @@ bool validate_client_config_json_types(const nlohmann::json& document,
     return true;
 }
 
+// Must reject what it cannot represent rather than wrap. Casting a negative
+// straight to uint32_t turned "obfs_jitter_ms": -1 into ~49 days of jitter
+// instead of a config error. The server-side parser of the same name in
+// server/cli/config_load.cpp enforces the same rules.
 std::uint32_t json_non_negative_u32(const nlohmann::json& document,
                                     const char* key) {
     const auto& value = document.at(key);
+    std::uint64_t parsed = 0;
     if (value.is_number_unsigned()) {
-        return static_cast<std::uint32_t>(value.get<std::uint64_t>());
+        parsed = value.get<std::uint64_t>();
+    } else if (value.is_number_integer()) {
+        const auto signed_value = value.get<std::int64_t>();
+        if (signed_value < 0) {
+            throw std::runtime_error(std::string(key) +
+                                     " must be a non-negative integer");
+        }
+        parsed = static_cast<std::uint64_t>(signed_value);
+    } else {
+        throw std::runtime_error(std::string(key) +
+                                 " must be a non-negative integer");
     }
-    return static_cast<std::uint32_t>(value.get<std::int64_t>());
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(std::string(key) +
+                                 " must be in 0..4294967295");
+    }
+    return static_cast<std::uint32_t>(parsed);
 }
 
 }  // namespace
@@ -297,9 +316,6 @@ bool load_client_config_file(const ParsedArgs& args,
         }
         if (json.contains("inner_crypto") && !args.inner_crypto_override) {
             cfg->inner_crypto = json["inner_crypto"].get<bool>();
-        }
-        if (json.contains("inner_heavy")) {
-            cfg->inner_heavy = json["inner_heavy"].get<bool>();
         }
         if (json.contains("rekey_window") && !args.rekey_window_override) {
             const int window = json["rekey_window"].get<int>();
@@ -598,7 +614,6 @@ void apply_cli_config_overrides(const ParsedArgs& args,
         cfg->inner_crypto = args.inner_crypto;
     }
     if (args.inner_crypto) {
-        cfg->inner_heavy = args.inner_heavy;
     }
     if (args.rekey_window_override) {
         cfg->rekey_window = ratchet::ClampRekeyWindow(
@@ -960,7 +975,6 @@ bool save_client_config_file(const ParsedArgs& args,
     if (cfg.obfs_pad_multiple > 0) json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
     if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
     json["inner_crypto"] = cfg.inner_crypto;
-    json["inner_heavy"] = cfg.inner_heavy;
     json["rekey_window"] = cfg.rekey_window;
     yume::config::WriteSecurityProfile(json, cfg.security_profile);
     json["udp"] = cfg.allow_udp;

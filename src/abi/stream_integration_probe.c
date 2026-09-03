@@ -2,486 +2,310 @@
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
+ *
+ * Drives a real client and server through the public C ABI v1 in one process
+ * and moves bytes both directions over a named service stream. This is the
+ * only check that the ABI is a transport rather than a lifecycle shell.
  */
 
-#include "yume/yume.h"
+#include <yume/yume.h>
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char kService[] = "abi-stream-v1";
+static const char kClientPayload[] = "yume abi client payload";
+static const char kServerPayload[] = "yume abi server reply";
 
-static void report_failure(const char* operation,
-                           int status,
-                           const void* handle) {
-    const char* detail = handle ? yume_handle_last_error(handle)
-                                : yume_last_error();
-    fprintf(stderr, "%s failed: %s (%d)%s%s\n",
-            operation,
-            yume_strerror(status),
-            status,
-            detail && detail[0] ? ": " : "",
-            detail && detail[0] ? detail : "");
+static void report(const char* operation, yume_status status, const void* handle) {
+    yume_diagnostic diagnostic;
+    memset(&diagnostic, 0, sizeof(diagnostic));
+    diagnostic.struct_size = sizeof(diagnostic);
+    diagnostic.abi_version = YUME_ABI_VERSION;
+    if (handle != NULL) {
+        (void)yume_handle_get_diagnostic(handle, &diagnostic, sizeof(diagnostic));
+    }
+    fprintf(stderr, "%s failed: status=%d %s%s\n", operation, (int)status,
+            diagnostic.message[0] != '\0' ? ": " : "", diagnostic.message);
 }
 
-static int expect_status(const char* operation,
-                         int actual,
-                         int expected,
-                         const void* handle) {
-    if (actual == expected) {
-        return 1;
-    }
-    fprintf(stderr, "%s returned %s (%d), expected %s (%d)\n",
-            operation,
-            yume_strerror(actual),
-            actual,
-            yume_strerror(expected),
-            expected);
-    if (handle) {
-        const char* detail = yume_handle_last_error(handle);
-        if (detail && detail[0]) {
-            fprintf(stderr, "%s detail: %s\n", operation, detail);
-        }
-    }
-    return 0;
-}
-
-// Exercises the read-only in-process operation surface against a live server:
-// sizing/retry, one real federation document, and fail-closed refusal of both
-// an unknown operation and a mutating admin-socket operation.
-static int probe_server_request_json(yume_server* server) {
-    size_t needed = 0;
+static char* read_file(const char* path, size_t* out_size) {
+    FILE* file = fopen(path, "rb");
     char* buffer = NULL;
-    int status = yume_server_request_json(
-        server, "federation.status", NULL, NULL, 0, &needed);
-    if (status != YUME_STATUS_BUFFER_TOO_SMALL || needed < 2) {
-        report_failure("yume_server_request_json sizing", status, server);
-        return 0;
-    }
+    long size = 0;
+    if (file == NULL) return NULL;
+    if (fseek(file, 0, SEEK_END) != 0) goto fail;
+    size = ftell(file);
+    if (size < 0 || fseek(file, 0, SEEK_SET) != 0) goto fail;
+    buffer = (char*)malloc((size_t)size + 1u);
+    if (buffer == NULL) goto fail;
+    if (fread(buffer, 1u, (size_t)size, file) != (size_t)size) goto fail;
+    buffer[size] = '\0';
+    *out_size = (size_t)size;
+    fclose(file);
+    return buffer;
 
-    buffer = (char*)malloc(needed);
-    if (!buffer) {
-        fprintf(stderr, "failed to allocate %zu bytes for federation status\n",
-                needed);
-        return 0;
-    }
-    status = yume_server_request_json(
-        server, "federation.status", "{}", buffer, needed, NULL);
-    if (status != YUME_STATUS_OK) {
-        report_failure("yume_server_request_json", status, server);
-        free(buffer);
-        return 0;
-    }
-    // Federation is off in this fixture, and the document must say so rather
-    // than come back empty. A configured peer's secret paths must never
-    // appear on this surface even when they are set.
-    if (!strstr(buffer, "\"schema_version\":1") ||
-        !strstr(buffer, "\"enabled\"") || !strstr(buffer, "\"self\"") ||
-        strstr(buffer, "psk_file") || strstr(buffer, "carrier_secret_file")) {
-        fprintf(stderr, "unexpected federation.status document: %s\n", buffer);
-        free(buffer);
-        return 0;
-    }
+fail:
     free(buffer);
-
-    needed = 0;
-    status = yume_server_request_json(
-        server, "runtime.events", "{\"limit\":-1}", NULL, 0, &needed);
-    if (!expect_status("invalid runtime.events sizing", status,
-                       YUME_STATUS_BUFFER_TOO_SMALL, server)) {
-        return 0;
-    }
-    buffer = (char*)malloc(needed);
-    if (!buffer) return 0;
-    buffer[0] = '\0';
-    status = yume_server_request_json(
-        server, "runtime.events", "{\"limit\":-1}",
-        buffer, needed, NULL);
-    if (!expect_status("invalid runtime.events", status,
-                       YUME_STATUS_OK, server) ||
-        !strstr(buffer, "\"ok\":false") ||
-        !strstr(buffer, "limit must be non-negative")) {
-        fprintf(stderr, "unexpected invalid-argument envelope: %s\n", buffer);
-        free(buffer);
-        return 0;
-    }
-    free(buffer);
-
-    needed = 0;
-    status = yume_server_request_json(
-        server, "no.such.op", NULL, NULL, 0, &needed);
-    if (!expect_status("unknown server op sizing", status,
-                       YUME_STATUS_BUFFER_TOO_SMALL, server)) {
-        return 0;
-    }
-    buffer = (char*)malloc(needed);
-    if (!buffer) return 0;
-    buffer[0] = '\0';
-    status = yume_server_request_json(
-        server, "no.such.op", NULL, buffer, needed, NULL);
-    if (!expect_status("unknown server op", status, YUME_STATUS_OK, server) ||
-        !strstr(buffer, "\"ok\":false") ||
-        !strstr(buffer, "read-only embedded server API")) {
-        fprintf(stderr, "unexpected unknown-op envelope: %s\n", buffer);
-        free(buffer);
-        return 0;
-    }
-    free(buffer);
-
-    needed = 0;
-    status = yume_server_request_json(
-        server, "runtime.stop", NULL, NULL, 0, &needed);
-    if (!expect_status("mutating server op sizing", status,
-                       YUME_STATUS_BUFFER_TOO_SMALL, server)) {
-        return 0;
-    }
-    buffer = (char*)malloc(needed);
-    if (!buffer) return 0;
-    buffer[0] = '\0';
-    status = yume_server_request_json(
-        server, "runtime.stop", NULL, buffer, needed, NULL);
-    if (!expect_status("mutating server op", status, YUME_STATUS_OK, server) ||
-        !strstr(buffer, "\"ok\":false") ||
-        !strstr(buffer, "read-only embedded server API")) {
-        fprintf(stderr, "unexpected mutating-op envelope: %s\n", buffer);
-        free(buffer);
-        return 0;
-    }
-    free(buffer);
-    return 1;
+    fclose(file);
+    return NULL;
 }
 
-// A request sizing call executes its operation before reporting the required
-// output size. Verify that a different request cannot receive that pending
-// output and that retrying a mutating request returns its completed response
-// without executing the mutation a second time.
-static int probe_client_request_json_replay(yume_client* client) {
-    size_t needed = 0;
-    char* buffer = NULL;
-    char tiny_buffer[1] = {'x'};
-    int status = yume_client_request_json(
-        client, "runtime.status", NULL, NULL, 0, &needed, 5000);
-    if (!expect_status("client runtime.status sizing", status,
-                       YUME_STATUS_BUFFER_TOO_SMALL, client)) {
-        return 0;
-    }
+struct accept_context {
+    yume_endpoint* endpoint;
+    int ok;
+};
 
-    // This different operation must replace the pending runtime.status result.
-    // Its own sizing/retry also verifies that NULL and {} normalize identically.
-    needed = 0;
-    status = yume_client_request_json(
-        client, "directory.list", NULL, NULL, 0, &needed, 5000);
-    if (!expect_status("client directory.list sizing", status,
-                       YUME_STATUS_BUFFER_TOO_SMALL, client) || needed < 2) {
-        return 0;
-    }
-    buffer = (char*)malloc(needed);
-    if (!buffer) {
-        fprintf(stderr, "failed to allocate client request JSON buffer\n");
-        return 0;
-    }
-    status = yume_client_request_json(
-        client, "directory.list", "{}", buffer, needed, NULL, 5000);
-    if (!expect_status("client directory.list retry", status,
-                       YUME_STATUS_OK, client) ||
-        !strstr(buffer, "\"ok\":true") ||
-        !strstr(buffer, "\"result\":[")) {
-        fprintf(stderr, "unexpected directory.list response: %s\n", buffer);
-        free(buffer);
-        return 0;
-    }
-    free(buffer);
-
-    needed = 0;
-    status = yume_client_request_json(
-        client, "runtime.stop", NULL,
-        tiny_buffer, sizeof(tiny_buffer), &needed, 5000);
-    if (!expect_status("client runtime.stop sizing", status,
-                       YUME_STATUS_BUFFER_TOO_SMALL, client) || needed < 2 ||
-        tiny_buffer[0] != 'x') {
-        fprintf(stderr, "runtime.stop sizing modified a short buffer\n");
-        return 0;
-    }
-    buffer = (char*)malloc(needed);
-    if (!buffer) {
-        fprintf(stderr, "failed to allocate runtime.stop JSON buffer\n");
-        return 0;
-    }
-    // runtime.stop has already requested client shutdown. Without response
-    // replay this second call cannot produce a fresh successful result, so an
-    // OK response proves exactly-once execution across the sizing/retry pair.
-    status = yume_client_request_json(
-        client, "runtime.stop", "{}", buffer, needed, NULL, 5000);
-    if (!expect_status("client runtime.stop retry", status,
-                       YUME_STATUS_OK, client) ||
-        !strstr(buffer, "\"ok\":true") ||
-        !strstr(buffer, "\"result\":true")) {
-        fprintf(stderr, "unexpected runtime.stop response: %s\n", buffer);
-        free(buffer);
-        return 0;
-    }
-    free(buffer);
-    return 1;
-}
-
-static int write_exact(yume_stream* stream,
-                       const void* data,
-                       size_t size) {
+/* Accepts one stream, echoes the client payload back, then half-closes. */
+static void* accept_worker(void* opaque) {
+    struct accept_context* context = (struct accept_context*)opaque;
+    yume_accept_options options;
+    yume_stream* stream = NULL;
+    yume_peer_identity identity;
+    char received[128];
+    size_t received_bytes = 0;
     size_t written = 0;
-    const int status = yume_stream_write(
-        stream, data, size, &written, 5000);
-    if (status != YUME_STATUS_OK || written != size) {
-        report_failure("yume_stream_write", status, stream);
-        fprintf(stderr, "write count: %zu of %zu\n", written, size);
-        return 0;
+    yume_status status;
+
+    memset(&options, 0, sizeof(options));
+    options.struct_size = sizeof(options);
+    options.abi_version = YUME_ABI_VERSION;
+    options.service.data = kService;
+    options.service.size = sizeof(kService) - 1u;
+    options.kind = YUME_SERVICE_BYTE_STREAM;
+
+    status = yume_endpoint_accept_stream(context->endpoint, &options, 20000u,
+                                         &stream);
+    if (status != YUME_STATUS_OK || stream == NULL) {
+        report("yume_endpoint_accept_stream", status, context->endpoint);
+        return NULL;
     }
-    return 1;
+
+    memset(&identity, 0, sizeof(identity));
+    identity.struct_size = sizeof(identity);
+    identity.abi_version = YUME_ABI_VERSION;
+    status = yume_stream_get_peer_identity(stream, &identity, sizeof(identity));
+    if (status != YUME_STATUS_OK) {
+        report("yume_stream_get_peer_identity", status, stream);
+        goto done;
+    }
+    if (identity.authenticated == 0u) {
+        fprintf(stderr, "accepted stream reported an unauthenticated peer\n");
+        goto done;
+    }
+    if (strcmp(identity.service, kService) != 0) {
+        fprintf(stderr, "accepted stream reported service '%s'\n",
+                identity.service);
+        goto done;
+    }
+
+    memset(received, 0, sizeof(received));
+    status = yume_stream_read(stream, received, sizeof(received) - 1u,
+                              &received_bytes, 20000u);
+    if (status != YUME_STATUS_OK) {
+        report("server yume_stream_read", status, stream);
+        goto done;
+    }
+    if (received_bytes != sizeof(kClientPayload) - 1u ||
+        memcmp(received, kClientPayload, received_bytes) != 0) {
+        fprintf(stderr, "server received unexpected payload '%s'\n", received);
+        goto done;
+    }
+
+    status = yume_stream_write(stream, kServerPayload,
+                               sizeof(kServerPayload) - 1u, &written, 20000u);
+    if (status != YUME_STATUS_OK || written != sizeof(kServerPayload) - 1u) {
+        report("server yume_stream_write", status, stream);
+        goto done;
+    }
+    status = yume_stream_shutdown_write(stream, 20000u);
+    if (status != YUME_STATUS_OK) {
+        report("server yume_stream_shutdown_write", status, stream);
+        goto done;
+    }
+    context->ok = 1;
+
+done:
+    (void)yume_stream_close(stream, 5000u);
+    yume_stream_destroy(stream);
+    return NULL;
 }
 
-static int read_exact(yume_stream* stream,
-                      const void* expected,
-                      size_t expected_size) {
-    unsigned char buffer[256];
-    size_t offset = 0;
-    while (offset < expected_size) {
-        size_t received = 0;
-        const int status = yume_stream_read(
-            stream,
-            buffer + offset,
-            sizeof(buffer) - offset,
-            &received,
-            5000);
-        if (status != YUME_STATUS_OK || received == 0) {
-            report_failure("yume_stream_read", status, stream);
-            return 0;
-        }
-        offset += received;
+static yume_status start_endpoint(yume_runtime* runtime,
+                                  const char* path,
+                                  yume_endpoint** out_endpoint) {
+    size_t size = 0;
+    char* text = read_file(path, &size);
+    yume_config* config = NULL;
+    yume_status status;
+
+    *out_endpoint = NULL;
+    if (text == NULL) {
+        fprintf(stderr, "cannot read configuration %s\n", path);
+        return YUME_STATUS_IO_ERROR;
     }
-    if (offset != expected_size ||
-        memcmp(buffer, expected, expected_size) != 0) {
-        fprintf(stderr, "stream payload mismatch\n");
-        return 0;
+    status = yume_config_parse_json(runtime, text, size, &config);
+    free(text);
+    if (status != YUME_STATUS_OK) {
+        report("yume_config_parse_json", status, runtime);
+        return status;
     }
-    return 1;
+    status = yume_endpoint_create(runtime, config, out_endpoint);
+    yume_config_destroy(config);
+    if (status != YUME_STATUS_OK) {
+        report("yume_endpoint_create", status, runtime);
+        return status;
+    }
+    status = yume_endpoint_start(*out_endpoint, 30000u);
+    if (status != YUME_STATUS_OK) {
+        report("yume_endpoint_start", status, *out_endpoint);
+        return status;
+    }
+    if (yume_endpoint_state(*out_endpoint) != YUME_ENDPOINT_RUNNING) {
+        fprintf(stderr, "started endpoint %s is not RUNNING\n", path);
+        return YUME_STATUS_INVALID_STATE;
+    }
+    return YUME_STATUS_OK;
 }
 
 int main(int argc, char** argv) {
-    yume_server* server = NULL;
-    yume_client* client = NULL;
-    yume_stream* client_stream = NULL;
-    yume_stream* server_stream = NULL;
-    yume_stream* aborted_client_stream = NULL;
-    yume_stream* aborted_server_stream = NULL;
+    yume_runtime_options options;
+    yume_runtime* runtime = NULL;
+    yume_endpoint* server = NULL;
+    yume_endpoint* client = NULL;
+    yume_service_descriptor descriptor;
+    yume_open_options open_options;
+    yume_stream* stream = NULL;
+    struct accept_context context;
+    pthread_t worker;
+    int worker_started = 0;
+    char reply[128];
+    size_t reply_bytes = 0;
+    size_t written = 0;
+    size_t trailing = 0;
+    yume_status status;
     int result = 1;
 
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <server.json> <client.json>\n", argv[0]);
+        fprintf(stderr, "usage: %s SERVER_CONFIG CLIENT_CONFIG\n", argv[0]);
         return 2;
     }
 
-    server = yume_server_create();
-    client = yume_client_create();
-    if (!server || !client) {
-        fprintf(stderr, "failed to allocate ABI runtime handles\n");
+    memset(&options, 0, sizeof(options));
+    options.struct_size = sizeof(options);
+    options.abi_version = YUME_ABI_VERSION;
+    options.config_base_dir = ".";
+    status = yume_runtime_create(&options, &runtime);
+    if (status != YUME_STATUS_OK) {
+        report("yume_runtime_create", status, NULL);
+        return 1;
+    }
+
+    if (start_endpoint(runtime, argv[1], &server) != YUME_STATUS_OK) goto cleanup;
+
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.abi_version = YUME_ABI_VERSION;
+    descriptor.name.data = kService;
+    descriptor.name.size = sizeof(kService) - 1u;
+    descriptor.kind = YUME_SERVICE_BYTE_STREAM;
+    descriptor.max_concurrent = 4u;
+    descriptor.max_pending_accepts = 4u;
+    descriptor.max_queued_bytes = 262144u;
+    status = yume_endpoint_register_service(server, &descriptor);
+    if (status != YUME_STATUS_OK) {
+        report("yume_endpoint_register_service", status, server);
         goto cleanup;
     }
 
-    {
-        int status = yume_server_start_file(server, argv[1]);
-        if (status != YUME_STATUS_OK) {
-            report_failure("yume_server_start_file", status, server);
-            goto cleanup;
-        }
-        status = yume_server_start_file(server, argv[1]);
-        if (!expect_status("repeated yume_server_start_file", status,
-                           YUME_STATUS_ALREADY_RUNNING, server)) {
-            goto cleanup;
-        }
-        status = yume_server_register_service(server, kService);
-        if (status != YUME_STATUS_OK) {
-            report_failure("yume_server_register_service", status, server);
-            goto cleanup;
-        }
-        status = yume_server_accept_stream(
-            server, kService, 0, &server_stream);
-        if (!expect_status("zero-time accept", status,
-                           YUME_STATUS_WOULD_BLOCK, server) ||
-            server_stream != NULL) {
-            goto cleanup;
-        }
-        if (!probe_server_request_json(server)) {
-            goto cleanup;
-        }
-        status = yume_client_start_file(client, argv[2], 15000);
-        if (status != YUME_STATUS_OK) {
-            report_failure("yume_client_start_file", status, client);
-            goto cleanup;
-        }
+    context.endpoint = server;
+    context.ok = 0;
+    if (pthread_create(&worker, NULL, accept_worker, &context) != 0) {
+        fprintf(stderr, "cannot start the accept worker\n");
+        goto cleanup;
+    }
+    worker_started = 1;
+
+    if (start_endpoint(runtime, argv[2], &client) != YUME_STATUS_OK) goto cleanup;
+
+    memset(&open_options, 0, sizeof(open_options));
+    /* A named service stream carries no destination. Declaring the shorter
+     * prefix size is how the sized-struct contract says "this field is not
+     * present"; zeroing the nested descriptor instead would be a truncated
+     * destination, not an absent one. */
+    open_options.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE;
+    open_options.abi_version = YUME_ABI_VERSION;
+    open_options.service.data = kService;
+    open_options.service.size = sizeof(kService) - 1u;
+    open_options.kind = YUME_SERVICE_BYTE_STREAM;
+    status = yume_endpoint_open_stream(client, &open_options, 20000u, &stream);
+    if (status != YUME_STATUS_OK || stream == NULL) {
+        report("yume_endpoint_open_stream", status, client);
+        goto cleanup;
     }
 
-    {
-        int status = yume_client_open_stream(
-            client, kService, 5000, &client_stream);
-        if (status != YUME_STATUS_OK || !client_stream) {
-            report_failure("yume_client_open_stream", status, client);
-            goto cleanup;
-        }
-        status = yume_server_accept_stream(
-            server, kService, 5000, &server_stream);
-        if (status != YUME_STATUS_OK || !server_stream) {
-            report_failure("yume_server_accept_stream", status, server);
-            goto cleanup;
-        }
-
-        {
-            unsigned char byte = 0;
-            size_t received = 123;
-            status = yume_stream_read(
-                server_stream, &byte, sizeof(byte), &received, 0);
-            if (!expect_status("zero-time stream read", status,
-                               YUME_STATUS_WOULD_BLOCK, server_stream) ||
-                received != 0) {
-                goto cleanup;
-            }
-        }
-
-        {
-            size_t needed = 0;
-            char* peer_json = NULL;
-            status = yume_stream_peer_json(
-                server_stream, NULL, 0, &needed);
-            if (status != YUME_STATUS_BUFFER_TOO_SMALL || needed < 2) {
-                report_failure("yume_stream_peer_json sizing", status,
-                               server_stream);
-                goto cleanup;
-            }
-            peer_json = (char*)malloc(needed);
-            if (!peer_json) {
-                fprintf(stderr, "failed to allocate peer JSON buffer\n");
-                goto cleanup;
-            }
-            status = yume_stream_peer_json(
-                server_stream, peer_json, needed, &needed);
-            if (status != YUME_STATUS_OK ||
-                strstr(peer_json, "auth_fingerprint_sha256") == NULL) {
-                report_failure("yume_stream_peer_json", status,
-                               server_stream);
-                free(peer_json);
-                goto cleanup;
-            }
-            free(peer_json);
-        }
-
-        {
-            static const char client_payload[] = "client-to-server";
-            static const char server_payload[] = "server-to-client";
-            if (!write_exact(client_stream,
-                             client_payload,
-                             sizeof(client_payload) - 1) ||
-                !read_exact(server_stream,
-                            client_payload,
-                            sizeof(client_payload) - 1) ||
-                !write_exact(server_stream,
-                             server_payload,
-                             sizeof(server_payload) - 1) ||
-                !read_exact(client_stream,
-                            server_payload,
-                            sizeof(server_payload) - 1)) {
-                goto cleanup;
-            }
-        }
-
-        status = yume_stream_shutdown_write(client_stream);
-        if (status != YUME_STATUS_OK) {
-            report_failure("client yume_stream_shutdown_write", status,
-                           client_stream);
-            goto cleanup;
-        }
-        {
-            unsigned char byte = 0;
-            size_t received = 123;
-            status = yume_stream_read(
-                server_stream, &byte, sizeof(byte), &received, 5000);
-            if (status != YUME_STATUS_OK || received != 0) {
-                report_failure("server clean EOF", status, server_stream);
-                goto cleanup;
-            }
-        }
-        status = yume_stream_shutdown_write(server_stream);
-        if (status != YUME_STATUS_OK) {
-            report_failure("server yume_stream_shutdown_write", status,
-                           server_stream);
-            goto cleanup;
-        }
-        {
-            unsigned char byte = 0;
-            size_t received = 123;
-            status = yume_stream_read(
-                client_stream, &byte, sizeof(byte), &received, 5000);
-            if (status != YUME_STATUS_OK || received != 0) {
-                report_failure("client clean EOF", status, client_stream);
-                goto cleanup;
-            }
-        }
+    status = yume_stream_write(stream, kClientPayload,
+                               sizeof(kClientPayload) - 1u, &written, 20000u);
+    if (status != YUME_STATUS_OK || written != sizeof(kClientPayload) - 1u) {
+        report("client yume_stream_write", status, stream);
+        goto cleanup;
     }
 
-    yume_stream_destroy(server_stream);
-    server_stream = NULL;
-    yume_stream_destroy(client_stream);
-    client_stream = NULL;
-
-    {
-        int status = yume_client_open_stream(
-            client, kService, 5000, &aborted_client_stream);
-        if (status != YUME_STATUS_OK || !aborted_client_stream) {
-            report_failure("second yume_client_open_stream", status, client);
-            goto cleanup;
-        }
-        status = yume_server_accept_stream(
-            server, kService, 5000, &aborted_server_stream);
-        if (status != YUME_STATUS_OK || !aborted_server_stream) {
-            report_failure("second yume_server_accept_stream", status, server);
-            goto cleanup;
-        }
-        status = yume_stream_close(aborted_server_stream);
-        if (status != YUME_STATUS_OK) {
-            report_failure("server yume_stream_close", status,
-                           aborted_server_stream);
-            goto cleanup;
-        }
-        {
-            unsigned char byte = 0;
-            size_t received = 123;
-            status = yume_stream_read(
-                aborted_client_stream, &byte, sizeof(byte), &received, 5000);
-            if (!expect_status("aborted stream read", status,
-                               YUME_STATUS_NOT_RUNNING,
-                               aborted_client_stream) ||
-                received != 0) {
-                goto cleanup;
-            }
-        }
+    memset(reply, 0, sizeof(reply));
+    status = yume_stream_read(stream, reply, sizeof(reply) - 1u, &reply_bytes,
+                              20000u);
+    if (status != YUME_STATUS_OK) {
+        report("client yume_stream_read", status, stream);
+        goto cleanup;
+    }
+    if (reply_bytes != sizeof(kServerPayload) - 1u ||
+        memcmp(reply, kServerPayload, reply_bytes) != 0) {
+        fprintf(stderr, "client received unexpected reply '%s'\n", reply);
+        goto cleanup;
     }
 
-    if (!probe_client_request_json_replay(client)) {
+    /* The server half-closed after replying, so the next read must report EOF
+     * rather than blocking until the deadline. */
+    status = yume_stream_read(stream, reply, sizeof(reply) - 1u, &trailing,
+                              20000u);
+    if (status != YUME_STATUS_EOF || trailing != 0u) {
+        report("client EOF after peer shutdown", status, stream);
+        goto cleanup;
+    }
+
+    if (pthread_join(worker, NULL) != 0) {
+        fprintf(stderr, "cannot join the accept worker\n");
+        goto cleanup;
+    }
+    worker_started = 0;
+    if (context.ok == 0) {
+        fprintf(stderr, "the server side of the exchange failed\n");
         goto cleanup;
     }
 
     result = 0;
+    printf("C ABI v1 stream integration passed\n");
 
 cleanup:
-    yume_stream_destroy(aborted_server_stream);
-    yume_stream_destroy(aborted_client_stream);
-    yume_stream_destroy(server_stream);
-    yume_stream_destroy(client_stream);
-    if (client) {
-        (void)yume_client_stop(client);
+    if (stream != NULL) {
+        (void)yume_stream_close(stream, 5000u);
+        yume_stream_destroy(stream);
     }
-    if (server) {
-        (void)yume_server_stop(server);
+    if (worker_started != 0) {
+        /* Stopping the server settles a blocked accept so the join returns. */
+        if (server != NULL) (void)yume_endpoint_stop(server, 10000u);
+        (void)pthread_join(worker, NULL);
     }
-    yume_client_destroy(client);
-    yume_server_destroy(server);
+    if (client != NULL) {
+        (void)yume_endpoint_stop(client, 10000u);
+        yume_endpoint_destroy(client);
+    }
+    if (server != NULL) {
+        (void)yume_endpoint_stop(server, 10000u);
+        yume_endpoint_destroy(server);
+    }
+    yume_runtime_destroy(runtime);
     return result;
 }

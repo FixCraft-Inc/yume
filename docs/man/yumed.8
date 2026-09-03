@@ -51,8 +51,19 @@ After binding, the daemon can drop privileges unless
 is used.
 .SH CORE OPTIONS
 .TP
+.B --credits
+Print third-party attribution and exit.
+.TP
 .BI "--config " path
 Read server configuration from a JSON file.
+.TP
+.BI "--proxy " url
+Route the daemon's own outbound connections through an upstream proxy.
+.TP
+.B --bench
+Enable the benchmark endpoint so a client's
+.B --bench
+run has a peer. Do not enable it on a public deployment.
 .TP
 .B transport_profile
 JSON-only exact authenticated transport identity. YUME 0.2.0-dev6 accepts only
@@ -328,6 +339,25 @@ Delegated server identity private key.
 .BI "--operator-delegated-cert " path
 CA-signed delegated server certificate. Its issuer should identify the
 operator and its subject should identify the server name/alias.
+.TP
+.BI "--upstream-response " path
+Serve a captured HTTP response to failed probes instead of the synthetic
+profile-driven reply. Line endings are normalised, so a capture taken with
+\fBcurl -i\fR works unmodified. Improves fidelity, but does not make the reply
+equivalent to a live upstream. Empty uses the synthetic profile.
+.TP
+.BI "--upstream-response-dir " dir
+Load every \fI*.http\fR and \fI*.response\fR file in \fIdir\fR and rotate
+between them per probe, which avoids the "every probe gets the same capture"
+tell of a single file. If both this and
+.B --upstream-response
+are set, the directory wins.
+.TP
+.BI "--upstream-response-ttl " seconds
+With
+.BR --upstream-response-dir ,
+reload the directory every \fIseconds\fR so new captures can be dropped in
+without restarting. 0 loads once at startup.
 .SH RELAY AND DIRECTORY OPTIONS
 .TP
 .BI "--server-name " name

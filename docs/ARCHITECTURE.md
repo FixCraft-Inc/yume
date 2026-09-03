@@ -1,234 +1,247 @@
 # YUME architecture
 
-This page maps the source tree to CMake targets and installed binaries.
-For traffic flow and routing models, see `docs/EXPLAINED.md`.
+This describes the **YTP/1 replacement** contracts. It is not a map of the code
+that runs today: the shipping transport-v2 product is roughly 117k of the tree's
+168k lines and is not covered here. For that, and for which of the two stacks a
+given file belongs to, read the [source map](SOURCE_MAP.md) first.
 
-## Installed binaries
-
-| Binary | CMake target | Role |
-| --- | --- | --- |
-| `yume` | `yume` | CLI client |
-| `yumed` | `yumed` | Server daemon |
-| `yume-gui` | `yume-gui` | Optional desktop UI (`YUME_BUILD_GUI=ON`) |
-| `libyume.so` | `yume_abi` | Optional stable C ABI (`YUME_BUILD_SHARED_ABI=ON`) |
-
-Debian packages split these into `yume`, `yume-daemon`, `yume-gui`,
-`libyume1`, and `libyume-dev`. See `docs/PACKAGING.md`.
-
-## CMake target graph
+The modular YTP/1 replacement has downward-only client and server
+compositions:
 
 ```text
-                         +----------------------+
-                         | yume_secure_core     |
-                         | STATIC protocol, AUTH|
-                         | ratchet, secret files|
-                         +----------+-----------+
-                                    |
-                    +---------------+---------------+
-                    |                               |
-          +---------v---------+           +---------v---------+
-          |     yume_core     |           | yume_transport_   |
-          | stealth/runtime/  |           | core              |
-          | shared facilities |           | reduced transport |
-          +---------+---------+           +---------+---------+
-                    |                               |
-                    +---------------+---------------+
-                                    |
-                          +---------v---------+
-                          | yume_outbound_    |
-                          | transport         |
-                          | dial/tunnel/auth  |
-                          +---------+---------+
-                                    |
-                    +---------------+---------------+
-                    |                               |
-          +---------v---------+           +---------v---------+
-          | yume_client_lib   |           |   yume_server     |
-          | cli/runtime/share |           | session/runtime/..|
-          +----+--------------+           +----+--------------+
-               |    \                       /    |
-               |     +---------+-----------+     |
-               |               |                 |
-       +-------v-------+   +----v-------------+  +v--------------+
-       |     yume      |   |   yume_facade    |  |     yumed      |
-       +---------------+   | session/config   |  +----------------+
-                           +---------+--------+
-                                     |
-                           +---------v---------+
-                           | yume-gui / ABI    |
-                           +-------------------+
+client: ByteChannel -> SecureChannel -> Carrier ---------+
+                                                         +-> SessionEngine
+server: FrontDoor -> AcceptedCarrier --------------------+      -> StreamDispatcher
+                                                                   -> StreamHandler
+                                                                   -> RouteProvider
 ```
 
-`yume_secure_core` is a STATIC library that gives the shared protocol,
-composite-AUTH, ratchet, and secret-material sources one compiled owner.
-`yume_core` and `yume_transport_core` both link it instead of compiling those
-sources twice. `yume_transport_core` is always built, so Android and embedders
-can link the reduced transport slice without pulling the full CLI or server
-stacks. `yume_outbound_transport` owns the small client/server-common dial,
-tunnel, forwarding, outbound-proxy, and authenticated-connect slice used by
-both the CLI and federation. Its implementation and server-consumed headers
-live under `src/outbound/`; compatibility headers under `src/client/` retain
-existing client include spellings without giving the client ownership of the
-shared implementation. The server does not link `yume_client_lib` or include
-client/CLI production headers.
+An application may supply or consume the endpoints at these boundaries. The
+session engine does not know about sockets, TLS libraries, HTTP/2 libraries,
+JSON, configuration files, command-line parsing, or GUI state.
 
-## Source layout
+This is not yet the runnable tunnel graph. The default-built transport-v2
+architecture remains documented in the
+[signed 0.2 snapshot](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/ARCHITECTURE.md) until replacement parity.
 
-### `src/core/`: shared transport kernel
+## Core contracts
 
-Used by client, server, facade, and ABI. No UI, no `main()`.
+### ByteChannel
 
-| Directory | Responsibility |
+`ByteChannel` owns a reliable, ordered asynchronous byte path. Buffers are
+move-only, reads and writes are bounded before admission, accepted operations
+complete exactly once on a declared executor affinity, and cancellation is
+distinct from terminal close. Its idempotent write shutdown is ordered after
+accepted writes and preserves the read direction; providers that cannot
+implement a genuine half-close fail instead of substituting a full close.
+
+### SecureChannel
+
+`SecureChannel` adds exporter-quality channel binding and bounded outer-channel
+peer evidence to a byte channel. That evidence may be unauthenticated: in the
+normal server-authenticated TLS shape, the server has no TLS client credential.
+`SecureChannelPeerEvidence` records what the outer channel actually established
+and is never application identity or dispatcher authorization. The default
+provider is TLS 1.3.
+
+### FrontDoor
+
+`FrontDoor` owns listening, ordinary HTTP behavior, replay-protected cheap
+admission, and promotion to a ready `AcceptedCarrier`. Missing, invalid,
+replayed, or resource-exhausted admission follows the genuine configured cover
+path. The front door does not emit a YUME-specific public rejection.
+
+The ready-carrier boundary is necessary for genuine HTTP/2. Admission occurs
+inside an established H2 connection and stream; reducing it back to a raw
+`SecureChannel` would lose SETTINGS, stream, parser, and flow-credit state.
+`AcceptedCarrier` transfers the carrier with immutable provider provenance and
+keeps provider-specific shared connection state behind typed interfaces. It is
+not an opaque context handle.
+
+### Carrier
+
+`Carrier` maps secure plaintext onto YTP record units and owns outer flow
+credit. On the client, the exact frozen carrier provider constructs it from a
+`SecureChannel`. On the server, the front door returns the already-promoted
+carrier so its admitted application-protocol state remains intact. The first
+provider uses a duplex HTTP/2 exchange. HTTP/2 is not a session-engine
+dependency, and transport-profile geometry is not a YTP field.
+
+The experimental `h2-duplex` provider reuses the retained libnghttp2/RFC 8441
+state machine without changing the runnable transport-v2 path. It performs the
+client's genuine priming and extended-CONNECT acceptance sequence, while the
+server construction seam accepts only an already-admitted live H2 carrier so
+SETTINGS, HPACK, stream, and flow-credit state are not reconstructed. Its
+private fixed 12-byte length envelope preserves YTP record boundaries across
+arbitrary WebSocket and secure-channel fragmentation. Send completion means
+the complete record has drained through H2 flow control and the secure-channel
+write queue, not merely that it entered an internal queue.
+
+### SessionBootstrap
+
+`SessionBootstrap` is a dependency-pure, one-session orchestration seam. A
+client consumes the frozen byte-channel, secure-channel, and carrier providers;
+a server borrows a shared persistent front door until one accept settles. It
+validates the YTP/1 role, the suite's explicit TLS 1.3 requirement, exact
+accepted-carrier provider ID/API/capabilities, and equal front-door, carrier,
+and secure-channel executor affinity before constructing `SessionEngine`.
+
+Every layer transfers single ownership into the next accepted asynchronous
+operation. Cancellation requests the active operation's token and waits for its
+one completion, closes a late returned object, and only then reports one
+terminal completion. Success is reported only after `SessionEngine` reaches
+`Active`; the reusable server front door is neither cancelled nor closed by a
+session bootstrap.
+
+### SessionEngine and StreamDispatcher
+
+`SessionEngine` owns YTP/1 authentication, the key schedule, directional
+ratchets, record protection, stream IDs, multiplexing, capabilities,
+backpressure, and teardown. Stream zero is session control; clients own odd
+application stream IDs and servers own even IDs.
+
+Only a successful complete YTP authentication creates `PeerEvidence`. That
+post-YTP evidence represents the authenticated application peer and is the
+identity passed to the dispatcher, stream handlers, and route policy. Outer
+`SecureChannelPeerEvidence` and post-YTP `PeerEvidence` are distinct types so a
+TLS observation cannot be promoted accidentally into application authority.
+
+The dispatcher checks the authenticated capability and calls the selected
+handler's authorization policy for every OPEN. It reserves stream, pending,
+queue, packet, credit, control, and rekey resources before allocation or
+expensive work. A capability advertisement never bypasses per-open policy.
+Service dispatch is keyed by `(canonical name, service kind)`, so the same name
+may intentionally expose one byte-stream handler and one packet handler without
+colliding or weakening either policy. Names use a bounded lowercase ASCII
+namespace grammar shared by the wire, config, engine, and ABI; authorization
+never depends on Unicode normalization or case folding.
+
+### StreamHandler and RouteProvider
+
+`StreamHandler` receives an authenticated byte-stream or packet-channel open.
+It owns service-specific authorization and resource policy. `RouteProvider`
+implements egress such as direct TCP or UDP, but its request type can be
+constructed only after the dispatcher has authenticated and authorized the
+peer, service, and destination.
+
+The provider-level `DirectRouteHandler` is the reusable adapter between those
+contracts. It opens egress only from `on_route`, forwards at most one bounded
+operation in each direction, retains inbound carrier credit through the exact
+route write completion, preserves packet boundaries, and maps byte-stream EOF
+to directional write shutdown. Provider errors, partial completions, and
+cancellation close both sides once.
+
+The opt-in `AsioDirectRouteProvider` is the first concrete egress
+implementation. It resolves a bounded number of DNS results, applies the
+instance-local socket protector after open and before connect, enforces
+pending-open, active-connection, read, write, packet, resolution-time, and
+connect-time bounds, and exposes TCP as `ByteChannel` and connected UDP as
+`PacketChannel`. It is build-tree-only and is not yet wired into a runtime or
+the C ABI endpoint graph.
+
+## Provider composition
+
+`TransportSuiteDescriptor` is immutable composition metadata: exact provider
+IDs, provider API versions, required capabilities, service kinds, and resource
+requirements. `EngineBuilder` registers provider instances locally, validates
+the entire graph, and freezes after its first successful build.
+
+There is no process-global mutable registry, reflection-based provider
+selection, dynamic loading in key-holding processes, fallback, or partial
+build. A configured provider that is absent, incompatible, or missing a
+required capability causes a typed hard failure.
+
+Trusted custom providers may use the experimental source-level C++20 provider
+interfaces. Cross-language applications target the C ABI candidate after its
+functional and freeze gates pass. An out-of-process plugin protocol is
+intentionally deferred.
+
+## First suite
+
+YTP/1 ships one mandatory suite:
+
+| Layer | Required implementation |
 | --- | --- |
-| `security/` | AUTH, identity, and the ML-KEM-1024 + X25519 + PSK ratchet with AES-GCM records |
-| `protocol/` | Wire format, frames, control protocol, runtime policy |
-| `stealth/` | TLS fingerprint shaping, HTTP/2 obfs carrier, disguise |
-| `app_codec/` | Codec-neutral envelope and registry; `builtin/` holds one unit per codec |
-| `diagnostics/` | Bounded runtime diagnostics and developer-only instrumentation |
-| `release/` | Version/build reports and release-facing runtime metadata |
-| `runtime/` | Local IPC / runtime socket helpers |
-| `encoding/` | Shared hex encoding and decoding |
+| secure channel | native TLS 1.3 |
+| front door | genuine HTTP/2 website or loopback reverse proxy |
+| carrier | bounded duplex HTTP/2 |
+| session | YTP/1 hybrid security and multiplexing |
+| authentication | Ed25519 **and** ML-DSA-87 |
+| establishment | X25519, ML-KEM-1024, per-identity access PSK, TLS exporter |
+| records | directional ratchet, one-use AES-256-GCM keys |
+| routes | explicit direct TCP and UDP through dispatcher policy |
 
-`src/core/version.hpp` holds the current development `kVersion` and its
-authenticated `kTransportVersion` alias. AUTH, relay, ABI, and helper IPC
-schema versions remain independent in their owning modules.
+YTP/1 contains no suite negotiation. A second suite cannot be added as a
+fallback; useful reviewed alternatives require a later wire version with an
+explicit negotiation design.
 
-### `src/outbound/`: neutral outbound transport
+## Source and target boundaries
 
-Owned by `yume_outbound_transport` and used by both client and server paths.
-It contains the transport core, stream, tunnel, socket-protection callback,
-SOCKS5 outbound dialer, timeout/cancellation I/O, forwarding adapter, bounded
-UDP queue, and AUTH carrier establishment. Compatibility headers retain older
-client include spellings. CLI-only fatal errors, option wording, and
-interactive policy remain under `src/client/cli/`.
+The implemented replacement foundation is organized by dependency:
 
-### `src/client/`: CLI client
-
-| Directory | Responsibility |
+| Path | Ownership |
 | --- | --- |
-| `cli/` | Argument parsing, config, connect handshake, commands |
-| `packet/` | Client-side packet-bulk/TUN data plane |
-| `transport/` | Client-owned TLS-helper/pool integration and compatibility headers for neutral outbound types |
-| `proxy/` | Local SOCKS5 runtime plus compatibility headers for neutral forwarding and queue types |
-| `relay/` | Relay runtime, secrets, history |
-| `transfer/` | Share/import/export transfer workflows |
-| `codec/` | Client-side app codec shims (e.g. Monero RPC) |
-| `runtime/` | Local runtime socket for attach/GUI |
+| `src/engine/` | dependency-pure channels, providers, builder, bootstrap, dispatcher, and session state |
+| `src/ytp/` | dependency-pure YTP/1 codecs, domains, and canonical vectors |
+| `src/config/v1/` | strict immutable schema-1 parsing; no secret loading |
+| `src/providers/` | opt-in session-security, memory-BIO TLS 1.3 secure-channel, and direct-route foundations; not a production H2/front-door/endpoint graph |
+| `src/abi/` | experimental exception-contained C ABI handles and blocking timeout scaffold |
+| `tools/` | provisioning and evidence tooling |
 
-Entry: `main_client.cpp` → `client/cli/entry.cpp`.
+Dedicated replacement adapter and CLI targets do not exist yet. The runnable
+transport-v2 executables and optional GUI remain in their existing source graph
+until those replacement layers reach parity.
 
-### `src/server/`: daemon
-
-| Directory | Responsibility |
-| --- | --- |
-| `cli/` | Args, config load, keys, cluster, startup checks |
-| `session/` | Per-client sessions: auth, carrier, codecs, streams |
-| `runtime/` | `Manager`, `RuntimeController`, identity admission, optional weighted egress |
-| `federation/` | Cluster peer links, plus the topology/status document a cluster viewer reads and its text layout |
-| `filter/` | IP / robots filtering, optional GeoIP |
-| `packet/` | TUN egress for packet-bulk mode |
-| `auth/` | Composite Ed25519 + ML-DSA-87 verification plus immutable regular/operator/admin snapshots |
-| `config/` | Server configuration types and defaults |
-| `host/` | Loopback cover backend, routes, and host-controller plumbing |
-
-Entry: `main_server.cpp` → `server/cli/entry.cpp`.
-
-### `src/facade/`: embedder API
-
-Static library over core + client + server. Used by `yume-gui` and
-automation. No Dear ImGui dependency. Its chat-history result preserves
-messages, storage availability, truncation, and the storage diagnostic as
-typed state; transport/envelope/schema failures remain a separate error path.
-
-### `src/gui/`: desktop UI
-
-Dear ImGui + GLFW + ImPlot. Pages call facade sessions; does not
-duplicate the transport stack.
-
-### `website/`: static publication site
-
-The Jekyll/GitHub Pages site presents project documentation, status, and
-release metadata. It does not link YUME libraries, control a local runtime, or
-own protocol behavior. The sync script publishes tracked `docs/*.md`,
-`docs/protocol/*.md`, `docs/release/*.md`, and `CONTRIBUTING.md` into ignored
-generated pages. CI checks that generated tree before building it.
-`website/docs/index.html` remains a hand-written landing page. Website
-contribution and validation rules live in `CONTRIBUTING.md`.
-
-### Other
-
-| Path | Role |
-| --- | --- |
-| `src/abi/` | `libyume` C ABI (`yume_c.cpp`) |
-| `src/config/` | Shared ratchet/security profile JSON parsing |
-| `src/platform/` | Per-OS executable path helpers |
-| `src/tools/` | `yume-net-map`, selftest benches (optional targets) |
-
-Transport identities are schema-driven rather than selected by browser-specific
-branches in consumers. `config/transport_profiles.json` registers immutable
-capture fixtures, `scripts/generate_transport_profiles.py` produces the checked-in
-C++ and Go helper registries, and TLS/HTTP/H2 code reads
-`cover_profile::active()`. See
-`docs/TRANSPORT_PROFILES.md` for the extension and evidence contract.
-
-## Dependency direction
-
-Edits should respect this import order:
+The foundational CMake targets enforce the following dependency rule:
 
 ```text
-secure/core + reduced transport
-                 ↓
-       outbound transport
-           ↙           ↘
-      client           server
-           ↘           ↙
-              facade  →  gui / ABI
+yume_engine + yume_ytp1 +     no OpenSSL, nghttp2, socket, JSON, CLI,
+yume_session_bootstrap        filesystem, or GUI dependency
+yume_config_v1                nlohmann JSON only
+native providers              engine/YTP plus their explicit system libraries
+replacement ABI               frozen instance graph; no private-header API
+future adapters/executables   candidate ABI or explicit application layer
 ```
 
-`core` must not include headers from `client/`, `server/`, `facade/`, or
-`gui/`. BaseFWX (`basefwx/`) owns the default one-shot cryptographic
-primitives when `YUME_USE_BASEFWX=ON`, including the explicit-nonce
-ChaCha20-Poly1305 operation used by protected relay history. YUME owns its wire
-formats, transport behavior, AUTH, and ratchet policy. A YUME-local
-compatibility/security helper still contains SHA-256 identity hashing plus
-residual X25519/HKDF/HMAC/RNG operations and the BaseFWX-disabled history
-fallback. Live callers must not expand that raw-OpenSSL surface. The
-required BaseFWX revision is recorded in `config/dependencies.json`; its public
-C++ contract and regression tests own the explicit-nonce primitive. Dead or
-unused helpers should be removed with reference checks and focused tests, not
-preserved as a second public status register.
+BaseFWX owns reusable cryptographic primitives and secret-wiping containers.
+YUME owns YTP authentication, domains, transcript construction, key schedules,
+ratchet semantics, admission, and authorization. `basefwx/` is a separate
+ignored checkout pinned by `config/dependencies.json`.
+
+## Public ABI boundary
+
+The explicitly enabled `libyume.so.1` candidate exposes opaque runtime, config,
+endpoint, stream, and packet handles. It is not a frozen installed product ABI.
+The surface is role-neutral and has no JSON operation bus. A runtime owns
+bounded executors and callback delivery; an immutable config owns validated
+values; an endpoint owns a frozen provider graph; stream and packet handles own
+application I/O lifetimes.
+
+The ABI contract defines thread safety, one-reader/one-writer rules, callback
+re-entry, cancellation, timeouts, shutdown, destruction, peer identity, and
+handle-scoped diagnostics. No exception or private C++ type crosses it.
+
+## Ingress and evidence boundary
+
+Captured browser geometry lives in `config/transport_profiles.json` and
+immutable fixtures. It may change independently of YTP/1. Profile qualification
+requires exact TLS/H2 semantic gates, active-probe cover behavior, immutable
+captures, and held-out classifier evidence for the named environment. A
+fingerprint string or successful request is not whole-session equivalence.
 
 ## Trust boundary
 
-The standard topology is single hop: `application -> yume -> yumed -> target`.
-The daemon is the terminating cryptographic peer and proxy exit, not a blind
-onion relay. It authenticates the client's composite public identity from a
-signed transcript, derives the hybrid session roots, decrypts YUME records, and
-opens target sockets. Application-layer TLS can remain end-to-end through that
-proxy. See `docs/THREAT_MODEL.md` for identity, forward-secrecy, channel-binding,
-and malicious-server limits.
+The default topology is single hop:
 
-## Documentation and diagrams
+```text
+application -> local adapter -> YTP session -> yumed -> authorized target
+```
 
-Architecture prose lives under `docs/`. Routing diagrams use
-`docs/diagrams/*.spec` rendered by `scripts/draw_pipeline.py`; see
-`scripts/regen_diagrams.sh` to regenerate ASCII for paste into README or
-man pages. `scripts/check_ascii_diagrams.py` enforces fixed box widths.
+The server terminates YTP cryptography and is the explicit exit. It is not an
+onion relay. Federation, transit, directory, reverse administration, command
+execution, chat/file relay, and host-controller modes are outside the first
+YTP/1 path; their transport-v2 implementations remain separate during the
+transition.
 
-## Related pages
-
-| Topic | Document |
-| --- | --- |
-| Traffic routes | `docs/EXPLAINED.md` |
-| Stealth layers | `docs/STEALTH.md` |
-| Transport profiles | `docs/TRANSPORT_PROFILES.md` |
-| Permissions | `docs/PERMISSIONS.md` |
-| Threat stance | `docs/THREAT_MODEL.md` |
-| Security modes | `docs/SECURITY_MODES.md` |
-| App codecs | `docs/APP_CODECS.md` |
-| Packet bulk | `docs/PACKET_NATIVE_BULK.md` |
-| C ABI scope | `docs/ABI.md` |
-| JSON control API | `docs/CONTROL_API.md` |
-| Federation transit (design only) | `docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md` |
-| Current implementation boundary | `docs/IMPLEMENTATION_STATUS.md` |
-| Contributor entry point | `AGENTS.md`, `CONTRIBUTING.md`, `docs/README.md` |
+See [YTP/1](protocol/YTP_1.md), [C ABI](ABI.md), and the
+[threat model](THREAT_MODEL.md) for the normative boundaries.

@@ -64,8 +64,6 @@ struct ConnectedSessionOptions {
     bool have_inner_caps{false};
     bool server_inner_dual{false};
     bool server_inner_active{false};
-    std::optional<inner::KdfParams> inner_kdf;
-    std::optional<crypto::Bytes> inner_key;
     std::unique_ptr<obfs::H2Carrier> h2_carrier;
     std::shared_ptr<obfs::OuterCarrierTrace> outer_carrier_trace;
     crypto::Bytes prefetched_carrier_bytes;

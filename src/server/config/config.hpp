@@ -40,7 +40,6 @@ struct ServerConfig {
     int threads{0};
     bool obfuscation{true};
     bool inner_crypto{true};
-    bool inner_heavy{true};
     bool inner_dual{false};
     bool inner_required{false};
     // Concurrent directional epoch offers accepted from one session, and the

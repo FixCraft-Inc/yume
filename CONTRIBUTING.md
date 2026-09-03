@@ -43,13 +43,34 @@ ctest --test-dir build --output-on-failure
 git diff --check
 ```
 
-Use isolated build directories for shared-ABI, client-only, sanitizer, static,
-or GUI configurations. Do not reuse evidence from an older source hash as if it
+Use isolated build directories for the experimental shared ABI,
+transport-v2/client-only, YTP/1-foundation-only, sanitizer, static, or GUI
+configurations. Do not reuse evidence from an older source hash as if it
 qualified the current candidate. Long remote matrices should run detached and
 write a final machine-readable summary; polling them repeatedly is not useful
 evidence.
 
 ## C++, API, and naming
+
+- `.clang-format` at the repository root describes the style already in the
+  tree. It was tuned against clang-format 19 by measuring the diff over a
+  sample spanning every layer, not chosen from taste.
+- **Do not run it over whole files or the tree.** That would rewrite about
+  51,000 lines across 547 files and bury real history under reflowed
+  whitespace. Format only what you touch:
+
+  ```bash
+  git-clang-format --diff     # preview what your change would reformat
+  git-clang-format            # apply it to the staged change
+  ```
+
+- `.clang-tidy` carries a curated check set with a written reason for every
+  exclusion. It is not a gate, and it is not exhaustive on purpose: enabling
+  everything produced noise nobody would act on. Run it on files you touch:
+
+  ```bash
+  clang-tidy -p <build-dir> src/path/to/file.cpp
+  ```
 
 - For new or meaningfully touched YUME code, use `PascalCase` for types, enums,
   and enum values; `snake_case` for functions and methods; `kPascalCase` for
@@ -65,27 +86,31 @@ evidence.
   exceptions; none may escape. Use error-code overloads for cancellation/close
   paths that cannot report failure.
 - Validate externally supplied JSON roots and field types before dispatch.
-- Operation-level JSON failures use `{ "ok": false, "error": "..." }`.
-  ABI/transport/lifecycle failures use the typed status enum; never parse human
-  error strings to recover a status.
-- The product version, transport v2, AUTH v2, relay v2, ABI v1, and helper IPC
-  v1 are different identifiers. Preserve versioned cryptographic domains and
-  wire labels unless a reviewed protocol migration intentionally changes them.
+- Transport-v2 operation JSON uses `{ "ok": false, "error": "..." }`.
+  Replacement ABI, transport, and lifecycle failures use typed statuses; never
+  parse human error strings to recover a status.
+- Product version, transport v2, AUTH v2, relay v2, YTP/1, config schema 1,
+  the replacement ABI candidate, and helper IPC v1 are different identifiers.
+  Preserve existing versioned cryptographic domains and wire labels; add new
+  domains for intentional protocol migrations.
 
-## Public ABI changes
+## Experimental replacement ABI changes
 
-The stable native boundary is C ABI v1. For every additive symbol, update and
-test all of:
+The role-neutral ABI v1 surface is an experimental build-tree candidate. It is
+not the stable installed boundary and may break before its endpoint, stream,
+packet, and clean-prefix gates pass. Every change still updates and tests all
+of:
 
 1. `include/yume/yume.h` declarations and behavioral comments;
 2. `src/abi/yume.map` export control;
-3. `debian/libyume1.symbols` packaging metadata;
-4. full and client-only implementations;
+3. candidate `debian/libyume1.symbols` metadata without emitting an ABI package;
+4. the exception-contained implementation;
 5. strict C/C++ ABI tests, buffer sizing, lifecycle, and error paths;
-6. `docs/ABI.md` and, for operation JSON, `docs/CONTROL_API.md`.
+6. `docs/ABI.md`.
 
-Changing a function's existing parameters, ownership, return convention, or
-payload meaning is not additive even while the product is pre-1.0.
+Record ownership and behavioral breaks explicitly even while compatibility is
+unfrozen. The transport-v2 JSON control API remains a separate current-runtime
+contract in `docs/CONTROL_API.md`; do not route it through the replacement ABI.
 
 ## Documentation and review
 

@@ -1,5 +1,9 @@
 # YUME transport-v2 federation transit design
 
+> **Design-only transport-v2 record:** direct single-hop federation exists in
+> the runnable 0.2 product. Multi-hop transit described here is not implemented
+> and is not a YTP/1 capability claim.
+
 Status: **design only. Transit is not implemented.** Nothing in this document
 is a supported command, wire contract, compatibility promise, or privacy claim.
 Current federation is direct and single-hop:

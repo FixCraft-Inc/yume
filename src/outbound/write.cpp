@@ -170,8 +170,7 @@ TransportCore::DataWriteAdmission TransportCore::wait_send_data(
             if (!stopped && bulk_capacity_available(
                                 data.size(), outstanding_bulk_frames_,
                                 outstanding_bulk_bytes_)) {
-                uint16_t flags = inner_key_.has_value()
-                    ? protocol::kFlagInnerEncrypted : 0;
+                const uint16_t flags = 0;
                 if (!data.empty()) {
                     activity_handler = activity_handler_;
                 }
@@ -245,13 +244,11 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(
     , diagnostics::SampleAccumulator* seal_timing
 #endif
 ) {
-    // Avoid copying the payload on the no-inner path: encode_frame and
-    // encrypt_inner_payload both take const&, so the source frame's payload
-    // can be passed through directly. Only the inner-encrypted path needs a
-    // separate buffer to hold the AEAD output.
+    // Avoid copying the payload: encode_frame takes const&, so an unsealed
+    // frame's payload passes through directly. Only the ratchet path needs a
+    // separate buffer to hold its sealed output.
     protocol::Frame protected_frame;
     const protocol::Frame* effective_frame = &frame;
-    bool use_legacy_inner = false;
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
@@ -267,17 +264,9 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(
             if (seal_timing) seal_timing->record(seal_timer);
 #endif
             effective_frame = &protected_frame;
-        } else if (!ratchet_) {
-            use_legacy_inner =
-                (frame.header.flags & protocol::kFlagInnerEncrypted) != 0;
         }
     }
     const Bytes* eff_payload = &effective_frame->payload;
-    Bytes encrypted;
-    if (use_legacy_inner) {
-        encrypted = encrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload);
-        eff_payload = &encrypted;
-    }
     std::uint16_t pad_multiple = 0;
     {
         std::lock_guard<std::mutex> lock(state_mu_);

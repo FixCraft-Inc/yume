@@ -560,6 +560,7 @@ public:
 
     bool priming_complete() const noexcept { return priming_complete_; }
     bool peer_extended_connect_enabled() const noexcept { return peer_connect_enabled_; }
+    H2CarrierRole role() const noexcept { return role_; }
     bool carrier_active() const noexcept { return carrier_active_; }
     bool carrier_closed() const noexcept { return carrier_closed_; }
     std::int32_t carrier_stream_id() const noexcept { return carrier_stream_id_; }
@@ -2157,6 +2158,7 @@ bool H2Carrier::priming_complete() const noexcept { return impl_->priming_comple
 bool H2Carrier::peer_extended_connect_enabled() const noexcept {
     return impl_->peer_extended_connect_enabled();
 }
+H2CarrierRole H2Carrier::role() const noexcept { return impl_->role(); }
 bool H2Carrier::carrier_active() const noexcept { return impl_->carrier_active(); }
 bool H2Carrier::carrier_closed() const noexcept { return impl_->carrier_closed(); }
 std::int32_t H2Carrier::carrier_stream_id() const noexcept {

@@ -11,7 +11,7 @@ connect -> stop -> reconnect -> stop lifecycle against it and exit 0.
 A GUI that compiles, renders and refuses bad input still proves nothing about
 whether it can talk to a server. This is that gate.
 
-The server recipe deliberately mirrors ``test_yume_abi_stream.py``, which is
+The server recipe deliberately mirrors the daemon fixtures used elsewhere, which is
 the already-qualified way to bring a dev6 server up in-tree.
 """
 

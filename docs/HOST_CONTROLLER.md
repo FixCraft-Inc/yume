@@ -1,5 +1,9 @@
 # YUME host controller
 
+> **Transport-v2 surface:** this integration belongs to the runnable 0.2
+> product. It is not part of the experimental YTP/1 ABI and will be reviewed as
+> an application consumer only after that ABI has a live data path.
+
 `yumed` can act as the single WAN-facing host on a machine. Backends bind
 loopback TCP only; `yumed` terminates TLS and dials inward. This
 avoids double-listen stacks (`node:443` plus `yume:443`).
@@ -116,7 +120,7 @@ Do not bind backends on `0.0.0.0`. Prefer:
 
 1. App codecs provide typed protocol shims (`monero-rpc-v1`, future mail codecs).
 2. `service.v1` provides in-process registration through
-   `yume_server_register_service`.
+   `yume_endpoint_register_service`.
 3. Loopback TCP uses `loopback://127.0.0.1:PORT` host-controller routes.
 
 See `docs/APP_CODECS.md` for the Monero pattern. Host-controller route

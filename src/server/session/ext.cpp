@@ -334,10 +334,6 @@ void Session::flush_packet_downstream() {
         return;
     }
     std::uint16_t flags = 0;
-    if (inner_key_.has_value()) {
-        payload = encrypt_inner_payload(protocol::DATA, stream.stream_id, payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
     stream.downstream_batches += 1;
     protocol::Frame frame{{static_cast<std::uint32_t>(payload.size()), protocol::DATA, stream.stream_id, flags}, payload};
     queue_frame_on_strand(frame);

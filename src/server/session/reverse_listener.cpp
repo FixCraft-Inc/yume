@@ -14,21 +14,6 @@ using namespace detail;
 
 void Session::handle_rlisten(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() &&
-        (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        crypto::Bytes decrypted;
-        if (decrypt_inner_payload(
-                frame.header.type,
-                frame.header.stream_id,
-                frame.payload,
-                &decrypted)) {
-            payload = std::move(decrypted);
-        } else {
-            send_open_reply(
-                frame.header.stream_id, false, "RLISTEN decrypt failed");
-            return;
-        }
-    }
     std::string payload_str(payload.begin(), payload.end());
     int listen_port = 0;
     std::string bind_host;
@@ -306,11 +291,6 @@ void Session::on_reverse_accept(
     std::vector<uint8_t> notify_payload(
         payload_text.begin(), payload_text.end());
     uint16_t flags = 0;
-    if (inner_key_.has_value()) {
-        notify_payload = encrypt_inner_payload(
-            protocol::ROPEN, stream_id, notify_payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
     protocol::Frame notify{
         {static_cast<uint32_t>(notify_payload.size()),
          protocol::ROPEN, stream_id, flags},

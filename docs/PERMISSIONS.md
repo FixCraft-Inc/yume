@@ -1,5 +1,9 @@
 # YUME permission model
 
+> **Runnable transport-v2 path:** startup checks and the installed daemon
+> reference this permission model. The schema-1 design is preserved
+> separately in the [YTP/1 authorization draft](development/ytp1/PERMISSIONS.md).
+
 YUME splits authentication from authorization and uses three physical identity
 stores:
 
@@ -47,6 +51,9 @@ enable command execution in the current development tree. Direct client-to-serve
 and `--allow-exec` / persisted `allow_exec=true` fail clearly on the client.
 This fail-closed state remains until child processes have portable bounded
 cancellation and join semantics.
+
+Administrative access requires an enabled build feature, explicit server
+permission, and a distinct identity in `admin_keys`.
 
 ## File layout
 
@@ -185,7 +192,7 @@ abuse.
 | `allow_local_ip` | deny | Open TCP/UDP streams to RFC1918 / loopback addresses through the server | `--allow-local-ip` and `YUME_FEATURE_LAN_BRIDGE=ON` |
 | `control_full` | invalid in metadata | Open TCP/UDP streams to *any* address only after a distinct admin factor | `--control-full`, `YUME_FEATURE_FULL_CONTROL=ON`, and verified admin identity |
 | `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
-| `allow_services` | deny | Use native embed named-service streams, for example `["example-service-v1"]` | server config `allow_services` plus `yume_server_register_service` |
+| `allow_services` | deny | Use native embed named-service streams, for example `["example-service-v1"]` | server config `allow_services` plus `yume_endpoint_register_service` |
 | `allow_monero_rpc` | deny | Compatibility alias for the built-in Monero RPC application codec against the server's loopback monerod backend | `--codec-allow monero-rpc` |
 | `allow_inbound_admin` | invalid in metadata | Runtime opt-in for this admin-authenticated target | verified admin identity plus client opt-in |
 | `allow_outbound_admin` | invalid in metadata | Runtime opt-in for this admin-authenticated operator caller | `operator_keys`, verified admin identity, and client opt-in |
@@ -267,7 +274,7 @@ Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
 - **Reload after edits.** Regular, operator, admin, and policy stores are immutable runtime snapshots. Use the authenticated reload operation where available, or `systemctl restart yumed`; a failed reload preserves the previous complete snapshot.
 - **Application codecs.** Codec permissions are intentionally narrower than `allow_local_ip`: they only enable named protocol-aware codecs listed in `allow_codecs`. The Monero built-in validates allowed wallet RPC paths/methods and reconstructs HTTP only to a loopback backend configured by `--monero-rpc-backend`.
-- **Native service streams.** `allow_services` is for embedded C ABI users and is intentionally separate from `allow_local_ip`, `control_full`, `allow_codecs`, and exec. For a normally authorized key, a service stream opens only when the server config lists the service, the key metadata lists the same service, and the embedding process registered it with `yume_server_register_service`. The separately configured preauth tier follows the narrower rules above.
+- **Native service streams.** `allow_services` is for embedded C ABI users and is intentionally separate from `allow_local_ip`, `control_full`, `allow_codecs`, and exec. For a normally authorized key, a service stream opens only when the server config lists the service, the key metadata lists the same service, and the embedding process registered it with `yume_endpoint_register_service`. The separately configured preauth tier follows the narrower rules above.
 - **Revoke a key.** Remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
 - **Audit.** Startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
 - **CI/scripted setup.** Use `yumed --keys-list` for composite fingerprints; a

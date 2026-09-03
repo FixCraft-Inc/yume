@@ -1,5 +1,13 @@
 # YUME stealth transport
 
+Status: transport-profile and evidence analysis for the runnable 0.2 runtime.
+The YTP/1 foundation does not yet wire the native TLS 1.3 secure
+channel, HTTP/2 front door or carrier, replay-protected admission, or
+production YTP/1 security provider. See the current
+[implementation status](IMPLEMENTATION_STATUS.md). Descriptions below of live
+carrier behavior apply to the transport-v2 product and remain evidence inputs,
+not claims that the replacement runtime works.
+
 YUME keeps its admitted tunnel inside a TLS 1.3, HTTP/2, and WebSocket
 connection. The same public listener sends ordinary requests to a separate
 cover site on loopback. This makes the session less like a proprietary tunnel
@@ -183,7 +191,9 @@ process memory have different consequences. Recovery requires fresh
 uncompromised contributions. It is not correct to say that every key becomes
 useless after a fixed number of milliseconds.
 
-The normative record and ratchet rules are in
-[the transport wire specification](protocol/YUME_2_0_WIRE.md). The
-[implementation status](IMPLEMENTATION_STATUS.md) records the current release
-and evidence boundary.
+The archived [transport-v2 wire contract](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/protocol/YUME_2_0_WIRE.md)
+records the runnable product's record and ratchet formulas. The
+[YTP/1 kernel contract](protocol/YTP_1.md) records the replacement's canonical
+encodings, fixed security constants, and exact unfinished cryptographic/runtime
+boundary. The [implementation status](IMPLEMENTATION_STATUS.md) records the
+current release and evidence boundary.

@@ -1,5 +1,9 @@
 # YUME application codecs
 
+> **Transport-v2 surface:** this document describes codecs retained by the
+> runnable 0.2 product. They are not built into YTP/1; a future application may
+> reintroduce a useful codec as an ordinary named service.
+
 Application codecs are protocol-aware local service shims. They are not raw TCP
 forwards and do not grant LAN/private-IP bridging.
 

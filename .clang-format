@@ -1,0 +1,26 @@
+# Tuned against clang-format 19 to match the code already in this tree, not to
+# impose a new house style. Measured over a 40-file sample spanning every
+# layer: plain Google differs by ~16,700 lines, this config by ~2,960.
+#
+# The tree is deliberately NOT reformatted. Measured: applying this wholesale
+# would rewrite about 51,000 lines across 547 files and destroy the history of
+# code nobody is changing.
+# Format the lines you touch instead:
+#
+#     git-clang-format --diff        # preview
+#     git-clang-format               # apply to staged changes
+#
+# See CONTRIBUTING.md.
+BasedOnStyle: Google
+IndentWidth: 4
+ColumnLimit: 80
+PointerAlignment: Left
+DerivePointerAlignment: false
+AccessModifierOffset: -4
+NamespaceIndentation: None
+AllowShortFunctionsOnASingleLine: Inline
+
+# Include grouping here is meaningful: public header first, then standard
+# library, then third party, then first party. Re-sorting scrambles it.
+IncludeBlocks: Preserve
+SortIncludes: Never

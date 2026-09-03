@@ -214,8 +214,9 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             // The admin store must be reachable from a config file, not only
             // from --admin-keys. Without this the dual-key requirement is
             // unreachable for every config-driven deployment: the key is
-            // written by tools/yume_setup.py and was silently ignored, so the
-            // second factor could never be verified. CLI wins, as above.
+            // written by tools/yume_setup_transport_v2.py and was silently
+            // ignored, so the second factor could never be verified. CLI
+            // wins, as above.
             if (json.contains("admin_keys") && cfg.admin_keys.empty()) {
                 cfg.admin_keys = resolve_cfg_path(json["admin_keys"].get<std::string>());
             }
@@ -233,9 +234,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             }
             if (json.contains("inner_required") && !overrides.inner_required) {
                 cfg.inner_required = json["inner_required"].get<bool>();
-            }
-            if (json.contains("inner_heavy")) {
-                cfg.inner_heavy = json["inner_heavy"].get<bool>();
             }
             if (json.contains("pq_auto_generate") && !overrides.pq_auto_generate) {
                 cfg.pq_auto_generate = json["pq_auto_generate"].get<bool>();

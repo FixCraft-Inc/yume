@@ -762,7 +762,6 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         std::string threads = prompt("threads", std::to_string(cfg.threads));
         std::string obfs = prompt("obfuscation (true/false)", cfg.obfuscation ? "true" : "false");
         std::string inner = prompt("inner_crypto (true/false)", cfg.inner_crypto ? "true" : "false");
-        std::string inner_heavy = prompt("inner_heavy (true/false)", cfg.inner_heavy ? "true" : "false");
         std::string inner_dual = prompt("inner_dual (true/false)", cfg.inner_dual ? "true" : "false");
         std::string inner_required = prompt("inner_required (true/false)", cfg.inner_required ? "true" : "false");
         std::string pq = prompt("pq_private_key", cfg.pq_private_key);
@@ -819,8 +818,6 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
             json["threads"] = require_int("threads", threads);
             json["obfuscation"] = require_bool("obfuscation", obfs);
             json["inner_crypto"] = require_bool("inner_crypto", inner);
-            json["inner_heavy"] =
-                require_bool("inner_heavy", inner_heavy);
             json["inner_dual"] = require_bool("inner_dual", inner_dual);
             json["inner_required"] =
                 require_bool("inner_required", inner_required);

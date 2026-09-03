@@ -1,5 +1,10 @@
 # YUME quick start
 
+> **Runnable transport-v2 path:** these commands drive the default-built
+> `yume` and `yumed` product. The separate
+> [YTP/1 foundation quick start](development/ytp1/QUICKSTART.md) uses
+> `yume-setup-ytp1` / `yume-doctor-ytp1` and does not yet create a tunnel.
+
 This starts the focused Linux desktop client/server slice on one machine. It
 uses the real HTTP/2 carrier, mandatory hybrid ratchet, and a separate Node.js
 cover bound to loopback.
@@ -31,7 +36,7 @@ produces the fastest executables for the current CPU but they are not portable;
 `--timing` hooks. The build produces `build/bin/yume` and
 `build/bin/yumed`. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
 
-## One-command server and device kit
+## One-command server and client kit
 
 After building, install the binaries/helpers or run the helper directly from
 the clone:
@@ -50,7 +55,7 @@ The helper uses the operating system CSPRNG for both 256-bit secret files,
 generates browser-compatible ECDSA TLS certificates, the delegated operator
 certificate key, and composite Ed25519 + ML-DSA-87 client identities, writes
 owner-only configs, and
-prints the exact server and device paths. It never prints secret values. For a
+prints the exact server and client paths. It never prints secret values. For a
 real deployment, supply an existing operator CA with `--ca-key` and
 `--ca-cert`; otherwise the generated CA is a test/bootstrap CA whose private
 key lives under `offline-ca/` and should be moved off-server.

@@ -1,5 +1,10 @@
 # YUME benchmarks
 
+> **Runnable transport-v2 path:** these checks and evidence rules qualify the
+> current product. Replacement engine, YTP/1, schema-1, and ABI gates are kept
+> in the [YTP/1 verification draft](development/ytp1/SELFTEST.md); passing
+> foundation tests does not qualify the tunnel.
+
 Native CTest executables keep `assert()` enabled even in Release and
 RelWithDebInfo builds. A test configuration must not report success merely
 because CMake defined `NDEBUG` and compiled its checks away.
@@ -125,14 +130,16 @@ actually crosses the boundary being claimed:
 | Deployed tunnel core | `yume --bench` | DATA, ratchet, H2, WebSocket, TLS, network, server |
 | SOCKS end to end | `yume --full-bench --configs yume-v2` | Actual SOCKS socket and target TCP socket on loopback |
 | Custom tunnel maximum | `yume --bench --bench-chunk-kib 256` | Same core with non-production DATA geometry |
-| Packet C ABI | `yume-abi-tun` plus `iperf3` through a configured server TUN | Public ABI copies, packet batching, tunnel, and TUN egress |
+| Packet adapter | `yume --packet-tun` plus `iperf3` through a configured server TUN | In-process packet adapter, packet batching, tunnel, and TUN egress |
 
 The endpoint benchmark deliberately records `adapter=authenticated-stream-core`
 and lists SOCKS, target TCP, and packet ABI as exclusions. The packet codec
-rows in `--full-bench --dev` are component ceilings, not packet-ABI network
-throughput. A packet result is publishable only after a live
-`yume-abi-tun`/`iperf3` test uses the public `yume_packet_*` symbols and the
-real `packet-bulk-v1`/TUN path; see `PACKET_NATIVE_BULK.md`.
+rows in `--full-bench --dev` are component ceilings, not packet network
+throughput. A packet result is publishable only after a live `iperf3` test
+crosses the real `packet-bulk-v1`/TUN path; see `PACKET_NATIVE_BULK.md`. No
+packet **C ABI** result can be produced from this tree: the 0.2 ABI packet
+handle and its `yume-abi-tun` adapter are gone, and the replacement ABI has no
+live packet channel yet.
 
 Security layers are not benchmark toggles in YUME transport v2. The hybrid
 ML-KEM-1024/X25519/PSK ratchet, AES-256-GCM, TLS 1.3, H2, and WebSocket carrier

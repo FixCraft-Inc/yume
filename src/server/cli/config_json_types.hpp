@@ -86,7 +86,6 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
     }
     if (!require_all(
             {"obfuscation", "inner_crypto", "inner_dual", "inner_required",
-             "inner_heavy", "pq_auto_generate", "allow_embedded_master",
              "allow_exec", "allow_local_ip", "control_full",
              "allow_monero_rpc_codec", "allow_monero_rpc", "real_http",
              "robots_deny", "benchmark_enable", "boring", "anonym",

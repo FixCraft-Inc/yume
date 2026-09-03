@@ -1,11 +1,23 @@
 # Filtering, robots, and self-DPI
 
+> **Transport-v2 surface:** this document records probe, cover, and diagnostic
+> behavior in the runnable 0.2 product. Its evidence does not automatically
+> qualify the unwired YTP/1 front door.
+
 ## Stealth boundary
 
 `--robots-deny`, IP filtering, and self-DPI do not change the TLS profile,
 ALPN, HTTP/2 carrier preface, obfs token, or YUME frame format. Robots is a
 normal HTTP-facade response for `GET`/`HEAD /robots.txt`; packet and stream
 traffic still rides inside the existing encrypted YUME `DATA` frames.
+
+### The default cover page is a fingerprint
+
+Configure `real_root`, `real_index_path`, or `real_backend`. Without one of
+them the daemon serves a fixed built-in redirect stub, so every default
+deployment answers an active probe with byte-identical HTML. That is a global
+identifier for YUME and defeats the cover path entirely. The daemon warns about
+this at startup; treat the warning as a deployment blocker, not advice.
 
 ## Server filters
 

@@ -114,7 +114,10 @@ def validate_published_markdown() -> None:
 
 def validate_product_version() -> None:
     source_text = (REPO_ROOT / "src" / "core" / "version.hpp").read_text(encoding="utf-8")
-    source_match = re.search(r'constexpr const char kVersion\[\] = "([^"]+)";', source_text)
+    source_match = re.search(
+        r'(?:inline\s+)?constexpr(?:\s+const)?\s+char\s+kVersion\[\]\s*=\s*"([^"]+)";',
+        source_text,
+    )
     config_text = SITE_CONFIG_PATH.read_text(encoding="utf-8")
     config_match = re.search(r"^product_version:\s*([^\s#]+)\s*$", config_text, re.MULTILINE)
     if not source_match or not config_match:

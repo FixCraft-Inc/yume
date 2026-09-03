@@ -6,13 +6,13 @@
 
 #include "core/stealth/websocket_codec.hpp"
 
+#include <openssl/rand.h>
+
 #include <algorithm>
 #include <array>
 #include <limits>
 #include <stdexcept>
 #include <utility>
-
-#include "core/security/crypto.hpp"
 
 namespace yume::obfs {
 namespace {
@@ -81,8 +81,11 @@ WebSocketBytes WebSocketCodec::EncodeFrame(std::uint8_t opcode,
 
     std::array<std::uint8_t, 4> masking_key{};
     if (mask) {
-        auto random = crypto::random_bytes(masking_key.size());
-        std::copy(random.begin(), random.end(), masking_key.begin());
+        if (RAND_bytes(masking_key.data(),
+                       static_cast<int>(masking_key.size())) != 1) {
+            throw std::runtime_error(
+                "failed to generate a WebSocket masking key");
+        }
         out.insert(out.end(), masking_key.begin(), masking_key.end());
     }
     for (std::size_t i = 0; i < size; ++i) {

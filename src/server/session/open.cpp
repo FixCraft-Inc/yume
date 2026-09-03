@@ -96,16 +96,6 @@ bool Session::handle_reverse_open_reply(const protocol::Frame& frame) {
 
     bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() &&
-        (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        crypto::Bytes decrypted;
-        if (decrypt_inner_payload(
-                frame.header.type, stream_id, frame.payload, &decrypted)) {
-            payload = std::move(decrypted);
-        } else {
-            ok = false;
-        }
-    }
     if (!ok) {
         std::string reason(payload.begin(), payload.end());
         util::log_warn("reverse open failed: " + reason);
@@ -332,23 +322,6 @@ void Session::handle_open(const protocol::Frame& frame) {
     }
 
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() &&
-        (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        crypto::Bytes decrypted;
-        if (decrypt_inner_payload(
-                frame.header.type, stream_id, frame.payload, &decrypted)) {
-            payload = std::move(decrypted);
-        } else {
-            util::log_warn(
-                "session " + std::to_string(session_id_) +
-                ": OPEN decrypt failed for stream " +
-                std::to_string(stream_id));
-            close_with_reason(
-                "OPEN decrypt failed for stream " +
-                std::to_string(stream_id));
-            return;
-        }
-    }
 
     nlohmann::json open_json;
     try {

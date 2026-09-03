@@ -71,7 +71,6 @@ struct ClientConfig {
     // random delay in [0, ms]. 0 = no delay.
     std::uint32_t obfs_jitter_ms{0};
     bool inner_crypto{true};
-    bool inner_heavy{true};
     // --rekey-window <N>. Concurrent directional epoch offers this client
     // accepts inbound and, capped by the server's advertised depth, uses
     // outbound. One outstanding exchange caps a saturated direction at one

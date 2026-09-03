@@ -89,21 +89,9 @@ std::optional<ServerControlOpen> ParseServerControlOpen(
 void TransportCore::handle_frame(const protocol::Frame& frame,
                                  InboundCredit inbound_credit) {
     const uint8_t stream_id = frame.header.stream_id;
-    Bytes decrypted_payload;
+    // The AUTH v2 ratchet has already opened this frame and cleared its
+    // sealed flag, so the payload here is plaintext.
     const Bytes* payload = &frame.payload;
-    bool inner_encrypted = false;
-    {
-        std::lock_guard<std::mutex> lock(state_mu_);
-        inner_encrypted = inner_key_.has_value() &&
-                          ((frame.header.flags & protocol::kFlagInnerEncrypted) != 0);
-    }
-    if (inner_encrypted) {
-        if (!decrypt_inner_payload(frame.header.type, stream_id, frame.payload, &decrypted_payload)) {
-            request_transport_close("decrypt failed");
-            return;
-        }
-        payload = &decrypted_payload;
-    }
 
     switch (frame.header.type) {
         case protocol::OPEN: {

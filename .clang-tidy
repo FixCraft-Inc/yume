@@ -1,0 +1,39 @@
+# Curated for this codebase, and measured before being written down. Enabling
+# everything produces noise nobody acts on, so each exclusion below has a
+# reason. Verified against clang-tidy 19.
+#
+# Not a gate yet. Run it on files you touch:
+#
+#     clang-tidy -p <build-dir> src/path/to/file.cpp
+#
+# It has already earned its keep: bugprone-exception-escape found a noexcept
+# function in the C ABI that allocates from a caller-sized buffer, which would
+# have terminated an embedder's process on bad_alloc instead of returning
+# YUME_STATUS_RESOURCE_EXHAUSTED.
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  clang-analyzer-security*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-unchecked-optional-access,
+  -bugprone-empty-catch,
+  -cert-err58-cpp,
+  -performance-avoid-endl
+
+# bugprone-unchecked-optional-access: engine::Result exposes .value as a raw
+#   optional and gates it behind ok(), which returns value_.has_value(). The
+#   analyzer cannot follow that indirection and reports every correct use.
+#   Prefer Result::value_if() in new code, which is safe and analyzable.
+# bugprone-empty-catch: teardown paths reached from destructors and noexcept
+#   ABI boundaries have nowhere to report a failure. Those catches are
+#   deliberate and commented individually.
+# bugprone-easily-swappable-parameters: fires on nearly every bounded-buffer
+#   signature in the tree.
+# bugprone-narrowing-conversions: fires throughout the wire encoders, which
+#   narrow deliberately after explicit bounds checks.
+
+HeaderFilterRegex: '^.*/(src|include)/.*'
+WarningsAsErrors: ''

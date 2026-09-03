@@ -239,7 +239,8 @@ ServiceStream::WriteResult ServiceStream::write(
     return result;
 }
 
-bool ServiceStream::shutdown_write(std::string* error) {
+bool ServiceStream::shutdown_write(std::string* error,
+                                   std::uint32_t timeout_ms) {
     CloseCallback cb;
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -249,12 +250,48 @@ bool ServiceStream::shutdown_write(std::string* error) {
         if (local_fin_sent_) {
             return true;
         }
-        local_fin_sent_ = true;
         cb = shutdown_write_cb_;
     }
     if (!cb) {
         if (error) *error = "stream is not connected";
         return false;
+    }
+
+    // Drain first. An accepted write is queued in the transport, not on the
+    // wire, so emitting FIN here without waiting lets the peer observe the
+    // half-close before the final record and drop it.
+    const auto outbound = outbound_state_;
+    {
+        std::unique_lock<std::mutex> lock(outbound->mutex);
+        if (outbound->active_write != 0 && !outbound->closed) {
+            const auto drained = [&outbound] {
+                return outbound->active_write == 0 || outbound->closed;
+            };
+            if (timeout_ms == 0) {
+                if (error) *error = "service write is still in flight";
+                return false;
+            }
+            if (!outbound->cv.wait_for(
+                    lock, std::chrono::milliseconds(timeout_ms), drained)) {
+                if (error) {
+                    *error = "timed out draining writes before write shutdown";
+                }
+                return false;
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (local_closed_) {
+            return true;
+        }
+        // Re-check under the state lock: the drain wait above released it, so
+        // a concurrent shutdown_write may have won the race.
+        if (local_fin_sent_) {
+            return true;
+        }
+        local_fin_sent_ = true;
     }
     cb("write side closed");
     return true;

@@ -1,290 +1,164 @@
-# YUME threat model
+# YUME 0.3 threat model
 
-This page describes the fixed Linux desktop 2.0 slice. Read it with
-`docs/STEALTH.md`, `docs/protocol/YUME_2_0_WIRE.md`, and
-`docs/PERMISSIONS.md`. It does not upgrade Android, federation, admin control,
-or other out-of-scope subsystems to 2.0 status.
+This threat model describes the intended YTP/1 product and explicitly separates
+requirements from current evidence. The authoritative implementation boundary
+is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
-## Trust boundaries
+## Assets and actors
 
-| Actor | Capability and visibility |
+| Actor | Visibility or capability |
 | --- | --- |
-| Path observer | Sees the TLS ClientHello, server certificate metadata, encrypted record sizes, timing, and volume. |
-| Local evidence reader | May obtain an explicitly requested outer-carrier behavior report, but not payloads, secrets, carrier paths, peer addresses, or opaque PING bytes. |
-| Active prober | Can open TLS/H1/H2 requests to the public endpoint. Ordinary GET/HEAD reaches the genuine Node cover path; a failed tunnel admission receives a bounded synthetic cover-style response that is not claimed to be byte-identical to Node. |
-| YUME server operator | Terminates TLS and the inner YUME channel; holds TLS material, admission and inner PSK files, and public-key stores; sees requested targets and decrypted YUME stream bytes unless the application independently encrypts them. |
-| Loopback Node process | Receives bounded ordinary GET/HEAD cover requests only; it must never receive tunnel records, client identities, or YUME secrets. |
-| Client host | Holds both shared secret files and the client's composite private identity (plus a distinct admin identity when configured); compromise exposes local plaintext and live session state. |
-| Target service | Sees the server egress identity, or another configured routing exit. |
+| Path observer | TLS metadata plus encrypted size, timing, direction, and volume |
+| Active prober | Opens arbitrary TLS/HTTP requests and repeats captured admission attempts |
+| Cover backend | Handles bounded ordinary web traffic; must never receive YTP records or secrets |
+| YUME server operator | Terminates TLS/YTP, holds server credentials, authenticates client identities, and sees direct destinations and unprotected application bytes |
+| Client host | Holds one client identity and access PSK and sees local application plaintext |
+| Application peer | Receives an authenticated YUME identity and named service, not proof that either endpoint is uncompromised |
+| Destination | Sees the chosen route provider's egress address and application traffic |
 
-YUME is a stealth transport and relay, not an anonymity system. Additional
-routing changes who sees traffic; it does not remove trust from compromised
-endpoints.
+YUME protects a session to its terminating endpoint. It is not an anonymity
+network, endpoint sandbox, traffic-volume concealment system, or substitute for
+application-layer encryption.
 
-Evidence collection is opt-in and local. It records bounded event metadata and
-sanitized expected header shapes; credentials, cookies, authorization values,
-WebSocket keys, dynamic carrier paths, authorities, origins, peer addresses,
-payload bytes, TLS secrets, and opaque PING bytes are absent or replaced with
-fixed labels. Collection allocation/cap failures do not alter carrier traffic,
-but the output is incomplete and cannot seal a matched arm. Possession of the
-report still exposes timing, stream geometry, frame sizes, and outcome metadata
-and should be treated as private campaign evidence outside Git.
+## Credential boundary
 
-## Mandatory out-of-band secrets
+Each authorized client identity has:
 
-Every client must receive two independent 32-byte random files out of band:
+- a composite Ed25519 + ML-DSA-87 signing identity;
+- a unique 32-byte access PSK;
+- the server's trusted composite public identity;
+- server TLS trust material;
+- server ML-KEM material;
+- admission material appropriate to the front-door design.
 
-- an admission secret used before AUTH;
-- an inner PSK mixed with ML-KEM-1024 and X25519.
+Server setup stores client identity, access PSK, and authorization together.
+A deployment-wide inner PSK is forbidden because compromise would collapse
+every client into one trust principal. Private credentials are referenced by strict
+config paths, created and read with owner-only permissions, and never embedded
+inline or printed by setup/doctor.
 
-This operational cost is intentional. There is no “connect with only the
-server public key,” empty-secret, or 1.x fallback mode. File parsing is strict:
-exactly 64 lowercase hex characters, no newline, and no group/world permissions.
+Endpoint compromise can expose plaintext, long-term credentials, and live
+session state. File permissions and best-effort wiping cannot defend against a
+process that is already compromised, swap/core copies, malicious endpoints, or
+credentials copied before installation.
 
-The secrets serve different purposes and must not be reused. Compromise of one
-does not by itself satisfy admission, composite identity, and the hybrid inner
-handshake, but compromise of the endpoint can expose all live material.
+## Public admission and cover
 
-## Client identity and channel binding
+Admission must be cheap, bounded, keyed, and replay protected before expensive
+YTP authentication work. Missing, malformed, expired, replayed, wrong-key,
+profile-mismatched, or authority-mismatched input stays on genuine website or
+reverse-proxy behavior. It must not expose an AUTH parser, YUME error, retry
+hint, or protocol downgrade to an unauthenticated peer.
 
-The client loads an Ed25519 + ML-DSA-87 composite private identity from its
-local identity path. AUTH sends the corresponding two public PEM blocks and
-both signatures, never the private halves. The
-signature input is domain-separated and contains the complete canonical server
-challenge plus unsigned response: transport version, fresh server challenge,
-server ML-KEM/X25519 public keys, salts, both rekey-window advertisements,
-client X25519 public key, ML-KEM ciphertext, and client public identity. The
-server accepts it only when the signature verifies and the public identity is
-authorized.
+The cover backend receives only bounded ordinary HTTP behavior and is isolated
+from key material and promoted channels. Backend failure still produces
+ordinary cover failure semantics.
 
-The server admits the identity only when both component signatures verify. A
-recorded public identity and signatures do not reveal either private half.
+This limits protocol fingerprint and asymmetric-work exposure; it cannot
+prevent link saturation, kernel-state exhaustion, or all TLS handshake denial
+of service.
 
-Key files are owner-only as a creation and loading invariant. Both halves of a
-generated pair are created exclusively at mode `0600`, so there is no window in
-which the private PEM sits at the process umask, and an existing path is never
-silently replaced. `crypto::load_composite_keypair()` reads the private key
-through a descriptor it has already validated: a regular non-symlink file,
-owned by the effective user, with no group or world permission bits, and within
-a bounded size. A key that fails any of those checks cannot sign an AUTH
-transcript.
-This is enforced on Linux/POSIX; Windows has no equivalent enforcement yet and
-loading fails closed there rather than accepting whatever the ACL allows.
+## Authentication and establishment
 
-Provisioning workflows that generate a client kit on an operator machine still
-expose the private key there before delivery; clients requiring strict origin
-isolation must generate and retain the identity on the client. Client host
-compromise remains outside what file modes can protect.
+YTP/1 requires both composite signature components and both classical and
+post-quantum establishment components. The canonical inputs bind:
 
-The signature input also includes a 32-byte TLS 1.3 exporter that each endpoint
-computes from its own live connection and never transmits. AUTH is therefore
-cryptographically bound to the exact TLS session it ran on, on top of
-certificate and hostname verification and optional leaf pinning/operator proof.
-A malicious terminating node with compatible admission and PSK material can
-still terminate TLS with a client, but forwarding that live exchange to another
-endpoint no longer works: the two connections have independent exporters, so
-the relayed signature does not verify at the far server. The same value is
-folded into the establishment root, so the two sides of a relay would not share
-keys even if the transcript check were bypassed.
+- the new `yume/ytp/1/...` domains and exact suite/security parameters;
+- initiator and responder roles;
+- the complete transcript and live TLS exporter;
+- both authenticated identities and capability manifests;
+- per-identity access PSK;
+- both X25519 public keys and shared contribution;
+- ML-KEM public key, ciphertext, and shared contribution.
 
-This closes live cross-connection forwarding of a client's identity. It does
-not make the terminating node trustworthy. See the endpoint sections below,
-and it is not an independent-audit claim.
+Component stripping, transcript mutation, exporter mismatch, replay, role
+confusion, invalid capabilities, or provider mismatch is terminal. YTP/1 does
+not negotiate a weaker composition or fall back to another provider.
 
-## Carrier admission boundary
+TLS still has its own certificate and implementation assumptions. Composite
+YTP authentication does not make a malicious terminating server trustworthy,
+and “hybrid” does not mean quantum-proof or independently certified.
 
-The HMAC admission token covers the exact transport version and transport
-profile recorded in source, normalized SNI, UTC hour, and a 32-byte nonce. SNI
-and HTTP/2 authority must match. The server accepts only the bounded clock
-window and stores authenticated nonces in a bounded replay cache.
+## Records and rekeying
 
-Missing, malformed, expired, replayed, wrong-secret, version-mismatched, or
-authority-mismatched requests do not cross the admission boundary and never
-receive AUTH. Ordinary GET/HEAD requests use the captured Node cover backend,
-while a rejected extended `CONNECT` receives a bounded synthetic 404. That
-response differs from the reference Node server's 405 response and remains an
-active-probe residual. A 1.x client receives cover behavior, not a downgrade
-offer or plaintext YUME diagnostic.
+Each direction has separate root and epoch state. A record token binds epoch
+and monotonically increasing sequence into the YTP/1 AAD; a derived
+AES-256-GCM key is used once. Replays, gaps, wrong direction/epoch, metadata
+mutation, data after close, and counter exhaustion fail closed.
 
-After admission, the server verifies both the Ed25519 and ML-DSA-87 signatures
-over the complete canonical AUTH transcript before KEM decapsulation or other
-avoidable expensive work. Unknown critical fields, duplicates, out-of-order
-fields, trailing bytes, and oversized records fail closed.
+Rekey work and prepared epochs are bounded. New hybrid contributions feed
+directional state, old and temporary secret material uses wipeable RAII storage,
+and cancellation destroys pending work. Races must not admit a record under an
+unconfirmed or reused key.
 
-## Inner channel and blast radius
+Ratcheting is post-compromise-oriented. Recovery depends on later fresh,
+uncompromised contributions, correct erasure, and the adversary losing endpoint
+access. It does not retroactively protect plaintext or keys retained by a
+malicious endpoint, and the exact recovery claim remains gated on external
+review and evidence.
 
-An accepted connection combines ephemeral ML-KEM-1024, ephemeral X25519, and
-the mandatory high-entropy PSK with salted HKDF. Argon2 is intentionally absent:
-it adds no brute-force resistance to a uniform 256-bit secret and would create a
-memory/CPU denial-of-service surface.
+## Authorization and egress
 
-Each direction has independent root, chain, epoch, and sequence state. Every
-encrypted frame derives one AES-256-GCM key, uses it once, and erases it. AAD
-binds a versioned domain string, the exact transport profile, direction, epoch,
-sequence, frame type, stream ID, and flags. Replays, gaps, old epochs, altered
-metadata, and counter wrap are fatal.
+Authenticated capabilities are availability statements, not permissions.
+Every OPEN is checked against authenticated identity, exact service and kind,
+strict destination encoding, per-service policy, and current resource limits.
+Sharing a name across stream and packet kinds does not merge their policies;
+the `(name, kind)` pair remains the authorization key.
 
-Before another application frame would cross the authenticated ratchet policy's
-byte/frame budget, or its sender-active time budget expires, that direction
-performs a fresh ML-KEM-1024 + X25519 hybrid rekey. Extreme remains the default
-at 256 KiB, 512 frames, and 500 ms. Normal, Soft, and bounded Ultimate policies
-deliberately widen the active-epoch compromise budget; algorithms and one-use
-message keys do not change. See `docs/SECURITY_MODES.md`.
+Only the dispatcher can construct an authorized route request. Direct TCP/UDP
+providers cannot bypass identity or destination policy. DNS resolution and
+socket creation must apply the same policy to every resolved address, prevent
+time-of-check/time-of-use policy changes, and invoke any embedding socket
+protection callback before connect/send.
 
-Receivers independently reject authenticated byte/frame overruns. The active
-time limit is sender-local because delayed delivery is indistinguishable from
-late sealing without a wire timestamp, so that part assumes a conforming
-sender.
+The terminating server sees direct destinations and any content not protected
+by an independent application protocol. A route through another network changes
+who sees the exit but does not hide the request from the YUME server.
 
-Up to the AUTH-negotiated window (1..64, default 8) of strictly contiguous
-future epochs may be authenticated and prepared while application data still
-fits in the current epoch. This overlaps hybrid round trips without extending
-the negotiated epoch's byte, frame, or sender-time boundary. An ACK prepares an epoch; the
-sender enters it only when the current epoch cannot carry the next application
-frame. The negotiated depth bounds outstanding ML-KEM work and retained future
-roots. Data waits in a bounded queue if no prepared epoch is available at a
-hard boundary, and timeout closes the session rather than using an expired
-epoch. The previous receiving chain is retained only until the first
-authenticated next-epoch frame and then erased with retired roots and
-ephemeral/shared material. Ordered H2/TCP prevents an honest sender's old-epoch
-frames from arriving after that commit; any such frame is fatal.
+## Resource containment
 
-The configured time is an honest-sender, active-epoch containment goal, not a
-wall-clock schedule. Byte/frame use may rotate sooner and idle connections do
-not rotate. It does not protect data present in
-live endpoint memory or survive simultaneous compromise of ML-KEM, X25519, the
-PSK, and an endpoint.
+Before allocation or asynchronous scheduling, enforce bounds on frame and AUTH
+size, fields, service names, stream IDs/count, pending opens, per-stream and
+connection credit, queued bytes, control messages, packet size/batch, admission
+replay state, handshake work, and rekey work.
 
-Compromise scope depends on which material is exposed. One erased per-message
-key does not reveal another message key. Exposure of the current directional
-chain/root can expose more traffic, and process-memory compromise can include
-plaintext plus current and prepared state. The negotiated window retains up to
-`w` future roots. Break-in recovery begins only after fresh, uncompromised
-rekey contributions; no blanket “the key is useless after N ms” statement
-applies to all of these cases.
+Credit is returned through single-owner RAII objects so cancellation, discard,
+or handler failure cannot leak flow capacity. Cleanup is idempotent and
+nonthrowing; callback exceptions are contained. Exhaustion produces typed
+local/session failure without creating an unauthenticated public YUME response.
 
-### Forward-secrecy scope
+Bounds reduce supported-process blast radius. They do not guarantee
+availability against an attacker controlling the link or external OS/resource
+limits.
 
-The initial root and each directional epoch transition mix fresh ephemeral
-ML-KEM-1024 and X25519 contributions. The implementation destroys the
-per-exchange private keys after derivation and stores roots/chains/PSK
-derivatives in self-wiping RAII containers. Consequently, capture of past wire
-traffic followed only by later theft of long-term server files is not enough to
-reconstruct historical session keys, assuming ML-KEM, X25519, HKDF, the random
-generator, and erasure behavior hold.
+## Traffic-profile boundary
 
-This is a forward-secrecy design, not an unconditional guarantee. A malicious
-server is already an endpoint and may retain plaintext or key material.
-Compromise during a session exposes the current roots and up to the negotiated
-window of prepared future roots. Best-effort wiping cannot erase allocator,
-library, swap, core-dump, or prior process-memory copies. A stolen server TLS
-private key and still-valid certificate/pin, plus deployment secrets, can also
-enable future server impersonation until those credentials are revoked and
-rotated; client composite authentication does not authenticate the server.
+A qualified profile pins observable TLS/H2 semantics and cover behavior to
+immutable captures and a named environment. Application traffic still exposes
+encrypted timing, direction, size, concurrency, and volume. Traffic geometry
+is not constant-rate padding and no universal classifier result transfers to a
+different browser, server, network, or application mix.
 
-## Single-hop server boundary
+Claims therefore name the exact profile and evidence environment. YUME does
+not claim byte-identical browser behavior, DPI-proof transport, universal
+indistinguishability, or anonymity.
 
-The normal route is `application -> yume -> yumed -> target`. YUME does not
-apply onion routing between several mutually independent relays. The server
-sees the client network address unless another transport such as Tor precedes
-YUME, receives the requested destination, decrypts the YUME transport records,
-and controls the outbound socket.
+## Replacement scope separation
 
-For plaintext application protocols, the server can read, modify, inject,
-drop, delay, or redirect bytes. For HTTPS or another independently
-authenticated end-to-end protocol carried through YUME, the server still sees
-metadata and can disrupt or redirect the connection, but it cannot silently
-read or modify protected application contents without defeating that protocol.
-The ratchet protects the path to the server; it does not sandbox the server from
-the traffic it is asked to proxy.
+Federation/transit, directory, relay applications, reverse forwarding,
+administration relationships, server command execution, host-controller modes,
+product-specific codecs, GUI/facade coupling, helper TLS fallback, runtime
+security modes, and dynamic plugins are not part of the first YTP/1 path. The
+runnable transport-v2 implementations remain a separate explicit lane; they
+must not be silently reachable from the replacement provider graph. Removal is
+a later reviewed milestone after replacement or retirement evidence, not an
+assumed property of the current tree.
 
-## Cover-backend containment
+## Evidence required for release
 
-The configured backend must be a loopback IP literal; DNS names, redirects,
-peer-selected destinations, and non-loopback addresses are rejected. Request
-headers, response headers, bodies, connection time, and response time are
-bounded, and hop-by-hop headers are removed. These controls limit the reverse
-proxy’s server-side request forgery and memory-exhaustion surface.
-
-The public TLS/H2 endpoint remains `yumed`. Node is separately supervised and
-never terminates YUME admission or inner encryption. A failed backend produces
-ordinary cover failure behavior, never a plaintext YUME diagnostic.
-
-## Identity admission and resource containment
-
-Regular user identities and operator/controller identities live in physically
-separate trust stores. A public key present in both stores is rejected.
-Outbound admin requires an individual identity enrolled in the operator store
-and a second, different identity enrolled in `admin_keys`; metadata in either
-visitor store cannot grant admin or full control.
-
-Regular keys are individual by default and therefore admit one authenticated
-session. An administrator can explicitly create a bounded `bulk` key when
-issuing one credential per client is impractical. A bulk credential does not
-identify which human holds it: theft or abuse by any holder affects the whole
-shared identity. YUME limits that blast radius by applying a per-key cap,
-counting each connection separately in the global cap, giving each connection
-its own fair-egress identity, and rejecting privileged bulk policy. It cannot
-distinguish an authorized holder from a thief who possesses the same private
-key and both shared secret files.
-
-The global tracked-session cap defaults to 256, the per-bulk-key cap defaults
-to 64, and one accept-rate budget covers all listeners. Queues and protected
-frame sizes are bounded. Administrators can also place aggregate
-weighted egress below the physical link rate and apply service-manager CPU,
-memory, task, and file-descriptor ceilings. These controls bound supported
-work; they do not make the public TLS socket available against an attacker who
-can saturate the link, exhaust external kernel state, or consume TLS handshake
-capacity before authenticated admission.
-
-## What YUME does not protect
-
-- Endpoint compromise, key theft, malicious server operators, or plaintext
-  already exposed on the client or server.
-- Reading or modification by the terminating YUME server when the application
-  itself provides no end-to-end encryption/authentication.
-- Traffic volume and timing analysis. Shaping is capture-derived and bounded,
-  not constant-rate padding, and no overhead figure has been qualified.
-- Application traffic that bypasses the local tunnel.
-- The target from the direct YUME server operator.
-- Availability against an attacker who can exhaust the network, TLS handshakes,
-  or all configured connection limits.
-- Byte-identical Chrome sessions. The default `openssl-chrome151` backend now
-  implements the six pinned ClientHello structure rows through an additive,
-  default-off patch on the exact OpenSSL source pin. That is still
-  narrower than indistinguishable Chrome: certificate-compression value
-  recapture, resumed/PSK handshakes, same-session Chrome comparison, complete
-  H2/WebSocket behavior, traffic timing/volume, classifier/active-probe,
-  lifecycle/soak, and independent review remain open. The older uTLS helper's
-  passing evidence does not transfer to the native replacement. See
-  `docs/STEALTH.md`.
-- Protected identity-file loading on Windows. The POSIX ownership/mode
-  invariant has no Windows equivalent yet, so identity loading fails closed
-  there instead of accepting an arbitrary ACL.
-
-## Existing permission gates outside this slice
-
-Command execution, LAN/private-address bridging, unrestricted bridging, and
-privileged application codecs remain gated by compile-time switches, server
-runtime settings, and per-key metadata as documented in
-`docs/PERMISSIONS.md`. The 2.0 transport does not broaden those permissions.
-
-Preauth service lanes, admin attach, federation, the legacy-named `anonym`
-privacy/operator-identity mode, and packet egress
-retain their existing authorization boundaries and are outside this focused
-wire change. They must not be described as release-qualified without their own
-integration and runtime evidence.
-
-## Release claims
-
-The transport stays on a development or release-candidate version until the
-release gates in `docs/IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
-smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
-external conformance, or sustained overhead. Release documentation must separate
-implemented behavior from those pending validations.
-
-“Hybrid post-quantum key establishment” is the supported terminology.
-“Quantum-proof,” “uncrackable,” and guaranteed future-proof are not supported
-claims: TLS certificates remain classical, the composite AUTH still depends on
-its Ed25519 half as well as ML-DSA-87, endpoint compromise is in scope, and the
-complete design has not received an independent formal proof or security audit.
+Before `0.3.0-rc1`, require mutation/stripping/replay/role/rekey tests,
+parser fuzzing, sanitizer and failure-injection suites, resource floods,
+installed ABI consumers, setup-to-first-stream and browser-cover smokes,
+profile captures/classifier gates, cross-platform builds, and external
+protocol/cryptography review. Unit tests alone do not justify production,
+performance, post-compromise recovery, or ingress-indistinguishability claims.

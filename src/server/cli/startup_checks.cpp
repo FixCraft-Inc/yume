@@ -477,8 +477,9 @@ void log_security_warnings(const yume::server::ServerConfig& cfg) {
         yume::util::log_warn("using embedded BaseFWX master PQ key fallback (explicitly enabled)");
     } else if (cfg.allow_embedded_master) {
         yume::util::log_warn(
-            "embedded BaseFWX master PQ keypair enabled; connection security depends on basefwx-bundled keys "
-            "(disable with --no-embedded-master if you also provide --pq-key)");
+            "embedded BaseFWX master PQ keypair enabled; connection security "
+            "depends on basefwx-bundled keys (set allow_embedded_master false "
+            "in the config and provide pq_private_key instead)");
     }
 
     if (cfg.anonym && cfg.anonym_ca_key.empty() && !cfg.anonym_ca_cert.empty()) {
@@ -554,7 +555,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
                                    const StartupCheckOptions& options) {
     if (cfg.transport_profile != yume::kTransportProfile) {
         yume::util::log_error(
-            "YUME 0.2.0-dev6 requires transport_profile " +
+            "the transport-v2 runtime requires transport_profile " +
             std::string(yume::kTransportProfile));
         return false;
     }

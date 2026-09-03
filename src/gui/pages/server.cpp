@@ -362,8 +362,8 @@ private:
     // Transport security. Everything the 2.0 runtime treats as mandatory is
     // stated, not offered: prepare_v2_security_config() refuses a config with
     // obfuscation or inner crypto disabled and force-sets inner_required, and
-    // the server advertises inner_mode="ratchet" regardless of the legacy
-    // light/heavy/dual fields. The three inputs below are the ones the runtime
+    // the server advertises inner_mode="ratchet" regardless of the surviving
+    // inner_dual field. The three inputs below are the ones the runtime
     // genuinely reads and cannot start without.
     void render_transport_security_card(bool running, ui::Colors const& c, float sc) {
         if (ui::begin_auto_card("##transport_security")) {

@@ -1,173 +1,215 @@
 # YUME implementation status
 
-This is the public support boundary for the current source tree. It uses three
-terms consistently:
+This page is the public support boundary for the live source tree. It uses
+three terms deliberately:
 
-- **Implemented** means the code exists in this repository.
-- **Tested** means a named unit, integration, or build path exercises it.
-- **Qualified** means the exact release candidate passed the full gate for the
-  stated platform and use.
+- **Implemented** means code exists in this repository.
+- **Tested** means a named executable or integration path exercises it.
+- **Qualified** means the exact candidate passed the complete gate for the
+  named platform and environment.
 
-Implemented or tested code is not automatically qualified. The exact product
-version is recorded in `src/core/version.hpp`; no stable release has been
-published.
+YUME is development software. The transition tree contains two explicit
+tracks: the default build keeps the runnable `0.2.0-dev6` client/daemon and
+transport-v2/AUTH-v2 path, while the `0.3.0-dev1` YTP/1 replacement foundation
+is built alongside it. Neither track is a stable or production-qualified
+release.
 
-## Supported development target
+## Current 0.3 foundation
 
-The first target is the Linux x86-64 command-line client and daemon built with
-the BaseFWX and patched OpenSSL revisions pinned by the build inputs.
-The source tree also contains an optional desktop GUI and a stable C ABI v1.
+Implemented and covered by focused local tests:
 
-Windows, macOS, the GUI as a human-facing application, the separate Android
-client, and external browser work are not qualified release targets. Some of
-their build or focused lifecycle paths exist, but those results do not transfer
-Linux qualification to another consumer or platform.
+- a dependency-pure C++20 engine foundation with move-only bounded buffers,
+  cancellation, executor affinity, byte-channel, secure-channel, carrier,
+  stream-handler, route-provider, exact provider descriptors, and an
+  instance-local freezing builder;
+- a role-neutral, one-session bootstrap coordinator that composes the frozen
+  client provider chain or a server front door's typed ready-carrier promotion,
+  validates TLS 1.3 suite provenance and exact carrier/affinity continuity,
+  waits for cancellation settlement, cleans every rejected layer, and reports
+  success only after the YTP session becomes active in focused in-memory tests;
+- an opt-in bounded `h2-duplex` carrier provider over `SecureChannel`, with
+  genuine client priming plus extended-CONNECT acceptance, a typed live-state
+  server-promotion seam, carrier-private record framing, move-owned outer
+  credit, and flow-controlled send completion. Focused fake-channel tests and
+  the retained transport-v2 H2 regression pass; no production FrontDoor or
+  admission provider is implied;
+- 31-bit YTP stream identifiers with stream zero reserved for control, odd
+  client ownership, even server ownership, and exhaustion checks;
+- a dependency-pure YTP/1 protocol kernel with bounded canonical frame, OPEN,
+  destination, capability, credit, AUTH-TLV, mandatory-security-parameter, and
+  key-schedule-input codecs;
+- entirely new `yume/ytp/1/...` domains plus checked-in canonical encoding
+  vectors;
+- an opt-in, build-tree-only OpenSSL 3.5 session-security provider candidate
+  with exact Ed25519 plus ML-DSA-87 authentication, X25519 plus ML-KEM-1024
+  establishment, per-identity access PSKs, exporter/transcript/capability binding,
+  one-use AES-256-GCM record keys, and crossed directional rekey tests. It is
+  not wired to a live endpoint or qualified for production use;
+- an opt-in, build-tree-only Boost.Asio client TCP ByteChannel provider with
+  bounded DNS/connect work, socket-protection-before-connect, bounded ordered
+  operation queues, per-operation and provider cancellation, real TCP
+  half-close, and explicit executor affinity. Server listening remains a
+  FrontDoor responsibility, and this provider is not runtime-wired;
+- an independent opt-in OpenSSL 3.5 TLS 1.3 secure-channel foundation which
+  wraps arbitrary engine byte channels through memory BIOs, enforces exact
+  TLS 1.3 plus ALPN `h2`, verifies client-side hostname/trust, exposes bounded
+  outer certificate evidence and exporter binding, and keeps its provider
+  provenance immutable. It is not an HTTP/2 carrier, front door, browser
+  profile, live endpoint integration, or production-qualified TLS claim;
+- strict immutable numeric config schema 1 with closed objects, duplicate-key
+  rejection, exact provider values, file-only credential references, bounded
+  services/adapters/resources, and RFC 6901 error locations;
+- the experimental role-neutral C ABI v1 candidate header, symbol allowlist,
+  typed metadata and diagnostics, and exception-contained handle scaffolding;
+- an explicitly enabled unversioned `libyume.so` build-tree library with
+  build-tree C and C++ consumers that verify metadata, both configuration
+  dialects, handle lifecycle, registration ordering, and a real transport start
+  reaching the runtime rather than a stub, plus an integration probe that
+  provisions a real server and client and moves bytes both directions over an
+  authenticated named service stream. It has no install rules, no generated CMake package or pkg-config
+  metadata, and is not emitted as an ABI package. `cmake/yumeConfig.cmake.in`,
+  `cmake/yume.pc.in`, `cmake/check_yume_abi_install.cmake`, and
+  `tests/abi/install_consumer/` are retained for that future installed
+  contract and are currently unreferenced by the build;
+- one compatibility manifest reporting product, YTP, config, ABI, logical
+  suite components, concrete providers, cryptographic backend, and
+  evidence-profile versions without treating an unwired component as active;
+- deterministic validation of declared source dependencies and regeneration of
+  a source-dependency SPDX SBOM. This inventory is not proof of source
+  ancestry.
 
-## Core transport
+Focused evidence currently includes GCC and Clang C++20 warning-as-error
+builds of the engine/YTP/config kernels and the opt-in security provider, GCC
+ASan+UBSan runs of the dependency-pure kernels, strict C header compilation,
+exact built/header/map/candidate-symbol agreement, example config parsing,
+build-tree CMake and pkg-config scaffold consumers, provider mismatch/freeze
+tests, real-key hybrid handshake/record/rekey tests, malformed canonical-codec
+tests, focused direct-route handler and Boost.Asio route-provider tests, and a
+focused Boost.Asio client TCP ByteChannel provider test. The provider tests use
+real loopback TCP and connected UDP, exercise DNS, socket protection,
+half-close, cancellation, queue/capacity limits, and oversized packets. The
+route-provider tests pass locally under ASan+UBSan and TSan; the new client TCP
+provider has not yet run that sanitizer matrix. A fresh remote bounded build
+completed all 234
+targets, including `yume` and `yumed`, and its remote CTest run passed 110 of
+110 tests. Those results establish build/test health for this dirty candidate,
+not release qualification or replacement end-to-end functionality.
 
-Implemented:
+## Not yet implemented end to end
 
-- TLS 1.3, HTTP/2, and WebSocket carrier on one persistent connection
-- keyed admission before AUTH v2
-- composite Ed25519 and ML-DSA-87 client authentication
-- ML-KEM-1024, X25519, random-PSK, and TLS-exporter-bound session setup
-- independent directional ratchets and one-use AES-256-GCM message keys
-- multiplexed TCP, UDP, forwarding, service, codec, and packet streams
-- bounded queues, session limits, key-specific admission, and optional weighted
-  egress shaping
+The following required 0.3 paths are still open in this development tree and
+must not be advertised as working:
 
-Focused tests cover carrier parsing and ordering, authentication vectors and
-channel binding, ratchet transitions, permission checks, bounded admission,
-service queues, packet lifecycle, and shutdown paths.
+- the genuine HTTP/2 web front-door provider (the opt-in duplex carrier
+  foundation does not implement public ingress or cover routing);
+- replay-protected admission and promotion whose failure is indistinguishable
+  from ordinary cover handling at the public HTTP boundary;
+- wiring the opt-in hybrid authentication/KEM/AEAD provider candidate to the
+  native TLS/HTTP/2 endpoint, runtime, and ABI, followed by production
+  qualification;
+- a complete authenticated session lifecycle over the native provider graph,
+  including real-carrier rekey races, close ordering, and all
+  credit/backpressure paths;
+- wiring the implemented opt-in direct TCP/connected-UDP route provider and
+  route handler into the endpoint graph, plus working SOCKS5, named-service,
+  and packet adapters on the new engine;
+- a public-ABI packet data path, and the same stream path on the YTP/1 backend;
+- authenticated clean-prefix C and C++ consumers using an installed CMake
+  package and pkg-config, which the build does not generate yet;
+- the final narrow `yume` and `yumed` runtimes and setup-to-first-SOCKS smoke;
+- external active-probe, classifier, performance, soak, fuzz, sanitizer, and
+  security-review gates.
 
-Still open:
+The replacement ABI attaches a runtime through one backend seam. A default
+build compiles the transport-v2 backend, so `yume_endpoint_start` really starts
+the runnable client or daemon, `yume_endpoint_register_service`,
+`yume_endpoint_open_stream`, and `yume_endpoint_accept_stream` carry
+authenticated named byte streams, and `yume_stream_read`/`write`/
+`shutdown_write`/`close` move real bytes with typed transport failures. A
+schema-1 endpoint still fails with a typed unsupported status because the YTP/1
+provider graph has no live front door, and nothing silently reroutes one
+dialect into the other runtime. Packet channels remain unsupported on both
+backends. The working `yume` and `yumed` binaries remain a separate, explicit
+product path during the transition.
 
-- exact-candidate reconnect, loss, resource-pressure, and long-running soak
-- repository-wide thread-sanitizer coverage
-- external HTTP/2 conformance and active-probe review
-- proof that full sessions match the selected browser and cover identity closely
-  enough for the stated deployment
+## Retained runnable 0.2 product
 
-## Browser-shaped carrier
+The default transition build continues to produce the runnable 0.2 `yume` and
+`yumed` tunnel, including its transport-v2/AUTH-v2 implementation and the
+dependencies needed by that working path. It is not called a fallback or
+deprecated implementation: it remains the current runnable product until the
+replacement passes its tunnel, cover, routing, embedding, packaging, and
+qualification parity gates.
 
-The only configured client profile is the browser and cover identity named by
-the active registry entry. The native backend passes the six pinned
-ClientHello structure checks and centralizes the TLS, HTTP/2, header, and cover
-identity.
+The signed 0.2 contracts, manuals, and design records are preserved in Git at
+[`f0cc9e7`](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/README.md) rather than copied into the working tree.
+Their wire and configuration are incompatible with YTP/1 and schema 1;
+coexistence does not add an automatic converter, downgrade, suite fallback, or
+migration promise. Optional and
+product-specific 0.2 surfaces are reviewed individually rather than deleted
+solely because the replacement architecture does not yet model them.
 
-That evidence is structural. Resumed and hello-retry handshakes, full exporter
-and certificate paths, same-session browser comparison, traffic timing and
-volume, held-out classifier tests, reproducible release artifacts, and deployed
-soak remain open. Matching ALPN, JA3, JA4, or a short functional path is not
-proof that YUME is identical to Chrome or immune to DPI.
+## Security boundary
 
-The cover backend is a separate supervised process bound to a loopback IP
-literal. Ordinary GET and HEAD requests are proxied to it. Tunnel payloads,
-identities, and secrets do not go to the cover process.
+The YTP/1 design requires all of the following:
 
-## Permissions and storage
+- Ed25519 **and** ML-DSA-87 authentication;
+- X25519 **and** ML-KEM-1024 establishment;
+- a distinct per-identity random access PSK;
+- the live TLS 1.3 exporter and exact roles, identities, transcript,
+  capabilities, suite, and fixed security parameters in the key schedule;
+- independent directional ratcheting, one-use AES-256-GCM keys for protected
+  records, and a candidate-new-root authenticated rekey acknowledgement;
+- bounded work and allocation before attacker-controlled parsing, KEM,
+  stream creation, queueing, or rekey preparation;
+- hard failure on a missing component, provider mismatch, role confusion,
+  replay, malformed canonical encoding, or authentication failure.
 
-Individual, bounded bulk, and separate administrator identities are
-implemented. Bulk identities cannot receive administrator, controller,
-unrestricted network, federation, execution, service, or privileged codec
-permissions. Session admission is counted and released through one controller.
+The opt-in provider candidate implements the cryptographic portions in focused
+in-memory tests; dependency-pure engine tests cover the matching record and
+resource contracts. They remain design and acceptance requirements, not a
+product guarantee, until the live TLS exporter, native carrier/runtime wiring,
+and full qualification gates land. They are not an independent proof, audit,
+or certification. The ratchet is described only as
+post-compromise-oriented.
 
-On POSIX, secure-material and profile operations use bounded input, no-follow
-file checks, owner-only permissions, transaction locks, and atomic publication.
-Imports validate JSON shapes and identifiers before use. Share bundles are
-encrypted and refuse unsafe overwrite targets.
+## Ingress evidence boundary
 
-Windows operations that need equivalent secure mutable storage fail closed or
-remain unadvertised until that policy is implemented and tested. Best-effort
-memory wiping does not protect allocator copies, swap, core dumps, or a live
-process compromise.
+The retained transport-profile capture pipeline and immutable Chrome/Node
+fixture are evidence inputs, not a claim of universal indistinguishability.
+Any release claim must name the exact profile, capture, candidate binary,
+environment, TLS/H2 semantic results, active-probe cover results, and held-out
+classifier result. ALPN, JA3/JA4, or a short successful navigation is
+insufficient.
 
-## Routing and host features
+## Performance boundary
 
-Implemented entry and exit surfaces include SOCKS, TCP and UDP forwarding,
-packet routing, built-in services, the `monero-rpc-v1` application codec, and
-the host-controller HTTPS and extra-listener configuration.
+No 0.3 performance claim exists. The private build host is reachable and has
+completed the bounded build/test evidence above; a matched pre-reset
+performance baseline has not yet been captured. The signed pre-reset commit
+remains identifiable for that isolated comparison. A claim such as “faster”
+requires at least five matched
+runs with throughput, p50/p99 latency, CPU/byte, allocations, peak memory, and
+1/32/256-stream fairness plus reported uncertainty.
 
-The host controller currently accepts only loopback TCP backends:
+## Freeze gates
 
-- `loopback://127.0.0.1:PORT`
-- `loopback://127.x.x.x:PORT`
-- `loopback://[::1]:PORT`
+Before `0.3.0-rc1`, the exact candidate must pass:
 
-`service://`, `codec://`, and `unix://` backends are rejected because their
-runtime drivers do not exist. Public-host cutover, real certificate renewal,
-browser ingress, mail STARTTLS interoperability, proxy deployment, and
-long-running backend-failure behavior still need deployment testing.
+- clean supported-platform builds and target/include layering checks;
+- YTP/1 vectors, mutation/component-stripping/replay/role/provider tests, and
+  parser fuzzing;
+- ASan, UBSan, TSan, failure injection, flood/resource-pressure, and sustained
+  soak qualification;
+- clean-prefix SDK installation and C/C++ stream and packet consumers through
+  both CMake and pkg-config;
+- clean-machine setup, permissions, doctor, cover-browser, and first-stream
+  smoke tests;
+- immutable ingress/profile evidence and reproducible performance evidence;
+- synchronized source, tests, help, manual pages, package metadata, website,
+  declared-dependency/SBOM, and documentation drift checks;
+- an external protocol and cryptography review.
 
-Inbound child-process execution is disabled. Portable bounded cancellation is
-not implemented, so the daemon does not start detached work and claim that it
-can control its lifetime.
-
-## Federation and relay
-
-AUTH v2 direct federation is implemented. A two-node integration test starts
-two real daemons and clients, exchanges the directory in both directions,
-relays exact data from one endpoint to the other, and closes the channel. A
-three-node line test proves direct links while keeping the far endpoint absent
-and unroutable.
-
-The runtime reports `transit.supported=false` and `transit.max_hops=1`.
-Multi-hop relay-channel transit is design-only. SOCKS, forward, packet, and
-other exit traffic cannot transit another YUME server. The daemon remains a
-terminating proxy, not an onion relay.
-
-Relay v2 uses composite-signed setup, explicit peer trust, a hybrid ratchet,
-bounded records and rekey queues, and confined POSIX file receive. Windows
-secure trust/history/file storage, GUI and Android wiring, external review, and
-long-running loss and soak tests remain open.
-
-## Public APIs and consumers
-
-C ABI v1 is the stable native interface and has a versioned SONAME
-`libyume.so.1`. Its header, symbol map, Debian symbols, full and client-only
-implementations, and ABI tests must change together. Exceptions do not cross
-the ABI.
-
-Generic request operations return a JSON operation envelope. Transport and
-lifecycle failures use typed ABI statuses. Callers must not recover a status by
-parsing an error string. See [C ABI](ABI.md) and [control API](CONTROL_API.md).
-
-The Dear ImGui application builds around the same facade and in-process
-runtime. Headless Linux lifecycle checks cover connect, stop, reconnect, and
-stop. Interactive window behavior, tray integration, accessibility, and
-cross-platform behavior are not qualified.
-
-## Performance and network qualification
-
-The carrier uses kernel TCP autotuning, an 8 MiB authenticated HTTP/2 receive
-window, bounded sink-coupled receive credit, and bounded TCP and UDP queues.
-Focused tests cover pause, drain, resume, and queue limits. These mechanisms do
-not amount to a universal end-to-end flow-control claim.
-
-Development lab runs have been useful for finding queue, socket-buffer, and
-high-latency limits. They are not published release benchmarks. There is no
-stable-release throughput, latency, classifier, or overhead figure.
-
-Before publishing one, the exact candidate needs repeated matched tests across
-the stated rates, delay, controlled loss, both directions, competing streams,
-and a deployed-network soak. The result must include binary provenance and host
-context and must keep correctness failures separate from performance numbers.
-
-## Release gates
-
-A stable release still requires, at minimum:
-
-- an exact-source portable build and test matrix with warnings as errors
-- exact-source sanitizer reconciliation and sustained lifecycle coverage
-- package installation, service startup, upgrade, and artifact verification
-- browser and HTTP/2 comparison for the selected profile and cover identity
-- WAN, loss, resource, and long-running soak qualification
-- platform and consumer qualification for every advertised target
-- independent cryptographic, protocol, and deployment review
-- synchronized source, tests, CLI help, man pages, website claims, and release
-  notes
-
-Until those gates close, describe YUME as experimental development software.
-Report narrower evidence with its exact platform and test path. Do not claim
-that YUME is impossible to block or trace, identical to a browser, a complete
-anonymity network, or production-qualified.
+Until those gates close, report only the focused evidence above and do not
+claim production readiness, browser identity, DPI resistance, anonymity,
+post-quantum security certification, or setup-to-tunnel completion.

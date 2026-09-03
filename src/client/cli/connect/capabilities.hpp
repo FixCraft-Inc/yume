@@ -14,17 +14,13 @@ namespace yume::client {
 struct ServerCapabilityInput {
     std::string server_version;
     std::string server_inner_mode;
-    std::string inner_kdf_name;
     bool inner_crypto_requested = false;
     bool inner_disabled_for_session = false;
-    bool inner_heavy = false;
     bool have_inner_caps = false;
     bool server_inner_supported = false;
     bool server_inner_required = false;
     bool server_inner_dual = false;
     bool server_cap_pq = false;
-    bool server_cap_argon2 = false;
-    bool server_cap_pbkdf2 = false;
 };
 
 struct ServerCapabilityResult {

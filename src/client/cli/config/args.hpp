@@ -60,7 +60,6 @@ struct ParsedArgs {
     int dest_port{0};
     bool inner_crypto{false};
     bool inner_crypto_override{false};
-    bool inner_heavy{true};
     int rekey_window{0};
     bool rekey_window_override{false};
     bool use_udp{false};

@@ -183,10 +183,6 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
             std::exchange(incoming_frame_credit_bytes_, 0U);
         retired_credit_release_handler =
             std::move(inbound_credit_release_handler_);
-        if (inner_key_.has_value()) {
-            security::secure_erase(*inner_key_);
-            inner_key_.reset();
-        }
         ratchet_.reset();
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         outbound_rekey_wait_.reset();
@@ -236,20 +232,11 @@ bool TransportCore::is_stopped() const {
     return stopped_;
 }
 
-void TransportCore::set_inner_key(const Bytes& key) {
-    std::lock_guard<std::mutex> lock(state_mu_);
-    // Assigning over the optional frees the superseded key without clearing it.
-    if (inner_key_) security::secure_erase(*inner_key_);
-    inner_key_ = key;
-}
 
 void TransportCore::set_ratchet(
     std::unique_ptr<ratchet::SessionRatchet> ratchet) {
     if (!ratchet) throw std::invalid_argument("ratchet must not be null");
     std::lock_guard<std::mutex> lock(state_mu_);
-    if (inner_key_.has_value()) {
-        throw std::runtime_error("static inner key and the directional ratchet are exclusive");
-    }
     ratchet_ = std::move(ratchet);
 }
 
@@ -435,9 +422,6 @@ void TransportCore::open_stream(uint8_t stream_id,
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         stopped = stopped_;
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
-        }
         reserved_streams_.erase(stream_id);
         pending_open_[stream_id] = std::move(handler);
     }
@@ -468,9 +452,6 @@ void TransportCore::open_relay_stream(uint8_t stream_id, const nlohmann::json& j
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         stopped = stopped_;
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
-        }
         reserved_streams_.erase(stream_id);
         pending_open_[stream_id] = std::move(handler);
     }
@@ -517,9 +498,6 @@ void TransportCore::request_remote_listen(uint8_t listen_id,
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         stopped = stopped_;
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
-        }
         reserved_streams_.erase(listen_id);
         pending_rlisten_[listen_id] = std::move(handler);
     }
@@ -568,9 +546,6 @@ bool TransportCore::try_send_data(uint8_t stream_id,
         if (stopped_) {
             stopped = true;
         } else {
-            if (inner_key_.has_value()) {
-                flags |= protocol::kFlagInnerEncrypted;
-            }
             if (!data.empty()) {
                 activity_handler = activity_handler_;
             }
@@ -603,9 +578,6 @@ void TransportCore::send_close(uint8_t stream_id, const std::string& reason) {
         if (stopped_) {
             return;
         }
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
-        }
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CLOSE, stream_id, flags}, payload};
     queue_frame(frame);
@@ -618,9 +590,6 @@ void TransportCore::send_stream_fin(uint8_t stream_id, const std::string& reason
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
             return;
-        }
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
         }
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CLOSE, stream_id, flags}, payload};
@@ -635,9 +604,6 @@ void TransportCore::send_open_ack(uint8_t stream_id, bool ok, const std::string&
         if (stopped_) {
             return;
         }
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
-        }
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     queue_frame(frame);
@@ -650,9 +616,6 @@ void TransportCore::send_exec(uint8_t stream_id, const std::string& command) {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
             return;
-        }
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
         }
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::EXEC, stream_id, flags}, payload};
@@ -667,9 +630,6 @@ void TransportCore::send_control_json(const nlohmann::json& json) {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
             return;
-        }
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
         }
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};

@@ -25,8 +25,6 @@ struct ServerCliParseResult {
     ServerConfigOverrides config_overrides;
     ServerKeyCommand key_command;
 
-    bool inner_heavy_override{false};
-    bool inner_heavy_value{true};
     bool attach_local{false};
     bool keep_root{false};
 };

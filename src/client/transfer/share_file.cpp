@@ -82,7 +82,6 @@ ShareBundle& ShareBundle::operator=(const ShareBundle& other) {
     anonym_pubkey = other.anonym_pubkey;
     pq_public_key_pem = other.pq_public_key_pem;
     inner_crypto = other.inner_crypto;
-    inner_heavy = other.inner_heavy;
     tunnel_count = other.tunnel_count;
     require_operator_identity = other.require_operator_identity;
     allow_udp = other.allow_udp;
@@ -126,7 +125,6 @@ ShareBundle& ShareBundle::operator=(ShareBundle&& other) {
     anonym_pubkey = std::move(other.anonym_pubkey);
     pq_public_key_pem = std::move(other.pq_public_key_pem);
     inner_crypto = other.inner_crypto;
-    inner_heavy = other.inner_heavy;
     tunnel_count = other.tunnel_count;
     require_operator_identity = other.require_operator_identity;
     allow_udp = other.allow_udp;
@@ -333,7 +331,6 @@ nlohmann::json bundle_to_json(const ShareBundle& b,
 
     nlohmann::json client_settings;
     client_settings["inner_crypto"] = b.inner_crypto;
-    client_settings["inner_heavy"] = b.inner_heavy;
     client_settings["inner_psk"] = b.inner_psk;
     client_settings["tunnels"] = b.tunnel_count;
     client_settings["require_operator_identity"] =
@@ -419,7 +416,6 @@ bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* erro
     if (j.contains("client_settings")) {
         const auto& cs = j["client_settings"];
         out->inner_crypto    = cs.value("inner_crypto", true);
-        out->inner_heavy     = cs.value("inner_heavy", true);
         out->inner_psk       = cs.value("inner_psk", std::string{});
         out->tunnel_count = static_cast<std::uint8_t>(
             std::clamp(cs.value("tunnels", 1), 1, 16));
@@ -1285,7 +1281,6 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
     out->tls_server_name     = in.tls_server_name;
     out->anonym_pubkey       = in.anonym_pubkey;
     out->inner_crypto        = in.inner_crypto;
-    out->inner_heavy         = in.inner_heavy;
     out->tunnel_count        = std::clamp<std::uint8_t>(in.tunnel_count, 1, 16);
     out->require_operator_identity = in.require_operator_identity;
     out->allow_udp           = in.allow_udp;
@@ -1410,7 +1405,6 @@ bool apply_imported_bundle(const ShareBundle& bundle,
             cfg["anonym_pubkey"] = bundle.anonym_pubkey;
         }
         cfg["inner_crypto"] = bundle.inner_crypto;
-        cfg["inner_heavy"] = bundle.inner_heavy;
         cfg["tunnels"] = std::clamp<int>(bundle.tunnel_count, 1, 16);
         cfg["require_anonym"] = bundle.require_operator_identity;
         cfg["udp"] = bundle.allow_udp;

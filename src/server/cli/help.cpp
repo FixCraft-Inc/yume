@@ -163,7 +163,7 @@ void print_help() {
         << "  --allow-monero-rpc       Alias for --codec-allow monero-rpc\n"
         << "  --service-allow <name>   Enable a native ABI named service stream\n"
         << "                             (also requires per-key allow_services\n"
-        << "                             and yume_server_register_service).\n"
+        << "                             and yume_endpoint_register_service).\n"
         << "  --monero-rpc-backend <addr:port>\n"
         << "                           Loopback monerod RPC backend for the codec\n"
         << "                             (default 127.0.0.1:18089).\n"

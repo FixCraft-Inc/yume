@@ -78,7 +78,6 @@ inline constexpr char rekey_window[] = "rekey_window";
 inline constexpr char identity[] = "identity";
 inline constexpr char inner_crypto[] = "inner_crypto";
 inline constexpr char inner_dual[] = "inner_dual";
-inline constexpr char inner_heavy[] = "inner_heavy";
 inline constexpr char inner_required[] = "inner_required";
 inline constexpr char instance_name[] = "instance_name";
 inline constexpr char io_threads[] = "io_threads";

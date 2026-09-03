@@ -61,7 +61,6 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::obfs_secret_file, s.obfs_secret_file);
     read_opt(j, cfg_key::inner_psk_file, s.inner_psk_file);
     read_opt(j, cfg_key::inner_crypto, s.inner_crypto);
-    read_opt(j, cfg_key::inner_heavy, s.inner_heavy);
     read_opt(j, cfg_key::inner_dual, s.inner_dual);
     read_opt(j, cfg_key::inner_required, s.inner_required);
     read_opt(j, cfg_key::rekey_window, s.rekey_window);
@@ -366,7 +365,6 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::obfs_secret_file, s.obfs_secret_file},
         {cfg_key::inner_psk_file, s.inner_psk_file},
         {cfg_key::inner_crypto, s.inner_crypto},
-        {cfg_key::inner_heavy, s.inner_heavy},
         {cfg_key::inner_dual, s.inner_dual},
         {cfg_key::inner_required, s.inner_required},
         {cfg_key::rekey_window, s.rekey_window},

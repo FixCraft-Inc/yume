@@ -82,7 +82,19 @@ public:
                       std::size_t size,
                       std::uint32_t timeout_ms,
                       std::string* error);
-    bool shutdown_write(std::string* error);
+    // Not safe to call concurrently with write() on the same stream from
+    // another thread: the drain wait releases the state lock, so a write that
+    // starts in that window is not covered. The C ABI serializes both calls on
+    // one handle, so an embedder is unaffected; an internal caller must not
+    // interleave them.
+    //
+    // Sends the write-side FIN, but only after every accepted write has
+    // drained. `write()` returns Accepted when the transport admits a frame,
+    // not when it reaches the wire, so an unordered FIN can overtake the last
+    // record and silently truncate a request/response exchange. Waits up to
+    // timeout_ms for the drain; 0 means do not wait, and a still-busy stream
+    // then reports failure rather than losing the pending write.
+    bool shutdown_write(std::string* error, std::uint32_t timeout_ms = 5000);
     void close(std::string reason);
 
     ReadResult read(void* out,

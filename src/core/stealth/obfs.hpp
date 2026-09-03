@@ -34,8 +34,9 @@ std::string selected_alpn(const SSL* ssl);
 // this header. Send-side jitter lives in:
 //   - Session::do_write (server) gated on cfg_.obfs_jitter_ms
 //   - Tunnel::set_obfs_shape (client) consumed in the write_handler
-// Frame-level padding lives on the wire as protocol::kFlagPadded; see
-// protocol::encode_frame's pad_multiple parameter. Operators enable
-// both via the --obfs-jitter-ms / --obfs-pad-multiple flags.
+// Frame-level padding lives on the wire as protocol::kFlagPadded. See
+// protocol::encode_frame's pad_multiple parameter. Operators enable both
+// through the obfs_jitter_ms / obfs_pad_multiple config keys. There are no
+// command-line flags for either.
 
 }  // namespace yume::obfs

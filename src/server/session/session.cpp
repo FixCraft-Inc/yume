@@ -412,15 +412,6 @@ bool Session::frame_allowed_by_authorization_tier(const protocol::Frame& frame) 
     if (authorization_tier_ == authorization::SessionTier::PreauthServiceOnly) {
         if (type == protocol::OPEN) {
             crypto::Bytes payload = frame.payload;
-            if (inner_key_.has_value() &&
-                (frame.header.flags & protocol::kFlagInnerEncrypted) != 0) {
-                if (!decrypt_inner_payload(type,
-                                           frame.header.stream_id,
-                                           frame.payload,
-                                           &payload)) {
-                    return false;
-                }
-            }
             const std::string payload_text(payload.begin(), payload.end());
             context.service_open =
                 authorization::preauth_service_open_payload(payload_text);
@@ -621,17 +612,6 @@ void Session::handle_frame(protocol::Frame frame,
         }
     }
 
-    if (inner_key_.has_value() &&
-        (frame.header.type == protocol::OPEN || frame.header.type == protocol::DATA ||
-         frame.header.type == protocol::EXEC || frame.header.type == protocol::CLOSE ||
-         frame.header.type == protocol::RLISTEN || frame.header.type == protocol::CONTROL)) {
-        if ((frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
-            util::log_warn("session " + std::to_string(session_id_) + ": missing inner encryption flag");
-            close_with_reason("missing inner encryption flag on authenticated frame type " +
-                              std::to_string(frame.header.type));
-            return;
-        }
-    }
 
     if (!frame_allowed_by_authorization_tier(frame)) {
         util::log_warn("session " + std::to_string(session_id_) +
@@ -723,15 +703,6 @@ void Session::handle_data(const protocol::Frame& frame,
                           runtime::InboundCredit inbound_credit) {
     crypto::Bytes decrypted_payload;
     const crypto::Bytes* payload = &frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted_payload)) {
-            util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed for stream " +
-                           std::to_string(frame.header.stream_id));
-            close_with_reason("DATA decrypt failed for stream " + std::to_string(frame.header.stream_id));
-            return;
-        }
-        payload = &decrypted_payload;
-    }
     std::function<void(
         const crypto::Bytes&,
         runtime::InboundCredit)> federated_data;
@@ -775,14 +746,6 @@ std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok)
         *ok = true;
     }
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::CLOSE, frame.header.stream_id, frame.payload, &payload)) {
-            if (ok) {
-                *ok = false;
-            }
-            return {};
-        }
-    }
     return std::string(payload.begin(), payload.end());
 }
 
@@ -963,10 +926,6 @@ void Session::handle_exec(const protocol::Frame& frame) {
     const std::string msg = "EXEC disabled for safety";
     crypto::Bytes payload(msg.begin(), msg.end());
     uint16_t flags = 0;
-            if (inner_key_.has_value()) {
-                payload = encrypt_inner_payload(protocol::DATA, frame.header.stream_id, payload);
-                flags |= protocol::kFlagInnerEncrypted;
-            }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
     async_write_frame(resp);
     send_control_close(frame.header.stream_id, "");
@@ -975,10 +934,6 @@ void Session::handle_exec(const protocol::Frame& frame) {
 void Session::send_open_reply(uint8_t stream_id, bool ok, const std::string& message) {
     crypto::Bytes payload(message.begin(), message.end());
     uint16_t flags = ok ? protocol::kFlagOpenOk : 0;
-    if (inner_key_.has_value()) {
-        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     async_write_frame(resp);
 }
@@ -1223,14 +1178,6 @@ void Session::begin_close() {
         }
     }
     ratchet_blocked_writes_.clear();
-    if (inner_key_.has_value()) {
-        security::secure_erase(*inner_key_);
-        inner_key_.reset();
-    }
-    if (inner_key_alt_.has_value()) {
-        security::secure_erase(*inner_key_alt_);
-        inner_key_alt_.reset();
-    }
 
     maybe_finish_close();
 }

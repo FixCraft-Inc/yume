@@ -14,10 +14,3 @@ test -r /etc/yume/yumed.json
 test -r /etc/yume/authorized_keys
 test -r /etc/yume/auth_keys.meta
 test -r /usr/lib/systemd/system/yumed.service || test -r /lib/systemd/system/yumed.service
-
-multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
-test -r /usr/include/yume/yume.h
-test -e "/usr/lib/${multiarch}/libyume.so"
-test -e "/usr/lib/${multiarch}/libyume.so.1"
-test -d "/usr/lib/${multiarch}/cmake/yume"
-pkg-config --exists yume

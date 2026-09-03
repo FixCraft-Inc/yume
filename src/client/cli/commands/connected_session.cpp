@@ -74,24 +74,15 @@ struct LongRunningWaitState {
 
 using LongRunningWaitStatePtr = std::shared_ptr<LongRunningWaitState>;
 
-crypto::Bytes decrypt_control_payload(const crypto::Bytes& key,
-                                      uint8_t frame_type,
-                                      uint8_t stream_id,
-                                      const crypto::Bytes& blob) {
-    return inner::decrypt_payload(key, frame_type, stream_id, blob);
-}
-
 class ControlFrameClient {
 public:
     ControlFrameClient(ClientTlsStream& stream,
                        boost::asio::io_context& io,
-                       const std::optional<crypto::Bytes>& inner_key,
                        obfs::H2Carrier* carrier,
                        crypto::Bytes* prefetched,
                        ratchet::SessionRatchet* ratchet)
         : stream_(stream),
           io_(io),
-          inner_key_(inner_key),
           carrier_(carrier),
           prefetched_(prefetched),
           ratchet_(ratchet) {}
@@ -99,12 +90,7 @@ public:
     void send(const nlohmann::json& req) {
         std::string payload_str = req.dump();
         crypto::Bytes payload(payload_str.begin(), payload_str.end());
-        uint16_t flags = 0;
-        if (inner_key_.has_value() && !ratchet_) {
-            payload = inner::encrypt_payload(*inner_key_, protocol::CONTROL, 0, payload);
-            flags |= protocol::kFlagInnerEncrypted;
-        }
-        protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
+        protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, 0}, payload};
         if (ratchet_) {
             frame = ratchet_->Seal(frame, std::chrono::steady_clock::now());
         }
@@ -152,24 +138,13 @@ public:
         if (resp_frame.header.type != protocol::CONTROL) {
             throw std::runtime_error("unexpected control response");
         }
-        crypto::Bytes payload = resp_frame.payload;
-        if (inner_key_.has_value() && !ratchet_) {
-            if ((resp_frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
-                throw std::runtime_error("control response missing inner encryption");
-            }
-            payload = decrypt_control_payload(
-                *inner_key_,
-                protocol::CONTROL,
-                resp_frame.header.stream_id,
-                resp_frame.payload);
-        }
+        const crypto::Bytes& payload = resp_frame.payload;
         return nlohmann::json::parse(std::string(payload.begin(), payload.end()));
     }
 
 private:
     ClientTlsStream& stream_;
     boost::asio::io_context& io_;
-    const std::optional<crypto::Bytes>& inner_key_;
     obfs::H2Carrier* carrier_{nullptr};
     crypto::Bytes* prefetched_{nullptr};
     ratchet::SessionRatchet* ratchet_{nullptr};
@@ -291,29 +266,18 @@ RelayRuntime::Options make_relay_options(const ClientConfig& cfg) {
     return relay_opts;
 }
 
-std::string effective_protection_summary(const ClientConfig& cfg,
-                                         bool inner_key_established,
-                                         bool have_inner_caps,
+std::string effective_protection_summary(bool have_inner_caps,
                                          bool server_inner_dual,
-                                         bool server_inner_active,
-                                         const std::optional<inner::KdfParams>& inner_kdf) {
-    if (!inner_key_established && !server_inner_active) {
+                                         bool server_inner_active) {
+    if (!server_inner_active) {
         return "TLS over 443";
     }
-    std::string protection = (have_inner_caps && server_inner_dual)
-        ? "Inner dual"
-        : (std::string("Inner ") + (cfg.inner_heavy ? "heavy" : "light"));
+    std::string protection =
+        (have_inner_caps && server_inner_dual) ? "Inner dual" : "Inner";
     protection += " over 443";
-    std::string kdf_name;
-    if (inner_kdf.has_value()) {
-        kdf_name = inner_kdf->name;
-    }
-    if (kdf_name.empty()) {
-        kdf_name = cfg.inner_heavy ? "argon2" : "hkdf";
-    }
-    if (!kdf_name.empty()) {
-        protection += " (" + kdf_name + ")";
-    }
+    // AUTH v2 pins its key schedule to HKDF and never accepts a peer-supplied
+    // KDF request, so there is nothing to resolve here.
+    protection += " (hkdf)";
     return protection;
 }
 
@@ -806,7 +770,6 @@ int run_connected_session(boost::asio::io_context& io,
     ControlFrameClient control_client(
         stream,
         io,
-        options.inner_key,
         options.h2_carrier.get(),
         &options.prefetched_carrier_bytes,
         options.ratchet.get());
@@ -839,9 +802,6 @@ int run_connected_session(boost::asio::io_context& io,
         util::log_warn(
             "embedded master PQ keypair enabled; connection security depends on basefwx-bundled keys "
             "(disable with --no-embedded-master)");
-    }
-    if (options.inner_key.has_value()) {
-        tunnel->set_inner_key(*options.inner_key);
     }
     tunnel->set_obfs_shape(cfg.obfs_pad_multiple, cfg.obfs_jitter_ms);
     tunnel->set_server_in_charge(cfg.server_in_charge);
@@ -876,12 +836,9 @@ int run_connected_session(boost::asio::io_context& io,
     };
 
     const std::string protection_summary = effective_protection_summary(
-        cfg,
-        options.inner_key.has_value(),
         options.have_inner_caps,
         options.server_inner_dual,
-        options.server_inner_active,
-        options.inner_kdf);
+        options.server_inner_active);
 
     auto tunnel_pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
     tunnel_pool->add(tunnel);

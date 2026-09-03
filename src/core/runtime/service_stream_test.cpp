@@ -208,6 +208,56 @@ void test_admission_cancel_and_stop_wake_waiters() {
     assert(stop_completions == 1U);
 }
 
+// Regression: write() returns Accepted when the transport admits a frame, not
+// when it drains. shutdown_write used to emit FIN immediately, so under load
+// the FIN overtook the final record and the peer saw EOF instead of the reply.
+// That silently truncated the most ordinary request/response exchange there is.
+void test_shutdown_write_waits_for_accepted_writes_to_drain() {
+    using ServiceStream = yume::runtime::ServiceStream;
+    ServiceStream stream("drain", "peer");
+    ServiceStream::WriteCompletion pending;
+    bool fin_sent = false;
+
+    stream.set_callbacks(
+        [&pending](ServiceStream::Bytes,
+                   std::uint32_t,
+                   ServiceStream::WriteCompletion completion,
+                   std::string*) {
+            // Hold the completion: the frame is admitted but not yet drained.
+            pending = std::move(completion);
+            return ServiceStream::WriteResult::Accepted;
+        },
+        [](std::string) {},
+        [&fin_sent](std::string) { fin_sent = true; });
+
+    const char payload = 'x';
+    std::string error;
+    assert(stream.write(&payload, 1U, 0U, &error) ==
+           ServiceStream::WriteResult::Accepted);
+    assert(!fin_sent);
+
+    // With the write still in flight and no deadline to wait on, shutdown must
+    // fail rather than send a FIN that would overtake it.
+    assert(!stream.shutdown_write(&error, 0U));
+    assert(!fin_sent);
+    assert(!error.empty());
+
+    // A bounded wait times out for the same reason while the write is stuck.
+    assert(!stream.shutdown_write(&error, 30U));
+    assert(!fin_sent);
+
+    // Draining the write releases the shutdown.
+    assert(pending);
+    pending(true, {});
+    assert(stream.shutdown_write(&error, 5000U));
+    assert(fin_sent);
+
+    // Idempotent: a second shutdown neither fails nor re-sends.
+    fin_sent = false;
+    assert(stream.shutdown_write(&error, 5000U));
+    assert(!fin_sent);
+}
+
 void test_service_stream_admission_gate_serializes_stop() {
     using Gate = yume::runtime::ServiceStreamAdmissionGate;
 
@@ -424,6 +474,7 @@ int main() {
     test_admission_cancel_reuses_one_scheduled_wake();
     test_admission_cancel_and_stop_wake_waiters();
     test_service_stream_admission_gate_serializes_stop();
+    test_shutdown_write_waits_for_accepted_writes_to_drain();
 
     return 0;
 }

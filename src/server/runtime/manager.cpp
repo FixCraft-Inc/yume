@@ -5,6 +5,11 @@
  */
 
 #include "server/runtime/manager.hpp"
+
+#include <future>
+
+#include <boost/asio/bind_executor.hpp>
+#include <boost/asio/strand.hpp>
 #include "server/runtime/service_queue_policy.hpp"
 #include "server/runtime/weighted_egress_limiter.hpp"
 
@@ -87,7 +92,8 @@ void validate_auth_policy_store(const AuthKeyPolicyMap& policies,
 Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     : io_(io)
     , cfg_(cfg)
-    , acceptor_(io)
+    , accept_strand_(boost::asio::make_strand(io))
+    , acceptor_(accept_strand_)
     , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, server_context_allows_h2(cfg)))
     , authorized_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
     , auth_policies_(std::make_shared<const AuthKeyPolicyMap>())
@@ -361,8 +367,30 @@ void Manager::stop() {
         }
         invites_.clear();
     }
-    boost::system::error_code ec;
-    acceptor_.close(ec);
+    // basic_socket_acceptor is not thread-safe, and the accept completion
+    // handler reads is_open() on the io_context thread. Closing from the
+    // caller's thread races that read on the acceptor's internal state.
+    // ThreadSanitizer catches it whenever a server is started and stopped
+    // in-process, which the C ABI does and yumed never did.
+    //
+    // RuntimeController::stop() runs this before io->stop(), so the post below
+    // is normally drained by a worker. The bounded wait is for any caller that
+    // stops a manager whose loop is not being run: closing late is better than
+    // hanging, and with no runner there is no handler to race anyway.
+    {
+        auto closed = std::make_shared<std::promise<void>>();
+        std::future<void> closed_future = closed->get_future();
+        boost::asio::post(accept_strand_, [this, closed]() {
+            boost::system::error_code ec;
+            acceptor_.close(ec);
+            closed->set_value();
+        });
+        if (closed_future.wait_for(std::chrono::seconds(5)) !=
+            std::future_status::ready) {
+            boost::system::error_code ec;
+            acceptor_.close(ec);
+        }
+    }
 
     std::vector<std::shared_ptr<runtime::ServiceStream>> pending_services;
     {
@@ -959,7 +987,9 @@ void Manager::do_accept() {
     if (!acceptor_.is_open()) {
         return;
     }
-    acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
+    acceptor_.async_accept(boost::asio::bind_executor(
+        accept_strand_,
+        [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
             if (ip_filter_) {
                 boost::system::error_code ep_ec;
@@ -1010,7 +1040,7 @@ void Manager::do_accept() {
         if (acceptor_.is_open()) {
             do_accept();
         }
-    });
+        }));
 }
 
 void Manager::refuse_client_socket(boost::asio::ip::tcp::socket& socket) {

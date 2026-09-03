@@ -1,49 +1,50 @@
 # Public automation context
 
-This directory contains repository context that is useful to coding tools but
-is safe to publish. It is not part of the user documentation path.
-
-Start with the root [AGENTS.md](../../AGENTS.md). It defines the repository
-boundaries, engineering rules, and validation policy. The source tree and tests
-remain authoritative.
+Start with the root `AGENTS.md`. Work from live Git and source state, preserve
+unrelated changes, and finish with focused checks plus `git diff --check`.
 
 ## Repository boundaries
 
-- This repository owns the native YUME client, daemon, C ABI, CLI, and optional
-  desktop GUI.
-- `basefwx/` is a separate Git checkout. Its required revision comes from
+- This checkout owns native YUME, its C ABI, CLIs, daemon, and adapters.
+- `basefwx/` is a separate ignored checkout pinned by
   `config/dependencies.json`.
-- The Android application and browser are separate repositories.
-- `.private/ai/`, when present, is an ignored local overlay. It may contain
-  current task state and machine evidence, but it never overrides tracked
-  source, tests, or public contracts.
+- Android is a separate repository and consumes public YUME interfaces.
+- `.private/ai/` may contain ignored local evidence but never overrides source,
+  tests, or tracked contracts.
 
-## Documentation boundary
+## Current version axes
 
-Keep durable public material in the narrowest matching document:
+The product development label, runnable transport v2/AUTH v2/relay v2,
+experimental YTP/1, config schema 1, replacement C ABI candidate, provider
+versions, cryptographic backend, and evidence-profile version are independent.
+Do not rename domains or bump ABI/schema merely to match the product version.
 
-- current support and release limits in `docs/IMPLEMENTATION_STATUS.md`
-- component ownership in `docs/ARCHITECTURE.md`
-- public C and JSON contracts in `docs/ABI.md` and `docs/CONTROL_API.md`
-- normative wire rules in `docs/protocol/`
-- contributor workflow in `CONTRIBUTING.md`
+## Documentation authority
 
-Dated handoffs, dirty-tree inventories, machine paths, benchmark artifacts,
-session narrative, rejected experiments, and task queues belong in the ignored
-private overlay or Git history. Do not create a public status file for each
-work session.
+- code layout, which of the two stacks a file belongs to, and the enforced
+  layering: `docs/SOURCE_MAP.md`;
+- current support and gates: `docs/IMPLEMENTATION_STATUS.md`;
+- YTP/1 replacement contracts, not a map of the running code:
+  `docs/ARCHITECTURE.md`;
+- current transport-v2 facade: `docs/CONTROL_API.md`;
+- experimental replacement C contract: `docs/ABI.md`;
+- current and replacement wires: `docs/protocol/YUME_2_0_WIRE.md` and
+  `docs/protocol/YTP_1.md`;
+- contributor flow: `CONTRIBUTING.md`.
 
-The product version recorded in `src/core/version.hpp`, transport v2, AUTH v2,
-relay v2, C ABI v1, and helper IPC v1 are separate identifiers. Do not rename
-wire domains or protocol files to match the product version.
+YTP/1 has no compatibility path for transport v2 or AUTH v2, and schema 1 has
+no old aliases. That wire break does not retire the default-built 0.2 product.
+Keep its GUI, federation, relay applications, command execution, codecs,
+self-DPI controls, and security modes separate from YTP/1 until each surface
+has a reviewed replacement or retirement milestone.
 
-## Safe changes
+Layering is checked at configure time by `cmake/YumeLayering.cmake`, which pins
+exact link dependencies for several targets and rejects cross-layer includes by
+direction. A new cross-layer dependency means changing an assertion on purpose,
+not routing around it.
 
-Preserve unrelated dirty work. Validate untrusted JSON before reading typed
-fields, keep queues bounded, contain all C ABI errors, and use explicit
-ownership and nonthrowing cleanup. Update tests and human documentation with
-behavior changes in the same patch. Search for duplicate claims in CLI help,
-man pages, release material, and manually maintained website pages; regenerate
-website documentation through `scripts/sync_website_docs.sh` rather than
-editing its ignored output. A private handoff does not close a tracked
-documentation obligation. Finish with focused checks and `git diff --check`.
+Keep engine and YTP sources independent of OpenSSL, nghttp2, sockets, JSON,
+filesystem, CLI, and GUI. Register exact providers on each `EngineBuilder`;
+never add a global mutable registry, runtime `dlopen()`, or provider fallback.
+Contain exceptions at the C ABI and callback boundaries, validate untrusted
+input before allocation, and keep queues and asynchronous work bounded.

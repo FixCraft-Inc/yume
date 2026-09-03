@@ -113,15 +113,6 @@ void Session::handle_control(const protocol::Frame& frame) noexcept {
 
 void Session::handle_control_impl(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        crypto::Bytes decrypted;
-        if (decrypt_inner_payload(protocol::CONTROL, frame.header.stream_id, frame.payload, &decrypted)) {
-            payload = std::move(decrypted);
-        } else {
-            util::log_warn("session " + std::to_string(session_id_) + ": CONTROL decrypt failed");
-            return;
-        }
-    }
 
     nlohmann::json json;
     try {
@@ -822,12 +813,6 @@ bool Session::handle_control_open_request(const protocol::Frame& frame) {
     }
 
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::OPEN, frame.header.stream_id, frame.payload, &payload)) {
-            send_open_reply(frame.header.stream_id, false, "control open decrypt failed");
-            return true;
-        }
-    }
 
     auto target_reservation = target->reserve_stream_id();
     if (!target_reservation) {
@@ -903,19 +888,6 @@ bool Session::handle_control_open_ack(const protocol::Frame& frame) {
     }
 
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::OPEN, frame.header.stream_id, frame.payload, &payload)) {
-            if (auto peer = link.peer.lock()) {
-                peer->send_control_close(link.peer_stream_id, "control open decrypt failed");
-            }
-            if (manager_ && !link.channel_id.empty()) {
-                manager_->unregister_active_channel(link.channel_id);
-            }
-            std::lock_guard<std::mutex> lock(control_mutex_);
-            control_inbound_.erase(frame.header.stream_id);
-            return true;
-        }
-    }
     const bool wire_ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
     const std::string reason(payload.begin(), payload.end());
 
@@ -1056,20 +1028,6 @@ bool Session::handle_control_data(
     }
 
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::DATA, frame.header.stream_id, frame.payload, &payload)) {
-            if (auto peer = link.peer.lock()) {
-                peer->send_control_close(link.peer_stream_id, "control data decrypt failed");
-            }
-            if (manager_ && !link.channel_id.empty()) {
-                manager_->unregister_active_channel(link.channel_id);
-            }
-            std::lock_guard<std::mutex> lock(control_mutex_);
-            control_outbound_.erase(frame.header.stream_id);
-            control_inbound_.erase(frame.header.stream_id);
-            return true;
-        }
-    }
 
     if (!inbound_credit) {
         peer->send_control_frame(
@@ -1111,11 +1069,6 @@ bool Session::handle_control_close(const protocol::Frame& frame) {
     }
 
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::CLOSE, frame.header.stream_id, frame.payload, &payload)) {
-            payload.clear();
-        }
-    }
     const std::string reason(payload.begin(), payload.end());
 
     {
@@ -1153,12 +1106,6 @@ bool Session::handle_control_exec(const protocol::Frame& frame) {
     }
 
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::EXEC, frame.header.stream_id, frame.payload, &payload)) {
-            send_control_close(frame.header.stream_id, "control exec decrypt failed");
-            return true;
-        }
-    }
 
     auto target_reservation = target->reserve_stream_id();
     if (!target_reservation) {
@@ -1218,10 +1165,6 @@ void Session::send_control_frame(
     std::function<void(const boost::system::error_code&, std::size_t)> handler) {
     crypto::Bytes out = payload;
     uint16_t flags = extra_flags;
-    if (inner_key_.has_value()) {
-        out = encrypt_inner_payload(type, stream_id, out);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
     protocol::Frame frame{{static_cast<uint32_t>(out.size()), type, stream_id, flags}, out};
     async_write_frame(frame, std::move(handler));
 }

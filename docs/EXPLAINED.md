@@ -1,148 +1,133 @@
 # YUME explained
 
-YUME carries several local connections through one authenticated connection to
-a YUME server. This page explains that path, the trust it creates, and the
-common ways to route it.
+YUME is a stealth universal transport. Its modular replacement keeps that
+role: the core abstraction is an authenticated peer opening a named byte
+stream or packet channel over one carrier. The runnable transport-v2 tunnel
+remains available while the replacement is completed.
 
-YUME can make a connection look less like a custom tunnel and can move the
-visible exit away from the client. It does not provide anonymity by itself.
-
-## The basic route
+## The dependency path
 
 ```text
-+--------------------------------+
-|  APPLICATION                   |
-|  browser, CLI, or service      |
-+--------------------------------+
-                |
-                | SOCKS, forward, packet path, or C API
-                v
-+--------------------------------+
-|  YUME CLIENT                   |
-|  authenticates and multiplexes |
-+--------------------------------+
-                |
-                | TLS 1.3 + HTTP/2 + WebSocket
-                v
-+--------------------------------+
-|  YUMED SERVER                  |
-|  checks policy and opens exits |
-+--------------------------------+
-                |
-                | TCP or UDP
-                v
-+--------------------------------+
-|  DESTINATION                   |
-|  sees the server's exit IP     |
-+--------------------------------+
+ByteChannel
+  -> SecureChannel
+  -> Carrier
+  -> SessionEngine
+  -> StreamDispatcher
+  -> StreamHandler or RouteProvider
 ```
 
-The application connects to a local YUME entry point. Each application socket
-becomes a logical stream. Opening another website or forward does not require a
-new TLS connection or client login.
+- `ByteChannel` owns reliable ordered asynchronous bytes, cancellation,
+  executor affinity, bounded writes, and move-only buffers.
+- `SecureChannel` adds an exporter-quality binding plus bounded outer-channel
+  evidence, which may represent an unauthenticated TLS client. Only successful
+  YTP authentication creates application `PeerEvidence` for policy. TLS 1.3 is
+  the required first provider.
+- `FrontDoor` owns listening, real website/reverse-proxy traffic, cheap
+  replay-protected admission, and promotion to a typed ready carrier that
+  retains the admitted HTTP/2 connection, stream, and flow-credit state.
+- `Carrier` maps secure plaintext to records and owns outer flow credit. The
+  first carrier is duplex HTTP/2.
+- `SessionEngine` owns YTP/1 authentication, records, ratchets,
+  multiplexing, capabilities, backpressure, and lifecycle without depending on
+  sockets, TLS, HTTP/2, JSON, filesystem, CLI, or GUI.
+- `StreamHandler` independently authorizes each authenticated named OPEN.
+- `RouteProvider` performs explicit egress only after dispatcher policy passes.
 
-The daemon authenticates the client, checks its permissions, decrypts YUME
-records, and opens the destination socket. The destination normally sees the
-daemon's exit address. The daemon can see destination metadata and any payload
-that is not protected by an application protocol such as HTTPS.
+`EngineBuilder` selects exact, instance-local providers and freezes the graph.
+There is no global mutable registry, reflection configuration, runtime
+`dlopen()`, provider fallback, or YTP/1 suite negotiation.
 
-## What appears on the network
+## The connection path
 
-The outer connection is TLS 1.3 with an HTTP/2 and WebSocket carrier. A normal
-browser request on the same listener is sent to a separate cover site on
-loopback. A request must pass keyed admission before it can reach YUME
-authentication.
-
-The current profile comes from one committed browser and cover-server capture.
-It centralizes the TLS choice, request headers, HTTP/2 settings, and cover
-identity. Some behavior is still distinguishable, especially full
-session timing and volume. Read [stealth transport](STEALTH.md) for the tested
-scope and remaining residuals.
-
-## Session security
-
-AUTH v2 uses a composite Ed25519 and ML-DSA-87 client identity. Key
-establishment combines ML-KEM-1024, X25519, a random pre-shared key, and the
-TLS exporter. The session then uses independent send and receive epochs with a
-one-use AES-256-GCM key for each message.
-
-Rekey policies change how much data or active time one epoch can cover. They do
-not remove the hybrid algorithms or per-message keys. See
-[security modes](SECURITY_MODES.md).
-
-The admission secret and inner pre-shared key solve different problems. Both
-are required for the current public-node mode and both must be distributed out
-of band.
-
-## Routing choices
-
-### Direct
-
-The client connects directly to `yumed`, and `yumed` connects directly to the
-destination. This has the fewest network hops. The client's network sees a
-connection to the YUME server. The destination sees the YUME server.
-
-### Outer proxy or Tor
-
-The client can reach `yumed` through a SOCKS5 proxy or Tor:
+The intended direct tunnel route is:
 
 ```text
-application -> yume -> SOCKS/Tor -> yumed -> destination
+application -> SOCKS/ABI adapter -> YUME endpoint -> TLS 1.3 + HTTP/2
+            -> authenticated YTP/1 session -> authorized direct route
+            -> destination
 ```
 
-Hostnames are sent to the proxy as domain names, so an onion address or remote
-DNS lookup does not need a direct client-side query. The proxy can see that the
-client connected to the YUME server. The YUME server still terminates the
-YUME session and sees its exit traffic.
+A local adapter asks the endpoint to open the named `tcp`, `udp`, or another
+application service. Service identity is the pair `(name, kind)`, allowing one
+name to expose distinct stream and packet semantics. YTP/1 assigns a 31-bit odd/even stream ID, preserves
+application payload opacity, and applies connection and stream credit. Direct
+TCP/UDP destinations use strict built-in binary encodings rather than JSON.
 
-### Server-side egress
+The server terminates the YUME session and therefore learns the authenticated
+client identity, service, and direct destination. HTTPS or another independent
+application protocol can still protect content end to end. YUME does not
+provide anonymity from its terminating server.
 
-An operator can route the daemon's outbound sockets through a separate egress
-network:
+## Public front door
 
-```text
-application -> yume -> yumed -> Tor or VPN -> destination
-```
+The public listener is a genuine application-protocol endpoint. Normal browser
+traffic and invalid or missing admission remain in the real cover website or
+reverse proxy. Only a bounded, replay-protected admission path can promote a
+connection to YTP/1; unauthenticated failures must not receive a YUME-shaped
+response.
 
-This changes which IP address the destination sees. It does not hide the
-destination from `yumed`, because the daemon chooses and opens that connection.
-The operator is responsible for making sure DNS and fallback routes use the
-same egress policy.
+Browser-shaped geometry is an independently versioned evidence profile. A new
+capture does not revise authenticated YTP semantics. Claims must name the exact
+qualified profile and environment; YUME does not claim universal
+indistinguishability or DPI resistance.
 
-### Federation
+## Session security contract
 
-YUME servers can exchange a directory and relay eligible channels across a
-direct authenticated federation link. The implemented boundary is one hop.
-The three-node regression intentionally proves that a far endpoint is not
-routable through the middle node.
+YTP/1 fixes one mandatory composition and binds it into a canonical schedule:
 
-Multi-hop relay-channel transit has a public design document, but it is not an
-implemented feature. Exit traffic such as SOCKS, forwarding, and packet routing
-remains local to the terminating daemon. See the
-[federation transit design](protocol/YUME_2_0_FEDERATION_TRANSIT.md).
+- Ed25519 **and** ML-DSA-87 authentication;
+- X25519 and ML-KEM-1024 establishment;
+- a unique access PSK for each authorized key;
+- the live TLS exporter;
+- suite, roles, transcript, both identities, both capability manifests, and
+  exact security parameters;
+- independent directional rekeying and one-use AES-256-GCM keys for protected
+  records. The sole bare post-AUTH record is the candidate-new-root
+  authenticated rekey acknowledgement defined by YTP/1.
 
-## Local entry points
+All required components must succeed. A mismatch is terminal; there is no
+downgrade or retry with a weaker provider. Ratcheting is described as
+post-compromise-oriented until recovery assumptions have formal and
+experimental support.
 
-The command-line client supports SOCKS, local and reverse forwards, attached
-commands, packet paths, services, and application codecs. Availability depends
-on the client key's permissions and the selected build. The stable C ABI offers
-the same in-process client runtime to native applications.
+These are normative requirements. The current `0.3.0-dev1` tree has an
+opt-in, build-tree-only OpenSSL security-provider candidate with focused
+real-key handshake, record, and rekey tests. It is still unwired from the
+native TLS/HTTP/2 runtime and public ABI, is not production-qualified, and has
+not completed external protocol/cryptography review.
 
-The optional desktop GUI uses that shared runtime. It is a development preview,
-not a separate transport implementation. The Android application and browser
-are separate repositories and are not qualified by the native Linux build.
+## Capabilities and policy
 
-## Decide what to trust
+AUTH binds a bounded canonical service-capability manifest. Every OPEN is still
+checked independently against identity, service kind, destination policy, and
+resource limits. Capability advertisement cannot bypass authorization.
 
-Before choosing a route, answer these questions:
+Routes are fenced by construction: only the session dispatcher can create an
+`AuthorizedRouteRequest`, and it does so after the policy gate. Slow consumers,
+stream floods, malformed input, packet batches, control messages, and rekey work
+all meet explicit bounds before allocation.
 
-1. Who may learn the client's network address?
-2. Who may learn the destination?
-3. Is the application payload protected end to end?
-4. Which component can fall back to a direct route?
-5. Which keys and shared secrets must be distributed or stored?
+## Embedding
 
-Use the [threat model](THREAT_MODEL.md) for attacker-specific analysis and the
-[operations guide](OPERATIONS.md) for deployment controls. The
-[implementation status](IMPLEMENTATION_STATUS.md) lists unqualified paths and
-open release gates.
+Future stable consumers will include only `<yume/yume.h>` and link the
+installed replacement library. The current role-neutral ABI candidate exposes runtime, immutable config,
+endpoint, stream, and packet handles with blocking timeout calls over the
+asynchronous implementation. Applications never need a CLI, private header,
+Boost.Asio, OpenSSL, nghttp2, or JSON operation bus.
+
+The experimental C++20 provider SDK is source-level and intended only for
+trusted in-process providers. Out-of-process plugins are deferred until a real
+consumer justifies a protocol and threat model.
+
+## Product boundary
+
+The first complete YTP/1 path targets direct routing, SOCKS5, named-service,
+and packet adapters; those adapters are not wired yet. GUI, federation,
+transit, directory, relay applications, reverse administration, command
+execution, and product-specific codecs remain separate transport-v2 surfaces
+rather than prerequisites for the first replacement tunnel. Dynamic plugins
+and cryptographic suite negotiation are outside YTP/1.
+
+The current implementation boundary is tracked in
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md); this description does not
+turn an unwired component into supported runtime behavior.

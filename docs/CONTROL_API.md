@@ -1,8 +1,16 @@
 # YUME JSON control API
 
+> **Transport-v2 surface:** this is the command-oriented facade contract used
+> by the runnable 0.2 product and optional GUI. The experimental role-neutral
+> YTP/1 ABI does not expose a JSON operation bus.
+
 This document defines the JSON operation envelope used by local runtime IPC and
-the public `yume_client_request_json` / `yume_server_request_json` C ABI calls.
-It is independent of transport v2 and of `YUME_ABI_VERSION`.
+by the in-process embedder entry points `client::RuntimeController::request` and
+`server::RuntimeController::request`. The 1.x C ABI reached this bus through
+`yume_client_request_json` / `yume_server_request_json`; those symbols no longer
+exist, and the replacement role-neutral ABI deliberately exposes typed
+lifecycle calls instead of a JSON operation bus. This contract is independent
+of transport v2 and of `YUME_ABI_VERSION`.
 
 ## Envelope and error layers
 
@@ -54,7 +62,7 @@ their terminating NULs; exceeding a bound returns
 
 ## Authority and deadlines
 
-`yume_client_request_json` runs as the connected local client identity. Its
+The client request entry point runs as the connected local client identity. Its
 explicit timeout bounds how long the caller waits and whether a queued handler
 may start. If the deadline expires before the handler starts, that handler is
 cancelled. If it has already started, it may finish after the caller receives
@@ -68,11 +76,11 @@ The owner-only local IPC socket exposes its process's complete local operation
 set. Socket filesystem permissions are therefore part of the authorization
 boundary.
 
-`yume_server_request_json` does not require IPC, but deliberately exposes only
-bounded read operations. It has no timeout parameter. Mutating admin-socket
-operations such as `runtime.stop`, `runtime.disconnect`, session killing, and
-rules reload return a handled `ok=false` envelope through this ABI function;
-use typed lifecycle/facade methods for embedded mutations.
+The embedded server request entry point does not require IPC, but deliberately
+exposes only bounded read operations. It has no timeout parameter. Mutating
+admin-socket operations such as `runtime.stop`, `runtime.disconnect`, session
+killing, and rules reload return a handled `ok=false` envelope here. Use typed
+lifecycle and facade methods for embedded mutations.
 
 ## Client operations
 
@@ -224,7 +232,7 @@ Identity/response fields are present only when supplied by that invite.
 
 ## Embedded-server read operations
 
-The `yume_server_request_json` allowlist is:
+The embedded server read allowlist is:
 
 | Operation | Args | Result |
 | --- | --- | --- |
@@ -236,8 +244,8 @@ The `yume_server_request_json` allowlist is:
 | `federation.topology` | `{}` | single-hop topology document |
 
 Unknown arguments are rejected. The owner-only server IPC socket also
-exposes these mutations; none is available through
-`yume_server_request_json`:
+exposes these mutations. None is available through the embedded server read
+entry point:
 
 | Operation | Exact args | Result |
 | --- | --- | --- |

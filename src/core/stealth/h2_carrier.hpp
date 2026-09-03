@@ -150,6 +150,7 @@ public:
 
     bool priming_complete() const noexcept;
     bool peer_extended_connect_enabled() const noexcept;
+    H2CarrierRole role() const noexcept;
     bool carrier_active() const noexcept;
     bool carrier_closed() const noexcept;
     std::int32_t carrier_stream_id() const noexcept;

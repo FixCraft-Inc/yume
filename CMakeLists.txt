@@ -23,7 +23,10 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
+option(YUME_BUILD_TRANSPORT_V2
+    "Build the current transport-v2 yume/yumed product while YTP/1 reaches parity"
+    ON)
+option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
 set(YUME_DEPENDENCY_MANIFEST
     "${CMAKE_CURRENT_SOURCE_DIR}/config/dependencies.json")
@@ -143,13 +146,13 @@ foreach(_yume_tls_candidate IN LISTS _yume_active_profile_tls_candidates)
     list(APPEND YUME_ACTIVE_PROFILE_TLS_CANDIDATE_ARGS
         --candidate "${_yume_tls_candidate_path}")
 endforeach()
-option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
+option(YUME_USE_SPDLOG "Enable spdlog logging backend" ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
 option(YUME_STATIC "Attempt static build (requires static deps)" OFF)
 option(YUME_STATIC_OPENSSL
     "Link the pinned OpenSSL into YUME binaries so native Chrome TLS has no runtime libssl dependency"
-    ON)
+    ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_NATIVE_OPT "Enable host-specific -march/-mtune=native CPU tuning; disables portable binaries" OFF)
 option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
@@ -158,12 +161,34 @@ option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
 option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool for desktop developers" OFF)
 option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
 option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
-option(YUME_BUILD_SHARED_ABI "Build and install the stable libyume C ABI shared library" OFF)
-option(YUME_ABI_CLIENT_ONLY "Build libyume with client/stream/packet runtime only" OFF)
+option(YUME_BUILD_SHARED_ABI
+    "Build the experimental unwired ABI v1 scaffold for local contract tests"
+    OFF)
+option(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER
+    "Build the unqualified OpenSSL 3.5 YTP/1 session-security provider"
+    OFF)
+option(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER
+    "Build the unqualified OpenSSL 3.5 YTP/1 TLS 1.3 secure-channel provider"
+    OFF)
+option(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER
+    "Build the unqualified Boost.Asio YTP/1 direct TCP/UDP route provider"
+    OFF)
+option(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER
+    "Build the unqualified client TCP ByteChannel provider for YTP/1"
+    OFF)
+option(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER
+    "Build the unqualified libnghttp2 YTP/1 duplex carrier provider"
+    OFF)
+option(YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS
+    "Install the schema-1 YTP/1 setup and doctor previews (not usable with transport-v2)"
+    OFF)
+option(YUME_ABI_CLIENT_ONLY
+    "Trim the current transport-v2 graph to its client-only sources"
+    OFF)
 
-# Compile at least one consumer as C whenever the public C ABI is enabled.
-# Keeping C conditional avoids imposing a second compiler on ordinary C++-only
-# and cross builds that do not produce libyume.
+# Compile at least one consumer as C whenever the experimental ABI contract is
+# enabled. Keeping C conditional avoids imposing a second compiler on normal
+# product and foundation-only builds.
 if(YUME_BUILD_SHARED_ABI)
     enable_language(C)
 endif()
@@ -282,7 +307,7 @@ option(YUME_BUILD_CHROME_TLS_HELPER
 option(YUME_GUI_PORTABLE "Statically link the C/C++ runtime into yume-gui" OFF)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/version.hpp" _yume_version_line
-    REGEX "constexpr const char kVersion\\[\\]")
+    REGEX "kVersion\\[\\][ \\t]*=[ \\t]*\"")
 string(REGEX MATCH "\"([^\"]+)\"" _yume_version_match "${_yume_version_line}")
 if(CMAKE_MATCH_1)
     set(YUME_PACKAGE_VERSION "${CMAKE_MATCH_1}")
@@ -349,17 +374,23 @@ endif()
 if(YUME_STATIC AND YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_BUILD_SHARED_ABI requires a dynamic build; disable YUME_STATIC")
 endif()
-if(YUME_TRANSPORT_CORE_ONLY AND YUME_BUILD_SHARED_ABI)
-    message(FATAL_ERROR "YUME_BUILD_SHARED_ABI requires the full YUME core; disable YUME_TRANSPORT_CORE_ONLY")
+if(YUME_ABI_CLIENT_ONLY AND NOT YUME_BUILD_TRANSPORT_V2)
+    message(FATAL_ERROR
+        "YUME_ABI_CLIENT_ONLY is available only with YUME_BUILD_TRANSPORT_V2=ON")
 endif()
-if(YUME_ABI_CLIENT_ONLY AND NOT YUME_BUILD_SHARED_ABI)
-    message(FATAL_ERROR "YUME_ABI_CLIENT_ONLY requires YUME_BUILD_SHARED_ABI=ON")
+if(NOT YUME_BUILD_TRANSPORT_V2 AND
+   (YUME_TRANSPORT_CORE_ONLY OR YUME_BUILD_GUI OR
+    YUME_BUILD_CHROME_TLS_HELPER OR YUME_BUILD_SELFTEST OR YUME_BUILD_TOOLS))
+    message(FATAL_ERROR
+        "A transport-v2 build option was enabled while "
+        "YUME_BUILD_TRANSPORT_V2=OFF. The YTP/1 foundation-only graph does "
+        "not build yume, yumed, the facade, GUI, helper, or benchmark tools.")
 endif()
 
-# Static libraries absorbed into libyume must be PIC, hidden, and ordinary
-# native objects. A version script is still the final export allowlist, but
-# GCC 11 LTO can materialize default-visible weak libstdc++ definitions after
-# GNU ld has applied that script. Keep LTO for builds without the shared ABI.
+# A static library absorbed into libyume must be PIC, hidden, and an ordinary
+# native object archive. A version script is still the final export allowlist,
+# but GCC 11 LTO can materialize default-visible weak libstdc++ definitions
+# after GNU ld has applied that script. Do not perturb unrelated engine targets.
 function(yume_prepare_static_for_shared_abi target)
     get_target_property(_yume_target_type ${target} TYPE)
     if(YUME_BUILD_SHARED_ABI AND _yume_target_type STREQUAL "STATIC_LIBRARY")
@@ -374,11 +405,10 @@ function(yume_prepare_static_for_shared_abi target)
             YUME_SHARED_ABI_INPUT ON
         )
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-            # Also overrides directory-level -flto inherited by bundled
-            # BaseFWX, which does not use yume_apply_perf_opts(). Consumers
-            # must inherit the same policy: GCC 14 cannot reliably resolve
-            # hidden inline/template definitions when an LTO object links
-            # these deliberately non-LTO archives.
+            # Override any directory-level -flto on the archive. The shared
+            # target consuming it inherits the same policy: GCC 14 cannot
+            # reliably resolve hidden inline/template definitions when an LTO
+            # object links a deliberately non-LTO archive.
             target_compile_options(${target}
                 PRIVATE -fno-lto
                 INTERFACE -fno-lto)
@@ -494,7 +524,37 @@ else()
     message(STATUS "YUME native CPU tuning: OFF (portable CPU baseline)")
 endif()
 
-if(NOT YUME_TRANSPORT_CORE_ONLY)
+if((YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER OR
+    YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER) AND
+   NOT (YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) AND
+   NOT TARGET OpenSSL::Crypto)
+    # These providers use upstream OpenSSL 3.5 APIs. They are intentionally
+    # independent of the patched TLS emitter required by the runnable
+    # transport-v2 product and remain explicit build-tree opt-ins.
+    find_package(OpenSSL 3.5 REQUIRED)
+endif()
+
+if((YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER OR
+    YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER) AND
+   NOT TARGET Boost::system)
+    find_package(Boost CONFIG QUIET COMPONENTS system)
+    if(NOT Boost_FOUND)
+        find_package(Boost REQUIRED COMPONENTS system)
+    endif()
+endif()
+
+if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+    find_package(PkgConfig REQUIRED)
+    if(NOT TARGET PkgConfig::NGHTTP2)
+        pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
+    endif()
+    set(YUME_NGHTTP2_TARGET PkgConfig::NGHTTP2)
+    if(NOT TARGET OpenSSL::Crypto)
+        find_package(OpenSSL 3.5 REQUIRED)
+    endif()
+endif()
+
+if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
     # Composite AUTH depends on primitives first provided by OpenSSL 3.5
     # (ML-DSA and X25519MLKEM768), while the default native TLS emitter also
     # requires YUME's additive ClientHello patch.
@@ -568,12 +628,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     find_package(Threads REQUIRED)
 endif()
 
-if(YUME_MINIMAL)
+if(YUME_BUILD_TRANSPORT_V2 AND YUME_MINIMAL)
     set(YUME_USE_BASEFWX ON CACHE BOOL "Enable BaseFWX for minimal builds" FORCE)
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for minimal builds" FORCE)
 endif()
 
-if(YUME_USE_BASEFWX)
+if(YUME_BUILD_TRANSPORT_V2 AND YUME_USE_BASEFWX)
     if(NOT CMAKE_CROSSCOMPILING)
         set(BASEFWX_NATIVE_OPT ${YUME_NATIVE_OPT} CACHE BOOL "Enable -march/-mtune native optimizations" FORCE)
     endif()
@@ -603,7 +663,6 @@ if(YUME_USE_BASEFWX)
             set(BASEFWX_BUILD_CLI OFF CACHE BOOL "Disable BaseFWX CLI build" FORCE)
             add_subdirectory(basefwx/cpp EXCLUDE_FROM_ALL)
             if(TARGET basefwxcpp)
-                yume_prepare_static_for_shared_abi(basefwxcpp)
                 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                     target_compile_options(basefwxcpp PRIVATE
                         -Wno-deprecated-declarations
@@ -621,14 +680,43 @@ endif()
 
 add_subdirectory(src)
 
-if(NOT YUME_TRANSPORT_CORE_ONLY)
+# Schema-1 provisioning currently targets the unwired YTP/1 provider graph,
+# not the runnable transport-v2 binaries. Keep the tools available for focused
+# development without placing a nonfunctional quick start in normal installs.
+if(YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS)
+    install(PROGRAMS tools/yume_setup_ytp1.py
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        RENAME yume-setup-ytp1
+        COMPONENT ytp1_experimental
+    )
+    install(PROGRAMS tools/yume_doctor_ytp1.py
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        RENAME yume-doctor-ytp1
+        COMPONENT ytp1_experimental
+    )
+    install(FILES
+        config/ytp1/yume.json
+        config/ytp1/yumed.json
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/yume/examples/ytp1"
+        COMPONENT ytp1_experimental
+    )
+endif()
+
+if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
     set(YUME_DOC_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/doc/yume")
+
+    # Keep the runnable transport-v2 product provisionable while the schema-1
+    # setup tool targets an experimental provider graph with no live endpoint.
+    install(PROGRAMS tools/yume_setup_transport_v2.py
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        RENAME yume-setup
+        COMPONENT yume_cli
+    )
 
     install(FILES
         README.md
         CONTRIBUTING.md
         docs/ABI.md
-        docs/CONTROL_API.md
         docs/DIAGNOSTICS.md
         docs/EXPLAINED.md
         docs/ARCHITECTURE.md
@@ -638,13 +726,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/QUICKSTART.md
         docs/STEALTH.md
         docs/THREAT_MODEL.md
-        docs/APP_CODECS.md
-        docs/HOST_CONTROLLER.md
         docs/IMPLEMENTATION_STATUS.md
         docs/SELFTEST.md
         docs/LEAK_TIGHT.md
         docs/PACKET_NATIVE_BULK.md
-        docs/FILTERING_SELF_DPI.md
         docs/release/CHANGELOG.md
         docs/release/RELEASE-NOTES-1.1.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
@@ -699,11 +784,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         RENAME yume-packet-quick
         COMPONENT yume_cli
     )
-    install(PROGRAMS tools/yume_setup.py
-        DESTINATION "${CMAKE_INSTALL_BINDIR}"
-        RENAME yume-setup
-        COMPONENT yume_cli
-    )
     install(FILES tools/cover-node/backend.mjs
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-node"
         COMPONENT yume_cli
@@ -725,7 +805,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             COMPONENT yume_gui
         )
     endif()
-
     set(CPACK_PACKAGE_NAME "yume")
     set(CPACK_PACKAGE_VENDOR "FixCraft")
     set(CPACK_PACKAGE_CONTACT "https://github.com/FixCraft-Inc/yume/issues")
@@ -738,15 +817,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     set(CPACK_COMPONENT_YUME_CLI_DESCRIPTION "YUME command-line client, yumed server daemon, man pages, and documentation.")
     set(CPACK_COMPONENT_YUME_GUI_DISPLAY_NAME "YUME desktop GUI")
     set(CPACK_COMPONENT_YUME_GUI_DESCRIPTION "Optional desktop GUI for YUME.")
-    set(CPACK_COMPONENT_LIBYUME_RUNTIME_DISPLAY_NAME "libyume runtime")
-    set(CPACK_COMPONENT_LIBYUME_RUNTIME_DESCRIPTION "Runtime shared library for the stable YUME C ABI.")
-    set(CPACK_COMPONENT_LIBYUME_DEVELOPMENT_DISPLAY_NAME "libyume development files")
-    set(CPACK_COMPONENT_LIBYUME_DEVELOPMENT_DESCRIPTION "Header, CMake config, and pkg-config metadata for libyume.")
-    set(CPACK_COMPONENT_LIBYUME_DEVELOPMENT_DEPENDS libyume_runtime)
     set(CPACK_COMPONENTS_ALL yume_cli)
-    if(YUME_BUILD_SHARED_ABI)
-        list(APPEND CPACK_COMPONENTS_ALL libyume_runtime libyume_development)
-    endif()
     if(YUME_BUILD_GUI)
         list(APPEND CPACK_COMPONENTS_ALL yume_gui)
         set(CPACK_COMPONENT_YUME_GUI_DEPENDS yume_cli)
@@ -761,25 +832,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         # dpkg-shlibdeps cannot infer the ML-DSA runtime floor by itself.
         set(CPACK_DEBIAN_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
         set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ${YUME_DEB_SHLIBDEPS})
-        if(YUME_BUILD_SHARED_ABI)
-            set(CPACK_DEB_COMPONENT_INSTALL ON)
-            set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
-            set(CPACK_COMPONENTS_GROUPING IGNORE)
-            set(CPACK_DEBIAN_YUME_CLI_PACKAGE_NAME "yume")
-            set(CPACK_DEBIAN_YUME_CLI_PACKAGE_SECTION "net")
-            set(CPACK_DEBIAN_YUME_CLI_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
-            set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_NAME "libyume1")
-            set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_SECTION "libs")
-            set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
-            set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_NAME "libyume-dev")
-            set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_SECTION "libdevel")
-            set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_DEPENDS "libyume1 (= ${YUME_PACKAGE_VERSION})")
-            if(YUME_BUILD_GUI)
-                set(CPACK_DEBIAN_YUME_GUI_PACKAGE_NAME "yume-gui")
-                set(CPACK_DEBIAN_YUME_GUI_PACKAGE_SECTION "net")
-                set(CPACK_DEBIAN_YUME_GUI_PACKAGE_DEPENDS "yume (= ${YUME_PACKAGE_VERSION})")
-            endif()
-        endif()
         set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
 "YUME is an authenticated TLS 1.3 HTTP/2/WebSocket transport with
 hybrid post-quantum identity, forward-secure session ratchets, SOCKS,

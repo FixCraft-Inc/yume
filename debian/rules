@@ -8,8 +8,6 @@ YUME_EXTRA_CMAKE_ARGS += -DCMAKE_PREFIX_PATH=$(BASEFWX_PREFIX)
 endif
 
 # Set DEB_BUILD_PROFILES=nogui to skip yume-gui (default is build it).
-# The yume-gui binary package is only assembled when the build profile
-# allows it and the build system finds GLFW + appindicator.
 YUME_BUILD_GUI = ON
 ifneq (,$(filter nogui,$(DEB_BUILD_PROFILES)))
 YUME_BUILD_GUI = OFF
@@ -25,8 +23,11 @@ override_dh_auto_configure:
 		-DYUME_USE_BUNDLED_NLOHMANN=OFF \
 		-DYUME_NATIVE_OPT=OFF \
 		-DYUME_LTO=OFF \
+		-DYUME_STATIC_OPENSSL=OFF \
 		-DYUME_DEB_SHLIBDEPS=ON \
-		-DYUME_BUILD_SHARED_ABI=ON \
+		-DYUME_BUILD_TRANSPORT_V2=ON \
+		-DYUME_BUILD_SHARED_ABI=OFF \
+		-DYUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=OFF \
 		-DYUME_BUILD_GUI=$(YUME_BUILD_GUI) \
 		$(YUME_EXTRA_CMAKE_ARGS)
 

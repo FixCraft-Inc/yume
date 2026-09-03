@@ -1,5 +1,9 @@
 # YUME security modes
 
+> **Transport-v2 surface:** these authenticated rekey policies remain part of
+> the runnable 0.2 wire. YTP/1 has one mandatory security composition and does
+> not inherit this mode negotiation.
+
 The current YUME transport supports four ratchet-policy modes. `extreme` remains
 the default and preserves the original transport-v2 epoch limits. The mode changes how much
 traffic may share one hybrid ML-KEM-1024 + X25519 epoch; it does not disable

@@ -6,2066 +6,2208 @@
 
 #include "yume/yume.h"
 
-#include "abi/service_open_wait.hpp"
-#include "abi/service_open_transaction.hpp"
-#include "abi/service_status.hpp"
-#include "client/packet/channel.hpp"
-#include "client/relay/secret.hpp"
-#include "client/transport/tunnel.hpp"
-#include "core/runtime/service_stream.hpp"
-#include "core/runtime/operation_status.hpp"
-#include "core/security/crypto.hpp"
-#include "core/security/inner_crypto.hpp"
-#include "core/security/secure_erase.hpp"
-#include "core/version.hpp"
-#include "facade/config/config_io.hpp"
-#include "facade/session/inproc_client.hpp"
-#if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
-#include "server/runtime/controller.hpp"
-#endif
-
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
+#include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "facade/session/endpoint_backend.hpp"
+#include "common/service_name.hpp"
+#include "config/v1/config.hpp"
+#include "core/compatibility_manifest.hpp"
+
+#if !defined(YUME_ABI_TRANSPORT_V2) || !YUME_ABI_TRANSPORT_V2
+// A build without a transport runtime still exports the identical surface.
+// Defining the seam here rather than guarding every call site keeps the shell
+// readable, and every dialect that would reach these is already refused.
+namespace yume::embed {
+
+std::unique_ptr<BackendConfig> parse_transport_v2_config(std::string_view,
+                                                         bool,
+                                                         std::string_view,
+                                                         std::string& error) {
+    error = "this build has no transport runtime linked into the ABI";
+    return nullptr;
+}
+
+std::unique_ptr<EndpointBackend> make_transport_v2_backend(
+    const BackendConfig&,
+    std::string& error) {
+    error = "this build has no transport runtime linked into the ABI";
+    return nullptr;
+}
+
+}  // namespace yume::embed
+#endif
+
 namespace {
 
-constexpr std::size_t kRequestReplayKeyBytes = 32;
-constexpr std::size_t kMaxRequestOperationBytes = 128;
-constexpr std::size_t kMaxRequestArgsJsonBytes = 1024U * 1024U;
-constexpr std::string_view kRequestReplayDomain =
-    "yume-abi-request-replay-v1";
+// "This build cannot do that" is a different answer from "that document is
+// malformed", and an embedder debugging a config deserves the accurate one.
+#if defined(YUME_ABI_TRANSPORT_V2) && YUME_ABI_TRANSPORT_V2
+constexpr bool kTransportBackendLinked = true;
+#else
+constexpr bool kTransportBackendLinked = false;
+#endif
 
-using RequestReplayKey = yume::crypto::Bytes;
+constexpr std::uint64_t kHandleMagic = UINT64_C(0x59554d4530334142);
+constexpr std::uint32_t kDefaultExecutorThreads = 1;
+constexpr std::uint32_t kMaxExecutorThreads = 64;
+constexpr std::uint32_t kDefaultPendingCallbacks = 1024;
+constexpr std::uint32_t kMaxPendingCallbacks = 65536;
+constexpr std::size_t kMaxRuntimeEndpoints = 65536;
+constexpr std::uint64_t kMaxServiceQueuedBytes = UINT64_C(64) * 1024 * 1024;
+constexpr std::uint32_t kMaxServiceConcurrency = 65536;
+constexpr std::size_t kMaxPacketBatch = 256;
+constexpr std::size_t kMaxPacketBytes = 65535;
+constexpr std::size_t kMaxPacketBatchBytes =
+    std::size_t{16} * 1024 * 1024;
+constexpr std::size_t kMaxConfigBaseDirBytes = 4096;
 
-class RequestReplayKeyWiper {
+static_assert(YUME_MAX_SERVICE_NAME == yume::common::kMaxServiceNameBytes);
+
+enum class HandleKind : std::uint32_t {
+    Runtime = 1,
+    Config = 2,
+    Endpoint = 3,
+    Stream = 4,
+    Packet = 5,
+};
+
+struct DiagnosticData {
+    yume_status status{YUME_STATUS_OK};
+    std::uint32_t flags{0};
+    std::array<char, YUME_MAX_JSON_POINTER> json_pointer{};
+    std::array<char, YUME_MAX_DIAGNOSTIC_TEXT> message{};
+};
+
+struct HandleHeader {
+    explicit HandleHeader(HandleKind handle_kind) : kind(handle_kind) {}
+
+    const std::uint64_t magic{kHandleMagic};
+    const HandleKind kind;
+    mutable std::mutex diagnostic_mutex;
+    DiagnosticData diagnostic;
+};
+
+struct EndpointControl {
+    explicit EndpointControl(std::uint64_t assigned_id) : id(assigned_id) {}
+
+    const std::uint64_t id;
+    // Serializes lifecycle calls and their event order. Callbacks may run while
+    // this sequencing mutex is held, but never while the state or diagnostic
+    // mutex is held; forbidden lifecycle re-entry fails before locking it.
+    mutable std::mutex lifecycle_mutex;
+    mutable std::mutex mutex;
+    std::uint32_t state{YUME_ENDPOINT_CREATED};
+    // Owned under lifecycle_mutex only. Constructed on the first successful
+    // start and destroyed by endpoint destruction, so a stopped endpoint can
+    // be restarted without reparsing its configuration.
+    std::unique_ptr<yume::embed::EndpointBackend> backend;
+};
+
+struct RuntimeState {
+    std::uint32_t executor_threads{kDefaultExecutorThreads};
+    std::uint32_t max_pending_callbacks{kDefaultPendingCallbacks};
+    yume_log_callback log_callback{nullptr};
+    yume_event_callback event_callback{nullptr};
+    void* callback_user_data{nullptr};
+    std::string config_base_dir{"."};
+    std::mutex callback_mutex;
+    std::condition_variable callback_cv;
+    std::size_t callbacks_in_flight{0};
+    bool callbacks_enabled{true};
+    std::atomic<std::uint64_t> next_endpoint_id{1};
+    std::atomic<bool> stopping{false};
+    std::mutex endpoints_mutex;
+    std::vector<std::weak_ptr<EndpointControl>> endpoints;
+};
+
+struct ServiceRegistration {
+    std::uint32_t kind{0};
+    std::uint32_t max_concurrent{0};
+    std::uint32_t max_pending_accepts{0};
+    std::uint64_t max_queued_bytes{0};
+};
+
+struct ServiceKey {
+    std::string name;
+    std::uint32_t kind{0};
+
+    friend bool operator==(const ServiceKey&, const ServiceKey&) = default;
+};
+
+struct ServiceKeyHash {
+    std::size_t operator()(const ServiceKey& key) const noexcept {
+        const std::size_t name_hash = std::hash<std::string>{}(key.name);
+        const std::size_t kind_hash = std::hash<std::uint32_t>{}(key.kind);
+        return name_hash ^ (kind_hash + 0x9e3779b9U +
+                            (name_hash << 6U) + (name_hash >> 2U));
+    }
+};
+
+thread_local bool g_in_callback = false;
+
+class CallbackScope {
 public:
-    explicit RequestReplayKeyWiper(RequestReplayKey& key) noexcept
-        : key_(key) {}
-    RequestReplayKeyWiper(const RequestReplayKeyWiper&) = delete;
-    RequestReplayKeyWiper& operator=(const RequestReplayKeyWiper&) = delete;
-    ~RequestReplayKeyWiper() { yume::security::secure_erase(key_); }
+    CallbackScope() noexcept : previous_(g_in_callback) {
+        g_in_callback = true;
+    }
+    ~CallbackScope() noexcept { g_in_callback = previous_; }
+
+    CallbackScope(const CallbackScope&) = delete;
+    CallbackScope& operator=(const CallbackScope&) = delete;
 
 private:
-    RequestReplayKey& key_;
+    bool previous_;
 };
 
-// A request sizing call has already executed the operation. Retaining exactly
-// one serialized response lets its immediate retry deliver that result without
-// repeating a mutation. The request itself is represented only by a fixed-size
-// digest; no plaintext argument JSON is retained here.
-struct RequestReplayCache {
-    std::mutex mutex;
-    RequestReplayKey key;
-    std::string response;
-    bool valid{false};
-
-    RequestReplayCache() = default;
-    RequestReplayCache(const RequestReplayCache&) = delete;
-    RequestReplayCache& operator=(const RequestReplayCache&) = delete;
-
-    ~RequestReplayCache() { clear(); }
-
-    bool matches(const RequestReplayKey& candidate) const noexcept {
-        return valid && key.size() == kRequestReplayKeyBytes &&
-               candidate.size() == kRequestReplayKeyBytes && key == candidate;
+const char* status_name(yume_status status) noexcept {
+    switch (status) {
+        case YUME_STATUS_OK: return "ok";
+        case YUME_STATUS_EOF: return "eof";
+        case YUME_STATUS_INVALID_ARGUMENT: return "invalid_argument";
+        case YUME_STATUS_BUFFER_TOO_SMALL: return "buffer_too_small";
+        case YUME_STATUS_INTERNAL_ERROR: return "internal_error";
+        case YUME_STATUS_INVALID_STATE: return "invalid_state";
+        case YUME_STATUS_TIMEOUT: return "timeout";
+        case YUME_STATUS_WOULD_BLOCK: return "would_block";
+        case YUME_STATUS_NOT_FOUND: return "not_found";
+        case YUME_STATUS_PERMISSION_DENIED: return "permission_denied";
+        case YUME_STATUS_PARSE_ERROR: return "parse_error";
+        case YUME_STATUS_RESOURCE_EXHAUSTED: return "resource_exhausted";
+        case YUME_STATUS_CANCELLED: return "cancelled";
+        case YUME_STATUS_CLOSED: return "closed";
+        case YUME_STATUS_INCOMPATIBLE: return "incompatible";
+        case YUME_STATUS_UNSUPPORTED: return "unsupported";
+        case YUME_STATUS_IO_ERROR: return "io_error";
+        default: return nullptr;
     }
+}
 
-    void clear() noexcept {
-        valid = false;
-        yume::security::secure_erase(key);
-        yume::client::wipe_relay_secret(response);
+bool copy_text(char* destination,
+               std::size_t capacity,
+               std::string_view value) noexcept {
+    if (!destination || capacity == 0) return !value.empty();
+    const std::size_t length = std::min(capacity - 1, value.size());
+    if (length != 0) {
+        std::memcpy(destination, value.data(), length);
     }
+    destination[length] = '\0';
+    return length != value.size();
+}
 
-    void replace(RequestReplayKey& candidate,
-                 std::string& completed_response) noexcept {
-        clear();
-        key.swap(candidate);
-        response.swap(completed_response);
-        valid = true;
+template <typename T>
+yume_status copy_sized(T* out,
+                       std::size_t out_size,
+                       std::size_t minimum,
+                       const T& value,
+                       std::span<const std::size_t> complete_fields) noexcept {
+    if (!out || out_size < minimum || out->struct_size < minimum ||
+        out->struct_size > out_size || out->abi_version != YUME_ABI_VERSION) {
+        return YUME_STATUS_INVALID_ARGUMENT;
     }
+    const std::size_t supplied = std::min(out_size, out->struct_size);
+    std::size_t complete_prefix = 0;
+    for (const std::size_t field_end : complete_fields) {
+        if (field_end > supplied) break;
+        complete_prefix = field_end;
+    }
+    if (complete_prefix < minimum) return YUME_STATUS_INVALID_ARGUMENT;
+    std::memcpy(out, &value, complete_prefix);
+    return supplied < sizeof(T) ? YUME_STATUS_BUFFER_TOO_SMALL
+                                : YUME_STATUS_OK;
+}
+
+template <typename T, typename Field>
+constexpr std::size_t field_end(std::size_t offset, Field T::*) noexcept {
+    return offset + sizeof(Field);
+}
+
+template <typename T>
+bool contains_field(const T& value,
+                    std::size_t offset,
+                    std::size_t field_size) noexcept {
+    return value.struct_size >= offset &&
+           field_size <= value.struct_size - offset;
+}
+
+#define YUME_FIELD_END(type, field) \
+    field_end(offsetof(type, field), &type::field)
+
+constexpr std::array kBuildInfoFields{
+    YUME_FIELD_END(yume_build_info, struct_size),
+    YUME_FIELD_END(yume_build_info, abi_version),
+    YUME_FIELD_END(yume_build_info, feature_flags),
+    YUME_FIELD_END(yume_build_info, product_version),
+    YUME_FIELD_END(yume_build_info, crypto_backend),
+    YUME_FIELD_END(yume_build_info, compiler),
 };
 
-struct HandleBase {
-    mutable std::mutex error_mu;
-    std::string last_error;
+constexpr std::array kCompatibilityFields{
+    YUME_FIELD_END(yume_compatibility, struct_size),
+    YUME_FIELD_END(yume_compatibility, abi_version),
+    YUME_FIELD_END(yume_compatibility, ytp_version),
+    YUME_FIELD_END(yume_compatibility, config_schema),
+    YUME_FIELD_END(yume_compatibility, evidence_profile_version),
+    YUME_FIELD_END(yume_compatibility, product_version),
+    YUME_FIELD_END(yume_compatibility, ytp_name),
+    YUME_FIELD_END(yume_compatibility, suite),
+    YUME_FIELD_END(yume_compatibility, crypto_backend),
+    YUME_FIELD_END(yume_compatibility, secure_channel_provider),
+    YUME_FIELD_END(yume_compatibility, front_door_provider),
+    YUME_FIELD_END(yume_compatibility, carrier_provider),
+    YUME_FIELD_END(yume_compatibility, session_component),
+    YUME_FIELD_END(yume_compatibility, session_security_provider),
+    YUME_FIELD_END(yume_compatibility, evidence_profile),
 };
 
-thread_local std::string abi_last_error;
+constexpr std::array kStatusInfoFields{
+    YUME_FIELD_END(yume_status_info, struct_size),
+    YUME_FIELD_END(yume_status_info, abi_version),
+    YUME_FIELD_END(yume_status_info, code),
+    YUME_FIELD_END(yume_status_info, name),
+};
 
-int set_abi_error(int status, std::string_view message) noexcept {
+constexpr std::array kDiagnosticFields{
+    YUME_FIELD_END(yume_diagnostic, struct_size),
+    YUME_FIELD_END(yume_diagnostic, abi_version),
+    YUME_FIELD_END(yume_diagnostic, status),
+    YUME_FIELD_END(yume_diagnostic, flags),
+    YUME_FIELD_END(yume_diagnostic, json_pointer),
+    YUME_FIELD_END(yume_diagnostic, message),
+};
+
+constexpr std::array kPeerIdentityFields{
+    YUME_FIELD_END(yume_peer_identity, struct_size),
+    YUME_FIELD_END(yume_peer_identity, abi_version),
+    YUME_FIELD_END(yume_peer_identity, authenticated),
+    YUME_FIELD_END(yume_peer_identity, role),
+    YUME_FIELD_END(yume_peer_identity, capability_flags),
+    YUME_FIELD_END(yume_peer_identity, composite_fingerprint_sha256),
+    YUME_FIELD_END(yume_peer_identity, peer_label),
+    YUME_FIELD_END(yume_peer_identity, service),
+};
+
+#undef YUME_FIELD_END
+
+void set_diagnostic(HandleHeader* header,
+                    yume_status status,
+                    std::string_view json_pointer,
+                    std::string_view message) noexcept {
+    if (!header) return;
     try {
-        abi_last_error.assign(message);
+        std::lock_guard<std::mutex> lock(header->diagnostic_mutex);
+        header->diagnostic.status = status;
+        header->diagnostic.flags = 0;
+        header->diagnostic.json_pointer.fill('\0');
+        header->diagnostic.message.fill('\0');
+        if (copy_text(header->diagnostic.json_pointer.data(),
+                      header->diagnostic.json_pointer.size(), json_pointer)) {
+            header->diagnostic.flags |=
+                YUME_DIAGNOSTIC_JSON_POINTER_TRUNCATED;
+        }
+        if (copy_text(header->diagnostic.message.data(),
+                      header->diagnostic.message.size(), message)) {
+            header->diagnostic.flags |= YUME_DIAGNOSTIC_MESSAGE_TRUNCATED;
+        }
     } catch (...) {
-        // Never let allocation failure cross the C boundary. The status still
-        // carries the failure even if the optional detail cannot be retained.
-        abi_last_error.clear();
+        // Diagnostics are secondary. A platform mutex failure must not disturb
+        // the already-settled protocol or lifecycle result.
     }
+}
+
+void clear_diagnostic(HandleHeader* header) noexcept {
+    set_diagnostic(header, YUME_STATUS_OK, {}, {});
+}
+
+yume_status fail_with_diagnostic(HandleHeader* header,
+                                 yume_status status,
+                                 std::string_view message,
+                                 std::string_view json_pointer = {}) noexcept {
+    set_diagnostic(header, status, json_pointer, message);
     return status;
 }
 
-void clear_abi_error() noexcept {
-    abi_last_error.clear();
+template <typename Function>
+yume_status guard(HandleHeader* diagnostic_owner, Function&& function) noexcept {
+    try {
+        return function();
+    } catch (const std::bad_alloc&) {
+        set_diagnostic(diagnostic_owner, YUME_STATUS_RESOURCE_EXHAUSTED, {},
+                       "allocation failed");
+        return YUME_STATUS_RESOURCE_EXHAUSTED;
+    } catch (const std::exception& error) {
+        set_diagnostic(diagnostic_owner, YUME_STATUS_INTERNAL_ERROR, {},
+                       error.what());
+        return YUME_STATUS_INTERNAL_ERROR;
+    } catch (...) {
+        set_diagnostic(diagnostic_owner, YUME_STATUS_INTERNAL_ERROR, {},
+                       "unexpected internal failure");
+        return YUME_STATUS_INTERNAL_ERROR;
+    }
 }
 
-int set_error(HandleBase* handle,
-              int status,
-              std::string_view message) noexcept {
-    if (!handle) {
-        return status;
-    }
-    try {
-        std::lock_guard<std::mutex> lock(handle->error_mu);
-        handle->last_error.assign(message);
-    } catch (...) {
-        // Error reporting is frequently called from an exception handler.
-        // Allocation or locking failure here must never replace the original
-        // status with an exception crossing the C boundary.
-        try {
-            std::lock_guard<std::mutex> lock(handle->error_mu);
-            handle->last_error.clear();
-        } catch (...) {
-        }
-    }
-    return status;
+bool valid_header(const HandleHeader* header, HandleKind kind) noexcept {
+    return header && header->magic == kHandleMagic && header->kind == kind;
 }
 
-int clear_error(HandleBase* handle) noexcept {
-    try {
-        if (!handle) {
-            return YUME_STATUS_OK;
+bool valid_any_header(const HandleHeader* header) noexcept {
+    if (!header || header->magic != kHandleMagic) return false;
+    switch (header->kind) {
+        case HandleKind::Runtime:
+        case HandleKind::Config:
+        case HandleKind::Endpoint:
+        case HandleKind::Stream:
+        case HandleKind::Packet:
+            return true;
+    }
+    return false;
+}
+
+bool valid_utf8(std::string_view text) noexcept {
+    std::size_t offset = 0;
+    while (offset < text.size()) {
+        const auto first = static_cast<unsigned char>(text[offset]);
+        std::size_t continuation_count = 0;
+        std::uint32_t code_point = 0;
+        std::uint32_t minimum = 0;
+        if (first <= 0x7fU) {
+            if (first <= 0x1fU || first == 0x7fU) return false;
+            ++offset;
+            continue;
         }
-        std::lock_guard<std::mutex> lock(handle->error_mu);
-        handle->last_error.clear();
-    } catch (...) {
-        // Clearing an optional diagnostic must not make an otherwise
-        // successful C call throw.
+        if ((first & 0xe0U) == 0xc0U) {
+            continuation_count = 1;
+            code_point = first & 0x1fU;
+            minimum = 0x80U;
+        } else if ((first & 0xf0U) == 0xe0U) {
+            continuation_count = 2;
+            code_point = first & 0x0fU;
+            minimum = 0x800U;
+        } else if ((first & 0xf8U) == 0xf0U) {
+            continuation_count = 3;
+            code_point = first & 0x07U;
+            minimum = 0x10000U;
+        } else {
+            return false;
+        }
+        if (continuation_count > text.size() - offset - 1U) return false;
+        for (std::size_t index = 0; index < continuation_count; ++index) {
+            const auto byte = static_cast<unsigned char>(text[offset + index + 1U]);
+            if ((byte & 0xc0U) != 0x80U) return false;
+            code_point = (code_point << 6U) | (byte & 0x3fU);
+        }
+        if (code_point < minimum || code_point > 0x10ffffU ||
+            (code_point >= 0xd800U && code_point <= 0xdfffU) ||
+            (code_point >= 0x7fU && code_point <= 0x9fU)) {
+            return false;
+        }
+        offset += continuation_count + 1U;
+    }
+    return true;
+}
+
+std::string checked_string(yume_string_view view,
+                           std::size_t maximum,
+                           const char* field) {
+    if ((view.size != 0 && !view.data) || view.size == 0 ||
+        view.size > maximum) {
+        throw std::invalid_argument(std::string(field) + " size is invalid");
+    }
+    if (std::memchr(view.data, 0, view.size) != nullptr) {
+        throw std::invalid_argument(std::string(field) + " contains NUL");
+    }
+    if (!valid_utf8(std::string_view(view.data, view.size))) {
+        throw std::invalid_argument(std::string(field) + " is not valid UTF-8");
+    }
+    return std::string(view.data, view.size);
+}
+
+std::string checked_service_name(yume_string_view view) {
+    std::string name = checked_string(
+        view, YUME_MAX_SERVICE_NAME, "service name");
+    if (!yume::common::valid_service_name(name)) {
+        throw std::invalid_argument(
+            "service name is not a canonical lowercase ASCII namespace");
+    }
+    return name;
+}
+
+bool valid_service_kind(std::uint32_t kind) noexcept {
+    return kind == YUME_SERVICE_BYTE_STREAM || kind == YUME_SERVICE_PACKET;
+}
+
+bool valid_destination_kind(std::uint32_t kind) noexcept {
+    return kind == YUME_DESTINATION_NONE ||
+           kind == YUME_DESTINATION_HOSTNAME ||
+           kind == YUME_DESTINATION_IPV4 ||
+           kind == YUME_DESTINATION_IPV6;
+}
+
+bool valid_ipv4(std::string_view value) noexcept {
+    std::size_t start = 0;
+    unsigned parts = 0;
+    while (start <= value.size()) {
+        const std::size_t end = value.find('.', start);
+        const std::string_view part = value.substr(
+            start, end == std::string_view::npos ? value.size() - start
+                                                 : end - start);
+        if (part.empty() || part.size() > 3 ||
+            (part.size() > 1 && part.front() == '0')) {
+            return false;
+        }
+        unsigned parsed = 0;
+        const auto conversion =
+            std::from_chars(part.data(), part.data() + part.size(), parsed);
+        if (conversion.ec != std::errc{} ||
+            conversion.ptr != part.data() + part.size() || parsed > 255) {
+            return false;
+        }
+        ++parts;
+        if (end == std::string_view::npos) break;
+        start = end + 1U;
+    }
+    return parts == 4;
+}
+
+bool count_ipv6_units(std::string_view part,
+                      bool allow_embedded_ipv4,
+                      unsigned& units) noexcept {
+    units = 0;
+    if (part.empty()) return true;
+    std::size_t start = 0;
+    while (start <= part.size()) {
+        const std::size_t end = part.find(':', start);
+        const std::string_view group = part.substr(
+            start, end == std::string_view::npos ? part.size() - start
+                                                 : end - start);
+        if (group.empty()) return false;
+        if (group.find('.') != std::string_view::npos) {
+            if (!allow_embedded_ipv4 || end != std::string_view::npos ||
+                !valid_ipv4(group)) {
+                return false;
+            }
+            units += 2;
+        } else {
+            if (group.size() > 4 ||
+                !std::all_of(group.begin(), group.end(), [](char value) {
+                    return (value >= '0' && value <= '9') ||
+                           (value >= 'a' && value <= 'f') ||
+                           (value >= 'A' && value <= 'F');
+                })) {
+                return false;
+            }
+            ++units;
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1U;
+    }
+    return true;
+}
+
+bool valid_ipv6(std::string_view value) noexcept {
+    if (value.empty() || value.find(':') == std::string_view::npos) return false;
+    const std::size_t compression = value.find("::");
+    if (compression == std::string_view::npos) {
+        unsigned units = 0;
+        return count_ipv6_units(value, true, units) && units == 8;
+    }
+    if (value.find("::", compression + 2U) != std::string_view::npos) {
+        return false;
+    }
+    unsigned left_units = 0;
+    unsigned right_units = 0;
+    return count_ipv6_units(value.substr(0, compression), false, left_units) &&
+           count_ipv6_units(value.substr(compression + 2U), true,
+                            right_units) &&
+           left_units + right_units < 8;
+}
+
+bool valid_dns_name(std::string_view value) noexcept {
+    if (value.empty() || value.size() > 253 || value.front() == '.' ||
+        value.back() == '.') {
+        return false;
+    }
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t end = value.find('.', start);
+        const std::string_view label = value.substr(
+            start, end == std::string_view::npos ? value.size() - start
+                                                 : end - start);
+        if (label.empty() || label.size() > 63 || label.front() == '-' ||
+            label.back() == '-' ||
+            !std::all_of(label.begin(), label.end(), [](char byte) {
+                return (byte >= 'a' && byte <= 'z') ||
+                       (byte >= '0' && byte <= '9') || byte == '-';
+            })) {
+            return false;
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1U;
+    }
+    return true;
+}
+
+template <typename T, typename Field>
+bool contains_input_field(const T& value,
+                          std::size_t offset,
+                          Field T::*) noexcept {
+    return contains_field(value, offset, sizeof(Field));
+}
+
+yume_status validate_destination(HandleHeader* diagnostic_owner,
+                                 const yume_destination& destination) {
+    if (destination.struct_size < YUME_DESTINATION_MIN_SIZE ||
+        destination.abi_version != YUME_ABI_VERSION ||
+        !valid_destination_kind(destination.kind) ||
+        destination.reserved != 0) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "destination descriptor is invalid or truncated");
+    }
+
+    constexpr std::size_t kHostOffset = offsetof(yume_destination, host);
+    constexpr std::size_t kPortOffset = offsetof(yume_destination, port);
+    constexpr std::size_t kReserved2Offset =
+        offsetof(yume_destination, reserved2);
+    const bool has_host = contains_input_field(
+        destination, kHostOffset, &yume_destination::host);
+    const bool has_port = contains_input_field(
+        destination, kPortOffset, &yume_destination::port);
+    const bool has_reserved2 = contains_input_field(
+        destination, kReserved2Offset, &yume_destination::reserved2);
+    if (destination.struct_size > YUME_DESTINATION_MIN_SIZE && !has_host) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "destination ends inside the host field");
+    }
+    if (has_host && !has_port &&
+        destination.struct_size > kPortOffset) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "destination ends inside the port field");
+    }
+    if (has_port && !has_reserved2 &&
+        destination.struct_size > kReserved2Offset) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "destination ends inside a reserved field");
+    }
+    if (has_reserved2 && destination.reserved2 != 0) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "destination reserved fields must be zero");
+    }
+
+    if (destination.kind == YUME_DESTINATION_NONE) {
+        if ((has_host && (destination.host.data || destination.host.size != 0)) ||
+            (has_port && destination.port != 0)) {
+            return fail_with_diagnostic(diagnostic_owner,
+                                        YUME_STATUS_INVALID_ARGUMENT,
+                                        "destination NONE must not carry a host or port");
+        }
+        return YUME_STATUS_OK;
+    }
+    if (!has_host || !has_port || destination.port == 0) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "network destination requires a host and nonzero port");
+    }
+    const std::size_t maximum =
+        destination.kind == YUME_DESTINATION_HOSTNAME ? 253U :
+        destination.kind == YUME_DESTINATION_IPV4 ? 15U : 45U;
+    std::string host;
+    try {
+        host = checked_string(destination.host, maximum, "destination host");
+    } catch (const std::invalid_argument& error) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    error.what());
+    }
+    const bool host_valid =
+        destination.kind == YUME_DESTINATION_HOSTNAME ? valid_dns_name(host) :
+        destination.kind == YUME_DESTINATION_IPV4 ? valid_ipv4(host) :
+                                                    valid_ipv6(host);
+    if (!host_valid) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "destination host does not match its declared kind");
     }
     return YUME_STATUS_OK;
 }
 
-static_assert(noexcept(set_error(nullptr, 0, std::string_view{})));
-static_assert(noexcept(clear_error(nullptr)));
-
-bool bounded_c_string_length(const char* value,
-                             std::size_t maximum,
-                             std::size_t* length) noexcept {
-    if (!value || !length) return false;
-    for (std::size_t index = 0;; ++index) {
-        if (value[index] == '\0') {
-            *length = index;
-            return true;
-        }
-        // Index maximum is the terminator slot for a maximum-length payload.
-        // Stop after inspecting it so even a future SIZE_MAX bound cannot
-        // wrap index.
-        if (index == maximum) return false;
-    }
-}
-
-int parse_request_operation(HandleBase* handle,
-                            const char* operation,
-                            std::string* parsed) noexcept {
-    if (!operation || !parsed) {
-        return set_error(handle, YUME_STATUS_INVALID_ARGUMENT,
-                         "request operation is null");
-    }
-    std::size_t length = 0;
-    if (!bounded_c_string_length(
-            operation, kMaxRequestOperationBytes, &length)) {
-        return set_error(handle, YUME_STATUS_RESOURCE_EXHAUSTED,
-                         "request operation exceeds 128 bytes");
-    }
-    if (length == 0U) {
-        return set_error(handle, YUME_STATUS_INVALID_ARGUMENT,
-                         "request operation is empty");
+yume_status validate_open_options(HandleHeader* diagnostic_owner,
+                                  const yume_open_options& options,
+                                  std::uint32_t expected_kind) {
+    if (options.struct_size < YUME_OPEN_OPTIONS_MIN_SIZE ||
+        options.abi_version != YUME_ABI_VERSION ||
+        options.kind != expected_kind || options.reserved != 0) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "open options are invalid or truncated");
     }
     try {
-        parsed->assign(operation, length);
-        return YUME_STATUS_OK;
-    } catch (const std::bad_alloc&) {
-        return set_error(handle, YUME_STATUS_RESOURCE_EXHAUSTED,
-                         "request operation allocation failed");
-    } catch (const std::exception& ex) {
-        return set_error(handle, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(handle, YUME_STATUS_INTERNAL_ERROR,
-                         "unknown request operation error");
+        (void)checked_service_name(options.service);
+    } catch (const std::invalid_argument& error) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    error.what());
     }
+    constexpr std::size_t kDestinationOffset =
+        offsetof(yume_open_options, destination);
+    const bool has_destination = contains_input_field(
+        options, kDestinationOffset, &yume_open_options::destination);
+    if (!has_destination) {
+        if (options.struct_size != YUME_OPEN_OPTIONS_MIN_SIZE) {
+            return fail_with_diagnostic(
+                diagnostic_owner, YUME_STATUS_INVALID_ARGUMENT,
+                "open options end inside the destination field");
+        }
+        return YUME_STATUS_OK;
+    }
+    return validate_destination(diagnostic_owner, options.destination);
 }
 
-int parse_request_args(HandleBase* handle,
-                       const char* args_json,
-                       nlohmann::json* args) noexcept {
-    if (!args) {
-        return set_error(handle, YUME_STATUS_INTERNAL_ERROR,
-                         "request argument output is unavailable");
+yume_status validate_accept_options(HandleHeader* diagnostic_owner,
+                                    const yume_accept_options& options,
+                                    std::uint32_t expected_kind) {
+    if (options.struct_size < YUME_ACCEPT_OPTIONS_MIN_SIZE ||
+        options.abi_version != YUME_ABI_VERSION ||
+        options.kind != expected_kind) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "accept options are invalid or truncated");
+    }
+    if (contains_input_field(options,
+                             offsetof(yume_accept_options, reserved),
+                             &yume_accept_options::reserved) &&
+        options.reserved != 0) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "accept options reserved fields must be zero");
     }
     try {
-        *args = nlohmann::json::object();
-        if (args_json) {
-            std::size_t length = 0;
-            if (!bounded_c_string_length(
-                    args_json, kMaxRequestArgsJsonBytes, &length)) {
-                return set_error(
-                    handle, YUME_STATUS_RESOURCE_EXHAUSTED,
-                    "args_json exceeds the 1 MiB request limit");
-            }
-            if (length != 0U) {
-                *args = nlohmann::json::parse(
-                    args_json, args_json + length);
-            }
+        (void)checked_service_name(options.service);
+    } catch (const std::invalid_argument& error) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    error.what());
+    }
+    return YUME_STATUS_OK;
+}
+
+void emit_endpoint_event(const std::shared_ptr<RuntimeState>& runtime,
+                         std::uint64_t endpoint_id,
+                         std::uint32_t endpoint_state,
+                         yume_status status) noexcept {
+    if (!runtime) return;
+    yume_event_callback callback = nullptr;
+    void* callback_data = nullptr;
+    try {
+        std::lock_guard<std::mutex> lock(runtime->callback_mutex);
+        if (!runtime->callbacks_enabled || !runtime->event_callback) return;
+        if (runtime->callbacks_in_flight >= runtime->max_pending_callbacks) {
+            return;
         }
-        if (!args->is_object()) {
-            return set_error(handle, YUME_STATUS_INVALID_ARGUMENT,
-                             "args_json must encode a JSON object");
-        }
-        return YUME_STATUS_OK;
-    } catch (const nlohmann::json::parse_error& ex) {
-        return set_error(handle, YUME_STATUS_PARSE_ERROR, ex.what());
-    } catch (const nlohmann::json::out_of_range& ex) {
-        // A syntactically valid numeric token that cannot be represented by
-        // nlohmann::json is still caller-controlled JSON parse input, not an
-        // internal runtime failure.
-        return set_error(handle, YUME_STATUS_PARSE_ERROR, ex.what());
-    } catch (const std::bad_alloc&) {
-        return set_error(handle, YUME_STATUS_RESOURCE_EXHAUSTED,
-                         "request argument allocation failed");
-    } catch (const std::exception& ex) {
-        return set_error(handle, YUME_STATUS_INTERNAL_ERROR, ex.what());
+        callback = runtime->event_callback;
+        callback_data = runtime->callback_user_data;
+        ++runtime->callbacks_in_flight;
     } catch (...) {
-        return set_error(handle, YUME_STATUS_INTERNAL_ERROR,
-                         "unknown request argument error");
+        return;
+    }
+    yume_event event{};
+    event.struct_size = sizeof(event);
+    event.abi_version = YUME_ABI_VERSION;
+    event.type = YUME_EVENT_ENDPOINT_STATE;
+    event.endpoint_state = endpoint_state;
+    event.endpoint_id = endpoint_id;
+    event.status = status;
+    try {
+        CallbackScope callback_scope;
+        callback(&event, callback_data);
+    } catch (...) {
+        // A callback is outside the ABI trust boundary. It cannot unwind into
+        // endpoint state settlement.
+    }
+    try {
+        std::lock_guard<std::mutex> lock(runtime->callback_mutex);
+        if (runtime->callbacks_in_flight != 0) {
+            --runtime->callbacks_in_flight;
+        }
+        if (runtime->callbacks_in_flight == 0) runtime->callback_cv.notify_all();
+    } catch (...) {
+        // The runtime remains fail-closed. A platform mutex failure is not
+        // recoverable through a callback or C ABI diagnostic path.
     }
 }
 
-void update_request_replay_digest(yume::crypto::Sha256Stream& digest,
-                                  std::string_view field) {
-    static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
-    std::array<std::uint8_t, sizeof(std::uint64_t)> encoded_size{};
-    std::uint64_t size = static_cast<std::uint64_t>(field.size());
-    for (std::size_t i = 0; i < encoded_size.size(); ++i) {
-        encoded_size[encoded_size.size() - i - 1] =
-            static_cast<std::uint8_t>(size & 0xffU);
-        size >>= 8U;
-    }
-    digest.Update(encoded_size);
-    if (!field.empty()) {
-        digest.Update(std::span<const std::uint8_t>(
-            reinterpret_cast<const std::uint8_t*>(field.data()),
-            field.size()));
-    }
-}
-
-RequestReplayKey make_request_replay_key(std::string_view op,
-                                         const nlohmann::json& args) {
-    std::string canonical_args = args.dump();
-    yume::client::RelaySecretWiper canonical_args_wiper(canonical_args);
-
-    yume::crypto::Sha256Stream digest;
-    update_request_replay_digest(digest, kRequestReplayDomain);
-    update_request_replay_digest(digest, op);
-    update_request_replay_digest(digest, canonical_args);
-    auto key = digest.Finish();
-    if (key.size() != kRequestReplayKeyBytes) {
-        yume::security::secure_erase(key);
-        throw std::runtime_error("unexpected request replay digest size");
-    }
-    return key;
-}
-
-std::size_t request_response_size(const std::string& response) {
-    if (response.size() == std::numeric_limits<std::size_t>::max()) {
-        throw std::length_error("request response is too large");
-    }
-    return response.size() + 1;
-}
-
-int copy_cached_request_response(HandleBase* handle,
-                                 RequestReplayCache* cache,
-                                 char* out,
-                                 std::size_t out_size,
-                                 std::size_t* needed) {
-    const std::size_t required = request_response_size(cache->response);
-    if (needed) {
-        *needed = required;
-    }
-    if (!out || out_size < required) {
-        return set_error(handle,
-                         YUME_STATUS_BUFFER_TOO_SMALL,
-                         "output buffer is too small");
-    }
-    std::memcpy(out, cache->response.c_str(), required);
-    cache->clear();
-    return clear_error(handle);
-}
-
-int write_completed_request_response(HandleBase* handle,
-                                     RequestReplayCache* cache,
-                                     RequestReplayKey* key,
-                                     const nlohmann::json& response,
-                                     char* out,
-                                     std::size_t out_size,
-                                     std::size_t* needed) {
-    std::string text = response.dump();
-    yume::client::RelaySecretWiper text_wiper(text);
-    const std::size_t required = request_response_size(text);
-    if (needed) {
-        *needed = required;
-    }
-    if (!out || out_size < required) {
-        cache->replace(*key, text);
-        return set_error(handle,
-                         YUME_STATUS_BUFFER_TOO_SMALL,
-                         "output buffer is too small");
-    }
-    std::memcpy(out, text.c_str(), required);
-    cache->clear();
-    return clear_error(handle);
-}
-
-template <typename T>
-void write_complete_abi_field(void* out,
-                              std::size_t out_size,
-                              std::size_t offset,
-                              const T& value) noexcept {
-    if (offset <= out_size && sizeof(T) <= out_size - offset) {
-        std::memcpy(static_cast<unsigned char*>(out) + offset,
-                    &value,
-                    sizeof(T));
-    }
-}
-
-std::string basefwx_version_string() {
-    return std::string(yume::kBasefwxVersion);
-}
-
-std::string pq_backend_string() {
-    return yume::inner::pq_backend_version();
-}
-
-std::string argon2_backend_string() {
-    return yume::inner::argon2_backend_version();
-}
-
-std::filesystem::path abi_base_dir(const char* base_dir) {
-    if (base_dir && *base_dir) {
-        return std::filesystem::path(base_dir);
-    }
-    std::error_code ec;
-    auto cwd = std::filesystem::current_path(ec);
-    return ec ? std::filesystem::path{} : cwd;
-}
-
-std::chrono::milliseconds start_timeout(uint32_t timeout_ms) {
-    return std::chrono::milliseconds{timeout_ms};
-}
-
-int timeout_as_int(uint32_t timeout_ms) {
-    return static_cast<int>(std::min<std::uint32_t>(
-        timeout_ms,
-        static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
-}
-
-std::int64_t unix_ms(std::chrono::system_clock::time_point tp) {
-    if (tp == std::chrono::system_clock::time_point{}) {
-        return 0;
-    }
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        tp.time_since_epoch()).count();
-}
-
-int write_json_buffer(HandleBase* handle,
-                      nlohmann::json const& json,
-                      char* out,
-                      std::size_t out_size,
-                      std::size_t* needed) {
-    const std::string text = json.dump();
-    const std::size_t required = text.size() + 1;
-    if (needed) {
-        *needed = required;
-    }
-    if (!out || out_size < required) {
-        return set_error(handle,
-                         YUME_STATUS_BUFFER_TOO_SMALL,
-                         "output buffer is too small");
-    }
-    std::memcpy(out, text.c_str(), required);
-    return clear_error(handle);
-}
-
-bool valid_service_name(std::string_view service) {
-    if (service.empty() || service.size() > 128) {
-        return false;
-    }
-    return std::all_of(service.begin(), service.end(), [](unsigned char ch) {
-        return (ch >= 'a' && ch <= 'z') ||
-               (ch >= 'A' && ch <= 'Z') ||
-               (ch >= '0' && ch <= '9') ||
-               ch == '-' || ch == '_' || ch == '.' || ch == ':';
-    });
-}
-
-int status_from_packet_result(yume::client::packet::QueueResult result) {
-    using Result = yume::client::packet::QueueResult;
-    switch (result) {
-    case Result::ok: return YUME_STATUS_OK;
-    case Result::would_block: return YUME_STATUS_WOULD_BLOCK;
-    case Result::timeout: return YUME_STATUS_TIMEOUT;
-    case Result::stopped: return YUME_STATUS_NOT_RUNNING;
-    case Result::buffer_too_small: return YUME_STATUS_BUFFER_TOO_SMALL;
-    case Result::invalid: return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    return YUME_STATUS_INTERNAL_ERROR;
-}
-
-int status_from_config_load_error(
-    yume::facade::config_io::ConfigLoadError error) {
-    using Error = yume::facade::config_io::ConfigLoadError;
-    switch (error) {
-    case Error::NotFound: return YUME_STATUS_NOT_FOUND;
-    case Error::PermissionDenied: return YUME_STATUS_PERMISSION_DENIED;
-    case Error::Parse: return YUME_STATUS_PARSE_ERROR;
-    case Error::Io:
-    case Error::None:
+yume_status stop_endpoint_control(
+    const std::shared_ptr<RuntimeState>& runtime,
+    const std::shared_ptr<EndpointControl>& control) noexcept {
+    if (!control) return YUME_STATUS_INVALID_ARGUMENT;
+    try {
+        std::lock_guard<std::mutex> lifecycle_lock(control->lifecycle_mutex);
+        {
+            std::lock_guard<std::mutex> state_lock(control->mutex);
+            if (control->state == YUME_ENDPOINT_STOPPED) {
+                return YUME_STATUS_OK;
+            }
+            control->state = YUME_ENDPOINT_STOPPING;
+        }
+        emit_endpoint_event(runtime, control->id, YUME_ENDPOINT_STOPPING,
+                            YUME_STATUS_OK);
+        // Tear the runtime down between the two published states so a caller
+        // that observes STOPPED has already had its worker threads joined.
+        // stop() is idempotent, so a never-started endpoint is a no-op.
+        if (control->backend) {
+            control->backend->stop();
+        }
+        {
+            std::lock_guard<std::mutex> state_lock(control->mutex);
+            control->state = YUME_ENDPOINT_STOPPED;
+        }
+        emit_endpoint_event(runtime, control->id, YUME_ENDPOINT_STOPPED,
+                            YUME_STATUS_OK);
+        return YUME_STATUS_OK;
+    } catch (...) {
         return YUME_STATUS_INTERNAL_ERROR;
     }
-    return YUME_STATUS_INTERNAL_ERROR;
 }
 
-int status_from_operation_status(yume::runtime::OperationStatus status) {
-    using Status = yume::runtime::OperationStatus;
-    switch (status) {
-    case Status::Success: return YUME_STATUS_OK;
-    case Status::InvalidArgument: return YUME_STATUS_INVALID_ARGUMENT;
-    case Status::NotRunning: return YUME_STATUS_NOT_RUNNING;
-    case Status::AlreadyRunning: return YUME_STATUS_ALREADY_RUNNING;
-    case Status::Timeout: return YUME_STATUS_TIMEOUT;
-    case Status::NotFound: return YUME_STATUS_NOT_FOUND;
-    case Status::PermissionDenied: return YUME_STATUS_PERMISSION_DENIED;
-    case Status::WouldBlock: return YUME_STATUS_WOULD_BLOCK;
-    case Status::ResourceExhausted:
-        return YUME_STATUS_RESOURCE_EXHAUSTED;
-    case Status::ParseError: return YUME_STATUS_PARSE_ERROR;
-    case Status::InternalError: return YUME_STATUS_INTERNAL_ERROR;
-    }
-    return YUME_STATUS_INTERNAL_ERROR;
-}
-
-int status_from_packet_open_result(
-    yume::client::packet::OpenStatus status) {
-    using Status = yume::client::packet::OpenStatus;
-    switch (status) {
-    case Status::success: return YUME_STATUS_OK;
-    case Status::invalid_argument: return YUME_STATUS_INVALID_ARGUMENT;
-    case Status::not_running: return YUME_STATUS_NOT_RUNNING;
-    case Status::capability_unavailable:
-    case Status::peer_rejected:
-        return YUME_STATUS_PERMISSION_DENIED;
-    case Status::timeout: return YUME_STATUS_TIMEOUT;
-    case Status::resource_exhausted:
-        return YUME_STATUS_RESOURCE_EXHAUSTED;
-    case Status::protocol_error: return YUME_STATUS_PARSE_ERROR;
-    }
-    return YUME_STATUS_INTERNAL_ERROR;
-}
-
-std::string validation_error(yume::facade::config_io::ValidationReport const& report) {
-    std::string out;
-    for (const auto& error : report.errors) {
-        if (!out.empty()) {
-            out += "; ";
+std::uint64_t allocate_endpoint_id(RuntimeState& runtime) noexcept {
+    std::uint64_t candidate = runtime.next_endpoint_id.load();
+    const std::uint64_t exhausted = std::numeric_limits<std::uint64_t>::max();
+    while (candidate != 0 && candidate != exhausted) {
+        if (runtime.next_endpoint_id.compare_exchange_weak(candidate,
+                                                           candidate + 1U)) {
+            return candidate;
         }
-        out += error;
     }
-    return out;
+    return 0;
 }
 
 }  // namespace
 
-struct yume_client {
-    HandleBase base{};
-    RequestReplayCache request_replay{};
-    std::mutex mu;
-    yume::facade::InProcClient runtime;
-    yume_socket_protect_fn socket_protect{nullptr};
-    void* socket_protect_user_data{nullptr};
-    bool start_in_progress{false};
-    std::shared_ptr<std::atomic<bool>> start_cancel_requested;
-};
+// Public identity fields are fixed-size and NUL-terminated. Truncation is
+// preferred over failing an otherwise valid stream, because these strings are
+// diagnostic labels rather than authorization inputs.
+void copy_bounded(char* destination,
+                  std::size_t capacity,
+                  std::string_view value) noexcept {
+    if (destination == nullptr || capacity == 0) return;
+    const std::size_t copied = std::min(value.size(), capacity - 1U);
+    std::memcpy(destination, value.data(), copied);
+    destination[copied] = '\0';
+}
 
-namespace {
-
-class ClientStartGuard {
-public:
-    ClientStartGuard(
-        yume_client* client,
-        std::shared_ptr<std::atomic<bool>> cancel_requested) noexcept
-        : client_(client), cancel_requested_(std::move(cancel_requested)) {}
-
-    ClientStartGuard(const ClientStartGuard&) = delete;
-    ClientStartGuard& operator=(const ClientStartGuard&) = delete;
-
-    ~ClientStartGuard() noexcept {
-        try {
-            std::lock_guard<std::mutex> lock(client_->mu);
-            if (client_->start_cancel_requested == cancel_requested_) {
-                client_->start_cancel_requested.reset();
-                client_->start_in_progress = false;
+// The transport publishes the composite fingerprint as lowercase hex. A value
+// that is not exactly 32 decoded bytes is dropped rather than partially
+// copied, so a caller can never read a half-populated fingerprint.
+void copy_fingerprint(std::uint8_t (&destination)[32],
+                      std::string_view hex) noexcept {
+    std::memset(destination, 0, sizeof(destination));
+    if (hex.size() != sizeof(destination) * 2U) return;
+    for (std::size_t index = 0; index < sizeof(destination); ++index) {
+        std::uint8_t byte = 0;
+        for (std::size_t nibble = 0; nibble < 2U; ++nibble) {
+            const char character = hex[index * 2U + nibble];
+            std::uint8_t value = 0;
+            if (character >= '0' && character <= '9') {
+                value = static_cast<std::uint8_t>(character - '0');
+            } else if (character >= 'a' && character <= 'f') {
+                value = static_cast<std::uint8_t>(character - 'a' + 10);
+            } else if (character >= 'A' && character <= 'F') {
+                value = static_cast<std::uint8_t>(character - 'A' + 10);
+            } else {
+                std::memset(destination, 0, sizeof(destination));
+                return;
             }
-        } catch (...) {
-            // The ABI requires callers to keep the handle alive while an
-            // operation is in flight. Clearing this admission flag must not
-            // let an exception cross the C boundary during cleanup.
+            byte = static_cast<std::uint8_t>((byte << 4) | value);
         }
-    }
-
-private:
-    yume_client* client_;
-    std::shared_ptr<std::atomic<bool>> cancel_requested_;
-};
-
-struct ClientServiceOpenRollbackContext {
-    yume::client::Tunnel* tunnel{nullptr};
-    std::shared_ptr<yume::runtime::ServiceStream>* stream{nullptr};
-    std::uint8_t stream_id{0};
-};
-
-void rollback_client_service_open(
-        void* opaque,
-        yume::abi::detail::ServiceOpenTransaction::Phase phase) noexcept {
-    using Phase = yume::abi::detail::ServiceOpenTransaction::Phase;
-    auto* context = static_cast<ClientServiceOpenRollbackContext*>(opaque);
-    if (!context || !context->tunnel || context->stream_id == 0) {
-        return;
-    }
-
-    // A ServiceStream destructor normally invokes its transport close
-    // callback. Disconnect it first so this transaction remains the only
-    // owner of rollback and cannot send a second CLOSE during stack unwind.
-    if (context->stream && *context->stream) {
-        try {
-            (*context->stream)->set_callbacks({}, {}, {});
-            (*context->stream)->receive_close("stream OPEN rolled back");
-        } catch (...) {
-            // Transport ownership below is the essential cleanup. A failure
-            // to update the already-unpublished local object must not skip it.
-        }
-    }
-
-    const auto action =
-        yume::abi::detail::ServiceOpenTransaction::ActionFor(phase);
-    using RollbackAction =
-        yume::abi::detail::ServiceOpenTransaction::RollbackAction;
-    if (action == RollbackAction::release_reservation) {
-        try {
-            context->tunnel->release_reserved_stream(context->stream_id);
-        } catch (...) {
-        }
-        return;
-    }
-    if (action == RollbackAction::unregister) {
-        try {
-            context->tunnel->unregister_stream(context->stream_id);
-        } catch (...) {
-        }
-        return;
-    }
-    if (action == RollbackAction::none) {
-        return;
-    }
-
-    // Once OPEN construction starts, conservatively assume it may have been
-    // queued. Retire the id even if sending CLOSE fails so a late ACK or DATA
-    // frame can never alias a later stream on this transport.
-    try {
-        context->tunnel->send_close(
-            context->stream_id,
-            phase == Phase::accepted
-                ? "stream handle publication failed"
-                : "stream open aborted");
-    } catch (...) {
-    }
-    try {
-        context->tunnel->retire_stream_id(context->stream_id);
-    } catch (...) {
+        destination[index] = byte;
     }
 }
 
-}  // namespace
+yume_status status_from_backend(yume::embed::BackendIo io) noexcept {
+    switch (io) {
+    case yume::embed::BackendIo::Ok:         return YUME_STATUS_OK;
+    case yume::embed::BackendIo::Eof:        return YUME_STATUS_EOF;
+    case yume::embed::BackendIo::Timeout:    return YUME_STATUS_TIMEOUT;
+    case yume::embed::BackendIo::WouldBlock: return YUME_STATUS_WOULD_BLOCK;
+    case yume::embed::BackendIo::Closed:     return YUME_STATUS_CLOSED;
+    case yume::embed::BackendIo::Invalid:    return YUME_STATUS_INVALID_ARGUMENT;
+    case yume::embed::BackendIo::NotRunning: return YUME_STATUS_INVALID_STATE;
+    case yume::embed::BackendIo::Failed:     return YUME_STATUS_IO_ERROR;
+    }
+    return YUME_STATUS_INTERNAL_ERROR;
+}
 
-struct yume_server {
-    HandleBase base{};
-    RequestReplayCache request_replay{};
-    std::mutex mu;
-#if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
-    yume::server::RuntimeController runtime;
-#endif
+struct DocumentDialect {
+    bool schema1{false};
+    bool server{false};
+    const char* error{nullptr};
+    const char* json_pointer{""};
+};
+
+// Both configuration dialects must state their role. Schema 1 additionally
+// carries "schema": 1. Anything else is rejected here rather than being fed
+// to a parser that would ignore the keys it does not recognize.
+//
+// Deliberately not noexcept: this builds a DOM from a caller-sized buffer, so
+// it can throw std::bad_alloc. Callers run it inside guard(), which turns that
+// into YUME_STATUS_RESOURCE_EXHAUSTED. Marking it noexcept would terminate the
+// embedder's process instead.
+DocumentDialect classify_document(std::string_view text) {
+    DocumentDialect dialect;
+    nlohmann::json document =
+        nlohmann::json::parse(text, nullptr, false, true);
+    if (document.is_discarded() || !document.is_object()) {
+        dialect.error = "configuration must be one JSON object";
+        return dialect;
+    }
+    const auto role = document.find("role");
+    if (role == document.end() || !role->is_string()) {
+        dialect.error = "required string key is missing";
+        dialect.json_pointer = "/role";
+        return dialect;
+    }
+    const auto& role_text = role->get_ref<const std::string&>();
+    if (role_text == "server") {
+        dialect.server = true;
+    } else if (role_text != "client") {
+        dialect.error = "must be \"client\" or \"server\"";
+        dialect.json_pointer = "/role";
+        return dialect;
+    }
+    const auto schema = document.find("schema");
+    if (schema != document.end()) {
+        if (!schema->is_number_unsigned() ||
+            schema->get<std::uint64_t>() != yume::config::v1::kSchema) {
+            dialect.error = "unsupported configuration schema";
+            dialect.json_pointer = "/schema";
+            return dialect;
+        }
+        dialect.schema1 = true;
+    }
+    return dialect;
+}
+
+struct yume_runtime {
+    HandleHeader header{HandleKind::Runtime};
+    std::shared_ptr<RuntimeState> state;
+};
+
+// Two configuration dialects reach the same public entry point during the
+// transition: strict schema 1 for the YTP/1 replacement, and the runnable
+// transport-v2 document. Both must name their role explicitly so the ABI
+// never has to guess which runtime a document was written for.
+struct yume_config {
+    yume_config(std::shared_ptr<RuntimeState> runtime_state,
+                yume::config::v1::Config parsed)
+        : runtime(std::move(runtime_state)),
+          schema1(std::move(parsed)),
+          server(schema1->role() == yume::config::v1::Role::Server) {}
+
+    yume_config(std::shared_ptr<RuntimeState> runtime_state,
+                std::unique_ptr<yume::embed::BackendConfig> parsed)
+        : runtime(std::move(runtime_state)),
+          transport_v2(std::move(parsed)),
+          server(transport_v2->is_server()) {}
+
+    HandleHeader header{HandleKind::Config};
+    std::shared_ptr<RuntimeState> runtime;
+    std::optional<yume::config::v1::Config> schema1;
+    std::shared_ptr<yume::embed::BackendConfig> transport_v2;
+    bool server{false};
+};
+
+struct yume_endpoint {
+    yume_endpoint(std::shared_ptr<RuntimeState> runtime_state,
+                  const yume_config& source,
+                  std::uint64_t assigned_id)
+        : runtime(std::move(runtime_state)),
+          config(source.schema1),
+          transport_v2(source.transport_v2),
+          control(std::make_shared<EndpointControl>(assigned_id)) {}
+
+    HandleHeader header{HandleKind::Endpoint};
+    std::shared_ptr<RuntimeState> runtime;
+    std::optional<yume::config::v1::Config> config;
+    std::shared_ptr<yume::embed::BackendConfig> transport_v2;
+    std::shared_ptr<EndpointControl> control;
+    mutable std::mutex mutex;
+    std::unordered_map<ServiceKey, ServiceRegistration, ServiceKeyHash>
+        services;
+    yume_socket_protect_callback socket_protector{nullptr};
+    void* socket_protector_data{nullptr};
 };
 
 struct yume_stream {
-    explicit yume_stream(std::shared_ptr<yume::runtime::ServiceStream> stream_in)
-        : stream(std::move(stream_in)) {}
-
-    ~yume_stream() noexcept {
-        try {
-            if (stream) {
-                stream->close("stream destroyed");
-            }
-        } catch (...) {
-            // Destruction is a C ABI operation. Cleanup is best-effort and
-            // must not terminate the caller if the transport close path fails.
-        }
+    yume_stream() noexcept {
+        peer.struct_size = sizeof(peer);
+        peer.abi_version = YUME_ABI_VERSION;
     }
 
-    HandleBase base{};
-    std::shared_ptr<yume::runtime::ServiceStream> stream;
+    explicit yume_stream(std::unique_ptr<yume::embed::BackendStream> backing)
+        : backend(std::move(backing)) {
+        peer.struct_size = sizeof(peer);
+        peer.abi_version = YUME_ABI_VERSION;
+        closed = false;
+        const yume::embed::BackendPeerIdentity identity =
+            backend->peer_identity();
+        peer.authenticated = identity.authenticated ? 1U : 0U;
+        copy_bounded(peer.peer_label, sizeof(peer.peer_label),
+                     identity.peer_label);
+        copy_bounded(peer.service, sizeof(peer.service), identity.service);
+        copy_fingerprint(peer.composite_fingerprint_sha256,
+                         identity.fingerprint_sha256);
+    }
+
+    HandleHeader header{HandleKind::Stream};
+    mutable std::mutex mutex;
+    yume_peer_identity peer{};
+    bool closed{true};
+    std::unique_ptr<yume::embed::BackendStream> backend;
 };
 
 struct yume_packet {
-    explicit yume_packet(
-        std::shared_ptr<yume::client::packet::PacketChannel> channel_in)
-        : channel(std::move(channel_in)) {}
-
-    ~yume_packet() noexcept {
-        try {
-            if (channel) channel->close("ABI packet destroyed");
-        } catch (...) {
-            // See yume_stream: destroy functions cannot report a status and
-            // are required to stay inside the C exception boundary.
-        }
+    yume_packet() noexcept {
+        peer.struct_size = sizeof(peer);
+        peer.abi_version = YUME_ABI_VERSION;
     }
 
-    HandleBase base{};
-    std::mutex mu;
-    std::shared_ptr<yume::client::packet::PacketChannel> channel;
+    HandleHeader header{HandleKind::Packet};
+    mutable std::mutex mutex;
+    yume_peer_identity peer{};
+    bool closed{true};
 };
 
-// yume_handle_last_error receives an opaque handle pointer and relies on the
-// common HandleBase being pointer-interconvertible with every public handle.
-// Keep this invariant compile-time enforced as handle implementations evolve.
-static_assert(std::is_standard_layout_v<yume_client>);
-static_assert(std::is_standard_layout_v<yume_server>);
-static_assert(std::is_standard_layout_v<yume_stream>);
-static_assert(std::is_standard_layout_v<yume_packet>);
-static_assert(offsetof(yume_client, base) == 0);
-static_assert(offsetof(yume_server, base) == 0);
-static_assert(offsetof(yume_stream, base) == 0);
-static_assert(offsetof(yume_packet, base) == 0);
+static_assert(std::is_standard_layout_v<yume_runtime> &&
+              offsetof(yume_runtime, header) == 0);
+static_assert(std::is_standard_layout_v<yume_config> &&
+              offsetof(yume_config, header) == 0);
+static_assert(std::is_standard_layout_v<yume_endpoint> &&
+              offsetof(yume_endpoint, header) == 0);
+static_assert(std::is_standard_layout_v<yume_stream> &&
+              offsetof(yume_stream, header) == 0);
+static_assert(std::is_standard_layout_v<yume_packet> &&
+              offsetof(yume_packet, header) == 0);
 
 extern "C" {
 
-uint32_t yume_abi_version(void) {
+uint32_t yume_abi_version(void) noexcept {
     return YUME_ABI_VERSION;
 }
 
-const char* yume_version(void) {
-    return yume::kVersion;
-}
-
-uint32_t yume_feature_flags(void) {
-    uint32_t flags = YUME_FEATURE_PBKDF2_HKDF | YUME_FEATURE_PACKET_BULK;
-#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
-    flags |= YUME_FEATURE_BASEFWX;
-#endif
-    try {
-        if (yume::inner::pq_supported()) {
-            flags |= YUME_FEATURE_PQ_MLKEM768;
-            flags |= YUME_FEATURE_PQ_MLKEM1024;
-        }
-        if (yume::inner::argon2_supported()) {
-            flags |= YUME_FEATURE_ARGON2ID;
-        }
-    } catch (...) {
-        return flags;
-    }
-    return flags;
-}
-
-const char* yume_basefwx_version(void) {
-    try {
-        static const std::string value = basefwx_version_string();
-        return value.c_str();
-    } catch (...) {
-        return "unknown";
-    }
-}
-
-const char* yume_pq_backend(void) {
-    try {
-        static const std::string value = pq_backend_string();
-        return value.c_str();
-    } catch (...) {
-        return "unavailable";
-    }
-}
-
-const char* yume_argon2_backend(void) {
-    try {
-        static const std::string value = argon2_backend_string();
-        return value.c_str();
-    } catch (...) {
-        return "unavailable";
-    }
-}
-
-int yume_get_build_info(yume_build_info* out, size_t out_size) {
-    if (!out) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    if (out_size < YUME_BUILD_INFO_MIN_SIZE) {
-        return YUME_STATUS_BUFFER_TOO_SMALL;
-    }
-
-    try {
-        const yume_build_info value{
-            sizeof(yume_build_info),
-            yume_abi_version(),
-            yume_feature_flags(),
-            yume_version(),
-            yume_basefwx_version(),
-            yume_pq_backend(),
-            yume_argon2_backend(),
-        };
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, struct_size),
-            value.struct_size);
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, abi_version),
-            value.abi_version);
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, feature_flags),
-            value.feature_flags);
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, yume_version),
-            value.yume_version);
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, basefwx_version),
-            value.basefwx_version);
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, pq_backend),
-            value.pq_backend);
-        write_complete_abi_field(
-            out, out_size, offsetof(yume_build_info, argon2_backend),
-            value.argon2_backend);
-        return YUME_STATUS_OK;
-    } catch (...) {
-        return YUME_STATUS_INTERNAL_ERROR;
-    }
-}
-
-const char* yume_strerror(int status) {
-    switch (status) {
-    case YUME_STATUS_OK: return "ok";
-    case YUME_STATUS_INVALID_ARGUMENT: return "invalid argument";
-    case YUME_STATUS_BUFFER_TOO_SMALL: return "buffer too small";
-    case YUME_STATUS_INTERNAL_ERROR: return "internal error";
-    case YUME_STATUS_NOT_RUNNING: return "not running";
-    case YUME_STATUS_ALREADY_RUNNING: return "already running";
-    case YUME_STATUS_TIMEOUT: return "timeout";
-    case YUME_STATUS_NOT_FOUND: return "not found";
-    case YUME_STATUS_PERMISSION_DENIED: return "permission denied";
-    case YUME_STATUS_PARSE_ERROR: return "parse error";
-    case YUME_STATUS_WOULD_BLOCK: return "would block";
-    case YUME_STATUS_RESOURCE_EXHAUSTED: return "resource exhausted";
-    default: return "unknown status";
-    }
-}
-
-int yume_generate_pq_keypair(const char* private_path,
-                             const char* public_path) {
-    if (!private_path || !*private_path || !public_path || !*public_path) {
-        return set_abi_error(
-            YUME_STATUS_INVALID_ARGUMENT,
-            "private_path and public_path must both be non-empty");
-    }
-    try {
-        std::string error;
-        if (!yume::inner::generate_pq_keypair(private_path, public_path, &error)) {
-            return set_abi_error(
-                YUME_STATUS_INTERNAL_ERROR,
-                error.empty() ? std::string_view("PQ keypair generation failed")
-                              : std::string_view(error));
-        }
-        clear_abi_error();
-        return YUME_STATUS_OK;
-    } catch (std::exception const& ex) {
-        return set_abi_error(YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_abi_error(
-            YUME_STATUS_INTERNAL_ERROR, "unknown PQ keypair generation error");
-    }
-}
-
-const char* yume_last_error(void) {
-    return abi_last_error.c_str();
-}
-
-yume_client* yume_client_create(void) {
-    try {
-        return new yume_client();
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-void yume_client_destroy(yume_client* client) {
-    delete client;
-}
-
-int yume_client_set_socket_protector(yume_client* client,
-                                     yume_socket_protect_fn callback,
-                                     void* user_data) {
-    if (!client) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::lock_guard<std::mutex> lock(client->mu);
-        if (client->start_in_progress || client->runtime.status().running) {
-            return set_error(&client->base, YUME_STATUS_ALREADY_RUNNING,
-                             "socket protector must be configured before start");
-        }
-        client->socket_protect = callback;
-        client->socket_protect_user_data = user_data;
-        return clear_error(&client->base);
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_start_json(yume_client* client,
-                           const char* config_json,
-                           const char* base_dir,
-                           uint32_t timeout_ms) {
-    if (!client || !config_json) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        auto start_cancel_requested =
-            std::make_shared<std::atomic<bool>>(false);
-        yume_socket_protect_fn callback = nullptr;
-        void* user_data = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(client->mu);
-            const bool start_in_progress = client->start_in_progress;
-            if (start_in_progress || client->runtime.running()) {
-                return set_error(&client->base,
-                                 YUME_STATUS_ALREADY_RUNNING,
-                                 start_in_progress
-                                     ? "client start is already in progress"
-                                     : "client is already running");
-            }
-            client->start_in_progress = true;
-            client->start_cancel_requested = start_cancel_requested;
-            callback = client->socket_protect;
-            user_data = client->socket_protect_user_data;
-        }
-        ClientStartGuard start_guard(client, start_cancel_requested);
-
-        std::string parse_error;
-        auto cfg = yume::facade::config_io::parse_client_json(
-            config_json,
-            abi_base_dir(base_dir),
-            &parse_error);
-        if (!cfg) {
-            return set_error(&client->base, YUME_STATUS_PARSE_ERROR, parse_error);
-        }
-        auto validation = yume::facade::config_io::validate(*cfg);
-        if (!validation.ok()) {
-            return set_error(&client->base,
-                             YUME_STATUS_INVALID_ARGUMENT,
-                             validation_error(validation));
-        }
-        if (callback) {
-            cfg->socket_protect = [callback, user_data](std::intptr_t handle) {
-                return callback(handle, user_data) != 0;
-            };
-        }
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        if (!client->runtime.start(std::move(*cfg), &error,
-                                   start_timeout(timeout_ms),
-                                   &operation_status,
-                                   start_cancel_requested)) {
-            return set_error(&client->base,
-                             status_from_operation_status(operation_status),
-                             error);
-        }
-        return clear_error(&client->base);
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_start_file(yume_client* client,
-                           const char* config_path,
-                           uint32_t timeout_ms) {
-    if (!client || !config_path || !*config_path) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        auto start_cancel_requested =
-            std::make_shared<std::atomic<bool>>(false);
-        yume_socket_protect_fn callback = nullptr;
-        void* user_data = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(client->mu);
-            const bool start_in_progress = client->start_in_progress;
-            if (start_in_progress || client->runtime.running()) {
-                return set_error(&client->base,
-                                 YUME_STATUS_ALREADY_RUNNING,
-                                 start_in_progress
-                                     ? "client start is already in progress"
-                                     : "client is already running");
-            }
-            client->start_in_progress = true;
-            client->start_cancel_requested = start_cancel_requested;
-            callback = client->socket_protect;
-            user_data = client->socket_protect_user_data;
-        }
-        ClientStartGuard start_guard(client, start_cancel_requested);
-
-        std::string error;
-        yume::facade::config_io::ConfigLoadError load_error{};
-        auto cfg = yume::facade::config_io::load_client(
-            config_path, &error, &load_error);
-        if (!cfg) {
-            return set_error(&client->base,
-                             status_from_config_load_error(load_error),
-                             error);
-        }
-        auto validation = yume::facade::config_io::validate(*cfg);
-        if (!validation.ok()) {
-            return set_error(&client->base,
-                             YUME_STATUS_INVALID_ARGUMENT,
-                             validation_error(validation));
-        }
-        if (callback) {
-            cfg->socket_protect = [callback, user_data](std::intptr_t handle) {
-                return callback(handle, user_data) != 0;
-            };
-        }
-        yume::runtime::OperationStatus operation_status{};
-        if (!client->runtime.start(std::move(*cfg), &error,
-                                   start_timeout(timeout_ms),
-                                   &operation_status,
-                                   start_cancel_requested)) {
-            return set_error(&client->base,
-                             status_from_operation_status(operation_status),
-                             error);
-        }
-        return clear_error(&client->base);
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_stop(yume_client* client) {
-    if (!client) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::shared_ptr<std::atomic<bool>> start_cancel_requested;
-        {
-            std::lock_guard<std::mutex> lock(client->mu);
-            start_cancel_requested = client->start_cancel_requested;
-        }
-        if (start_cancel_requested) {
-            start_cancel_requested->store(true, std::memory_order_release);
-        }
-        std::string error;
-        client->runtime.stop(&error, "ABI client stop");
-        if (!error.empty()) {
-            return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, error);
-        }
-        return clear_error(&client->base);
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_status_json(yume_client* client,
-                            char* out,
-                            size_t out_size,
-                            size_t* needed) {
-    if (!client) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        const auto status = client->runtime.status();
-        const auto& server_capabilities = status.server_capabilities;
-        const bool packet_bulk_supported =
-            (yume_feature_flags() & YUME_FEATURE_PACKET_BULK) != 0 &&
-            yume::client::packet::has_packet_bulk_capability(
-                server_capabilities);
-        nlohmann::json json = {
-            {"running", status.running},
-            {"ready", status.ipc_available},
-            {"message", status.message},
-            {"socket_path", status.socket_path},
-            {"exit_code", status.exit_code},
-            {"server_tls_fingerprint_sha256", status.server_tls_fingerprint_sha256},
-            {"started_unix_ms", unix_ms(status.started)},
-            {"server_capabilities", server_capabilities},
-            {"packet_bulk_supported", packet_bulk_supported}
-        };
-        return write_json_buffer(&client->base, json, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_request_json(yume_client* client,
-                             const char* op,
-                             const char* args_json,
-                             char* out,
-                             size_t out_size,
-                             size_t* needed,
-                             uint32_t timeout_ms) {
-    if (!client || !op) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::lock_guard<std::mutex> request_lock(
-            client->request_replay.mutex);
-        std::string operation;
-        const int operation_parse_status =
-            parse_request_operation(&client->base, op, &operation);
-        if (operation_parse_status != YUME_STATUS_OK) {
-            return operation_parse_status;
-        }
-        nlohmann::json args;
-        const int args_status =
-            parse_request_args(&client->base, args_json, &args);
-        if (args_status != YUME_STATUS_OK) {
-            return args_status;
-        }
-        yume::client::RelayRequestSecretsWiper args_wiper(args);
-        auto request_key = make_request_replay_key(operation, args);
-        RequestReplayKeyWiper request_key_wiper(request_key);
-        if (client->request_replay.matches(request_key)) {
-            return copy_cached_request_response(
-                &client->base, &client->request_replay,
-                out, out_size, needed);
-        }
-        client->request_replay.clear();
-
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        auto response = client->runtime.request(
-            operation, args, &error, timeout_as_int(timeout_ms),
-            &operation_status);
-        if (operation_status != yume::runtime::OperationStatus::Success) {
-            return set_error(&client->base,
-                             status_from_operation_status(operation_status),
-                             error.empty() ? "client request failed" : error);
-        }
-        return write_completed_request_response(
-            &client->base, &client->request_replay, &request_key,
-            response, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_open_stream(yume_client* client,
-                            const char* service,
-                            uint32_t timeout_ms,
-                            yume_stream** out_stream) {
-    if (!client || !service || !out_stream) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    *out_stream = nullptr;
-    if (!valid_service_name(service)) {
-        return set_error(&client->base,
-                         YUME_STATUS_INVALID_ARGUMENT,
-                         "invalid service name");
-    }
-    if (timeout_ms == 0) {
-        return set_error(&client->base,
-                         YUME_STATUS_WOULD_BLOCK,
-                         "stream OPEN requires a positive deadline");
-    }
-
-    try {
-        const std::string service_name(service);
-        auto runtime_access = client->runtime.acquire_runtime();
-        if (!runtime_access) {
-            return set_error(&client->base,
-                             YUME_STATUS_NOT_RUNNING,
-                             "client runtime is not running");
-        }
-        const auto lifetime_gate = runtime_access->gate();
-        auto tunnel = runtime_access->tunnel();
-        if (!tunnel || !tunnel->is_alive()) {
-            return set_error(&client->base,
-                             YUME_STATUS_NOT_RUNNING,
-                             "client tunnel is not running");
-        }
-
-        std::shared_ptr<yume::runtime::ServiceStream> stream;
-        ClientServiceOpenRollbackContext rollback_context{
-            tunnel.get(), &stream, 0};
-        const uint8_t stream_id = tunnel->reserve_stream_id();
-        if (stream_id == 0) {
-            return set_error(&client->base,
-                             YUME_STATUS_RESOURCE_EXHAUSTED,
-                             "no stream ids available");
-        }
-        rollback_context.stream_id = stream_id;
-        yume::abi::detail::ServiceOpenTransaction open_transaction(
-            &rollback_context, rollback_client_service_open);
-
-        stream = std::make_shared<yume::runtime::ServiceStream>(
-            service_name,
-            "server");
-        auto open_wait = std::make_shared<yume::abi::detail::ServiceOpenWait>();
-        std::weak_ptr<yume::abi::detail::ServiceOpenWait> weak_open_wait =
-            open_wait;
-        std::weak_ptr<yume::client::Tunnel> weak_tunnel = tunnel;
-
-        stream->set_callbacks(
-            [weak_tunnel, lifetime_gate, stream_id](
-                yume::runtime::ServiceStream::Bytes data,
-                std::uint32_t timeout_ms,
-                yume::runtime::ServiceStream::WriteCompletion completion,
-                std::string* error) {
-                using Admission =
-                    yume::client::TransportCore::DataWriteAdmission;
-                using Result = yume::runtime::ServiceStream::WriteResult;
-                yume::client::RuntimeLifetimeGate::Lease runtime_lease;
-                if (lifetime_gate) {
-                    runtime_lease = lifetime_gate->try_acquire();
-                    if (!runtime_lease) {
-                        if (error) *error = "client runtime is stopping";
-                        return Result::Closed;
-                    }
-                }
-                auto locked = weak_tunnel.lock();
-                if (!locked || !locked->is_alive()) {
-                    if (error) *error = "client tunnel is closed";
-                    return Result::Closed;
-                }
-                const auto admission = locked->wait_send_data(
-                    stream_id, std::move(data),
-                    std::chrono::milliseconds(timeout_ms),
-                    [completion = std::move(completion)](
-                        bool ok, std::size_t, const std::string& reason) mutable {
-                        if (completion) completion(ok, reason);
-                    });
-                switch (admission) {
-                case Admission::accepted:
-                    return Result::Accepted;
-                case Admission::would_block:
-                    if (error) *error = "service write would block";
-                    return Result::WouldBlock;
-                case Admission::timeout:
-                    if (error) *error = "service write deadline expired";
-                    return Result::Timeout;
-                case Admission::stopped:
-                    if (error) *error = "client transport stopped";
-                    return Result::Closed;
-                case Admission::invalid:
-                    if (error) *error = "service write is too large";
-                    return Result::Invalid;
-                }
-                if (error) *error = "unknown service write admission result";
-                return Result::Failed;
-            },
-            [weak_tunnel, lifetime_gate, stream_id](std::string reason) {
-                auto runtime_lease = lifetime_gate
-                    ? lifetime_gate->try_acquire()
-                    : yume::client::RuntimeLifetimeGate::Lease{};
-                if (lifetime_gate && !runtime_lease) return;
-                if (auto locked = weak_tunnel.lock()) {
-                    locked->send_close(stream_id, reason);
-                    locked->unregister_stream(stream_id);
-                }
-            },
-            [weak_tunnel, lifetime_gate, stream_id](std::string reason) {
-                auto runtime_lease = lifetime_gate
-                    ? lifetime_gate->try_acquire()
-                    : yume::client::RuntimeLifetimeGate::Lease{};
-                if (lifetime_gate && !runtime_lease) return;
-                if (auto locked = weak_tunnel.lock()) {
-                    locked->send_stream_fin(stream_id, reason);
-                }
-            });
-
-        const bool registered = tunnel->register_stream(
-            stream_id,
-            [stream, weak_tunnel, lifetime_gate, stream_id](
-                const yume::client::Tunnel::Bytes& data,
-                yume::client::Tunnel::InboundCredit inbound_credit) {
-                std::string error;
-                yume::client::Tunnel::Bytes owned(data.begin(), data.end());
-                if (stream->receive_data(
-                        std::move(owned), std::move(inbound_credit), &error)) {
-                    return;
-                }
-                const std::string reason = error.empty() ? "service inbound queue overflow"
-                                                         : "service inbound queue overflow: " + error;
-                stream->receive_close(reason, true);
-                auto runtime_lease = lifetime_gate
-                    ? lifetime_gate->try_acquire()
-                    : yume::client::RuntimeLifetimeGate::Lease{};
-                if (lifetime_gate && !runtime_lease) return;
-                if (auto locked = weak_tunnel.lock()) {
-                    locked->send_close(stream_id, reason);
-                    locked->unregister_stream(stream_id);
-                }
-            },
-            [stream, weak_tunnel, weak_open_wait, lifetime_gate, stream_id](
-                const std::string& reason) {
-                // Tunnel shutdown clears pending OPEN handlers, but it invokes
-                // registered stream-close handlers. Settle the waiter here so
-                // both yume_client_stop() and a natural disconnect wake it.
-                if (auto wait = weak_open_wait.lock()) {
-                    wait->cancel(reason);
-                }
-                stream->receive_close(reason);
-                auto runtime_lease = lifetime_gate
-                    ? lifetime_gate->try_acquire()
-                    : yume::client::RuntimeLifetimeGate::Lease{};
-                if (lifetime_gate && !runtime_lease) return;
-                if (auto locked = weak_tunnel.lock()) {
-                    locked->unregister_stream(stream_id);
-                }
-            },
-            [stream](const std::string& reason) {
-                stream->receive_fin(reason);
-            });
-        if (!registered) {
-            if (!tunnel->is_alive()) {
-                return set_error(&client->base,
-                                 YUME_STATUS_NOT_RUNNING,
-                                 "client tunnel stopped while registering stream");
-            }
-            return set_error(&client->base,
-                             YUME_STATUS_INTERNAL_ERROR,
-                             "reserved stream registration failed");
-        }
-        open_transaction.MarkRegistered();
-
-        open_transaction.MarkOpenStarted();
-        tunnel->open_relay_stream(
-            stream_id,
-            nlohmann::json{{"proto", "service.v1"}, {"service", service_name}},
-            [open_wait](bool ok, const std::string& reason) {
-                open_wait->complete(ok, reason);
-            });
-
-        const auto open_result = open_wait->wait_for(
-            std::chrono::milliseconds(timeout_ms));
-        if (open_result.outcome !=
-            yume::abi::detail::ServiceOpenWait::Outcome::accepted) {
-            using Outcome = yume::abi::detail::ServiceOpenWait::Outcome;
-            if (open_result.outcome == Outcome::timed_out) {
-                return set_error(&client->base,
-                                 YUME_STATUS_TIMEOUT,
-                                 "stream open timed out");
-            }
-            open_transaction.MarkRejected();
-            if (open_result.outcome == Outcome::cancelled) {
-                const std::string reason = open_result.reason.empty()
-                    ? "client tunnel closed while opening stream"
-                    : open_result.reason;
-                return set_error(&client->base, YUME_STATUS_NOT_RUNNING, reason);
-            }
-
-            const std::string reason = open_result.reason.empty()
-                ? "stream open rejected"
-                : open_result.reason;
-            return set_error(&client->base,
-                             YUME_STATUS_PERMISSION_DENIED,
-                             reason);
-        }
-
-        open_transaction.MarkAccepted();
-        // Keep `stream` populated until Publish(): rollback_context points to
-        // it so an allocation failure here can detach the unpublished stream
-        // before the transport is closed and retired.
-        auto published_stream = std::make_unique<yume_stream>(stream);
-        *out_stream = published_stream.release();
-        open_transaction.Publish();
-        return clear_error(&client->base);
-    } catch (std::bad_alloc const&) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_client_open_packet(yume_client* client,
-                            uint32_t timeout_ms,
-                            yume_packet** out_packet) {
-    if (!client || !out_packet) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    *out_packet = nullptr;
-    if (timeout_ms == 0) {
-        return set_error(&client->base, YUME_STATUS_WOULD_BLOCK,
-                         "packet OPEN requires a positive deadline");
-    }
-    try {
-        auto runtime_access = client->runtime.acquire_runtime();
-        if (!runtime_access) {
-            return set_error(&client->base, YUME_STATUS_NOT_RUNNING,
-                             "client runtime is not running");
-        }
-        auto tunnel = runtime_access->tunnel();
-        if (!tunnel || !tunnel->is_alive()) {
-            return set_error(&client->base, YUME_STATUS_NOT_RUNNING,
-                             "client tunnel is not running");
-        }
-        std::string error;
-        yume::client::packet::OpenResult open_result;
-        auto channel = yume::client::packet::PacketChannel::open(
-            std::move(tunnel), runtime_access->server_capabilities(),
-            std::chrono::milliseconds(timeout_ms), &error,
-            runtime_access->gate(), &open_result);
-        if (!channel) {
-            return set_error(&client->base,
-                             status_from_packet_open_result(open_result.status),
-                             error.empty() ? open_result.detail : error);
-        }
-        *out_packet = new yume_packet(std::move(channel));
-        return clear_error(&client->base);
-    } catch (std::bad_alloc const&) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
-    } catch (std::exception const& ex) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_packet_status_json(yume_packet* packet,
-                            char* out,
-                            size_t out_size,
-                            size_t* needed) {
-    if (!packet || !packet->channel) return YUME_STATUS_INVALID_ARGUMENT;
-    try {
-        const auto& assignment = packet->channel->assignment();
-        const auto stats = packet->channel->stats();
-        nlohmann::json json{
-            {"protocol", "packet-bulk-v1"},
-            {"capability", "packet_bulk_v1"},
-            {"ipv4", assignment.ipv4},
-            {"mtu", assignment.mtu},
-            {"dns", assignment.dns_servers},
-            {"stopped", stats.stopped},
-            {"stop_reason", stats.stop_reason},
-            {"outbound_batches", stats.outbound_batches},
-            {"outbound_packets", stats.outbound_packets},
-            {"outbound_bytes", stats.outbound_bytes},
-            {"outbound_queue_packets", stats.outbound_queue_packets},
-            {"outbound_queue_bytes", stats.outbound_queue_bytes},
-            {"inbound_batches", stats.inbound_batches},
-            {"inbound_packets", stats.inbound_packets},
-            {"inbound_bytes", stats.inbound_bytes},
-            {"inbound_queue_packets", stats.inbound_queue_packets},
-            {"inbound_queue_bytes", stats.inbound_queue_bytes},
-        };
-        return write_json_buffer(&packet->base, json, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_packet_write_batch(yume_packet* packet,
-                            const void* const* packets,
-                            const size_t* lengths,
-                            size_t packet_count,
-                            uint32_t timeout_ms) {
-    if (!packet || !packet->channel || !packets || !lengths || packet_count == 0) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    if (packet_count >
-        yume::client::packet::PacketBatchEngine::kDefaultMaxQueuePackets) {
-        return set_error(&packet->base, YUME_STATUS_INVALID_ARGUMENT,
-                         "packet batch exceeds the queue packet limit");
-    }
-    try {
-        std::size_t total_bytes = 0;
-        for (std::size_t i = 0; i < packet_count; ++i) {
-            if (!packets[i] || lengths[i] == 0 ||
-                lengths[i] > yume::protocol::packet_bulk::kMaxPacketBytes) {
-                return set_error(&packet->base, YUME_STATUS_INVALID_ARGUMENT,
-                                 "packet input is null, empty, or oversized");
-            }
-            if (lengths[i] >
-                yume::client::packet::PacketBatchEngine::kDefaultMaxQueueBytes -
-                    std::min(total_bytes,
-                             yume::client::packet::PacketBatchEngine::kDefaultMaxQueueBytes)) {
-                return set_error(&packet->base, YUME_STATUS_INVALID_ARGUMENT,
-                                 "packet batch exceeds the queue byte limit");
-            }
-            total_bytes += lengths[i];
-        }
-        std::vector<yume::client::packet::Bytes> copied;
-        copied.reserve(packet_count);
-        for (std::size_t i = 0; i < packet_count; ++i) {
-            const auto* begin = static_cast<const std::uint8_t*>(packets[i]);
-            copied.emplace_back(begin, begin + lengths[i]);
-        }
-        std::string error;
-        const auto result = packet->channel->write_packets(
-            copied, std::chrono::milliseconds(timeout_ms), &error);
-        if (result != yume::client::packet::QueueResult::ok) {
-            return set_error(&packet->base,
-                             status_from_packet_result(result),
-                             error.empty() ? "packet write unavailable" : error);
-        }
-        return clear_error(&packet->base);
-    } catch (std::bad_alloc const&) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
-    } catch (std::exception const& ex) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_packet_read_batch(yume_packet* packet,
-                           void* storage,
-                           size_t storage_size,
-                           size_t* offsets,
-                           size_t* lengths,
-                           size_t array_capacity,
-                           size_t* packet_count,
-                           size_t* required_storage,
-                           uint32_t timeout_ms) {
-    if (!packet || !packet->channel || !packet_count ||
-        array_capacity == 0 || !offsets || !lengths ||
-        (!storage && storage_size != 0)) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    *packet_count = 0;
-    if (required_storage) *required_storage = 0;
-    try {
-        std::vector<yume::client::packet::Bytes> packets;
-        std::size_t required = 0;
-        const auto result = packet->channel->read_packets(
-            array_capacity, storage_size, std::chrono::milliseconds(timeout_ms),
-            &packets, &required);
-        if (required_storage) *required_storage = required;
-        if (result != yume::client::packet::QueueResult::ok) {
-            return set_error(&packet->base, status_from_packet_result(result),
-                             result == yume::client::packet::QueueResult::buffer_too_small
-                                 ? "packet read storage is too small"
-                                 : "packet read unavailable");
-        }
-        auto* bytes = static_cast<std::uint8_t*>(storage);
-        std::size_t offset = 0;
-        for (std::size_t i = 0; i < packets.size(); ++i) {
-            offsets[i] = offset;
-            lengths[i] = packets[i].size();
-            std::memcpy(bytes + offset, packets[i].data(), packets[i].size());
-            offset += packets[i].size();
-        }
-        *packet_count = packets.size();
-        if (required_storage) *required_storage = offset;
-        return clear_error(&packet->base);
-    } catch (std::exception const& ex) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_packet_close(yume_packet* packet) {
-    if (!packet || !packet->channel) return YUME_STATUS_INVALID_ARGUMENT;
-    try {
-        packet->channel->close("ABI packet close");
-        return clear_error(&packet->base);
-    } catch (...) {
-        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR,
-                         "packet close failed");
-    }
-}
-
-void yume_packet_destroy(yume_packet* packet) {
-    delete packet;
-}
-
-yume_server* yume_server_create(void) {
-    try {
-        return new yume_server();
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-void yume_server_destroy(yume_server* server) {
-    delete server;
-}
-
-#if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
-
-int yume_server_start_json(yume_server* server,
-                           const char* config_json,
-                           const char* base_dir) {
-    if (!server || !config_json) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::string parse_error;
-        auto cfg = yume::facade::config_io::parse_server_json(
-            config_json,
-            abi_base_dir(base_dir),
-            &parse_error);
-        if (!cfg) {
-            return set_error(&server->base, YUME_STATUS_PARSE_ERROR, parse_error);
-        }
-        auto validation = yume::facade::config_io::validate(*cfg);
-        if (!validation.ok()) {
-            return set_error(&server->base,
-                             YUME_STATUS_INVALID_ARGUMENT,
-                             validation_error(validation));
-        }
-
-        std::lock_guard<std::mutex> lock(server->mu);
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        const bool started = server->runtime.start(
-            std::move(*cfg), &error, &operation_status);
-        if (!started ||
-            operation_status != yume::runtime::OperationStatus::Success) {
-            return set_error(&server->base,
-                             status_from_operation_status(operation_status),
-                             error.empty() ? "server start failed" : error);
-        }
-        return clear_error(&server->base);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_start_file(yume_server* server,
-                           const char* config_path) {
-    if (!server || !config_path || !*config_path) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::string error;
-        yume::facade::config_io::ConfigLoadError load_error{};
-        auto cfg = yume::facade::config_io::load_server(
-            config_path, &error, &load_error);
-        if (!cfg) {
-            return set_error(&server->base,
-                             status_from_config_load_error(load_error),
-                             error);
-        }
-        auto validation = yume::facade::config_io::validate(*cfg);
-        if (!validation.ok()) {
-            return set_error(&server->base,
-                             YUME_STATUS_INVALID_ARGUMENT,
-                             validation_error(validation));
-        }
-        std::lock_guard<std::mutex> lock(server->mu);
-        yume::runtime::OperationStatus operation_status{};
-        const bool started = server->runtime.start(
-            std::move(*cfg), &error, &operation_status);
-        if (!started ||
-            operation_status != yume::runtime::OperationStatus::Success) {
-            return set_error(&server->base,
-                             status_from_operation_status(operation_status),
-                             error.empty() ? "server start failed" : error);
-        }
-        return clear_error(&server->base);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_stop(yume_server* server) {
-    if (!server) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::lock_guard<std::mutex> lock(server->mu);
-        server->runtime.stop();
-        return clear_error(&server->base);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_reload_auth(yume_server* server) {
-    if (!server) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        if (!server->runtime.reload_auth(&error, &operation_status)) {
-            return set_error(&server->base,
-                             status_from_operation_status(operation_status),
-                             error);
-        }
-        return clear_error(&server->base);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_status_json(yume_server* server,
-                            char* out,
-                            size_t out_size,
-                            size_t* needed) {
-    if (!server) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        const auto status = server->runtime.status();
-        nlohmann::json json = {
-            {"running", status.running},
-            {"listen_endpoint", status.listen_endpoint},
-            {"ipc_path", status.ipc_path},
-            {"message", status.message},
-            {"active_sessions", status.active_sessions},
-            {"started_unix_ms", unix_ms(status.started)}
-        };
-        return write_json_buffer(&server->base, json, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_request_json(yume_server* server,
-                             const char* op,
-                             const char* args_json,
-                             char* out,
-                             size_t out_size,
-                             size_t* needed) {
-    if (!server || !op) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        std::lock_guard<std::mutex> request_lock(
-            server->request_replay.mutex);
-        std::string operation;
-        const int operation_parse_status =
-            parse_request_operation(&server->base, op, &operation);
-        if (operation_parse_status != YUME_STATUS_OK) {
-            return operation_parse_status;
-        }
-        nlohmann::json args;
-        const int args_status =
-            parse_request_args(&server->base, args_json, &args);
-        if (args_status != YUME_STATUS_OK) {
-            return args_status;
-        }
-        yume::client::RelayRequestSecretsWiper args_wiper(args);
-        auto request_key = make_request_replay_key(operation, args);
-        RequestReplayKeyWiper request_key_wiper(request_key);
-        if (server->request_replay.matches(request_key)) {
-            return copy_cached_request_response(
-                &server->base, &server->request_replay,
-                out, out_size, needed);
-        }
-        server->request_replay.clear();
-
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        auto response = server->runtime.request(
-            operation, args, &error, &operation_status);
-        if (operation_status != yume::runtime::OperationStatus::Success) {
-            return set_error(&server->base,
-                             status_from_operation_status(operation_status),
-                             error.empty() ? "server request failed" : error);
-        }
-        return write_completed_request_response(
-            &server->base, &server->request_replay, &request_key,
-            response, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_sessions_json(yume_server* server,
-                              char* out,
-                              size_t out_size,
-                              size_t* needed) {
-    if (!server) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        nlohmann::json sessions = nlohmann::json::array();
-        for (const auto& session : server->runtime.sessions()) {
-            sessions.push_back({
-                {"endpoint_id", session.endpoint_id},
-                {"display_name", session.display_name},
-                {"state", session.state},
-                {"client_platform", session.client_platform},
-                {"client_version", session.client_version}
-            });
-        }
-        return write_json_buffer(&server->base, sessions, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_register_service(yume_server* server,
-                                 const char* service) {
-    if (!server || !service) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    if (!valid_service_name(service)) {
-        return set_error(&server->base,
-                         YUME_STATUS_INVALID_ARGUMENT,
-                         "invalid service name");
-    }
-    try {
-        const std::string service_name(service);
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        if (!server->runtime.register_service(
-                service_name, &error, &operation_status)) {
-            return set_error(&server->base,
-                             status_from_operation_status(operation_status),
-                             error);
-        }
-        return clear_error(&server->base);
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
-int yume_server_accept_stream(yume_server* server,
-                              const char* service,
-                              uint32_t timeout_ms,
-                              yume_stream** out_stream) {
-    if (!server || !service || !out_stream) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    *out_stream = nullptr;
-    if (!valid_service_name(service)) {
-        return set_error(&server->base,
-                         YUME_STATUS_INVALID_ARGUMENT,
-                         "invalid service name");
-    }
-    try {
-        const std::string service_name(service);
-        std::string error;
-        yume::runtime::OperationStatus operation_status{};
-        auto stream = server->runtime.accept_service_stream(
-            service_name, timeout_ms, &error, &operation_status);
-        if (!stream) {
-            return set_error(&server->base,
-                             status_from_operation_status(operation_status),
-                             error);
-        }
-        *out_stream = new yume_stream(std::move(stream));
-        return clear_error(&server->base);
-    } catch (std::bad_alloc const&) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
-}
-
+yume_status yume_get_build_info(yume_build_info* out,
+                                size_t out_size) noexcept {
+    yume_build_info value{};
+    value.struct_size = sizeof(value);
+    value.abi_version = YUME_ABI_VERSION;
+    value.feature_flags = 0;
+    copy_text(value.product_version, sizeof(value.product_version),
+              yume::kCompatibilityManifest.product_version);
+    copy_text(value.crypto_backend, sizeof(value.crypto_backend),
+              yume::kCompatibilityManifest.crypto_backend);
+#if defined(__clang__)
+    copy_text(value.compiler, sizeof(value.compiler), "clang");
+#elif defined(__GNUC__)
+    copy_text(value.compiler, sizeof(value.compiler), "gcc");
+#elif defined(_MSC_VER)
+    copy_text(value.compiler, sizeof(value.compiler), "msvc");
 #else
-
-int yume_server_start_json(yume_server* server,
-                           const char* config_json,
-                           const char*) {
-    if (!server || !config_json) return YUME_STATUS_INVALID_ARGUMENT;
-    return set_error(&server->base, YUME_STATUS_PERMISSION_DENIED,
-                     "server runtime is not included in this client-only build");
-}
-
-int yume_server_start_file(yume_server* server, const char* config_path) {
-    if (!server || !config_path || !*config_path) return YUME_STATUS_INVALID_ARGUMENT;
-    return set_error(&server->base, YUME_STATUS_PERMISSION_DENIED,
-                     "server runtime is not included in this client-only build");
-}
-
-int yume_server_stop(yume_server* server) {
-    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
-    return clear_error(&server->base);
-}
-
-int yume_server_reload_auth(yume_server* server) {
-    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
-    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
-                     "server runtime is not included in this client-only build");
-}
-
-int yume_server_status_json(yume_server* server, char*, size_t, size_t*) {
-    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
-    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
-                     "server runtime is not included in this client-only build");
-}
-
-int yume_server_sessions_json(yume_server* server, char*, size_t, size_t*) {
-    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
-    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
-                     "server runtime is not included in this client-only build");
-}
-
-int yume_server_request_json(yume_server* server, const char* op,
-                             const char* args_json,
-                             char*, size_t, size_t*) {
-    if (!server || !op) return YUME_STATUS_INVALID_ARGUMENT;
-    try {
-        std::lock_guard<std::mutex> request_lock(
-            server->request_replay.mutex);
-        std::string operation;
-        const int operation_parse_status =
-            parse_request_operation(&server->base, op, &operation);
-        if (operation_parse_status != YUME_STATUS_OK) {
-            return operation_parse_status;
-        }
-        nlohmann::json args;
-        const int args_status =
-            parse_request_args(&server->base, args_json, &args);
-        if (args_status != YUME_STATUS_OK) return args_status;
-        yume::client::RelayRequestSecretsWiper args_wiper(args);
-        server->request_replay.clear();
-        return set_error(
-            &server->base, YUME_STATUS_NOT_RUNNING,
-            "server runtime is not included in this client-only build");
-    } catch (std::exception const& ex) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR,
-                         "unknown error");
-    }
-}
-
-int yume_server_register_service(yume_server* server, const char* service) {
-    if (!server || !service) return YUME_STATUS_INVALID_ARGUMENT;
-    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
-                     "server runtime is not included in this client-only build");
-}
-
-int yume_server_accept_stream(yume_server* server,
-                              const char* service,
-                              uint32_t,
-                              yume_stream** out_stream) {
-    if (!server || !service || !out_stream) return YUME_STATUS_INVALID_ARGUMENT;
-    *out_stream = nullptr;
-    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
-                     "server runtime is not included in this client-only build");
-}
-
+    copy_text(value.compiler, sizeof(value.compiler), "unknown");
 #endif
-
-int yume_stream_peer_json(yume_stream* stream,
-                          char* out,
-                          size_t out_size,
-                          size_t* needed) {
-    if (!stream || !stream->stream) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    try {
-        const auto info = stream->stream->peer_info();
-        nlohmann::json json = {
-            {"service", info.service},
-            {"peer", info.peer},
-            {"auth_fingerprint_sha256", info.auth_fingerprint_sha256},
-            {"session_id", info.session_id},
-            {"server_session_id", info.server_session_id},
-            {"remote_addr", info.remote_addr}
-        };
-        return write_json_buffer(&stream->base, json, out, out_size, needed);
-    } catch (std::exception const& ex) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
+    return copy_sized(out, out_size, YUME_BUILD_INFO_MIN_SIZE, value,
+                      kBuildInfoFields);
 }
 
-int yume_stream_read(yume_stream* stream,
-                     void* out,
-                     size_t out_size,
-                     size_t* bytes_read,
-                     uint32_t timeout_ms) {
-    if (!stream || !out || out_size == 0) {
-        return YUME_STATUS_INVALID_ARGUMENT;
-    }
-    if (bytes_read) {
-        *bytes_read = 0;
-    }
-    try {
-        std::string reason;
-        const auto result = stream->stream->read(out, out_size, timeout_ms, bytes_read, &reason);
-        const int status = yume::abi::detail::service_read_status(
-            result, timeout_ms);
-        if (status == YUME_STATUS_OK) {
-            return clear_error(&stream->base);
-        }
-        if (status == YUME_STATUS_WOULD_BLOCK) {
-            return set_error(&stream->base, status, "stream read would block");
-        }
-        if (status == YUME_STATUS_TIMEOUT) {
-            return set_error(&stream->base, status, "stream read timed out");
-        }
-        if (status == YUME_STATUS_NOT_RUNNING) {
-            return set_error(&stream->base, status,
-                             reason.empty() ? "stream is closed" : reason);
-        }
-        return set_error(&stream->base, status, "unknown read result");
-    } catch (std::exception const& ex) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
+yume_status yume_get_compatibility(yume_compatibility* out,
+                                   size_t out_size) noexcept {
+    yume_compatibility value{};
+    value.struct_size = sizeof(value);
+    value.abi_version = YUME_ABI_VERSION;
+    value.ytp_version = yume::kYtpVersionNumber;
+    value.config_schema = yume::kConfigSchema;
+    value.evidence_profile_version = yume::kEvidenceProfileVersion;
+    copy_text(value.product_version, sizeof(value.product_version),
+              yume::kCompatibilityManifest.product_version);
+    copy_text(value.ytp_name, sizeof(value.ytp_name),
+              yume::kCompatibilityManifest.ytp_version);
+    copy_text(value.suite, sizeof(value.suite),
+              yume::kCompatibilityManifest.transport_suite);
+    copy_text(value.crypto_backend, sizeof(value.crypto_backend),
+              yume::kCompatibilityManifest.crypto_backend);
+    copy_text(value.secure_channel_provider,
+              sizeof(value.secure_channel_provider),
+              yume::kCompatibilityManifest.secure_channel_provider);
+    copy_text(value.front_door_provider, sizeof(value.front_door_provider),
+              yume::kCompatibilityManifest.front_door_provider);
+    copy_text(value.carrier_provider, sizeof(value.carrier_provider),
+              yume::kCompatibilityManifest.carrier_provider);
+    copy_text(value.session_component, sizeof(value.session_component),
+              yume::kCompatibilityManifest.session_component);
+    copy_text(value.session_security_provider,
+              sizeof(value.session_security_provider),
+              yume::kCompatibilityManifest.session_security_provider);
+    copy_text(value.evidence_profile, sizeof(value.evidence_profile),
+              yume::kCompatibilityManifest.evidence_profile);
+    return copy_sized(out, out_size, YUME_COMPATIBILITY_MIN_SIZE, value,
+                      kCompatibilityFields);
 }
 
-int yume_stream_write(yume_stream* stream,
-                      const void* data,
-                      size_t size,
-                      size_t* bytes_written,
-                      uint32_t timeout_ms) {
-    if (!stream || (size > 0 && !data)) {
+yume_status yume_get_status_info(yume_status code,
+                                 yume_status_info* out,
+                                 size_t out_size) noexcept {
+    const char* name = status_name(code);
+    if (!name) return YUME_STATUS_INVALID_ARGUMENT;
+    yume_status_info value{};
+    value.struct_size = sizeof(value);
+    value.abi_version = YUME_ABI_VERSION;
+    value.code = code;
+    copy_text(value.name, sizeof(value.name), name);
+    return copy_sized(out, out_size, YUME_STATUS_INFO_MIN_SIZE, value,
+                      kStatusInfoFields);
+}
+
+yume_status yume_runtime_create(const yume_runtime_options* options,
+                                yume_runtime** out_runtime) noexcept {
+    if (out_runtime) *out_runtime = nullptr;
+    if (g_in_callback) return YUME_STATUS_INVALID_STATE;
+    if (!options || !out_runtime ||
+        options->struct_size < YUME_RUNTIME_OPTIONS_MIN_SIZE ||
+        options->abi_version != YUME_ABI_VERSION) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
-    if (bytes_written) {
-        *bytes_written = 0;
-    }
-    try {
-        std::string error;
-        const auto result = stream->stream->write(
-            data, size, timeout_ms, &error);
-        using Result = yume::runtime::ServiceStream::WriteResult;
-        if (result != Result::Accepted) {
-            int status = YUME_STATUS_INTERNAL_ERROR;
-            switch (result) {
-            case Result::WouldBlock:
-                status = YUME_STATUS_WOULD_BLOCK;
-                break;
-            case Result::Timeout:
-                status = YUME_STATUS_TIMEOUT;
-                break;
-            case Result::Closed:
-                status = YUME_STATUS_NOT_RUNNING;
-                break;
-            case Result::Invalid:
-                status = YUME_STATUS_INVALID_ARGUMENT;
-                break;
-            case Result::Failed:
-                status = YUME_STATUS_INTERNAL_ERROR;
-                break;
-            case Result::Accepted:
-                break;
+    return guard(nullptr, [&]() -> yume_status {
+        const std::uint32_t threads = options->executor_threads == 0
+            ? kDefaultExecutorThreads : options->executor_threads;
+        const std::uint32_t pending = options->max_pending_callbacks == 0
+            ? kDefaultPendingCallbacks : options->max_pending_callbacks;
+        if (threads > kMaxExecutorThreads || pending > kMaxPendingCallbacks) {
+            return YUME_STATUS_RESOURCE_EXHAUSTED;
+        }
+        auto runtime = std::make_unique<yume_runtime>();
+        runtime->state = std::make_shared<RuntimeState>();
+        runtime->state->executor_threads = threads;
+        runtime->state->max_pending_callbacks = pending;
+        runtime->state->log_callback = options->log_callback;
+        if (contains_field(*options,
+                           offsetof(yume_runtime_options, event_callback),
+                           sizeof(options->event_callback))) {
+            runtime->state->event_callback = options->event_callback;
+        }
+        if (contains_field(*options,
+                           offsetof(yume_runtime_options, callback_user_data),
+                           sizeof(options->callback_user_data))) {
+            runtime->state->callback_user_data = options->callback_user_data;
+        }
+        if (contains_field(*options,
+                           offsetof(yume_runtime_options, config_base_dir),
+                           sizeof(options->config_base_dir)) &&
+            options->config_base_dir != nullptr) {
+            const std::string_view base(options->config_base_dir);
+            if (base.empty() || base.size() > kMaxConfigBaseDirBytes) {
+                return YUME_STATUS_INVALID_ARGUMENT;
             }
-            return set_error(&stream->base, status,
-                             error.empty() ? "stream write failed" : error);
+            runtime->state->config_base_dir = std::string(base);
         }
-        if (bytes_written) {
-            *bytes_written = size;
-        }
-        return clear_error(&stream->base);
-    } catch (std::exception const& ex) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
+        *out_runtime = runtime.release();
+        return YUME_STATUS_OK;
+    });
 }
 
-int yume_stream_shutdown_write(yume_stream* stream) {
-    if (!stream) {
-        return YUME_STATUS_INVALID_ARGUMENT;
+void yume_runtime_destroy(yume_runtime* runtime) noexcept {
+    if (!runtime || !valid_header(&runtime->header, HandleKind::Runtime)) return;
+    if (g_in_callback) return;
+    const std::shared_ptr<RuntimeState> state = runtime->state;
+    try {
+        if (state) {
+            state->stopping.store(true);
+            std::vector<std::weak_ptr<EndpointControl>> endpoints;
+            {
+                std::lock_guard<std::mutex> lock(state->endpoints_mutex);
+                endpoints.swap(state->endpoints);
+            }
+            for (const auto& weak_endpoint : endpoints) {
+                if (auto endpoint = weak_endpoint.lock()) {
+                    (void)stop_endpoint_control(state, endpoint);
+                }
+            }
+        }
+    } catch (...) {
+        // Continue disabling callbacks and releasing the runtime handle. The
+        // shared state remains fail-closed through stopping=true.
     }
     try {
+        if (state) {
+            std::unique_lock<std::mutex> callback_lock(state->callback_mutex);
+            state->callbacks_enabled = false;
+            state->callback_cv.wait(callback_lock, [&state] {
+                return state->callbacks_in_flight == 0;
+            });
+            state->log_callback = nullptr;
+            state->event_callback = nullptr;
+            state->callback_user_data = nullptr;
+        }
+    } catch (...) {
+        // Mutex/condition-variable failure is not recoverable through a void C
+        // destructor. stopping=true still prevents further endpoint work.
+    }
+    delete runtime;
+}
+
+yume_status yume_config_parse_json(yume_runtime* runtime,
+                                   const void* json,
+                                   size_t json_size,
+                                   yume_config** out_config) noexcept {
+    if (out_config) *out_config = nullptr;
+    if (!runtime || !valid_header(&runtime->header, HandleKind::Runtime)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&runtime->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "configuration parsing is forbidden from callbacks");
+    }
+    if (!json || json_size == 0 || !out_config) {
+        return fail_with_diagnostic(&runtime->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "JSON input and output handle are required");
+    }
+    return guard(&runtime->header, [&]() -> yume_status {
+        const auto* data = static_cast<const char*>(json);
+        const std::string_view text(data, json_size);
+
+        // Dialect selection is explicit, never inferred from which parser
+        // happens to accept the bytes. Both dialects ignore unknown keys, so
+        // guessing would silently load a document against the wrong runtime.
+        const DocumentDialect dialect = classify_document(text);
+        if (dialect.error != nullptr) {
+            set_diagnostic(&runtime->header, YUME_STATUS_PARSE_ERROR,
+                           dialect.json_pointer, dialect.error);
+            return YUME_STATUS_PARSE_ERROR;
+        }
+
+        if (dialect.schema1) {
+            try {
+                auto parsed = yume::config::v1::ParseJson(text);
+                auto config = std::make_unique<yume_config>(runtime->state,
+                                                            std::move(parsed));
+                clear_diagnostic(&runtime->header);
+                *out_config = config.release();
+                return YUME_STATUS_OK;
+            } catch (const yume::config::v1::ValidationError& error) {
+                set_diagnostic(&runtime->header, YUME_STATUS_PARSE_ERROR,
+                               error.json_pointer(), error.detail());
+                return YUME_STATUS_PARSE_ERROR;
+            }
+        }
+
         std::string error;
-        if (!stream->stream->shutdown_write(&error)) {
-            return set_error(&stream->base, YUME_STATUS_NOT_RUNNING, error);
+        auto parsed = yume::embed::parse_transport_v2_config(
+            text, dialect.server, runtime->state->config_base_dir, error);
+        if (!parsed) {
+            const yume_status status = kTransportBackendLinked
+                ? YUME_STATUS_PARSE_ERROR : YUME_STATUS_UNSUPPORTED;
+            set_diagnostic(&runtime->header, status, {}, error);
+            return status;
         }
-        return clear_error(&stream->base);
-    } catch (std::exception const& ex) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
-    } catch (...) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
-    }
+        auto config = std::make_unique<yume_config>(runtime->state,
+                                                    std::move(parsed));
+        clear_diagnostic(&runtime->header);
+        *out_config = config.release();
+        return YUME_STATUS_OK;
+    });
 }
 
-int yume_stream_close(yume_stream* stream) {
-    if (!stream) {
+uint32_t yume_config_role(const yume_config* config) noexcept {
+    if (!config || !valid_header(&config->header, HandleKind::Config)) return 0;
+    if (g_in_callback) return 0;
+    return config->server ? YUME_ROLE_SERVER : YUME_ROLE_CLIENT;
+}
+
+void yume_config_destroy(yume_config* config) noexcept {
+    if (!config || !valid_header(&config->header, HandleKind::Config)) return;
+    if (g_in_callback) return;
+    delete config;
+}
+
+yume_status yume_endpoint_create(yume_runtime* runtime,
+                                 const yume_config* config,
+                                 yume_endpoint** out_endpoint) noexcept {
+    if (out_endpoint) *out_endpoint = nullptr;
+    if (!runtime || !valid_header(&runtime->header, HandleKind::Runtime)) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&runtime->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint creation is forbidden from callbacks");
+    }
+    if (!config || !valid_header(&config->header, HandleKind::Config) ||
+        !out_endpoint) {
+        return fail_with_diagnostic(&runtime->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "config and output endpoint are required");
+    }
+    return guard(&runtime->header, [&]() -> yume_status {
+        if (runtime->state->stopping.load()) {
+            return fail_with_diagnostic(&runtime->header,
+                                        YUME_STATUS_CANCELLED,
+                                        "runtime is stopping");
+        }
+        if (config->runtime.get() != runtime->state.get()) {
+            return fail_with_diagnostic(&runtime->header,
+                                        YUME_STATUS_INVALID_ARGUMENT,
+                                        "config belongs to a different runtime");
+        }
+        const std::uint64_t id = allocate_endpoint_id(*runtime->state);
+        if (id == 0) {
+            return fail_with_diagnostic(&runtime->header,
+                                        YUME_STATUS_RESOURCE_EXHAUSTED,
+                                        "endpoint identifier space is exhausted");
+        }
+        auto endpoint = std::make_unique<yume_endpoint>(
+            runtime->state, *config, id);
+        {
+            std::lock_guard<std::mutex> lock(runtime->state->endpoints_mutex);
+            if (runtime->state->stopping.load()) {
+                return fail_with_diagnostic(&runtime->header,
+                                            YUME_STATUS_CANCELLED,
+                                            "runtime is stopping");
+            }
+            auto& endpoints = runtime->state->endpoints;
+            endpoints.erase(
+                std::remove_if(endpoints.begin(), endpoints.end(),
+                               [](const auto& item) { return item.expired(); }),
+                endpoints.end());
+            if (endpoints.size() >= kMaxRuntimeEndpoints) {
+                return fail_with_diagnostic(
+                    &runtime->header, YUME_STATUS_RESOURCE_EXHAUSTED,
+                    "runtime endpoint limit is exhausted");
+            }
+            endpoints.emplace_back(endpoint->control);
+        }
+        clear_diagnostic(&runtime->header);
+        *out_endpoint = endpoint.release();
+        return YUME_STATUS_OK;
+    });
+}
+
+yume_status yume_endpoint_set_socket_protector(
+    yume_endpoint* endpoint,
+    yume_socket_protect_callback callback,
+    void* user_data) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "socket protector changes are forbidden from callbacks");
+    }
+    if (!callback && user_data) {
+        return fail_with_diagnostic(
+            &endpoint->header, YUME_STATUS_INVALID_ARGUMENT,
+            "socket protector user data requires a callback");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lifecycle_lock(
+            endpoint->control->lifecycle_mutex);
+        std::lock_guard<std::mutex> state_lock(endpoint->control->mutex);
+        if (endpoint->runtime->stopping.load()) {
+            return fail_with_diagnostic(&endpoint->header,
+                                        YUME_STATUS_CANCELLED,
+                                        "runtime is stopping");
+        }
+        if (endpoint->control->state == YUME_ENDPOINT_STARTING ||
+            endpoint->control->state == YUME_ENDPOINT_RUNNING ||
+            endpoint->control->state == YUME_ENDPOINT_STOPPING) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_INVALID_STATE,
+                "socket protector cannot change while the endpoint is active");
+        }
+        std::lock_guard<std::mutex> lock(endpoint->mutex);
+        endpoint->socket_protector = callback;
+        endpoint->socket_protector_data = user_data;
+        clear_diagnostic(&endpoint->header);
+        return YUME_STATUS_OK;
+    });
+}
+
+yume_status yume_endpoint_register_service(
+    yume_endpoint* endpoint,
+    const yume_service_descriptor* service) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "service registration is forbidden from callbacks");
+    }
+    if (!service || service->struct_size < YUME_SERVICE_DESCRIPTOR_MIN_SIZE ||
+        service->abi_version != YUME_ABI_VERSION ||
+        !valid_service_kind(service->kind)) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "service descriptor is invalid or truncated");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        if (endpoint->runtime->stopping.load()) {
+            return fail_with_diagnostic(&endpoint->header,
+                                        YUME_STATUS_CANCELLED,
+                                        "runtime is stopping");
+        }
+        std::string name;
+        try {
+            name = checked_service_name(service->name);
+        } catch (const std::invalid_argument& error) {
+            set_diagnostic(&endpoint->header, YUME_STATUS_INVALID_ARGUMENT, {},
+                           error.what());
+            return YUME_STATUS_INVALID_ARGUMENT;
+        }
+        if (service->max_concurrent == 0 ||
+            service->max_concurrent > kMaxServiceConcurrency ||
+            service->max_pending_accepts == 0 ||
+            service->max_pending_accepts > kMaxServiceConcurrency ||
+            service->max_queued_bytes == 0 ||
+            service->max_queued_bytes > kMaxServiceQueuedBytes) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_RESOURCE_EXHAUSTED,
+                "service resource policy is outside supported bounds");
+        }
+        if (!endpoint->config.has_value()) {
+            // A transport-v2 endpoint has no schema-1 service table to check
+            // a registration against, so the runtime itself is the authority.
+            // Registration is a server capability and the runtime must already
+            // be listening, which is why this runs after start rather than
+            // before it.
+            if (service->kind != YUME_SERVICE_BYTE_STREAM) {
+                return fail_with_diagnostic(
+                    &endpoint->header, YUME_STATUS_UNSUPPORTED,
+                    "packet services are not implemented yet");
+            }
+            yume::embed::EndpointBackend* backend =
+                endpoint->control->backend.get();
+            if (backend == nullptr) {
+                return fail_with_diagnostic(
+                    &endpoint->header, YUME_STATUS_INVALID_STATE,
+                    "endpoint must be started before registering a service");
+            }
+            std::string backend_error;
+            const yume::embed::BackendIo io =
+                backend->register_service(name, backend_error);
+            if (io != yume::embed::BackendIo::Ok) {
+                return fail_with_diagnostic(
+                    &endpoint->header, status_from_backend(io),
+                    backend_error.empty() ? "service registration failed"
+                                          : backend_error);
+            }
+            std::lock_guard<std::mutex> lock(endpoint->mutex);
+            endpoint->services.insert_or_assign(
+                ServiceKey{name, service->kind},
+                ServiceRegistration{service->kind, service->max_concurrent,
+                                    service->max_pending_accepts,
+                                    service->max_queued_bytes});
+            clear_diagnostic(&endpoint->header);
+            return YUME_STATUS_OK;
+        }
+        const auto configured_service = std::find_if(
+            endpoint->config->services().begin(),
+            endpoint->config->services().end(),
+            [&](const yume::config::v1::Service& configured) {
+                const bool kind_matches =
+                    (configured.kind() == yume::config::v1::ServiceKind::Stream &&
+                     service->kind == YUME_SERVICE_BYTE_STREAM) ||
+                    (configured.kind() == yume::config::v1::ServiceKind::Packet &&
+                     service->kind == YUME_SERVICE_PACKET);
+                return configured.name() == name && kind_matches;
+            });
+        if (configured_service == endpoint->config->services().end()) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_PERMISSION_DENIED,
+                "service is not enabled by the immutable endpoint config");
+        }
+        if (service->max_concurrent == 0 ||
+            service->max_concurrent > kMaxServiceConcurrency ||
+            service->max_pending_accepts == 0 ||
+            service->max_pending_accepts > kMaxServiceConcurrency ||
+            service->max_queued_bytes == 0 ||
+            service->max_queued_bytes > kMaxServiceQueuedBytes) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_RESOURCE_EXHAUSTED,
+                "service resource policy is outside supported bounds");
+        }
+        const auto& endpoint_limits = endpoint->config->limits();
+        if (service->max_concurrent >
+                configured_service->max_concurrent_streams() ||
+            service->max_concurrent > endpoint_limits.max_streams() ||
+            service->max_pending_accepts >
+                endpoint_limits.max_pending_opens() ||
+            service->max_queued_bytes > endpoint_limits.max_queued_bytes()) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_PERMISSION_DENIED,
+                "service policy exceeds immutable endpoint config limits");
+        }
+        {
+            std::lock_guard<std::mutex> lifecycle_lock(
+                endpoint->control->lifecycle_mutex);
+            std::lock_guard<std::mutex> state_lock(endpoint->control->mutex);
+            if (endpoint->runtime->stopping.load()) {
+                return fail_with_diagnostic(&endpoint->header,
+                                            YUME_STATUS_CANCELLED,
+                                            "runtime is stopping");
+            }
+            if (endpoint->control->state != YUME_ENDPOINT_CREATED &&
+                endpoint->control->state != YUME_ENDPOINT_STOPPED) {
+                return fail_with_diagnostic(
+                    &endpoint->header, YUME_STATUS_INVALID_STATE,
+                    "services cannot change while the endpoint is active");
+            }
+            std::lock_guard<std::mutex> lock(endpoint->mutex);
+            const auto [_, inserted] = endpoint->services.emplace(
+                ServiceKey{std::move(name), service->kind},
+                ServiceRegistration{
+                    service->kind, service->max_concurrent,
+                    service->max_pending_accepts, service->max_queued_bytes});
+            if (!inserted) {
+                return fail_with_diagnostic(&endpoint->header,
+                                            YUME_STATUS_INVALID_ARGUMENT,
+                                            "service name and kind are already registered");
+            }
+        }
+        clear_diagnostic(&endpoint->header);
+        return YUME_STATUS_OK;
+    });
+}
+
+yume_status yume_endpoint_start(yume_endpoint* endpoint,
+                                uint32_t timeout_ms) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint start is forbidden from callbacks");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lifecycle_lock(
+            endpoint->control->lifecycle_mutex);
+        {
+            std::lock_guard<std::mutex> lock(endpoint->control->mutex);
+            if (endpoint->runtime->stopping.load()) {
+                return fail_with_diagnostic(&endpoint->header,
+                                            YUME_STATUS_CANCELLED,
+                                            "runtime is stopping");
+            }
+            if (endpoint->control->state != YUME_ENDPOINT_CREATED &&
+                endpoint->control->state != YUME_ENDPOINT_STOPPED) {
+                return fail_with_diagnostic(
+                    &endpoint->header, YUME_STATUS_INVALID_STATE,
+                    "endpoint cannot start from its current state");
+            }
+            endpoint->control->state = YUME_ENDPOINT_STARTING;
+        }
+        clear_diagnostic(&endpoint->header);
+        emit_endpoint_event(endpoint->runtime, endpoint->control->id,
+                            YUME_ENDPOINT_STARTING, YUME_STATUS_OK);
+
+        // A schema-1 endpoint targets the YTP/1 provider graph, which has no
+        // live TLS/H2 front door yet. Never substitute a test or in-memory
+        // channel for the configured mandatory suite to make this path look
+        // like it works.
+        yume_status failure = YUME_STATUS_UNSUPPORTED;
+        std::string detail =
+            "native ytp1-tls13-h2 endpoint provider is not linked";
+        bool started = false;
+
+        if (endpoint->transport_v2) {
+            std::string error;
+            if (!endpoint->control->backend) {
+                endpoint->control->backend =
+                    yume::embed::make_transport_v2_backend(
+                        *endpoint->transport_v2, error);
+            }
+            if (!endpoint->control->backend) {
+                failure = YUME_STATUS_INTERNAL_ERROR;
+                detail = error.empty() ? "endpoint backend unavailable" : error;
+            } else if (endpoint->control->backend->start(timeout_ms, error)) {
+                started = true;
+            } else {
+                // A failed start leaves no half-open runtime behind: the
+                // backend is torn down so a retry re-runs the whole sequence.
+                endpoint->control->backend->stop();
+                failure = YUME_STATUS_IO_ERROR;
+                detail = error.empty() ? "endpoint failed to start" : error;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(endpoint->control->mutex);
+            const bool cancelled =
+                endpoint->runtime->stopping.load() ||
+                endpoint->control->state != YUME_ENDPOINT_STARTING;
+            if (cancelled) {
+                if (started && endpoint->control->backend) {
+                    endpoint->control->backend->stop();
+                }
+                return fail_with_diagnostic(&endpoint->header,
+                                            YUME_STATUS_CANCELLED,
+                                            "endpoint start was cancelled");
+            }
+            endpoint->control->state =
+                started ? YUME_ENDPOINT_RUNNING : YUME_ENDPOINT_FAILED;
+        }
+
+        if (started) {
+            emit_endpoint_event(endpoint->runtime, endpoint->control->id,
+                                YUME_ENDPOINT_RUNNING, YUME_STATUS_OK);
+            clear_diagnostic(&endpoint->header);
+            return YUME_STATUS_OK;
+        }
+
+        emit_endpoint_event(endpoint->runtime, endpoint->control->id,
+                            YUME_ENDPOINT_FAILED, failure);
+        // A callback may make a forbidden re-entrant call which records its
+        // own INVALID_STATE diagnostic. Publish this operation's final result
+        // after callbacks return so the caller observes the start failure.
+        set_diagnostic(&endpoint->header, failure, {}, detail);
+        return failure;
+    });
+}
+
+yume_status yume_endpoint_stop(yume_endpoint* endpoint,
+                               uint32_t /*timeout_ms*/) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint stop is forbidden from callbacks");
+    }
+    const yume_status status =
+        stop_endpoint_control(endpoint->runtime, endpoint->control);
+    if (status == YUME_STATUS_OK) {
+        clear_diagnostic(&endpoint->header);
+    } else {
+        set_diagnostic(&endpoint->header, status, {},
+                       "endpoint stop failed during state settlement");
+    }
+    return status;
+}
+
+uint32_t yume_endpoint_state(const yume_endpoint* endpoint) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return 0;
+    }
+    if (g_in_callback) return 0;
     try {
-        stream->stream->close("ABI stream close");
-        return clear_error(&stream->base);
-    } catch (std::exception const& ex) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+        std::lock_guard<std::mutex> lock(endpoint->control->mutex);
+        return endpoint->control->state;
     } catch (...) {
-        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+        return 0;
     }
 }
 
-void yume_stream_destroy(yume_stream* stream) {
+namespace {
+
+yume_status unavailable_endpoint_io(yume_endpoint* endpoint,
+                                    std::uint32_t kind) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint) ||
+        !valid_service_kind(kind)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint I/O is forbidden from callbacks");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        if (endpoint->runtime->stopping.load()) {
+            return fail_with_diagnostic(&endpoint->header,
+                                        YUME_STATUS_CANCELLED,
+                                        "runtime is stopping");
+        }
+        std::lock_guard<std::mutex> lock(endpoint->control->mutex);
+        if (endpoint->control->state != YUME_ENDPOINT_RUNNING) {
+            return fail_with_diagnostic(&endpoint->header,
+                                        YUME_STATUS_INVALID_STATE,
+                                        "endpoint is not running");
+        }
+        return fail_with_diagnostic(
+            &endpoint->header, YUME_STATUS_UNSUPPORTED,
+            "native ytp1-tls13-h2 endpoint provider is not linked");
+    });
+}
+
+// Streams are opened by the client role and accepted by the server role. The
+// backend refuses the direction it does not own, so this shared entry point
+// never has to know which role it is serving.
+yume_status backend_stream_io(yume_endpoint* endpoint,
+                              std::uint32_t kind,
+                              std::string_view service,
+                              std::uint32_t timeout_ms,
+                              bool accept,
+                              yume_stream** out_stream) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint) ||
+        !valid_service_kind(kind) || out_stream == nullptr) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint I/O is forbidden from callbacks");
+    }
+    if (kind != YUME_SERVICE_BYTE_STREAM) {
+        return fail_with_diagnostic(&endpoint->header, YUME_STATUS_UNSUPPORTED,
+                                    "packet channels are not implemented yet");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        if (endpoint->runtime->stopping.load()) {
+            return fail_with_diagnostic(&endpoint->header,
+                                        YUME_STATUS_CANCELLED,
+                                        "runtime is stopping");
+        }
+        {
+            std::lock_guard<std::mutex> lock(endpoint->control->mutex);
+            if (endpoint->control->state != YUME_ENDPOINT_RUNNING) {
+                return fail_with_diagnostic(&endpoint->header,
+                                            YUME_STATUS_INVALID_STATE,
+                                            "endpoint is not running");
+            }
+        }
+        // The backend pointer is only written under lifecycle_mutex during
+        // start, and start must have completed for the state check above to
+        // pass, so reading it here needs no lifecycle lock.
+        yume::embed::EndpointBackend* backend = endpoint->control->backend.get();
+        if (backend == nullptr) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_UNSUPPORTED,
+                "native ytp1-tls13-h2 endpoint provider is not linked");
+        }
+
+        std::unique_ptr<yume::embed::BackendStream> opened;
+        std::string error;
+        const std::string service_name(service);
+        const yume::embed::BackendIo io = accept
+            ? backend->accept_stream(service_name, timeout_ms, opened, error)
+            : backend->open_stream(service_name, timeout_ms, opened, error);
+        if (io != yume::embed::BackendIo::Ok || !opened) {
+            const yume_status status = io == yume::embed::BackendIo::Ok
+                ? YUME_STATUS_INTERNAL_ERROR
+                : status_from_backend(io);
+            return fail_with_diagnostic(
+                &endpoint->header, status,
+                error.empty() ? "stream operation failed" : error);
+        }
+        auto published = std::make_unique<yume_stream>(std::move(opened));
+        clear_diagnostic(&endpoint->header);
+        *out_stream = published.release();
+        return YUME_STATUS_OK;
+    });
+}
+
+}  // namespace
+
+yume_status yume_endpoint_open_stream(yume_endpoint* endpoint,
+                                      const yume_open_options* options,
+                                      uint32_t timeout_ms,
+                                      yume_stream** out_stream) noexcept {
+    if (out_stream) *out_stream = nullptr;
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint I/O is forbidden from callbacks");
+    }
+    if (!options || !out_stream) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "open options and output handle are required");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        const yume_status status = validate_open_options(
+            &endpoint->header, *options, YUME_SERVICE_BYTE_STREAM);
+        if (status != YUME_STATUS_OK) return status;
+        return backend_stream_io(
+            endpoint, options->kind,
+            std::string_view(options->service.data, options->service.size),
+            timeout_ms, false, out_stream);
+    });
+}
+
+yume_status yume_endpoint_accept_stream(yume_endpoint* endpoint,
+                                        const yume_accept_options* options,
+                                        uint32_t timeout_ms,
+                                        yume_stream** out_stream) noexcept {
+    if (out_stream) *out_stream = nullptr;
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint I/O is forbidden from callbacks");
+    }
+    if (!options || !out_stream) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "accept options and output handle are required");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        const yume_status status = validate_accept_options(
+            &endpoint->header, *options, YUME_SERVICE_BYTE_STREAM);
+        if (status != YUME_STATUS_OK) return status;
+        return backend_stream_io(
+            endpoint, options->kind,
+            std::string_view(options->service.data, options->service.size),
+            timeout_ms, true, out_stream);
+    });
+}
+
+yume_status yume_endpoint_open_packet(yume_endpoint* endpoint,
+                                      const yume_open_options* options,
+                                      uint32_t /*timeout_ms*/,
+                                      yume_packet** out_packet) noexcept {
+    if (out_packet) *out_packet = nullptr;
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint I/O is forbidden from callbacks");
+    }
+    if (!options || !out_packet) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "open options and output handle are required");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        const yume_status status = validate_open_options(
+            &endpoint->header, *options, YUME_SERVICE_PACKET);
+        if (status != YUME_STATUS_OK) return status;
+        return unavailable_endpoint_io(endpoint, options->kind);
+    });
+}
+
+yume_status yume_endpoint_accept_packet(yume_endpoint* endpoint,
+                                        const yume_accept_options* options,
+                                        uint32_t /*timeout_ms*/,
+                                        yume_packet** out_packet) noexcept {
+    if (out_packet) *out_packet = nullptr;
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "endpoint I/O is forbidden from callbacks");
+    }
+    if (!options || !out_packet) {
+        return fail_with_diagnostic(&endpoint->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "accept options and output handle are required");
+    }
+    return guard(&endpoint->header, [&]() -> yume_status {
+        const yume_status status = validate_accept_options(
+            &endpoint->header, *options, YUME_SERVICE_PACKET);
+        if (status != YUME_STATUS_OK) return status;
+        return unavailable_endpoint_io(endpoint, options->kind);
+    });
+}
+
+void yume_endpoint_destroy(yume_endpoint* endpoint) noexcept {
+    if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
+        return;
+    }
+    if (g_in_callback) return;
+    (void)yume_endpoint_stop(endpoint, YUME_TIMEOUT_INFINITE);
+    delete endpoint;
+}
+
+yume_status yume_stream_get_peer_identity(const yume_stream* stream,
+                                          yume_peer_identity* out,
+                                          size_t out_size) noexcept {
+    if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(
+            const_cast<HandleHeader*>(&stream->header),
+            YUME_STATUS_INVALID_STATE,
+            "stream identity queries are forbidden from callbacks");
+    }
+    auto* diagnostic_owner = const_cast<HandleHeader*>(&stream->header);
+    if (!out) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "peer identity output is required");
+    }
+    return guard(diagnostic_owner, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        const yume_status status = copy_sized(
+            out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, stream->peer,
+            kPeerIdentityFields);
+        if (status == YUME_STATUS_OK) {
+            clear_diagnostic(diagnostic_owner);
+        } else {
+            set_diagnostic(diagnostic_owner, status, {},
+                           status == YUME_STATUS_BUFFER_TOO_SMALL
+                               ? "peer identity output is too small"
+                               : "peer identity output layout is invalid");
+        }
+        return status;
+    });
+}
+
+yume_status yume_stream_read(yume_stream* stream,
+                             void* out,
+                             size_t out_size,
+                             size_t* bytes_read,
+                             uint32_t timeout_ms) noexcept {
+    if (bytes_read) *bytes_read = 0;
+    if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&stream->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "stream reads are forbidden from callbacks");
+    }
+    if (!bytes_read || !out || out_size == 0) {
+        return fail_with_diagnostic(&stream->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "stream read requires nonempty output storage");
+    }
+    return guard(&stream->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        if (stream->closed || !stream->backend) {
+            return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
+                                        "stream is closed");
+        }
+        std::string error;
+        std::size_t received = 0;
+        const yume::embed::BackendIo io =
+            stream->backend->read(out, out_size, timeout_ms, received, error);
+        if (io == yume::embed::BackendIo::Ok) {
+            *bytes_read = received;
+            clear_diagnostic(&stream->header);
+            return YUME_STATUS_OK;
+        }
+        if (io == yume::embed::BackendIo::Eof) {
+            clear_diagnostic(&stream->header);
+            return YUME_STATUS_EOF;
+        }
+        return fail_with_diagnostic(
+            &stream->header, status_from_backend(io),
+            error.empty() ? "stream read failed" : error);
+    });
+}
+
+yume_status yume_stream_write(yume_stream* stream,
+                              const void* data,
+                              size_t size,
+                              size_t* bytes_written,
+                              uint32_t timeout_ms) noexcept {
+    if (bytes_written) *bytes_written = 0;
+    if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&stream->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "stream writes are forbidden from callbacks");
+    }
+    if (!bytes_written || (size != 0 && !data)) {
+        return fail_with_diagnostic(&stream->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "stream write input is invalid");
+    }
+    return guard(&stream->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        if (stream->closed || !stream->backend) {
+            return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
+                                        "stream is closed");
+        }
+        if (size == 0) {
+            clear_diagnostic(&stream->header);
+            return YUME_STATUS_OK;
+        }
+        std::string error;
+        const yume::embed::BackendIo io =
+            stream->backend->write(data, size, timeout_ms, error);
+        if (io == yume::embed::BackendIo::Ok) {
+            // Admission is all or none, so a successful write always consumed
+            // the complete input.
+            *bytes_written = size;
+            clear_diagnostic(&stream->header);
+            return YUME_STATUS_OK;
+        }
+        return fail_with_diagnostic(
+            &stream->header, status_from_backend(io),
+            error.empty() ? "stream write failed" : error);
+    });
+}
+
+yume_status yume_stream_shutdown_write(yume_stream* stream,
+                                       uint32_t timeout_ms) noexcept {
+    if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&stream->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "stream shutdown is forbidden from callbacks");
+    }
+    return guard(&stream->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        if (stream->closed || !stream->backend) {
+            return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
+                                        "stream is closed");
+        }
+        std::string error;
+        const yume::embed::BackendIo io =
+            stream->backend->shutdown_write(timeout_ms, error);
+        if (io == yume::embed::BackendIo::Ok) {
+            clear_diagnostic(&stream->header);
+            return YUME_STATUS_OK;
+        }
+        return fail_with_diagnostic(
+            &stream->header, status_from_backend(io),
+            error.empty() ? "stream write shutdown failed" : error);
+    });
+}
+
+yume_status yume_stream_close(yume_stream* stream,
+                              uint32_t /*timeout_ms*/) noexcept {
+    if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&stream->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "stream close is forbidden from callbacks");
+    }
+    return guard(&stream->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(stream->mutex);
+        // Close is the promised logical close, and it must happen here rather
+        // than at destroy so a caller that closes and then inspects the handle
+        // sees a settled stream. It is idempotent.
+        if (!stream->closed && stream->backend) {
+            stream->backend->close();
+        }
+        stream->closed = true;
+        clear_diagnostic(&stream->header);
+        return YUME_STATUS_OK;
+    });
+}
+
+void yume_stream_destroy(yume_stream* stream) noexcept {
+    if (!stream || !valid_header(&stream->header, HandleKind::Stream)) return;
+    if (g_in_callback) return;
     delete stream;
 }
 
-const char* yume_handle_last_error(const void* handle) {
-    if (!handle) {
-        return "invalid handle";
+yume_status yume_packet_get_peer_identity(const yume_packet* packet,
+                                          yume_peer_identity* out,
+                                          size_t out_size) noexcept {
+    if (!packet || !valid_header(&packet->header, HandleKind::Packet)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
     }
+    if (g_in_callback) {
+        return fail_with_diagnostic(
+            const_cast<HandleHeader*>(&packet->header),
+            YUME_STATUS_INVALID_STATE,
+            "packet identity queries are forbidden from callbacks");
+    }
+    auto* diagnostic_owner = const_cast<HandleHeader*>(&packet->header);
+    if (!out) {
+        return fail_with_diagnostic(diagnostic_owner,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "peer identity output is required");
+    }
+    return guard(diagnostic_owner, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(packet->mutex);
+        const yume_status status = copy_sized(
+            out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, packet->peer,
+            kPeerIdentityFields);
+        if (status == YUME_STATUS_OK) {
+            clear_diagnostic(diagnostic_owner);
+        } else {
+            set_diagnostic(diagnostic_owner, status, {},
+                           status == YUME_STATUS_BUFFER_TOO_SMALL
+                               ? "peer identity output is too small"
+                               : "peer identity output layout is invalid");
+        }
+        return status;
+    });
+}
+
+yume_status yume_packet_write_batch(yume_packet* packet,
+                                    const yume_packet_view* packets,
+                                    size_t packet_count,
+                                    size_t* packets_written,
+                                    uint32_t /*timeout_ms*/) noexcept {
+    if (packets_written) *packets_written = 0;
+    if (!packet || !valid_header(&packet->header, HandleKind::Packet)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "packet writes are forbidden from callbacks");
+    }
+    if (!packets_written || packet_count == 0 || !packets) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "packet batch and output count are required");
+    }
+    if (packet_count > kMaxPacketBatch) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_RESOURCE_EXHAUSTED,
+                                    "packet batch count exceeds the ABI bound");
+    }
+    std::size_t total_bytes = 0;
+    for (std::size_t index = 0; index < packet_count; ++index) {
+        if (!packets[index].data || packets[index].size == 0 ||
+            packets[index].size > kMaxPacketBytes) {
+            return fail_with_diagnostic(&packet->header,
+                                        YUME_STATUS_INVALID_ARGUMENT,
+                                        "packet batch contains an invalid data view");
+        }
+        if (packets[index].size > kMaxPacketBatchBytes - total_bytes) {
+            return fail_with_diagnostic(&packet->header,
+                                        YUME_STATUS_RESOURCE_EXHAUSTED,
+                                        "packet batch byte total exceeds the ABI bound");
+        }
+        total_bytes += packets[index].size;
+    }
+    return guard(&packet->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(packet->mutex);
+        return fail_with_diagnostic(
+            &packet->header,
+            packet->closed ? YUME_STATUS_CLOSED : YUME_STATUS_UNSUPPORTED,
+            packet->closed ? "packet channel is closed"
+                           : "packet provider is not linked");
+    });
+}
+
+yume_status yume_packet_read_batch(yume_packet* packet,
+                                   void* storage,
+                                   size_t storage_size,
+                                   yume_packet_slot* slots,
+                                   size_t slot_count,
+                                   size_t* packets_read,
+                                   size_t* required_storage,
+                                   uint32_t /*timeout_ms*/) noexcept {
+    if (packets_read) *packets_read = 0;
+    if (required_storage) *required_storage = 0;
+    if (!packet || !valid_header(&packet->header, HandleKind::Packet)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "packet reads are forbidden from callbacks");
+    }
+    if (!packets_read || !required_storage || slot_count == 0 || !slots ||
+        (storage_size != 0 && !storage)) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_INVALID_ARGUMENT,
+                                    "packet read buffers and output counts are required");
+    }
+    if (slot_count > kMaxPacketBatch ||
+        storage_size > kMaxPacketBatchBytes) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_RESOURCE_EXHAUSTED,
+                                    "packet read buffers exceed ABI bounds");
+    }
+    return guard(&packet->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(packet->mutex);
+        return fail_with_diagnostic(
+            &packet->header,
+            packet->closed ? YUME_STATUS_CLOSED : YUME_STATUS_UNSUPPORTED,
+            packet->closed ? "packet channel is closed"
+                           : "packet provider is not linked");
+    });
+}
+
+yume_status yume_packet_close(yume_packet* packet,
+                              uint32_t /*timeout_ms*/) noexcept {
+    if (!packet || !valid_header(&packet->header, HandleKind::Packet)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (g_in_callback) {
+        return fail_with_diagnostic(&packet->header,
+                                    YUME_STATUS_INVALID_STATE,
+                                    "packet close is forbidden from callbacks");
+    }
+    return guard(&packet->header, [&]() -> yume_status {
+        std::lock_guard<std::mutex> lock(packet->mutex);
+        packet->closed = true;
+        clear_diagnostic(&packet->header);
+        return YUME_STATUS_OK;
+    });
+}
+
+void yume_packet_destroy(yume_packet* packet) noexcept {
+    if (!packet || !valid_header(&packet->header, HandleKind::Packet)) return;
+    if (g_in_callback) return;
+    delete packet;
+}
+
+yume_status yume_handle_get_diagnostic(const void* handle,
+                                       yume_diagnostic* out,
+                                       size_t out_size) noexcept {
+    if (!handle || !out) return YUME_STATUS_INVALID_ARGUMENT;
+    const auto* header = static_cast<const HandleHeader*>(handle);
+    if (!valid_any_header(header)) return YUME_STATUS_INVALID_ARGUMENT;
+    DiagnosticData diagnostic;
     try {
-        const auto* base = static_cast<const HandleBase*>(handle);
-        thread_local std::string copy;
-        std::lock_guard<std::mutex> lock(base->error_mu);
-        copy = base->last_error;
-        return copy.c_str();
+        std::lock_guard<std::mutex> lock(header->diagnostic_mutex);
+        diagnostic = header->diagnostic;
     } catch (...) {
-        return "invalid handle";
+        return YUME_STATUS_INTERNAL_ERROR;
     }
+    yume_diagnostic value{};
+    value.struct_size = sizeof(value);
+    value.abi_version = YUME_ABI_VERSION;
+    value.status = diagnostic.status;
+    value.flags = diagnostic.flags;
+    copy_text(value.json_pointer, sizeof(value.json_pointer),
+              diagnostic.json_pointer.data());
+    copy_text(value.message, sizeof(value.message), diagnostic.message.data());
+    return copy_sized(out, out_size, YUME_DIAGNOSTIC_MIN_SIZE, value,
+                      kDiagnosticFields);
 }
 
 }  // extern "C"

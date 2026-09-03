@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "role": "server",
+  "endpoint": {
+    "listen_addresses": [
+      "0.0.0.0",
+      "::"
+    ],
+    "port": 443
+  },
+  "suite": {
+    "id": "ytp1-tls13-h2",
+    "secure_channel": "tls13-native",
+    "front_door": "h2-web",
+    "carrier": "h2-duplex",
+    "session": "ytp1-hybrid"
+  },
+  "credentials": {
+    "composite_key": {
+      "file": "credentials/server-composite.pem"
+    },
+    "authorized_keys": {
+      "file": "credentials/authorized-keys.json"
+    },
+    "admin_keys": {
+      "file": "credentials/admin-keys.json"
+    },
+    "tls_certificate": {
+      "file": "credentials/server-tls.pem"
+    },
+    "tls_key": {
+      "file": "credentials/server-tls.key"
+    },
+    "admission_key": {
+      "file": "credentials/admission.key"
+    },
+    "mlkem_key": {
+      "file": "credentials/server-mlkem.key"
+    }
+  },
+  "cover": {
+    "profile": "chrome151-node24-v1",
+    "root": {
+      "file": "cover-site"
+    }
+  },
+  "services": [
+    {
+      "name": "tcp",
+      "kind": "stream",
+      "max_concurrent_streams": 256
+    },
+    {
+      "name": "udp",
+      "kind": "packet",
+      "max_concurrent_streams": 256
+    },
+    {
+      "name": "packet",
+      "kind": "packet",
+      "max_concurrent_streams": 256
+    }
+  ],
+  "adapters": [
+    {
+      "kind": "direct_tcp",
+      "service": "tcp"
+    },
+    {
+      "kind": "direct_udp",
+      "service": "udp"
+    }
+  ],
+  "limits": {
+    "max_frame_bytes": 262144,
+    "max_streams": 256,
+    "max_queued_bytes": 4194304,
+    "max_pending_opens": 64,
+    "max_rekey_jobs": 4,
+    "max_control_messages": 128,
+    "max_packet_bytes": 65535,
+    "max_packet_batch": 64
+  }
+}

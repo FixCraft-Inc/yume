@@ -39,7 +39,7 @@ inline constexpr uint16_t kFlagStreamFin = 0x0002;
 // Trailing-padding flag (HTTP/2 DATA-style). When set, the payload's last
 // byte is N, the count of pad bytes preceding it. The on-wire payload size
 // is therefore actual_payload + N + 1. Senders only set this when an
-// operator opted in via --obfs-pad-multiple; receivers always strip it
+// operator opted in via the obfs_pad_multiple config key. Receivers strip it
 // transparently so handle_frame sees the original payload.
 inline constexpr uint16_t kFlagPadded         = 0x4000;
 inline constexpr uint16_t kFlagInnerEncrypted = 0x8000;

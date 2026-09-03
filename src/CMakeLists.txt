@@ -34,11 +34,13 @@ if(NOT nlohmann_json_FOUND)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
-# zstd can be provided either via a config package (commonly exports zstd::libzstd)
-# or via a FindZSTD module (often only sets variables). Try config first.
-find_package(zstd CONFIG QUIET)
-if(NOT TARGET zstd::libzstd AND NOT TARGET zstd::libzstd_shared AND NOT TARGET zstd::libzstd_static)
-    find_package(ZSTD QUIET)
+# zstd belongs to the current transport-v2 graph. The dependency-clean YTP/1
+# foundations must configure without discovering it.
+if(YUME_BUILD_TRANSPORT_V2)
+    find_package(zstd CONFIG QUIET)
+    if(NOT TARGET zstd::libzstd AND NOT TARGET zstd::libzstd_shared AND NOT TARGET zstd::libzstd_static)
+        find_package(ZSTD QUIET)
+    endif()
 endif()
 if(CMAKE_CROSSCOMPILING AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_library(ATOMIC_LIBRARY atomic)
@@ -51,7 +53,7 @@ function(yume_link_atomic_if_needed target scope)
 endfunction()
 
 set(YUME_SPDLOG_TARGET "")
-if(YUME_USE_SPDLOG)
+if(YUME_BUILD_TRANSPORT_V2 AND YUME_USE_SPDLOG)
     set(_fmt_vendor_candidates
         "${CMAKE_SOURCE_DIR}/third_party/fmt/include"
         "${CMAKE_CURRENT_LIST_DIR}/../third_party/fmt/include"
@@ -274,6 +276,568 @@ function(yume_apply_pch target)
     )
 endfunction()
 
+# ----------------------------------------------------------------------
+# YUME 0.3 dependency-clean foundations
+# ----------------------------------------------------------------------
+# The experimental C++ provider and C ABI surfaces remain build-tree-only
+# while they are changing. The ABI scaffold links only config v1 and fails
+# endpoint start until the native provider is wired.
+include("${CMAKE_SOURCE_DIR}/cmake/YumeLayering.cmake")
+
+add_library(yume_engine STATIC
+    engine/buffer.cpp
+    engine/buffer.hpp
+    engine/byte_channel.hpp
+    engine/cancellation.cpp
+    engine/cancellation.hpp
+    engine/carrier.cpp
+    engine/carrier.hpp
+    engine/engine_builder.cpp
+    engine/engine_builder.hpp
+    engine/front_door.hpp
+    engine/route_provider.cpp
+    engine/route_provider.hpp
+    engine/secure_channel.cpp
+    engine/secure_channel.hpp
+    engine/secure_erase.hpp
+    engine/status.cpp
+    engine/status.hpp
+    engine/stream_handler.cpp
+    engine/stream_handler.hpp
+    engine/stream_id.cpp
+    engine/stream_id.hpp
+    engine/transport_suite.cpp
+    engine/transport_suite.hpp
+    engine/types.hpp
+)
+add_library(yume::engine ALIAS yume_engine)
+target_include_directories(yume_engine PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+yume_apply_perf_opts(yume_engine)
+
+add_library(yume_ytp1 STATIC
+    ytp/protocol.cpp
+    ytp/protocol.hpp
+    ytp/security.cpp
+    ytp/security.hpp
+)
+add_library(yume::ytp1 ALIAS yume_ytp1)
+target_include_directories(yume_ytp1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+yume_apply_perf_opts(yume_ytp1)
+
+add_library(yume_session_engine STATIC
+    engine/session_engine.cpp
+    engine/session_engine.hpp
+)
+add_library(yume::session_engine ALIAS yume_session_engine)
+target_include_directories(yume_session_engine
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(yume_session_engine
+    PUBLIC yume_engine
+    PRIVATE yume_ytp1)
+yume_apply_perf_opts(yume_session_engine)
+
+add_library(yume_session_bootstrap STATIC
+    engine/session_bootstrap.cpp
+    engine/session_bootstrap.hpp
+)
+add_library(yume::session_bootstrap ALIAS yume_session_bootstrap)
+target_include_directories(yume_session_bootstrap
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(yume_session_bootstrap
+    PUBLIC yume_session_engine)
+yume_apply_perf_opts(yume_session_bootstrap)
+
+add_library(yume_direct_route_handler STATIC
+    providers/direct_route_handler.cpp
+    providers/direct_route_handler.hpp)
+add_library(yume::direct_route_handler ALIAS yume_direct_route_handler)
+target_include_directories(yume_direct_route_handler
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(yume_direct_route_handler PUBLIC yume_engine)
+yume_apply_perf_opts(yume_direct_route_handler)
+
+# Concrete direct TCP/connected-UDP egress remains an opt-in provider until
+# the replacement endpoint graph is wired and qualified. Its public header is
+# a source-level C++20 provider contract; it is not part of the C ABI.
+if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
+    add_library(yume_asio_direct_route_provider STATIC
+        providers/asio_direct_route_provider.cpp
+        providers/asio_direct_route_provider.hpp)
+    add_library(yume::asio_direct_route_provider ALIAS
+        yume_asio_direct_route_provider)
+    target_include_directories(yume_asio_direct_route_provider
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_asio_direct_route_provider
+        PUBLIC yume_engine Boost::system)
+    yume_apply_perf_opts(yume_asio_direct_route_provider)
+endif()
+
+# Client TCP is the first concrete ByteChannel under the replacement graph.
+# Server socket ownership remains exclusively in the future FrontDoor.
+if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+    add_library(yume_asio_tcp_byte_channel_provider STATIC
+        providers/asio_tcp_byte_channel_provider.cpp
+        providers/asio_tcp_byte_channel_provider.hpp)
+    add_library(yume::asio_tcp_byte_channel_provider ALIAS
+        yume_asio_tcp_byte_channel_provider)
+    target_include_directories(yume_asio_tcp_byte_channel_provider
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_asio_tcp_byte_channel_provider
+        PUBLIC yume_engine Boost::system)
+    yume_apply_perf_opts(yume_asio_tcp_byte_channel_provider)
+endif()
+
+# The carrier reuses the qualified transport-v2 HTTP/2/WebSocket state
+# machine but remains an opt-in YTP/1 adapter until native TLS/front-door
+# providers and admission are wired and qualified.
+if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+    add_library(yume_ytp1_h2_carrier STATIC
+        providers/ytp1_h2_carrier.cpp
+        providers/ytp1_h2_carrier.hpp
+        core/stealth/cover_profile.cpp
+        core/stealth/cover_profile.hpp
+        core/stealth/h2_carrier.cpp
+        core/stealth/h2_carrier.hpp
+        core/stealth/h2_wire_profile.cpp
+        core/stealth/h2_wire_profile.hpp
+        core/stealth/outer_carrier_observer.cpp
+        core/stealth/outer_carrier_observer.hpp
+        core/stealth/websocket_codec.cpp
+        core/stealth/websocket_codec.hpp)
+    add_library(yume::ytp1_h2_carrier ALIAS yume_ytp1_h2_carrier)
+    target_include_directories(yume_ytp1_h2_carrier
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_ytp1_h2_carrier
+        PUBLIC yume_engine
+        PRIVATE ${YUME_NGHTTP2_TARGET} OpenSSL::Crypto)
+    yume_apply_dev_diagnostics(yume_ytp1_h2_carrier PRIVATE)
+    yume_apply_perf_opts(yume_ytp1_h2_carrier)
+endif()
+
+# The first concrete YTP/1 security-provider candidate is deliberately an
+# opt-in, build-tree-only target. It uses upstream OpenSSL 3.5 primitives but
+# is not part of the runnable transport-v2 graph and is not release-qualified.
+if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER)
+    add_library(yume_ytp1_openssl_security STATIC
+        providers/ytp1_security_provider.cpp
+        providers/ytp1_security_provider.hpp)
+    add_library(yume::ytp1_openssl_security ALIAS
+        yume_ytp1_openssl_security)
+    target_include_directories(yume_ytp1_openssl_security
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_ytp1_openssl_security
+        PUBLIC yume_session_engine yume_ytp1
+        PRIVATE OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_ytp1_openssl_security)
+endif()
+
+# Memory-BIO TLS wraps the engine ByteChannel contract and therefore has no
+# socket dependency. It is not the browser-profile front door or H2 carrier.
+if(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+    add_library(yume_ytp1_tls13_secure_channel STATIC
+        providers/ytp1_tls13_secure_channel.cpp
+        providers/ytp1_tls13_secure_channel.hpp)
+    add_library(yume::ytp1_tls13_secure_channel ALIAS
+        yume_ytp1_tls13_secure_channel)
+    target_include_directories(yume_ytp1_tls13_secure_channel
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_ytp1_tls13_secure_channel
+        PUBLIC yume_engine PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_ytp1_tls13_secure_channel)
+endif()
+
+add_library(yume_config_v1 STATIC
+    config/v1/config.cpp
+    config/v1/config.hpp
+)
+add_library(yume::config_v1 ALIAS yume_config_v1)
+target_include_directories(yume_config_v1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(yume_config_v1 PUBLIC nlohmann_json::nlohmann_json)
+yume_prepare_static_for_shared_abi(yume_config_v1)
+yume_apply_perf_opts(yume_config_v1)
+
+# The 0.3 ABI is intentionally a fail-closed, build-tree-only scaffold until
+# the native TLS/H2/YTP provider graph is wired. It exposes metadata, strict
+# config parsing, and role-neutral handle lifecycle for contract tests without
+# claiming an installed ABI or inheriting the transport-v2 runtime.
+if(YUME_BUILD_SHARED_ABI)
+    # One translation unit. The shell owns handles, validation, diagnostics,
+    # and callback rules; every runtime lives behind the embed seam.
+    add_library(yume_abi SHARED abi/yume_c.cpp)
+    add_library(yume::yume ALIAS yume_abi)
+    set_target_properties(yume_abi PROPERTIES
+        OUTPUT_NAME yume
+        EXPORT_NAME yume
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+        POSITION_INDEPENDENT_CODE ON
+    )
+    yume_apply_warnings(yume_abi)
+    target_compile_definitions(yume_abi PRIVATE YUME_ABI_BUILD=1)
+    target_include_directories(yume_abi
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
+        target_compile_definitions(yume_abi PRIVATE YUME_ABI_TRANSPORT_V2=1)
+        # yume_embed, not yume_facade: the shared library must not carry the
+        # GUI's session objects, traffic meter, profile switching, or CA
+        # material import.
+        target_link_libraries(yume_abi PRIVATE yume_config_v1 yume_embed)
+    else()
+        target_link_libraries(yume_abi PRIVATE yume_config_v1)
+    endif()
+
+    # The canonical map is the only exported-symbol allowlist on ELF and the
+    # source for the equivalent Mach-O list. PE exports only YUME_API symbols.
+    set(_yume_abi_version_script "${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map")
+    if(UNIX AND NOT APPLE)
+        target_link_options(yume_abi PRIVATE
+            "LINKER:--version-script=${_yume_abi_version_script}"
+            "LINKER:--exclude-libs,ALL"
+        )
+        set_property(TARGET yume_abi APPEND PROPERTY
+            LINK_DEPENDS "${_yume_abi_version_script}")
+    elseif(APPLE)
+        set(_yume_abi_symbol_list
+            "${CMAKE_CURRENT_BINARY_DIR}/yume.exported_symbols")
+        yume_write_macho_symbol_list(
+            "${_yume_abi_version_script}" "${_yume_abi_symbol_list}")
+        target_link_options(yume_abi PRIVATE
+            "LINKER:-exported_symbols_list,${_yume_abi_symbol_list}")
+        set_property(TARGET yume_abi APPEND PROPERTY
+            LINK_DEPENDS "${_yume_abi_version_script}")
+    endif()
+
+endif()
+
+# Make accidental dependency creep fail at configure time. Source-layer checks
+# are also registered with CTest so edits are rechecked without relying on an
+# already-configured build tree.
+yume_assert_exact_link_dependencies(yume_engine)
+yume_assert_exact_link_dependencies(yume_ytp1)
+yume_assert_exact_link_dependencies(
+    yume_session_engine yume_engine yume_ytp1)
+yume_assert_exact_link_dependencies(
+    yume_session_bootstrap yume_session_engine)
+if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER)
+    yume_assert_exact_link_dependencies(
+        yume_ytp1_openssl_security
+        yume_session_engine yume_ytp1 OpenSSL::Crypto)
+endif()
+if(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+    yume_assert_exact_link_dependencies(
+        yume_ytp1_tls13_secure_channel
+        yume_engine OpenSSL::SSL OpenSSL::Crypto)
+endif()
+yume_assert_exact_link_dependencies(
+    yume_config_v1 nlohmann_json::nlohmann_json)
+yume_assert_exact_link_dependencies(
+    yume_direct_route_handler yume_engine)
+if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
+    yume_assert_exact_link_dependencies(
+        yume_asio_direct_route_provider yume_engine Boost::system)
+endif()
+if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+    yume_assert_exact_link_dependencies(
+        yume_asio_tcp_byte_channel_provider yume_engine Boost::system)
+endif()
+if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+    yume_assert_exact_link_dependencies(
+        yume_ytp1_h2_carrier
+        yume_engine ${YUME_NGHTTP2_TARGET} OpenSSL::Crypto)
+endif()
+if(YUME_BUILD_SHARED_ABI)
+    if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
+        yume_assert_exact_link_dependencies(
+            yume_abi yume_config_v1 yume_embed)
+    else()
+        yume_assert_exact_link_dependencies(yume_abi yume_config_v1)
+    endif()
+endif()
+yume_check_03_source_layering("${CMAKE_SOURCE_DIR}")
+
+if(YUME_BUILD_TESTING)
+    add_executable(yume_engine_in_memory_contract_test
+        engine/in_memory_contract_test.cpp)
+    target_link_libraries(yume_engine_in_memory_contract_test
+        PRIVATE yume_engine)
+    yume_apply_perf_opts(yume_engine_in_memory_contract_test)
+    yume_assert_exact_link_dependencies(
+        yume_engine_in_memory_contract_test yume_engine)
+    add_test(NAME yume_engine_in_memory_contract_test
+        COMMAND yume_engine_in_memory_contract_test)
+
+    add_executable(yume_session_engine_test
+        engine/session_engine_test.cpp)
+    target_link_libraries(yume_session_engine_test
+        PRIVATE yume_session_engine yume_ytp1)
+    yume_apply_perf_opts(yume_session_engine_test)
+    yume_assert_exact_link_dependencies(
+        yume_session_engine_test yume_session_engine yume_ytp1)
+    add_test(NAME yume_session_engine_test COMMAND yume_session_engine_test)
+
+    add_executable(yume_session_bootstrap_test
+        engine/session_bootstrap_test.cpp)
+    target_link_libraries(yume_session_bootstrap_test
+        PRIVATE yume_session_bootstrap yume_ytp1)
+    yume_apply_perf_opts(yume_session_bootstrap_test)
+    yume_assert_exact_link_dependencies(
+        yume_session_bootstrap_test yume_session_bootstrap yume_ytp1)
+    add_test(NAME yume_session_bootstrap_test
+        COMMAND yume_session_bootstrap_test)
+
+    add_executable(yume_direct_route_handler_test
+        providers/direct_route_handler_test.cpp)
+    target_link_libraries(yume_direct_route_handler_test
+        PRIVATE yume_direct_route_handler yume_session_engine yume_ytp1)
+    yume_apply_perf_opts(yume_direct_route_handler_test)
+    yume_assert_exact_link_dependencies(
+        yume_direct_route_handler_test
+        yume_direct_route_handler yume_session_engine yume_ytp1)
+    add_test(NAME yume_direct_route_handler_test
+        COMMAND yume_direct_route_handler_test)
+
+    if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
+        add_executable(yume_asio_direct_route_provider_test
+            providers/asio_direct_route_provider_test.cpp)
+        target_link_libraries(yume_asio_direct_route_provider_test
+            PRIVATE yume_asio_direct_route_provider
+                    yume_session_engine yume_ytp1)
+        yume_apply_perf_opts(yume_asio_direct_route_provider_test)
+        yume_assert_exact_link_dependencies(
+            yume_asio_direct_route_provider_test
+            yume_asio_direct_route_provider yume_session_engine yume_ytp1)
+        add_test(NAME yume_asio_direct_route_provider_test
+            COMMAND yume_asio_direct_route_provider_test)
+        set_tests_properties(yume_asio_direct_route_provider_test PROPERTIES
+            LABELS "foundation;0.3;route-provider")
+    endif()
+
+    if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+        add_executable(yume_ytp1_h2_carrier_test
+            providers/ytp1_h2_carrier_test.cpp)
+        target_link_libraries(yume_ytp1_h2_carrier_test
+            PRIVATE yume_ytp1_h2_carrier)
+        yume_apply_perf_opts(yume_ytp1_h2_carrier_test)
+        yume_assert_exact_link_dependencies(
+            yume_ytp1_h2_carrier_test yume_ytp1_h2_carrier)
+        add_test(NAME yume_ytp1_h2_carrier_test
+            COMMAND yume_ytp1_h2_carrier_test)
+        set_tests_properties(yume_ytp1_h2_carrier_test PROPERTIES
+            LABELS "foundation;0.3;carrier-provider")
+
+        # Compile and execute the long-lived transport-v2 H2 contract against
+        # the exact shared codec sources used by the replacement adapter.
+        add_executable(yume_ytp1_h2_legacy_regression_test
+            core/stealth/h2_carrier_test.cpp)
+        target_link_libraries(yume_ytp1_h2_legacy_regression_test
+            PRIVATE yume_ytp1_h2_carrier)
+        if(MSVC)
+            target_compile_options(yume_ytp1_h2_legacy_regression_test
+                PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(yume_ytp1_h2_legacy_regression_test
+                PRIVATE -UNDEBUG)
+        endif()
+        yume_apply_perf_opts(yume_ytp1_h2_legacy_regression_test)
+        yume_assert_exact_link_dependencies(
+            yume_ytp1_h2_legacy_regression_test yume_ytp1_h2_carrier)
+        add_test(NAME yume_ytp1_h2_legacy_regression_test
+            COMMAND yume_ytp1_h2_legacy_regression_test)
+        set_tests_properties(yume_ytp1_h2_legacy_regression_test PROPERTIES
+            LABELS "foundation;0.3;carrier-provider;transport-v2-regression")
+    endif()
+
+    if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+        add_executable(yume_asio_tcp_byte_channel_provider_test
+            providers/asio_tcp_byte_channel_provider_test.cpp)
+        target_link_libraries(yume_asio_tcp_byte_channel_provider_test
+            PRIVATE yume_asio_tcp_byte_channel_provider)
+        yume_apply_perf_opts(yume_asio_tcp_byte_channel_provider_test)
+        yume_assert_exact_link_dependencies(
+            yume_asio_tcp_byte_channel_provider_test
+            yume_asio_tcp_byte_channel_provider)
+        add_test(NAME yume_asio_tcp_byte_channel_provider_test
+            COMMAND yume_asio_tcp_byte_channel_provider_test)
+        set_tests_properties(
+            yume_asio_tcp_byte_channel_provider_test PROPERTIES
+            LABELS "foundation;0.3;byte-channel-provider")
+    endif()
+
+    add_executable(yume_ytp1_kernel_test
+        ytp/tests/ytp1_kernel_test.cpp)
+    target_link_libraries(yume_ytp1_kernel_test PRIVATE yume_ytp1)
+    yume_apply_perf_opts(yume_ytp1_kernel_test)
+    yume_assert_exact_link_dependencies(yume_ytp1_kernel_test yume_ytp1)
+    add_test(NAME yume_ytp1_kernel_test COMMAND yume_ytp1_kernel_test)
+
+    if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER)
+        add_executable(yume_ytp1_openssl_security_test
+            providers/ytp1_security_provider_test.cpp)
+        target_link_libraries(yume_ytp1_openssl_security_test
+            PRIVATE yume_ytp1_openssl_security OpenSSL::Crypto)
+        yume_apply_perf_opts(yume_ytp1_openssl_security_test)
+        yume_assert_exact_link_dependencies(
+            yume_ytp1_openssl_security_test
+            yume_ytp1_openssl_security OpenSSL::Crypto)
+        add_test(NAME yume_ytp1_openssl_security_test
+            COMMAND yume_ytp1_openssl_security_test)
+        set_tests_properties(yume_ytp1_openssl_security_test PROPERTIES
+            LABELS "foundation;0.3;security-provider")
+    endif()
+
+    if(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+        add_executable(yume_ytp1_tls13_secure_channel_test
+            providers/ytp1_tls13_secure_channel_test.cpp)
+        target_link_libraries(yume_ytp1_tls13_secure_channel_test
+            PRIVATE yume_ytp1_tls13_secure_channel OpenSSL::SSL OpenSSL::Crypto)
+        if(MSVC)
+            target_compile_options(yume_ytp1_tls13_secure_channel_test PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(yume_ytp1_tls13_secure_channel_test PRIVATE -UNDEBUG)
+        endif()
+        yume_apply_perf_opts(yume_ytp1_tls13_secure_channel_test)
+        yume_assert_exact_link_dependencies(
+            yume_ytp1_tls13_secure_channel_test
+            yume_ytp1_tls13_secure_channel OpenSSL::SSL OpenSSL::Crypto)
+        add_test(NAME yume_ytp1_tls13_secure_channel_test
+            COMMAND yume_ytp1_tls13_secure_channel_test)
+        set_tests_properties(yume_ytp1_tls13_secure_channel_test PROPERTIES
+            LABELS "foundation;0.3;secure-channel-provider")
+    endif()
+
+    add_executable(yume_config_v1_test
+        config/v1/config_test.cpp)
+    target_link_libraries(yume_config_v1_test PRIVATE yume_config_v1)
+    yume_apply_perf_opts(yume_config_v1_test)
+    yume_assert_exact_link_dependencies(yume_config_v1_test yume_config_v1)
+    add_test(NAME yume_config_v1_test COMMAND yume_config_v1_test)
+    add_test(NAME yume_config_v1_client_example
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_PROGRAM=$<TARGET_FILE:yume_config_v1_test>"
+            "-DYUME_ARGUMENT=--stdin-client"
+            "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/ytp1/yume.json"
+            -P "${CMAKE_SOURCE_DIR}/cmake/run_with_stdin.cmake")
+    add_test(NAME yume_config_v1_server_example
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_PROGRAM=$<TARGET_FILE:yume_config_v1_test>"
+            "-DYUME_ARGUMENT=--stdin-server"
+            "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/ytp1/yumed.json"
+            -P "${CMAKE_SOURCE_DIR}/cmake/run_with_stdin.cmake")
+
+    if(YUME_BUILD_SHARED_ABI)
+        add_executable(yume_c_abi_contract_test
+            abi/yume_c_contract_test.cpp)
+        target_link_libraries(yume_c_abi_contract_test PRIVATE yume_abi)
+        if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
+            target_compile_definitions(yume_c_abi_contract_test
+                PRIVATE YUME_ABI_TRANSPORT_V2=1)
+        endif()
+        yume_apply_perf_opts(yume_c_abi_contract_test)
+        yume_assert_exact_link_dependencies(
+            yume_c_abi_contract_test yume_abi)
+        add_test(NAME yume_c_abi_contract_test
+            COMMAND yume_c_abi_contract_test
+                "${CMAKE_SOURCE_DIR}/config/ytp1/yume.json")
+
+        # The C boundary is the whole point of a C ABI: compiling the public
+        # header as strict C is the only check that a C++-only declaration has
+        # not leaked into it. Reuse the clean-prefix fixture source rather than
+        # keeping a second copy of the same consumer.
+        add_executable(yume_c_abi_consumer_c
+            "${CMAKE_SOURCE_DIR}/tests/abi/install_consumer/consumer.c")
+        set_target_properties(yume_c_abi_consumer_c PROPERTIES
+            C_STANDARD 11
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF)
+        target_link_libraries(yume_c_abi_consumer_c PRIVATE yume_abi)
+        yume_apply_warnings(yume_c_abi_consumer_c)
+        yume_assert_exact_link_dependencies(yume_c_abi_consumer_c yume_abi)
+        add_test(NAME yume_c_abi_consumer_c COMMAND yume_c_abi_consumer_c)
+
+        # Stream-id ownership regression. A rolled-back OPEN must release,
+        # unregister, or close-and-retire exactly according to how far it got,
+        # or a late ACK can alias a later stream on the same transport. This
+        # header is dependency-free, so the check needs no runtime.
+        add_executable(yume_abi_stream_open_transaction_test
+            facade/session/service_open_transaction_test.cpp)
+        target_include_directories(yume_abi_stream_open_transaction_test
+            PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        yume_apply_warnings(yume_abi_stream_open_transaction_test)
+        add_test(NAME yume_abi_stream_open_transaction_test
+            COMMAND yume_abi_stream_open_transaction_test)
+
+        set(_yume_abi_contract_tests
+            yume_c_abi_contract_test
+            yume_c_abi_consumer_c
+            yume_abi_stream_open_transaction_test)
+        if(UNIX AND CMAKE_NM)
+            if(APPLE)
+                set(_yume_abi_format macho)
+            else()
+                set(_yume_abi_format elf)
+            endif()
+            add_test(NAME yume_abi_exports
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DYUME_ABI_LIBRARY=$<TARGET_FILE:yume_abi>"
+                    "-DYUME_NM=${CMAKE_NM}"
+                    "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
+                    "-DYUME_ABI_FORMAT=${_yume_abi_format}"
+                    -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_exports.cmake")
+            list(APPEND _yume_abi_contract_tests yume_abi_exports)
+        endif()
+
+        add_test(NAME yume_abi_header_matches_map
+            COMMAND "${CMAKE_COMMAND}"
+                "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
+                "-DYUME_ABI_HEADER=${CMAKE_SOURCE_DIR}/include/yume/yume.h"
+                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_header.cmake")
+        add_test(NAME yume_abi_debian_symbols_match_map
+            COMMAND "${CMAKE_COMMAND}"
+                "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
+                "-DYUME_DEBIAN_SYMBOLS=${CMAKE_SOURCE_DIR}/debian/libyume1.symbols"
+                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_debian_symbols.cmake")
+        list(APPEND _yume_abi_contract_tests
+            yume_abi_header_matches_map
+            yume_abi_debian_symbols_match_map)
+
+        set_tests_properties(${_yume_abi_contract_tests} PROPERTIES
+            LABELS "foundation;0.3;abi")
+    endif()
+
+    add_test(NAME yume_03_layering_check
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/YumeLayering.cmake")
+    add_test(NAME yume_03_layering_guard_test
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_LAYERING_MODULE=${CMAKE_SOURCE_DIR}/cmake/YumeLayering.cmake"
+            "-DYUME_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DYUME_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/layering-guard-test"
+            -P "${CMAKE_SOURCE_DIR}/tests/cmake/yume_03_layering_test.cmake")
+    set_tests_properties(
+        yume_engine_in_memory_contract_test
+        yume_session_engine_test
+        yume_session_bootstrap_test
+        yume_direct_route_handler_test
+        yume_ytp1_kernel_test
+        yume_config_v1_test
+        yume_config_v1_client_example
+        yume_config_v1_server_example
+        yume_03_layering_check
+        yume_03_layering_guard_test
+        PROPERTIES LABELS "foundation;0.3")
+endif()
+
+# The current transport-v2 aggregate libraries and products stay enabled by
+# default until YTP/1 reaches functional and qualification parity. Disable this
+# graph only for dependency-layering work on the replacement foundations.
+if(YUME_BUILD_TRANSPORT_V2)
+
 if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::spdlog_header_only")
     message(WARNING "Static link requested but only compiled spdlog was found; disabling spdlog.")
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
@@ -318,9 +882,6 @@ if(WIN32)
     target_link_libraries(yume_secure_core PUBLIC advapi32)
 endif()
 yume_link_atomic_if_needed(yume_secure_core PUBLIC)
-if(YUME_BUILD_SHARED_ABI)
-    yume_prepare_static_for_shared_abi(yume_secure_core)
-endif()
 yume_apply_perf_opts(yume_secure_core)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
@@ -490,10 +1051,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         endif()
     endif()
 
-    if(YUME_BUILD_SHARED_ABI)
-        yume_prepare_static_for_shared_abi(yume_core)
-    endif()
-
     yume_apply_perf_opts(yume_core)
     yume_apply_pch(yume_core)
 
@@ -534,9 +1091,6 @@ if(WIN32)
     target_link_libraries(yume_transport_core PUBLIC advapi32)
 endif()
 yume_link_atomic_if_needed(yume_transport_core PUBLIC)
-if(YUME_BUILD_SHARED_ABI)
-    yume_prepare_static_for_shared_abi(yume_transport_core)
-endif()
 yume_apply_perf_opts(yume_transport_core)
 yume_apply_pch(yume_transport_core)
 
@@ -561,9 +1115,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_outbound_transport
         PUBLIC yume_core yume_transport_core)
-    if(YUME_BUILD_SHARED_ABI)
-        yume_prepare_static_for_shared_abi(yume_outbound_transport)
-    endif()
     yume_apply_perf_opts(yume_outbound_transport)
     yume_apply_pch(yume_outbound_transport)
     if(WIN32)
@@ -625,9 +1176,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     target_include_directories(yume_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_server PUBLIC yume_core yume_transport_core
         yume_outbound_transport)
-    if(YUME_BUILD_SHARED_ABI)
-        yume_prepare_static_for_shared_abi(yume_server)
-    endif()
     yume_apply_perf_opts(yume_server)
     yume_apply_pch(yume_server)
     if(WIN32)
@@ -736,9 +1284,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core
         yume_outbound_transport)
-    if(YUME_BUILD_SHARED_ABI)
-        yume_prepare_static_for_shared_abi(yume_client_lib)
-    endif()
     yume_apply_perf_opts(yume_client_lib)
     yume_apply_pch(yume_client_lib)
     if(WIN32)
@@ -865,14 +1410,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         target_include_directories(yume_selftest_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(yume_selftest_lib PUBLIC yume_core OpenSSL::Crypto Threads::Threads)
-        yume_prepare_static_for_shared_abi(yume_selftest_lib)
         yume_apply_perf_opts(yume_selftest_lib)
         # The definition and the link must live on the same target. When the
-        # link was only on the `yume` executable, every other consumer of
-        # yume_client_lib - yume_facade, and through it the yume_abi shared
-        # library - compiled the call in client/cli/entry.cpp but had nothing
-        # to resolve it against, so -DYUME_BUILD_SELFTEST=ON with
-        # -DYUME_BUILD_SHARED_ABI=ON failed to link with
+        # link was only on the `yume` executable, every other historical
+        # consumer of yume_client_lib, including yume_facade and the retired
+        # facade-backed ABI, compiled the call in client/cli/entry.cpp but had
+        # nothing to resolve it against, so self-test builds failed to link with
         # "undefined reference to yume::tools::selftest::run_cli".
         target_compile_definitions(yume_client_lib PUBLIC YUME_HAS_SELFTEST=1)
         target_link_libraries(yume_client_lib PUBLIC yume_selftest_lib)
@@ -916,152 +1459,57 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # The facade library has no GUI dependency and is small enough to
     # build unconditionally; the executable is gated on YUME_BUILD_GUI.
     add_subdirectory(facade)
-    if(YUME_BUILD_SHARED_ABI)
-        include(CMakePackageConfigHelpers)
-
-        add_library(yume_abi SHARED
-            abi/yume_c.cpp
-        )
-        set_target_properties(yume_abi PROPERTIES
-            OUTPUT_NAME yume
-            EXPORT_NAME yume
-            CXX_VISIBILITY_PRESET hidden
-            VISIBILITY_INLINES_HIDDEN ON
-            POSITION_INDEPENDENT_CODE ON
-            PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/yume/yume.h"
-        )
-        # Android's package manager only recognizes unversioned *.so entries.
-        # The ABI line remains YUME_ABI_VERSION=1; desktop platforms retain the
-        # public libyume.so.1 SONAME and normal versioned symlink chain.
-        if(NOT ANDROID)
-            set_target_properties(yume_abi PROPERTIES
-                VERSION "${YUME_PACKAGE_VERSION}"
-                SOVERSION 1
-            )
-        endif()
-        # Warnings, but deliberately NOT yume_apply_perf_opts: this target is
-        # the installed shared library, and changing its optimisation/LTO
-        # settings is a shipped-artifact decision, separate from wanting the
-        # C boundary compiled with -Wall -Wextra like everything else.
-        #
-        # yume_c.cpp is the highest-value file in the tree for warnings - it is
-        # the only place untyped void* from arbitrary embedders is
-        # dereferenced - and until this line existed it was compiled with no
-        # warning flags at all.
-        yume_apply_warnings(yume_abi)
-        target_compile_definitions(yume_abi PRIVATE
-            YUME_ABI_BUILD=1
-            YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
-        target_include_directories(yume_abi
-            PUBLIC
-                $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-                $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-            PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}
-        )
-        if(YUME_ABI_CLIENT_ONLY)
-            target_link_libraries(yume_abi PRIVATE yume_client_facade)
-        else()
-            target_link_libraries(yume_abi PRIVATE yume_facade)
-        endif()
-        # Symbol control. Without it, implementation symbols from YUME's
-        # internal static libraries and any absorbed third-party archives leak
-        # into the public namespace. That both breaks the "exactly these
-        # functions" contract and lets an embedder bind to an internal detail.
-        #
-        #   ELF     version script.
-        #   Mach-O  -exported_symbols_list, generated from the same map so the
-        #           two platforms cannot drift.
-        #   PE      nothing to do: symbols are private unless declared
-        #           __declspec(dllexport), which only YUME_API carries. The
-        #           presence of explicit exports also disables MinGW's
-        #           export-everything fallback.
-        set(_yume_abi_version_script "${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map")
-        if(UNIX AND NOT APPLE)
-            target_link_options(yume_abi PRIVATE
-                "LINKER:--version-script=${_yume_abi_version_script}"
-                # The facade/core arrive through non-LTO static archives.
-                # Hidden input visibility is the primary control; exclude-libs
-                # contains any remaining archive-level implementation symbols.
-                "LINKER:--exclude-libs,ALL"
-            )
-            set_property(TARGET yume_abi APPEND PROPERTY
-                LINK_DEPENDS "${_yume_abi_version_script}"
-            )
-        elseif(APPLE)
-            set(_yume_abi_symbol_list "${CMAKE_CURRENT_BINARY_DIR}/yume.exported_symbols")
-            yume_write_macho_symbol_list(
-                "${_yume_abi_version_script}" "${_yume_abi_symbol_list}")
-            target_link_options(yume_abi PRIVATE
-                "LINKER:-exported_symbols_list,${_yume_abi_symbol_list}"
-            )
-            set_property(TARGET yume_abi APPEND PROPERTY
-                LINK_DEPENDS "${_yume_abi_version_script}"
-            )
-        endif()
-
-        install(TARGETS yume_abi
-            EXPORT yumeTargets
-            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-                COMPONENT libyume_runtime
-            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-                COMPONENT libyume_runtime
-                NAMELINK_COMPONENT libyume_development
-            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-                COMPONENT libyume_development
-            PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/yume"
-                COMPONENT libyume_development
-        )
-        install(EXPORT yumeTargets
-            FILE yumeTargets.cmake
-            NAMESPACE yume::
-            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
-            COMPONENT libyume_development
-        )
-
-        configure_package_config_file(
-            "${CMAKE_SOURCE_DIR}/cmake/yumeConfig.cmake.in"
-            "${CMAKE_BINARY_DIR}/yumeConfig.cmake"
-            INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
-        )
-        write_basic_package_version_file(
-            "${CMAKE_BINARY_DIR}/yumeConfigVersion.cmake"
-            VERSION "${YUME_PACKAGE_VERSION}"
-            COMPATIBILITY SameMajorVersion
-        )
-        install(FILES
-            "${CMAKE_BINARY_DIR}/yumeConfig.cmake"
-            "${CMAKE_BINARY_DIR}/yumeConfigVersion.cmake"
-            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
-            COMPONENT libyume_development
-        )
-
-        set(_yume_pc_install_dir "/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
-        file(RELATIVE_PATH YUME_PC_PREFIX_FROM_PKGCONFIG
-            "${_yume_pc_install_dir}" "/")
-        configure_file(
-            "${CMAKE_SOURCE_DIR}/cmake/yume.pc.in"
-            "${CMAKE_BINARY_DIR}/yume.pc"
-            @ONLY
-        )
-        install(FILES "${CMAKE_BINARY_DIR}/yume.pc"
-            DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
-            COMPONENT libyume_development
-        )
-
-        if(YUME_BUILD_TOOLS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            add_executable(yume-abi-tun tools/abi_tun.cpp)
-            target_link_libraries(yume-abi-tun PRIVATE yume_abi Threads::Threads)
-            target_include_directories(yume-abi-tun PRIVATE ${CMAKE_SOURCE_DIR}/include)
-            yume_apply_perf_opts(yume-abi-tun)
-            install(TARGETS yume-abi-tun
-                RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-                COMPONENT yume_cli
-            )
-        endif()
-    endif()
     if(YUME_BUILD_GUI)
         add_subdirectory(gui)
+    endif()
+
+    # Lock the first-party layering of the transport-v2 stack. Third-party
+    # dependencies vary with build options, so only targets whose direct
+    # dependencies are entirely first-party and option-independent are pinned
+    # here. The directional source check in YumeLayering.cmake covers the rest.
+    yume_assert_exact_link_dependencies(
+        yume_outbound_transport yume_core yume_transport_core)
+    yume_assert_exact_link_dependencies(
+        yume_server yume_core yume_transport_core yume_outbound_transport)
+    if(TARGET yume_selftest_lib)
+        yume_assert_exact_link_dependencies(
+            yume_client_lib yume_core yume_transport_core
+            yume_outbound_transport yume_selftest_lib)
+    else()
+        yume_assert_exact_link_dependencies(
+            yume_client_lib yume_core yume_transport_core
+            yume_outbound_transport)
+    endif()
+
+    # Lock the embed/facade boundary. This directory became a GUI wrapper by
+    # accident once already: a desktop need was added to the shared library
+    # and nothing objected. Adding a GUI dependency to yume_embed, or letting
+    # yume_facade reach past it, now fails at configure time.
+    if(TARGET yume_embed)
+        yume_assert_exact_link_dependencies(
+            yume_embed yume_core yume_server yume_client_lib)
+    endif()
+    if(TARGET yume_facade)
+        yume_assert_exact_link_dependencies(yume_facade yume_embed)
+    endif()
+
+    # Every archive absorbed into libyume must be PIC, hidden, and non-LTO.
+    # The version script is the final export allowlist, but GCC LTO can still
+    # materialize default-visible weak libstdc++ definitions after GNU ld has
+    # applied it. This must cover the whole transitive chain, not just the
+    # library named on the link line.
+    if(YUME_BUILD_SHARED_ABI)
+        foreach(_yume_absorbed IN ITEMS
+                yume_embed yume_facade yume_client_lib yume_server
+                yume_outbound_transport yume_selftest_lib yume_core
+                yume_transport_core yume_secure_core)
+            if(TARGET ${_yume_absorbed})
+                yume_prepare_static_for_shared_abi(${_yume_absorbed})
+            endif()
+        endforeach()
+        if(TARGET basefwxcpp)
+            yume_prepare_static_for_shared_abi(basefwxcpp)
+        endif()
     endif()
 endif()
 
@@ -1094,6 +1542,13 @@ add_executable(yume_profiles_test facade/config/profiles_test.cpp)
 target_link_libraries(yume_profiles_test PRIVATE yume_facade Threads::Threads)
 yume_apply_perf_opts(yume_profiles_test)
 add_test(NAME yume_profiles_test COMMAND yume_profiles_test)
+
+add_executable(yume_client_config_load_test
+    client/cli/config/config_load_test.cpp)
+target_link_libraries(yume_client_config_load_test PRIVATE yume_client_lib)
+yume_apply_perf_opts(yume_client_config_load_test)
+add_test(NAME yume_client_config_load_test
+    COMMAND yume_client_config_load_test)
 
 add_executable(yume_client_args_test client/cli/config/args_test.cpp)
 target_link_libraries(yume_client_args_test PRIVATE yume_client_lib)
@@ -1590,11 +2045,6 @@ target_link_libraries(yume_server_config_values_test PRIVATE
 yume_apply_perf_opts(yume_server_config_values_test)
 add_test(NAME yume_server_config_values_test COMMAND yume_server_config_values_test)
 
-add_executable(yume_inner_crypto_limits_test core/security/inner_crypto_limits_test.cpp)
-target_link_libraries(yume_inner_crypto_limits_test PRIVATE yume_transport_core)
-yume_link_atomic_if_needed(yume_inner_crypto_limits_test PRIVATE)
-yume_apply_perf_opts(yume_inner_crypto_limits_test)
-add_test(NAME yume_inner_crypto_limits_test COMMAND yume_inner_crypto_limits_test)
 
 add_executable(yume_ratchet_test core/security/ratchet_test.cpp)
 target_link_libraries(yume_ratchet_test PRIVATE yume_transport_core)
@@ -1743,6 +2193,27 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     yume_apply_perf_opts(yume_h2_opening_probe)
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    # The only check that the ABI actually moves bytes. It provisions a real
+    # server and client and drives a named service stream in both directions,
+    # so it needs the transport backend linked and a Python interpreter.
+    if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi AND TARGET yumed
+       AND YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
+        add_executable(yume_abi_stream_probe abi/stream_integration_probe.c)
+        target_link_libraries(yume_abi_stream_probe
+            PRIVATE yume_abi Threads::Threads)
+        target_include_directories(yume_abi_stream_probe
+            PRIVATE "${CMAKE_SOURCE_DIR}/include")
+        yume_apply_warnings(yume_abi_stream_probe)
+        add_test(NAME yume_abi_stream_integration
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_stream.py"
+                --probe "$<TARGET_FILE:yume_abi_stream_probe>"
+                --yumed "$<TARGET_FILE:yumed>")
+        set_tests_properties(yume_abi_stream_integration PROPERTIES
+            TIMEOUT 180
+            LABELS "0.3;abi;integration")
+    endif()
     add_test(NAME yume_transport_profile_generation_check
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/generate_transport_profiles.py"
@@ -1757,6 +2228,27 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_socket_autotuning.py"
     )
+    # Provisioning coverage. These generate real kits and assert the
+    # credential-store invariants, including the separation between the
+    # traffic store and the admin second-factor store. They were previously
+    # runnable only by hand, so a regression in setup or doctor passed CI.
+    add_test(NAME yume_setup_transport_v2_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_setup_transport_v2.py"
+    )
+    add_test(NAME yume_setup_ytp1_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_setup_ytp1.py"
+    )
+    add_test(NAME yume_doctor_ytp1_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor_ytp1.py"
+    )
+    set_tests_properties(
+        yume_setup_transport_v2_test
+        yume_setup_ytp1_test
+        yume_doctor_ytp1_test
+        PROPERTIES TIMEOUT 300)
     add_test(NAME yume_release_diagnostics_cost_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_release_diagnostics_cost.py"
@@ -1879,99 +2371,29 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_test(NAME yume_obfs_test COMMAND yume_obfs_test)
 endif()
 
-if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
-    add_executable(yume_abi_stream_open_transaction_test
-        abi/service_open_transaction_test.cpp)
-    target_include_directories(yume_abi_stream_open_transaction_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR})
-    yume_apply_warnings(yume_abi_stream_open_transaction_test)
-    add_test(NAME yume_abi_stream_open_transaction_test
-        COMMAND yume_abi_stream_open_transaction_test)
-
-    add_executable(yume_abi_test abi/yume_c_test.cpp)
-    target_include_directories(yume_abi_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(yume_abi_test PRIVATE yume_abi)
-    yume_apply_warnings(yume_abi_test)
-    target_compile_definitions(yume_abi_test PRIVATE
-        YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
-    add_test(NAME yume_abi_test COMMAND yume_abi_test)
-    if(NOT YUME_ABI_CLIENT_ONLY AND TARGET yumed)
-        add_executable(yume_abi_stream_probe
-            abi/stream_integration_probe.c)
-        set_target_properties(yume_abi_stream_probe PROPERTIES
-            C_STANDARD 11
-            C_STANDARD_REQUIRED ON
-            C_EXTENSIONS OFF)
-        target_link_libraries(yume_abi_stream_probe PRIVATE yume_abi)
-        yume_apply_warnings(yume_abi_stream_probe)
-        add_test(NAME yume_abi_stream_integration
-            COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_stream.py"
-                --probe "$<TARGET_FILE:yume_abi_stream_probe>"
-                --yumed "$<TARGET_FILE:yumed>"
-                --library "$<TARGET_FILE:yume_abi>")
-        set_tests_properties(yume_abi_stream_integration PROPERTIES
-            TIMEOUT 90)
-        if(DEFINED _yume_asan_preload AND NOT _yume_asan_preload STREQUAL "")
-            # Python must preload ASan before ctypes opens libyume, but
-            # LeakSanitizer cannot distinguish CPython's process-lifetime
-            # allocations from leaks. Disable leak checking only in the host
-            # interpreter; the harness restores it for every spawned YUME
-            # executable through YUME_TEST_CHILD_ASAN_OPTIONS.
-            set_property(TEST yume_abi_stream_integration APPEND PROPERTY
-                ENVIRONMENT
-                    "LD_PRELOAD=${_yume_asan_preload}"
-                    "ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1"
-                    "YUME_TEST_CHILD_ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1")
-        endif()
-    endif()
-    if(UNIX AND CMAKE_NM)
-        if(APPLE)
-            set(_yume_abi_format macho)
-        else()
-            set(_yume_abi_format elf)
-        endif()
-        add_test(NAME yume_abi_exports
-            COMMAND "${CMAKE_COMMAND}"
-                "-DYUME_ABI_LIBRARY=$<TARGET_FILE:yume_abi>"
-                "-DYUME_NM=${CMAKE_NM}"
-                "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
-                "-DYUME_ABI_FORMAT=${_yume_abi_format}"
-                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_exports.cmake"
-        )
-    endif()
-
-    # The version script is the contract; the header is what embedders read.
-    # This catches a function declared in one and forgotten in the other.
-    add_test(NAME yume_abi_header_matches_map
-        COMMAND "${CMAKE_COMMAND}"
-            "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
-            "-DYUME_ABI_HEADER=${CMAKE_SOURCE_DIR}/include/yume/yume.h"
-            -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_header.cmake"
-    )
-    add_test(NAME yume_abi_debian_symbols_match_map
-        COMMAND "${CMAKE_COMMAND}"
-            "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
-            "-DYUME_DEBIAN_SYMBOLS=${CMAKE_SOURCE_DIR}/debian/libyume1.symbols"
-            -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_debian_symbols.cmake"
-    )
-    if(UNIX AND NOT APPLE AND EXISTS "/usr/bin/dpkg-architecture")
-        add_test(NAME yume_abi_installed_consumer
-            COMMAND "${CMAKE_COMMAND}"
-                "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
-                "-DYUME_BUILD_CONFIG=$<CONFIG>"
-                "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/libyume-$<CONFIG>"
-                "-DYUME_CONSUMER_TEST=${CMAKE_SOURCE_DIR}/debian/tests/libyume-dev"
-                "-DYUME_CONSUMER_SANITIZER_FLAGS=${_yume_sanitize_flags}"
-                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_install.cmake"
-        )
-        set_tests_properties(yume_abi_installed_consumer PROPERTIES
-            ENVIRONMENT
-                "PKG_CONFIG_PATH=${CMAKE_SOURCE_DIR}/tests/fixtures/pkgconfig-hostile"
-        )
-    endif()
 endif()
+
+endif() # YUME_BUILD_TRANSPORT_V2
+
+if(NOT YUME_BUILD_TRANSPORT_V2)
+    foreach(_transport_v2_target IN ITEMS
+            yume_secure_core
+            yume_core
+            yume_transport_core
+            yume_outbound_transport
+            yume_server
+            yumed
+            yume_client_lib
+            yume
+            yume_facade
+            yume-gui
+            yume_chrome_tls_helper)
+        if(TARGET "${_transport_v2_target}")
+            message(FATAL_ERROR
+                "Transport-v2 target '${_transport_v2_target}' escaped the explicit "
+                "YUME_BUILD_TRANSPORT_V2 graph")
+        endif()
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,20 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
         return 1;
     }
 
+    // With no configured cover, load_real_index() serves a fixed built-in
+    // redirect stub. Every default deployment then answers an active probe
+    // with byte-identical HTML, which is a global fingerprint for YUME and
+    // defeats the point of the cover path. Say so at startup rather than
+    // letting an operator discover it from a classifier report.
+    if (cfg.real_root.empty() && cfg.real_index_path.empty() &&
+        cfg.real_backend.empty()) {
+        yume::util::log_warn(
+            "no cover site configured: the built-in fallback index is "
+            "identical on every YUME server and is trivially fingerprinted. "
+            "Set real_root, real_index_path, or real_backend before exposing "
+            "this daemon.");
+    }
+
     if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
         cfg.auth_keys_meta = cfg.auth_keys + ".json";
     }

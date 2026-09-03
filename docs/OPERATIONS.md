@@ -1,5 +1,9 @@
 # YUME operations
 
+> **Runnable transport-v2 path:** this is the current operator reference. The
+> [YTP/1 operations draft](development/ytp1/OPERATIONS.md) covers an
+> experimental schema-1 surface that does not drive these binaries.
+
 This page covers the release, deployment, and service workflows that operators need after the first successful connection.
 
 ## Release verification
@@ -272,7 +276,7 @@ boundary.
 
 For new deployments, `yume-setup init` creates the protected admission/inner
 secret files, TLS and operator-identity chain, safe key stores, configs, and a
-first device profile in one owner-only directory. `yume-setup issue-key`
+first client profile in one owner-only directory. `yume-setup issue-key`
 handles individual, bounded bulk, and separate admin/operator credentials
 without manual PEM concatenation or JSON editing. See `docs/QUICKSTART.md`.
 

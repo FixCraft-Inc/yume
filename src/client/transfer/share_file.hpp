@@ -94,7 +94,6 @@ struct ShareBundle {
 
     // client behavior recommendations
     bool inner_crypto{true};
-    bool inner_heavy{true};
     std::uint8_t tunnel_count{1};
     bool require_operator_identity{false};
     bool allow_udp{false};
@@ -182,7 +181,6 @@ struct BackupInputs {
     std::uint16_t obfs_pad_multiple{0};
     std::uint32_t obfs_jitter_ms{0};
     bool          inner_crypto{true};
-    bool          inner_heavy{true};
     std::uint8_t tunnel_count{1};
     bool          require_operator_identity{false};
     bool          allow_udp{false};

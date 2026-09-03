@@ -171,7 +171,6 @@ public:
         if (ui::begin_auto_card("##connect_security")) {
             // Not a choice: dev6 pins these. State them, do not offer them.
             cfg_.inner_crypto = true;
-            cfg_.inner_heavy = false;
             cfg_.pq_public_key.clear();
             ui::section_label_help(
                 "Transport security",
@@ -236,7 +235,8 @@ public:
                     ImGui::EndCombo();
                 }
                 ui::muted_text(
-                    "YUME 0.2.0-dev6 exposes one complete Chrome 151 + Node 24 identity.");
+                    "The transport-v2 runtime exposes one complete Chrome 151 "
+                    "+ Node 24 identity.");
                 int_input("IO threads (0 = auto)", cfg_.io_threads);
 
                 const char* relay_modes[] = {"untrusted", "trusted", "operator"};
@@ -625,7 +625,7 @@ private:
                 ImGui::Text("PQ pubkey:   %s", b.pq_public_key_pem.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("Obfs secret: %s", b.obfs_secret.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("Inner:       %s",
-                    b.inner_crypto ? (b.inner_heavy ? "heavy" : "light") : "off");
+                    b.inner_crypto ? "on" : "off");
                 ImGui::Dummy(ImVec2(0, 6 * sc));
                 if (ui::primary_button("Apply: write to ~/.yume/imported/",
                                        ImVec2(300 * sc, 38 * sc))) {
@@ -675,7 +675,6 @@ private:
         in.tls_server_name = cfg_.tls_server_name;
         in.anonym_pubkey = cfg_.anonym_pubkey;
         in.inner_crypto = cfg_.inner_crypto;
-        in.inner_heavy = cfg_.inner_heavy;
         in.tunnel_count = static_cast<std::uint8_t>(
             std::clamp(cfg_.tunnel_count, 1, 16));
         in.require_operator_identity = cfg_.require_anonym;

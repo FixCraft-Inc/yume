@@ -1,0 +1,246 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "created": "1970-01-01T00:00:00Z",
+    "creators": [
+      "Tool: scripts/check_dependency_sbom.py"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentDescribes": [
+    "SPDXRef-Package-YUME"
+  ],
+  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/839d50bc36532ee0a2f715748d6cae8dc54b3cfa89f228d4ca28c40d00b45330",
+  "name": "YUME source dependency SBOM",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-YUME",
+      "downloadLocation": "https://github.com/FixCraft-Inc/yume",
+      "filesAnalyzed": false,
+      "licenseConcluded": "AGPL-3.0-or-later",
+      "licenseDeclared": "AGPL-3.0-or-later",
+      "name": "YUME",
+      "versionInfo": "0.3.0-dev1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-basefwx",
+      "downloadLocation": "https://github.com/F1xGOD/basefwx.git",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "e6ffbb79daa02bf62c31c3ae6513d5c603ec8dcd",
+          "referenceType": "git"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "LGPL-3.0-or-later",
+      "licenseDeclared": "LGPL-3.0-or-later",
+      "name": "basefwx",
+      "versionInfo": "3.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-liboqs",
+      "downloadLocation": "https://github.com/open-quantum-safe/liboqs.git",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "5a1a854b0dc9f2141bdc771c555ee60c37950183",
+          "referenceType": "git"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "liboqs",
+      "versionInfo": "0.16.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-openssl",
+      "downloadLocation": "https://github.com/openssl/openssl.git",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+          "referenceType": "git"
+        }
+      ],
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "openssl",
+      "versionInfo": "3.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-argon2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "argon2",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-boost-asio",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "boost-asio",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-boost-date-time",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "boost-date-time",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-boost-beast",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "boost-beast",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-boost-system",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "boost-system",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-liblzma",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "liblzma",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-liboqs",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "liboqs",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-nghttp2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nghttp2",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-openssl",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "openssl",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-zlib",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "zlib",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-vcpkg-zstd",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "zstd",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    }
+  ],
+  "relationships": [
+    {
+      "relatedSpdxElement": "SPDXRef-Package-basefwx",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-liboqs",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-openssl",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-argon2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-asio",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-date-time",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-beast",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-system",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-liblzma",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-liboqs",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-nghttp2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-openssl",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-zlib",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-zstd",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    }
+  ],
+  "spdxVersion": "SPDX-2.3"
+}

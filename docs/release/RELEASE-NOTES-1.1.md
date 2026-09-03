@@ -1,9 +1,13 @@
 # YUME 1.1 — First Stable Release
 
 > **Historical plan:** this document records the superseded 1.x release plan.
-> Use [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md) and
-> [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
-> implementation and protocol truth.
+> All claims below, including references to a “stable C ABI,” describe that
+> abandoned plan and are not current product or compatibility claims.
+> Use [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md) for the
+> transition boundary, [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md)
+> for the runnable transport, and [`../protocol/YTP_1.md`](../protocol/YTP_1.md)
+> for the experimental replacement kernel. The production YTP/1
+> crypto/provider/runtime remains unwired as recorded there.
 
 YUME is a **post-quantum stealth transport** that tunnels TCP and UDP
 through real TLS 1.3 sessions with browser-profiled ClientHellos and an

@@ -249,7 +249,7 @@ std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
                                               const std::string& helper_tls_backend) {
     if (cfg.transport_profile != yume::kTransportProfile) {
         util::log_error(
-            "YUME 0.2.0-dev6 requires transport_profile " +
+            "the transport-v2 runtime requires transport_profile " +
             std::string(yume::kTransportProfile));
         return 1;
     }
@@ -1262,11 +1262,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                  auth_challenge_timer.elapsed_ns() / 1'000'000U) +
                                  " bytes=" + std::to_string(auth_challenge.payload.size()));
             util::log_info("AUTH challenge received");
-            std::optional<crypto::Bytes> inner_key;
-            std::optional<inner::KdfParams> inner_kdf;
-            inner::KdfParams v2_kdf;
-            v2_kdf.name = "hkdf";
-            inner_kdf = v2_kdf;
             bool inner_disabled_for_session = false;
             bool pq_need_key = false;
             bool pq_not_supported = false;
@@ -1336,8 +1331,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             bool server_inner_active = false;
             std::string server_inner_mode;
             bool server_cap_pq = false;
-            bool server_cap_argon2 = false;
-            bool server_cap_pbkdf2 = false;
             std::string server_version;
             std::string server_error;
             std::string mode = "normal";
@@ -1375,8 +1368,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 server_inner_active = server_info.server_inner_active;
                 server_inner_mode = std::move(server_info.server_inner_mode);
                 server_cap_pq = server_info.server_cap_pq;
-                server_cap_argon2 = server_info.server_cap_argon2;
-                server_cap_pbkdf2 = server_info.server_cap_pbkdf2;
             } catch (const nlohmann::json::parse_error&) {
                 throw FatalError("this endpoint is not a yume server (invalid server response); please check the origin and try again");
             } catch (const std::exception& ex) {
@@ -1430,19 +1421,13 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             ServerCapabilityInput capability_input;
             capability_input.server_version = server_version;
             capability_input.server_inner_mode = server_inner_mode;
-            if (inner_kdf.has_value()) {
-                capability_input.inner_kdf_name = inner_kdf->name;
-            }
             capability_input.inner_crypto_requested = true;
             capability_input.inner_disabled_for_session = inner_disabled_for_session;
-            capability_input.inner_heavy = false;
             capability_input.have_inner_caps = have_inner_caps;
             capability_input.server_inner_supported = server_inner_supported;
             capability_input.server_inner_required = server_inner_required;
             capability_input.server_inner_dual = server_inner_dual;
             capability_input.server_cap_pq = server_cap_pq;
-            capability_input.server_cap_argon2 = server_cap_argon2;
-            capability_input.server_cap_pbkdf2 = server_cap_pbkdf2;
 
             ServerCapabilityResult capability = evaluate_server_capabilities(capability_input);
             if (!capability.error.empty()) {
@@ -1565,13 +1550,9 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     summary.server += " (tls: " + tls_name + ")";
                 }
                 summary.version = server_version;
-                if (inner_kdf.has_value()) {
-                    summary.inner_kdf_name = inner_kdf->name;
-                }
                 summary.verified_proof_sources = verified_proof_sources;
                 summary.obfuscation_enabled = cfg.obfuscation;
                 summary.inner_established = v2_ratchet != nullptr;
-                summary.inner_heavy = false;
                 summary.have_inner_caps = have_inner_caps;
                 summary.server_inner_dual = server_inner_dual;
                 summary.server_inner_active = server_inner_active;
@@ -1620,8 +1601,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             connected_options.have_inner_caps = have_inner_caps;
             connected_options.server_inner_dual = server_inner_dual;
             connected_options.server_inner_active = server_inner_active;
-            connected_options.inner_kdf = inner_kdf;
-            connected_options.inner_key = inner_key;
             connected_options.ratchet = std::move(v2_ratchet);
             connected_options.h2_carrier = std::move(h2_carrier);
             connected_options.outer_carrier_trace = outer_carrier_trace;

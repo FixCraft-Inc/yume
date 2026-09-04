@@ -57,7 +57,7 @@ def validate_interface(value: str, label: str) -> str:
 def parse_listen(value: str) -> tuple[ipaddress.IPv4Address, int]:
     host, separator, port_text = value.rpartition(":")
     if not separator or not host or not port_text:
-        raise SetupError("--listen must be an IPv4 address and port, for example build-host.example:8443")
+        raise SetupError("--listen must be an IPv4 address and port, for example 192.168.1.10:8443")
     try:
         address = ipaddress.IPv4Address(host)
         port = int(port_text)

@@ -116,3 +116,11 @@ website/docs/*.md
 website/docs/**/*.md
 website/.jekyll-cache/
 website/_site/
+
+# Fuzzing working directories. tests/fuzz/run_fuzzers.sh writes seeds, an
+# evolving corpus, logs and any crashing input here. A crashing input is
+# evidence about a specific tree and belongs in the private overlay, never in
+# Git. `fuzz-out` is the script's default and the name CI uses.
+/fuzz-out/
+/fuzz-*/
+/build-fuzz/

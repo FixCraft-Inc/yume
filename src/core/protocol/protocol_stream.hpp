@@ -7,6 +7,8 @@
 #pragma once
 
 #include <array>
+#include <stdexcept>
+#include <string>
 
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/read.hpp>
@@ -41,6 +43,14 @@ Frame read_frame(SyncStream& stream) {
     frame.header.flags = static_cast<uint16_t>(header_buf[6] << 8) |
                          static_cast<uint16_t>(header_buf[7]);
 
+    // Before the resize, not after: `len` is peer-supplied and a hostile
+    // server can otherwise make this allocate up to 4 GiB before anything
+    // parses.
+    if (len > kMaxFramePayloadBytes) {
+        throw std::runtime_error("read_frame: declared payload of " +
+                                 std::to_string(len) +
+                                 " bytes exceeds the transport maximum");
+    }
     frame.payload.resize(len);
     if (len > 0) {
         boost::asio::read(stream, boost::asio::buffer(frame.payload));

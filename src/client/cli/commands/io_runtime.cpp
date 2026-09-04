@@ -17,6 +17,7 @@
 
 #include "client/cli/config/input.hpp"
 #include "client/transport/tunnel.hpp"
+#include "core/runtime/worker_loop.hpp"
 #include "util.hpp"
 #include <boost/asio/post.hpp>
 
@@ -60,7 +61,9 @@ std::vector<std::thread> start_io_threads(boost::asio::io_context& io, int reque
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(threads));
     for (int i = 0; i < threads; ++i) {
-        workers.emplace_back([&io]() { io.run(); });
+        workers.emplace_back([&io]() {
+            yume::runtime::run_worker(io, "client");
+        });
     }
     return workers;
 }

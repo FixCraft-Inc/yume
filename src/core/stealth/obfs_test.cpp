@@ -685,6 +685,108 @@ void test_handshake_round_trip_with_stateful_encoder() {
     assert(decoder.extracted_path() == path);
 }
 
+// Emit an HPACK integer whose accumulated value is exactly `target` when the
+// decoder computes `prefix_max + sum(digit_i << 7i)` without an overflow
+// check. Digits 0..8 carry bits 0..62 and the tenth carries bit 63, so any
+// 64-bit target is representable and the encoding always terminates on the
+// tenth continuation byte -- the last position the decoder's `shift >= 64`
+// guard still admits.
+void push_wrapping_hpack_varint(std::vector<std::uint8_t>& out,
+                                std::uint8_t opcode_bits,
+                                std::uint8_t prefix_mask,
+                                std::uint64_t target) {
+    out.push_back(static_cast<std::uint8_t>(opcode_bits | prefix_mask));
+    const std::uint64_t x = target - prefix_mask;
+    for (unsigned i = 0; i < 9; ++i) {
+        out.push_back(static_cast<std::uint8_t>(((x >> (7 * i)) & 0x7F) | 0x80));
+    }
+    out.push_back(static_cast<std::uint8_t>((x >> 63) & 0x7F));
+}
+
+// Preface + non-ACK SETTINGS + a HEADERS frame on stream 1 carrying `block`.
+// This is the exact shape an unauthenticated peer can present to the server
+// carrier probe before any admission check runs.
+std::vector<std::uint8_t> unauthenticated_headers_wire(
+    const std::vector<std::uint8_t>& block) {
+    std::vector<std::uint8_t> wire;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    wire.insert(wire.end(), kPref, kPref + 24);
+    push_empty_settings(wire);
+    push_frame(wire, static_cast<std::uint32_t>(block.size()), 0x01, 0x05, 1);
+    wire.insert(wire.end(), block.begin(), block.end());
+    return wire;
+}
+
+// A peer-declared HPACK string length that wraps past 2^64 must be rejected
+// before it reaches std::string::assign. Feeding the pre-authentication probe
+// decoder must never throw: the exception would escape into the Asio worker
+// that owns Session::on_h2_probe_read.
+void test_decoder_rejects_wrapping_hpack_string_length() {
+    std::vector<std::uint8_t> block;
+    block.push_back(0x40);  // literal with incremental indexing, new name
+    // prefix_consumed is 11, so a declared length of 2^64 - 11 makes the
+    // unchecked bound `prefix_consumed + str_len` wrap to zero and pass.
+    push_wrapping_hpack_varint(block, 0x00, 0x7F,
+                               ~static_cast<std::uint64_t>(0) - 10u);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    bool threw = false;
+    try {
+        auto wire = unauthenticated_headers_wire(block);
+        decoder.feed(wire.data(), wire.size());
+    } catch (...) {
+        threw = true;
+    }
+    assert(!threw);
+    assert(decoder.failed());
+}
+
+// A wrapped varint must not resolve to a valid static-table index either. The
+// encoding below accumulates to 2 (":method: GET") only if the addition is
+// allowed to wrap, so accepting it would let a peer smuggle a header the wire
+// never carried.
+void test_decoder_rejects_wrapping_hpack_index() {
+    std::vector<std::uint8_t> block;
+    push_wrapping_hpack_varint(block, 0x80, 0x7F, 2u);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    bool threw = false;
+    try {
+        auto wire = unauthenticated_headers_wire(block);
+        decoder.feed(wire.data(), wire.size());
+    } catch (...) {
+        threw = true;
+    }
+    assert(!threw);
+    assert(decoder.failed());
+    assert(decoder.decoded_headers().empty());
+}
+
+// One-byte indexed fields expand roughly thirtyfold into retained name/value
+// pairs, so the 16 KiB frame cap alone does not bound what the decoder keeps.
+void test_decoder_bounds_retained_header_expansion() {
+    std::vector<std::uint8_t> block(4096, 0x82);  // indexed ":method: GET"
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    auto wire = unauthenticated_headers_wire(block);
+    decoder.feed(wire.data(), wire.size());
+    assert(decoder.failed());
+    assert(decoder.decoded_headers().empty());
+}
+
+// The caps must leave a browser-shaped request intact.
+void test_decoder_accepts_ordinary_header_count() {
+    const std::string sni = "bounded.example";
+    const std::string path = "/0123456789abcdef0123456789abcdef/0123456789abcdef";
+    auto request = yume::obfs::encode_client_handshake(sni, path, "profile-user-agent");
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(request.data(), request.size());
+    assert(!decoder.failed());
+    assert(decoder.headers_seen());
+    assert(decoder.extracted_path() == path);
+}
+
 void test_encoder_respects_send_window() {
     // Body bigger than the budget should be truncated; budget = 100
     // means we emit at most 100 payload bytes total across all DATA
@@ -730,6 +832,10 @@ int main() {
     test_decoder_initial_window_size_delta_applies();
     test_on_local_data_sent_debits_both_windows();
     test_encoder_respects_send_window();
+    test_decoder_rejects_wrapping_hpack_string_length();
+    test_decoder_rejects_wrapping_hpack_index();
+    test_decoder_bounds_retained_header_expansion();
+    test_decoder_accepts_ordinary_header_count();
     test_hpack_encoder_emits_incremental_indexing_opcode();
     test_hpack_encoder_evicts_on_table_shrink();
     test_hpack_encoder_size_update_opcode();

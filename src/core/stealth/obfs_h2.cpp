@@ -22,6 +22,16 @@ namespace yume::obfs {
 
 namespace {
 
+constexpr std::uint64_t kUint64Max = ~static_cast<std::uint64_t>(0);
+
+// A HEADERS block is capped at the 16 KiB frame limit on the wire, but a
+// one-byte indexed field expands into a retained name/value pair roughly
+// thirtyfold, so the frame cap alone does not bound what the decoder keeps.
+// Both caps are far above any browser-shaped request or upstream response the
+// carrier and decoy paths actually exchange.
+constexpr std::size_t kMaxDecodedHeaders     = 128;
+constexpr std::size_t kMaxDecodedHeaderBytes = 16384;
+
 constexpr std::uint8_t kFrameData         = 0x00;
 constexpr std::uint8_t kFrameHeaders      = 0x01;
 constexpr std::uint8_t kFramePriority     = 0x02;
@@ -137,15 +147,26 @@ bool decode_hpack_varint(const std::uint8_t* data, std::size_t len,
     while (*consumed < len) {
         std::uint8_t b = data[*consumed];
         *consumed += 1;
-        v += static_cast<std::uint64_t>(b & 0x7F) << shift;
+        const std::uint64_t chunk = static_cast<std::uint64_t>(b & 0x7F);
+        // One owner for the shift bound: `kUint64Max >> shift` is undefined at
+        // 64, and the accumulation must not wrap. A wrapped value is not
+        // merely wrong -- the caller's bounds check is computed from it, and a
+        // wrapped index would resolve to a static-table entry the peer never
+        // sent. Both operands are checked before they are evaluated, so no
+        // overflow occurs at all.
+        if (shift >= 64 || chunk > (kUint64Max >> shift)) {
+            return false;
+        }
+        const std::uint64_t addend = chunk << shift;
+        if (v > kUint64Max - addend) {
+            return false;
+        }
+        v += addend;
         if (!(b & 0x80)) {
             *value_out = v;
             return true;
         }
         shift += 7;
-        if (shift >= 64) {
-            return false;
-        }
     }
     return false;
 }
@@ -161,14 +182,23 @@ bool decode_hpack_string(const std::uint8_t* data, std::size_t len,
     if (!decode_hpack_varint(data, len, 0x7F, &prefix_consumed, &str_len)) {
         return false;
     }
-    if (prefix_consumed + str_len > len) {
+    // Subtraction, not addition: `prefix_consumed + str_len` wraps for a
+    // near-maximal declared length and would admit it.
+    if (prefix_consumed > len) {
+        return false;
+    }
+    const std::uint64_t remaining = len - prefix_consumed;
+    if (str_len > remaining) {
         return false;
     }
     if (huffman) {
         return false;
     }
-    out->assign(reinterpret_cast<const char*>(data + prefix_consumed), str_len);
-    *consumed = prefix_consumed + str_len;
+    // Narrowing is safe only because str_len is now bounded by `remaining`,
+    // which came from a std::size_t.
+    const std::size_t take = static_cast<std::size_t>(str_len);
+    out->assign(reinterpret_cast<const char*>(data + prefix_consumed), take);
+    *consumed = prefix_consumed + take;
     return true;
 }
 
@@ -223,6 +253,29 @@ bool scan_headers_block(
     std::string* path_out,
     std::string* authority_out) {
     std::size_t pos = 0;
+    std::size_t retained_headers = 0;
+    std::size_t retained_bytes = 0;
+    // Bound what one header block can make the decoder retain. Returns false
+    // so the caller treats an over-cap block the way it treats a malformed
+    // one: reject the carrier probe and fall through to the decoy response.
+    const auto record = [&](const std::string_view name,
+                            const std::string_view value) -> bool {
+        if (retained_headers >= kMaxDecodedHeaders) {
+            return false;
+        }
+        const std::size_t entry_bytes = name.size() + value.size();
+        if (entry_bytes > kMaxDecodedHeaderBytes - retained_bytes) {
+            return false;
+        }
+        retained_headers += 1;
+        retained_bytes += entry_bytes;
+        if (headers_out) {
+            headers_out->emplace_back(name, value);
+        }
+        if (name == ":authority" && authority_out) *authority_out = std::string(value);
+        if (name == ":path" && path_out) *path_out = std::string(value);
+        return true;
+    };
     while (pos < len) {
         std::uint8_t b = data[pos];
         if ((b & 0x80) != 0) {
@@ -236,11 +289,9 @@ bool scan_headers_block(
             if (name.empty()) {
                 return false;
             }
-            if (headers_out) {
-                headers_out->emplace_back(name, value);
+            if (!record(name, value)) {
+                return false;
             }
-            if (name == ":authority" && authority_out) *authority_out = value;
-            if (name == ":path" && path_out) *path_out = value;
             continue;
         }
         if ((b & 0xC0) == 0x40) {
@@ -267,9 +318,9 @@ bool scan_headers_block(
                 return false;
             }
             pos += vcons;
-            if (headers_out) headers_out->emplace_back(name, value);
-            if (name == ":authority" && authority_out) *authority_out = value;
-            if (name == ":path" && path_out) *path_out = value;
+            if (!record(name, value)) {
+                return false;
+            }
             continue;
         }
         if ((b & 0xE0) == 0x20) {
@@ -304,9 +355,9 @@ bool scan_headers_block(
             return false;
         }
         pos += vcons;
-        if (headers_out) headers_out->emplace_back(name, value);
-        if (name == ":authority" && authority_out) *authority_out = value;
-        if (name == ":path" && path_out) *path_out = value;
+        if (!record(name, value)) {
+            return false;
+        }
     }
     return true;
 }

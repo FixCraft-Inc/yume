@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -43,6 +44,13 @@ inline constexpr uint16_t kFlagStreamFin = 0x0002;
 // transparently so handle_frame sees the original payload.
 inline constexpr uint16_t kFlagPadded         = 0x4000;
 inline constexpr uint16_t kFlagInnerEncrypted = 0x8000;
+
+// Largest payload a peer may declare in the 8-byte frame header. Owned here
+// because the header is defined here: every reader of it -- the synchronous
+// read_frame and the asynchronous TransportCore path alike -- must refuse an
+// oversize declaration before it allocates. Unrelated to the HTTP/2 carrier's
+// own frame limits, which bound a different wire.
+inline constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
 
 struct FrameHeader {
     uint32_t len;

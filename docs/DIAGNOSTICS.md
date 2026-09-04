@@ -108,6 +108,44 @@ continuing, which is what makes it usable as a CI gate.
 `address` and `thread` are mutually exclusive by construction. Run them as
 separate configurations. Never distribute a sanitized binary.
 
+## Fuzzing
+
+```bash
+cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DYUME_BUILD_TESTING=ON -DYUME_BUILD_FUZZERS=ON
+cmake --build build-fuzz -j"$(nproc)" \
+  --target yume_fuzz_h2_probe_decoder yume_fuzz_client_config \
+           yume_fuzz_server_config
+bash tests/fuzz/run_fuzzers.sh build-fuzz/bin 600 fuzz-out
+```
+
+`tests/fuzz/run_fuzzers.sh` seeds the corpora, runs each harness for the given
+per-target budget, and exits nonzero if libFuzzer writes any artifact. CI runs
+the same script with a short budget as a regression gate. A longer campaign is
+the same invocation with a larger budget and a corpus carried over from the
+previous run. Seeds come from `tests/fuzz/make_seeds.py`, which generates them
+as code rather than checking in opaque binaries, and includes the hostile HPACK
+encodings the decoder regressions pin.
+
+`YUME_BUILD_FUZZERS` builds libFuzzer harnesses for the parsers that consume
+input from outside a trust boundary, and requires Clang. Each harness carries
+its own ASan and UBSan instrumentation, so it does not combine with
+`YUME_SANITIZE`, and it forces `YUME_LTO=OFF` for the same reason a sanitizer
+build does. The harnesses are never installed.
+
+| Harness | Parser | Reached by |
+| --- | --- | --- |
+| `yume_fuzz_h2_probe_decoder` | `obfs::H2InboundDecoder` | an unauthenticated peer, before any admission check |
+| `yume_fuzz_client_config` | `facade::config_io::parse_client_json` | a configuration file, the GUI, and the C ABI |
+| `yume_fuzz_server_config` | `facade::config_io::parse_server_json` | a configuration file and the GUI |
+
+The decoder harness asserts a stronger contract than "does not crash": the
+decoder must reject malformed input rather than throw, because a throw would
+unwind into the Asio worker instead of the session that owns the connection.
+Both configuration harnesses assert the same for their loaders. Corpora live
+outside the tree; a crashing input is evidence and does not belong in Git.
+
 ## Verification
 
 ```bash

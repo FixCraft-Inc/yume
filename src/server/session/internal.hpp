@@ -72,7 +72,11 @@ class Manager;  // egress_filter_allows() only needs a pointer
 namespace detail {
 
 // ---- Constants (formerly session.cpp anonymous namespace) ----------------
-inline constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
+// The same bound as every other reader of the 8-byte transport frame header,
+// owned by core/protocol where that header is defined. This was a third
+// independent spelling of the identical value.
+inline constexpr uint32_t kMaxFrameSize =
+    static_cast<uint32_t>(protocol::kMaxFramePayloadBytes);
 inline constexpr uint8_t kMinFrameType = protocol::AUTH;
 inline constexpr uint8_t kMaxFrameType = protocol::REKEY_ACK;
 inline constexpr int64_t kIdleTimeoutMs = 90 * 1000;

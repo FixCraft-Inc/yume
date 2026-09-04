@@ -7,6 +7,7 @@
 #include "server/runtime/controller.hpp"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,7 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include "core/runtime/worker_loop.hpp"
 #include "core/security/identity.hpp"
 #include "server/runtime/local_runtime.hpp"
 #include "server/runtime/manager.hpp"
@@ -188,6 +190,10 @@ bool RuntimeController::start(
     }
 
     std::vector<std::thread> workers;
+    // Each worker lambda holds a copy, so the counter outlives a start that
+    // fails partway through worker creation without needing an owner in Impl.
+    // Nothing reads it yet beyond the rate-limited log inside run_worker.
+    auto worker_exceptions = std::make_shared<std::atomic<std::size_t>>(0);
     const int workers_count = worker_count_for(cfg);
     auto rollback_worker_start = [&]() {
         // Worker creation can fail after earlier workers have entered run().
@@ -213,7 +219,9 @@ bool RuntimeController::start(
     try {
         workers.reserve(static_cast<std::size_t>(workers_count));
         for (int i = 0; i < workers_count; ++i) {
-            workers.emplace_back([raw = io.get()]() { raw->run(); });
+            workers.emplace_back([raw = io.get(), counter = worker_exceptions]() {
+                yume::runtime::run_worker(*raw, "server", counter.get());
+            });
         }
     } catch (std::exception const& ex) {
         rollback_worker_start();

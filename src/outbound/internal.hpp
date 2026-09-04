@@ -26,7 +26,11 @@ namespace detail {
 // Bound queued work so congestion cannot retain unbounded frame storage or
 // starve control traffic behind large DATA batches.
 
-inline constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
+// The frame-payload cap is owned by core/protocol, which defines the header
+// this bound applies to. Re-exported here so the transport translation units
+// keep their single `using namespace detail;` idiom.
+using protocol::kMaxFramePayloadBytes;
+
 inline constexpr std::size_t kMaxWriteBatchFrames = 64;
 inline constexpr std::size_t kMaxWriteBatchBytes = 1024U * 1024U;
 

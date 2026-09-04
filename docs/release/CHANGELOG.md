@@ -20,6 +20,19 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   discovery (`yume_liboqs`, `YUME_HAS_OQS`) instead of inheriting it from the
   BaseFWX build. `YUME_REQUIRE_OQS` fails configuration when liboqs is
   missing.
+- **libFuzzer harnesses for the untrusted parsers.** `YUME_BUILD_FUZZERS`
+  (Clang-only, never installed) builds `yume_fuzz_h2_probe_decoder`,
+  `yume_fuzz_client_config`, and `yume_fuzz_server_config`. Each asserts that
+  its parser rejects malformed input rather than throwing, because the H2
+  probe decoder runs on an Asio worker where an escaping exception does not
+  reach the session. `tests/fuzz/run_fuzzers.sh` seeds the corpora, enforces a
+  per-target budget, and fails on any artifact, so CI, a build host and a local
+  run are the same invocation. `docs/DIAGNOSTICS.md` records it.
+- **ThreadSanitizer and fuzzing are CI gates.** A `thread-sanitize` job builds
+  with `YUME_SANITIZE=thread` and runs the full suite, and a `fuzz` job builds
+  the Clang harnesses and runs each briefly against the seeded corpus. Neither
+  had ever run automatically, so a data race or a parser crash could reach
+  `main` with nothing objecting.
 
 ### Changed
 
@@ -98,6 +111,71 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **The plain `attach` control command is named truthfully.** Its refusal
   called it "legacy" while `admin.attach` is a different operation, not a
   newer generation of the same one.
+- **HPACK integers no longer wrap on the unauthenticated carrier probe.**
+  `decode_hpack_varint` accumulated shifts and additions without an overflow
+  check, so a peer could declare a string length near `2^64` that made
+  `decode_hpack_string`'s bounds check wrap and pass, reaching
+  `std::string::assign` with that length. The resulting exception escaped
+  `Session::on_h2_probe_read` into the Asio worker, which aborts the process
+  (see the worker-containment entry below). A wrapped value could also
+  resolve to a static-table index the wire never carried. The decoder now
+  rejects both operands before evaluating them, compares remaining length by
+  subtraction, and bounds the header count and aggregate bytes one block may
+  retain. The probe read contains a decoder throw and serves the masquerade
+  response. Reachable before authentication.
+- **A throwing completion handler no longer aborts the process.** The server
+  and client worker threads ran `io_context::run()` as the thread body. An
+  exception that escapes a completion handler propagates out of `run()`, and
+  an exception that escapes a thread entry point calls `std::terminate`, so
+  any peer able to reach a throwing handler could abort the daemon. Both
+  workers now go through `runtime::run_worker`, which contains the exception,
+  drops only the connection whose handler threw, re-enters `run()` for every
+  other session, and records the occurrence in a rate-limited warning.
+  Containment is a backstop: a handler at a trust boundary must still reject
+  bad input rather than throw.
+- **One frame-payload bound, not three.** `server::detail::kMaxFrameSize` was
+  a third independent spelling of the same 16 MiB limit on the same header
+  field, alongside the outbound constant and a bare literal in the prefetch
+  classifier. All three now resolve to `protocol::kMaxFramePayloadBytes`.
+- **Control frames are bounded before allocation.** `protocol::read_frame`
+  resized the payload to a peer-supplied 32-bit length, so a hostile server
+  could ask a client for 4 GiB before anything parsed. The cap now belongs to
+  `core/protocol`, which defines the header, and is shared by the synchronous
+  reader, the asynchronous transport path, and the prefetch classifier that
+  previously repeated the number by hand.
+- **The optional TLS fingerprint diagnostic is bounded.** Its HTTP/1.1 fetch
+  appended to EOF and its HTTP/2 fetch allocated each peer-declared frame,
+  accumulated DATA, and waited for END_STREAM, all without a limit or a
+  deadline, so a redirected endpoint could hang or exhaust the client. The
+  fetch moved to `core/stealth/tls_verify_fetch.hpp` with total, per-frame,
+  and frame-count caps plus a wall-clock deadline, and the socket carries a
+  receive timeout. It runs only under `openssl-diagnostic` with
+  `tls_fingerprint_verify`.
+- **MaxMind record parsing is valid C++.** `MmdbValue` held
+  `std::vector<std::pair<std::string, MmdbValue>>`, and `std::pair` does not
+  admit an incomplete member type the way `std::vector` admits an incomplete
+  element type. GCC accepted it; Clang rejected it, which blocked every
+  Clang-based analysis of the server tree. The key now lives on the value and
+  the vector holds the element type directly.
+- **The CI OpenSSL guard counts lanes instead of assuming three.**
+  `release_preflight.py` required exactly three occurrences of the
+  dependency-setup block and of `-DYUME_STATIC_OPENSSL=ON`. The invariant is
+  that *every* lane which configures CMake carries both, so the literal count
+  went stale as soon as a lane was added and would also have passed if one
+  lane were deleted and another added in its place. It now derives the lane
+  count and names the mismatch.
+- **A Clang build of the whole tree links again.**
+  `yume_anonym_curl_transport_test` used `yume_apply_warnings` where every
+  other non-ABI target uses `yume_apply_perf_opts`, so it linked the
+  LTO-built `yume_core` without `-flto`. GCC hides that by using the linker
+  plugin automatically. Clang does not, and GNU `ld` reported "file format
+  not recognized" on a bitcode archive. The ABI targets remain the deliberate
+  exception, because their inputs are built without LTO.
+- **`yume-packet-quick` examples are valid input.** `--listen` requires a
+  numeric IPv4 address, which the helper renders into nftables and UFW rules,
+  but the documentation, the parser's own error message, and the test fixtures
+  all used a hostname. The test was also never registered, so two failing
+  cases passed CI; it now runs in CTest.
 
 ### Removed
 

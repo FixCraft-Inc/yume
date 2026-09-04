@@ -37,7 +37,7 @@ careful lasting code anyway, and never accept redundancy at any stage.
 | --- | --- |
 | `src/core/`, `src/outbound/`, wire or AUTH behaviour | `docs/protocol/YUME_2_0_WIRE.md`, `docs/SECURITY_MODES.md`, the focused test beside the file |
 | `include/yume/yume.h`, `src/abi/`, `src/facade/session/` | `docs/ABI.md`, `src/abi/yume.map`, the ABI contract tests, `docs/IMPLEMENTATION_STATUS.md` |
-| `src/config/client_document_keys.hpp`, either client config parser | both parsers, `client_config_io_test.cpp`, `docs/man/yume.1`, `docs/ABI.md` dialect text |
+| `src/config/client_document_keys.hpp`, `src/config/server_document_keys.hpp`, `src/config/document_keys.hpp`, any config parser | both parsers of that role, `client_config_io_test.cpp` or `config_load_test.cpp`, `docs/man/yume.1` or `docs/man/yumed.8`, `docs/ABI.md` dialect text |
 | `src/server/` startup checks, permissions, cover | `docs/PERMISSIONS.md`, `docs/OPERATIONS.md`, `docs/FILTERING_SELF_DPI.md`, `docs/man/yumed.8` |
 | `src/client/cli/` options or help | `docs/man/yume.1`, `docs/QUICKSTART.md`, `tests/test_project_metadata.py` help-parity checks |
 | `src/client/transfer/share_file*` | `docs/OPERATIONS.md` share section, `share_file_test.cpp` |

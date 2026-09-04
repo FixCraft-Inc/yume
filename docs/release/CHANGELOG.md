@@ -63,8 +63,54 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   longer calls BaseFWX the core crypto engine or claims ML-DSA comes from
   liboqs.
 
+- **No built-in cover page, and a cover source is required.** `yumed` shipped a
+  redirect stub compiled into the binary. It was byte-identical on every
+  deployment, and the HTTP/2 decoy served it whenever only `real_backend` was
+  configured, so a single HTTP/2 request identified the server as YUME
+  regardless of what the HTTP/1.1 cover backend served. Startup now refuses
+  unless one of `upstream_response_dir`, `upstream_response`, `real_root`, or
+  `real_index_path` is set alongside `real_backend`, which answers HTTP/1.1
+  only. A configured source that disappears at run time yields the profile's
+  ordinary 404 rather than a substitute page.
+- **Packet-mode DNS has no default.** The resolver was silently `1.1.1.1` when
+  none was configured, making a third party the observer of every hostname a
+  tunnelled client resolved. `--packet-egress tun` now refuses to start until
+  an IPv4 resolver is named.
+- **Server configuration keys are a closed set.** The `yumed` CLI loader and
+  the facade parser used by the GUI share one key table in
+  `src/config/server_document_keys.hpp`, over the same predicate as the client
+  set. An unknown key is an error instead of "leave the default", and several
+  of those defaults are security decisions.
+- **Server `obfs_jitter_ms` and `threads` are bounded.** The server loader
+  accepted any representable value, so a config could delay every outbound
+  batch by up to roughly 49 days or request an unbounded worker count. Both
+  now use `policy::kMaxObfsJitterMs` and `policy::kMaxIoThreads`, matching the
+  client.
+- **Configuration and start failures are typed.** A failure attributable to
+  one member now carries an RFC 6901 JSON pointer in both dialects, malformed
+  input is `YUME_STATUS_PARSE_ERROR` and a document that parses but does not
+  validate is `YUME_STATUS_INVALID_ARGUMENT`, and `yume_endpoint_start`
+  reports the runtime's typed outcome instead of collapsing every failure to
+  `YUME_STATUS_IO_ERROR`. A refused bind is now distinguishable from a
+  transient failure without parsing the diagnostic text.
+- **The release lane is `linux-desktop-0.3.0`.** It accepted only `v0.2.0`
+  tags while the product was `0.3.0-dev1`, so it could not ship the tree.
+- **The plain `attach` control command is named truthfully.** Its refusal
+  called it "legacy" while `admin.attach` is a different operation, not a
+  newer generation of the same one.
+
 ### Removed
 
+- **Inline `real_secret` and the `--real-secret` flag.** The cover-backend
+  secret could be passed in argv, where the process table exposes it, or
+  written into the configuration file. Both server loaders now refuse the key
+  and name `real_secret_file`, which is read at start or created with fresh
+  random contents.
+- **Five unused server configuration aliases.** `allow_monero_rpc`,
+  `codec_allow`, `deny_default`, `exposure_check`, and the combined
+  `monero_rpc_backend` spelling had no writer and named no consumer. The
+  equivalent CLI flags remain, because a flag name and a config key are
+  separate surfaces.
 - **`docs/release/RELEASE-NOTES-1.1.md`.** It described a stable 1.1 release
   that never happened and was installed into every package. Git history keeps
   it.

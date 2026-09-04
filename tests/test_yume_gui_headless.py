@@ -122,6 +122,10 @@ def case_invalid_server_config(gui: Path, home: Path) -> None:
                 "listen_port": 8443,
                 "tls_cert": str(home / "cert.pem"),
                 "tls_key": str(home / "key.pem"),
+                # The cover-source requirement is conditional on real_http,
+                # so without this the config never reaches that check and the
+                # case would not cover it.
+                "real_http": True,
             }
         ),
         encoding="utf-8",

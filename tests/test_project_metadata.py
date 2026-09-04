@@ -527,6 +527,42 @@ class MetadataTests(unittest.TestCase):
             with self.assertRaises(ProfileError):
                 generate(path)
 
+    def test_vendored_json_tree_supplies_every_included_header(self) -> None:
+        """The bundled nlohmann tree must satisfy every <nlohmann/...> include.
+
+        third_party/nlohmann_json comes first on the include path, so any
+        header it does not provide silently falls through to whatever the
+        build host has installed. That mixes two versions of one library in a
+        single translation unit: the bundled json.hpp declared basic_json and
+        json_pointer one way while a distribution json_fwd.hpp declared them
+        another, and every CI build lane failed inside the vendored header
+        while developer machines whose distribution version happened to match
+        built fine.
+        """
+        bundled = ROOT / "third_party" / "nlohmann_json" / "nlohmann"
+        self.assertTrue(bundled.is_dir(), "vendored nlohmann tree is missing")
+        pattern = re.compile(r"#\s*include\s*<(nlohmann/[^>]+)>")
+        missing: dict[str, list[str]] = {}
+        for source in list(ROOT.glob("src/**/*.[ch]pp")) + list(
+            ROOT.glob("include/**/*.h*")
+        ):
+            for header in pattern.findall(source.read_text(encoding="utf-8", errors="ignore")):
+                name = header.split("/", 1)[1]
+                if not (bundled / name).is_file():
+                    missing.setdefault(header, []).append(
+                        str(source.relative_to(ROOT))
+                    )
+        self.assertEqual(
+            missing,
+            {},
+            "these <nlohmann/...> includes are not provided by the vendored "
+            "tree and resolve to whatever the host has installed: "
+            + "; ".join(
+                f"{header} (from {', '.join(sorted(users))})"
+                for header, users in sorted(missing.items())
+            ),
+        )
+
     def test_source_archive_rejects_private_and_malformed_paths(self) -> None:
         prefix = "yume-0.3.0~dev1"
         rejected = rejected_paths([

@@ -48,8 +48,10 @@ Per-key permission is separate from LAN bridging:
 }
 ```
 
-`allow_monero_rpc: true` remains accepted as a compatibility alias, but new
-configs should use the modular codec list.
+`allow_monero_rpc: true` remains accepted as an alias inside this per-key
+permissions document, but new entries should use the modular codec list. The
+server configuration file is a different document and does not accept that
+spelling: it takes `allow_monero_rpc_codec` or `allow_codecs`.
 
 Client side:
 
@@ -97,8 +99,8 @@ HTTP request bytes on the Yume data path.
   so it covers every codec rather than only the Monero handler.
 - Dispatch is fail-closed. A descriptor without a `validate_request` hook admits
   no requests at all, so an unfinished codec cannot reach a backend by default.
-- `allow_codecs` and legacy `allow_monero_rpc` do not imply `allow_local_ip`
-  or `control_full`.
+- `allow_codecs`, and the `allow_monero_rpc` permission alias, do not imply
+  `allow_local_ip` or `control_full`.
 - The codec reconstructs HTTP and strips hop-by-hop headers.
 - Body caps come from the descriptor. Monero RPC uses 8 MiB requests and 15 MiB
   responses.

@@ -157,6 +157,18 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   element type. GCC accepted it; Clang rejected it, which blocked every
   Clang-based analysis of the server tree. The key now lives on the value and
   the vector holds the element type directly.
+- **The vendored nlohmann tree is complete, so CI builds again.**
+  `third_party/nlohmann_json/nlohmann/` shipped `json.hpp` but not
+  `json_fwd.hpp`. That directory is first on the include path, so
+  `config/v1/config.hpp`'s `#include <nlohmann/json_fwd.hpp>` fell through to
+  whatever the build host had installed while `json.hpp` came from the bundle.
+  A host whose distribution nlohmann matched the bundled 3.11.3 built fine,
+  which is why every developer and build-host lane was green while every CI
+  lane failed inside the vendored header: Ubuntu 22.04 ships 3.10.5, which
+  declares `basic_json` and `json_pointer` differently. The matching 3.11.3
+  `json_fwd.hpp` is now vendored alongside it, and a metadata test fails if
+  any `<nlohmann/...>` include is not satisfied by the vendored tree. The
+  dependency and its version are unchanged, so the notices and SBOM are too.
 - **The CI OpenSSL guard counts lanes instead of assuming three.**
   `release_preflight.py` required exactly three occurrences of the
   dependency-setup block and of `-DYUME_STATIC_OPENSSL=ON`. The invariant is

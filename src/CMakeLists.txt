@@ -142,6 +142,14 @@ function(yume_apply_warnings target)
             $<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>
             $<$<BOOL:${YUME_WARNINGS_AS_ERRORS}>:-Werror>
         )
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+           _yume_sanitize STREQUAL "thread")
+            # GCC diagnoses the atomic fences used by Boost.Asio as not being
+            # modeled by TSan. Keep that limitation visible without allowing
+            # a third-party header diagnostic to prevent the sanitizer lane
+            # from compiling any first-party translation unit.
+            target_compile_options(${target} PRIVATE -Wno-error=tsan)
+        endif()
     elseif(MSVC)
         target_compile_options(${target} PRIVATE
             /W4
@@ -280,8 +288,9 @@ endfunction()
 # YUME 0.3 dependency-clean foundations
 # ----------------------------------------------------------------------
 # The experimental C++ provider and C ABI surfaces remain build-tree-only
-# while they are changing. The ABI scaffold links only config v1 and fails
-# endpoint start until the native provider is wired.
+# while they are changing. The ABI always parses config v1; when transport v2
+# is enabled it also links the embed seam, while schema-1 endpoint start stays
+# unsupported until the native provider graph is composed.
 include("${CMAKE_SOURCE_DIR}/cmake/YumeLayering.cmake")
 
 add_library(yume_engine STATIC
@@ -456,10 +465,10 @@ target_link_libraries(yume_config_v1 PUBLIC nlohmann_json::nlohmann_json)
 yume_prepare_static_for_shared_abi(yume_config_v1)
 yume_apply_perf_opts(yume_config_v1)
 
-# The 0.3 ABI is intentionally a fail-closed, build-tree-only scaffold until
-# the native TLS/H2/YTP provider graph is wired. It exposes metadata, strict
-# config parsing, and role-neutral handle lifecycle for contract tests without
-# claiming an installed ABI or inheriting the transport-v2 runtime.
+# The 0.3 ABI is intentionally build-tree-only and unfrozen. With transport v2
+# enabled it links the embed seam and carries authenticated named streams; a
+# schema-1 endpoint still fails closed because the native YTP/1 provider graph
+# is not composed. It has no install/export/package rule.
 if(YUME_BUILD_SHARED_ABI)
     # One translation unit. The shell owns handles, validation, diagnostics,
     # and callback rules; every runtime lives behind the embed seam.
@@ -477,7 +486,6 @@ if(YUME_BUILD_SHARED_ABI)
     target_include_directories(yume_abi
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
     )

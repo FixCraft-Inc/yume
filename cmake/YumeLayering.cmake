@@ -29,7 +29,10 @@ function(yume_check_03_source_layering source_dir)
     foreach(_layer IN ITEMS engine ytp)
         file(GLOB_RECURSE _sources
             "${source_dir}/src/${_layer}/*.cpp"
-            "${source_dir}/src/${_layer}/*.hpp")
+            "${source_dir}/src/${_layer}/*.hpp"
+            "${source_dir}/src/${_layer}/*.cc"
+            "${source_dir}/src/${_layer}/*.c"
+            "${source_dir}/src/${_layer}/*.h")
         foreach(_source IN LISTS _sources)
             file(READ "${_source}" _contents)
             string(TOLOWER "${_contents}" _lower_contents)

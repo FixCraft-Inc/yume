@@ -11,7 +11,9 @@
       "repository": "https://github.com/openssl/openssl.git",
       "revision": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
       "minimum_version": "3.5.0",
+      "source_version": "3.5.7",
       "patch_series": "patches/openssl/series",
+      "patch_license": "AGPL-3.0-or-later",
       "license": "Apache-2.0"
     },
     "liboqs": {

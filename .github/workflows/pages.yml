@@ -32,9 +32,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Sync docs into website
-        run: |
-          bash scripts/sync_website_docs.sh
-          bash scripts/sync_website_docs.sh --check
+        run: bash scripts/sync_website_docs.sh
 
       - name: Validate website catalog
         run: |

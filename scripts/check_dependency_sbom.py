@@ -13,6 +13,8 @@ import re
 import sys
 from typing import Any
 
+from yume_dependencies import DependencyError, load_dependencies
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPENDENCIES = ROOT / "config/dependencies.json"
@@ -44,9 +46,11 @@ def validated_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
     dependency_root = load_json(DEPENDENCIES)
     if dependency_root.get("schema") != 1:
         raise SbomError("config/dependencies.json schema must be numeric 1")
-    dependencies = dependency_root.get("dependencies")
-    if not isinstance(dependencies, dict) or not dependencies:
-        raise SbomError("dependency manifest must contain dependencies")
+    try:
+        dependencies = load_dependencies(DEPENDENCIES)
+    except (OSError, DependencyError) as exc:
+        raise SbomError(f"invalid dependency manifest: {exc}") from exc
+    dependency_root = {"schema": 1, "dependencies": dependencies}
     for name, entry in dependencies.items():
         if not isinstance(name, str) or not isinstance(entry, dict):
             raise SbomError("dependency entries must be named objects")
@@ -107,24 +111,32 @@ def build_sbom(dependency_root: dict[str, Any], vcpkg: dict[str, Any]) -> dict[s
     relationships: list[dict[str, str]] = []
     for name, entry in sorted(dependency_root["dependencies"].items()):
         spdx_id = package_id(name)
-        packages.append(
-            {
-                "SPDXID": spdx_id,
-                "name": name,
-                "versionInfo": entry["minimum_version"],
-                "downloadLocation": entry["repository"],
-                "licenseConcluded": entry["license"],
-                "licenseDeclared": entry["license"],
-                "filesAnalyzed": False,
-                "externalRefs": [
-                    {
-                        "referenceCategory": "PACKAGE-MANAGER",
-                        "referenceType": "git",
-                        "referenceLocator": entry["revision"],
-                    }
-                ],
-            }
-        )
+        package = {
+            "SPDXID": spdx_id,
+            "name": name,
+            "versionInfo": entry.get("source_version", entry["minimum_version"]),
+            "downloadLocation": entry["repository"],
+            "licenseConcluded": entry["license"],
+            "licenseDeclared": entry["license"],
+            "filesAnalyzed": False,
+            "externalRefs": [
+                {
+                    "referenceCategory": "PACKAGE-MANAGER",
+                    "referenceType": "git",
+                    "referenceLocator": entry["revision"],
+                }
+            ],
+        }
+        patch_license = entry.get("patch_license")
+        if patch_license is not None:
+            package["licenseConcluded"] = (
+                f"{entry['license']} AND {patch_license}"
+            )
+            package["comment"] = (
+                f"YUME applies the downstream patch series "
+                f"{entry['patch_series']}, declared {patch_license}."
+            )
+        packages.append(package)
         relationships.append(
             {
                 "spdxElementId": "SPDXRef-Package-YUME",

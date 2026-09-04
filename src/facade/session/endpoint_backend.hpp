@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -44,6 +45,9 @@ enum class BackendIo {
     Closed,
     Invalid,
     NotRunning,
+    NotFound,
+    PermissionDenied,
+    ResourceExhausted,
     Failed,
 };
 
@@ -54,6 +58,7 @@ struct BackendPeerIdentity {
     // Lowercase hex, empty when the transport did not authenticate one.
     std::string fingerprint_sha256;
     bool authenticated{false};
+    bool peer_is_server{false};
 };
 
 class BackendStream {
@@ -78,9 +83,14 @@ public:
     // Blocks until accepted writes have drained, so it takes a deadline.
     virtual BackendIo shutdown_write(std::uint32_t timeout_ms,
                                      std::string& error) = 0;
+    // A client OPEN is not externally committed until its embedding handle
+    // exists. Implementations keep rollback armed until this call.
+    virtual void publish() noexcept = 0;
     virtual void close() noexcept = 0;
     virtual BackendPeerIdentity peer_identity() const = 0;
 };
+
+using SocketProtector = std::function<bool(std::intptr_t)>;
 
 class EndpointBackend {
 public:
@@ -124,6 +134,7 @@ std::unique_ptr<BackendConfig> parse_transport_v2_config(
 // Creates an unstarted backend for an already-parsed configuration.
 std::unique_ptr<EndpointBackend> make_transport_v2_backend(
     const BackendConfig& config,
+    SocketProtector socket_protector,
     std::string& error);
 
 }  // namespace yume::embed

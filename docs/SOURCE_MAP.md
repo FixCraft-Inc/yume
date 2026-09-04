@@ -38,33 +38,39 @@ you which one you are looking at.
 | Frame type | `protocol::Frame` (`core/protocol/protocol.hpp`) | `ytp1` codecs (`ytp/protocol.hpp`) |
 | Session | `server::Session` (`server/session/`) | `engine::SessionEngine` (`engine/session_engine.cpp`) |
 | Build flag | `YUME_BUILD_TRANSPORT_V2` (ON) | `YUME_BUILD_EXPERIMENTAL_YTP1_*` (all OFF) |
-| Status | runs, tested, carries traffic | compiles and unit-tests, no live endpoint |
+| Status | runs, tested, carries traffic | provider candidates and focused tests; no live YTP/1 endpoint |
 
 If you search for "Frame" or "how is a stream opened" you will land in one of
 the two depending on which file you started from. Check the directory first.
 
 ## Directories
 
-### Shipping product
+### Transport-v2 implementation
 
-| Path | Owns | Size |
-| --- | ---: | ---: |
-| `core/` | Framing, crypto, AUTH v2 ratchet, stealth (TLS/H2/WebSocket), runtime primitives, app codecs | 28k |
-| `outbound/` | The client's `TransportCore`: frame dispatch, write scheduling, credit. Also, confusingly, server-side egress forwarding in `forward.cpp` | 6.8k |
-| `client/` | CLI, SOCKS, forwards, packet/TUN, relay, transfer | 36k |
-| `server/` | `yumed`: sessions, auth, host controller, federation, filters | 34k |
-| `facade/` | `yume_embed` (config marshalling, in-process client, log ring, and the transport backend behind `session/endpoint_backend.hpp`) and `yume_facade` (desktop session objects, traffic meter, key management) | 9.5k |
-| `gui/` | Optional desktop app. Links `yume_facade` only | 8.5k |
-| `abi/` | The C ABI. One translation unit, `yume_c.cpp`: handles, validation, diagnostics, callback rules. No runtime | 2.9k |
+| Path | Owns |
+| --- | --- |
+| `core/` | Framing, crypto, AUTH v2 ratchet, stealth (TLS/H2/WebSocket), runtime primitives, app codecs |
+| `outbound/` | The client's `TransportCore`: frame dispatch, write scheduling, credit. Also, confusingly, server-side egress forwarding in `forward.cpp` |
+| `client/` | CLI, SOCKS, forwards, packet/TUN, relay, transfer |
+| `server/` | `yumed`: sessions, auth, host controller, federation, filters |
+| `facade/` | `yume_embed` (config marshalling, in-process client, log ring, and the transport backend behind `session/endpoint_backend.hpp`) and `yume_facade` (desktop session objects, traffic meter, key management) |
+| `gui/` | Optional desktop app. Links `yume_facade` only |
+
+### Cross-stack embedding boundary
+
+| Path | Owns |
+| --- | --- |
+| `abi/` | The opt-in C ABI translation unit: handles, input validation, diagnostics, callback rules, and backend leasing. It reaches transport v2 only through `yume_embed`; it parses schema 1 through `config/v1`, whose endpoint remains unsupported. |
+| `include/yume/` | The public candidate C header. It is build-tree-only and unfrozen. |
 
 ### Replacement foundation
 
-| Path | Owns | Size |
-| --- | ---: | ---: |
-| `engine/` | Dependency-pure contracts: `ByteChannel`, `SecureChannel`, `Carrier`, `FrontDoor`, `SessionEngine` | 11k |
-| `ytp/` | YTP/1 protocol kernel and security domains. May not include the engine | 2.4k |
-| `providers/` | Concrete backends: OpenSSL security, TLS 1.3 channel, Asio routes, H2 carrier. All opt-in | 16k |
-| `config/v1/` | Strict numeric schema 1 parser with RFC 6901 error pointers | 2.5k |
+| Path | Owns |
+| --- | --- |
+| `engine/` | Dependency-pure contracts: `ByteChannel`, `SecureChannel`, `Carrier`, `FrontDoor`, `SessionEngine` |
+| `ytp/` | YTP/1 protocol kernel and security domains. May not include the engine |
+| `providers/` | Concrete candidates: OpenSSL security, TLS 1.3 channel, Asio TCP/UDP routes and client TCP ByteChannel, H2 carrier. All opt-in; none forms a live endpoint graph |
+| `config/v1/` | Strict numeric schema 1 parser with RFC 6901 error pointers |
 
 ## Layering, and where it is enforced
 
@@ -108,15 +114,14 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
 
 Real, measured, and worth knowing before you go in.
 
-- **`server::Session` is one class across 11 files.** `session.hpp` declares
-  about 145 members and 188 methods. The bodies are split across `session.cpp`,
+- **`server::Session` is one large class across many files.** The bodies are split across `session.cpp`,
   `carrier.cpp`, `control.cpp`, `streams.cpp`, `auth.cpp`, `open.cpp`,
   `open_transport.cpp`, `codecs.cpp`, `ext.cpp`, `services.cpp`, and
   `reverse_listener.cpp`, divided by file size rather than by subsystem.
   Tracing one behaviour means jumping between several of them.
-- **`Cli::run_parsed` is 1,249 lines**, nesting seven deep
-  (`client/cli/entry.cpp`).
-- **`src/util.hpp` is included by 58 translation units** and bundles logging,
+- **`Cli::run_parsed` is a large, deeply nested entry point** in
+  `client/cli/entry.cpp`.
+- **`src/util.hpp` is broadly included** and bundles logging,
   path resolution, terminal state, privilege dropping, randomness, base64, and
   signal handling. Touching it rebuilds most of the tree.
 - **`src/core` has no `yume::core` namespace.** Every other layer mirrors its

@@ -213,6 +213,8 @@ def validate_workflow_guards() -> None:
         require(needle in ci_yml, f"ci.yml is missing required guard: {needle}")
     require(openssl["minimum_version"] == "3.5.0",
             "OpenSSL dependency minimum changed without updating release guards")
+    require(openssl.get("source_version") == "3.5.7",
+            "OpenSSL dependency source version must match the pinned source archive")
     require("find_package(OpenSSL 3.5 REQUIRED)" in cmake,
             "CMake must reject OpenSSL versions without ML-DSA-87")
     require('YUME_OPENSSL_FORCE_PINNED: "1"' in codeql_yml,
@@ -223,6 +225,8 @@ def validate_workflow_guards() -> None:
             "OpenSSL helper source commit does not match dependency metadata")
     require(openssl.get("patch_series") == "patches/openssl/series",
             "OpenSSL dependency metadata must name the downstream patch series")
+    require(openssl.get("patch_license") == "AGPL-3.0-or-later",
+            "OpenSSL dependency metadata must declare the downstream patch license")
     openssl_series = ROOT / openssl["patch_series"]
     require(openssl_series.is_file(), "OpenSSL patch series is missing")
     require("0001-yume-chrome-clienthello.patch" in

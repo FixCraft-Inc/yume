@@ -67,6 +67,13 @@ file(WRITE "${YUME_TEST_ROOT}/src/engine/forbidden.hpp"
 run_layering_check(FALSE "dependency-clean engine")
 file(REMOVE "${YUME_TEST_ROOT}/src/engine/forbidden.hpp")
 
+# Dependency-clean layers must not gain a bypass merely by using a C-style
+# header extension.
+file(WRITE "${YUME_TEST_ROOT}/src/engine/forbidden.h"
+    "#include <openssl/ssl.h>\n")
+run_layering_check(FALSE "dependency-clean engine")
+file(REMOVE "${YUME_TEST_ROOT}/src/engine/forbidden.h")
+
 file(WRITE "${YUME_TEST_ROOT}/src/engine/forbidden.hpp"
     "#include \"ytp/protocol.hpp\"\n")
 run_layering_check(FALSE "Only SessionEngine")

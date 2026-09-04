@@ -81,14 +81,16 @@ is experimental because it is.
 
 ```sh
 bash scripts/sync_website_docs.sh
-bash scripts/sync_website_docs.sh --check
 python3 scripts/check_website_catalog.py
 jekyll build -s website -d /tmp/yume-site --baseurl /yume
 python3 -m http.server 8000 -d /tmp/yume-site
 ```
 
-`--check` does not write files. It fails when the generated Markdown differs
-from the canonical sources. The base URL matches the GitHub project-page mount.
+CI and Pages generate the ignored mirror before catalog validation and the
+Jekyll build. Optional `bash scripts/sync_website_docs.sh --check` does not
+write files; it compares an already-generated local mirror with the canonical
+sources. It is not a clean-checkout gate because the mirror is intentionally
+absent there. The base URL matches the GitHub project-page mount.
 
 Before pushing, confirm there is no horizontal scroll at 320, 375, 414, and 768
 pixels, and that the theme toggle round-trips and survives a reload.

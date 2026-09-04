@@ -119,10 +119,13 @@ normative wire requirements under `docs/protocol/`; current support boundaries
 in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
 Search CLI help, man pages, release material, and manually maintained website
 pages for duplicate claims. Regenerate website documentation with
-`scripts/sync_website_docs.sh`, then run its `--check` mode and
-`scripts/check_website_catalog.py`. Every fenced block in published Markdown
-must have a language tag. Do not leave a corrected contract only in a private
-review note.
+`scripts/sync_website_docs.sh`, then run `scripts/check_website_catalog.py`.
+Generated `website/docs/**/*.md` files are ignored: CI and Pages regenerate
+them from canonical Markdown before validating and building the site. Local
+`--check` mode only compares an already-generated local mirror; it is useful
+after generation but is not a clean-checkout drift gate. Every fenced block in
+published Markdown must have a language tag. Do not leave a corrected contract
+only in a private review note.
 Dated handoffs, machine evidence, rejected experiments, dirty-tree inventories,
 and task queues belong in the ignored `.private/ai/` overlay or Git history.
 Public automation context belongs under `docs/agents/` and must contain no

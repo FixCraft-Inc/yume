@@ -271,6 +271,29 @@ void test_success_io_exporter_and_bounds() {
         rejected = true;
     });
     assert(rejected);
+
+    // Re-entrant rejected submissions arrive while the state driver is still
+    // invoking the outer callback. Each owns a distinct completion; a single
+    // shared "immediate" slot used to overwrite the first nested callback.
+    unsigned int nested_rejections = 0U;
+    server->async_read(
+        server->max_read_size() + 1U, {},
+        [&](Result<Buffer> outer) {
+            assert(!outer.ok() &&
+                   outer.status().code() == StatusCode::InvalidArgument);
+            ++nested_rejections;
+            for (unsigned int index = 0U; index < 2U; ++index) {
+                server->async_read(
+                    server->max_read_size() + 1U, {},
+                    [&](Result<Buffer> nested) {
+                        assert(!nested.ok() &&
+                               nested.status().code() ==
+                                   StatusCode::InvalidArgument);
+                        ++nested_rejections;
+                    });
+            }
+        });
+    assert(nested_rejections == 3U);
     CancellationSource cancelled;
     cancelled.cancel();
     bool read_cancelled = false;

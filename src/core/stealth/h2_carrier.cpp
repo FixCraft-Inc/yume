@@ -36,7 +36,7 @@ constexpr std::size_t kMaxResponseBody = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxQueuedOutput = 32U * 1024U * 1024U;
 constexpr std::size_t kMaxPendingServerRequests = 64U;
 constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
-// Receive window advertised on the carrier once the peer is authenticated.
+// Receive window advertised once the caller has admitted the carrier.
 //
 // This is the binding constraint on inbound throughput at WAN latency, not the
 // ratchet and not TCP: a window of W delivers at most W/RTT, so 2 MiB capped a
@@ -58,7 +58,8 @@ constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
 // Increasing it would still enlarge retained protocol/parser state and change
 // WINDOW_UPDATE timing; that belongs with separate WAN and classifier evidence.
 // See docs/IMPLEMENTATION_STATUS.md, "Performance and network qualification".
-constexpr std::int32_t kAuthenticatedReceiveWindow = 8 * 1024 * 1024;
+constexpr std::int32_t kAdmittedReceiveWindow =
+    static_cast<std::int32_t>(kAdmittedH2ReceiveWindowBytes);
 
 nghttp2_nv Nv(std::string& name, std::string& value) {
     return nghttp2_nv{
@@ -367,24 +368,24 @@ public:
         return !failed();
     }
 
-    bool EnableAuthenticatedReceiveWindow() {
-        if (role_ != H2CarrierRole::Server || !carrier_active_ ||
-            carrier_stream_id_ < 0 || carrier_closed_ || failed()) {
+    bool EnableAdmittedReceiveWindow() {
+        if (!carrier_active_ || carrier_stream_id_ < 0 || carrier_closed_ ||
+            failed()) {
             return Fail(
-                "authenticated receive window requires an active server carrier");
+                "admitted receive window requires an active carrier");
         }
-        if (authenticated_receive_window_enabled_) return true;
+        if (admitted_receive_window_enabled_) return true;
         if (!CheckBool(nghttp2_session_set_local_window_size(
                            session_.get(), NGHTTP2_FLAG_NONE, 0,
-                           kAuthenticatedReceiveWindow),
-                       "expand authenticated HTTP/2 connection receive window") ||
+                           kAdmittedReceiveWindow),
+                       "expand admitted HTTP/2 connection receive window") ||
             !CheckBool(nghttp2_session_set_local_window_size(
                            session_.get(), NGHTTP2_FLAG_NONE,
-                           carrier_stream_id_, kAuthenticatedReceiveWindow),
-                       "expand authenticated HTTP/2 stream receive window")) {
+                           carrier_stream_id_, kAdmittedReceiveWindow),
+                       "expand admitted HTTP/2 stream receive window")) {
             return false;
         }
-        authenticated_receive_window_enabled_ = true;
+        admitted_receive_window_enabled_ = true;
         Flush();
         return !failed();
     }
@@ -2002,7 +2003,7 @@ private:
     bool carrier_active_{false};
     bool carrier_closed_{false};
     bool carrier_h2_stream_closed_{false};
-    bool authenticated_receive_window_enabled_{false};
+    bool admitted_receive_window_enabled_{false};
     bool graceful_close_started_{false};
     bool server_fragment_fixture_sent_{false};
     bool server_active_ping_sent_{false};
@@ -2133,8 +2134,8 @@ bool H2Carrier::AcceptCarrier(std::int32_t stream_id,
                               const H2Headers& response_headers) {
     return impl_->AcceptCarrier(stream_id, response_headers);
 }
-bool H2Carrier::EnableAuthenticatedReceiveWindow() {
-    return impl_->EnableAuthenticatedReceiveWindow();
+bool H2Carrier::EnableAdmittedReceiveWindow() {
+    return impl_->EnableAdmittedReceiveWindow();
 }
 bool H2Carrier::RejectCarrier(std::int32_t stream_id, unsigned status,
                               const H2Headers& headers, H2Bytes body) {

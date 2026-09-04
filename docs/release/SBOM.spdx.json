@@ -10,7 +10,7 @@
   "documentDescribes": [
     "SPDXRef-Package-YUME"
   ],
-  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/839d50bc36532ee0a2f715748d6cae8dc54b3cfa89f228d4ca28c40d00b45330",
+  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/61d453761a5792d644a58f00e809cc9b1e971a3bd86b5d10d4630dda7474758c",
   "name": "YUME source dependency SBOM",
   "packages": [
     {
@@ -56,6 +56,7 @@
     },
     {
       "SPDXID": "SPDXRef-Package-openssl",
+      "comment": "YUME applies the downstream patch series patches/openssl/series, declared AGPL-3.0-or-later.",
       "downloadLocation": "https://github.com/openssl/openssl.git",
       "externalRefs": [
         {
@@ -65,10 +66,10 @@
         }
       ],
       "filesAnalyzed": false,
-      "licenseConcluded": "Apache-2.0",
+      "licenseConcluded": "Apache-2.0 AND AGPL-3.0-or-later",
       "licenseDeclared": "Apache-2.0",
       "name": "openssl",
-      "versionInfo": "3.5.0"
+      "versionInfo": "3.5.7"
     },
     {
       "SPDXID": "SPDXRef-Package-vcpkg-argon2",

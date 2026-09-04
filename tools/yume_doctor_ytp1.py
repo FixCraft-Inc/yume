@@ -739,6 +739,8 @@ def _check_composite_pair(
 def _secret_digest(payload: bytearray, pointer: str) -> bytes:
     if len(payload) != 32:
         _fail(pointer, "must contain exactly 32 binary bytes")
+    if not any(payload):
+        _fail(pointer, "must not contain the all-zero secret")
     return hashlib.sha256(payload).digest()
 
 
@@ -888,7 +890,6 @@ def _check_authorized_keys(
                 f"{key_pointer}/identity/sha256",
                 "must be a lowercase SHA-256 fingerprint",
             )
-        fingerprints.add(fingerprint)
         identity_pointer = f"{key_pointer}/identity/file"
         try:
             identity_payload = _checked_bytes(
@@ -934,6 +935,13 @@ def _check_authorized_keys(
                 psk_payload[:] = b"\0" * len(psk_payload)
         except DoctorError as error:
             diagnostics.append(error)
+
+        if fingerprint in fingerprints:
+            _fail(
+                f"{key_pointer}/identity/sha256",
+                "identity is reused by another authorized key",
+            )
+        fingerprints.add(fingerprint)
 
         capabilities = entry["capabilities"]
         if type(capabilities) is not list:

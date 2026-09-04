@@ -405,6 +405,20 @@ public:
         if (!completion) {
             return;
         }
+        std::shared_ptr<ByteChannel::ReadCompletion> completion_holder;
+        try {
+            // make_shared allocates before constructing the stored callback;
+            // std::function's move is noexcept. If allocation fails, the
+            // caller-owned completion below therefore remains callable.
+            completion_holder =
+                std::make_shared<ByteChannel::ReadCompletion>(
+                    std::move(completion));
+        } catch (...) {
+            post_read_completion(
+                std::move(completion),
+                allocation_status("TCP read callback allocation failed"));
+            return;
+        }
         Status immediate = Status::success();
         {
             std::lock_guard<std::mutex> lock(submission_mutex_);
@@ -420,10 +434,10 @@ public:
                         strand_,
                         [self = shared_from_this(), max_bytes,
                          cancellation = std::move(cancellation),
-                         completion = std::move(completion)]() mutable noexcept {
+                         completion_holder]() mutable noexcept {
                             self->start_read(
                                 max_bytes, std::move(cancellation),
-                                std::move(completion));
+                                std::move(*completion_holder));
                         });
                     return;
                 } catch (const std::bad_alloc&) {
@@ -435,13 +449,26 @@ public:
                 }
             }
         }
-        post_read_completion(std::move(completion), std::move(immediate));
+        post_read_completion(
+            std::move(*completion_holder), std::move(immediate));
     }
 
     void async_write(Buffer buffer,
                      CancellationToken cancellation,
                      ByteChannel::WriteCompletion completion) noexcept {
         if (!completion) {
+            return;
+        }
+        std::shared_ptr<ByteChannel::WriteCompletion> completion_holder;
+        try {
+            completion_holder =
+                std::make_shared<ByteChannel::WriteCompletion>(
+                    std::move(completion));
+        } catch (...) {
+            post_write_completion(
+                std::move(completion),
+                allocation_status("TCP write callback allocation failed"),
+                0U);
             return;
         }
         Status immediate = Status::success();
@@ -460,10 +487,10 @@ public:
                         [self = shared_from_this(),
                          buffer = std::move(buffer),
                          cancellation = std::move(cancellation),
-                         completion = std::move(completion)]() mutable noexcept {
+                         completion_holder]() mutable noexcept {
                             self->start_write(
                                 std::move(buffer), std::move(cancellation),
-                                std::move(completion));
+                                std::move(*completion_holder));
                         });
                     return;
                 } catch (const std::bad_alloc&) {
@@ -475,7 +502,8 @@ public:
                 }
             }
         }
-        post_write_completion(std::move(completion), std::move(immediate), 0U);
+        post_write_completion(
+            std::move(*completion_holder), std::move(immediate), 0U);
     }
 
     Status shutdown_write() noexcept {
@@ -536,30 +564,51 @@ public:
 private:
     void post_read_completion(ByteChannel::ReadCompletion completion,
                               Status status) noexcept {
+        std::shared_ptr<ByteChannel::ReadCompletion> completion_holder;
+        std::shared_ptr<Status> status_holder;
         try {
+            completion_holder =
+                std::make_shared<ByteChannel::ReadCompletion>(
+                    std::move(completion));
+            status_holder = std::make_shared<Status>(std::move(status));
             boost::asio::post(
-                strand_, [completion = std::move(completion),
-                          status = std::move(status)]() mutable noexcept {
-                    complete_read(std::move(completion), std::move(status));
+                strand_, [completion_holder, status_holder]() mutable noexcept {
+                    complete_read(std::move(*completion_holder),
+                                  std::move(*status_holder));
                 });
         } catch (...) {
-            complete_read(std::move(completion), std::move(status));
+            complete_read(
+                completion_holder ? std::move(*completion_holder)
+                                  : std::move(completion),
+                status_holder ? std::move(*status_holder)
+                              : std::move(status));
         }
     }
 
     void post_write_completion(ByteChannel::WriteCompletion completion,
                                Status status,
                                std::size_t transferred) noexcept {
+        std::shared_ptr<ByteChannel::WriteCompletion> completion_holder;
+        std::shared_ptr<Status> status_holder;
         try {
+            completion_holder =
+                std::make_shared<ByteChannel::WriteCompletion>(
+                    std::move(completion));
+            status_holder = std::make_shared<Status>(std::move(status));
             boost::asio::post(
-                strand_, [completion = std::move(completion),
-                          status = std::move(status),
+                strand_, [completion_holder, status_holder,
                           transferred]() mutable noexcept {
-                    invoke_noexcept(completion, std::move(status),
+                    invoke_noexcept(*completion_holder,
+                                    std::move(*status_holder),
                                     transferred);
                 });
         } catch (...) {
-            invoke_noexcept(completion, std::move(status), transferred);
+            auto& selected_completion =
+                completion_holder ? *completion_holder : completion;
+            invoke_noexcept(
+                selected_completion,
+                status_holder ? std::move(*status_holder) : std::move(status),
+                transferred);
         }
     }
 
@@ -995,6 +1044,17 @@ public:
         if (!completion) {
             return;
         }
+        std::shared_ptr<PacketChannel::ReceiveCompletion> completion_holder;
+        try {
+            completion_holder =
+                std::make_shared<PacketChannel::ReceiveCompletion>(
+                    std::move(completion));
+        } catch (...) {
+            post_receive_completion(
+                std::move(completion),
+                allocation_status("UDP receive callback allocation failed"));
+            return;
+        }
         Status immediate = Status::success();
         {
             std::lock_guard<std::mutex> lock(submission_mutex_);
@@ -1006,10 +1066,10 @@ public:
                         strand_,
                         [self = shared_from_this(),
                          cancellation = std::move(cancellation),
-                         completion = std::move(completion)]() mutable noexcept {
+                         completion_holder]() mutable noexcept {
                             self->start_receive(
                                 std::move(cancellation),
-                                std::move(completion));
+                                std::move(*completion_holder));
                         });
                     return;
                 } catch (const std::bad_alloc&) {
@@ -1022,13 +1082,26 @@ public:
                 }
             }
         }
-        post_receive_completion(std::move(completion), std::move(immediate));
+        post_receive_completion(
+            std::move(*completion_holder), std::move(immediate));
     }
 
     void async_send(Buffer packet,
                     CancellationToken cancellation,
                     PacketChannel::SendCompletion completion) noexcept {
         if (!completion) {
+            return;
+        }
+        std::shared_ptr<PacketChannel::SendCompletion> completion_holder;
+        try {
+            completion_holder =
+                std::make_shared<PacketChannel::SendCompletion>(
+                    std::move(completion));
+        } catch (...) {
+            post_send_completion(
+                std::move(completion),
+                allocation_status("UDP send callback allocation failed"),
+                0U);
             return;
         }
         Status immediate = Status::success();
@@ -1047,11 +1120,11 @@ public:
                         [self = shared_from_this(),
                          packet = std::move(packet),
                          cancellation = std::move(cancellation),
-                         completion = std::move(completion)]() mutable noexcept {
+                         completion_holder]() mutable noexcept {
                             self->start_send(
                                 std::move(packet),
                                 std::move(cancellation),
-                                std::move(completion));
+                                std::move(*completion_holder));
                         });
                     return;
                 } catch (const std::bad_alloc&) {
@@ -1063,7 +1136,8 @@ public:
                 }
             }
         }
-        post_send_completion(std::move(completion), std::move(immediate), 0U);
+        post_send_completion(
+            std::move(*completion_holder), std::move(immediate), 0U);
     }
 
     void request_cancel() noexcept override {
@@ -1097,31 +1171,51 @@ private:
     void post_receive_completion(
         PacketChannel::ReceiveCompletion completion,
         Status status) noexcept {
+        std::shared_ptr<PacketChannel::ReceiveCompletion> completion_holder;
+        std::shared_ptr<Status> status_holder;
         try {
+            completion_holder =
+                std::make_shared<PacketChannel::ReceiveCompletion>(
+                    std::move(completion));
+            status_holder = std::make_shared<Status>(std::move(status));
             boost::asio::post(
-                strand_, [completion = std::move(completion),
-                          status = std::move(status)]() mutable noexcept {
-                    complete_receive(std::move(completion),
-                                     std::move(status));
+                strand_, [completion_holder, status_holder]() mutable noexcept {
+                    complete_receive(std::move(*completion_holder),
+                                     std::move(*status_holder));
                 });
         } catch (...) {
-            complete_receive(std::move(completion), std::move(status));
+            complete_receive(
+                completion_holder ? std::move(*completion_holder)
+                                  : std::move(completion),
+                status_holder ? std::move(*status_holder)
+                              : std::move(status));
         }
     }
 
     void post_send_completion(PacketChannel::SendCompletion completion,
                               Status status,
                               std::size_t transferred) noexcept {
+        std::shared_ptr<PacketChannel::SendCompletion> completion_holder;
+        std::shared_ptr<Status> status_holder;
         try {
+            completion_holder =
+                std::make_shared<PacketChannel::SendCompletion>(
+                    std::move(completion));
+            status_holder = std::make_shared<Status>(std::move(status));
             boost::asio::post(
-                strand_, [completion = std::move(completion),
-                          status = std::move(status),
+                strand_, [completion_holder, status_holder,
                           transferred]() mutable noexcept {
-                    invoke_noexcept(completion, std::move(status),
+                    invoke_noexcept(*completion_holder,
+                                    std::move(*status_holder),
                                     transferred);
                 });
         } catch (...) {
-            invoke_noexcept(completion, std::move(status), transferred);
+            auto& selected_completion =
+                completion_holder ? *completion_holder : completion;
+            invoke_noexcept(
+                selected_completion,
+                status_holder ? std::move(*status_holder) : std::move(status),
+                transferred);
         }
     }
 

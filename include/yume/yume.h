@@ -30,7 +30,6 @@ extern "C" {
 #endif
 
 #define YUME_ABI_VERSION 1u
-#define YUME_TIMEOUT_INFINITE UINT32_MAX
 
 #define YUME_MAX_VERSION_TEXT 32u
 #define YUME_MAX_PROVIDER_NAME 32u
@@ -174,7 +173,6 @@ typedef struct yume_peer_identity {
     uint32_t abi_version;
     uint32_t authenticated;
     uint32_t role;
-    uint32_t capability_flags;
     uint8_t composite_fingerprint_sha256[32];
     /* Opaque transport-level label for the authenticated peer. YUME assigns
      * it no application meaning: it is not a device, account, user, or
@@ -219,7 +217,6 @@ typedef void (*yume_event_callback)(const yume_event* event,
 typedef struct yume_runtime_options {
     size_t struct_size;
     uint32_t abi_version;
-    uint32_t executor_threads;
     uint32_t max_pending_callbacks;
     yume_log_callback log_callback;
     yume_event_callback event_callback;
@@ -249,9 +246,6 @@ typedef struct yume_service_descriptor {
     uint32_t abi_version;
     yume_string_view name;
     uint32_t kind;
-    uint32_t max_concurrent;
-    uint32_t max_pending_accepts;
-    uint64_t max_queued_bytes;
 } yume_service_descriptor;
 
 #define YUME_SERVICE_DESCRIPTOR_MIN_SIZE sizeof(yume_service_descriptor)
@@ -310,12 +304,13 @@ YUME_API yume_status yume_get_status_info(yume_status code,
                                           size_t out_size) YUME_NOEXCEPT;
 
 /*
- * Runtime owns bounded executors and callback delivery. Runtime destroy
- * requests cancellation and waits for its child endpoints. Child handle
- * storage remains caller-owned and must still be destroyed. Callers must not
- * race a destroy function with another call using that same handle, use a
- * handle after destroy, or pass an output-handle pointer that aliases an input
- * object or handle.
+ * Runtime owns callback delivery and coordinates cancellation of child
+ * endpoints; a selected transport backend owns its own execution resources.
+ * Runtime destroy requests cancellation and waits for its child endpoints.
+ * Child handle storage remains caller-owned and must still be destroyed.
+ * Callers must not race a destroy function with another call using that same
+ * handle, use a handle after destroy, or pass an output-handle pointer that
+ * aliases an input object or handle.
  */
 YUME_API yume_status yume_runtime_create(const yume_runtime_options* options,
                                          yume_runtime** out_runtime)
@@ -347,6 +342,13 @@ YUME_API yume_status yume_endpoint_set_socket_protector(
 YUME_API yume_status yume_endpoint_register_service(
     yume_endpoint* endpoint,
     const yume_service_descriptor* service) YUME_NOEXCEPT;
+/* Lifecycle timeouts are operation-specific while this ABI is experimental:
+ * client start accepts a finite millisecond deadline (zero selects its 30 s
+ * default); transport-v2 server start, endpoint stop, and stream/packet close
+ * currently accept only zero because they have no caller-bounded deadline.
+ * A successful transport-v2 stop discards its runtime service registrations;
+ * register them again after restarting. Schema-1 registrations describe its
+ * immutable pre-start configuration and remain attached to the endpoint. */
 YUME_API yume_status yume_endpoint_start(yume_endpoint* endpoint,
                                          uint32_t timeout_ms) YUME_NOEXCEPT;
 YUME_API yume_status yume_endpoint_stop(yume_endpoint* endpoint,
@@ -377,15 +379,16 @@ YUME_API yume_status yume_endpoint_accept_packet(
 YUME_API void yume_endpoint_destroy(yume_endpoint* endpoint) YUME_NOEXCEPT;
 
 /*
- * Each stream handle serializes its own operations internally, so calls on one
- * handle from several threads are safe but do not overlap: a blocking read
- * holds the handle for its whole timeout and a concurrent write on the same
- * handle waits. Use separate streams to overlap transfers.
- *
- * A stream permits one reader and one writer concurrently. Reads may be
- * partial. YUME_STATUS_EOF means the peer shut down its write side after all
- * buffered bytes were returned. Writes copy the complete input before
- * returning OK and are admitted all-or-none to bounded queues.
+ * A stream permits one active reader and one active writer concurrently. The
+ * caller must not overlap two operations in the same direction; write-side
+ * shutdown is a write-direction operation. A blocking read does not prevent a
+ * write or write-side shutdown on another thread. Reads may be partial.
+ * YUME_STATUS_EOF means the peer shut down its write side after all buffered
+ * bytes were returned. Writes copy the complete input before returning OK and
+ * are admitted all-or-none to bounded queues.
+ * For open, accept, read, write, and write-side shutdown, zero polls without
+ * waiting and a positive value is a finite relative deadline in milliseconds.
+ * A zero-timeout client OPEN returns WOULD_BLOCK without sending OPEN.
  */
 YUME_API yume_status yume_stream_get_peer_identity(
     const yume_stream* stream,

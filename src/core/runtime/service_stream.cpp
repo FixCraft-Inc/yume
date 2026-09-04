@@ -239,22 +239,31 @@ ServiceStream::WriteResult ServiceStream::write(
     return result;
 }
 
-bool ServiceStream::shutdown_write(std::string* error,
-                                   std::uint32_t timeout_ms) {
+ServiceStream::ShutdownWriteResult ServiceStream::shutdown_write(
+    std::string* error,
+    std::uint32_t timeout_ms) {
     CloseCallback cb;
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (local_closed_) {
-            return true;
+            if (error) {
+                *error = close_reason_.empty() ? "stream closed" : close_reason_;
+            }
+            return ShutdownWriteResult::Closed;
         }
         if (local_fin_sent_) {
-            return true;
+            if (error) error->clear();
+            return ShutdownWriteResult::Sent;
+        }
+        if (local_fin_sending_) {
+            if (error) *error = "stream write shutdown is already in progress";
+            return ShutdownWriteResult::WouldBlock;
         }
         cb = shutdown_write_cb_;
     }
     if (!cb) {
         if (error) *error = "stream is not connected";
-        return false;
+        return ShutdownWriteResult::Closed;
     }
 
     // Drain first. An accepted write is queued in the transport, not on the
@@ -269,32 +278,72 @@ bool ServiceStream::shutdown_write(std::string* error,
             };
             if (timeout_ms == 0) {
                 if (error) *error = "service write is still in flight";
-                return false;
+                return ShutdownWriteResult::WouldBlock;
             }
             if (!outbound->cv.wait_for(
                     lock, std::chrono::milliseconds(timeout_ms), drained)) {
                 if (error) {
                     *error = "timed out draining writes before write shutdown";
                 }
-                return false;
+                return ShutdownWriteResult::Timeout;
             }
+        }
+        if (outbound->closed) {
+            if (error) {
+                *error = outbound->close_reason.empty()
+                    ? "service transport write failed"
+                    : outbound->close_reason;
+            }
+            return ShutdownWriteResult::Closed;
         }
     }
 
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (local_closed_) {
-            return true;
+            if (error) {
+                *error = close_reason_.empty() ? "stream closed" : close_reason_;
+            }
+            return ShutdownWriteResult::Closed;
         }
         // Re-check under the state lock: the drain wait above released it, so
         // a concurrent shutdown_write may have won the race.
         if (local_fin_sent_) {
-            return true;
+            if (error) error->clear();
+            return ShutdownWriteResult::Sent;
         }
+        if (local_fin_sending_) {
+            if (error) *error = "stream write shutdown is already in progress";
+            return ShutdownWriteResult::WouldBlock;
+        }
+        local_fin_sending_ = true;
+    }
+    try {
+        cb("write side closed");
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            local_fin_sending_ = false;
+        }
+        // A failed FIN callback leaves the transport outcome unknown. Close
+        // the whole stream so its unregister/rollback callback still runs and
+        // no live transport entry is stranded behind a terminal local handle.
+        try {
+            close("write shutdown callback failed");
+        } catch (...) {
+            // close() settles local state before invoking application-owned
+            // cleanup, so a second callback failure cannot reopen the stream.
+        }
+        if (error) *error = "write shutdown callback failed";
+        return ShutdownWriteResult::Failed;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        local_fin_sending_ = false;
         local_fin_sent_ = true;
     }
-    cb("write side closed");
-    return true;
+    if (error) error->clear();
+    return ShutdownWriteResult::Sent;
 }
 
 void ServiceStream::close(std::string reason) {

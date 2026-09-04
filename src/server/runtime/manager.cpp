@@ -373,11 +373,15 @@ void Manager::stop() {
     // ThreadSanitizer catches it whenever a server is started and stopped
     // in-process, which the C ABI does and yumed never did.
     //
-    // RuntimeController::stop() runs this before io->stop(), so the post below
-    // is normally drained by a worker. The bounded wait is for any caller that
-    // stops a manager whose loop is not being run: closing late is better than
-    // hanging, and with no runner there is no handler to race anyway.
-    {
+    // RuntimeController::stop() runs this before io->stop(). During startup
+    // rollback there may not be a worker yet, so this thread polls the context
+    // until it executes the strand-confined close. Never fall back to touching
+    // the acceptor off-strand: a delayed strand handler is evidence of
+    // contention, not evidence that concurrent access became safe.
+    if (accept_strand_.running_in_this_thread()) {
+        boost::system::error_code ec;
+        acceptor_.close(ec);
+    } else {
         auto closed = std::make_shared<std::promise<void>>();
         std::future<void> closed_future = closed->get_future();
         boost::asio::post(accept_strand_, [this, closed]() {
@@ -385,10 +389,11 @@ void Manager::stop() {
             acceptor_.close(ec);
             closed->set_value();
         });
-        if (closed_future.wait_for(std::chrono::seconds(5)) !=
-            std::future_status::ready) {
-            boost::system::error_code ec;
-            acceptor_.close(ec);
+        while (closed_future.wait_for(std::chrono::milliseconds::zero()) !=
+               std::future_status::ready) {
+            if (io_.poll_one() == 0U) {
+                (void)closed_future.wait_for(std::chrono::milliseconds(1));
+            }
         }
     }
 

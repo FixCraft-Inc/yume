@@ -1,5 +1,5 @@
 /*
- * Clean-prefix C consumer for the YUME C ABI v1 scaffold.
+ * Clean-prefix C consumer for the YUME C ABI v1 candidate.
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
@@ -69,7 +69,7 @@ int main(void) {
         build.abi_version != YUME_ABI_VERSION ||
         build.struct_size != sizeof(build) ||
         strcmp(build.crypto_backend, "unwired") != 0) {
-        result = fail("build metadata does not describe the unwired ABI v1 scaffold", 3);
+        result = fail("build metadata does not describe the unwired YTP/1 provider graph", 3);
         goto cleanup;
     }
 
@@ -100,7 +100,6 @@ int main(void) {
     yume_runtime_options options = {0};
     options.struct_size = sizeof(options);
     options.abi_version = YUME_ABI_VERSION;
-    options.executor_threads = 1U;
     options.max_pending_callbacks = 16U;
     if (yume_runtime_create(&options, &runtime) != YUME_STATUS_OK ||
         runtime == NULL) {

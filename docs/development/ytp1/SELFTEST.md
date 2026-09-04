@@ -26,12 +26,14 @@ git diff --check
 ```
 
 These cover the dependency-clean engine contracts, YTP/1 codecs and vectors,
-strict config parser, public ABI scaffold, install consumers, source layering,
-setup/doctor, metadata, documentation catalog, and source SBOM.
+strict config parser, build-tree ABI and strict C/C++ consumers, source
+layering, setup/doctor, metadata, documentation catalog, and source SBOM. The
+clean-prefix install consumers remain future freeze fixtures because the ABI
+has no install rules yet.
 
 ## Security-provider gates
 
-The native YTP/1 provider must add tests for:
+The opt-in OpenSSL security provider has focused tests for:
 
 - both Ed25519 and ML-DSA-87 signatures being required;
 - X25519, ML-KEM-1024, per-identity access PSK, TLS exporter, role, transcript,
@@ -43,6 +45,11 @@ The native YTP/1 provider must add tests for:
 
 Known-answer vectors use only new `yume/ytp/1/...` domains. Transport-v2
 vectors are not renamed or edited into YTP/1 vectors.
+
+The separate TLS 1.3, H2 carrier, TCP ByteChannel, and direct-route provider
+candidates have focused fake-channel or loopback coverage. Their composition,
+real public ingress, failure injection, and production resource qualification
+remain runtime gates.
 
 ## Runtime gates
 

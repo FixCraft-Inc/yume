@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
@@ -11,13 +13,52 @@
 #include <yume/yume.h>
 
 #include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static const char kService[] = "abi-stream-v1";
 static const char kClientPayload[] = "yume abi client payload";
 static const char kServerPayload[] = "yume abi server reply";
+static _Atomic unsigned int protected_socket_count = 0u;
+static _Atomic unsigned int rejected_socket_count = 0u;
+
+static int protect_socket(uintptr_t socket_handle, void* user_data) {
+    (void)socket_handle;
+    (void)user_data;
+    atomic_fetch_add_explicit(
+        &protected_socket_count, 1u, memory_order_relaxed);
+    return 1;
+}
+
+static int reject_socket(uintptr_t socket_handle, void* user_data) {
+    (void)socket_handle;
+    (void)user_data;
+    atomic_fetch_add_explicit(
+        &rejected_socket_count, 1u, memory_order_relaxed);
+    return 0;
+}
+
+static void wait_for_worker(_Atomic int* entered) {
+    struct timespec delay;
+    while (atomic_load_explicit(entered, memory_order_acquire) == 0) {
+        sched_yield();
+    }
+    /* Give the worker time to enter the blocking ABI call. This turns the old
+     * single stream/lifecycle mutexes into deterministic integration failures. */
+    delay.tv_sec = 0;
+    delay.tv_nsec = 50L * 1000L * 1000L;
+    (void)nanosleep(&delay, NULL);
+}
+
+static long elapsed_milliseconds(struct timespec start, struct timespec end) {
+    const long seconds = (long)(end.tv_sec - start.tv_sec);
+    const long nanoseconds = end.tv_nsec - start.tv_nsec;
+    return seconds * 1000L + nanoseconds / 1000000L;
+}
 
 static void report(const char* operation, yume_status status, const void* handle) {
     yume_diagnostic diagnostic;
@@ -58,6 +99,51 @@ struct accept_context {
     int ok;
 };
 
+struct read_context {
+    yume_stream* stream;
+    _Atomic int entered;
+    yume_status status;
+    size_t size;
+    char data[128];
+};
+
+struct cancel_accept_context {
+    yume_endpoint* endpoint;
+    _Atomic int entered;
+    yume_status status;
+};
+
+static void* read_worker(void* opaque) {
+    struct read_context* context = (struct read_context*)opaque;
+    memset(context->data, 0, sizeof(context->data));
+    atomic_store_explicit(&context->entered, 1, memory_order_release);
+    context->status = yume_stream_read(
+        context->stream, context->data, sizeof(context->data) - 1u,
+        &context->size, 20000u);
+    return NULL;
+}
+
+static void* cancelled_accept_worker(void* opaque) {
+    struct cancel_accept_context* context =
+        (struct cancel_accept_context*)opaque;
+    yume_accept_options options;
+    yume_stream* stream = NULL;
+    memset(&options, 0, sizeof(options));
+    options.struct_size = sizeof(options);
+    options.abi_version = YUME_ABI_VERSION;
+    options.service.data = kService;
+    options.service.size = sizeof(kService) - 1u;
+    options.kind = YUME_SERVICE_BYTE_STREAM;
+    atomic_store_explicit(&context->entered, 1, memory_order_release);
+    context->status = yume_endpoint_accept_stream(
+        context->endpoint, &options, 60000u, &stream);
+    if (stream != NULL) {
+        (void)yume_stream_close(stream, 0u);
+        yume_stream_destroy(stream);
+    }
+    return NULL;
+}
+
 /* Accepts one stream, echoes the client payload back, then half-closes. */
 static void* accept_worker(void* opaque) {
     struct accept_context* context = (struct accept_context*)opaque;
@@ -95,6 +181,11 @@ static void* accept_worker(void* opaque) {
         fprintf(stderr, "accepted stream reported an unauthenticated peer\n");
         goto done;
     }
+    if (identity.role != YUME_ROLE_CLIENT) {
+        fprintf(stderr, "accepted stream reported peer role %u\n",
+                identity.role);
+        goto done;
+    }
     if (strcmp(identity.service, kService) != 0) {
         fprintf(stderr, "accepted stream reported service '%s'\n",
                 identity.service);
@@ -128,7 +219,7 @@ static void* accept_worker(void* opaque) {
     context->ok = 1;
 
 done:
-    (void)yume_stream_close(stream, 5000u);
+    (void)yume_stream_close(stream, 0u);
     yume_stream_destroy(stream);
     return NULL;
 }
@@ -140,6 +231,7 @@ static yume_status start_endpoint(yume_runtime* runtime,
     char* text = read_file(path, &size);
     yume_config* config = NULL;
     yume_status status;
+    uint32_t role = 0u;
 
     *out_endpoint = NULL;
     if (text == NULL) {
@@ -152,13 +244,55 @@ static yume_status start_endpoint(yume_runtime* runtime,
         report("yume_config_parse_json", status, runtime);
         return status;
     }
+    role = yume_config_role(config);
     status = yume_endpoint_create(runtime, config, out_endpoint);
     yume_config_destroy(config);
     if (status != YUME_STATUS_OK) {
         report("yume_endpoint_create", status, runtime);
         return status;
     }
-    status = yume_endpoint_start(*out_endpoint, 30000u);
+    if (role == YUME_ROLE_CLIENT) {
+        status = yume_endpoint_set_socket_protector(
+            *out_endpoint, reject_socket, NULL);
+        if (status != YUME_STATUS_OK) {
+            report("install rejecting socket protector", status, *out_endpoint);
+            return status;
+        }
+        status = yume_endpoint_start(*out_endpoint, 30000u);
+        if (status != YUME_STATUS_IO_ERROR ||
+            atomic_load_explicit(
+                &rejected_socket_count, memory_order_relaxed) == 0u) {
+            report("fail-closed socket protector", status, *out_endpoint);
+            return status == YUME_STATUS_OK ? YUME_STATUS_INTERNAL_ERROR : status;
+        }
+        /* Replacing a protector in FAILED is allowed. The next start must not
+         * reuse the failed backend's copied callback after stop settles it. */
+        status = yume_endpoint_set_socket_protector(
+            *out_endpoint, protect_socket, NULL);
+        if (status != YUME_STATUS_OK) {
+            report("replace failed socket protector", status, *out_endpoint);
+            return status;
+        }
+        status = yume_endpoint_stop(*out_endpoint, 0u);
+        if (status != YUME_STATUS_OK) {
+            report("stop after rejected socket", status, *out_endpoint);
+            return status;
+        }
+    } else {
+        status = yume_endpoint_set_socket_protector(
+            *out_endpoint, protect_socket, NULL);
+        if (status != YUME_STATUS_UNSUPPORTED) {
+            report("server socket protector rejection", status, *out_endpoint);
+            return status == YUME_STATUS_OK ? YUME_STATUS_INTERNAL_ERROR : status;
+        }
+        status = yume_endpoint_start(*out_endpoint, 1u);
+        if (status != YUME_STATUS_UNSUPPORTED) {
+            report("bounded server start rejection", status, *out_endpoint);
+            return status == YUME_STATUS_OK ? YUME_STATUS_INTERNAL_ERROR : status;
+        }
+    }
+    status = yume_endpoint_start(
+        *out_endpoint, role == YUME_ROLE_SERVER ? 0u : 30000u);
     if (status != YUME_STATUS_OK) {
         report("yume_endpoint_start", status, *out_endpoint);
         return status;
@@ -179,10 +313,14 @@ int main(int argc, char** argv) {
     yume_open_options open_options;
     yume_stream* stream = NULL;
     struct accept_context context;
+    struct read_context read_context;
+    struct cancel_accept_context cancel_context;
     pthread_t worker;
+    pthread_t read_thread;
+    pthread_t cancel_thread;
     int worker_started = 0;
-    char reply[128];
-    size_t reply_bytes = 0;
+    int read_thread_started = 0;
+    int cancel_thread_started = 0;
     size_t written = 0;
     size_t trailing = 0;
     yume_status status;
@@ -211,13 +349,36 @@ int main(int argc, char** argv) {
     descriptor.name.data = kService;
     descriptor.name.size = sizeof(kService) - 1u;
     descriptor.kind = YUME_SERVICE_BYTE_STREAM;
-    descriptor.max_concurrent = 4u;
-    descriptor.max_pending_accepts = 4u;
-    descriptor.max_queued_bytes = 262144u;
+    descriptor.name.data = "not-enabled";
+    descriptor.name.size = sizeof("not-enabled") - 1u;
+    status = yume_endpoint_register_service(server, &descriptor);
+    if (status != YUME_STATUS_PERMISSION_DENIED) {
+        report("unauthorized service registration", status, server);
+        goto cleanup;
+    }
+    descriptor.name.data = kService;
+    descriptor.name.size = sizeof(kService) - 1u;
     status = yume_endpoint_register_service(server, &descriptor);
     if (status != YUME_STATUS_OK) {
         report("yume_endpoint_register_service", status, server);
         goto cleanup;
+    }
+
+    {
+        yume_accept_options poll_options;
+        yume_stream* polled_stream = NULL;
+        memset(&poll_options, 0, sizeof(poll_options));
+        poll_options.struct_size = sizeof(poll_options);
+        poll_options.abi_version = YUME_ABI_VERSION;
+        poll_options.service.data = kService;
+        poll_options.service.size = sizeof(kService) - 1u;
+        poll_options.kind = YUME_SERVICE_BYTE_STREAM;
+        status = yume_endpoint_accept_stream(
+            server, &poll_options, 0u, &polled_stream);
+        if (status != YUME_STATUS_WOULD_BLOCK || polled_stream != NULL) {
+            report("zero-timeout stream accept", status, server);
+            goto cleanup;
+        }
     }
 
     context.endpoint = server;
@@ -229,6 +390,11 @@ int main(int argc, char** argv) {
     worker_started = 1;
 
     if (start_endpoint(runtime, argv[2], &client) != YUME_STATUS_OK) goto cleanup;
+    if (atomic_load_explicit(
+            &protected_socket_count, memory_order_relaxed) == 0u) {
+        fprintf(stderr, "client socket protector was never invoked\n");
+        goto cleanup;
+    }
 
     memset(&open_options, 0, sizeof(open_options));
     /* A named service stream carries no destination. Declaring the shorter
@@ -240,11 +406,62 @@ int main(int argc, char** argv) {
     open_options.service.data = kService;
     open_options.service.size = sizeof(kService) - 1u;
     open_options.kind = YUME_SERVICE_BYTE_STREAM;
+    status = yume_endpoint_open_stream(client, &open_options, 0u, &stream);
+    if (status != YUME_STATUS_WOULD_BLOCK || stream != NULL) {
+        report("zero-timeout stream OPEN", status, client);
+        goto cleanup;
+    }
+    open_options.struct_size = sizeof(open_options);
+    open_options.destination.struct_size = sizeof(open_options.destination);
+    open_options.destination.abi_version = YUME_ABI_VERSION;
+    open_options.destination.kind = YUME_DESTINATION_HOSTNAME;
+    open_options.destination.host.data = "example.com";
+    open_options.destination.host.size = sizeof("example.com") - 1u;
+    open_options.destination.port = 443u;
+    status = yume_endpoint_open_stream(client, &open_options, 20000u, &stream);
+    if (status != YUME_STATUS_UNSUPPORTED || stream != NULL) {
+        report("destination-routed stream rejection", status, client);
+        goto cleanup;
+    }
+    memset(&open_options.destination, 0, sizeof(open_options.destination));
+    open_options.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE;
     status = yume_endpoint_open_stream(client, &open_options, 20000u, &stream);
     if (status != YUME_STATUS_OK || stream == NULL) {
         report("yume_endpoint_open_stream", status, client);
         goto cleanup;
     }
+
+    {
+        yume_peer_identity identity;
+        memset(&identity, 0, sizeof(identity));
+        identity.struct_size = sizeof(identity);
+        identity.abi_version = YUME_ABI_VERSION;
+        status = yume_stream_get_peer_identity(stream, &identity, sizeof(identity));
+        if (status != YUME_STATUS_OK || identity.authenticated == 0u ||
+            identity.role != YUME_ROLE_SERVER) {
+            report("client stream peer identity", status, stream);
+            goto cleanup;
+        }
+    }
+
+    memset(&read_context, 0, sizeof(read_context));
+    status = yume_stream_read(
+        stream, read_context.data, sizeof(read_context.data) - 1u,
+        &read_context.size, 0u);
+    if (status != YUME_STATUS_WOULD_BLOCK || read_context.size != 0u) {
+        report("zero-timeout stream read", status, stream);
+        goto cleanup;
+    }
+
+    memset(&read_context, 0, sizeof(read_context));
+    read_context.stream = stream;
+    atomic_init(&read_context.entered, 0);
+    if (pthread_create(&read_thread, NULL, read_worker, &read_context) != 0) {
+        fprintf(stderr, "cannot start the concurrent read worker\n");
+        goto cleanup;
+    }
+    read_thread_started = 1;
+    wait_for_worker(&read_context.entered);
 
     status = yume_stream_write(stream, kClientPayload,
                                sizeof(kClientPayload) - 1u, &written, 20000u);
@@ -252,24 +469,26 @@ int main(int argc, char** argv) {
         report("client yume_stream_write", status, stream);
         goto cleanup;
     }
-
-    memset(reply, 0, sizeof(reply));
-    status = yume_stream_read(stream, reply, sizeof(reply) - 1u, &reply_bytes,
-                              20000u);
-    if (status != YUME_STATUS_OK) {
-        report("client yume_stream_read", status, stream);
+    if (pthread_join(read_thread, NULL) != 0) {
+        fprintf(stderr, "cannot join the concurrent read worker\n");
         goto cleanup;
     }
-    if (reply_bytes != sizeof(kServerPayload) - 1u ||
-        memcmp(reply, kServerPayload, reply_bytes) != 0) {
-        fprintf(stderr, "client received unexpected reply '%s'\n", reply);
+    read_thread_started = 0;
+    if (read_context.status != YUME_STATUS_OK) {
+        report("client concurrent yume_stream_read", read_context.status, stream);
+        goto cleanup;
+    }
+    if (read_context.size != sizeof(kServerPayload) - 1u ||
+        memcmp(read_context.data, kServerPayload, read_context.size) != 0) {
+        fprintf(stderr, "client received unexpected reply '%s'\n",
+                read_context.data);
         goto cleanup;
     }
 
     /* The server half-closed after replying, so the next read must report EOF
      * rather than blocking until the deadline. */
-    status = yume_stream_read(stream, reply, sizeof(reply) - 1u, &trailing,
-                              20000u);
+    status = yume_stream_read(stream, read_context.data,
+                              sizeof(read_context.data) - 1u, &trailing, 20000u);
     if (status != YUME_STATUS_EOF || trailing != 0u) {
         report("client EOF after peer shutdown", status, stream);
         goto cleanup;
@@ -285,25 +504,128 @@ int main(int argc, char** argv) {
         goto cleanup;
     }
 
+    memset(&cancel_context, 0, sizeof(cancel_context));
+    cancel_context.endpoint = server;
+    atomic_init(&cancel_context.entered, 0);
+    if (pthread_create(
+            &cancel_thread, NULL, cancelled_accept_worker, &cancel_context) != 0) {
+        fprintf(stderr, "cannot start the cancellation accept worker\n");
+        goto cleanup;
+    }
+    cancel_thread_started = 1;
+    wait_for_worker(&cancel_context.entered);
+    {
+        struct timespec started;
+        struct timespec stopped;
+        (void)clock_gettime(CLOCK_MONOTONIC, &started);
+        status = yume_endpoint_stop(server, 0u);
+        (void)clock_gettime(CLOCK_MONOTONIC, &stopped);
+        if (status != YUME_STATUS_OK ||
+            elapsed_milliseconds(started, stopped) > 5000L) {
+            report("stop with a blocked accept", status, server);
+            goto cleanup;
+        }
+    }
+    if (pthread_join(cancel_thread, NULL) != 0) {
+        fprintf(stderr, "cannot join the cancellation accept worker\n");
+        goto cleanup;
+    }
+    cancel_thread_started = 0;
+    if (cancel_context.status == YUME_STATUS_OK) {
+        fprintf(stderr, "blocked accept succeeded while the server stopped\n");
+        goto cleanup;
+    }
+
+    /* Transport-v2 registrations belong to one running server instance. A
+     * restart must let the embedder register the service with the new runtime
+     * instead of colliding with stale endpoint bookkeeping. */
+    status = yume_endpoint_start(server, 0u);
+    if (status != YUME_STATUS_OK) {
+        report("restart server endpoint", status, server);
+        goto cleanup;
+    }
+    {
+        yume_accept_options poll_options;
+        yume_stream* polled_stream = NULL;
+        memset(&poll_options, 0, sizeof(poll_options));
+        poll_options.struct_size = sizeof(poll_options);
+        poll_options.abi_version = YUME_ABI_VERSION;
+        poll_options.service.data = kService;
+        poll_options.service.size = sizeof(kService) - 1u;
+        poll_options.kind = YUME_SERVICE_BYTE_STREAM;
+        status = yume_endpoint_accept_stream(
+            server, &poll_options, 0u, &polled_stream);
+        if (status != YUME_STATUS_NOT_FOUND || polled_stream != NULL) {
+            report("stale service after restart", status, server);
+            goto cleanup;
+        }
+    }
+    status = yume_endpoint_register_service(server, &descriptor);
+    if (status != YUME_STATUS_OK) {
+        report("register service after restart", status, server);
+        goto cleanup;
+    }
+    status = yume_endpoint_register_service(server, &descriptor);
+    if (status != YUME_STATUS_INVALID_ARGUMENT) {
+        report("duplicate service after restart", status, server);
+        goto cleanup;
+    }
+    {
+        yume_accept_options poll_options;
+        yume_stream* polled_stream = NULL;
+        memset(&poll_options, 0, sizeof(poll_options));
+        poll_options.struct_size = sizeof(poll_options);
+        poll_options.abi_version = YUME_ABI_VERSION;
+        poll_options.service.data = kService;
+        poll_options.service.size = sizeof(kService) - 1u;
+        poll_options.kind = YUME_SERVICE_BYTE_STREAM;
+        status = yume_endpoint_accept_stream(
+            server, &poll_options, 0u, &polled_stream);
+        if (status != YUME_STATUS_WOULD_BLOCK || polled_stream != NULL) {
+            report("service unavailable after re-registration", status, server);
+            goto cleanup;
+        }
+    }
+    status = yume_endpoint_stop(server, 0u);
+    if (status != YUME_STATUS_OK) {
+        report("stop restarted server endpoint", status, server);
+        goto cleanup;
+    }
+
+    status = yume_stream_close(stream, 1u);
+    if (status != YUME_STATUS_INVALID_ARGUMENT) {
+        report("nonzero immediate stream close", status, stream);
+        goto cleanup;
+    }
+
     result = 0;
     printf("C ABI v1 stream integration passed\n");
 
 cleanup:
     if (stream != NULL) {
-        (void)yume_stream_close(stream, 5000u);
+        (void)yume_stream_close(stream, 0u);
+    }
+    if (read_thread_started != 0) {
+        (void)pthread_join(read_thread, NULL);
+    }
+    if (stream != NULL) {
         yume_stream_destroy(stream);
+    }
+    if (cancel_thread_started != 0) {
+        if (server != NULL) (void)yume_endpoint_stop(server, 0u);
+        (void)pthread_join(cancel_thread, NULL);
     }
     if (worker_started != 0) {
         /* Stopping the server settles a blocked accept so the join returns. */
-        if (server != NULL) (void)yume_endpoint_stop(server, 10000u);
+        if (server != NULL) (void)yume_endpoint_stop(server, 0u);
         (void)pthread_join(worker, NULL);
     }
     if (client != NULL) {
-        (void)yume_endpoint_stop(client, 10000u);
+        (void)yume_endpoint_stop(client, 0u);
         yume_endpoint_destroy(client);
     }
     if (server != NULL) {
-        (void)yume_endpoint_stop(server, 10000u);
+        (void)yume_endpoint_stop(server, 0u);
         yume_endpoint_destroy(server);
     }
     yume_runtime_destroy(runtime);

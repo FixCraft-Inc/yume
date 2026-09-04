@@ -67,9 +67,9 @@ is not yet an installed-ABI consumer for the replacement.
 - [Architecture](ARCHITECTURE.md) defines the fixed dependency flow and
   provider ownership.
 - [YUME Transport Protocol 1](protocol/YTP_1.md) is the normative contract for
-  the implemented YTP/1 kernel, session engine, and opt-in OpenSSL security
-  provider candidate. It explicitly marks the candidate as unwired from the
-  TLS/HTTP/2 runtime and ABI, and as unqualified.
+  the implemented YTP/1 kernel, session engine, and opt-in native provider
+  candidates. It explicitly marks them as uncomposed into a live YTP/1 front
+  door, runtime, or ABI backend, and as unqualified.
 - [Threat model](THREAT_MODEL.md) defines the YTP/1 actor, credential,
   admission, authorization, resource, and evidence boundaries.
 - [Transport profiles](TRANSPORT_PROFILES.md) separates browser evidence from
@@ -80,7 +80,7 @@ is not yet an installed-ABI consumer for the replacement.
 ## Version and freeze policy
 
 The modular development line begins at `0.3.0-dev1` with YTP/1, numeric config
-schema 1, and a replacement C ABI v1 scaffold. Breaking changes are permitted
+schema 1, and a replacement C ABI v1 candidate. Breaking changes are permitted
 during `0.3.0-dev*`. These interfaces freeze independently only after their
 release gates pass; the replacement ABI must not be presented as stable merely
 because it currently uses version number 1.
@@ -90,8 +90,8 @@ not negotiate suites or parse transport-v2/AUTH-v2 peers. That deliberate wire
 break is separate from the build transition: the working 0.2 binaries remain
 available until the replacement reaches tunnel, cover, routing, embedding,
 packaging, and qualification parity. The YTP/1 constants and codecs exist; the
-opt-in security-provider candidate also exists, but live provider wiring and
-the YTP/1 runtime do not yet.
+opt-in security, TLS, H2 carrier, TCP ByteChannel, and direct-route candidates
+also exist, but their live YTP/1 composition and runtime do not yet.
 
 ## Evidence and release material
 

@@ -34,9 +34,9 @@ inline constexpr std::string_view kEvidenceProfile =
 inline constexpr std::string_view kTransportProfile = kEvidenceProfile;
 inline constexpr std::uint32_t kEvidenceProfileVersion = 1;
 
-// YTP/1, schema 1, and the role-neutral ABI are development contracts. The
-// ABI remains build-tree-only and the provider is not wired into a live
-// endpoint, so none of these constants imply replacement-product parity.
+// YTP/1, schema 1, and the role-neutral ABI are development contracts. The ABI
+// remains build-tree-only; its transport-v2 backend does not imply that the
+// YTP/1 provider graph is wired into a live endpoint or has replacement parity.
 inline constexpr std::string_view kYtpVersion = "YTP/1";
 inline constexpr std::uint32_t kYtpVersionNumber = 1;
 inline constexpr std::string_view kYtpMaturity = "experimental-unwired";

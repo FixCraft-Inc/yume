@@ -61,6 +61,13 @@ public:
         Timeout,
         Closed,
     };
+    enum class ShutdownWriteResult {
+        Sent,
+        WouldBlock,
+        Timeout,
+        Closed,
+        Failed,
+    };
 
     ServiceStream(std::string service, std::string peer);
     ServiceStream(std::string service, std::string peer, ServicePeerInfo peer_info);
@@ -92,9 +99,11 @@ public:
     // drained. `write()` returns Accepted when the transport admits a frame,
     // not when it reaches the wire, so an unordered FIN can overtake the last
     // record and silently truncate a request/response exchange. Waits up to
-    // timeout_ms for the drain; 0 means do not wait, and a still-busy stream
-    // then reports failure rather than losing the pending write.
-    bool shutdown_write(std::string* error, std::uint32_t timeout_ms = 5000);
+    // timeout_ms for the drain; 0 means do not wait. The typed result keeps a
+    // busy poll, an expired deadline, a failed accepted write, and a transport
+    // callback failure distinct across embedding boundaries.
+    ShutdownWriteResult shutdown_write(
+        std::string* error, std::uint32_t timeout_ms = 5000);
     void close(std::string reason);
 
     ReadResult read(void* out,
@@ -133,6 +142,7 @@ private:
     bool remote_closed_{false};
     bool local_closed_{false};
     bool local_fin_sent_{false};
+    bool local_fin_sending_{false};
     std::string close_reason_;
 
     WriteCallback write_cb_;

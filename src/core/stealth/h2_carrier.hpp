@@ -27,6 +27,14 @@ enum class H2CarrierRole {
     Server,
 };
 
+// Receive credit advertised in either direction after the caller admits the
+// carrier. This layer does not authenticate YUME sessions: callers must apply
+// their own secure-channel and carrier-path checks before enabling the window.
+// Providers that retain a complete private record before returning credit
+// must keep their maximum framed record within this window.
+inline constexpr std::size_t kAdmittedH2ReceiveWindowBytes =
+    8U * 1024U * 1024U;
+
 struct H2Request {
     std::int32_t stream_id{-1};
     std::string method;
@@ -122,11 +130,11 @@ public:
                      bool head_request = false);
     bool AcceptCarrier(std::int32_t stream_id,
                        const H2Headers& response_headers = {});
-    // Server only. Expands the admitted carrier's receive credit after YUME
-    // authentication so a ratchet epoch does not require multiple reverse
-    // WINDOW_UPDATE turns. The window remains bounded and H2 flow control
-    // remains enabled.
-    bool EnableAuthenticatedReceiveWindow();
+    // Both roles. Expands an admitted carrier's receive credit so a maximum
+    // record does not require multiple reverse WINDOW_UPDATE turns. This is
+    // not an authentication operation; the caller owns admission policy. The
+    // window remains bounded and H2 flow control remains enabled.
+    bool EnableAdmittedReceiveWindow();
     bool RejectCarrier(std::int32_t stream_id,
                        unsigned status,
                        const H2Headers& headers,

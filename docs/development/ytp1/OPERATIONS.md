@@ -37,10 +37,12 @@ yume-doctor-ytp1 --config /etc/yume/yumed.json
 yume-doctor-ytp1 --config "$XDG_CONFIG_HOME/yume/yume.json"
 ```
 
-The experimental doctor rejects unknown schema keys, provider mismatch, unsafe limits, missing
-cover content, unsupported or mismatched key algorithms, symlink and file-race
-conditions, permissive secret modes, and incompatible manifest values. Fix the
-reported JSON pointer or path; do not bypass the check with a CLI override.
+The experimental doctor rejects unknown schema keys, provider or profile
+mismatch, unsafe limits, missing cover content, unsupported or mismatched key
+algorithms, symlink and file-race conditions, and permissive secret modes. It
+does not inspect file ownership or consume a separate compatibility manifest.
+Fix the reported JSON pointer or path; do not bypass the check with a CLI
+override.
 
 ## Configuration authority
 
@@ -88,8 +90,8 @@ transport-v2 `yumed` accepts schema-1 configuration. The unqualified
 - Treat queue, stream, packet, control, and rekey exhaustion as bounded
   failures; increasing limits requires a measured resource review.
 - Rotate a compromised key by issuing a new per-identity bundle and removing
-  the old public identity and PSK mapping. Reusing unaffected devices is a
-  deployment-policy choice, not a protocol downgrade.
+  the old public identity and PSK mapping. Reusing unaffected client bundles
+  is a deployment-policy choice, not a protocol downgrade.
 - Retain only redacted logs and reproducible evidence. Never collect private
   keys, PSKs, plaintext, full AUTH messages, or exported keying material.
 

@@ -332,10 +332,12 @@ Markdown stays in the repository root. Generated files under
 `website/docs/` are ignored and must not be edited by hand.
 
 Run `bash scripts/sync_website_docs.sh`, then
-`bash scripts/sync_website_docs.sh --check` and
-`python3 scripts/check_website_catalog.py`. The check mode compares every
-generated page with its canonical source without writing files. The catalog
-check validates source routes, source markers, and fenced-code language tags.
+`python3 scripts/check_website_catalog.py`. CI and Pages follow that order and
+build only from the freshly generated mirror. Because `website/docs/**/*.md`
+is ignored, running `--check` on a clean checkout would compare canonical
+sources with an absent mirror; after local generation it can confirm that no
+later local edit changed the mirror. The catalog check validates source routes,
+source markers, and fenced-code language tags.
 `website/docs/index.html` remains hand-written, and `docs/agents/` stays outside
 the website reader path.
 

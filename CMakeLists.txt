@@ -162,7 +162,7 @@ option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool fo
 option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
 option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI
-    "Build the experimental unwired ABI v1 scaffold for local contract tests"
+    "Build the experimental, uninstalled ABI v1 candidate and contract tests"
     OFF)
 option(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER
     "Build the unqualified OpenSSL 3.5 YTP/1 session-security provider"

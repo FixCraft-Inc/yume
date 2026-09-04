@@ -67,10 +67,21 @@ bool valid_visible_text(std::string_view value,
 }
 
 Status validate_limits(const Ytp1H2CarrierLimits& limits) {
+    const bool framed_record_fits =
+        limits.max_record_bytes <=
+        obfs::kAdmittedH2ReceiveWindowBytes -
+            kYtp1H2CarrierEnvelopeBytes;
+    const bool retained_record_fits =
+        limits.max_record_bytes <=
+        std::numeric_limits<std::size_t>::max() -
+            kYtp1H2CarrierEnvelopeBytes &&
+        limits.max_retained_receive_bytes >=
+            limits.max_record_bytes + kYtp1H2CarrierEnvelopeBytes;
     if (limits.max_record_bytes == 0U ||
         limits.max_record_bytes > engine::kAbsoluteMaxBufferBytes ||
+        !framed_record_fits ||
         limits.max_buffered_records == 0U ||
-        limits.max_retained_receive_bytes < limits.max_record_bytes ||
+        !retained_record_fits ||
         limits.max_retained_receive_bytes > 32U * 1024U * 1024U ||
         limits.max_pending_secure_write_bytes == 0U ||
         limits.max_pending_secure_write_bytes > 32U * 1024U * 1024U ||
@@ -243,14 +254,26 @@ public:
     void async_receive(CancellationToken cancellation,
                        Carrier::ReceiveCompletion completion) {
         const auto self = shared_from_this();
+        std::shared_ptr<Carrier::ReceiveCompletion> completion_holder;
+        try {
+            completion_holder =
+                std::make_shared<Carrier::ReceiveCompletion>(
+                    std::move(completion));
+        } catch (const std::bad_alloc&) {
+            Result<ReceivedRecord> result(Status(
+                StatusCode::ResourceExhausted,
+                "H2 receive-dispatch allocation failed"));
+            invoke_noexcept(completion, std::move(result));
+            return;
+        }
         if (!post([self, cancellation = std::move(cancellation),
-                   completion = std::move(completion)]() mutable {
+                   completion_holder]() mutable {
                 self->begin_receive(std::move(cancellation),
-                                    std::move(completion));
+                                    std::move(*completion_holder));
             })) {
             Result<ReceivedRecord> result(Status(
                 StatusCode::Internal, "H2 carrier executor rejected receive"));
-            invoke_noexcept(completion, std::move(result));
+            invoke_noexcept(*completion_holder, std::move(result));
         }
     }
 
@@ -259,12 +282,15 @@ public:
                     Carrier::SendCompletion completion) {
         const auto self = shared_from_this();
         std::shared_ptr<std::optional<Buffer>> owned_record;
+        std::shared_ptr<Carrier::SendCompletion> completion_holder;
         try {
             owned_record = std::make_shared<std::optional<Buffer>>(
                 std::move(record));
+            completion_holder = std::make_shared<Carrier::SendCompletion>(
+                std::move(completion));
         } catch (const std::bad_alloc&) {
             invoke_noexcept(
-                completion,
+                completion_holder ? *completion_holder : completion,
                 Status(StatusCode::ResourceExhausted,
                        "H2 carrier send-dispatch allocation failed"),
                 0U);
@@ -272,14 +298,14 @@ public:
         }
         if (!post([self, owned_record,
                    cancellation = std::move(cancellation),
-                   completion = std::move(completion)]() mutable {
+                   completion_holder]() mutable {
                 self->begin_send(
                     std::move(**owned_record), std::move(cancellation),
-                    std::move(completion));
+                    std::move(*completion_holder));
                 owned_record->reset();
             })) {
             invoke_noexcept(
-                completion,
+                *completion_holder,
                 Status(StatusCode::Internal,
                        "H2 carrier executor rejected send"),
                 0U);
@@ -288,6 +314,9 @@ public:
 
     void request_cancel() noexcept {
         const auto self = shared_from_this();
+        // State is executor-confined, so there is no safe inline fallback.
+        // The public post-handler contract requires accepted carrier lifetime
+        // work to be serialized and never rejected or silently discarded.
         (void)post([self] {
             self->fail(Status(StatusCode::Cancelled,
                               "H2 carrier was cancelled"));
@@ -296,6 +325,8 @@ public:
 
     void request_close() noexcept {
         const auto self = shared_from_this();
+        // See request_cancel(): an off-affinity close would race carrier state,
+        // and rejecting lifetime work already violates the provider contract.
         (void)post([self] {
             self->fail(Status(StatusCode::Closed,
                               "H2 carrier was closed"));
@@ -1100,6 +1131,15 @@ void Ytp1H2CarrierState::finish_client_opening() {
     if (!opening_ || terminal_) {
         return;
     }
+    // Chrome's captured initial stream window is smaller than the maximum YTP
+    // carrier record. The secure channel has authenticated the peer and the
+    // peer has accepted the extended CONNECT, so admit bounded receive credit
+    // before the YTP session handshake starts. This is carrier admission, not
+    // YTP session authentication.
+    if (!h2_->EnableAdmittedReceiveWindow()) {
+        fail(h2_failure("expand admitted client receive credit"));
+        return;
+    }
     opening_ = false;
     create_cancellation_.unregister();
     engine::CarrierProvider::Completion completion =
@@ -1185,9 +1225,12 @@ void Ytp1H2CarrierProvider::async_create(
     CancellationToken cancellation,
     Completion completion) {
     std::shared_ptr<std::unique_ptr<SecureChannel>> owned_channel;
+    std::shared_ptr<Completion> completion_holder;
     try {
         owned_channel = std::make_shared<std::unique_ptr<SecureChannel>>(
             std::move(channel));
+        completion_holder =
+            std::make_shared<Completion>(std::move(completion));
         const ProviderDescriptor descriptor = descriptor_;
         const ExecutorAffinity executor_affinity = executor_affinity_;
         const Ytp1H2PostHandler post = post_;
@@ -1195,8 +1238,8 @@ void Ytp1H2CarrierProvider::async_create(
         post_([descriptor, executor_affinity, post, config, owned_channel,
                local_role,
                cancellation = std::move(cancellation),
-               completion = std::move(completion)]() mutable {
-            if (!completion) {
+               completion_holder]() mutable {
+            if (!*completion_holder) {
                 if (*owned_channel) {
                     (*owned_channel)->close();
                 }
@@ -1209,7 +1252,7 @@ void Ytp1H2CarrierProvider::async_create(
                 Result<std::unique_ptr<Carrier>> result(Status(
                     StatusCode::InvalidArgument,
                     "H2 carrier provider creates client carriers only"));
-                invoke_noexcept(completion, std::move(result));
+                invoke_noexcept(*completion_holder, std::move(result));
                 return;
             }
             if ((*owned_channel)->executor_affinity() !=
@@ -1218,7 +1261,7 @@ void Ytp1H2CarrierProvider::async_create(
                 Result<std::unique_ptr<Carrier>> result(Status(
                     StatusCode::ProviderMismatch,
                     "H2 carrier and secure channel affinities differ"));
-                invoke_noexcept(completion, std::move(result));
+                invoke_noexcept(*completion_holder, std::move(result));
                 return;
             }
             try {
@@ -1229,7 +1272,8 @@ void Ytp1H2CarrierProvider::async_create(
                     std::move(*owned_channel), std::move(h2));
                 state->start_client(
                     config.authority, config.carrier_path,
-                    std::move(cancellation), std::move(completion));
+                    std::move(cancellation),
+                    std::move(*completion_holder));
             } catch (const std::bad_alloc&) {
                 if (*owned_channel) {
                     (*owned_channel)->close();
@@ -1237,23 +1281,43 @@ void Ytp1H2CarrierProvider::async_create(
                 Result<std::unique_ptr<Carrier>> result(Status(
                     StatusCode::ResourceExhausted,
                     "H2 carrier creation allocation failed"));
-                invoke_noexcept(completion, std::move(result));
+                invoke_noexcept(*completion_holder, std::move(result));
             } catch (...) {
                 if (*owned_channel) {
                     (*owned_channel)->close();
                 }
                 Result<std::unique_ptr<Carrier>> result(Status(
                     StatusCode::Internal, "H2 carrier creation threw"));
-                invoke_noexcept(completion, std::move(result));
+                invoke_noexcept(*completion_holder, std::move(result));
             }
         });
+    } catch (const std::bad_alloc&) {
+        if (owned_channel && *owned_channel) {
+            (*owned_channel)->close();
+        } else if (channel) {
+            channel->close();
+        }
+        Result<std::unique_ptr<Carrier>> result(Status(
+            StatusCode::ResourceExhausted,
+            "H2 carrier creation dispatch allocation failed"));
+        if (completion_holder) {
+            invoke_noexcept(*completion_holder, std::move(result));
+        } else {
+            invoke_noexcept(completion, std::move(result));
+        }
     } catch (...) {
         if (owned_channel && *owned_channel) {
             (*owned_channel)->close();
+        } else if (channel) {
+            channel->close();
         }
         Result<std::unique_ptr<Carrier>> result(Status(
             StatusCode::Internal, "H2 carrier executor rejected creation"));
-        invoke_noexcept(completion, std::move(result));
+        if (completion_holder) {
+            invoke_noexcept(*completion_holder, std::move(result));
+        } else {
+            invoke_noexcept(completion, std::move(result));
+        }
     }
 }
 
@@ -1296,7 +1360,7 @@ Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
     // legacy provider's fixed, bounded 8-MiB receive window; otherwise a record
     // larger than the initial window could never reach ReceivedRecord and its
     // move-owned credit could never be released.
-    if (!admitted_h2->EnableAuthenticatedReceiveWindow()) {
+    if (!admitted_h2->EnableAdmittedReceiveWindow()) {
         channel->close();
         return Result<std::unique_ptr<Carrier>>(Status(
             StatusCode::FailedPrecondition,

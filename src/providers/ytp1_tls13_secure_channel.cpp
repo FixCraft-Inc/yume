@@ -365,24 +365,27 @@ public:
             return;
         }
         std::uint64_t id = 0U;
+        Status immediate = Status::success();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (maximum == 0U || maximum > owner_->limits.max_plaintext_bytes) {
-                immediate_read_ = std::move(completion);
-                immediate_status_ = safe_status(StatusCode::InvalidArgument,
-                                                "TLS read exceeds its bound");
+                immediate = safe_status(StatusCode::InvalidArgument,
+                                        "TLS read exceeds its bound");
             } else if (phase_ != Phase::Active || remote_closed_) {
-                immediate_read_ = std::move(completion);
-                immediate_status_ = closed_status();
+                immediate = closed_status();
             } else if (read_) {
-                immediate_read_ = std::move(completion);
-                immediate_status_ = safe_status(StatusCode::ResourceExhausted,
-                                                "TLS read already pending");
+                immediate = safe_status(StatusCode::ResourceExhausted,
+                                        "TLS read already pending");
             } else {
                 id = next_id_++;
                 read_.emplace(PendingRead{id, maximum, std::move(completion),
                                           {}, {}});
             }
+        }
+        if (!immediate.ok()) {
+            queue_read_completion(
+                std::move(completion), std::move(immediate));
+            return;
         }
         if (id != 0U) {
             auto registration = token.register_callback(
@@ -412,24 +415,27 @@ public:
             return;
         }
         std::uint64_t id = 0U;
+        Status immediate = Status::success();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (buffer.size() > owner_->limits.max_plaintext_bytes) {
-                immediate_write_ = std::move(completion);
-                immediate_status_ = safe_status(StatusCode::ResourceExhausted,
-                                                "TLS write exceeds its bound");
+                immediate = safe_status(StatusCode::ResourceExhausted,
+                                        "TLS write exceeds its bound");
             } else if (phase_ != Phase::Active || shutdown_requested_) {
-                immediate_write_ = std::move(completion);
-                immediate_status_ = closed_status();
+                immediate = closed_status();
             } else if (write_) {
-                immediate_write_ = std::move(completion);
-                immediate_status_ = safe_status(StatusCode::ResourceExhausted,
-                                                "TLS write already pending");
+                immediate = safe_status(StatusCode::ResourceExhausted,
+                                        "TLS write already pending");
             } else {
                 id = next_id_++;
                 write_.emplace(PendingWrite{id, std::move(buffer), 0U,
                                             std::move(completion), {}, {}});
             }
+        }
+        if (!immediate.ok()) {
+            queue_write_completion(
+                std::move(completion), std::move(immediate));
+            return;
         }
         if (id != 0U) {
             auto registration = token.register_callback(
@@ -544,6 +550,54 @@ private:
         SecureChannel::ReadCompletion read;
         SecureChannel::WriteCompletion write;
     };
+    struct ImmediateAction final {
+        explicit ImmediateAction(Action&& value) noexcept
+            : action(std::move(value)) {}
+
+        Action action;
+        std::unique_ptr<ImmediateAction> next;
+    };
+
+    void queue_action(Action action) noexcept {
+        std::unique_ptr<ImmediateAction> node;
+        try {
+            node = std::make_unique<ImmediateAction>(std::move(action));
+        } catch (...) {
+            // Allocation failed before the callback moved into shared state.
+            // Completing inline still preserves exactly-once settlement.
+            execute(std::move(action));
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ImmediateAction* const inserted = node.get();
+            if (immediate_tail_) {
+                immediate_tail_->next = std::move(node);
+            } else {
+                immediate_head_ = std::move(node);
+            }
+            immediate_tail_ = inserted;
+        }
+        drive();
+    }
+
+    void queue_read_completion(SecureChannel::ReadCompletion completion,
+                               Status status) noexcept {
+        Action action;
+        action.kind = ActionKind::ReadFailure;
+        action.read = std::move(completion);
+        action.status = std::move(status);
+        queue_action(std::move(action));
+    }
+
+    void queue_write_completion(SecureChannel::WriteCompletion completion,
+                                Status status) noexcept {
+        Action action;
+        action.kind = ActionKind::WriteComplete;
+        action.write = std::move(completion);
+        action.status = std::move(status);
+        queue_action(std::move(action));
+    }
 
     void cancel_read(std::uint64_t id) noexcept {
         {
@@ -619,17 +673,12 @@ private:
             action.kind = ActionKind::TransportClose;
             return action;
         }
-        if (immediate_read_) {
-            action.kind = ActionKind::ReadFailure;
-            action.read = std::move(immediate_read_);
-            action.status = std::exchange(immediate_status_, Status{});
-            return action;
-        }
-        if (immediate_write_) {
-            action.kind = ActionKind::WriteComplete;
-            action.write = std::move(immediate_write_);
-            action.status = std::exchange(immediate_status_, Status{});
-            return action;
+        if (immediate_head_) {
+            std::unique_ptr<ImmediateAction> queued =
+                std::move(immediate_head_);
+            immediate_head_ = std::move(queued->next);
+            if (!immediate_head_) immediate_tail_ = nullptr;
+            return std::move(queued->action);
         }
         if ((phase_ == Phase::Failed || phase_ == Phase::Closed) &&
             handshake_completion_) {
@@ -852,7 +901,8 @@ private:
             break;
         }
         case ActionKind::HandshakeFailure: {
-            Result<std::unique_ptr<SecureChannel>> result(action.status);
+            Result<std::unique_ptr<SecureChannel>> result(
+                std::move(action.status));
             invoke_noexcept(action.handshake, std::move(result));
             break;
         }
@@ -862,12 +912,13 @@ private:
             break;
         }
         case ActionKind::ReadFailure: {
-            Result<Buffer> result(action.status);
+            Result<Buffer> result(std::move(action.status));
             invoke_noexcept(action.read, std::move(result));
             break;
         }
         case ActionKind::WriteComplete:
-            invoke_noexcept(action.write, action.status, action.count);
+            invoke_noexcept(
+                action.write, std::move(action.status), action.count);
             break;
         case ActionKind::None:
             break;
@@ -949,9 +1000,8 @@ private:
     engine::CancellationSource internal_cancellation_;
     std::optional<PendingRead> read_;
     std::optional<PendingWrite> write_;
-    SecureChannel::ReadCompletion immediate_read_;
-    SecureChannel::WriteCompletion immediate_write_;
-    Status immediate_status_;
+    std::unique_ptr<ImmediateAction> immediate_head_;
+    ImmediateAction* immediate_tail_{nullptr};
     Status terminal_{StatusCode::Internal, "TLS state failed"};
     std::uint64_t next_id_{1U};
     std::size_t io_expected_{0U};

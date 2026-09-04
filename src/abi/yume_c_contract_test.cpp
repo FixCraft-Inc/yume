@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
             "compatibility manifest omitted the logical session component");
     require(std::string_view(compatibility.session_security_provider) ==
                 "unwired",
-            "unwired ABI scaffold claimed a concrete security provider");
+            "unwired YTP/1 backend claimed a concrete security provider");
 
     yume_build_info prefix{};
     auto* prefix_bytes = reinterpret_cast<unsigned char*>(&prefix);
@@ -164,11 +164,11 @@ int main(int argc, char** argv) {
                 rejected_runtime == nullptr,
             "truncated runtime options published a handle");
     invalid_runtime_options.struct_size = sizeof(invalid_runtime_options);
-    invalid_runtime_options.executor_threads = UINT32_MAX;
+    invalid_runtime_options.max_pending_callbacks = UINT32_MAX;
     require(yume_runtime_create(&invalid_runtime_options, &rejected_runtime) ==
                 YUME_STATUS_RESOURCE_EXHAUSTED &&
                 rejected_runtime == nullptr,
-            "unbounded executor request was accepted");
+            "unbounded callback request was accepted");
 
     std::uint32_t omitted_event_count = 0;
     yume_runtime* first = make_runtime(YUME_RUNTIME_OPTIONS_MIN_SIZE,
@@ -188,6 +188,19 @@ int main(int argc, char** argv) {
                 YUME_STATUS_PARSE_ERROR &&
                 rejected_config == nullptr,
             "invalid schema-1 input published a config");
+    const std::string oversized_config(1024U * 1024U + 1U, ' ');
+    require(yume_config_parse_json(
+                first, oversized_config.data(), oversized_config.size(),
+                &rejected_config) == YUME_STATUS_RESOURCE_EXHAUSTED &&
+                rejected_config == nullptr,
+            "oversized JSON reached a DOM parser");
+    const std::string nested_config =
+        std::string(17U, '[') + std::string(17U, ']');
+    require(yume_config_parse_json(
+                first, nested_config.data(), nested_config.size(),
+                &rejected_config) == YUME_STATUS_PARSE_ERROR &&
+                rejected_config == nullptr,
+            "excessively nested JSON reached a DOM parser");
     yume_diagnostic runtime_diagnostic{};
     runtime_diagnostic.struct_size = sizeof(runtime_diagnostic);
     runtime_diagnostic.abi_version = YUME_ABI_VERSION;
@@ -279,13 +292,12 @@ int main(int argc, char** argv) {
             "successful endpoint creation did not clear runtime diagnostics");
 
     yume_service_descriptor truncated_service{};
-    truncated_service.struct_size =
-        offsetof(yume_service_descriptor, max_queued_bytes);
+    truncated_service.struct_size = YUME_SERVICE_DESCRIPTOR_MIN_SIZE - 1U;
     truncated_service.abi_version = YUME_ABI_VERSION;
     truncated_service.kind = YUME_SERVICE_BYTE_STREAM;
     require(yume_endpoint_register_service(endpoint, &truncated_service) ==
                 YUME_STATUS_INVALID_ARGUMENT,
-            "truncated service policy was accepted");
+            "truncated service descriptor was accepted");
 
     const char invalid_utf8[] = {static_cast<char>(0xc0),
                                  static_cast<char>(0xaf)};
@@ -294,9 +306,6 @@ int main(int argc, char** argv) {
     service.abi_version = YUME_ABI_VERSION;
     service.name = {invalid_utf8, sizeof(invalid_utf8)};
     service.kind = YUME_SERVICE_BYTE_STREAM;
-    service.max_concurrent = 8;
-    service.max_pending_accepts = 4;
-    service.max_queued_bytes = 65536;
     require(yume_endpoint_register_service(endpoint, &service) ==
                 YUME_STATUS_INVALID_ARGUMENT,
             "invalid UTF-8 service name was accepted");
@@ -312,7 +321,7 @@ int main(int argc, char** argv) {
     service.name = {kStreamService, sizeof(kStreamService) - 1U};
     require(yume_endpoint_register_service(endpoint, &service) ==
                 YUME_STATUS_OK,
-            "valid bounded service policy was rejected");
+            "valid service registration was rejected");
     require(yume_endpoint_register_service(endpoint, &service) ==
                 YUME_STATUS_INVALID_ARGUMENT,
             "duplicate service registration was accepted");
@@ -442,7 +451,6 @@ int main(int argc, char** argv) {
     yume_runtime_options reentry_options{};
     reentry_options.struct_size = sizeof(reentry_options);
     reentry_options.abi_version = YUME_ABI_VERSION;
-    reentry_options.executor_threads = 1;
     reentry_options.max_pending_callbacks = 8;
     reentry_options.event_callback = reentry_event;
     reentry_options.callback_user_data = &reentry;
@@ -521,9 +529,6 @@ int main(int argc, char** argv) {
         service.abi_version = YUME_ABI_VERSION;
         service.name = yume_string_view{"tcp", 3};
         service.kind = YUME_SERVICE_BYTE_STREAM;
-        service.max_concurrent = 1;
-        service.max_pending_accepts = 1;
-        service.max_queued_bytes = 4096;
         require(yume_endpoint_register_service(transport_endpoint, &service) ==
                     YUME_STATUS_INVALID_STATE,
                 "service registration before start was not refused");
@@ -558,7 +563,7 @@ int main(int argc, char** argv) {
                 "failed transport start recorded no diagnostic");
         require(yume_endpoint_state(transport_endpoint) == YUME_ENDPOINT_FAILED,
                 "failed transport start did not reach FAILED");
-        require(yume_endpoint_stop(transport_endpoint, 5000) == YUME_STATUS_OK,
+        require(yume_endpoint_stop(transport_endpoint, 0) == YUME_STATUS_OK,
                 "transport endpoint stop failed");
         require(yume_endpoint_state(transport_endpoint) ==
                     YUME_ENDPOINT_STOPPED,

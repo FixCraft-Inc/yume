@@ -84,7 +84,9 @@ struct RuntimeController::Impl {
         status.running = false;
         status.message = "stopped by local runtime request";
         if (manager) manager->stop();
-        if (io) io->stop();
+        // Manager::stop cancels every persistent producer and posts bounded
+        // session shutdown. Keep the context alive so those handlers can
+        // release Session-owned callbacks instead of stranding self-cycles.
     }
 };
 
@@ -274,10 +276,13 @@ bool RuntimeController::stop() {
 
     if (local_runtime) local_runtime->stop();
     if (manager) manager->stop();
-    if (io) io->stop();
+    // Do not stop the context before its shutdown handlers run. Manager
+    // cancellation removes the accept/timer work, and each session has a
+    // bounded transport-close deadline, so run() can drain and return.
     for (auto& worker : workers) {
         if (worker.joinable()) worker.join();
     }
+    if (io) io->stop();
     return true;
 }
 

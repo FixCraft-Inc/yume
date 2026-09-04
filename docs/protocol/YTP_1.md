@@ -1,23 +1,23 @@
 # YUME Transport Protocol 1 kernel
 
 Status: normative development contract for the implemented dependency-pure
-YTP/1 kernel, in-memory session engine, and opt-in OpenSSL 3.5 security
-provider. YUME is `0.3.0-dev1` development software; this document is not a
+YTP/1 kernel, in-memory session engine, and opt-in native provider candidates.
+YUME is `0.3.0-dev1` development software; this document is not a
 production-readiness, cryptographic-proof, or interoperability claim.
 
 The authority for this contract is `src/ytp/`,
-`src/engine/session_engine.*`, and
-`src/providers/ytp1_security_provider.*`, together with their focused tests
-and the checked-in kernel vectors. Source and executable tests outrank this
-document if they disagree.
+`src/engine/session_engine.*`, and the `src/providers/ytp1_*` and Asio provider
+sources, together with their focused tests and the checked-in kernel vectors.
+Source and executable tests outrank this document if they disagree.
 
 This contract remains narrower than a complete transport product. The kernel
 implements canonical encodings, structural validation, bounds, stream rules,
 fixed suite metadata, domains, and key-schedule input encoding. The session
 engine implements the authenticated record lifecycle and multiplexing over a
-carrier. The opt-in provider performs the fixed hybrid handshake, record
-protection, and directional rekey using OpenSSL 3.5. None is wired to a native
-TLS/HTTP/2 ingress, installed ABI endpoint, or runnable YTP/1 tunnel. The exact
+carrier. Opt-in candidates implement the fixed hybrid handshake, a memory-BIO
+TLS 1.3 secure channel, duplex H2 carrier behavior, client TCP ByteChannel, and
+direct TCP/connected-UDP routing. They are not composed with a genuine front
+door, admission path, YTP/1 ABI backend, or runnable YTP/1 tunnel. The exact
 unfinished boundary is listed below.
 
 ## Conventions and compatibility
@@ -565,13 +565,26 @@ Implemented in the opt-in `yume_ytp1_openssl_security` target and exercised by
   mutation, mismatch, component-stripping, replay, epoch, and post-failure
   negative tests.
 
+Implemented as separate opt-in provider candidates with focused tests:
+
+- `yume_ytp1_tls13_secure_channel` wraps an engine ByteChannel with OpenSSL
+  memory BIOs, enforces TLS 1.3 and ALPN `h2`, verifies client-side trust and
+  hostname, bounds peer evidence, and exports channel binding;
+- `yume_ytp1_h2_carrier` implements client priming and extended CONNECT,
+  bounded private record framing, flow-credit ownership, and a typed server
+  promotion seam for an already-admitted live H2 connection;
+- `yume_asio_tcp_byte_channel_provider` supplies bounded client DNS/connect,
+  socket protection, ordered operations, cancellation, and TCP half-close; and
+- `yume_asio_direct_route_provider` supplies bounded TCP and connected-UDP
+  egress behind the dependency-pure route-handler contract.
+
 Not implemented or not qualified as a production YTP/1 path:
 
-- a native TLS 1.3 secure-channel provider, genuine HTTP/2 front door,
-  replay-protected admission, duplex HTTP/2 carrier, real channel exporter, or
-  live wiring of the OpenSSL session provider;
-- direct TCP/UDP route providers and SOCKS/packet adapters on YTP/1, plus a
-  functional public-ABI endpoint/stream/packet data path;
+- a genuine HTTP/2 web front door, replay-protected admission and promotion,
+  or live composition of the TLS, H2, security, session, and route providers;
+- runtime wiring for the direct-route candidates and SOCKS/named-service/
+  packet adapters on YTP/1, plus a functional schema-1 ABI endpoint, stream,
+  and packet data path;
 - deterministic cryptographic known-answer vectors and published rekey
   vectors; the provider test currently uses generated keys rather than a
   reproducible interoperability corpus;
@@ -580,9 +593,11 @@ Not implemented or not qualified as a production YTP/1 path:
 - production runtime, interoperability, fuzz, soak, sanitizer, active-probe,
   performance, or independent security-review qualification.
 
-The OpenSSL provider remains build-tree-only and is not created by a live
-endpoint. The replacement ABI endpoint start fails with a typed unsupported
-status and never silently dispatches into transport v2. The runnable
+The provider candidates remain build-tree-only and are not created by a live
+YTP/1 endpoint. Schema-1 ABI endpoint start fails with a typed unsupported
+status and never silently dispatches into transport v2. An explicitly selected
+transport-v2 configuration can use the same ABI symbols and carry named byte
+streams, but it is a separate backend and does not qualify YTP/1. The runnable
 transport-v2 product remains a separate default-build lane during the
 transition; its presence does not make transport v2, AUTH v2, federation,
 relay, GUI, or other product-specific surfaces part of YTP/1.

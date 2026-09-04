@@ -48,3 +48,11 @@ filesystem, CLI, and GUI. Register exact providers on each `EngineBuilder`;
 never add a global mutable registry, runtime `dlopen()`, or provider fallback.
 Contain exceptions at the C ABI and callback boundaries, validate untrusted
 input before allocation, and keep queues and asynchronous work bounded.
+
+Before finishing a behavior change, update its focused tests, comments, public
+contract, status boundary, and manually maintained website claim in the same
+change. Regenerate ignored website mirrors from canonical Markdown. If the
+local `.private/ai/` overlay records lasting state or an open queue, correct the
+existing lasting file rather than appending a session narrative; never stage
+that overlay. Delete temporary handoffs once their durable facts have moved to
+the proper tracked or private lasting document.

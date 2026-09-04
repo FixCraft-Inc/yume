@@ -338,6 +338,37 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("access PSK is reused by another authorized key", result.stderr)
 
+    def test_duplicate_authorized_identity_is_rejected(self) -> None:
+        store_path = self.case / "server/credentials/authorized-keys.json"
+        store = json.loads(store_path.read_text())
+        duplicate = copy.deepcopy(store["keys"][0])
+        duplicate["name"] = "tablet"
+        duplicate_psk = store_path.parent / "authorized/tablet-access.psk"
+        duplicate_psk.write_bytes(bytes(range(1, 33)))
+        os.chmod(duplicate_psk, 0o600)
+        duplicate["access_psk"]["file"] = "authorized/tablet-access.psk"
+        store["keys"].append(duplicate)
+        store_path.write_text(json.dumps(store))
+        os.chmod(store_path, 0o600)
+
+        result = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "identity is reused by another authorized key", result.stderr
+        )
+
+    def test_all_zero_access_psk_is_rejected(self) -> None:
+        access_psk = (
+            self.case
+            / "server/credentials/authorized/phone-access.psk"
+        )
+        access_psk.write_bytes(b"\0" * 32)
+        os.chmod(access_psk, 0o600)
+
+        result = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("must not contain the all-zero secret", result.stderr)
+
     def test_client_admission_key_must_differ_from_access_psk(self) -> None:
         access_psk_path = self.case / "client/credentials/client-access.psk"
         admission = self.case / "client/credentials/admission.key"

@@ -16,7 +16,7 @@ release.
 
 ## Current 0.3 foundation
 
-Implemented and covered by focused local tests:
+Implemented and covered by focused tests:
 
 - a dependency-pure C++20 engine foundation with move-only bounded buffers,
   cancellation, executor affinity, byte-channel, secure-channel, carrier,
@@ -66,8 +66,10 @@ Implemented and covered by focused local tests:
   dialects, handle lifecycle, registration ordering, and a real transport start
   reaching the runtime rather than a stub, plus an integration probe that
   provisions a real server and client and moves bytes both directions over an
-  authenticated named service stream. It has no install rules, no generated CMake package or pkg-config
-  metadata, and is not emitted as an ABI package. `cmake/yumeConfig.cmake.in`,
+  authenticated named service stream. Client socket protection is connected
+  to every outbound transport-v2 dial and fails closed. The candidate has no
+  install rules, no generated CMake package or pkg-config metadata, and is not
+  emitted as an ABI package. `cmake/yumeConfig.cmake.in`,
   `cmake/yume.pc.in`, `cmake/check_yume_abi_install.cmake`, and
   `tests/abi/install_consumer/` are retained for that future installed
   contract and are currently unreferenced by the build;
@@ -78,22 +80,14 @@ Implemented and covered by focused local tests:
   a source-dependency SPDX SBOM. This inventory is not proof of source
   ancestry.
 
-Focused evidence currently includes GCC and Clang C++20 warning-as-error
-builds of the engine/YTP/config kernels and the opt-in security provider, GCC
-ASan+UBSan runs of the dependency-pure kernels, strict C header compilation,
-exact built/header/map/candidate-symbol agreement, example config parsing,
-build-tree CMake and pkg-config scaffold consumers, provider mismatch/freeze
-tests, real-key hybrid handshake/record/rekey tests, malformed canonical-codec
-tests, focused direct-route handler and Boost.Asio route-provider tests, and a
-focused Boost.Asio client TCP ByteChannel provider test. The provider tests use
-real loopback TCP and connected UDP, exercise DNS, socket protection,
-half-close, cancellation, queue/capacity limits, and oversized packets. The
-route-provider tests pass locally under ASan+UBSan and TSan; the new client TCP
-provider has not yet run that sanitizer matrix. A fresh remote bounded build
-completed all 234
-targets, including `yume` and `yumed`, and its remote CTest run passed 110 of
-110 tests. Those results establish build/test health for this dirty candidate,
-not release qualification or replacement end-to-end functionality.
+The lasting automated evidence includes warning-as-error builds, strict C and
+C++ ABI consumers, exact built/header/map/candidate-symbol agreement, schema
+examples and negative parser cases, real-key hybrid handshake/record/rekey
+tests, malformed canonical-codec cases, fake-channel TLS/H2 provider tests,
+real loopback TCP and connected-UDP route tests, the transport-v2 H2 regression,
+and the end-to-end ABI named-stream probe. Exact candidate run results belong
+to CI or private qualification artifacts rather than this current-behavior
+document. Passing focused tests does not qualify the replacement end to end.
 
 ## Not yet implemented end to end
 
@@ -141,9 +135,10 @@ deprecated implementation: it remains the current runnable product until the
 replacement passes its tunnel, cover, routing, embedding, packaging, and
 qualification parity gates.
 
-The signed 0.2 contracts, manuals, and design records are preserved in Git at
-[`f0cc9e7`](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/README.md) rather than copied into the working tree.
-Their wire and configuration are incompatible with YTP/1 and schema 1;
+The current quick start, operations guide, control API, and transport-v2
+protocol documents remain authoritative for the runnable product. Historical
+contracts remain available in signed Git history. Transport v2 and its
+configuration are incompatible with YTP/1 and schema 1;
 coexistence does not add an automatic converter, downgrade, suite fallback, or
 migration promise. Optional and
 product-specific 0.2 surfaces are reviewed individually rather than deleted
@@ -184,11 +179,10 @@ insufficient.
 
 ## Performance boundary
 
-No 0.3 performance claim exists. The private build host is reachable and has
-completed the bounded build/test evidence above; a matched pre-reset
-performance baseline has not yet been captured. The signed pre-reset commit
-remains identifiable for that isolated comparison. A claim such as “faster”
-requires at least five matched
+No 0.3 performance claim exists. A matched pre-reset performance baseline has
+not yet been captured; the signed pre-reset commit remains identifiable in Git
+history for that isolated comparison. A claim such as “faster” requires at
+least five matched
 runs with throughput, p50/p99 latency, CPU/byte, allocations, peak memory, and
 1/32/256-stream fairness plus reported uncertainty.
 

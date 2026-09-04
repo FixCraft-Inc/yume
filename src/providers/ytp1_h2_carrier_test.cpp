@@ -93,6 +93,9 @@ public:
         if (!task) {
             throw TestFailure("empty executor task");
         }
+        if (reject_) {
+            throw TestFailure("executor rejected task");
+        }
         tasks_.push_back(std::move(task));
     }
 
@@ -111,10 +114,13 @@ public:
     }
 
     bool running() const noexcept { return running_; }
+    void reject_new_tasks() noexcept { reject_ = true; }
+    void accept_new_tasks() noexcept { reject_ = false; }
 
 private:
     std::deque<std::function<void()>> tasks_;
     bool running_{false};
+    bool reject_{false};
 };
 
 struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
@@ -463,6 +469,35 @@ private:
 };
 
 struct OpenedPair final {
+    OpenedPair() = default;
+    OpenedPair(OpenedPair&&) noexcept = default;
+    OpenedPair& operator=(OpenedPair&&) noexcept = default;
+    OpenedPair(const OpenedPair&) = delete;
+    OpenedPair& operator=(const OpenedPair&) = delete;
+
+    ~OpenedPair() noexcept {
+        if (!executor) {
+            return;
+        }
+        try {
+            // Individual tests can reject submissions to verify synchronous
+            // failure settlement. Teardown is a separate lifecycle phase:
+            // permit the carrier's executor-confined close tasks again.
+            executor->accept_new_tasks();
+            if (client) client->close();
+            if (server) server->close();
+            executor->run();
+            // Carrier destruction requests one final idempotent close. Drain
+            // those self-capturing tasks too, or a test post handler that owns
+            // its executor forms state -> executor -> task -> state at exit.
+            client.reset();
+            server.reset();
+            executor->run();
+        } catch (...) {
+            // Test teardown must not throw while another assertion unwinds.
+        }
+    }
+
     std::shared_ptr<TestExecutor> executor;
     std::shared_ptr<TestPipe> pipe;
     std::shared_ptr<ServerOpening> server_opening;
@@ -518,6 +553,32 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
               kYtp1H2CarrierProviderId);
     }
     return pair;
+}
+
+void test_limits_cover_envelope_and_receive_window() {
+    auto executor = std::make_shared<TestExecutor>();
+    const auto post = [executor](std::function<void()> task) {
+        executor->post(std::move(task));
+    };
+
+    Ytp1H2ClientConfig retained_too_small{
+        "cover.example", "/carrier-test", {}};
+    retained_too_small.limits.max_retained_receive_bytes =
+        retained_too_small.limits.max_record_bytes;
+    auto retained = Ytp1H2CarrierProvider::create(
+        ExecutorAffinity(77U), post, std::move(retained_too_small));
+    CHECK(!retained.ok());
+    CHECK(retained.status().code() == StatusCode::InvalidArgument);
+
+    Ytp1H2ClientConfig record_too_large{
+        "cover.example", "/carrier-test", {}};
+    record_too_large.limits.max_record_bytes =
+        obfs::kAdmittedH2ReceiveWindowBytes -
+        kYtp1H2CarrierEnvelopeBytes + 1U;
+    auto oversized = Ytp1H2CarrierProvider::create(
+        ExecutorAffinity(77U), post, std::move(record_too_large));
+    CHECK(!oversized.ok());
+    CHECK(oversized.status().code() == StatusCode::InvalidArgument);
 }
 
 void test_opening_fragmentation_and_bidirectional_records() {
@@ -599,6 +660,51 @@ void test_receive_cancellation_and_queue_bound() {
     CHECK(rejected);
 }
 
+void test_executor_rejection_settles_each_operation_once() {
+    OpenedPair pair = open_pair();
+    pair.executor->reject_new_tasks();
+
+    unsigned int receives = 0U;
+    pair.client->async_receive({}, [&receives](Result<ReceivedRecord> result) {
+        CHECK(!result.ok());
+        CHECK(result.status().code() == StatusCode::Internal);
+        ++receives;
+    });
+    CHECK(receives == 1U);
+
+    unsigned int sends = 0U;
+    pair.client->async_send(
+        make_buffer("rejected"), {},
+        [&sends](Status status, std::size_t bytes) {
+            CHECK(!status.ok());
+            CHECK(status.code() == StatusCode::Internal);
+            CHECK(bytes == 0U);
+            ++sends;
+        });
+    CHECK(sends == 1U);
+}
+
+void test_executor_rejection_settles_provider_creation_once() {
+    TestExecutor executor;
+    auto pipe = std::make_shared<TestPipe>(executor);
+    auto provider = require(Ytp1H2CarrierProvider::create(
+        ExecutorAffinity(77U),
+        [](std::function<void()>) {
+            throw TestFailure("executor rejected provider creation");
+        },
+        Ytp1H2ClientConfig{"cover.example", "/carrier-test", {}}));
+
+    unsigned int completions = 0U;
+    provider->async_create(
+        std::make_unique<FakeSecureChannel>(pipe, 0U), EndpointRole::Client, {},
+        [&completions](Result<std::unique_ptr<Carrier>> result) {
+            CHECK(!result.ok());
+            CHECK(result.status().code() == StatusCode::Internal);
+            ++completions;
+        });
+    CHECK(completions == 1U);
+}
+
 void test_partial_secure_write_fails_send() {
     OpenedPair pair = open_pair();
     pair.pipe->partial_next_write[0] = true;
@@ -657,9 +763,12 @@ int main() {
     try {
         yume::providers::test_opening_fragmentation_and_bidirectional_records();
         yume::providers::test_receive_cancellation_and_queue_bound();
+        yume::providers::test_executor_rejection_settles_each_operation_once();
+        yume::providers::test_executor_rejection_settles_provider_creation_once();
         yume::providers::test_partial_secure_write_fails_send();
         yume::providers::test_malformed_carrier_envelope_fails_closed();
         yume::providers::test_oversized_carrier_length_fails_before_payload();
+        yume::providers::test_limits_cover_envelope_and_receive_window();
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << exception.what() << '\n';

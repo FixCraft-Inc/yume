@@ -125,9 +125,8 @@ std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> Session::r
 }
 
 void Session::notify_server_shutdown(const std::string& reason) {
-    // RuntimeController stops the io_context immediately after Manager::stop
-    // returns. Publish terminal ServiceStream state before the strand post so
-    // accepted handles cannot depend on that post running to wake their waits.
+    // Publish terminal ServiceStream state before the strand post so accepted
+    // handles do not depend on later executor progress to wake their waits.
     stop_service_streams(reason.empty() ? "server stopping" : reason);
     boost::asio::post(strand_, [self = shared_from_this(), reason]() {
         if (self->close_state_ != CloseState::Open) {
@@ -479,7 +478,10 @@ void Session::handle_frame(protocol::Frame frame,
 
         authenticated_ = true;
         if (v2_h2_carrier_) {
-            if (!v2_h2_carrier_->EnableAuthenticatedReceiveWindow()) {
+            // Transport-v2 waits for YUME authentication before admitting the
+            // larger bounded receive window. Other providers can admit at a
+            // different, explicitly checked carrier boundary.
+            if (!v2_h2_carrier_->EnableAdmittedReceiveWindow()) {
                 close_with_reason(
                     "failed to expand authenticated HTTP/2 receive window: " +
                     v2_h2_carrier_->error());
@@ -1000,6 +1002,15 @@ void Session::begin_close() {
         flush_v2_h2_wire_on_strand();
     }
     close_state_ = CloseState::Closing;
+    // An H2 exact read stores its higher-level completion in the Session, and
+    // that completion captures the Session so it can resume frame parsing.
+    // Once closing starts it must never resume. Drop the member-owned callback
+    // now so io_context destruction cannot strand a Session -> callback ->
+    // Session cycle if the underlying TLS read is cancelled without dispatch.
+    v2_h2_read_handler_ = {};
+    v2_h2_read_target_ = nullptr;
+    v2_h2_read_size_ = 0U;
+    v2_h2_read_copied_ = 0U;
     stop_service_streams(
         close_reason_.empty() ? "session closing" : close_reason_);
     // Cover requests run before YUME authentication and may be blocked on a

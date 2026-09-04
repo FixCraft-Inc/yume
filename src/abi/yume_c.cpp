@@ -53,6 +53,7 @@ std::unique_ptr<BackendConfig> parse_transport_v2_config(std::string_view,
 
 std::unique_ptr<EndpointBackend> make_transport_v2_backend(
     const BackendConfig&,
+    SocketProtector,
     std::string& error) {
     error = "this build has no transport runtime linked into the ABI";
     return nullptr;
@@ -72,13 +73,9 @@ constexpr bool kTransportBackendLinked = false;
 #endif
 
 constexpr std::uint64_t kHandleMagic = UINT64_C(0x59554d4530334142);
-constexpr std::uint32_t kDefaultExecutorThreads = 1;
-constexpr std::uint32_t kMaxExecutorThreads = 64;
 constexpr std::uint32_t kDefaultPendingCallbacks = 1024;
 constexpr std::uint32_t kMaxPendingCallbacks = 65536;
 constexpr std::size_t kMaxRuntimeEndpoints = 65536;
-constexpr std::uint64_t kMaxServiceQueuedBytes = UINT64_C(64) * 1024 * 1024;
-constexpr std::uint32_t kMaxServiceConcurrency = 65536;
 constexpr std::size_t kMaxPacketBatch = 256;
 constexpr std::size_t kMaxPacketBytes = 65535;
 constexpr std::size_t kMaxPacketBatchBytes =
@@ -121,14 +118,13 @@ struct EndpointControl {
     mutable std::mutex lifecycle_mutex;
     mutable std::mutex mutex;
     std::uint32_t state{YUME_ENDPOINT_CREATED};
-    // Owned under lifecycle_mutex only. Constructed on the first successful
-    // start and destroyed by endpoint destruction, so a stopped endpoint can
-    // be restarted without reparsing its configuration.
-    std::unique_ptr<yume::embed::EndpointBackend> backend;
+    // Published and replaced under lifecycle_mutex only. Blocking operations
+    // take a shared lease, which lets stop cancel them without destroying the
+    // backend until the last operation has settled.
+    std::shared_ptr<yume::embed::EndpointBackend> backend;
 };
 
 struct RuntimeState {
-    std::uint32_t executor_threads{kDefaultExecutorThreads};
     std::uint32_t max_pending_callbacks{kDefaultPendingCallbacks};
     yume_log_callback log_callback{nullptr};
     yume_event_callback event_callback{nullptr};
@@ -146,9 +142,6 @@ struct RuntimeState {
 
 struct ServiceRegistration {
     std::uint32_t kind{0};
-    std::uint32_t max_concurrent{0};
-    std::uint32_t max_pending_accepts{0};
-    std::uint64_t max_queued_bytes{0};
 };
 
 struct ServiceKey {
@@ -166,6 +159,9 @@ struct ServiceKeyHash {
                             (name_hash << 6U) + (name_hash >> 2U));
     }
 };
+
+using ServiceRegistry =
+    std::unordered_map<ServiceKey, ServiceRegistration, ServiceKeyHash>;
 
 thread_local bool g_in_callback = false;
 
@@ -304,7 +300,6 @@ constexpr std::array kPeerIdentityFields{
     YUME_FIELD_END(yume_peer_identity, abi_version),
     YUME_FIELD_END(yume_peer_identity, authenticated),
     YUME_FIELD_END(yume_peer_identity, role),
-    YUME_FIELD_END(yume_peer_identity, capability_flags),
     YUME_FIELD_END(yume_peer_identity, composite_fingerprint_sha256),
     YUME_FIELD_END(yume_peer_identity, peer_label),
     YUME_FIELD_END(yume_peer_identity, service),
@@ -765,7 +760,9 @@ void emit_endpoint_event(const std::shared_ptr<RuntimeState>& runtime,
 
 yume_status stop_endpoint_control(
     const std::shared_ptr<RuntimeState>& runtime,
-    const std::shared_ptr<EndpointControl>& control) noexcept {
+    const std::shared_ptr<EndpointControl>& control,
+    std::mutex* transient_services_mutex = nullptr,
+    ServiceRegistry* transient_services = nullptr) noexcept {
     if (!control) return YUME_STATUS_INVALID_ARGUMENT;
     try {
         std::lock_guard<std::mutex> lifecycle_lock(control->lifecycle_mutex);
@@ -783,6 +780,11 @@ yume_status stop_endpoint_control(
         // stop() is idempotent, so a never-started endpoint is a no-op.
         if (control->backend) {
             control->backend->stop();
+        }
+        if (transient_services_mutex && transient_services) {
+            std::lock_guard<std::mutex> services_lock(
+                *transient_services_mutex);
+            transient_services->clear();
         }
         {
             std::lock_guard<std::mutex> state_lock(control->mutex);
@@ -859,6 +861,11 @@ yume_status status_from_backend(yume::embed::BackendIo io) noexcept {
     case yume::embed::BackendIo::Closed:     return YUME_STATUS_CLOSED;
     case yume::embed::BackendIo::Invalid:    return YUME_STATUS_INVALID_ARGUMENT;
     case yume::embed::BackendIo::NotRunning: return YUME_STATUS_INVALID_STATE;
+    case yume::embed::BackendIo::NotFound:   return YUME_STATUS_NOT_FOUND;
+    case yume::embed::BackendIo::PermissionDenied:
+        return YUME_STATUS_PERMISSION_DENIED;
+    case yume::embed::BackendIo::ResourceExhausted:
+        return YUME_STATUS_RESOURCE_EXHAUSTED;
     case yume::embed::BackendIo::Failed:     return YUME_STATUS_IO_ERROR;
     }
     return YUME_STATUS_INTERNAL_ERROR;
@@ -870,6 +877,37 @@ struct DocumentDialect {
     const char* error{nullptr};
     const char* json_pointer{""};
 };
+
+// Bound caller-controlled work before either JSON parser builds a DOM. This
+// scanner recognizes only structural bytes outside strings; syntax and escape
+// validity remain the parser's job.
+bool json_nesting_within_limit(std::string_view text,
+                               std::size_t maximum) noexcept {
+    std::size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (const char byte : text) {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (byte == '"') {
+            in_string = true;
+        } else if (byte == '{' || byte == '[') {
+            if (depth == maximum) return false;
+            ++depth;
+        } else if ((byte == '}' || byte == ']') && depth != 0U) {
+            --depth;
+        }
+    }
+    return true;
+}
 
 // Both configuration dialects must state their role. Schema 1 additionally
 // carries "schema": 1. Anything else is rejected here rather than being fed
@@ -950,16 +988,17 @@ struct yume_endpoint {
         : runtime(std::move(runtime_state)),
           config(source.schema1),
           transport_v2(source.transport_v2),
+          server(source.server),
           control(std::make_shared<EndpointControl>(assigned_id)) {}
 
     HandleHeader header{HandleKind::Endpoint};
     std::shared_ptr<RuntimeState> runtime;
     std::optional<yume::config::v1::Config> config;
     std::shared_ptr<yume::embed::BackendConfig> transport_v2;
+    bool server{false};
     std::shared_ptr<EndpointControl> control;
     mutable std::mutex mutex;
-    std::unordered_map<ServiceKey, ServiceRegistration, ServiceKeyHash>
-        services;
+    ServiceRegistry services;
     yume_socket_protect_callback socket_protector{nullptr};
     void* socket_protector_data{nullptr};
 };
@@ -978,6 +1017,8 @@ struct yume_stream {
         const yume::embed::BackendPeerIdentity identity =
             backend->peer_identity();
         peer.authenticated = identity.authenticated ? 1U : 0U;
+        peer.role = identity.peer_is_server ? YUME_ROLE_SERVER
+                                            : YUME_ROLE_CLIENT;
         copy_bounded(peer.peer_label, sizeof(peer.peer_label),
                      identity.peer_label);
         copy_bounded(peer.service, sizeof(peer.service), identity.service);
@@ -986,7 +1027,9 @@ struct yume_stream {
     }
 
     HandleHeader header{HandleKind::Stream};
-    mutable std::mutex mutex;
+    mutable std::mutex state_mutex;
+    mutable std::mutex read_mutex;
+    mutable std::mutex write_mutex;
     yume_peer_identity peer{};
     bool closed{true};
     std::unique_ptr<yume::embed::BackendStream> backend;
@@ -1102,16 +1145,13 @@ yume_status yume_runtime_create(const yume_runtime_options* options,
         return YUME_STATUS_INVALID_ARGUMENT;
     }
     return guard(nullptr, [&]() -> yume_status {
-        const std::uint32_t threads = options->executor_threads == 0
-            ? kDefaultExecutorThreads : options->executor_threads;
         const std::uint32_t pending = options->max_pending_callbacks == 0
             ? kDefaultPendingCallbacks : options->max_pending_callbacks;
-        if (threads > kMaxExecutorThreads || pending > kMaxPendingCallbacks) {
+        if (pending > kMaxPendingCallbacks) {
             return YUME_STATUS_RESOURCE_EXHAUSTED;
         }
         auto runtime = std::make_unique<yume_runtime>();
         runtime->state = std::make_shared<RuntimeState>();
-        runtime->state->executor_threads = threads;
         runtime->state->max_pending_callbacks = pending;
         runtime->state->log_callback = options->log_callback;
         if (contains_field(*options,
@@ -1200,6 +1240,18 @@ yume_status yume_config_parse_json(yume_runtime* runtime,
     return guard(&runtime->header, [&]() -> yume_status {
         const auto* data = static_cast<const char*>(json);
         const std::string_view text(data, json_size);
+
+        if (text.size() > yume::config::v1::kMaxDocumentBytes) {
+            return fail_with_diagnostic(
+                &runtime->header, YUME_STATUS_RESOURCE_EXHAUSTED,
+                "configuration exceeds the 1 MiB input limit");
+        }
+        if (!json_nesting_within_limit(
+                text, yume::config::v1::kMaxNestingDepth)) {
+            return fail_with_diagnostic(
+                &runtime->header, YUME_STATUS_PARSE_ERROR,
+                "configuration nesting exceeds the supported limit");
+        }
 
         // Dialect selection is explicit, never inferred from which parser
         // happens to accept the bytes. Both dialects ignore unknown keys, so
@@ -1337,6 +1389,11 @@ yume_status yume_endpoint_set_socket_protector(
     return guard(&endpoint->header, [&]() -> yume_status {
         std::lock_guard<std::mutex> lifecycle_lock(
             endpoint->control->lifecycle_mutex);
+        if (callback && endpoint->server) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_UNSUPPORTED,
+                "socket protection is implemented only for client endpoints");
+        }
         std::lock_guard<std::mutex> state_lock(endpoint->control->mutex);
         if (endpoint->runtime->stopping.load()) {
             return fail_with_diagnostic(&endpoint->header,
@@ -1353,6 +1410,12 @@ yume_status yume_endpoint_set_socket_protector(
         std::lock_guard<std::mutex> lock(endpoint->mutex);
         endpoint->socket_protector = callback;
         endpoint->socket_protector_data = user_data;
+        // A backend owns the callback value copied at construction. Active
+        // states were rejected above, so discard any stopped or failed
+        // instance and rebuild it on the next start. In particular, a failed
+        // protector may be replaced before the caller settles FAILED through
+        // stop(); retaining that backend would silently retain the old hook.
+        endpoint->control->backend.reset();
         clear_diagnostic(&endpoint->header);
         return YUME_STATUS_OK;
     });
@@ -1390,16 +1453,6 @@ yume_status yume_endpoint_register_service(
                            error.what());
             return YUME_STATUS_INVALID_ARGUMENT;
         }
-        if (service->max_concurrent == 0 ||
-            service->max_concurrent > kMaxServiceConcurrency ||
-            service->max_pending_accepts == 0 ||
-            service->max_pending_accepts > kMaxServiceConcurrency ||
-            service->max_queued_bytes == 0 ||
-            service->max_queued_bytes > kMaxServiceQueuedBytes) {
-            return fail_with_diagnostic(
-                &endpoint->header, YUME_STATUS_RESOURCE_EXHAUSTED,
-                "service resource policy is outside supported bounds");
-        }
         if (!endpoint->config.has_value()) {
             // A transport-v2 endpoint has no schema-1 service table to check
             // a registration against, so the runtime itself is the authority.
@@ -1411,28 +1464,43 @@ yume_status yume_endpoint_register_service(
                     &endpoint->header, YUME_STATUS_UNSUPPORTED,
                     "packet services are not implemented yet");
             }
-            yume::embed::EndpointBackend* backend =
-                endpoint->control->backend.get();
-            if (backend == nullptr) {
-                return fail_with_diagnostic(
-                    &endpoint->header, YUME_STATUS_INVALID_STATE,
-                    "endpoint must be started before registering a service");
+            std::lock_guard<std::mutex> lifecycle_lock(
+                endpoint->control->lifecycle_mutex);
+            {
+                std::lock_guard<std::mutex> state_lock(
+                    endpoint->control->mutex);
+                if (endpoint->control->state != YUME_ENDPOINT_RUNNING ||
+                    !endpoint->control->backend) {
+                    return fail_with_diagnostic(
+                        &endpoint->header, YUME_STATUS_INVALID_STATE,
+                        "endpoint must be running before registering a service");
+                }
             }
+
+            const ServiceKey key{name, service->kind};
+            {
+                std::lock_guard<std::mutex> lock(endpoint->mutex);
+                const auto [_, inserted] = endpoint->services.emplace(
+                    key, ServiceRegistration{service->kind});
+                if (!inserted) {
+                    return fail_with_diagnostic(
+                        &endpoint->header, YUME_STATUS_INVALID_ARGUMENT,
+                        "service name and kind are already registered");
+                }
+            }
+
             std::string backend_error;
             const yume::embed::BackendIo io =
-                backend->register_service(name, backend_error);
+                endpoint->control->backend->register_service(
+                    name, backend_error);
             if (io != yume::embed::BackendIo::Ok) {
+                std::lock_guard<std::mutex> lock(endpoint->mutex);
+                endpoint->services.erase(key);
                 return fail_with_diagnostic(
                     &endpoint->header, status_from_backend(io),
                     backend_error.empty() ? "service registration failed"
                                           : backend_error);
             }
-            std::lock_guard<std::mutex> lock(endpoint->mutex);
-            endpoint->services.insert_or_assign(
-                ServiceKey{name, service->kind},
-                ServiceRegistration{service->kind, service->max_concurrent,
-                                    service->max_pending_accepts,
-                                    service->max_queued_bytes});
             clear_diagnostic(&endpoint->header);
             return YUME_STATUS_OK;
         }
@@ -1452,27 +1520,6 @@ yume_status yume_endpoint_register_service(
                 &endpoint->header, YUME_STATUS_PERMISSION_DENIED,
                 "service is not enabled by the immutable endpoint config");
         }
-        if (service->max_concurrent == 0 ||
-            service->max_concurrent > kMaxServiceConcurrency ||
-            service->max_pending_accepts == 0 ||
-            service->max_pending_accepts > kMaxServiceConcurrency ||
-            service->max_queued_bytes == 0 ||
-            service->max_queued_bytes > kMaxServiceQueuedBytes) {
-            return fail_with_diagnostic(
-                &endpoint->header, YUME_STATUS_RESOURCE_EXHAUSTED,
-                "service resource policy is outside supported bounds");
-        }
-        const auto& endpoint_limits = endpoint->config->limits();
-        if (service->max_concurrent >
-                configured_service->max_concurrent_streams() ||
-            service->max_concurrent > endpoint_limits.max_streams() ||
-            service->max_pending_accepts >
-                endpoint_limits.max_pending_opens() ||
-            service->max_queued_bytes > endpoint_limits.max_queued_bytes()) {
-            return fail_with_diagnostic(
-                &endpoint->header, YUME_STATUS_PERMISSION_DENIED,
-                "service policy exceeds immutable endpoint config limits");
-        }
         {
             std::lock_guard<std::mutex> lifecycle_lock(
                 endpoint->control->lifecycle_mutex);
@@ -1491,9 +1538,7 @@ yume_status yume_endpoint_register_service(
             std::lock_guard<std::mutex> lock(endpoint->mutex);
             const auto [_, inserted] = endpoint->services.emplace(
                 ServiceKey{std::move(name), service->kind},
-                ServiceRegistration{
-                    service->kind, service->max_concurrent,
-                    service->max_pending_accepts, service->max_queued_bytes});
+                ServiceRegistration{service->kind});
             if (!inserted) {
                 return fail_with_diagnostic(&endpoint->header,
                                             YUME_STATUS_INVALID_ARGUMENT,
@@ -1518,6 +1563,11 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
     return guard(&endpoint->header, [&]() -> yume_status {
         std::lock_guard<std::mutex> lifecycle_lock(
             endpoint->control->lifecycle_mutex);
+        if (endpoint->transport_v2 && endpoint->server && timeout_ms != 0U) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_UNSUPPORTED,
+                "transport-v2 server start has no bounded deadline; pass zero");
+        }
         {
             std::lock_guard<std::mutex> lock(endpoint->control->mutex);
             if (endpoint->runtime->stopping.load()) {
@@ -1549,9 +1599,30 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
         if (endpoint->transport_v2) {
             std::string error;
             if (!endpoint->control->backend) {
+                yume::embed::SocketProtector socket_protector;
+                {
+                    std::lock_guard<std::mutex> lock(endpoint->mutex);
+                    if (endpoint->socket_protector) {
+                        const auto callback = endpoint->socket_protector;
+                        void* const callback_data =
+                            endpoint->socket_protector_data;
+                        socket_protector =
+                            [callback, callback_data](std::intptr_t socket) {
+                                try {
+                                    CallbackScope callback_scope;
+                                    return callback(
+                                               static_cast<std::uintptr_t>(socket),
+                                               callback_data) != 0;
+                                } catch (...) {
+                                    return false;
+                                }
+                            };
+                    }
+                }
                 endpoint->control->backend =
                     yume::embed::make_transport_v2_backend(
-                        *endpoint->transport_v2, error);
+                        *endpoint->transport_v2,
+                        std::move(socket_protector), error);
             }
             if (!endpoint->control->backend) {
                 failure = YUME_STATUS_INTERNAL_ERROR;
@@ -1602,7 +1673,7 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
 }
 
 yume_status yume_endpoint_stop(yume_endpoint* endpoint,
-                               uint32_t /*timeout_ms*/) noexcept {
+                               uint32_t timeout_ms) noexcept {
     if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint)) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
@@ -1611,8 +1682,16 @@ yume_status yume_endpoint_stop(yume_endpoint* endpoint,
                                     YUME_STATUS_INVALID_STATE,
                                     "endpoint stop is forbidden from callbacks");
     }
+    if (timeout_ms != 0U) {
+        return fail_with_diagnostic(
+            &endpoint->header, YUME_STATUS_UNSUPPORTED,
+            "bounded endpoint stop is not implemented; pass zero");
+    }
     const yume_status status =
-        stop_endpoint_control(endpoint->runtime, endpoint->control);
+        endpoint->transport_v2
+        ? stop_endpoint_control(endpoint->runtime, endpoint->control,
+                                &endpoint->mutex, &endpoint->services)
+        : stop_endpoint_control(endpoint->runtime, endpoint->control);
     if (status == YUME_STATUS_OK) {
         clear_diagnostic(&endpoint->header);
     } else {
@@ -1674,6 +1753,7 @@ yume_status backend_stream_io(yume_endpoint* endpoint,
                               std::string_view service,
                               std::uint32_t timeout_ms,
                               bool accept,
+                              bool destination_requested,
                               yume_stream** out_stream) noexcept {
     if (!endpoint || !valid_header(&endpoint->header, HandleKind::Endpoint) ||
         !valid_service_kind(kind) || out_stream == nullptr) {
@@ -1694,22 +1774,27 @@ yume_status backend_stream_io(yume_endpoint* endpoint,
                                         YUME_STATUS_CANCELLED,
                                         "runtime is stopping");
         }
+        std::shared_ptr<yume::embed::EndpointBackend> backend;
         {
+            std::lock_guard<std::mutex> lifecycle_lock(
+                endpoint->control->lifecycle_mutex);
             std::lock_guard<std::mutex> lock(endpoint->control->mutex);
             if (endpoint->control->state != YUME_ENDPOINT_RUNNING) {
                 return fail_with_diagnostic(&endpoint->header,
                                             YUME_STATUS_INVALID_STATE,
                                             "endpoint is not running");
             }
+            backend = endpoint->control->backend;
         }
-        // The backend pointer is only written under lifecycle_mutex during
-        // start, and start must have completed for the state check above to
-        // pass, so reading it here needs no lifecycle lock.
-        yume::embed::EndpointBackend* backend = endpoint->control->backend.get();
-        if (backend == nullptr) {
+        if (!backend) {
             return fail_with_diagnostic(
                 &endpoint->header, YUME_STATUS_UNSUPPORTED,
                 "native ytp1-tls13-h2 endpoint provider is not linked");
+        }
+        if (destination_requested) {
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_UNSUPPORTED,
+                "destination-routed stream OPEN is not implemented");
         }
 
         std::unique_ptr<yume::embed::BackendStream> opened;
@@ -1727,8 +1812,24 @@ yume_status backend_stream_io(yume_endpoint* endpoint,
                 error.empty() ? "stream operation failed" : error);
         }
         auto published = std::make_unique<yume_stream>(std::move(opened));
+        {
+            // Stop is allowed to race a blocking open/accept. Revalidate the
+            // lease before publishing so an operation that settled during
+            // teardown cannot escape as a live handle.
+            std::lock_guard<std::mutex> lifecycle_lock(
+                endpoint->control->lifecycle_mutex);
+            std::lock_guard<std::mutex> state_lock(endpoint->control->mutex);
+            if (endpoint->runtime->stopping.load() ||
+                endpoint->control->state != YUME_ENDPOINT_RUNNING ||
+                endpoint->control->backend != backend) {
+                return fail_with_diagnostic(
+                    &endpoint->header, YUME_STATUS_CANCELLED,
+                    "endpoint stopped while the stream operation was settling");
+            }
+            published->backend->publish();
+            *out_stream = published.release();
+        }
         clear_diagnostic(&endpoint->header);
-        *out_stream = published.release();
         return YUME_STATUS_OK;
     });
 }
@@ -1757,10 +1858,15 @@ yume_status yume_endpoint_open_stream(yume_endpoint* endpoint,
         const yume_status status = validate_open_options(
             &endpoint->header, *options, YUME_SERVICE_BYTE_STREAM);
         if (status != YUME_STATUS_OK) return status;
+        constexpr std::size_t kDestinationOffset =
+            offsetof(yume_open_options, destination);
+        const bool destination_requested = contains_input_field(
+            *options, kDestinationOffset, &yume_open_options::destination) &&
+            options->destination.kind != YUME_DESTINATION_NONE;
         return backend_stream_io(
             endpoint, options->kind,
             std::string_view(options->service.data, options->service.size),
-            timeout_ms, false, out_stream);
+            timeout_ms, false, destination_requested, out_stream);
     });
 }
 
@@ -1789,7 +1895,7 @@ yume_status yume_endpoint_accept_stream(yume_endpoint* endpoint,
         return backend_stream_io(
             endpoint, options->kind,
             std::string_view(options->service.data, options->service.size),
-            timeout_ms, true, out_stream);
+            timeout_ms, true, false, out_stream);
     });
 }
 
@@ -1850,7 +1956,7 @@ void yume_endpoint_destroy(yume_endpoint* endpoint) noexcept {
         return;
     }
     if (g_in_callback) return;
-    (void)yume_endpoint_stop(endpoint, YUME_TIMEOUT_INFINITE);
+    (void)yume_endpoint_stop(endpoint, 0U);
     delete endpoint;
 }
 
@@ -1873,7 +1979,6 @@ yume_status yume_stream_get_peer_identity(const yume_stream* stream,
                                     "peer identity output is required");
     }
     return guard(diagnostic_owner, [&]() -> yume_status {
-        std::lock_guard<std::mutex> lock(stream->mutex);
         const yume_status status = copy_sized(
             out, out_size, YUME_PEER_IDENTITY_MIN_SIZE, stream->peer,
             kPeerIdentityFields);
@@ -1909,15 +2014,20 @@ yume_status yume_stream_read(yume_stream* stream,
                                     "stream read requires nonempty output storage");
     }
     return guard(&stream->header, [&]() -> yume_status {
-        std::lock_guard<std::mutex> lock(stream->mutex);
-        if (stream->closed || !stream->backend) {
-            return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
-                                        "stream is closed");
+        std::lock_guard<std::mutex> direction_lock(stream->read_mutex);
+        yume::embed::BackendStream* backend = nullptr;
+        {
+            std::lock_guard<std::mutex> state_lock(stream->state_mutex);
+            if (stream->closed || !stream->backend) {
+                return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
+                                            "stream is closed");
+            }
+            backend = stream->backend.get();
         }
         std::string error;
         std::size_t received = 0;
         const yume::embed::BackendIo io =
-            stream->backend->read(out, out_size, timeout_ms, received, error);
+            backend->read(out, out_size, timeout_ms, received, error);
         if (io == yume::embed::BackendIo::Ok) {
             *bytes_read = received;
             clear_diagnostic(&stream->header);
@@ -1953,10 +2063,15 @@ yume_status yume_stream_write(yume_stream* stream,
                                     "stream write input is invalid");
     }
     return guard(&stream->header, [&]() -> yume_status {
-        std::lock_guard<std::mutex> lock(stream->mutex);
-        if (stream->closed || !stream->backend) {
-            return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
-                                        "stream is closed");
+        std::lock_guard<std::mutex> direction_lock(stream->write_mutex);
+        yume::embed::BackendStream* backend = nullptr;
+        {
+            std::lock_guard<std::mutex> state_lock(stream->state_mutex);
+            if (stream->closed || !stream->backend) {
+                return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
+                                            "stream is closed");
+            }
+            backend = stream->backend.get();
         }
         if (size == 0) {
             clear_diagnostic(&stream->header);
@@ -1964,7 +2079,7 @@ yume_status yume_stream_write(yume_stream* stream,
         }
         std::string error;
         const yume::embed::BackendIo io =
-            stream->backend->write(data, size, timeout_ms, error);
+            backend->write(data, size, timeout_ms, error);
         if (io == yume::embed::BackendIo::Ok) {
             // Admission is all or none, so a successful write always consumed
             // the complete input.
@@ -1989,14 +2104,19 @@ yume_status yume_stream_shutdown_write(yume_stream* stream,
                                     "stream shutdown is forbidden from callbacks");
     }
     return guard(&stream->header, [&]() -> yume_status {
-        std::lock_guard<std::mutex> lock(stream->mutex);
-        if (stream->closed || !stream->backend) {
-            return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
-                                        "stream is closed");
+        std::lock_guard<std::mutex> direction_lock(stream->write_mutex);
+        yume::embed::BackendStream* backend = nullptr;
+        {
+            std::lock_guard<std::mutex> state_lock(stream->state_mutex);
+            if (stream->closed || !stream->backend) {
+                return fail_with_diagnostic(&stream->header, YUME_STATUS_CLOSED,
+                                            "stream is closed");
+            }
+            backend = stream->backend.get();
         }
         std::string error;
         const yume::embed::BackendIo io =
-            stream->backend->shutdown_write(timeout_ms, error);
+            backend->shutdown_write(timeout_ms, error);
         if (io == yume::embed::BackendIo::Ok) {
             clear_diagnostic(&stream->header);
             return YUME_STATUS_OK;
@@ -2008,7 +2128,7 @@ yume_status yume_stream_shutdown_write(yume_stream* stream,
 }
 
 yume_status yume_stream_close(yume_stream* stream,
-                              uint32_t /*timeout_ms*/) noexcept {
+                              uint32_t timeout_ms) noexcept {
     if (!stream || !valid_header(&stream->header, HandleKind::Stream)) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
@@ -2017,15 +2137,24 @@ yume_status yume_stream_close(yume_stream* stream,
                                     YUME_STATUS_INVALID_STATE,
                                     "stream close is forbidden from callbacks");
     }
+    if (timeout_ms != 0U) {
+        return fail_with_diagnostic(
+            &stream->header, YUME_STATUS_INVALID_ARGUMENT,
+            "stream close is immediate; its reserved timeout must be zero");
+    }
     return guard(&stream->header, [&]() -> yume_status {
-        std::lock_guard<std::mutex> lock(stream->mutex);
+        yume::embed::BackendStream* backend = nullptr;
         // Close is the promised logical close, and it must happen here rather
         // than at destroy so a caller that closes and then inspects the handle
         // sees a settled stream. It is idempotent.
-        if (!stream->closed && stream->backend) {
-            stream->backend->close();
+        {
+            std::lock_guard<std::mutex> state_lock(stream->state_mutex);
+            if (!stream->closed && stream->backend) {
+                backend = stream->backend.get();
+            }
+            stream->closed = true;
         }
-        stream->closed = true;
+        if (backend) backend->close();
         clear_diagnostic(&stream->header);
         return YUME_STATUS_OK;
     });
@@ -2162,7 +2291,7 @@ yume_status yume_packet_read_batch(yume_packet* packet,
 }
 
 yume_status yume_packet_close(yume_packet* packet,
-                              uint32_t /*timeout_ms*/) noexcept {
+                              uint32_t timeout_ms) noexcept {
     if (!packet || !valid_header(&packet->header, HandleKind::Packet)) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
@@ -2170,6 +2299,11 @@ yume_status yume_packet_close(yume_packet* packet,
         return fail_with_diagnostic(&packet->header,
                                     YUME_STATUS_INVALID_STATE,
                                     "packet close is forbidden from callbacks");
+    }
+    if (timeout_ms != 0U) {
+        return fail_with_diagnostic(
+            &packet->header, YUME_STATUS_INVALID_ARGUMENT,
+            "packet close is immediate; its reserved timeout must be zero");
     }
     return guard(&packet->header, [&]() -> yume_status {
         std::lock_guard<std::mutex> lock(packet->mutex);

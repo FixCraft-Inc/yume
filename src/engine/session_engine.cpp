@@ -2639,40 +2639,56 @@ void SessionEngine::Impl::async_open(
         return;
     }
 
-    ytp1::OpenRequest request;
-    request.service_kind = ytp_kind.value();
-    request.service_name.assign(service_name);
-    if (destination) {
-        auto encoded_destination = to_ytp_destination(*destination);
-        if (!encoded_destination.ok()) {
-            remove_stream(stream_id, encoded_destination.status());
-            auto result = Result<std::shared_ptr<StreamResponder>>(
-                encoded_destination.status());
+    try {
+        ytp1::OpenRequest request;
+        request.service_kind = ytp_kind.value();
+        request.service_name.assign(service_name);
+        if (destination) {
+            auto encoded_destination = to_ytp_destination(*destination);
+            if (!encoded_destination.ok()) {
+                remove_stream(stream_id, encoded_destination.status());
+                auto result = Result<std::shared_ptr<StreamResponder>>(
+                    encoded_destination.status());
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
+            request.destination =
+                std::move(encoded_destination).take_value();
+        }
+        auto encoded = ytp1::EncodeOpen(request);
+        if (!encoded.ok()) {
+            remove_stream(stream_id, protocol_failure(
+                "local OPEN could not be encoded canonically"));
+            auto result = Result<std::shared_ptr<StreamResponder>>(Status(
+                StatusCode::Internal, "local OPEN encoding failed"));
             invoke_noexcept(completion, std::move(result));
             return;
         }
-        request.destination =
-            std::move(encoded_destination).take_value();
-    }
-    auto encoded = ytp1::EncodeOpen(request);
-    if (!encoded.ok()) {
-        remove_stream(stream_id, protocol_failure(
-            "local OPEN could not be encoded canonically"));
-        auto result = Result<std::shared_ptr<StreamResponder>>(Status(
-            StatusCode::Internal, "local OPEN encoding failed"));
+        Status send = enqueue_record(
+            ytp1::RecordType::Open, stream_id, as_bytes(*encoded.value), true,
+            false);
+        if (send.ok()) {
+            send = send_stream_credit(stream_id,
+                                      limits_.initial_stream_credit);
+        }
+        if (!send.ok()) {
+            remove_stream(stream_id, send);
+            auto result = Result<std::shared_ptr<StreamResponder>>(send);
+            invoke_noexcept(completion, std::move(result));
+            return;
+        }
+    } catch (const std::bad_alloc&) {
+        Status failure(StatusCode::ResourceExhausted,
+                       "stream OPEN construction allocation failed");
+        remove_stream(stream_id, failure);
+        auto result = Result<std::shared_ptr<StreamResponder>>(failure);
         invoke_noexcept(completion, std::move(result));
         return;
-    }
-    Status send = enqueue_record(
-        ytp1::RecordType::Open, stream_id, as_bytes(*encoded.value), true,
-        false);
-    if (send.ok()) {
-        send = send_stream_credit(stream_id,
-                                  limits_.initial_stream_credit);
-    }
-    if (!send.ok()) {
-        remove_stream(stream_id, send);
-        auto result = Result<std::shared_ptr<StreamResponder>>(send);
+    } catch (...) {
+        Status failure(StatusCode::Internal,
+                       "stream OPEN construction failed");
+        remove_stream(stream_id, failure);
+        auto result = Result<std::shared_ptr<StreamResponder>>(failure);
         invoke_noexcept(completion, std::move(result));
         return;
     }

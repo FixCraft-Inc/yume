@@ -1,7 +1,7 @@
 # YUME
 
-YUME is an experimental secure transport becoming a reusable session layer for
-applications. During this transition, the default build keeps the runnable
+YUME is an experimental embeddable stealth universal transport. During this
+transition, the default build keeps the runnable
 `0.2.0-dev6` client (`yume`) and daemon (`yumed`) available while the modular
 YTP/1 engine, schema-1 configuration, and replacement C ABI are built alongside
 them.
@@ -43,7 +43,7 @@ stream and which destination it exits to. Application TLS can still protect
 content end to end. Direct federation is implemented in the 0.2 product, but
 transit is limited to one hop and is not onion routing.
 
-## What YUME is becoming
+## Replacement transport
 
 The YTP/1 replacement (YUME Transport Protocol 1, a new protocol whose
 version is unrelated to the product version) turns the tunnel core into
@@ -56,9 +56,11 @@ public interface instead of defining the wire protocol.
 The dependency direction is `ByteChannel → SecureChannel → Carrier →
 SessionEngine → StreamDispatcher → StreamHandler/RouteProvider`. The
 dependency-clean engine, bounded YTP/1 codecs, strict schema-1 parser, setup and
-doctor tools, and replacement ABI scaffold exist. The production hybrid
-provider, TLS/H2 front door, routes/adapters, and live ABI stream and packet
-paths do not yet form an end-to-end tunnel.
+doctor tools, and replacement ABI candidate exist. Opt-in hybrid security, TLS
+1.3, duplex H2 carrier, TCP ByteChannel, and direct TCP/UDP route providers
+also exist as isolated candidates. They are not composed with a live YTP/1
+front door, admission path, runtime, or adapters and therefore do not form an
+end-to-end replacement tunnel.
 
 The replacement deliberately breaks wire and configuration compatibility. It
 does not require disabling the working product early: the 0.2 runtime remains
@@ -89,7 +91,7 @@ evidence.
 ## Provisioning during the transition
 
 The current `yume-setup` command generates the runnable transport-v2 server and
-device kit:
+client kit:
 
 ```bash
 sudo cmake --install build
@@ -120,9 +122,9 @@ material from the server host.
 | --- | --- |
 | `yume` | Client, SOCKS endpoint, forwards, packet routing, and attached tools |
 | `yumed` | TLS/H2 endpoint, authentication, policy enforcement, and proxy exit |
-| replacement `libyume` | Experimental C ABI scaffold; endpoint start is not wired |
+| replacement `libyume` | Opt-in build-tree C ABI; transport-v2 named streams work, while schema-1 start and packets remain unsupported |
 | `yume-gui` | Optional Dear ImGui desktop client and server UI, still a preview |
-| `yume-setup` | Runnable transport-v2 server and device-kit provisioner |
+| `yume-setup` | Runnable transport-v2 server and client-kit provisioner |
 | `yume-setup-ytp1` / `yume-doctor-ytp1` | Experimental schema-1 generator and validator |
 
 The static site under `website/` publishes project and release information. It

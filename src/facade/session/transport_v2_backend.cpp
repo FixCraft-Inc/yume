@@ -79,9 +79,12 @@ BackendIo backend_io_from(runtime::OperationStatus status) noexcept {
     case runtime::OperationStatus::WouldBlock:
         return BackendIo::WouldBlock;
     case runtime::OperationStatus::NotFound:
+        return BackendIo::NotFound;
     case runtime::OperationStatus::PermissionDenied:
-    case runtime::OperationStatus::AlreadyRunning:
+        return BackendIo::PermissionDenied;
     case runtime::OperationStatus::ResourceExhausted:
+        return BackendIo::ResourceExhausted;
+    case runtime::OperationStatus::AlreadyRunning:
     case runtime::OperationStatus::InternalError:
         return BackendIo::Failed;
     }
@@ -93,8 +96,12 @@ BackendIo backend_io_from(runtime::OperationStatus status) noexcept {
 class ServiceBackendStream final : public BackendStream {
 public:
     explicit ServiceBackendStream(
-        std::shared_ptr<runtime::ServiceStream> stream)
-        : stream_(std::move(stream)) {}
+        std::shared_ptr<runtime::ServiceStream> stream,
+        bool peer_is_server,
+        std::function<void()> unpublished_rollback = {})
+        : stream_(std::move(stream)),
+          peer_is_server_(peer_is_server),
+          unpublished_rollback_(std::move(unpublished_rollback)) {}
 
     ~ServiceBackendStream() override { close(); }
 
@@ -113,7 +120,8 @@ public:
         case runtime::ServiceStream::ReadResult::Eof:
             return BackendIo::Eof;
         case runtime::ServiceStream::ReadResult::Timeout:
-            return BackendIo::Timeout;
+            return timeout_ms == 0U ? BackendIo::WouldBlock
+                                    : BackendIo::Timeout;
         case runtime::ServiceStream::ReadResult::Closed:
             error = reason;
             return BackendIo::Closed;
@@ -148,11 +156,34 @@ public:
                              std::string& error) override {
         // The FIN must follow every accepted write, so this can block and
         // therefore honours the caller's deadline.
-        return stream_->shutdown_write(&error, timeout_ms) ? BackendIo::Ok
-                                                           : BackendIo::Failed;
+        switch (stream_->shutdown_write(&error, timeout_ms)) {
+        case runtime::ServiceStream::ShutdownWriteResult::Sent:
+            return BackendIo::Ok;
+        case runtime::ServiceStream::ShutdownWriteResult::WouldBlock:
+            return BackendIo::WouldBlock;
+        case runtime::ServiceStream::ShutdownWriteResult::Timeout:
+            return BackendIo::Timeout;
+        case runtime::ServiceStream::ShutdownWriteResult::Closed:
+            return BackendIo::Closed;
+        case runtime::ServiceStream::ShutdownWriteResult::Failed:
+            return BackendIo::Failed;
+        }
+        return BackendIo::Failed;
+    }
+
+    void publish() noexcept override {
+        unpublished_rollback_ = nullptr;
     }
 
     void close() noexcept override {
+        if (unpublished_rollback_) {
+            auto rollback = std::move(unpublished_rollback_);
+            try {
+                rollback();
+            } catch (...) {
+            }
+            return;
+        }
         try {
             stream_->close("ABI stream closed");
         } catch (...) {
@@ -168,17 +199,21 @@ public:
         // The transport only publishes a fingerprint once composite
         // authentication succeeded, so its presence is the authentication
         // signal rather than a separate self-reported flag.
-        identity.authenticated = !info.auth_fingerprint_sha256.empty();
+        identity.authenticated =
+            peer_is_server_ || !info.auth_fingerprint_sha256.empty();
+        identity.peer_is_server = peer_is_server_;
         return identity;
     }
 
 private:
     std::shared_ptr<runtime::ServiceStream> stream_;
+    bool peer_is_server_{false};
+    std::function<void()> unpublished_rollback_;
 };
 
 struct ClientOpenRollback {
-    client::Tunnel* tunnel{nullptr};
-    std::shared_ptr<runtime::ServiceStream>* stream{nullptr};
+    std::shared_ptr<client::Tunnel> tunnel;
+    std::shared_ptr<runtime::ServiceStream> stream;
     std::uint8_t stream_id{0};
 };
 
@@ -196,10 +231,10 @@ void rollback_client_open(
     // A ServiceStream destructor normally invokes its transport close
     // callback. Disconnect it first so this transaction stays the only owner
     // of rollback and cannot send a second CLOSE during stack unwind.
-    if (context->stream && *context->stream) {
+    if (context->stream) {
         try {
-            (*context->stream)->set_callbacks({}, {}, {});
-            (*context->stream)->receive_close("stream OPEN rolled back");
+            context->stream->set_callbacks({}, {}, {});
+            context->stream->receive_close("stream OPEN rolled back");
         } catch (...) {
         }
     }
@@ -282,8 +317,8 @@ public:
                           std::string& error) override {
         out.reset();
         if (timeout_ms == 0U) {
-            error = "stream OPEN requires a positive deadline";
-            return BackendIo::Invalid;
+            error = "stream OPEN would block; no OPEN was sent";
+            return BackendIo::WouldBlock;
         }
         auto runtime_access = client_.acquire_runtime();
         if (!runtime_access) {
@@ -298,7 +333,7 @@ public:
         }
 
         std::shared_ptr<runtime::ServiceStream> stream;
-        ClientOpenRollback rollback{tunnel.get(), &stream, 0};
+        ClientOpenRollback rollback{tunnel, {}, 0};
         const std::uint8_t stream_id = tunnel->reserve_stream_id();
         if (stream_id == 0) {
             error = "no stream ids available";
@@ -309,6 +344,7 @@ public:
                                                         rollback_client_open);
 
         stream = std::make_shared<runtime::ServiceStream>(service, "server");
+        rollback.stream = stream;
         auto open_wait = std::make_shared<detail::ServiceOpenWait>();
         std::weak_ptr<detail::ServiceOpenWait> weak_open_wait = open_wait;
         std::weak_ptr<client::Tunnel> weak_tunnel = tunnel;
@@ -456,10 +492,18 @@ public:
         }
 
         open_transaction.MarkAccepted();
-        // Keep `stream` populated until Publish(): the rollback context points
-        // at it, so an allocation failure here can still detach the
-        // unpublished stream before the transport is closed and retired.
-        out = std::make_unique<ServiceBackendStream>(stream);
+        // The C handle is allocated by the caller after this returns. Transfer
+        // rollback into the backend object so failure at that later allocation
+        // still closes the remotely accepted OPEN and permanently retires its
+        // 8-bit identifier.
+        std::function<void()> unpublished_rollback =
+            [rollback]() mutable noexcept {
+                rollback_client_open(
+                    &rollback,
+                    detail::ServiceOpenTransaction::Phase::accepted);
+            };
+        out = std::make_unique<ServiceBackendStream>(
+            stream, true, std::move(unpublished_rollback));
         open_transaction.Publish();
         return BackendIo::Ok;
     }
@@ -516,8 +560,12 @@ public:
             error = "server runtime is not running";
             return BackendIo::NotRunning;
         }
-        return controller_.register_service(service, &error) ? BackendIo::Ok
-                                                             : BackendIo::Failed;
+        auto operation_status = runtime::OperationStatus::Success;
+        if (controller_.register_service(
+                service, &error, &operation_status)) {
+            return BackendIo::Ok;
+        }
+        return backend_io_from(operation_status);
     }
 
     BackendIo open_stream(const std::string&,
@@ -546,7 +594,8 @@ public:
         if (!stream) {
             return backend_io_from(operation_status);
         }
-        out = std::make_unique<ServiceBackendStream>(std::move(stream));
+        out = std::make_unique<ServiceBackendStream>(
+            std::move(stream), false);
         return BackendIo::Ok;
     }
 
@@ -598,6 +647,7 @@ std::unique_ptr<BackendConfig> parse_transport_v2_config(
 
 std::unique_ptr<EndpointBackend> make_transport_v2_backend(
     const BackendConfig& config,
+    SocketProtector socket_protector,
     std::string& error) {
     try {
         if (config.is_server()) {
@@ -613,7 +663,9 @@ std::unique_ptr<EndpointBackend> make_transport_v2_backend(
             error = "configuration handle does not carry a client config";
             return nullptr;
         }
-        return std::make_unique<ClientBackend>(typed->value());
+        client::ClientConfig client_config = typed->value();
+        client_config.socket_protect = std::move(socket_protector);
+        return std::make_unique<ClientBackend>(std::move(client_config));
     } catch (const std::exception& thrown) {
         error = thrown.what();
         return nullptr;

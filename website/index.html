@@ -1,6 +1,6 @@
 ---
 layout: page
-title: "YUME: secure transport becoming a reusable session layer"
+title: "YUME: embeddable stealth universal transport"
 description: YUME keeps its runnable profile-matched hybrid tunnel while building a modular stealth universal transport with an embeddable C ABI.
 body_class: home-page
 footer_statement: YUME is an embeddable stealth universal transport.
@@ -23,7 +23,7 @@ section_nav:
 <section class="hero" id="top">
   <div class="hero-copy">
     <div class="hero-status"><span aria-hidden="true"></span>Experimental &middot; runnable tunnel plus modular foundation</div>
-    <h1>YUME <small>Secure transport, built to become a session layer.</small></h1>
+    <h1>YUME <small>Stealth transport, built for embedding.</small></h1>
     <p>
       YUME currently carries TCP and UDP inside one persistent, browser-shaped
       connection. Its working 0.2 client and daemon remain available while YTP/1
@@ -134,11 +134,11 @@ section_nav:
     </div>
     <div class="card">
       <h3>Foundation retained</h3>
-      <p>The tree includes bounded YTP/1 codecs, the session engine, an opt-in hybrid security-provider candidate, strict schema-1 configuration, compatibility metadata, setup and doctor tools, layering checks, and build-tree SDK consumers.</p>
+      <p>The tree includes bounded YTP/1 codecs, the session engine, opt-in hybrid security, TLS 1.3, duplex H2 carrier, TCP ByteChannel, and direct-route providers, strict schema-1 configuration, setup and doctor tools, layering checks, and build-tree ABI consumers.</p>
     </div>
     <div class="card">
       <h3>Still unwired</h3>
-      <p>The provider candidates are not connected to a live endpoint. The replacement has bounded direct TCP/connected-UDP egress and its route bridge, but still needs its TLS/H2 front door, admission path, runtime adapters, live ABI stream and packet data paths, and full security qualification.</p>
+      <p>The provider candidates are not connected to a live YTP/1 endpoint. The build-tree ABI can carry authenticated transport-v2 named streams, but schema 1 still needs a genuine front door, admission and provider composition, runtime adapters, stream and packet wiring, and full security qualification.</p>
     </div>
     <div class="card">
       <h3>Switch-over rule</h3>
@@ -215,13 +215,13 @@ section_nav:
         The desktop GUI (<code>yume-gui</code>) remains an optional 0.2 development
         preview and still uses the existing facade. It is not deleted merely
         because the replacement ABI is incomplete. Android and third-party
-        embedders must not treat the replacement ABI scaffold as stable until
+        embedders must not treat the replacement ABI candidate as stable until
         its functional and lifecycle gates pass.
       </p>
       <div class="link-row">
         <a class="btn secondary" href="{{ '/docs/ABI/' | relative_url }}">Replacement ABI status</a>
         <a class="btn secondary" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">Implementation status</a>
-        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/tree/main/docs/history/0.2" target="_blank" rel="noopener">0.2 contracts</a>
+        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs" target="_blank" rel="noopener">0.2 contracts</a>
       </div>
     </article>
   </div>
@@ -231,7 +231,7 @@ section_nav:
   <h2 class="section-title">Tunnel protection</h2>
   <p class="section-lead">
     The replacement keeps YUME's hybrid, fail-closed identity while tightening
-    per-device credentials, service policy, and resource contracts.
+    per-client transport credentials, service policy, and resource contracts.
   </p>
   <div class="table-scroll">
     <table class="compare-table">
@@ -246,12 +246,12 @@ section_nav:
         <tr>
           <td>Client identity</td>
           <td>Composite Ed25519 + ML-DSA-87; both signatures verified. Admin requires a second, distinct identity from a separate admin store.</td>
-          <td>Per-device composite identity plus explicit trust in the server's composite public identity; every required component must verify.</td>
+          <td>Per-client composite transport identity plus explicit trust in the server's composite public identity; every required component must verify.</td>
         </tr>
         <tr>
           <td>Key establishment</td>
           <td>ML-KEM-1024 + X25519 + a random pre-shared key, bound to the TLS exporter.</td>
-          <td>ML-KEM-1024 + X25519 + a distinct enrollment PSK per device, with exact roles, identities, transcript, capabilities, parameters, and exporter bound into the schedule.</td>
+          <td>ML-KEM-1024 + X25519 + a distinct access PSK per client identity, with exact roles, identities, transcript, capabilities, parameters, and exporter bound into the schedule.</td>
         </tr>
         <tr>
           <td>Record layer</td>
@@ -296,7 +296,7 @@ section_nav:
   <h2 class="section-title">Build, provision, connect</h2>
   <p class="section-lead">
     This workflow is the runnable transport-v2 path. <code>yume-setup init</code>
-    generates its server and device kit. Admission and inner-PSK files carry no
+    generates its server and client kit. Admission and inner-PSK files carry no
     group or world permission bits and must be distributed out of band.
   </p>
   <div class="workflow-grid">

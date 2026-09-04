@@ -184,8 +184,8 @@ The implemented replacement foundation is organized by dependency:
 | `src/engine/` | dependency-pure channels, providers, builder, bootstrap, dispatcher, and session state |
 | `src/ytp/` | dependency-pure YTP/1 codecs, domains, and canonical vectors |
 | `src/config/v1/` | strict immutable schema-1 parsing; no secret loading |
-| `src/providers/` | opt-in session-security, memory-BIO TLS 1.3 secure-channel, and direct-route foundations; not a production H2/front-door/endpoint graph |
-| `src/abi/` | experimental exception-contained C ABI handles and blocking timeout scaffold |
+| `src/providers/` | opt-in session-security, memory-BIO TLS 1.3, client TCP ByteChannel, H2 carrier, and direct-route candidates; not a production front-door/endpoint graph |
+| `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing; transport v2 is wired through the embed seam, YTP/1 is not |
 | `tools/` | provisioning and evidence tooling |
 
 Dedicated replacement adapter and CLI targets do not exist yet. The runnable
@@ -199,7 +199,7 @@ yume_engine + yume_ytp1 +     no OpenSSL, nghttp2, socket, JSON, CLI,
 yume_session_bootstrap        filesystem, or GUI dependency
 yume_config_v1                nlohmann JSON only
 native providers              engine/YTP plus their explicit system libraries
-replacement ABI               frozen instance graph; no private-header API
+replacement ABI candidate     config_v1 plus embed seam; no private-header API
 future adapters/executables   candidate ABI or explicit application layer
 ```
 
@@ -210,12 +210,19 @@ ignored checkout pinned by `config/dependencies.json`.
 
 ## Public ABI boundary
 
-The explicitly enabled `libyume.so.1` candidate exposes opaque runtime, config,
-endpoint, stream, and packet handles. It is not a frozen installed product ABI.
-The surface is role-neutral and has no JSON operation bus. A runtime owns
-bounded executors and callback delivery; an immutable config owns validated
-values; an endpoint owns a frozen provider graph; stream and packet handles own
-application I/O lifetimes.
+The explicitly enabled candidate builds as unversioned, build-tree-only
+`libyume.so`. It exposes opaque runtime, config, endpoint, stream, and packet
+types but is not a frozen installed product ABI. The surface is role-neutral
+and has no JSON operation bus. A runtime owns callback delivery and coordinates
+child endpoints; execution resources belong to the selected backend. An
+immutable config owns validated values, an endpoint owns one backend selection,
+and a stream handle owns its application I/O lifetime. Packet handle creation
+remains unsupported.
+
+The current ABI backend can run transport-v2 client/server endpoints and
+authenticated named byte streams. This does not make transport v2 an implicit
+YTP/1 provider: schema-1 start still fails closed until the provider candidates
+are composed with a genuine front door, admission, runtime, and adapters.
 
 The ABI contract defines thread safety, one-reader/one-writer rules, callback
 re-entry, cancellation, timeouts, shutdown, destruction, peer identity, and

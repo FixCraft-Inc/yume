@@ -8,33 +8,30 @@ current implementation boundary is stated below.
 
 The ABI line, product version, YTP version, and config schema are independent.
 During `0.3.0-dev*`, this replacement surface is still allowed to break without
-an ABI-version bump. The opt-in scaffold is a build-tree-only, unversioned
+an ABI-version bump. The opt-in candidate is a build-tree-only, unversioned
 `libyume.so`; it is not `libyume.so.1`. ABI v1 and SONAME `libyume.so.1` freeze
 at `0.3.0-rc1` only after the functional and installed-consumer gates in this
 document pass.
 
-## Current development scaffold
+## Current development candidate
 
 When explicitly enabled for a development build, the `0.3.0-dev1` library
 currently implements build/compatibility metadata, strict schema-1 config
 parsing, runtime and endpoint construction, bounded diagnostics, callback
-containment, cancellation, and teardown. The production TLS 1.3, HTTP/2, and
-YTP/1 endpoint provider is not linked yet. Every valid start attempt from
-`YUME_ENDPOINT_CREATED` or `YUME_ENDPOINT_STOPPED` therefore transitions the
-endpoint to `YUME_ENDPOINT_FAILED`, records a handle-scoped diagnostic, and
-returns `YUME_STATUS_UNSUPPORTED` without falling back to the retained 0.2
-runtime.
+containment, cancellation, and teardown. With the default transport-v2 graph
+present, it can start client and server endpoints and carry authenticated named
+byte streams through open, accept, read, write, half-close, close, and destroy.
+The integration probe exercises that path against a provisioned real server.
 
-No authenticated public-ABI stream or packet data path exists in this
-scaffold. Stream/packet acceptance, authenticated echo, and packet lifecycle
-remain release gates rather than installed-library capabilities.
-Consequently, the library cannot yet create a live stream or packet handle.
-Provider wiring must make their destroy functions perform the promised logical
-close before this surface can pass its lifecycle gate.
+This is not a live YTP/1 endpoint. A schema-1 endpoint still fails start with
+`YUME_STATUS_UNSUPPORTED`: the opt-in TLS, H2 carrier, security, and route
+provider candidates are not composed into a production front door or ABI
+backend. Packet handles and destination-routed OPEN are also unsupported. The
+library remains build-tree-only, unversioned, uninstalled, and unfrozen.
 
-The remaining sections define the candidate contract that implementation and
-tests must satisfy before the ABI is installed or frozen. They do not claim a
-data path that does not exist.
+The remaining sections distinguish current transport-v2 behavior from the
+candidate contract and gates that still must pass before installation or ABI
+freeze.
 
 ## Configuration dialects and the backend seam
 
@@ -62,8 +59,10 @@ accident of symmetry.
 `yume_endpoint_register_service` advertises a service the peer may open. On a
 transport-v2 endpoint the running runtime is the authority, so registration
 must follow `yume_endpoint_start` and returns `YUME_STATUS_INVALID_STATE`
-before it. On a schema-1 endpoint the registration is additionally checked
-against the immutable service table in the configuration.
+before it. A successful stop discards those runtime registrations; after a
+restart the caller registers them again. On a schema-1 endpoint the
+registration is additionally checked against the immutable service table in
+the configuration and remains attached across stop and restart.
 
 A named service stream carries no destination. Declare the shorter prefix size
 to say so:
@@ -136,10 +135,10 @@ size_t received = 0;
 yume_stream_read(stream, buffer, sizeof(buffer), &received, 20000);
 
 yume_stream_shutdown_write(stream, 20000);   /* drains accepted writes first */
-yume_stream_close(stream, 5000);
+yume_stream_close(stream, 0);      /* immediate; nonzero is rejected */
 yume_stream_destroy(stream);
 
-yume_endpoint_stop(endpoint, 10000);
+yume_endpoint_stop(endpoint, 0);   /* synchronous; nonzero is unsupported */
 yume_endpoint_destroy(endpoint);
 yume_runtime_destroy(runtime);
 ```
@@ -180,8 +179,9 @@ required public link flag.
 
 The five opaque handle types are:
 
-- `yume_runtime`: bounded executors and callback delivery;
-- `yume_config`: one immutable, validated schema-1 configuration;
+- `yume_runtime`: callback delivery and child-endpoint coordination;
+- `yume_config`: one immutable, validated transport-v2 or schema-1
+  configuration;
 - `yume_endpoint`: a role-neutral client or server endpoint;
 - `yume_stream`: one authenticated named byte stream; and
 - `yume_packet`: one authenticated named packet channel.
@@ -213,10 +213,12 @@ Config handles are immutable and may be inspected concurrently. Endpoint
 lifecycle, service registration, open, and accept calls are serialized inside
 the endpoint and may be called from different application threads.
 
-A stream supports one reader and one writer concurrently. Two simultaneous
-readers or two simultaneous writers on the same stream are invalid. A packet
-handle supports one batch reader and one batch writer concurrently. The caller
-must otherwise synchronize operations on the same handle.
+A stream supports one active reader and one active writer concurrently.
+Write-side shutdown belongs to the write direction. Callers must not overlap
+two operations in the same direction; the handle's direction mutexes are a
+defensive serialization boundary, not an extension of a caller deadline. A
+packet handle will use the same one-reader/one-writer rule once packets are
+implemented. The caller must otherwise synchronize operations on one handle.
 
 YUME does not hold state or diagnostic mutexes while invoking application
 callbacks. It may retain endpoint lifecycle sequencing across a callback so
@@ -230,12 +232,12 @@ contained before returning through the C boundary.
 
 ## Runtime callbacks and bounds
 
-`yume_runtime_options` configures executor threads, the maximum pending callback
-count, and optional log/event callbacks. Both numeric fields are bounded by the
-library. Zero selects the documented safe default; an out-of-range nonzero
-value is rejected rather than clamped invisibly. The unwired scaffold has no
-provider worker pool yet and delivers its endpoint-lifecycle observations
-synchronously on the initiating thread.
+`yume_runtime_options` configures the maximum simultaneous callback count and
+optional log/event callbacks. Zero selects the bounded default. The ABI layer
+does not expose an executor-count knob: execution resources belong to the
+selected backend. Endpoint-state events are currently delivered synchronously
+on the initiating lifecycle thread. The log callback field is accepted for
+forward compatibility, but the current ABI backends emit no log records.
 
 Log and event callbacks are observational and must not be used as the source of
 an authentication, authorization, close, or resource-limit decision. Callback
@@ -246,17 +248,19 @@ credentials, PSKs, plaintext, and packet contents are never callback fields.
 The socket-protection callback is endpoint-scoped. It runs synchronously after
 an outbound socket is created and before connect. Its `uintptr_t` argument
 holds the platform-native socket value. Returning zero fails closed
-with `YUME_STATUS_PERMISSION_DENIED`. The callback and its user data must stay
-valid until cleared or endpoint destruction finishes. No ABI re-entry is
-allowed from this callback.
+and the current transport-v2 start reports `YUME_STATUS_IO_ERROR` with a
+diagnostic. The callback and its user data must stay valid until cleared or
+endpoint destruction finishes. No ABI re-entry is allowed from this callback.
 
 ## Strict configuration
 
 `yume_config_parse_json` accepts a pointer plus explicit byte count; the input
-does not need a trailing NUL and is copied before return. The maximum JSON size
-is bounded before parsing. The parser requires numeric schema `1` and a role of
-`client` or `server`, then validates closed endpoint, suite, credential,
-cover, service/adapter, and resource-limit objects.
+does not need a trailing NUL and is copied before return. Input is limited to
+1 MiB and 16 nesting levels before either parser builds its full object model.
+Every document requires a `client` or `server` role. A numeric `"schema": 1`
+selects the strict replacement parser, which validates closed endpoint, suite,
+credential, cover, service/adapter, and resource-limit objects. Omitting
+`schema` selects the transport-v2 parser.
 
 Unknown keys, old aliases, wrong types, inline private material, unsupported
 providers, and unsafe combinations are errors. No partial config handle is
@@ -282,23 +286,28 @@ CREATED -> STARTING -> RUNNING -> STOPPING -> STOPPED
    \-----------------------> STOPPING -> STOPPED
 ```
 
-`yume_endpoint_start` is blocking-with-timeout over an asynchronous
-implementation. Success means the client completed authenticated establishment
-or the server front door is accepting work with its complete immutable policy.
-Failure never publishes a partially authenticated peer or half-built provider
-graph. `stop` is idempotent after a successful start attempt and cancels
-pending opens/accepts before joining endpoint work. Explicit stop, runtime
-destruction, or endpoint destruction may also take an endpoint directly from
-`CREATED` through `STOPPING` to `STOPPED` without starting a provider.
+`yume_endpoint_start` is blocking. A transport-v2 client uses a positive
+millisecond deadline; zero selects the backend's 30-second default. A
+transport-v2 server accepts only zero because server startup currently has no
+caller-bounded deadline. Schema-1 start accepts the descriptor but returns
+`YUME_STATUS_UNSUPPORTED`. Success means the client completed authenticated
+establishment or the server is accepting work. Failure never publishes a
+partially started backend. `stop` is synchronous, idempotent after a start
+attempt, and currently accepts only zero. A successful transport-v2 stop also
+discards registrations owned by that stopped runtime, so callers re-register
+services after restarting it; immutable schema-1 registrations remain.
+Explicit stop, runtime destruction, or endpoint destruction may take an
+endpoint directly from `CREATED` through `STOPPING` to `STOPPED` without
+starting a backend.
 
-Services are registered by a canonical name, kind, concurrency limit,
-pending-accept limit, and queued-byte limit. Names contain 1 through 128 bytes
-of lowercase ASCII namespace segments separated by `.`; `-` and `_` are
-allowed only inside a segment. This avoids case-folding and Unicode
-normalization differences between embedding languages. Service names are
-unique by `(name, kind)` within an endpoint. A registration must match a
-service enabled by the immutable config, and its local limits may narrow but
-never exceed that config policy.
+Services are registered by a canonical name and kind. Resource controls remain
+in immutable configuration and the selected runtime; the ABI descriptor does
+not duplicate them. Names contain 1 through 128 bytes of lowercase ASCII
+namespace segments separated by `.`; `-` and `_` are allowed only inside a
+segment. Service names are unique by `(name, kind)` within an endpoint. A
+schema-1 registration must match the immutable service table and occurs before
+start. A transport-v2 server registers byte-stream services after start so the
+running runtime remains the authority.
 Registration is endpoint-local; there is no process-global provider or service
 registry. A server OPEN is dispatched
 only after the authenticated identity, advertised capability, service policy,
@@ -308,32 +317,40 @@ same dispatcher and cannot bypass those checks.
 ## Open and accept
 
 `yume_open_options` contains a service name, stream/packet kind, and an
-optional typed destination. Custom services use destination kind `NONE`.
-Built-in direct TCP/UDP adapters use a strict hostname, IPv4, or IPv6
-destination plus a nonzero port. DNS names use the same canonical lowercase
-ASCII grammar as YTP/1; they are not silently normalized. There is no generic
-JSON metadata channel.
+optional typed destination. Custom named services omit the suffix or use
+destination kind `NONE`. Hostname, IPv4, and IPv6 descriptors are validated
+strictly, including a nonzero port, but destination-routed ABI OPEN currently
+returns `YUME_STATUS_UNSUPPORTED` before sending anything. The opt-in direct
+route provider belongs to the uncomposed YTP/1 graph and is not silently used
+by the transport-v2 ABI backend. There is no generic JSON metadata channel.
 
 Open and accept publish an output handle only on success. A timeout before an
 OPEN is admitted sends nothing. A timeout after an OPEN crossed the wire
-retires its 31-bit stream identifier for that session, so a late ACK or DATA
-record cannot alias a new stream. Peer-created identifiers are independently
-checked for role parity, collision, exhaustion, and resource policy.
+causes the transport-v2 bridge to close and permanently retire its 8-bit
+service-stream identifier for that tunnel, so a late ACK or DATA frame cannot
+alias a new stream. YTP/1 separately owns 31-bit odd/even identifiers in its
+session engine, but that engine is not the current ABI backend.
 
-The accepted stream or packet exposes a sized `yume_peer_identity`. It includes
-the authenticated composite fingerprint, an opaque transport `peer_label`,
-role, capability flags, and service. The label carries no application meaning:
-it is not a device, account, or enrollment record, and an embedder that needs
-those concepts owns them outside YUME. Both Ed25519 and ML-DSA-87 verification must have
-succeeded before `authenticated` can be nonzero.
+The accepted stream exposes a sized `yume_peer_identity`: authenticated state,
+peer role, an optional composite fingerprint, an opaque transport
+`peer_label`, and service. The label carries no application meaning: it is not
+a device, account, or enrollment record. On the transport-v2 server, the
+client fingerprint is present after composite authentication. On the client,
+the server is authenticated by the outer TLS channel and the composite
+fingerprint field remains zero because that backend does not expose one.
 
 ## Stream I/O
 
 Timeouts are milliseconds:
 
 - `0` polls current state without waiting;
-- `YUME_TIMEOUT_INFINITE` waits until completion or cancellation; and
-- every other value is one relative deadline for the complete call.
+- every positive value is one finite relative deadline for the backend
+  operation; and
+- there is no infinite-timeout sentinel.
+
+These rules apply to open, accept, read, write, and write-side shutdown. A
+zero-timeout client OPEN returns `WOULD_BLOCK` without sending OPEN. Lifecycle
+and immediate-close timeouts are operation-specific as described above.
 
 Reads may be partial. `YUME_STATUS_OK` with a positive byte count returns data.
 `YUME_STATUS_EOF` means the peer shut down its write side and all buffered data
@@ -378,9 +395,9 @@ existing field.
 
 Sized input structures use the same append-only rule. The library reads only
 complete fields contained by `struct_size`; omitted optional suffix fields use
-their documented zero/default behavior. A service descriptor is intentionally
-required through `max_queued_bytes`, while the destination suffix of an OPEN
-may be absent and is then treated as destination kind `NONE`.
+their documented zero/default behavior. The current service descriptor's
+complete `(name, kind)` layout is required, while the destination suffix of an
+OPEN may be absent and is then treated as destination kind `NONE`.
 
 ## Status and diagnostics
 
@@ -430,10 +447,11 @@ must update:
 - clean-prefix CMake and pkg-config consumers; and
 - this document.
 
-The current opt-in scaffold gate is build-tree-only. It checks the exact symbol
-set, header/map/Debian-symbol agreement, strict C/C++ header consumption,
-metadata, strict config parsing, lifecycle/callback containment, diagnostics,
-ownership, and the intentional typed `UNSUPPORTED` start boundary. The
+The current opt-in gate is build-tree-only. It checks the exact symbol set,
+header/map/Debian-symbol agreement, strict C/C++ header consumption, metadata,
+both config dialects, lifecycle/callback containment, diagnostics, ownership,
+transport-v2 start and authenticated named-stream traffic, plus the intentional
+typed `UNSUPPORTED` schema-1, packet, and routed-OPEN boundaries. The
 clean-prefix CMake and pkg-config fixtures are future acceptance material, not
 a claim that the candidate is currently installed.
 

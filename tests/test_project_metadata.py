@@ -122,16 +122,33 @@ class MetadataTests(unittest.TestCase):
         dependencies = load_dependencies()
         self.assertRegex(dependencies["basefwx"]["revision"], r"^[0-9a-f]{40}$")
         self.assertEqual(dependencies["openssl"]["minimum_version"], "3.5.0")
+        self.assertEqual(dependencies["openssl"]["source_version"], "3.5.7")
         self.assertEqual(
             dependencies["openssl"]["revision"],
             "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
         )
         self.assertEqual(dependencies["openssl"]["patch_series"],
                          "patches/openssl/series")
+        self.assertEqual(dependencies["openssl"]["patch_license"],
+                         "AGPL-3.0-or-later")
         series = ROOT / dependencies["openssl"]["patch_series"]
         self.assertTrue(series.is_file())
         self.assertIn("0001-yume-chrome-clienthello.patch",
                       series.read_text(encoding="utf-8"))
+        sbom = json.loads(
+            (ROOT / "docs/release/SBOM.spdx.json").read_text(encoding="utf-8")
+        )
+        openssl_package = next(
+            package for package in sbom["packages"]
+            if package["name"] == "openssl"
+        )
+        self.assertEqual(openssl_package["versionInfo"], "3.5.7")
+        self.assertEqual(openssl_package["licenseDeclared"], "Apache-2.0")
+        self.assertEqual(
+            openssl_package["licenseConcluded"],
+            "Apache-2.0 AND AGPL-3.0-or-later",
+        )
+        self.assertIn("patches/openssl/series", openssl_package["comment"])
         self.assertEqual(dependencies["liboqs"]["minimum_version"], "0.16.0")
         self.assertEqual(
             dependencies["liboqs"]["revision"],
@@ -259,6 +276,7 @@ class MetadataTests(unittest.TestCase):
             workflow = (ROOT / ".github/workflows" / workflow_name).read_text(
                 encoding="utf-8")
             self.assertIn("bash scripts/sync_website_docs.sh", workflow)
+            self.assertNotIn("sync_website_docs.sh --check", workflow)
 
         pages_workflow = (ROOT / ".github/workflows/pages.yml").read_text(
             encoding="utf-8")
@@ -339,6 +357,37 @@ class MetadataTests(unittest.TestCase):
             path = self.write_json(pathlib.Path(temporary), "dependencies.json", document)
             with self.assertRaises(DependencyError):
                 load_dependencies(path)
+
+    def test_dependency_patch_metadata_is_complete_and_typed(self) -> None:
+        original = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+        invalid_documents = []
+
+        missing_license = copy.deepcopy(original)
+        del missing_license["dependencies"]["openssl"]["patch_license"]
+        invalid_documents.append(missing_license)
+
+        orphan_license = copy.deepcopy(original)
+        del orphan_license["dependencies"]["openssl"]["patch_series"]
+        invalid_documents.append(orphan_license)
+
+        invalid_source_version = copy.deepcopy(original)
+        invalid_source_version["dependencies"]["openssl"]["source_version"] = "main"
+        invalid_documents.append(invalid_source_version)
+
+        invalid_patch_license = copy.deepcopy(original)
+        invalid_patch_license["dependencies"]["openssl"]["patch_license"] = (
+            "Apache-2.0 AND AGPL-3.0-or-later"
+        )
+        invalid_documents.append(invalid_patch_license)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            for index, document in enumerate(invalid_documents):
+                path = self.write_json(
+                    directory, f"dependencies-{index}.json", document
+                )
+                with self.subTest(index=index), self.assertRaises(DependencyError):
+                    load_dependencies(path)
 
     def test_profile_fixture_cannot_escape_repository(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))

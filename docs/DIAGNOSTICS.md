@@ -82,6 +82,19 @@ The deliberately disabled flags are `-Wconversion`, `-Wsign-conversion`,
 `-Wshadow`, `-Wcast-qual`, and `-Wold-style-cast`. Each needs a dedicated
 cleanup pass instead of a suppression and is enabled as that work is done.
 
+Two diagnostics are demoted from errors rather than disabled, so they still
+print. Both are limitations of a specific toolchain reported against a system
+or third-party header, where an in-source pragma does not apply:
+
+| Demoted | Where | Why |
+| --- | --- | --- |
+| `-Wstringop-overread` | GCC 11 only | GCC 11 propagates an exact string length proved at the call site into libstdc++'s `std::string` move assignment, then warns about the short-string branch a string of that length can never take. GCC 12 and later do not emit it. |
+| `-Wtsan` | GCC, ThreadSanitizer lane | GCC reports that Boost.Asio's atomic fences are not modeled by TSan. |
+
+Neither is a licence to ignore the warning elsewhere. The release toolchain is
+GCC 11 because `release.yml` builds on `ubuntu-22.04`, so a real overread on
+that compiler still appears in the log.
+
 ## Sanitizers
 
 ```bash

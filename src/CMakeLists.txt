@@ -143,6 +143,19 @@ function(yume_apply_warnings target)
             $<$<BOOL:${YUME_WARNINGS_AS_ERRORS}>:-Werror>
         )
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+           CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12)
+            # GCC 11 propagates an exact string length proved at the call site
+            # into libstdc++'s std::string move assignment, then reports
+            # -Wstringop-overread against the short-string branch that a
+            # string of that length can never take. The diagnostic's location
+            # is inside the system header, so a pragma at the call site does
+            # not suppress it, and GCC 12 and later do not emit it at all.
+            # Demote rather than disable, so the release toolchain still
+            # prints it if it ever fires on something real.
+            target_compile_options(${target} PRIVATE
+                -Wno-error=stringop-overread)
+        endif()
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
            _yume_sanitize STREQUAL "thread")
             # GCC diagnoses the atomic fences used by Boost.Asio as not being
             # modeled by TSan. Keep that limitation visible without allowing

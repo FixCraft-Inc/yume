@@ -231,6 +231,170 @@ jobs:
         run: |
           ctest --test-dir build-asan --output-on-failure --parallel 2
 
+
+  # ThreadSanitizer. Separate job because TSan and ASan are mutually exclusive
+  # instrumentation: they cannot share a build directory or a run. Before this
+  # existed, TSan had only ever been run by hand on a developer's build host,
+  # so a data race could reach main with nothing objecting.
+  thread-sanitize:
+    needs: [preflight]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
+          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+          fi
+          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config perl \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
+
+      - name: Fetch and verify prebuilt vendor libs
+        run: |
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Configure (ThreadSanitizer)
+        run: |
+          test "$(pkg-config --modversion openssl)" = "3.5.7"
+          cmake -S . -B build-tsan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_STATIC_OPENSSL=ON \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DYUME_SANITIZE=thread \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+
+      - name: Build
+        run: |
+          cmake --build build-tsan --parallel "${CI_SANITIZER_BUILD_JOBS}"
+
+      - name: Run unit tests under ThreadSanitizer
+        env:
+          # halt_on_error keeps the first race as the failure rather than a
+          # wall of cascading ones. The prebuilt vendor archives are not
+          # instrumented, so a report pointing inside them is a suppression
+          # candidate rather than necessarily a YUME defect.
+          TSAN_OPTIONS: halt_on_error=1:abort_on_error=1:second_deadlock_stack=1
+        run: |
+          ctest --test-dir build-tsan --output-on-failure --parallel 2
+
+  # libFuzzer smoke over the parsers that consume input from outside a trust
+  # boundary. This is a regression gate, not a campaign: it proves the
+  # harnesses still build and that the seeded corpus produces no crash. A
+  # sustained campaign is a separate, longer-running exercise.
+  #
+  # Clang-only, so this is the one job that does not use the default compiler.
+  # It builds the three harness targets by name rather than the whole tree,
+  # which keeps it well inside the runner budget.
+  fuzz:
+    needs: [preflight]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
+          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+          fi
+          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config perl \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
+
+      - name: Fetch and verify prebuilt vendor libs
+        run: |
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Install Clang
+        run: |
+          sudo apt-get install -y clang
+          clang++ --version
+
+      - name: Configure (libFuzzer)
+        run: |
+          # YUME_BUILD_FUZZERS forces YUME_LTO=OFF: the harnesses carry their
+          # own ASan+UBSan instrumentation, and LTO rewrites across exactly the
+          # boundaries that instrumentation reports against.
+          CC=clang CXX=clang++ cmake -S . -B build-fuzz \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_BUILD_FUZZERS=ON \
+            -DYUME_STATIC_OPENSSL=ON \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+
+      - name: Build harnesses
+        run: |
+          cmake --build build-fuzz --parallel "${CI_SANITIZER_BUILD_JOBS}" \
+            --target yume_fuzz_h2_probe_decoder \
+                     yume_fuzz_client_config \
+                     yume_fuzz_server_config
+
+      - name: Fuzz
+        run: |
+          set -euo pipefail
+          bash tests/fuzz/run_fuzzers.sh build-fuzz/bin "${FUZZ_SECONDS}" fuzz-out
+        env:
+          FUZZ_SECONDS: "60"
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz-out/artifacts/
+          if-no-files-found: ignore
+
   # The optional desktop GUI. It defaults to OFF, so before this job nothing
   # in CI compiled it and no automated check ever opened its window: a GUI
   # break could only be found by a human building locally.

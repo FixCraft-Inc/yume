@@ -192,9 +192,9 @@ For an optional, reversible TUN/NAT/UFW setup, review and apply the separate
 host helper instead of granting firewall privileges to the daemon:
 
 ```bash
-yume-packet-quick up --listen build-host.example:8443 \
+yume-packet-quick up --listen 192.168.1.10:8443 \
   --allow-from 192.168.1.0/24 --dry-run
-sudo yume-packet-quick up --listen build-host.example:8443 \
+sudo yume-packet-quick up --listen 192.168.1.10:8443 \
   --allow-from 192.168.1.0/24
 sudo yume-packet-quick down
 ```

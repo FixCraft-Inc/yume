@@ -72,7 +72,7 @@ explicit `yume-packet-quick` helper. Review its complete plan first:
 
 ```bash
 tools/yume_packet_quick.py up \
-  --listen build-host.example:8443 \
+  --listen 192.168.1.10:8443 \
   --allow-from 192.168.1.0/24 \
   --dry-run
 ```
@@ -81,7 +81,7 @@ Then apply it through `sudo`:
 
 ```bash
 sudo tools/yume_packet_quick.py up \
-  --listen build-host.example:8443 \
+  --listen 192.168.1.10:8443 \
   --allow-from 192.168.1.0/24
 ```
 

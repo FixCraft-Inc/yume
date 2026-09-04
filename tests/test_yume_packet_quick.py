@@ -20,13 +20,21 @@ SPEC.loader.exec_module(packet_quick)
 
 class PacketQuickTest(unittest.TestCase):
     def test_parses_scoped_ipv4_inputs(self) -> None:
-        address, port = packet_quick.parse_listen("build-host.example:8443")
-        self.assertEqual(address, ipaddress.IPv4Address("build-host.example"))
+        address, port = packet_quick.parse_listen("192.168.1.10:8443")
+        self.assertEqual(address, ipaddress.IPv4Address("192.168.1.10"))
         self.assertEqual(port, 8443)
         self.assertEqual(
             packet_quick.parse_packet_cidr("10.89.0.0/24"),
             ipaddress.IPv4Network("10.89.0.0/24"),
         )
+
+    def test_rejects_non_numeric_listen_address(self) -> None:
+        # The parsed address is rendered into nftables and UFW rules, so a
+        # name that could resolve anywhere -- or to nothing -- is refused
+        # rather than looked up.
+        for value in ("build-host.example:8443", "localhost:8443", "8443", ""):
+            with self.assertRaises(packet_quick.SetupError):
+                packet_quick.parse_listen(value)
 
     def test_rejects_unsafe_interface_and_packet_pool(self) -> None:
         with self.assertRaises(packet_quick.SetupError):
@@ -44,7 +52,7 @@ class PacketQuickTest(unittest.TestCase):
             mtu=1420,
             owner="yume",
             wan="wlan0",
-            listen_address=ipaddress.IPv4Address("build-host.example"),
+            listen_address=ipaddress.IPv4Address("192.168.1.10"),
             listen_port=8443,
             allow_from=ipaddress.IPv4Network("192.168.1.0/24"),
             firewall="ufw",

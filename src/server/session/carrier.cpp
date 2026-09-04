@@ -16,6 +16,8 @@
 #include <filesystem>
 #include <limits>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 #include <boost/beast/http/status.hpp>
@@ -1304,7 +1306,22 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
         return;
     }
     if (bytes > 0) {
-        carrier_decoder_->feed(carrier_scratch_.data(), bytes);
+        // This is an asynchronous trust boundary: the bytes are peer-supplied
+        // and unauthenticated, and an escaping exception would unwind into the
+        // Asio worker rather than this session. The decoder is written to
+        // reject malformed input instead of throwing; contain a throw anyway
+        // so a future decoder defect degrades to the decoy response.
+        try {
+            carrier_decoder_->feed(carrier_scratch_.data(), bytes);
+        } catch (const std::exception& ex) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": h2 carrier decode threw; serving masquerade "
+                           "response: " + std::string(ex.what()));
+            carrier_probe_active_ = false;
+            preface_timer_.cancel();
+            serve_fake_h2_real_index();
+            return;
+        }
     }
     if (carrier_decoder_->failed()) {
         util::log_warn("session " + std::to_string(session_id_) +

@@ -952,6 +952,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/runtime/file_transaction_lock.cpp
         core/runtime/local_runtime.cpp
         core/runtime/service_stream.cpp
+        core/runtime/worker_loop.cpp
         core/stealth/obfs.cpp
         core/stealth/obfs_h2.cpp
         core/stealth/obfs_signal.cpp
@@ -1248,7 +1249,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_link_libraries(yume_anonym_curl_transport_test PRIVATE yume_core)
         target_compile_definitions(yume_anonym_curl_transport_test PRIVATE
             YUME_CURL_TRANSPORT_TESTING=1)
-        yume_apply_warnings(yume_anonym_curl_transport_test)
+        # perf_opts, not warnings alone: this links yume_core, which is built
+        # with LTO. Under Clang an LTO archive is bitcode and a consumer
+        # without -flto cannot link it ("file format not recognized"). GCC
+        # hides that by using the linker plugin automatically. The ABI targets
+        # are the only deliberate exceptions, and they link non-LTO inputs.
+        yume_apply_perf_opts(yume_anonym_curl_transport_test)
         add_test(NAME yume_anonym_curl_transport_test
             COMMAND yume_anonym_curl_transport_test)
     endif()
@@ -1658,6 +1664,14 @@ yume_link_atomic_if_needed(yume_directory_policy_test PRIVATE)
 yume_apply_perf_opts(yume_directory_policy_test)
 add_test(NAME yume_directory_policy_test
     COMMAND yume_directory_policy_test)
+
+add_executable(yume_protocol_stream_test
+    core/protocol/protocol_stream_test.cpp)
+target_link_libraries(yume_protocol_stream_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_protocol_stream_test PRIVATE)
+yume_apply_perf_opts(yume_protocol_stream_test)
+add_test(NAME yume_protocol_stream_test
+    COMMAND yume_protocol_stream_test)
 
 add_executable(yume_control_command_policy_test
     core/protocol/control_command_policy_test.cpp)
@@ -2119,6 +2133,14 @@ yume_link_atomic_if_needed(yume_stream_queue_limits_test PRIVATE)
 yume_apply_perf_opts(yume_stream_queue_limits_test)
 add_test(NAME yume_stream_queue_limits_test COMMAND yume_stream_queue_limits_test)
 
+add_executable(yume_worker_loop_test
+    core/runtime/worker_loop_test.cpp
+)
+target_link_libraries(yume_worker_loop_test PRIVATE yume_core Threads::Threads)
+yume_link_atomic_if_needed(yume_worker_loop_test PRIVATE)
+yume_apply_perf_opts(yume_worker_loop_test)
+add_test(NAME yume_worker_loop_test COMMAND yume_worker_loop_test)
+
 add_executable(yume_service_stream_test
     core/runtime/service_stream_test.cpp
     core/runtime/service_stream.cpp
@@ -2258,6 +2280,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_socket_autotuning.py"
     )
+    # The packet helper renders its --listen value into nftables and UFW
+    # rules, so its parsing and plan invariants are a gate, not a convenience.
+    add_test(NAME yume_packet_quick_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_packet_quick.py"
+    )
     # Provisioning coverage. These generate real kits and assert the
     # credential-store invariants, including the separation between the
     # traffic store and the admin second-factor store. They were previously
@@ -2394,6 +2422,13 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_setup_install.cmake"
     )
 
+    add_executable(yume_tls_verify_fetch_test
+        core/stealth/tls_verify_fetch_test.cpp)
+    target_link_libraries(yume_tls_verify_fetch_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_tls_verify_fetch_test PRIVATE)
+    yume_apply_perf_opts(yume_tls_verify_fetch_test)
+    add_test(NAME yume_tls_verify_fetch_test COMMAND yume_tls_verify_fetch_test)
+
     add_executable(yume_obfs_test core/stealth/obfs_test.cpp)
     target_link_libraries(yume_obfs_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
@@ -2427,6 +2462,35 @@ if(NOT YUME_BUILD_TRANSPORT_V2)
 endif()
 
 # ---------------------------------------------------------------------------
+# Fuzz harnesses. Opt-in, Clang-only, never installed. Each target covers a
+# parser that consumes input from outside the trust boundary: the H2 carrier
+# probe decoder reached before authentication, and the two configuration
+# loaders. They are executables rather than CTest cases because a fuzz run is
+# time-bounded by the operator, not by a pass/fail assertion.
+if(YUME_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "YUME_BUILD_FUZZERS requires Clang; got ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+
+    function(yume_add_fuzzer name source)
+        add_executable(${name} "${CMAKE_SOURCE_DIR}/tests/fuzz/${source}")
+        target_link_libraries(${name} PRIVATE ${ARGN})
+        target_compile_options(${name} PRIVATE
+            -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
+        target_link_options(${name} PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+        yume_apply_perf_opts(${name})
+    endfunction()
+
+    yume_add_fuzzer(yume_fuzz_h2_probe_decoder fuzz_h2_probe_decoder.cpp yume_core)
+    if(TARGET yume_facade)
+        yume_add_fuzzer(yume_fuzz_client_config fuzz_client_config.cpp yume_facade)
+        yume_add_fuzzer(yume_fuzz_server_config fuzz_server_config.cpp yume_facade)
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Warning-coverage audit.
 #
 # Every first-party target compiled from this directory or a first-party
@@ -2434,6 +2498,11 @@ endif()
 # or via yume_apply_perf_opts(). A target that forgets it compiles with no
 # warning flags at all and nothing says so - which is exactly how the public
 # ABI library ended up as the one unwarned target in the tree.
+#
+# A first-party target that links an LTO-built first-party library needs
+# yume_apply_perf_opts, not yume_apply_warnings alone: under Clang the archive
+# is bitcode and a consumer without -flto cannot read it. The ABI targets are
+# the deliberate exception because their inputs are built without LTO.
 #
 # Add a genuinely exempt target to YUME_WARNING_EXEMPT_TARGETS with a comment
 # saying why. Recursion stays below this source directory, so FetchContent and

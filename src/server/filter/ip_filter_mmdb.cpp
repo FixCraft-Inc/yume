@@ -51,7 +51,13 @@ struct MmdbValue {
     std::string text;
     std::uint64_t uint_value{0};
     bool bool_value{false};
-    std::vector<std::pair<std::string, MmdbValue>> map;
+    // Key of this value when it is a member of an enclosing map. std::vector
+    // supports an incomplete element type; std::pair does not, so the key
+    // cannot live in a pair alongside a not-yet-complete MmdbValue. GCC
+    // accepted that spelling, Clang rejects it, and it was ill-formed either
+    // way.
+    std::string key;
+    std::vector<MmdbValue> map;
 };
 
 struct MmdbControl {
@@ -194,7 +200,8 @@ bool read_mmdb_value(const std::vector<std::uint8_t>& data,
             if (!read_mmdb_value(data, pointer_base, pos, depth + 1, &child, &pos)) {
                 return false;
             }
-            value.map.emplace_back(std::move(key.text), std::move(child));
+            child.key = std::move(key.text);
+            value.map.emplace_back(std::move(child));
         }
         *next = pos;
         *out = std::move(value);
@@ -235,8 +242,8 @@ bool read_mmdb_value(const std::vector<std::uint8_t>& data,
 
 const MmdbValue* mmdb_map_find(const MmdbValue& value, std::string_view key) {
     if (value.type != MmdbValue::Type::Map) return nullptr;
-    for (const auto& [item_key, item_value] : value.map) {
-        if (item_key == key) return &item_value;
+    for (const auto& item : value.map) {
+        if (item.key == key) return &item;
     }
     return nullptr;
 }

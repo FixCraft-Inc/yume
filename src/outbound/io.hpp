@@ -645,7 +645,7 @@ inline bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
                    (static_cast<uint32_t>(header[2]) << 8) |
                    (static_cast<uint32_t>(header[3]));
     uint8_t type = header[4];
-    if (len > 16U * 1024U * 1024U) {
+    if (len > protocol::kMaxFramePayloadBytes) {
         return false;
     }
     if (type < protocol::AUTH || type > protocol::SOPEN) {

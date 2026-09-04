@@ -156,6 +156,9 @@ option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OF
 option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
 option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool for desktop developers" OFF)
 option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
+# libFuzzer harnesses for the parsers an untrusted peer or file reaches.
+# Clang-only and never installed; the corpora live outside the tree.
+option(YUME_BUILD_FUZZERS "Build libFuzzer harnesses (requires Clang)" OFF)
 option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI
     "Build the experimental, uninstalled ABI v1 candidate and contract tests"
@@ -444,6 +447,15 @@ endif()
 string(TOLOWER "${YUME_SANITIZE}" _yume_sanitize)
 if(_yume_sanitize STREQUAL "" OR _yume_sanitize STREQUAL "off")
     set(_yume_sanitize "none")
+endif()
+
+# The fuzz harnesses carry their own instrumentation rather than going through
+# YUME_SANITIZE, so they miss the forcing below. They need it for the same
+# reason: LTO rewrites across the boundaries the instrumentation reports
+# against, and under Clang it also leaves every archive as bitcode that a
+# non-IPO target cannot link.
+if(YUME_BUILD_FUZZERS)
+    set(YUME_LTO OFF CACHE BOOL "Enable link-time optimization for yume builds" FORCE)
 endif()
 
 if(NOT _yume_sanitize STREQUAL "none")

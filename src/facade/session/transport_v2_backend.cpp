@@ -85,6 +85,7 @@ BackendIo backend_io_from(runtime::OperationStatus status) noexcept {
     case runtime::OperationStatus::ResourceExhausted:
         return BackendIo::ResourceExhausted;
     case runtime::OperationStatus::AlreadyRunning:
+        return BackendIo::AlreadyRunning;
     case runtime::OperationStatus::InternalError:
         return BackendIo::Failed;
     }
@@ -280,12 +281,18 @@ public:
     // caller is allowed to drop the handle without stopping first.
     ~ClientBackend() override { stop(); }
 
-    bool start(std::uint32_t timeout_ms, std::string& error) override {
+    BackendIo start(std::uint32_t timeout_ms, std::string& error) override {
         const auto wait = timeout_ms == 0U
             ? kDefaultStartWait
             : std::chrono::milliseconds(timeout_ms);
         std::lock_guard<std::mutex> lock(mutex_);
-        return client_.start(config_, &error, wait);
+        // Start pessimistic: a false return that forgot to set a status must
+        // surface as an internal error, never as success.
+        auto operation_status = runtime::OperationStatus::InternalError;
+        if (client_.start(config_, &error, wait, &operation_status)) {
+            return BackendIo::Ok;
+        }
+        return backend_io_from(operation_status);
     }
 
     void stop() noexcept override {
@@ -532,10 +539,16 @@ public:
 
     ~ServerBackend() override { stop(); }
 
-    bool start(std::uint32_t /*timeout_ms*/, std::string& error) override {
+    BackendIo start(std::uint32_t /*timeout_ms*/, std::string& error) override {
         // Listener setup already bounds itself and takes no caller deadline.
         std::lock_guard<std::mutex> lock(mutex_);
-        return controller_.start(config_, &error);
+        // Start pessimistic: a false return that forgot to set a status must
+        // surface as an internal error, never as success.
+        auto operation_status = runtime::OperationStatus::InternalError;
+        if (controller_.start(config_, &error, &operation_status)) {
+            return BackendIo::Ok;
+        }
+        return backend_io_from(operation_status);
     }
 
     void stop() noexcept override {
@@ -560,7 +573,9 @@ public:
             error = "server runtime is not running";
             return BackendIo::NotRunning;
         }
-        auto operation_status = runtime::OperationStatus::Success;
+        // Start pessimistic: a false return that forgot to set a status must
+        // surface as an internal error, never as success.
+        auto operation_status = runtime::OperationStatus::InternalError;
         if (controller_.register_service(
                 service, &error, &operation_status)) {
             return BackendIo::Ok;
@@ -588,7 +603,9 @@ public:
             error = "server runtime is not running";
             return BackendIo::NotRunning;
         }
-        auto operation_status = runtime::OperationStatus::Success;
+        // Start pessimistic: a false return that forgot to set a status must
+        // surface as an internal error, never as success.
+        auto operation_status = runtime::OperationStatus::InternalError;
         auto stream = controller_.accept_service_stream(
             service, timeout_ms, &error, &operation_status);
         if (!stream) {
@@ -611,36 +628,60 @@ std::unique_ptr<BackendConfig> parse_transport_v2_config(
     std::string_view json,
     bool is_server,
     std::string_view base_dir,
-    std::string& error) {
+    BackendConfigDiagnostic& diagnostic) {
+    diagnostic = {};
     // The ABI receives bytes, not a file, so relative credential paths have
     // to resolve against something explicit rather than silently against
     // whatever the embedder's working directory happens to be at parse time.
     const std::filesystem::path base{std::string(base_dir)};
+    // Two gates, and only the second is Invalid: the document must be well
+    // formed for its dialect, then the values it carries must describe an
+    // endpoint that can actually run. A validation failure spans the document
+    // rather than one member, so it carries no pointer.
+    const auto validation_failed = [&diagnostic](
+                                       const facade::config_io::ValidationReport&
+                                           report) {
+        if (report.ok()) {
+            diagnostic.outcome = BackendConfigOutcome::Ok;
+            return false;
+        }
+        diagnostic.outcome = BackendConfigOutcome::Invalid;
+        diagnostic.json_pointer.clear();
+        diagnostic.message = join_report(report);
+        return true;
+    };
     try {
         if (is_server) {
             auto parsed = facade::config_io::parse_server_json(
-                json, base, &error);
-            if (!parsed) return nullptr;
-            const auto report = facade::config_io::validate(*parsed);
-            if (!report.ok()) {
-                error = join_report(report);
+                json, base, &diagnostic.message, &diagnostic.json_pointer);
+            if (!parsed) {
+                diagnostic.outcome = BackendConfigOutcome::Malformed;
+                return nullptr;
+            }
+            if (validation_failed(facade::config_io::validate(*parsed))) {
                 return nullptr;
             }
             return std::make_unique<ServerBackendConfig>(std::move(*parsed));
         }
-        auto parsed = facade::config_io::parse_client_json(json, base, &error);
-        if (!parsed) return nullptr;
-        const auto report = facade::config_io::validate(*parsed);
-        if (!report.ok()) {
-            error = join_report(report);
+        auto parsed = facade::config_io::parse_client_json(
+            json, base, &diagnostic.message, &diagnostic.json_pointer);
+        if (!parsed) {
+            diagnostic.outcome = BackendConfigOutcome::Malformed;
+            return nullptr;
+        }
+        if (validation_failed(facade::config_io::validate(*parsed))) {
             return nullptr;
         }
         return std::make_unique<ClientBackendConfig>(std::move(*parsed));
     } catch (const std::exception& thrown) {
-        error = thrown.what();
+        diagnostic.outcome = BackendConfigOutcome::Failed;
+        diagnostic.json_pointer.clear();
+        diagnostic.message = thrown.what();
         return nullptr;
     } catch (...) {
-        error = "configuration parsing failed";
+        diagnostic.outcome = BackendConfigOutcome::Failed;
+        diagnostic.json_pointer.clear();
+        diagnostic.message = "configuration parsing failed";
         return nullptr;
     }
 }

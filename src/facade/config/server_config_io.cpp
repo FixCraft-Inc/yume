@@ -21,6 +21,7 @@
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
 #include "config/ratchet_profile_json.hpp"
+#include "config/server_document_keys.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/runtime/atomic_file.hpp"
@@ -43,6 +44,9 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     if (!j.is_object()) {
         throw std::runtime_error("config root must be a JSON object");
     }
+    if (auto key_error = yume::config::server_document_key_error(j)) {
+        throw std::move(*key_error);
+    }
     server::ServerConfig s;
     read_opt(j, cfg_key::transport_profile, s.transport_profile);
     read_opt(j, cfg_key::listen_address, s.listen_address);
@@ -57,7 +61,10 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::max_sessions, s.max_sessions);
     read_opt(j, cfg_key::accept_rate_limit, s.accept_rate_limit);
     read_opt(j, cfg_key::obfuscation, s.obfuscation);
-    read_opt(j, cfg_key::obfs_secret, s.obfs_secret);
+    // validate() judges both shaping fields, so a parser that silently
+    // dropped them made a GUI-loaded server quietly unshaped.
+    read_opt(j, cfg_key::obfs_pad_multiple, s.obfs_pad_multiple);
+    read_opt(j, cfg_key::obfs_jitter_ms, s.obfs_jitter_ms);
     read_opt(j, cfg_key::obfs_secret_file, s.obfs_secret_file);
     read_opt(j, cfg_key::inner_psk_file, s.inner_psk_file);
     read_opt(j, cfg_key::inner_crypto, s.inner_crypto);
@@ -79,12 +86,6 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::preauth_services, s.preauth_services);
     if (j.contains(cfg_key::allow_monero_rpc_codec)) {
         s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc_codec].get<bool>();
-        if (s.allow_monero_rpc_codec) {
-            yume::app_codec::add_codec_unique(&s.allowed_codecs,
-                                              yume::app_codec::builtin::kMoneroRpcCodecId);
-        }
-    } else if (j.contains(cfg_key::allow_monero_rpc)) {
-        s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc].get<bool>();
         if (s.allow_monero_rpc_codec) {
             yume::app_codec::add_codec_unique(&s.allowed_codecs,
                                               yume::app_codec::builtin::kMoneroRpcCodecId);
@@ -113,22 +114,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
             }
         }
     };
-    read_codec_allow(cfg_key::codec_allow);
     read_codec_allow(cfg_key::allow_codecs);
-    if (j.contains(cfg_key::monero_rpc_backend)) {
-        std::string parse_error;
-        auto ep = yume::app_codec::parse_endpoint_spec(
-            j[cfg_key::monero_rpc_backend].get<std::string>(),
-            yume::app_codec::builtin::kMoneroRpcDefaultHost,
-            yume::app_codec::builtin::kMoneroRpcDefaultPort,
-            &parse_error);
-        if (ep.has_value()) {
-            s.monero_rpc_backend_host = ep->host;
-            s.monero_rpc_backend_port = ep->port;
-        } else {
-            throw std::runtime_error("monero_rpc_backend: " + parse_error);
-        }
-    }
     read_opt(j, cfg_key::monero_rpc_backend_host, s.monero_rpc_backend_host);
     read_opt(j, cfg_key::monero_rpc_backend_port, s.monero_rpc_backend_port);
     read_opt(j, cfg_key::real_http, s.real_http);
@@ -136,7 +122,6 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::real_index_path, s.real_index_path);
     read_opt(j, cfg_key::real_root, s.real_root);
     read_opt(j, cfg_key::real_backend, s.real_backend);
-    read_opt(j, cfg_key::real_secret, s.real_secret);
     read_opt(j, cfg_key::real_secret_file, s.real_secret_file);
     read_opt(j, cfg_key::anonym, s.anonym);
     read_opt(j, cfg_key::anonym_proof_mode, s.anonym_proof_mode);
@@ -196,6 +181,9 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::packet_cidr, s.packet_cidr);
     read_opt(j, cfg_key::packet_mtu, s.packet_mtu);
     read_opt(j, cfg_key::boring, s.boring);
+    read_opt(j, cfg_key::benchmark_enable, s.benchmark_enable);
+    read_opt(j, cfg_key::upstream_response_dir, s.upstream_response_dir);
+    read_opt(j, cfg_key::upstream_response_ttl, s.upstream_response_ttl_s);
     if (j.contains(cfg_key::host_mode)) {
         auto mode = yume::server::host::parse_host_mode(j[cfg_key::host_mode].get<std::string>());
         if (mode.has_value()) {
@@ -208,14 +196,6 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
         }
     }
     read_opt(j, cfg_key::accept_yume_clients, s.accept_yume_clients);
-    if (j.contains(cfg_key::deny_default)) {
-        auto action = yume::server::host::parse_deny_action(j[cfg_key::deny_default].get<std::string>());
-        if (action.has_value()) {
-            s.client_deny_action = *action;
-        } else {
-            throw std::runtime_error("deny_default must be close, reset, or drop");
-        }
-    }
     if (j.contains(cfg_key::client_deny_action)) {
         auto action = yume::server::host::parse_deny_action(j[cfg_key::client_deny_action].get<std::string>());
         if (action.has_value()) {
@@ -225,9 +205,6 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
         }
     }
     read_opt(j, cfg_key::exposure_check_hostname, s.exposure_check_hostname);
-    if (j.contains(cfg_key::exposure_check) && s.exposure_check_hostname.empty()) {
-        s.exposure_check_hostname = j[cfg_key::exposure_check].get<std::string>();
-    }
     if (j.contains(cfg_key::routes)) {
         std::string route_error;
         if (!yume::server::host::HostRouteTable::parse_routes_json(j[cfg_key::routes],
@@ -310,8 +287,10 @@ std::optional<server::ServerConfig> load_server(
 std::optional<server::ServerConfig> parse_server_json(
     std::string_view text,
     std::filesystem::path const& base_dir,
-    std::string* err) {
+    std::string* err,
+    std::string* json_pointer) {
     if (err) err->clear();
+    if (json_pointer) json_pointer->clear();
     json j;
     try {
         j = json::parse(text.begin(), text.end());
@@ -321,6 +300,12 @@ std::optional<server::ServerConfig> parse_server_json(
     }
     try {
         return server_from_json(j, base_dir);
+    } catch (yume::config::DocumentError const& e) {
+        // Attributable to one member, so the caller gets its location as
+        // data instead of having to read it out of the message.
+        if (err) *err = e.what();
+        if (json_pointer) *json_pointer = e.json_pointer();
+        return std::nullopt;
     } catch (std::exception const& e) {
         if (err) *err = e.what();
         return std::nullopt;
@@ -423,6 +408,9 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::packet_cidr, s.packet_cidr},
         {cfg_key::packet_mtu, s.packet_mtu},
         {cfg_key::boring, s.boring},
+        {cfg_key::benchmark_enable, s.benchmark_enable},
+        {cfg_key::upstream_response_dir, s.upstream_response_dir},
+        {cfg_key::upstream_response_ttl, s.upstream_response_ttl_s},
         {cfg_key::host_mode, yume::server::host::to_string(s.host_mode)},
         {cfg_key::accept_yume_clients, s.accept_yume_clients},
         {cfg_key::client_deny_action, yume::server::host::to_string(s.client_deny_action)},
@@ -497,10 +485,6 @@ ValidationReport validate(server::ServerConfig const& s) {
     if (s.inner_psk_file.empty()) {
         r.errors.emplace_back("inner_psk_file: required");
     }
-    if (!s.obfs_secret.empty()) {
-        r.errors.emplace_back(
-            "obfs_secret: inline secrets are refused; use obfs_secret_file");
-    }
     if (s.real_backend.empty()) {
         r.errors.emplace_back(
             "real_backend: required; expected "
@@ -509,6 +493,17 @@ ValidationReport validate(server::ServerConfig const& s) {
                     .has_value()) {
         r.errors.emplace_back(
             "real_backend: must be loopback://<loopback-ip-literal>:<port>");
+    }
+    // The cover backend answers HTTP/1.1 only. The HTTP/2 decoy needs its own
+    // source, and there is no built-in page, because one compiled into the
+    // daemon would be identical on every deployment.
+    if (s.real_http && s.upstream_response_dir.empty() &&
+        s.upstream_response_file.empty() && s.upstream_response_bytes.empty() &&
+        s.real_root.empty() && s.real_index_path.empty()) {
+        r.errors.emplace_back(
+            "real_index_path/real_root/upstream_response_dir: one cover source "
+            "is required for the HTTP/2 decoy; real_backend answers HTTP/1.1 "
+            "only");
     }
     if (!s.obfuscation || !s.inner_crypto) {
         r.errors.emplace_back(

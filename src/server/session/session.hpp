@@ -178,7 +178,9 @@ private:
     // Connection header, so a 404 ends the (possibly keep-alive) connection
     // rather than lie about reuse.
     void send_disguise_404(const std::string& path);
-    std::string load_real_index();
+    // Nullopt when no configured cover source can be read; there is no
+    // built-in page, because a constant one is a deployment-wide fingerprint.
+    std::optional<std::string> load_real_index();
     std::string build_hidden_blob();
     void send_auth_challenge();
 

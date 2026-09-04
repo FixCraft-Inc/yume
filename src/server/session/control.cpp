@@ -137,7 +137,7 @@ void Session::handle_control_impl(const protocol::Frame& frame) {
     const std::string cmd = command;
     if (cmd == "register") {
         std::string registration_error;
-        auto registration = control::try_legacy_control_registration_from_json(
+        auto registration = control::try_control_registration_from_json(
             json, &registration_error);
         if (!registration) {
             util::log_warn("session " + std::to_string(session_id_) +
@@ -745,6 +745,9 @@ void Session::handle_control_impl(const protocol::Frame& frame) {
         return;
     }
 
+    // "attach" takes control of a controlled client session that granted
+    // server-in-charge; "admin.attach" above inspects a directory endpoint.
+    // They are different operations, not two generations of one.
     if (cmd == "attach") {
         nlohmann::json resp;
         resp["cmd"] = "attach";
@@ -778,7 +781,9 @@ void Session::handle_control_impl(const protocol::Frame& frame) {
                 client_allow_outbound_admin_,
                 target->allows_inbound_admin())) {
             resp["ok"] = false;
-            resp["error"] = "legacy attach requires caller outbound-admin and target inbound-admin permission in trusted relay mode";
+            resp["error"] =
+                "session attach requires caller outbound-admin and target "
+                "inbound-admin permission in trusted relay mode";
             send_json(resp);
             return;
         }

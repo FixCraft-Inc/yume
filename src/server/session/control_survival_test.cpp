@@ -125,7 +125,7 @@ void CheckControlSurvival(yume::server::Session& session) {
     auto oversized_registration = nlohmann::json{
         {"cmd", "register"},
         {"hostname", std::string(
-             yume::control::kMaxLegacyHostnameBytes + 1U, 'h')},
+             yume::control::kMaxRegistrationHostnameBytes + 1U, 'h')},
         {"wan_ip", "203.0.113.7"},
         {"server_in_charge", true},
         {"allow_exec", true},
@@ -156,7 +156,7 @@ void CheckControlSurvival(yume::server::Session& session) {
     Check(SessionControlSurvivalTestPeer::ServerInCharge(session),
           "valid registration lost server-in-charge");
     Check(!SessionControlSurvivalTestPeer::AllowsExec(session),
-          "legacy registration bypassed the disabled EXEC policy");
+          "registration bypassed the disabled EXEC policy");
 
     // This was the original remote exception: json.value<string>() on an
     // integer state.  It must produce a bounded rejection and leave the same

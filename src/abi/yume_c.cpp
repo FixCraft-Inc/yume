@@ -43,11 +43,15 @@
 // readable, and every dialect that would reach these is already refused.
 namespace yume::embed {
 
-std::unique_ptr<BackendConfig> parse_transport_v2_config(std::string_view,
-                                                         bool,
-                                                         std::string_view,
-                                                         std::string& error) {
-    error = "this build has no transport runtime linked into the ABI";
+std::unique_ptr<BackendConfig> parse_transport_v2_config(
+    std::string_view,
+    bool,
+    std::string_view,
+    BackendConfigDiagnostic& diagnostic) {
+    diagnostic.outcome = BackendConfigOutcome::Unsupported;
+    diagnostic.json_pointer.clear();
+    diagnostic.message =
+        "this build has no transport runtime linked into the ABI";
     return nullptr;
 }
 
@@ -63,14 +67,6 @@ std::unique_ptr<EndpointBackend> make_transport_v2_backend(
 #endif
 
 namespace {
-
-// "This build cannot do that" is a different answer from "that document is
-// malformed", and an embedder debugging a config deserves the accurate one.
-#if defined(YUME_ABI_TRANSPORT_V2) && YUME_ABI_TRANSPORT_V2
-constexpr bool kTransportBackendLinked = true;
-#else
-constexpr bool kTransportBackendLinked = false;
-#endif
 
 constexpr std::uint64_t kHandleMagic = UINT64_C(0x59554d4530334142);
 constexpr std::uint32_t kDefaultPendingCallbacks = 1024;
@@ -866,7 +862,28 @@ yume_status status_from_backend(yume::embed::BackendIo io) noexcept {
         return YUME_STATUS_PERMISSION_DENIED;
     case yume::embed::BackendIo::ResourceExhausted:
         return YUME_STATUS_RESOURCE_EXHAUSTED;
+    case yume::embed::BackendIo::AlreadyRunning:
+        return YUME_STATUS_INVALID_STATE;
     case yume::embed::BackendIo::Failed:     return YUME_STATUS_IO_ERROR;
+    }
+    return YUME_STATUS_INTERNAL_ERROR;
+}
+
+// A malformed document and one that parses but cannot describe a running
+// endpoint are separate answers to an embedder, so they get separate statuses.
+yume_status status_from_config_outcome(
+    yume::embed::BackendConfigOutcome outcome) noexcept {
+    switch (outcome) {
+    case yume::embed::BackendConfigOutcome::Ok:
+        return YUME_STATUS_OK;
+    case yume::embed::BackendConfigOutcome::Malformed:
+        return YUME_STATUS_PARSE_ERROR;
+    case yume::embed::BackendConfigOutcome::Invalid:
+        return YUME_STATUS_INVALID_ARGUMENT;
+    case yume::embed::BackendConfigOutcome::Unsupported:
+        return YUME_STATUS_UNSUPPORTED;
+    case yume::embed::BackendConfigOutcome::Failed:
+        return YUME_STATUS_INTERNAL_ERROR;
     }
     return YUME_STATUS_INTERNAL_ERROR;
 }
@@ -1254,8 +1271,8 @@ yume_status yume_config_parse_json(yume_runtime* runtime,
         }
 
         // Dialect selection is explicit, never inferred from which parser
-        // happens to accept the bytes. Both dialects ignore unknown keys, so
-        // guessing would silently load a document against the wrong runtime.
+        // happens to accept the bytes. Guessing would load a document against
+        // the wrong runtime whenever the two key sets overlap.
         const DocumentDialect dialect = classify_document(text);
         if (dialect.error != nullptr) {
             set_diagnostic(&runtime->header, YUME_STATUS_PARSE_ERROR,
@@ -1278,13 +1295,14 @@ yume_status yume_config_parse_json(yume_runtime* runtime,
             }
         }
 
-        std::string error;
+        yume::embed::BackendConfigDiagnostic diagnostic;
         auto parsed = yume::embed::parse_transport_v2_config(
-            text, dialect.server, runtime->state->config_base_dir, error);
+            text, dialect.server, runtime->state->config_base_dir, diagnostic);
         if (!parsed) {
-            const yume_status status = kTransportBackendLinked
-                ? YUME_STATUS_PARSE_ERROR : YUME_STATUS_UNSUPPORTED;
-            set_diagnostic(&runtime->header, status, {}, error);
+            const yume_status status = status_from_config_outcome(
+                diagnostic.outcome);
+            set_diagnostic(&runtime->header, status, diagnostic.json_pointer,
+                           diagnostic.message);
             return status;
         }
         auto config = std::make_unique<yume_config>(runtime->state,
@@ -1627,32 +1645,50 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
             if (!endpoint->control->backend) {
                 failure = YUME_STATUS_INTERNAL_ERROR;
                 detail = error.empty() ? "endpoint backend unavailable" : error;
-            } else if (endpoint->control->backend->start(timeout_ms, error)) {
+            } else if (const auto io =
+                           endpoint->control->backend->start(timeout_ms, error);
+                       io == yume::embed::BackendIo::Ok) {
                 started = true;
             } else {
                 // A failed start leaves no half-open runtime behind: the
                 // backend is torn down so a retry re-runs the whole sequence.
                 endpoint->control->backend->stop();
-                failure = YUME_STATUS_IO_ERROR;
+                // The backend carries the runtime's typed outcome, so a
+                // refused bind stays PERMISSION_DENIED instead of collapsing
+                // into a generic I/O failure the embedder cannot act on.
+                failure = status_from_backend(io);
                 detail = error.empty() ? "endpoint failed to start" : error;
             }
         }
 
+        bool cancelled = false;
         {
             std::lock_guard<std::mutex> lock(endpoint->control->mutex);
-            const bool cancelled =
-                endpoint->runtime->stopping.load() ||
-                endpoint->control->state != YUME_ENDPOINT_STARTING;
+            cancelled = endpoint->runtime->stopping.load() ||
+                        endpoint->control->state != YUME_ENDPOINT_STARTING;
             if (cancelled) {
                 if (started && endpoint->control->backend) {
                     endpoint->control->backend->stop();
                 }
-                return fail_with_diagnostic(&endpoint->header,
-                                            YUME_STATUS_CANCELLED,
-                                            "endpoint start was cancelled");
+                // A cancelled start must not strand the handle in STARTING:
+                // yume_endpoint_start refuses to retry from that state and an
+                // event-driven embedder would wait for a terminal event that
+                // never comes. A concurrent stop may already have moved the
+                // state on; only the STARTING marker set above is ours.
+                if (endpoint->control->state == YUME_ENDPOINT_STARTING) {
+                    endpoint->control->state = YUME_ENDPOINT_STOPPED;
+                }
+            } else {
+                endpoint->control->state =
+                    started ? YUME_ENDPOINT_RUNNING : YUME_ENDPOINT_FAILED;
             }
-            endpoint->control->state =
-                started ? YUME_ENDPOINT_RUNNING : YUME_ENDPOINT_FAILED;
+        }
+        if (cancelled) {
+            emit_endpoint_event(endpoint->runtime, endpoint->control->id,
+                                YUME_ENDPOINT_STOPPED, YUME_STATUS_CANCELLED);
+            return fail_with_diagnostic(&endpoint->header,
+                                        YUME_STATUS_CANCELLED,
+                                        "endpoint start was cancelled");
         }
 
         if (started) {

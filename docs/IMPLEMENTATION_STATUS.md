@@ -8,11 +8,11 @@ three terms deliberately:
 - **Qualified** means the exact candidate passed the complete gate for the
   named platform and environment.
 
-YUME is development software. The transition tree contains two explicit
-tracks: the default build keeps the runnable `0.2.0-dev6` client/daemon and
-transport-v2/AUTH-v2 path, while the `0.3.0-dev1` YTP/1 replacement foundation
-is built alongside it. Neither track is a stable or production-qualified
-release.
+YUME is development software at product version `0.3.0-dev1`. That single
+product contains two explicit transport tracks: the default build keeps the
+runnable client/daemon on the transport-v2/AUTH-v2 path, which speaks wire
+`0.2.0-dev6`, while the YTP/1 replacement foundation is built alongside it.
+Neither track is a stable or production-qualified release.
 
 ## Current 0.3 foundation
 

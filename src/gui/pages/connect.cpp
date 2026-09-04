@@ -667,7 +667,6 @@ private:
         in.obfuscation = cfg_.obfuscation;
         in.obfs_secret_path = cfg_.obfs_secret_file;
         in.inner_psk_path = cfg_.inner_psk_file;
-        in.obfs_secret = cfg_.obfs_secret;
         in.obfs_pad_multiple = cfg_.obfs_pad_multiple;
         in.obfs_jitter_ms = cfg_.obfs_jitter_ms;
         in.tls_pin_sha256 = cfg_.tls_pin_sha256;

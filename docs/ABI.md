@@ -41,9 +41,12 @@ symbols serve every backend and a later swap changes no exported name.
 A configuration document must name its role. A document that also carries
 `"schema": 1` is a YTP/1 document and is parsed by the strict schema-1 parser.
 Any other role-bearing document is the runnable transport-v2 dialect. The
-dialect is never inferred from which parser happens to accept the bytes:
-both ignore unknown keys, so guessing would load a document against the wrong
-runtime.
+dialect is never inferred from which parser happens to accept the bytes: the
+role and `schema` fields select it. Both parsers reject unknown keys, so a
+document offered to the wrong parser fails instead of loading with silently
+dropped fields. The transport-v2 client parser shares one closed key table
+with the `yume` CLI (`src/config/client_document_keys.hpp`); a misspelled
+security key such as `tls_pin` is an error, never "not configured".
 
 | Dialect | Start | Byte streams | Packets |
 | --- | --- | --- | --- |
@@ -262,10 +265,20 @@ selects the strict replacement parser, which validates closed endpoint, suite,
 credential, cover, service/adapter, and resource-limit objects. Omitting
 `schema` selects the transport-v2 parser.
 
-Unknown keys, old aliases, wrong types, inline private material, unsupported
-providers, and unsafe combinations are errors. No partial config handle is
-published. The runtime diagnostic names the first failure with an RFC 6901
-JSON pointer. A pointer or message longer than its fixed ABI field is marked by
+Unknown keys, wrong types, inline private material, unsupported providers, and
+unsafe combinations are errors, and no partial config handle is published. One
+qualification applies to the transport-v2 dialect only: it still accepts four
+alias spellings (`io_threads`, `allow_udp`, `tls_pin_sha256`, `codec`) because
+a released consumer emits one of them, while every writer emits the canonical
+key.
+
+Both dialects report the first failure with an RFC 6901 JSON pointer when it
+is attributable to one member, and an empty pointer when it is not, such as
+malformed JSON or a document-wide validation failure. The two are separate
+statuses: a document that is not well formed for its dialect is
+`YUME_STATUS_PARSE_ERROR`, and a document that parses but does not describe a
+usable endpoint is `YUME_STATUS_INVALID_ARGUMENT`. A
+pointer or message longer than its fixed ABI field is marked by
 `YUME_DIAGNOSTIC_JSON_POINTER_TRUNCATED` or
 `YUME_DIAGNOSTIC_MESSAGE_TRUNCATED`. Config paths remain references;
 permission and trust-material
@@ -292,7 +305,16 @@ transport-v2 server accepts only zero because server startup currently has no
 caller-bounded deadline. Schema-1 start accepts the descriptor but returns
 `YUME_STATUS_UNSUPPORTED`. Success means the client completed authenticated
 establishment or the server is accepting work. Failure never publishes a
-partially started backend. `stop` is synchronous, idempotent after a start
+partially started backend.
+
+A start failure carries the runtime's typed outcome rather than one generic
+code, so an embedder does not have to read the diagnostic prose to tell the
+cases apart. A refused bind is `YUME_STATUS_PERMISSION_DENIED`, a runtime that
+is already running or is still stopping is `YUME_STATUS_INVALID_STATE` or
+`YUME_STATUS_WOULD_BLOCK`, an exhausted resource is
+`YUME_STATUS_RESOURCE_EXHAUSTED`, and a failure with no more specific
+classification stays `YUME_STATUS_IO_ERROR`. Never infer a status from the
+message. `stop` is synchronous, idempotent after a start
 attempt, and currently accepts only zero. A successful transport-v2 stop also
 discards registrations owned by that stopped runtime, so callers re-register
 services after restarting it; immutable schema-1 registrations remain.

@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-08-01" "YUME 0.2.0-dev6" "YUME Manual"
+.TH YUMED 8 "2026-08-01" "YUME 0.3.0-dev1" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -66,7 +66,7 @@ Enable the benchmark endpoint so a client's
 run has a peer. Do not enable it on a public deployment.
 .TP
 .B transport_profile
-JSON-only exact authenticated transport identity. YUME 0.2.0-dev6 accepts only
+JSON-only exact authenticated transport identity. The transport-v2 runtime accepts only
 .BR chrome151-node24-v1 ;
 stale identifiers fail startup and cannot be negotiated or downgraded.
 .TP
@@ -162,7 +162,11 @@ Minimum port for reverse forwards.
 Maximum port for reverse forwards.
 .TP
 .BI "--dns-server " ip
-Resolver for outbound opens.
+IPv4 resolver for server-side outbound opens. It is also the resolver handed
+to every client in packet mode, so whoever runs it observes every hostname
+those clients look up. There is no default:
+.B --packet-egress tun
+refuses to start until this is set.
 .TP
 .B --robots-deny
 Serve
@@ -301,11 +305,13 @@ profile 404. The same root backs the HTTP/1.1 probe and the H2 decoy. Pair with
 .B --hide-in-the-crowd nginx
 for the closest header fit.
 .TP
-.BI "--real-secret " string
-Hidden metadata secret used by YUME tooling.
-.TP
 .BI "--real-secret-file " path
-Load or create a real-facade secret file.
+Owner-only file holding the cover-backend secret. It is read at start, or
+created with fresh random contents when it does not exist. There is no inline
+form: a secret passed on the command line or written into the configuration
+file would be readable from the process table or the file, so
+.B real_secret
+is refused by both configuration loaders.
 .TP
 .B --operator-identity
 Publish an operator identity proof and minimize identifying log fields where

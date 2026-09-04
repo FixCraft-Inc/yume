@@ -19,7 +19,7 @@ almost nowhere.
 | **admission** | The cheap, replay-protected check a client passes before the server will promote a connection to a YUME carrier. Failing it gets the ordinary cover response, not an error. |
 | **cover** | The genuine website or reverse proxy a non-YUME visitor sees. Configure it, or the default stub fingerprints the deployment. |
 | **carrier** | The outer connection that YUME records ride inside: TLS 1.3 plus HTTP/2, optionally WebSocket-framed. |
-| **obfs secret** | The admission key. `obfs_secret_file` and `obfs_secret_material` are live. The inline `obfs_secret` config string is a rejected 1.x leftover. |
+| **obfs secret** | The admission key. `obfs_secret_file` and `obfs_secret_material` are live. An inline `obfs_secret` key is refused by every parser and no field carries it. |
 | **anonym** | Operator-authority proof and privacy-minimizing logging. It proves who runs the server, **not** that nothing is logged. |
 | **BaseFWX** | A separate pinned repository providing cryptographic primitives. Not a subdirectory of this project despite living at `basefwx/`. |
 | **evidence profile** | A captured browser identity such as `chrome151-node24-v1`. Geometry only. It is not a wire version and recapturing one does not change the protocol. |
@@ -108,7 +108,7 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
 | Egress and SSRF policy | `server/session/net.cpp` |
 | Embedding YUME | `include/yume/yume.h`, [ABI.md](ABI.md), `abi/stream_integration_probe.c` |
 | Adding a transport backend | `facade/session/endpoint_backend.hpp` |
-| Config keys | `facade/config/keys.hpp` (transport-v2), `config/v1/config.hpp` (schema 1) |
+| Config keys | `config/client_document_keys.hpp` and `config/server_document_keys.hpp` are the closed transport-v2 key sets both parsers of each role check, over the shared `config/document_keys.hpp` predicate; `facade/config/keys.hpp` holds the spellings, `config/v1/config.hpp` is schema 1 |
 
 ## Rough edges
 
@@ -127,6 +127,15 @@ Real, measured, and worth knowing before you go in.
 - **`src/core` has no `yume::core` namespace.** Every other layer mirrors its
   directory. Core's symbols sit under `yume::` or feature namespaces such as
   `yume::crypto`, `yume::runtime`, and `yume::obfs`.
+- **Each transport-v2 role has two separate parsers.**
+  `client/cli/config/config.cpp` and `server/cli/config_load.cpp` serve the
+  CLI. `facade/config/client_config_io.cpp` and
+  `facade/config/server_config_io.cpp` serve the GUI and the C ABI. Within a
+  role they share only the closed key table
+  (`config/client_document_keys.hpp`, `config/server_document_keys.hpp`), so a
+  new key or bound has to be added to both. They still diverge on which
+  numeric ranges they enforce and where, and the facade server parser reads a
+  narrower set of fields than it validates.
 - **Four error-handling conventions coexist.** Exceptions in core, client, and
   server. `runtime::OperationStatus`. `engine::StatusCode`. And facade's `bool`
   plus `std::string* err`. The C ABI wraps all of them at its boundary.

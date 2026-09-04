@@ -1,7 +1,7 @@
 # YUME operations
 
 > **Runnable transport-v2 path:** this is the current operator reference. The
-> [YTP/1 operations draft](development/ytp1/OPERATIONS.md) covers an
+> [YTP/1 foundation page](development/ytp1/README.md#configuration-authority) covers an
 > experimental schema-1 surface that does not drive these binaries.
 
 This page covers the release, deployment, and service workflows that operators need after the first successful connection.
@@ -73,7 +73,7 @@ Group=yume
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/usr/local/bin/yumed --listen 443 --cert /etc/yume/server.crt --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys --obfs-secret-file /etc/yume/secrets/admission.hex --inner-psk-file /etc/yume/secrets/inner.hex --real-backend loopback://127.0.0.1:3000
+ExecStart=/usr/local/bin/yumed --listen 443 --cert /etc/yume/server.crt --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys --obfs-secret-file /etc/yume/secrets/admission.hex --inner-psk-file /etc/yume/secrets/inner.hex --real-backend loopback://127.0.0.1:3000 --real-index /etc/yume/cover-index.html
 Restart=on-failure
 RestartSec=3
 

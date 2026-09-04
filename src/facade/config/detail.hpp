@@ -6,25 +6,59 @@
 
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include "config/document_error.hpp"
+
 namespace yume::facade::config_io::detail {
 
+// Reads `key` into `dst` when present and non-null. Integral targets are
+// range-checked instead of narrowed: nlohmann's get<std::uint32_t>() would
+// turn "obfs_jitter_ms": -1 into ~49 days of jitter and get<std::uint16_t>()
+// would fold 65792 into 256, so a value the field cannot represent is a
+// configuration error, the same rule the CLI parser applies.
 template <typename T>
 void read_opt(nlohmann::json const& j, const char* key, T& dst) {
     auto it = j.find(key);
-    if (it != j.end() && !it->is_null()) {
+    if (it == j.end() || it->is_null()) {
+        return;
+    }
+    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {
+        if (!it->is_number_integer()) {
+            throw yume::config::member_error(
+                key, std::string(key) + ": must be an integer");
+        }
+        if (it->is_number_unsigned()) {
+            const auto value = it->get<std::uint64_t>();
+            if (!std::in_range<T>(value)) {
+                throw yume::config::member_error(
+                    key, std::string(key) + ": value is out of range");
+            }
+            dst = static_cast<T>(value);
+        } else {
+            const auto value = it->get<std::int64_t>();
+            if (!std::in_range<T>(value)) {
+                throw yume::config::member_error(
+                    key, std::string(key) + ": value is out of range");
+            }
+            dst = static_cast<T>(value);
+        }
+        return;
+    } else {
         try {
             dst = it->get<T>();
         } catch (const nlohmann::json::exception& error) {
-            throw std::runtime_error(
-                std::string(key) + ": invalid value: " + error.what());
+            throw yume::config::member_error(
+                key, std::string(key) + ": invalid value: " + error.what());
         }
     }
 }

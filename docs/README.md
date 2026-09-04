@@ -1,10 +1,12 @@
 # YUME documentation
 
 YUME is moving from its working 0.2 tunnel toward an embeddable stealth
-universal transport with a stable C ABI. The default transition build keeps the runnable
-`0.2.0-dev6` `yume` and `yumed` runtime available while YTP/1, schema 1, and the
-new session engine are developed alongside it. The replacement is not yet an
-end-to-end tunnel and does not make the working runtime disposable.
+universal transport with a stable C ABI. The product version is `0.3.0-dev1`.
+Its default transition build keeps the runnable `yume` and `yumed` runtime,
+which speaks the transport-v2 wire `0.2.0-dev6`, available while YTP/1,
+schema 1, and the new session engine are developed alongside it. The
+replacement is not yet an end-to-end tunnel and does not make the working
+runtime disposable.
 
 Source and executable tests are authoritative when prose disagrees. Product,
 wire, configuration, ABI, provider, cryptographic-backend, and evidence-profile
@@ -35,14 +37,12 @@ manifest.
 
 ## Build and inspect the replacement foundation
 
-- [YTP/1 foundation quick start](development/ytp1/QUICKSTART.md) describes the
-  experimental `yume-setup-ytp1` / `yume-doctor-ytp1` path; its
-  setup-to-SOCKS runtime is not implemented yet.
-- [YTP/1 operations](development/ytp1/OPERATIONS.md),
-  [authorization](development/ytp1/PERMISSIONS.md),
-  [packet channels](development/ytp1/PACKET_NATIVE_BULK.md), and
-  [verification](development/ytp1/SELFTEST.md) preserve the replacement
-  contracts without installing them as current-runtime documentation.
+- The [YTP/1 foundation page](development/ytp1/README.md) is the one
+  development reference for the replacement: the experimental
+  `yume-setup-ytp1` / `yume-doctor-ytp1` path, the schema-1, authorization,
+  packet, and diagnostics contracts, and the verification gates. Its
+  setup-to-SOCKS runtime is not implemented yet, and nothing there is
+  installed as current-runtime documentation.
 - [Packaging](PACKAGING.md) defines the installed binaries, SDK, and package
   boundaries.
 - [C ABI](ABI.md) is the experimental candidate for a future stable
@@ -55,8 +55,8 @@ manifest.
 The top-level [yume.1](man/yume.1) and [yumed.8](man/yumed.8) pages document the
 runnable transport-v2 binaries installed by the default build. The intended
 replacement CLI sketches are preserved under
-[`docs/development/ytp1/`](development/ytp1/README.md), not installed as if
-they worked. The existing optional GUI belongs to the runnable 0.2 surface; it
+[`docs/development/ytp1/man/`](development/ytp1/README.md), not installed as
+if they worked. The existing optional GUI belongs to the runnable 0.2 surface; it
 is not yet an installed-ABI consumer for the replacement.
 
 ## Design and security

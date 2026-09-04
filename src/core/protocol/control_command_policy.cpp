@@ -19,7 +19,7 @@
 namespace yume::control {
 namespace {
 
-constexpr std::array<std::string_view, 5> kLegacyRegistrationFields{
+constexpr std::array<std::string_view, 5> kRegistrationFields{
     "cmd", fields::hostname, "wan_ip", "server_in_charge", "allow_exec",
 };
 
@@ -140,21 +140,21 @@ bool is_valid_lifecycle_state(std::string_view value) noexcept {
            value == "error";
 }
 
-std::optional<LegacyControlRegistration>
-try_legacy_control_registration_from_json(
+std::optional<ControlRegistration>
+try_control_registration_from_json(
     const nlohmann::json& json,
     std::string* error) noexcept {
     if (error) error->clear();
     try {
-        if (!HasOnlyKnownFields(json, kLegacyRegistrationFields) ||
+        if (!HasOnlyKnownFields(json, kRegistrationFields) ||
             !RequiredString(json, "cmd", kMaxControlCommandBytes, false) ||
             json["cmd"].get_ref<const std::string&>() != "register" ||
             !OptionalString(json, fields::hostname,
-                            kMaxLegacyHostnameBytes) ||
-            !OptionalString(json, "wan_ip", kMaxLegacyIpBytes) ||
+                            kMaxRegistrationHostnameBytes) ||
+            !OptionalString(json, "wan_ip", kMaxRegistrationIpBytes) ||
             !OptionalBool(json, "server_in_charge") ||
             !OptionalBool(json, "allow_exec")) {
-            SetError(error, "invalid legacy registration fields");
+            SetError(error, "invalid registration fields");
             return std::nullopt;
         }
         const std::string_view hostname = json.contains(fields::hostname)
@@ -165,13 +165,13 @@ try_legacy_control_registration_from_json(
             ? std::string_view(json["wan_ip"].get_ref<const std::string&>())
             : std::string_view{};
         if (!IsIpAddressOrEmpty(wan_ip) ||
-            hostname.size() > kMaxLegacyRegistrationStringBytes -
-                std::min(kMaxLegacyRegistrationStringBytes, wan_ip.size())) {
-            SetError(error, "invalid legacy registration address or size");
+            hostname.size() > kMaxRegistrationStringBytes -
+                std::min(kMaxRegistrationStringBytes, wan_ip.size())) {
+            SetError(error, "invalid registration address or size");
             return std::nullopt;
         }
 
-        LegacyControlRegistration registration;
+        ControlRegistration registration;
         registration.hostname = hostname;
         registration.wan_ip = wan_ip;
         registration.server_in_charge =
@@ -181,10 +181,10 @@ try_legacy_control_registration_from_json(
                                   json["allow_exec"].get<bool>();
         return registration;
     } catch (const std::exception&) {
-        SetError(error, "invalid legacy registration fields");
+        SetError(error, "invalid registration fields");
         return std::nullopt;
     } catch (...) {
-        SetError(error, "invalid legacy registration fields");
+        SetError(error, "invalid registration fields");
         return std::nullopt;
     }
 }

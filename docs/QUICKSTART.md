@@ -2,7 +2,7 @@
 
 > **Runnable transport-v2 path:** these commands drive the default-built
 > `yume` and `yumed` product. The separate
-> [YTP/1 foundation quick start](development/ytp1/QUICKSTART.md) uses
+> [YTP/1 foundation page](development/ytp1/README.md) uses
 > `yume-setup-ytp1` / `yume-doctor-ytp1` and does not yet create a tunnel.
 
 This starts the focused Linux desktop client/server slice on one machine. It
@@ -145,8 +145,16 @@ sudo ./build/bin/yumed \
   --accept-rate-limit 100 \
   --obfs-secret-file "$HOME/.config/yume/admission.hex" \
   --inner-psk-file "$HOME/.config/yume/inner.hex" \
-  --real-backend loopback://127.0.0.1:3000
+  --real-backend loopback://127.0.0.1:3000 \
+  --real-index /etc/yume/cover-index.html
 ```
+
+`--real-index` is not optional. The cover backend answers HTTP/1.1 only, so
+the HTTP/2 decoy needs its own page and the daemon ships no built-in one: a
+page compiled into `yumed` would be byte-identical on every YUME deployment
+and would identify the server to anyone who sends it one HTTP/2 request.
+`--real-root <dir>` or a captured `--upstream-response-dir <dir>` satisfies
+the same requirement.
 
 `yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
 to Node. Node never receives tunnel payloads, identities, or secret material.

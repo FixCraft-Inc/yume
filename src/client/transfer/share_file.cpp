@@ -142,10 +142,6 @@ void ShareBundle::clear_secrets() noexcept {
     basefwx::crypto::SecureClear(inner_psk);
 }
 
-BackupInputs::~BackupInputs() {
-    basefwx::crypto::SecureClear(obfs_secret);
-}
-
 namespace {
 
 constexpr char     kMagic[]      = "YUMESHRE";
@@ -511,9 +507,18 @@ std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
 
     basefwx::crypto::SecureBytes plaintext{
         std::vector<std::uint8_t>(serialised.begin(), serialised.end())};
+    // The share-file KDF is a YUME format decision. BaseFWX resolves its
+    // default "auto" label through the BASEFWX_USER_KDF environment variable,
+    // so leaving the default would let the process environment downgrade new
+    // share files to PBKDF2. Argon2id is a hard BaseFWX build requirement
+    // (BASEFWX_REQUIRE_ARGON2), so the explicit label always resolves. The
+    // decoder reads the serialized label and needs no matching option.
+    basefwx::fwxaes::Options encrypt_options;
+    encrypt_options.user_kdf.label = "argon2id";
     std::vector<std::uint8_t> encrypted;
     try {
-        encrypted = basefwx::fwxaes::EncryptRaw(plaintext.bytes(), password);
+        encrypted = basefwx::fwxaes::EncryptRaw(
+            plaintext.bytes(), password, encrypt_options);
     } catch (const std::exception& ex) {
         if (error) *error = std::string("encrypt failed: ") + ex.what();
         return {};
@@ -1262,13 +1267,6 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
     if (!load_secret_text(in.obfs_secret_path, "admission secret",
                           &out->obfs_secret, error)) {
         return false;
-    }
-    if (in.obfs_secret_path.empty() && !in.obfs_secret.empty()) {
-        if (!valid_secret_hex(in.obfs_secret)) {
-            if (error) *error = "admission secret must contain exactly 64 lowercase hex characters";
-            return false;
-        }
-        out->obfs_secret = in.obfs_secret;
     }
     if (!load_secret_text(in.inner_psk_path, "inner PSK",
                           &out->inner_psk, error)) {

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
 #include <algorithm>
 #include <string>
 #include <string_view>
@@ -17,6 +18,16 @@ inline constexpr int kReversePortMinDefault = 4100;
 inline constexpr int kReversePortMaxDefault = 8600;
 inline constexpr int kServerInChargeManualMinPort = 3000;
 inline constexpr int kServerInChargeManualMaxPort = 30000;
+
+// Per-write obfuscation shaping bounds. Jitter delays every outbound frame,
+// so an unbounded value is a self-inflicted hang rather than a stealth
+// setting: 4294967295 ms is ~49 days per write. Ten seconds is already far
+// beyond any useful traffic-shaping delay.
+inline constexpr std::uint32_t kMaxObfsJitterMs = 10000;
+// One io_context worker per hardware thread is the useful ceiling; beyond
+// this the threads contend rather than help, and a config typo such as
+// 1000000 would exhaust the process thread limit at start.
+inline constexpr int kMaxIoThreads = 256;
 
 inline constexpr int kAnonymProofWindowSeconds = 600;
 inline constexpr int kAnonymRefreshSeconds = 300;

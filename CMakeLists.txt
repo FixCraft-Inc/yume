@@ -38,10 +38,6 @@ string(JSON _yume_dependency_schema GET "${_yume_dependency_json}" schema)
 if(NOT _yume_dependency_schema EQUAL 1)
     message(FATAL_ERROR "Unsupported dependency manifest schema")
 endif()
-string(JSON YUME_BASEFWX_REPOSITORY GET "${_yume_dependency_json}"
-    dependencies basefwx repository)
-string(JSON YUME_BASEFWX_REVISION GET "${_yume_dependency_json}"
-    dependencies basefwx revision)
 string(JSON YUME_REQUIRED_BASEFWX_VERSION GET "${_yume_dependency_json}"
     dependencies basefwx minimum_version)
 
@@ -633,6 +629,206 @@ if(YUME_BUILD_TRANSPORT_V2 AND YUME_MINIMAL)
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for minimal builds" FORCE)
 endif()
 
+
+# ----------------------------------------------------------------------
+# liboqs — YUME's own dependency edge
+# ----------------------------------------------------------------------
+# src/core/security/inner_crypto.cpp calls OQS_KEM_new/OQS_KEM_keypair
+# directly and src/core/release/version_report.cpp reads OQS_VERSION_TEXT.
+# That is YUME's own code implementing a YUME protocol decision, so it must
+# not be gated on BaseFWX's BASEFWX_HAS_OQS build macro nor reach the headers
+# only through basefwxcpp's PUBLIC link interface. Both projects may link
+# liboqs; neither is hostage to the other's configuration, and the liboqs row
+# in config/dependencies.json now has build meaning on this side too.
+#
+# Discovery deliberately honours the same cache variables the existing build
+# scripts already pass to BaseFWX (ezbuild.sh, fullau.sh, the vcpkg and
+# vendored cross prefixes), so no build script changes to keep working:
+#   1. YUME_OQS_ROOT                (explicit prefix, YUME-owned)
+#   2. OQS_INCLUDE_DIR/OQS_LIBRARY  (explicit paths; what ezbuild.sh passes)
+#   3. BASEFWX_VENDOR_DIR           (vendored cross prefixes)
+#   4. vcpkg installed triplet
+#   5. liboqs CMake config package
+#   6. pkg-config liboqs
+#   7. plain find_path/find_library
+if(YUME_BUILD_TRANSPORT_V2)
+    option(YUME_REQUIRE_OQS
+        "Fail configuration when liboqs is not found for YUME's ML-KEM code"
+        OFF)
+    set(YUME_OQS_ROOT "" CACHE PATH
+        "Prefix holding include/oqs/oqs.h and lib/liboqs.{a,so,dylib,dll.a}")
+
+    set(_yume_oqs_include "")
+    set(_yume_oqs_libraries "")
+
+    # A fully static link must not be handed a .so; resolve the archive first
+    # so a static request either configures truthfully or falls through.
+    if(YUME_STATIC)
+        set(_yume_oqs_libnames liboqs.a liboqs.dll.a liboqs.so liboqs.dylib)
+    else()
+        set(_yume_oqs_libnames liboqs.so liboqs.dylib liboqs.a liboqs.dll.a)
+    endif()
+    set(_yume_oqs_libdirs
+        "lib"
+        "lib/${CMAKE_LIBRARY_ARCHITECTURE}"
+        "lib64"
+    )
+
+    # (2) Explicit paths win over every search. These are the variables the
+    # cross/vcpkg branches of ezbuild.sh and fullau.sh already set.
+    if(OQS_INCLUDE_DIR AND OQS_LIBRARY AND
+       EXISTS "${OQS_INCLUDE_DIR}/oqs/oqs.h" AND EXISTS "${OQS_LIBRARY}")
+        set(_yume_oqs_include "${OQS_INCLUDE_DIR}")
+        set(_yume_oqs_libraries "${OQS_LIBRARY}")
+    endif()
+
+    # (1), (3), (4): prefix-shaped installs.
+    if(NOT _yume_oqs_include)
+        set(_yume_oqs_prefixes "")
+        if(YUME_OQS_ROOT)
+            list(APPEND _yume_oqs_prefixes "${YUME_OQS_ROOT}")
+        endif()
+        if(BASEFWX_VENDOR_DIR)
+            list(APPEND _yume_oqs_prefixes "${BASEFWX_VENDOR_DIR}")
+        endif()
+        if(VCPKG_INSTALLED_DIR AND VCPKG_TARGET_TRIPLET)
+            list(APPEND _yume_oqs_prefixes
+                "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+        endif()
+        foreach(_yume_oqs_prefix IN LISTS _yume_oqs_prefixes)
+            if(_yume_oqs_include)
+                break()
+            endif()
+            if(NOT EXISTS "${_yume_oqs_prefix}/include/oqs/oqs.h")
+                continue()
+            endif()
+            foreach(_yume_oqs_libdir IN LISTS _yume_oqs_libdirs)
+                foreach(_yume_oqs_libname IN LISTS _yume_oqs_libnames)
+                    set(_yume_oqs_candidate
+                        "${_yume_oqs_prefix}/${_yume_oqs_libdir}/${_yume_oqs_libname}")
+                    if(NOT _yume_oqs_libraries AND EXISTS "${_yume_oqs_candidate}")
+                        set(_yume_oqs_include "${_yume_oqs_prefix}/include")
+                        set(_yume_oqs_libraries "${_yume_oqs_candidate}")
+                    endif()
+                endforeach()
+            endforeach()
+        endforeach()
+    endif()
+
+    # (5) Upstream liboqs installs a CMake config package exporting OQS::oqs.
+    if(NOT _yume_oqs_include)
+        find_package(liboqs CONFIG QUIET)
+        if(liboqs_FOUND AND TARGET OQS::oqs)
+            set(_yume_oqs_libraries OQS::oqs)
+            set(_yume_oqs_include "")
+            set(_yume_oqs_via_config ON)
+        endif()
+    endif()
+
+    # (6) pkg-config, then (7) the plain search. Neither is meaningful when
+    # cross-compiling, where an explicit prefix is mandatory.
+    if(NOT _yume_oqs_libraries AND NOT CMAKE_CROSSCOMPILING)
+        find_package(PkgConfig QUIET)
+        if(PKG_CONFIG_FOUND)
+            pkg_check_modules(YUME_OQS_PC QUIET liboqs)
+        endif()
+        if(YUME_OQS_PC_FOUND)
+            set(_yume_oqs_include "${YUME_OQS_PC_INCLUDE_DIRS}")
+            # -loqs with a bare -L is not usable on a static link and not
+            # reliable when several prefixes are installed; resolve it.
+            set(_yume_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+            if(YUME_STATIC)
+                set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+            endif()
+            find_library(YUME_OQS_LIBRARY
+                NAMES oqs
+                HINTS ${YUME_OQS_PC_LIBRARY_DIRS}
+            )
+            set(CMAKE_FIND_LIBRARY_SUFFIXES "${_yume_saved_suffixes}")
+            unset(_yume_saved_suffixes)
+            if(YUME_OQS_LIBRARY)
+                set(_yume_oqs_libraries "${YUME_OQS_LIBRARY}")
+            else()
+                set(_yume_oqs_include "")
+            endif()
+        endif()
+    endif()
+
+    if(NOT _yume_oqs_libraries AND NOT CMAKE_CROSSCOMPILING)
+        set(_yume_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+        if(YUME_STATIC)
+            set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+        endif()
+        find_path(YUME_OQS_INCLUDE_DIR NAMES oqs/oqs.h)
+        find_library(YUME_OQS_LIBRARY NAMES oqs)
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${_yume_saved_suffixes}")
+        unset(_yume_saved_suffixes)
+        if(YUME_OQS_INCLUDE_DIR AND YUME_OQS_LIBRARY)
+            set(_yume_oqs_include "${YUME_OQS_INCLUDE_DIR}")
+            set(_yume_oqs_libraries "${YUME_OQS_LIBRARY}")
+        endif()
+    endif()
+
+    # A prefix that merely has the header is not enough: YUME's inner crypto
+    # needs the ML-KEM-768 identifier. Compile-only so cross builds can be
+    # validated without running the target.
+    if(_yume_oqs_libraries)
+        include(CheckCXXSourceCompiles)
+        set(_yume_saved_required_includes "${CMAKE_REQUIRED_INCLUDES}")
+        set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+        if(_yume_oqs_include)
+            set(CMAKE_REQUIRED_INCLUDES "${_yume_oqs_include}")
+        endif()
+        if(_yume_oqs_via_config)
+            set(CMAKE_REQUIRED_LIBRARIES OQS::oqs)
+        endif()
+        unset(YUME_OQS_HAS_ML_KEM_768 CACHE)
+        check_cxx_source_compiles([=[
+            #include <oqs/oqs.h>
+            int main() {
+                const char* name = OQS_KEM_alg_ml_kem_768;
+                return name == nullptr;
+            }
+        ]=] YUME_OQS_HAS_ML_KEM_768)
+        set(CMAKE_REQUIRED_INCLUDES "${_yume_saved_required_includes}")
+        set(CMAKE_REQUIRED_LIBRARIES "${_yume_saved_required_libraries}")
+        unset(_yume_saved_required_includes)
+        unset(_yume_saved_required_libraries)
+        if(NOT YUME_OQS_HAS_ML_KEM_768)
+            message(STATUS
+                "YUME: liboqs found but it does not expose ML-KEM-768; "
+                "treating PQ keypair generation as unavailable")
+            set(_yume_oqs_libraries "")
+            set(_yume_oqs_include "")
+        endif()
+    endif()
+
+    if(_yume_oqs_libraries)
+        add_library(yume_liboqs INTERFACE)
+        if(_yume_oqs_include)
+            target_include_directories(yume_liboqs INTERFACE "${_yume_oqs_include}")
+        endif()
+        target_link_libraries(yume_liboqs INTERFACE ${_yume_oqs_libraries})
+        message(STATUS "YUME: liboqs -> ${_yume_oqs_libraries}")
+    elseif(YUME_REQUIRE_OQS)
+        message(FATAL_ERROR
+            "YUME_REQUIRE_OQS is ON but liboqs was not found. Pass "
+            "-DYUME_OQS_ROOT=<prefix>, or -DOQS_INCLUDE_DIR=/-DOQS_LIBRARY=, "
+            "or install liboqs >= 0.16.0 (see config/dependencies.json).")
+    else()
+        message(STATUS
+            "YUME: liboqs not found; ML-KEM keypair generation will report "
+            "itself unavailable at runtime")
+    endif()
+
+    unset(_yume_oqs_include)
+    unset(_yume_oqs_libraries)
+    unset(_yume_oqs_libnames)
+    unset(_yume_oqs_libdirs)
+    unset(_yume_oqs_prefixes)
+    unset(_yume_oqs_via_config)
+endif()
+
 if(YUME_BUILD_TRANSPORT_V2 AND YUME_USE_BASEFWX)
     if(NOT CMAKE_CROSSCOMPILING)
         set(BASEFWX_NATIVE_OPT ${YUME_NATIVE_OPT} CACHE BOOL "Enable -march/-mtune native optimizations" FORCE)
@@ -731,7 +927,6 @@ if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
         docs/LEAK_TIGHT.md
         docs/PACKET_NATIVE_BULK.md
         docs/release/CHANGELOG.md
-        docs/release/RELEASE-NOTES-1.1.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
         COMPONENT yume_cli
     )

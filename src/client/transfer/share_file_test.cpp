@@ -276,11 +276,39 @@ void test_share_file_boundaries(const std::filesystem::path& root) {
 
 }  // namespace
 
+#ifndef _WIN32
+// The share-file KDF label is fixed by YUME, not resolved from the process
+// environment. BaseFWX maps an "auto" label through BASEFWX_USER_KDF, so with
+// the default options a hostile or careless environment could downgrade new
+// share files to PBKDF2 or, with an unsupported label, make encoding fail.
+// Encoding must succeed and decode while the variable names a label BaseFWX
+// rejects.
+void test_share_kdf_ignores_environment() {
+    using namespace yume::share;
+    ShareBundle bundle;
+    bundle.server_host = "192.0.2.12";
+    bundle.server_port = 8443;
+    bundle.anonym_ca_cert_pem = "operator-ca";
+    const std::string password(kPasswordMin, 'k');
+    assert(::setenv("BASEFWX_USER_KDF", "argon2evil", 1) == 0);
+    std::string error;
+    const auto encoded = encode_share(bundle, password, &error);
+    assert(::unsetenv("BASEFWX_USER_KDF") == 0);
+    assert(!encoded.empty());
+    const auto decoded = decode_share(encoded, password, &error);
+    assert(decoded.has_value());
+    assert(decoded->server_host == bundle.server_host);
+}
+#endif
+
 int main() {
     namespace fs = std::filesystem;
     using namespace yume::share;
 
     test_bundle_sensitive_lifecycle();
+#ifndef _WIN32
+    test_share_kdf_ignores_environment();
+#endif
 
     ShareBundle bundle;
     bundle.server_host = "192.0.2.10";

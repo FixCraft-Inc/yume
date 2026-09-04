@@ -2,7 +2,7 @@
 
 > **Runnable transport-v2 path:** startup checks and the installed daemon
 > reference this permission model. The schema-1 design is preserved
-> separately in the [YTP/1 authorization draft](development/ytp1/PERMISSIONS.md).
+> separately in the [YTP/1 foundation page](development/ytp1/README.md#identity-and-authorization).
 
 YUME splits authentication from authorization and uses three physical identity
 stores:
@@ -255,7 +255,7 @@ An admin channel is admitted only when all of these are true:
 3. the target also proved a distinct `admin_keys` identity and enabled its
    inbound runtime opt-in.
 
-Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and requires the target's `--accept-server-control` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
+`admin.attach` and `attach` are different operations, not two generations of one. `admin.attach` inspects a directory endpoint and additionally requires the target to accept the signed invite. `attach` takes control of a connected client session that granted server-in-charge; it applies the same caller/target predicate and additionally requires the target's `--accept-server-control` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
 
 ## Pre-authenticated service-only tier
 

@@ -3,7 +3,7 @@
 > **Runnable transport-v2 path:** this document describes the current packet
 > service. First-class YTP/1 packet channels are an unfinished replacement
 > contract documented in the
-> [YTP/1 packet draft](development/ytp1/PACKET_NATIVE_BULK.md).
+> [YTP/1 foundation page](development/ytp1/README.md#packet-channels).
 
 This is the v1 packet-native path for making Yume behave more like a
 packet VPN under load without giving up the current DPI profile.
@@ -49,8 +49,14 @@ while removing per-application-stream work from the hot path.
 yumed --packet-egress tun \
       --packet-tun-name yume-pkt0 \
       --packet-cidr 10.89.0.0/24 \
-      --packet-mtu 1420
+      --packet-mtu 1420 \
+      --dns-server 192.0.2.53
 ```
+
+`--dns-server` is required, not defaulted. Its address is handed to every
+client that enters packet mode, so whoever operates that resolver observes
+every hostname those clients look up. Startup refuses packet egress until an
+IPv4 resolver is named, so that observer is always an operator decision.
 
 The Linux TUN address and NAT are operator-prepared in v1. `yumed` attaches
 to that TUN, allocates client IPv4 addresses from the CIDR, writes validated

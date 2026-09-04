@@ -2,7 +2,7 @@
 
 > **Runnable transport-v2 path:** these checks and evidence rules qualify the
 > current product. Replacement engine, YTP/1, schema-1, and ABI gates are kept
-> in the [YTP/1 verification draft](development/ytp1/SELFTEST.md); passing
+> in the [YTP/1 foundation page](development/ytp1/README.md#verification-gates); passing
 > foundation tests does not qualify the tunnel.
 
 Native CTest executables keep `assert()` enabled even in Release and
@@ -399,6 +399,7 @@ sudo ./build/bin/yumed \
   --obfs-secret-file /etc/yume/secrets/admission.hex \
   --inner-psk-file /etc/yume/secrets/inner.hex \
   --real-backend loopback://127.0.0.1:3000 \
+  --real-index /etc/yume/cover-index.html \
   --bench
 ```
 

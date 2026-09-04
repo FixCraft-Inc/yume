@@ -1,7 +1,9 @@
 # Public automation context
 
-Start with the root `AGENTS.md`. Work from live Git and source state, preserve
-unrelated changes, and finish with focused checks plus `git diff --check`.
+Start with the root `AGENTS.md`; its "Before you act" and "Before you finish"
+checks apply to automation as well. Work from live Git and source state,
+preserve unrelated changes, and finish with focused checks plus
+`git diff --check`.
 
 ## Repository boundaries
 
@@ -18,6 +20,35 @@ The product development label, runnable transport v2/AUTH v2/relay v2,
 experimental YTP/1, config schema 1, replacement C ABI candidate, provider
 versions, cryptographic backend, and evidence-profile version are independent.
 Do not rename domains or bump ABI/schema merely to match the product version.
+
+## Temporary: no compatibility debt while nothing depends on us
+
+**Delete this section once the project has real deployed users.** Nothing
+consumes these interfaces yet, so a wire format, flag, config key, status
+code, or version may be changed outright. Do not add an alias, fallback,
+deprecation shim, or silent default for a caller that does not exist, and
+remove one when you find it. A surface that looks like compatibility support
+must name the consumer it serves. Two rules outlive this section: write
+careful lasting code anyway, and never accept redundancy at any stage.
+
+## What to update when you change something
+
+| You changed | Update in the same change |
+| --- | --- |
+| `src/core/`, `src/outbound/`, wire or AUTH behaviour | `docs/protocol/YUME_2_0_WIRE.md`, `docs/SECURITY_MODES.md`, the focused test beside the file |
+| `include/yume/yume.h`, `src/abi/`, `src/facade/session/` | `docs/ABI.md`, `src/abi/yume.map`, the ABI contract tests, `docs/IMPLEMENTATION_STATUS.md` |
+| `src/config/client_document_keys.hpp`, either client config parser | both parsers, `client_config_io_test.cpp`, `docs/man/yume.1`, `docs/ABI.md` dialect text |
+| `src/server/` startup checks, permissions, cover | `docs/PERMISSIONS.md`, `docs/OPERATIONS.md`, `docs/FILTERING_SELF_DPI.md`, `docs/man/yumed.8` |
+| `src/client/cli/` options or help | `docs/man/yume.1`, `docs/QUICKSTART.md`, `tests/test_project_metadata.py` help-parity checks |
+| `src/client/transfer/share_file*` | `docs/OPERATIONS.md` share section, `share_file_test.cpp` |
+| `src/engine/`, `src/ytp/`, `src/providers/`, `src/config/v1/` | `docs/protocol/YTP_1.md`, `docs/ARCHITECTURE.md`, `docs/development/ytp1/README.md` |
+| `src/core/version.hpp`, packaging, `debian/` | `README.md`, `docs/README.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/PACKAGING.md`, `docs/release/CHANGELOG.md`, `debian/changelog` |
+| `config/dependencies.json`, BaseFWX pin, OpenSSL overlay | `docs/release/THIRD-PARTY-NOTICES.md`, `docs/release/SBOM.spdx.json` via its script, `docs/WHY_YUME.md` |
+| any `docs/*.md` | run `scripts/sync_website_docs.sh --check` and `scripts/check_website_catalog.py` |
+
+Every behaviour change also gets a line under the current section of
+`docs/release/CHANGELOG.md`. If a row above is missing for the directory you
+touched, add the row.
 
 ## Documentation authority
 

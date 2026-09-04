@@ -159,7 +159,7 @@ void CheckLifecyclePolicy() {
           "lifecycle history exceeded its retained string budget");
 }
 
-void CheckLegacyRegistrationPolicy() {
+void CheckRegistrationPolicy() {
     std::string error;
     const nlohmann::json valid{
         {"cmd", "register"},
@@ -169,72 +169,72 @@ void CheckLegacyRegistrationPolicy() {
         {"allow_exec", false},
     };
     auto registration =
-        yume::control::try_legacy_control_registration_from_json(
+        yume::control::try_control_registration_from_json(
             valid, &error);
-    Check(registration.has_value(), "valid legacy registration was rejected");
-    Check(error.empty(), "valid legacy registration populated an error");
+    Check(registration.has_value(), "valid registration was rejected");
+    Check(error.empty(), "valid registration populated an error");
     Check(registration->hostname == "workstation.local",
-          "legacy hostname changed");
-    Check(registration->wan_ip == "203.0.113.7", "legacy IP changed");
+          "registration hostname changed");
+    Check(registration->wan_ip == "203.0.113.7", "registration IP changed");
     Check(registration->server_in_charge,
-          "legacy server-in-charge boolean changed");
-    Check(!registration->allow_exec, "legacy allow-exec boolean changed");
+          "registration server-in-charge boolean changed");
+    Check(!registration->allow_exec, "registration allow-exec boolean changed");
 
     registration =
-        yume::control::try_legacy_control_registration_from_json(
+        yume::control::try_control_registration_from_json(
             {{"cmd", "register"}});
-    Check(registration.has_value(), "minimal legacy registration was rejected");
+    Check(registration.has_value(), "minimal registration was rejected");
     Check(registration->hostname.empty() && registration->wan_ip.empty() &&
               !registration->server_in_charge && !registration->allow_exec,
-          "legacy registration defaults changed");
+          "registration defaults changed");
 
     auto malformed = valid;
     malformed["hostname"] = 1;
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "numeric legacy hostname was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "numeric registration hostname was accepted");
     malformed = valid;
     malformed["wan_ip"] = true;
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "boolean legacy IP was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "boolean registration IP was accepted");
     malformed = valid;
     malformed["server_in_charge"] = "yes";
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "string legacy permission was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "string registration permission was accepted");
     malformed = valid;
     malformed["allow_exec"] = 1;
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "numeric legacy allow-exec was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "numeric registration allow-exec was accepted");
     malformed = valid;
     malformed["hostname"] = std::string(
-        yume::control::kMaxLegacyHostnameBytes + 1U, 'h');
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "oversized legacy hostname was accepted");
+        yume::control::kMaxRegistrationHostnameBytes + 1U, 'h');
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "oversized registration hostname was accepted");
     malformed = valid;
     malformed["wan_ip"] = "203.0.113.999";
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "invalid legacy IP was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "invalid registration IP was accepted");
     malformed = valid;
     malformed["hostname"] = "host\nname";
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "legacy hostname control character was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "registration hostname control character was accepted");
     malformed = valid;
     malformed["future_field"] = true;
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "unknown legacy registration field was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "unknown registration field was accepted");
 
     malformed = valid;
     malformed["hostname"] = std::string(
-        yume::control::kMaxLegacyHostnameBytes, 'h');
+        yume::control::kMaxRegistrationHostnameBytes, 'h');
     malformed["wan_ip"] = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff";
-    Check(!yume::control::try_legacy_control_registration_from_json(malformed),
-          "aggregate-oversized legacy registration was accepted");
+    Check(!yume::control::try_control_registration_from_json(malformed),
+          "aggregate-oversized registration was accepted");
 }
 
 }  // namespace
 
 int main() {
     CheckLifecyclePolicy();
-    CheckLegacyRegistrationPolicy();
+    CheckRegistrationPolicy();
     Check(yume::control::is_valid_control_command_name("directory.list"),
           "valid command name was rejected");
     Check(!yume::control::is_valid_control_command_name("bad\ncommand"),

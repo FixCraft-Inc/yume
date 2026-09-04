@@ -367,11 +367,6 @@ std::optional<int> validate_security_posture(ClientConfig& cfg) {
     if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
         return 1;
     }
-    if (!cfg.obfs_secret.empty()) {
-        util::log_error(
-            "literal obfs_secret is not accepted by YUME 2.0; use --obfs-secret-file");
-        return 1;
-    }
     if (cfg.obfs_secret_file.empty() || cfg.inner_psk_file.empty()) {
         util::log_error(
             "YUME 2.0 requires --obfs-secret-file and --inner-psk-file");

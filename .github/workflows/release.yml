@@ -6,12 +6,12 @@ on:
       release_profile:
         description: "Release profile"
         required: true
-        default: "linux-desktop-0.2.0"
+        default: "linux-desktop-0.3.0"
         type: choice
         options:
-          - linux-desktop-0.2.0
+          - linux-desktop-0.3.0
       tag_name:
-        description: "Existing release tag (v0.2.0-rcN or v0.2.0)"
+        description: "Existing release tag (v0.3.0-rcN or v0.3.0)"
         required: true
         type: string
       publish:
@@ -59,7 +59,7 @@ jobs:
             echo "workflow_dispatch releases must be started from main." >&2
             exit 1
           fi
-          if [[ "${{ inputs.release_profile }}" != "linux-desktop-0.2.0" ]]; then
+          if [[ "${{ inputs.release_profile }}" != "linux-desktop-0.3.0" ]]; then
             echo "Unsupported release profile." >&2
             exit 1
           fi
@@ -244,14 +244,14 @@ jobs:
             --artifacts dist
           mkdir -p transfer
           tar --format=posix --sort=name --owner=0 --group=0 --numeric-owner \
-            --mtime=@0 -cf transfer/linux-desktop-0.2.0-prepared.tar \
+            --mtime=@0 -cf transfer/linux-desktop-0.3.0-prepared.tar \
             -C dist yume-amd64-linux.tar.xz yumed-amd64-linux
 
       - name: Upload prepared Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-desktop-0.2.0
-          path: transfer/linux-desktop-0.2.0-prepared.tar
+          name: linux-desktop-0.3.0
+          path: transfer/linux-desktop-0.3.0-prepared.tar
           if-no-files-found: error
           retention-days: 14
 
@@ -273,14 +273,14 @@ jobs:
       - name: Download prepared Linux artifacts
         uses: actions/download-artifact@v4
         with:
-          name: linux-desktop-0.2.0
+          name: linux-desktop-0.3.0
           path: transfer
 
       - name: Restore prepared Linux artifact modes
         shell: bash
         run: |
           set -euo pipefail
-          archive=transfer/linux-desktop-0.2.0-prepared.tar
+          archive=transfer/linux-desktop-0.3.0-prepared.tar
           mapfile -t members < <(tar -tf "${archive}")
           test "${#members[@]}" -eq 2
           test "${members[0]}" = "yume-amd64-linux.tar.xz"

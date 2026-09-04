@@ -320,8 +320,20 @@ YUME_API void yume_runtime_destroy(yume_runtime* runtime) YUME_NOEXCEPT;
 /*
  * Parsing is strict and copies the complete input. The returned config is
  * immutable, role-tagged, and independent of the input buffer. Unknown keys,
- * aliases, inline private material, provider mismatch, and unsafe combinations
- * fail with a diagnostic containing the first RFC 6901 JSON pointer.
+ * inline private material, provider mismatch, and unsafe combinations fail
+ * with a diagnostic.
+ *
+ * One boundary is deliberate and differs from the schema-1 dialect: the
+ * transport-v2 client dialect still accepts four spellings that alias a
+ * canonical key, because a released consumer emits one of them. Writers emit
+ * only the canonical spelling.
+ *
+ * Both dialects report an RFC 6901 JSON pointer for a failure attributable to
+ * one member, and an empty pointer when the failure belongs to no single
+ * member, such as malformed JSON or a document-wide validation failure. A
+ * document that is not well formed for its dialect is YUME_STATUS_PARSE_ERROR.
+ * A document that parses but does not describe a usable endpoint is
+ * YUME_STATUS_INVALID_ARGUMENT.
  */
 YUME_API yume_status yume_config_parse_json(yume_runtime* runtime,
                                             const void* json,

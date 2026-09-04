@@ -88,7 +88,6 @@ int run_export_share(const std::string& out_path,
     }
 
     yume::share::BackupInputs in;
-    RelaySecretWiper inline_obfs_secret_wiper(in.obfs_secret);
     in.label = cfg.server + (cfg.port > 0 ? ":" + std::to_string(cfg.port) : std::string());
     in.created_by = std::string("yume ") + yume::kVersion;
     in.server_host = cfg.server;
@@ -100,7 +99,6 @@ int run_export_share(const std::string& out_path,
     in.obfuscation = cfg.obfuscation;
     in.obfs_secret_path = cfg.obfs_secret_file;
     in.inner_psk_path = cfg.inner_psk_file;
-    in.obfs_secret = cfg.obfs_secret;
     in.obfs_pad_multiple = cfg.obfs_pad_multiple;
     in.obfs_jitter_ms = cfg.obfs_jitter_ms;
     in.tls_pin_sha256 = cfg.tls_pin_sha256;

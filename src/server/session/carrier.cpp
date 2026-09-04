@@ -15,6 +15,7 @@
 #include <ctime>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include <boost/beast/http/status.hpp>
@@ -440,31 +441,32 @@ void Session::finish_masq_write(std::shared_ptr<std::string> resp,
             }));
 }
 
-std::string Session::load_real_index() {
+std::optional<std::string> Session::load_real_index() {
     // With --real-root, the H2 decoy and the HTTP/1.1 "/" path must present the
     // same index bytes so an active probe sees one web identity across both
-    // carriers. Serve <root>/index.html; fall back to the redirect stub only
-    // when no index file is present.
+    // carriers.
+    //
+    // There is deliberately no built-in fallback page. A constant page
+    // compiled into the daemon is byte-identical on every deployment, which
+    // is exactly the global active-probe fingerprint the cover path exists to
+    // avoid. Startup refuses a configuration with no cover source, and a
+    // source that disappears at runtime returns nullopt so the caller answers
+    // with the profile's ordinary 404 instead.
     if (!cfg_.real_root.empty()) {
         auto file = static_site::read_under_root(cfg_.real_root, "index.html", kMaxRealFileBytes);
         if (file.has_value()) {
             return std::move(file->bytes);
         }
-    } else if (!cfg_.real_index_path.empty()) {
+        return std::nullopt;
+    }
+    if (!cfg_.real_index_path.empty()) {
         std::ifstream in(cfg_.real_index_path, std::ios::binary);
         if (in) {
             std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
             return contents;
         }
     }
-    return "<!doctype html><html><head><meta charset=\"utf-8\">"
-           "<title>Redirecting...</title>"
-           "<meta http-equiv=\"refresh\" content=\"0;url=https://ja.wikipedia.org/wiki/%E5%AE%87%E5%AE%99\">"
-           "<script>window.location.replace(\"https://ja.wikipedia.org/wiki/%E5%AE%87%E5%AE%99\");</script>"
-           "</head><body>"
-           "<noscript><meta http-equiv=\"refresh\" content=\"0;url=https://ja.wikipedia.org/wiki/%E5%AE%87%E5%AE%99\"></noscript>"
-           "<p>Redirecting to Wikipedia...</p>"
-           "</body></html>";
+    return std::nullopt;
 }
 
 std::string Session::build_hidden_blob() {
@@ -613,7 +615,15 @@ void Session::send_real_http_response(const std::string& path, const std::string
         send_disguise_404(path);
         return;
     }
-    std::string body = load_real_index();
+    auto index = load_real_index();
+    if (!index.has_value()) {
+        // The configured cover source vanished. A real nginx whose document
+        // root lost its index answers 404, so do that rather than inventing a
+        // page that only YUME servers serve.
+        send_disguise_404(path);
+        return;
+    }
+    std::string body = std::move(*index);
     std::string status_line = "HTTP/1.1 200 OK\r\n";
 
     std::string hidden = build_hidden_blob();
@@ -1506,8 +1516,9 @@ void Session::serve_fake_h2_real_index() {
         profile = yume::http_profile::server("nginx");
     }
 
-    if (!have_response && cfg_.real_http) {
-        std::string body = load_real_index();
+    auto index = cfg_.real_http ? load_real_index() : std::nullopt;
+    if (!have_response && index.has_value()) {
+        std::string body = std::move(*index);
         const std::string hidden = build_hidden_blob();
         if (!hidden.empty()) {
             body += "<span style=\"display:none\" aria-hidden=\"true\">" + hidden + "</span>";

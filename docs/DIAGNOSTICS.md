@@ -2,7 +2,7 @@
 
 > **Runnable transport-v2 path:** these diagnostics apply to the current
 > product. Replacement typed diagnostics and `yume-doctor-ytp1` are documented
-> in the [YTP/1 draft](development/ytp1/DIAGNOSTICS.md).
+> in the [YTP/1 foundation page](development/ytp1/README.md#diagnostics-and-evidence).
 
 YUME keeps precise in-process timing available for diagnosis without carrying
 it in production executables. The build configuration, not a runtime flag,

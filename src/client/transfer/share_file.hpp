@@ -154,7 +154,6 @@ struct BackupInputs {
     BackupInputs& operator=(const BackupInputs&) = delete;
     BackupInputs(BackupInputs&&) = delete;
     BackupInputs& operator=(BackupInputs&&) = delete;
-    ~BackupInputs();
 
     // Display label + provenance (optional but nice in the summary)
     std::string label;
@@ -170,8 +169,6 @@ struct BackupInputs {
     std::string pq_public_key_path;
     std::string obfs_secret_path;
     std::string inner_psk_path;
-    // Inline legacy value (accepted only when no protected file is set).
-    std::string obfs_secret;
     std::string tls_pin_sha256;
     std::string tls_stealth_profile;
     std::string tls_server_name;

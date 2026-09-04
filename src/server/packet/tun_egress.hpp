@@ -27,6 +27,12 @@ struct PacketTunAssignment {
     std::vector<std::string> dns_servers;
 };
 
+// True when the configuration names an IPv4 resolver for packet mode. There
+// is deliberately no default: the resolver handed to every tunnelled client
+// sees every hostname they look up, so the operator must name the party that
+// gets to observe it.
+bool packet_dns_configured(const ServerConfig& cfg) noexcept;
+
 class PacketTunEgress {
 public:
     using PacketHandler = std::function<void(crypto::Bytes)>;

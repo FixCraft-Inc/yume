@@ -48,6 +48,7 @@ enum class BackendIo {
     NotFound,
     PermissionDenied,
     ResourceExhausted,
+    AlreadyRunning,
     Failed,
 };
 
@@ -97,8 +98,10 @@ public:
     virtual ~EndpointBackend() = default;
 
     // Blocking start bounded by timeout_ms, where 0 means the backend's own
-    // default. Returns false with `error` populated on failure.
-    virtual bool start(std::uint32_t timeout_ms, std::string& error) = 0;
+    // default. Anything other than Ok populates `error`. The outcome is
+    // typed because a refused bind and a transient failure are different
+    // answers to an embedder, and neither may be recovered from the text.
+    virtual BackendIo start(std::uint32_t timeout_ms, std::string& error) = 0;
 
     // Idempotent, must not throw, and must be safe from the destructor.
     virtual void stop() noexcept = 0;
@@ -122,14 +125,41 @@ public:
                                     std::string& error) = 0;
 };
 
-// Parses the transport-v2 configuration dialect. Returns nullptr with `error`
-// populated when the document is not valid for the requested role. Relative
-// credential paths resolve against `base_dir`.
+// Why a configuration document was refused. Malformed bytes and a document
+// that parses but does not describe a usable endpoint are different answers,
+// and an embedder must not have to read the message to tell them apart.
+enum class BackendConfigOutcome {
+    Ok,
+    // The bytes are not a well-formed document of this dialect: bad JSON, a
+    // non-object root, an unknown or retired key, or a member of the wrong
+    // type.
+    Malformed,
+    // The document parsed, but the values do not form a usable endpoint.
+    Invalid,
+    // This build has no transport runtime linked.
+    Unsupported,
+    // Parsing itself failed for a reason that is not the document's fault.
+    Failed,
+};
+
+struct BackendConfigDiagnostic {
+    // Pessimistic by default: a parser that returns nullptr without setting
+    // an outcome must not read as success or as the caller's fault.
+    BackendConfigOutcome outcome{BackendConfigOutcome::Failed};
+    // RFC 6901 pointer to the offending member, empty when the failure is not
+    // attributable to one. Machine-readable; never derived from `message`.
+    std::string json_pointer;
+    std::string message;
+};
+
+// Parses the transport-v2 configuration dialect. Returns nullptr with
+// `diagnostic` populated when the document is not valid for the requested
+// role. Relative credential paths resolve against `base_dir`.
 std::unique_ptr<BackendConfig> parse_transport_v2_config(
     std::string_view json,
     bool is_server,
     std::string_view base_dir,
-    std::string& error);
+    BackendConfigDiagnostic& diagnostic);
 
 // Creates an unstarted backend for an already-parsed configuration.
 std::unique_ptr<EndpointBackend> make_transport_v2_backend(

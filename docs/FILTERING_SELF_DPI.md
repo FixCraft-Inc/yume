@@ -11,13 +11,23 @@ ALPN, HTTP/2 carrier preface, obfs token, or YUME frame format. Robots is a
 normal HTTP-facade response for `GET`/`HEAD /robots.txt`; packet and stream
 traffic still rides inside the existing encrypted YUME `DATA` frames.
 
-### The default cover page is a fingerprint
+### There is no default cover page
 
-Configure `real_root`, `real_index_path`, or `real_backend`. Without one of
-them the daemon serves a fixed built-in redirect stub, so every default
-deployment answers an active probe with byte-identical HTML. That is a global
-identifier for YUME and defeats the cover path entirely. The daemon warns about
-this at startup; treat the warning as a deployment blocker, not advice.
+`yumed` ships no built-in cover page. One compiled into the daemon would be
+byte-identical on every deployment, so a single HTTP/2 request would identify
+the server as YUME no matter what the HTTP/1.1 cover backend serves.
+
+Startup therefore requires two separate things and refuses without either:
+
+- `real_backend`, a real local HTTP server that answers unauthenticated
+  HTTP/1.1 requests and is health-checked at start; and
+- a source for the HTTP/2 decoy: `upstream_response_dir` or
+  `upstream_response` (captured real responses, the closest fit),
+  `real_root` (a static site, whose `index.html` is also the decoy page), or
+  `real_index_path` (a single page).
+
+If a configured source disappears at run time, the daemon answers with the
+profile's ordinary 404 rather than substituting a page of its own.
 
 ## Server filters
 

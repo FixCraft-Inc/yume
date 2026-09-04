@@ -150,7 +150,7 @@ Stable registry contract:
 - A codec has a canonical id such as `monero-rpc-v1` plus stable user aliases
   such as `monero-rpc`.
 - Server config enables codecs by name with `--codec-allow <name>` or
-  `codec_allow: ["name"]`.
+  `allow_codecs: ["name"]`.
 - Per-key auth grants codec use with `permissions.allow_codecs`.
 - Every identity question (`is_supported_codec`, `canonical_codec_id`,
   `builtin_codec`) resolves through the registry, so a codec added to the

@@ -640,23 +640,23 @@ if(YUME_BUILD_TESTING)
 
         # Compile and execute the long-lived transport-v2 H2 contract against
         # the exact shared codec sources used by the replacement adapter.
-        add_executable(yume_ytp1_h2_legacy_regression_test
+        add_executable(yume_transport_v2_h2_regression_test
             core/stealth/h2_carrier_test.cpp)
-        target_link_libraries(yume_ytp1_h2_legacy_regression_test
+        target_link_libraries(yume_transport_v2_h2_regression_test
             PRIVATE yume_ytp1_h2_carrier)
         if(MSVC)
-            target_compile_options(yume_ytp1_h2_legacy_regression_test
+            target_compile_options(yume_transport_v2_h2_regression_test
                 PRIVATE /UNDEBUG)
         else()
-            target_compile_options(yume_ytp1_h2_legacy_regression_test
+            target_compile_options(yume_transport_v2_h2_regression_test
                 PRIVATE -UNDEBUG)
         endif()
-        yume_apply_perf_opts(yume_ytp1_h2_legacy_regression_test)
+        yume_apply_perf_opts(yume_transport_v2_h2_regression_test)
         yume_assert_exact_link_dependencies(
-            yume_ytp1_h2_legacy_regression_test yume_ytp1_h2_carrier)
-        add_test(NAME yume_ytp1_h2_legacy_regression_test
-            COMMAND yume_ytp1_h2_legacy_regression_test)
-        set_tests_properties(yume_ytp1_h2_legacy_regression_test PROPERTIES
+            yume_transport_v2_h2_regression_test yume_ytp1_h2_carrier)
+        add_test(NAME yume_transport_v2_h2_regression_test
+            COMMAND yume_transport_v2_h2_regression_test)
+        set_tests_properties(yume_transport_v2_h2_regression_test PROPERTIES
             LABELS "foundation;0.3;carrier-provider;transport-v2-regression")
     endif()
 
@@ -883,6 +883,19 @@ if(TARGET basefwxcpp)
     target_compile_definitions(yume_secure_core PUBLIC YUME_USE_BASEFWX=1)
 else()
     target_compile_definitions(yume_secure_core PUBLIC YUME_USE_BASEFWX=0)
+endif()
+
+# YUME's own liboqs edge. inner_crypto.cpp calls OQS_KEM_new/OQS_KEM_keypair
+# itself, so it links and gates on liboqs directly instead of inheriting the
+# headers from basefwxcpp's PUBLIC interface and keying off BaseFWX's
+# BASEFWX_HAS_OQS build macro. yume_core inherits this through its PUBLIC
+# dependency on yume_secure_core, which is what version_report.cpp needs for
+# OQS_VERSION_TEXT. Discovery lives in the top-level CMakeLists.
+if(TARGET yume_liboqs)
+    target_link_libraries(yume_secure_core PUBLIC yume_liboqs)
+    target_compile_definitions(yume_secure_core PUBLIC YUME_HAS_OQS=1)
+else()
+    target_compile_definitions(yume_secure_core PUBLIC YUME_HAS_OQS=0)
 endif()
 if(WIN32)
     # ConvertStringSecurityDescriptorToSecurityDescriptorW, used by
@@ -1597,6 +1610,15 @@ add_executable(yume_server_config_io_test
 target_link_libraries(yume_server_config_io_test PRIVATE yume_facade)
 yume_apply_perf_opts(yume_server_config_io_test)
 add_test(NAME yume_server_config_io_test COMMAND yume_server_config_io_test)
+
+add_executable(yume_server_startup_admission_test
+    server/runtime/security_config_test.cpp
+)
+target_link_libraries(yume_server_startup_admission_test PRIVATE yume_server)
+yume_apply_perf_opts(yume_server_startup_admission_test)
+add_test(NAME yume_server_startup_admission_test
+    COMMAND yume_server_startup_admission_test)
+set_tests_properties(yume_server_startup_admission_test PROPERTIES TIMEOUT 30)
 
 add_executable(yume_signal_dispatch_test util_signal_test.cpp)
 target_link_libraries(yume_signal_dispatch_test PRIVATE yume_core)

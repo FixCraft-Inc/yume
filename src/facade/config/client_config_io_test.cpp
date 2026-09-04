@@ -430,7 +430,6 @@ yume::client::ClientConfig make_config() {
     config.packet_tun_name = "yume1";
     config.io_threads = 8;
     config.tunnel_count = 2;
-    config.obfs_secret = "inline-secret-must-not-survive";
     config.obfs_pad_multiple = 32;
     config.obfs_jitter_ms = 9;
     config.allow_udp = true;
@@ -624,9 +623,6 @@ bool test_cli_alias_load_and_canonical_save(
             {"allow_udp", false},
             {"tls_pin_sha256", "stale-pin"},
             {"codec", "stale-codec"},
-            {"obfs_secret", "stale-inline-secret"},
-            {"inner_hop", true},
-            {"hop_interval_ms", 250},
         })) {
         return expect(false, "should write CLI canonicalization fixture");
     }
@@ -648,6 +644,210 @@ bool test_cli_alias_load_and_canonical_save(
                       !document->contains("inner_hop") &&
                       !document->contains("hop_interval_ms"),
                   "CLI save should remove retired aliases");
+}
+
+// The client key set is closed and shared by both parsers. An unknown key is
+// an error rather than silence, because a misspelled security key would
+// otherwise parse as "not configured" and the client would connect without
+// it. Retired keys name their replacement, and integral fields reject values
+// they cannot represent instead of wrapping.
+bool test_client_key_set_is_closed(const std::filesystem::path& base) {
+    std::string error;
+    auto typo = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","tls_pinn":"deadbeef"})", base, &error);
+    if (!expect(!typo.has_value(),
+                "facade must reject an unknown client key") ||
+        !expect(error.find("tls_pinn") != std::string::npos,
+                "unknown-key error should name the key")) {
+        return false;
+    }
+    auto inline_secret = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","obfs_secret":"00"})", base, &error);
+    if (!expect(!inline_secret.has_value(),
+                "facade must reject an inline admission secret") ||
+        !expect(error.find("obfs_secret_file") != std::string::npos,
+                "inline-secret error should name the file key")) {
+        return false;
+    }
+    auto negative_jitter = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","obfs_jitter_ms":-1})", base, &error);
+    if (!expect(!negative_jitter.has_value(),
+                "facade must reject a negative obfs_jitter_ms") ||
+        !expect(error.find("obfs_jitter_ms") != std::string::npos,
+                "range error should name the key")) {
+        return false;
+    }
+    auto wide_pad = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","obfs_pad_multiple":65792})", base,
+        &error);
+    if (!expect(!wide_pad.has_value(),
+                "facade must reject an obfs_pad_multiple beyond 16 bits")) {
+        return false;
+    }
+
+    // Representable is not the same as sane. A huge positive jitter passes
+    // every type check and then delays every outbound frame, so both parsers
+    // carry the same ceiling.
+    auto huge_jitter = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","obfs_jitter_ms":4294967295})", base,
+        &error);
+    if (!expect(huge_jitter.has_value(),
+                "a representable jitter should still parse")) {
+        return false;
+    }
+    if (!expect(!yume::facade::config_io::validate(*huge_jitter).errors.empty(),
+                "validate must reject an unbounded obfs_jitter_ms")) {
+        return false;
+    }
+
+    const auto bound_path = base / "huge-jitter-yume.json";
+    if (!write_json(bound_path, {
+            {"server", "example.test"},
+            {"obfs_jitter_ms", 4294967295U},
+        })) {
+        return expect(false, "should write huge-jitter fixture");
+    }
+    {
+        yume::client::ParsedArgs bound_args;
+        bound_args.config_path = bound_path.string();
+        bound_args.config_specified = true;
+        yume::client::ClientConfig bound_config;
+        error.clear();
+        if (!expect(!yume::client::load_client_config_file(
+                        bound_args, "", &bound_config, &error),
+                    "CLI must reject an unbounded obfs_jitter_ms") ||
+            !expect(error.find("obfs_jitter_ms") != std::string::npos,
+                    "CLI bound error should name the key")) {
+            return false;
+        }
+    }
+
+    const auto path = base / "unknown-key-yume.json";
+    if (!write_json(path, {
+            {"server", "example.test"},
+            {"tls_pinn", "deadbeef"},
+        })) {
+        return expect(false, "should write unknown-key client fixture");
+    }
+    yume::client::ParsedArgs args;
+    args.config_path = path.string();
+    args.config_specified = true;
+    yume::client::ClientConfig config;
+    error.clear();
+    return expect(!yume::client::load_client_config_file(
+                      args, "", &config, &error),
+                  "CLI must reject an unknown client key") &&
+           expect(error.find("tls_pinn") != std::string::npos,
+                  "CLI unknown-key error should name the key");
+}
+
+// A member-level failure carries an RFC 6901 pointer so an embedder can point
+// at the offending key without parsing the message. Failures that belong to no
+// single member carry no pointer, and an empty pointer is a fact rather than a
+// missing field.
+bool test_parse_reports_json_pointer(const std::filesystem::path& base) {
+    std::string error;
+    std::string pointer;
+    auto typo = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","tls_pinn":"deadbeef"})", base, &error,
+        &pointer);
+    if (!expect(!typo.has_value(), "unknown key must be refused") ||
+        !expect(pointer == "/tls_pinn",
+                "unknown key should report its own pointer")) {
+        return false;
+    }
+    pointer.clear();
+    auto bad_type = yume::facade::config_io::parse_client_json(
+        R"({"server":"example.test","port":"not-a-number"})", base, &error,
+        &pointer);
+    if (!expect(!bad_type.has_value(), "a wrong-typed member must be refused") ||
+        !expect(pointer == "/port",
+                "a wrong-typed member should report its own pointer")) {
+        return false;
+    }
+    pointer.clear();
+    auto broken_json = yume::facade::config_io::parse_client_json(
+        R"({"server":)", base, &error, &pointer);
+    if (!expect(!broken_json.has_value(), "malformed JSON must be refused") ||
+        !expect(pointer.empty(),
+                "malformed JSON belongs to no member and carries no pointer")) {
+        return false;
+    }
+    pointer.clear();
+    auto server_typo = yume::facade::config_io::parse_server_json(
+        R"({"listen_port":443,"lisen_address":"0.0.0.0"})", base, &error,
+        &pointer);
+    return expect(!server_typo.has_value(),
+                  "the server key set is closed too") &&
+           expect(pointer == "/lisen_address",
+                  "an unknown server key should report its own pointer") &&
+           expect(error.find("lisen_address") != std::string::npos,
+                  "an unknown server key error should name the key");
+}
+
+// The server key set is closed for the same reason the client set is, and both
+// server parsers must agree. Inline secret material is refused outright.
+bool test_server_key_set_is_closed(const std::filesystem::path& base) {
+    std::string error;
+    auto inline_obfs = yume::facade::config_io::parse_server_json(
+        R"({"listen_port":443,"obfs_secret":"00"})", base, &error);
+    if (!expect(!inline_obfs.has_value(),
+                "facade must reject an inline server admission secret") ||
+        !expect(error.find("obfs_secret_file") != std::string::npos,
+                "the refusal should name the file key")) {
+        return false;
+    }
+    auto inline_cover = yume::facade::config_io::parse_server_json(
+        R"({"listen_port":443,"real_secret":"hunter2"})", base, &error);
+    if (!expect(!inline_cover.has_value(),
+                "facade must reject an inline cover-backend secret") ||
+        !expect(error.find("real_secret_file") != std::string::npos,
+                "the refusal should name the file key")) {
+        return false;
+    }
+
+    // The facade used to drop these on load while validate() still judged
+    // them, so a GUI-loaded server was quietly unshaped.
+    auto shaping = yume::facade::config_io::parse_server_json(
+        R"({"listen_port":443,"obfs_pad_multiple":16,"obfs_jitter_ms":25})",
+        base, &error);
+    if (!expect(shaping.has_value(), "shaping fields should parse") ||
+        !expect(shaping->obfs_pad_multiple == 16 &&
+                    shaping->obfs_jitter_ms == 25,
+                "shaping fields must reach ServerConfig")) {
+        return false;
+    }
+
+    // A key the facade parses but never serializes is silent data loss across
+    // a GUI load-and-save round trip.
+    auto carried = yume::facade::config_io::parse_server_json(
+        R"({"listen_port":443,"upstream_response_dir":"/tmp/captures",)"
+        R"("upstream_response_ttl":900,"benchmark_enable":true})",
+        base, &error);
+    if (!expect(carried.has_value(), "capture-replay keys should parse")) {
+        return false;
+    }
+    if (!expect(carried->upstream_response_dir == "/tmp/captures" &&
+                    carried->upstream_response_ttl_s == 900 &&
+                    carried->benchmark_enable,
+                "capture-replay keys must reach ServerConfig")) {
+        return false;
+    }
+    const auto round_trip_path = base / "server-round-trip.json";
+    if (!expect(yume::facade::config_io::save_server(
+                    *carried, round_trip_path, &error),
+                "saving a server config should succeed")) {
+        return false;
+    }
+    std::ifstream saved(round_trip_path);
+    const std::string saved_text((std::istreambuf_iterator<char>(saved)),
+                                 std::istreambuf_iterator<char>());
+    return expect(saved_text.find("upstream_response_dir") != std::string::npos,
+                  "the serializer must not drop upstream_response_dir") &&
+           expect(saved_text.find("upstream_response_ttl") != std::string::npos,
+                  "the serializer must not drop upstream_response_ttl") &&
+           expect(saved_text.find("benchmark_enable") != std::string::npos,
+                  "the serializer must not drop benchmark_enable");
 }
 
 bool test_cli_load_is_transactional(const std::filesystem::path& base) {
@@ -833,6 +1033,9 @@ int main() {
                        test_facade_save_surfaces_serialization_failure(
                            temporary.path()) &&
                        test_cli_alias_load_and_canonical_save(temporary.path()) &&
+                       test_client_key_set_is_closed(temporary.path()) &&
+                       test_parse_reports_json_pointer(temporary.path()) &&
+                       test_server_key_set_is_closed(temporary.path()) &&
                        test_cli_load_is_transactional(temporary.path()) &&
                        test_cli_save_reports_failure(temporary.path()) &&
                        test_cli_save_preserves_malformed_existing_config(

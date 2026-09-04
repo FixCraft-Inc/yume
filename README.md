@@ -1,10 +1,10 @@
 # YUME
 
-YUME is an experimental embeddable stealth universal transport. During this
-transition, the default build keeps the runnable
-`0.2.0-dev6` client (`yume`) and daemon (`yumed`) available while the modular
-YTP/1 engine, schema-1 configuration, and replacement C ABI are built alongside
-them.
+YUME is an experimental embeddable stealth universal transport. The product
+version is `0.3.0-dev1`. During this transition its default build keeps the
+runnable `yume` client and `yumed` daemon, which speak the transport-v2 wire
+`0.2.0-dev6`, available while the modular YTP/1 engine, schema-1 configuration,
+and replacement C ABI are built alongside them.
 
 There is no stable product release yet. Linux x86-64 command-line builds are
 the first qualification target. Other platforms, the GUI, and external
@@ -108,7 +108,7 @@ replacement's schema-1 credential and configuration contracts. Their kits do
 not yet drive the runnable `yume` or `yumed` binaries. Read the current
 [quick start](docs/QUICKSTART.md) and [operations guide](docs/OPERATIONS.md) for
 the tunnel, and the
-[replacement quick start](docs/development/ytp1/QUICKSTART.md) for the YTP/1
+[YTP/1 foundation page](docs/development/ytp1/README.md) for the YTP/1
 scaffold.
 
 The runnable setup helper retains its owner-only credential handling and
@@ -139,7 +139,7 @@ Start with the [documentation map](docs/README.md). The main reader paths are:
   product direction and trust boundary
 - [quick start](docs/QUICKSTART.md) and [operations](docs/OPERATIONS.md) for the
   runnable transport
-- [YTP/1 development drafts](docs/development/ytp1/README.md) for the schema-1
+- [YTP/1 foundation](docs/development/ytp1/README.md) for the schema-1
   foundation
 - [implementation status](docs/IMPLEMENTATION_STATUS.md) for the current
   support and release boundary

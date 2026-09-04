@@ -9,10 +9,10 @@
     "order": 5
   },
   {
-    "title": "YTP/1 foundation quick start",
-    "summary": "Build the replacement SDK, create a schema-1 kit with the experimental tools, and verify the unwired boundary.",
-    "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/QUICKSTART.md",
-    "source": "docs/development/ytp1/QUICKSTART.md",
+    "title": "YTP/1 foundation",
+    "summary": "Build the replacement SDK, create a schema-1 kit with the experimental tools, and read the contracts and gates behind the unwired boundary.",
+    "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md",
+    "source": "docs/development/ytp1/README.md",
     "home_group": "Start here",
     "landing_group": "Start here",
     "order": 10

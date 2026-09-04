@@ -162,6 +162,64 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(profile["tls_wire_profile"].is_file())
         self.assertGreaterEqual(len(profile["tls_wire_candidates"]), 1)
 
+    def test_reader_facing_docs_state_the_product_version(self) -> None:
+        """The website and vcpkg had drift checks; the human-facing docs did
+        not, so all three front-door documents drifted into calling the
+        transport-v2 wire version the product version and labelling the
+        binaries with it. The product version is derived here rather than
+        hardcoded so a version bump forces these documents forward."""
+        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        product = re.search(
+            r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+        wire = re.search(
+            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+
+        for relative in ("README.md", "docs/README.md",
+                         "docs/IMPLEMENTATION_STATUS.md"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            # assertTrue, not assertIn: a failed assertIn would dump the
+            # whole document into the report.
+            self.assertTrue(
+                product in text,
+                f"{relative} must state the product version {product}")
+            # The wire version may appear, but only where the prose says it is
+            # the transport-v2 wire. Otherwise it reads as the product version.
+            for paragraph in text.split("\n\n"):
+                if wire not in paragraph:
+                    continue
+                self.assertRegex(
+                    paragraph.replace("\n", " "),
+                    r"transport-v2 wire|wire `?" + re.escape(wire),
+                    f"{relative} mentions {wire} without saying it is the "
+                    "transport-v2 wire version")
+
+    def test_manual_pages_state_the_product_version(self) -> None:
+        """The roff header names the product a page belongs to. It carried
+        the transport-v2 wire version until the front-door documents were
+        corrected, so pin it to the product version as well."""
+        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        product = re.search(
+            r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+        wire = re.search(
+            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+        for relative in ("docs/man/yume.1", "docs/man/yumed.8",
+                         "docs/man/yume-gui.1"):
+            first_line = (ROOT / relative).read_text(
+                encoding="utf-8").splitlines()[0]
+            self.assertTrue(
+                first_line.startswith(".TH "),
+                f"{relative} must open with a .TH header")
+            self.assertIn(
+                f'"YUME {product}"', first_line,
+                f"{relative} header must name product version {product}")
+            self.assertNotIn(
+                wire, first_line,
+                f"{relative} header must not carry wire version {wire}")
+
     def test_product_and_transport_versions_are_coherent(self) -> None:
         version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
         self.assertIn('kVersion[] = "0.3.0-dev1"', version_header)

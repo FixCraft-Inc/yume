@@ -1,4 +1,4 @@
-.TH YUME 1 "2026-08-01" "YUME 0.2.0-dev6" "YUME Manual"
+.TH YUME 1 "2026-08-01" "YUME 0.3.0-dev1" "YUME Manual"
 .SH NAME
 yume \- stealth post-quantum transport client
 .SH SYNOPSIS
@@ -591,7 +591,7 @@ together with
 .BR --codec-listen .
 .TP
 .BI "--codec " name
-Select an application codec by registry name. In 0.2.0-dev6 the only built-in
+Select an application codec by registry name. In the transport-v2 runtime the only built-in
 codec is
 .BR monero-rpc-v1 ,
 which is also accepted as
@@ -841,7 +841,7 @@ Pin the server TLS certificate fingerprint.
 .SH TLS STEALTH OPTIONS
 .TP
 .BI "--profile " name
-Select the pinned Chrome 151 Linux profile. In 0.2.0-dev6,
+Select the pinned Chrome 151 Linux profile. In the transport-v2 runtime,
 .B chrome
 is the only accepted value.
 .TP
@@ -873,7 +873,7 @@ a certificate issued for a DNS name.
 .TP
 .B "--hide-in-the-crowd chrome"
 Explicit spelling for the same pinned Chrome 151 HTTP User-Agent profile.
-Other HTTP profiles are rejected for 0.2.0-dev6.
+Other HTTP profiles are rejected by the transport-v2 runtime.
 .TP
 .B --tls-fingerprint-log
 Log TLS fingerprint metrics for the explicit
@@ -1106,7 +1106,8 @@ time-correlation risks.
 .SH FILES
 .TP
 .I config/yume.json
-Example local client configuration.
+Example local client configuration. Its keys form a closed set: an unknown
+or retired key is a load error, never a silently ignored setting.
 .TP
 .I ~/.yume/id_ed25519
 Common client identity key location.

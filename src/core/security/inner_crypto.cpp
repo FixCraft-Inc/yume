@@ -13,31 +13,53 @@
 #include <string>
 #include <system_error>
 
-#if YUME_USE_BASEFWX
-#include <basefwx/constants.hpp>
-#include <basefwx/crypto.hpp>
-#if defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
+// liboqs is YUME's own dependency, discovered and linked by YUME's CMake
+// (target yume_liboqs). It is deliberately NOT reached through BaseFWX's
+// PUBLIC link interface and NOT gated on BaseFWX's BASEFWX_HAS_OQS build
+// macro. The calls below are YUME's own, so a BaseFWX build that leaves
+// liboqs out must not disable them, and the reverse holds too.
+#if defined(YUME_HAS_OQS) && YUME_HAS_OQS
 #include <oqs/oqs.h>
 #endif
+
+// BaseFWX still owns the wiping primitive used for the private key.
+#if YUME_USE_BASEFWX
+#include <basefwx/crypto.hpp>
 #endif
 
 namespace yume::inner {
 
+#if defined(YUME_HAS_OQS) && YUME_HAS_OQS
+namespace {
+
+// YUME's protocol decision, not BaseFWX's. facade/keys/keys.cpp labels the
+// result "ml-kem-768". Taking the name from basefwx::constants::kMasterPqAlg
+// (BaseFWX's .yss master-escrow algorithm) would let a BaseFWX-side change
+// silently switch the algorithm YUME generates while the label stayed put.
+constexpr const char* kInnerKemAlgorithm = OQS_KEM_alg_ml_kem_768;
+
+}  // namespace
+#endif
+
 bool generate_pq_keypair(const std::string& private_path,
                          const std::string& public_path,
                          std::string* err) {
-#if !YUME_USE_BASEFWX
-    if (err) *err = "inner crypto not available: BaseFWX disabled";
+#if !defined(YUME_HAS_OQS) || !YUME_HAS_OQS
+    (void)private_path;
+    (void)public_path;
+    if (err) *err = "PQ not available (YUME was built without liboqs)";
+    return false;
+#elif !YUME_USE_BASEFWX
+    (void)private_path;
+    (void)public_path;
+    // The private key must never outlive this call in unwiped memory, and the
+    // wiping primitive is BaseFWX's. Fail closed rather than write a key out
+    // of a buffer nothing clears.
+    if (err) *err = "PQ not available (YUME was built without BaseFWX)";
     return false;
 #else
-#if !defined(BASEFWX_HAS_OQS) || !BASEFWX_HAS_OQS
-    if (err) *err = "PQ not available (liboqs not enabled in BaseFWX)";
-    return false;
-#else
-    std::string algo_str(basefwx::constants::kMasterPqAlg);
-    const char* algo = algo_str.c_str();
     std::unique_ptr<OQS_KEM, decltype(&OQS_KEM_free)> kem(
-        OQS_KEM_new(algo), OQS_KEM_free);
+        OQS_KEM_new(kInnerKemAlgorithm), OQS_KEM_free);
     if (!kem) {
         if (err) *err = "OQS_KEM_new failed";
         return false;
@@ -66,11 +88,10 @@ bool generate_pq_keypair(const std::string& private_path,
     }
     return true;
 #endif
-#endif
 }
 
 bool pq_supported() {
-#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
+#if defined(YUME_HAS_OQS) && YUME_HAS_OQS && YUME_USE_BASEFWX
     return true;
 #else
     return false;

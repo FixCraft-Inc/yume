@@ -17,6 +17,7 @@
 #include "server/filter/ip_filter.hpp"
 #include "server/host/host_types.hpp"
 #include "server/host/host_routes.hpp"
+#include "server/packet/tun_egress.hpp"
 #include "server/runtime/security_config.hpp"
 #include "util.hpp"
 
@@ -123,8 +124,11 @@ bool validate_filters(const yume::server::ServerConfig& cfg) {
 }
 
 bool validate_resource_limits(const yume::server::ServerConfig& cfg) {
-    if (cfg.threads < 0 || cfg.threads > 256) {
-        yume::util::log_error("threads must be in 0..256");
+    if (cfg.threads < 0 || cfg.threads > yume::policy::kMaxIoThreads) {
+        yume::util::log_error(
+            "threads must be in 0.." +
+            std::to_string(yume::policy::kMaxIoThreads) +
+            " (0 selects one worker per hardware thread)");
         return false;
     }
     if (cfg.bulk_key_max_sessions == 0 || cfg.bulk_key_max_sessions > 65535) {
@@ -148,6 +152,23 @@ bool validate_packet_egress(const yume::server::ServerConfig& cfg) {
     }
     if (cfg.packet_mtu < 576 || cfg.packet_mtu > 65535) {
         yume::util::log_error("--packet-mtu must be in range 576..65535");
+        return false;
+    }
+    // Packet mode hands the resolver address to every tunnelled client, so
+    // that resolver sees every name they look up. Picking one for the
+    // operator would silently make a third party the observer of all of it,
+    // so the choice is required rather than defaulted.
+    if (!yume::server::packet_dns_configured(cfg)) {
+        yume::util::log_error(
+            "packet egress requires an explicit DNS resolver: every client in "
+            "packet mode is told to resolve names through it, so whoever runs "
+            "that resolver sees every hostname your users look up. Set "
+            "--dns-server <IPv4> (or dns_server in the config) to an address "
+            "you accept as that observer" +
+            std::string(cfg.dns_server.empty()
+                            ? ""
+                            : "; \"" + cfg.dns_server +
+                                  "\" is not an IPv4 literal"));
         return false;
     }
     yume::util::log_info("packet-native egress requested: tun=" + cfg.packet_tun_name +
@@ -536,6 +557,8 @@ void log_effective_startup_summary(const yume::server::ServerConfig& cfg) {
 }
 
 bool load_real_http_secret(yume::server::ServerConfig& cfg, const std::string& default_secret_path) {
+    // real_secret is never configured inline any more: it is loaded from an
+    // owner-only file, or generated into one on first start.
     if (!cfg.real_http || !cfg.real_backend.empty() || !cfg.real_secret.empty()) {
         return true;
     }

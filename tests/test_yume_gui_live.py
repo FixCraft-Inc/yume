@@ -11,7 +11,7 @@ connect -> stop -> reconnect -> stop lifecycle against it and exit 0.
 A GUI that compiles, renders and refuses bad input still proves nothing about
 whether it can talk to a server. This is that gate.
 
-The server recipe deliberately mirrors ``test_yume_abi_stream.py``, which is
+The server recipe deliberately mirrors the daemon fixtures used elsewhere, which is
 the already-qualified way to bring a dev6 server up in-tree.
 """
 
@@ -171,6 +171,13 @@ def provision(root: Path, yumed: Path, cover_port: int,
     inner_psk = root / "inner-psk.hex"
     write_secret(obfs_secret)
     write_secret(inner_psk)
+    # yumed refuses to start without a cover source: with none, the HTTP/2
+    # decoy would serve a page identical on every deployment.
+    cover_index = root / "cover-index.html"
+    cover_index.write_text(
+        "<!doctype html><title>example</title><p>It works.</p>\n",
+        encoding="utf-8",
+    )
 
     port = pick_port()
     server_config = root / "server.json"
@@ -189,6 +196,7 @@ def provision(root: Path, yumed: Path, cover_port: int,
                 "inner_psk_file": str(inner_psk),
                 "inner_crypto": True,
                 "real_backend": f"loopback://127.0.0.1:{cover_port}",
+                "real_index_path": str(cover_index),
                 "allow_services": [SERVICE],
                 "ipc_enable": False,
                 "boring": True,

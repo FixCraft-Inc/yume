@@ -48,19 +48,22 @@ constexpr Person kPeople[] = {
 
 constexpr Component kComponentsAll[] = {
     {"BaseFWX",
-     "The core Yume crypto engine - outer auth, inner post-quantum tunnel, key formats.",
+     "Key-wiping buffers, Argon2id/PBKDF2/HKDF, AEAD, X25519 and ML-KEM wrappers, and the .yss share container.",
      "LGPL-3.0-or-later"},
     {"liboqs (Open Quantum Safe)",
-     "Post-quantum primitives (ML-KEM, ML-DSA) consumed through BaseFWX.",
+     "ML-KEM implementation: linked directly for key generation, reached through BaseFWX for encapsulation.",
      "MIT"},
+    {"OpenSSL",
+     "TLS 1.3, X.509, classical primitives, and the ML-DSA-87 signature provider.",
+     "Apache-2.0"},
+    {"Yume OpenSSL patch overlay",
+     "Downstream patches for the Chrome-shaped TLS backend.",
+     "AGPL-3.0-or-later"},
 };
 
 // Compiled into every desktop binary (CLI + GUI). Not present on Android,
 // which uses JVM/Conscrypt equivalents.
 constexpr Component kComponentsDesktopCore[] = {
-    {"OpenSSL",
-     "TLS transport, X.509 parsing, and classical crypto primitives.",
-     "Apache-2.0"},
     {"Boost (ASIO, system)",
      "Async network IO that drives the relay, client, and server.",
      "Boost Software License 1.0"},

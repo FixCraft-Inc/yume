@@ -40,7 +40,6 @@ struct ServerConfig {
     int threads{0};
     bool obfuscation{true};
     bool inner_crypto{true};
-    bool inner_heavy{true};
     bool inner_dual{false};
     bool inner_required{false};
     // Concurrent directional epoch offers accepted from one session, and the
@@ -89,8 +88,6 @@ struct ServerConfig {
     std::string inner_psk_file;
     std::shared_ptr<yume::security::Secret32> obfs_secret_material;
     std::shared_ptr<yume::security::Secret32> inner_psk_material;
-    // Legacy 1.x literal. YUME 2.0 startup rejects nonempty values.
-    std::string obfs_secret;
     // Historical config/wire name. This enables privacy-minimizing behavior
     // and publishes an operator-authority proof; the proof authenticates the
     // operator CA/key relationship but cannot prove a no-logging policy.

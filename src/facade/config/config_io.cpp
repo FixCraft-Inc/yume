@@ -32,35 +32,4 @@ std::filesystem::path default_server_config_path() {
     return default_data_dir() / "server.json";
 }
 
-std::filesystem::path default_gui_preferences_path() {
-    return default_data_dir() / "gui.json";
-}
-
-GuiPreferences load_gui_preferences() {
-    GuiPreferences out;
-    std::ifstream in(default_gui_preferences_path());
-    if (!in) return out;
-    try {
-        json j;
-        in >> j;
-        if (j.is_object()) {
-            read_opt(j, cfg_key::dark_mode, out.dark_mode);
-            read_opt(j, cfg_key::minimize_to_tray_on_close, out.minimize_to_tray_on_close);
-        }
-    } catch (...) {
-        // Malformed JSON: fall back to defaults silently. The next save
-        // rewrites the preferences file cleanly.
-    }
-    return out;
-}
-
-bool save_gui_preferences(GuiPreferences const& prefs) {
-    const auto path = default_gui_preferences_path();
-    json j = {{cfg_key::dark_mode, prefs.dark_mode},
-              {cfg_key::minimize_to_tray_on_close, prefs.minimize_to_tray_on_close}};
-    return yume::runtime::AtomicWriteFile(
-        path, j.dump(2), nullptr,
-        yume::runtime::ParentDirectoryPolicy::Create);
-}
-
 }  // namespace yume::facade::config_io

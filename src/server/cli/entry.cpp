@@ -299,8 +299,6 @@ int Server::run(int argc, char** argv) {
 
     ServerConfigOverrides config_overrides = cli_args.config_overrides;
     ServerKeyCommand key_command = cli_args.key_command;
-    const bool inner_heavy_override = cli_args.inner_heavy_override;
-    const bool inner_heavy_value = cli_args.inner_heavy_value;
     const bool attach_local = cli_args.attach_local;
     const bool keep_root = cli_args.keep_root;
 
@@ -324,9 +322,6 @@ int Server::run(int argc, char** argv) {
             "Use --dns-server 1.1.1.1 or set YUME_DNS_SERVER=1.1.1.1 to bypass system DNS.");
     }
 #endif
-    if (inner_heavy_override) {
-        cfg.inner_heavy = inner_heavy_value;
-    }
     if (cfg.inner_dual || cfg.inner_required) {
         cfg.inner_crypto = true;
     }

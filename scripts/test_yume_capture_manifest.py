@@ -44,6 +44,15 @@ class CaptureManifestTest(unittest.TestCase):
             ["git", "-C", str(self.repo), "config", "user.email", "test@example.invalid"],
             check=True,
         )
+        # This project signs its commits, so a global commit.gpgsign reaches
+        # the fixture repository and blocks the commit below on a passphrase
+        # prompt. The fixture only needs a commit to exist, never a signed
+        # one, so it must not inherit the developer's signing policy.
+        for signing_key in ("commit.gpgsign", "tag.gpgsign"):
+            subprocess.run(
+                ["git", "-C", str(self.repo), "config", signing_key, "false"],
+                check=True,
+            )
         (self.repo / "tracked").write_text("clean\n", encoding="utf-8")
         subprocess.run(
             ["git", "-C", str(self.repo), "add", "tracked"], check=True

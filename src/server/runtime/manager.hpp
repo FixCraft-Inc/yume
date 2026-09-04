@@ -23,6 +23,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/asio/strand.hpp>
 
 #include "core/protocol/control_protocol.hpp"
 #include "core/protocol/directory_policy.hpp"
@@ -250,6 +251,9 @@ private:
     boost::asio::io_context& io_;
     ServerConfig cfg_;
     std::mutex cfg_mutex_;
+    // basic_socket_acceptor is not thread-safe and this io_context is run by
+    // several workers, so every acceptor operation is serialized here.
+    boost::asio::strand<boost::asio::io_context::executor_type> accept_strand_;
     boost::asio::ip::tcp::acceptor acceptor_;
     boost::asio::ssl::context ssl_ctx_;
     mutable std::mutex auth_keys_mutex_;

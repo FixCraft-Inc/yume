@@ -88,7 +88,6 @@ int run_export_share(const std::string& out_path,
     }
 
     yume::share::BackupInputs in;
-    RelaySecretWiper inline_obfs_secret_wiper(in.obfs_secret);
     in.label = cfg.server + (cfg.port > 0 ? ":" + std::to_string(cfg.port) : std::string());
     in.created_by = std::string("yume ") + yume::kVersion;
     in.server_host = cfg.server;
@@ -100,7 +99,6 @@ int run_export_share(const std::string& out_path,
     in.obfuscation = cfg.obfuscation;
     in.obfs_secret_path = cfg.obfs_secret_file;
     in.inner_psk_path = cfg.inner_psk_file;
-    in.obfs_secret = cfg.obfs_secret;
     in.obfs_pad_multiple = cfg.obfs_pad_multiple;
     in.obfs_jitter_ms = cfg.obfs_jitter_ms;
     in.tls_pin_sha256 = cfg.tls_pin_sha256;
@@ -108,7 +106,6 @@ int run_export_share(const std::string& out_path,
     in.tls_server_name = cfg.tls_server_name;
     in.anonym_pubkey = cfg.anonym_pubkey;
     in.inner_crypto = cfg.inner_crypto;
-    in.inner_heavy = cfg.inner_heavy;
     in.tunnel_count = static_cast<std::uint8_t>(
         std::clamp(cfg.tunnel_count, 1, 16));
     in.require_operator_identity = cfg.require_anonym;
@@ -190,7 +187,8 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
     std::cout                             << "PQ pubkey:    " << (bundle.pq_public_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Obfs secret:  " << (bundle.obfs_secret.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Inner PSK:    " << (bundle.inner_psk.empty() ? "(none)" : "PRESENT") << "\n";
-    std::cout                             << "Inner crypto: " << (bundle.inner_crypto ? (bundle.inner_heavy ? "heavy" : "light") : "off") << "\n";
+    std::cout << "Inner crypto: " << (bundle.inner_crypto ? "on" : "off")
+              << "\n";
     std::cout                             << "Tunnels:      " << static_cast<unsigned>(bundle.tunnel_count) << "\n";
     std::cout                             << "Relay trust:  " << bundle.relay_trust_mode << "\n";
     std::cout                             << "Explicit pins: " << bundle.relay_peer_pins.size() << "\n";

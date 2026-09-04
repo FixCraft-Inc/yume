@@ -1,9 +1,9 @@
 ---
 layout: page
-title: "YUME: protected transport through browser-shaped HTTPS"
-description: YUME carries TCP and UDP through one persistent browser-shaped connection with hybrid session keys and per-message encryption.
+title: "YUME: embeddable stealth universal transport"
+description: YUME keeps its runnable profile-matched hybrid tunnel while building a modular stealth universal transport with an embeddable C ABI.
 body_class: home-page
-footer_statement: YUME carries TCP and UDP through browser-shaped HTTPS.
+footer_statement: YUME is an embeddable stealth universal transport.
 section_nav:
   - label: Status
     url: "#status"
@@ -22,16 +22,17 @@ section_nav:
 ---
 <section class="hero" id="top">
   <div class="hero-copy">
-    <div class="hero-status"><span aria-hidden="true"></span>Experimental development software</div>
-    <h1>YUME <small>Protected passage for TCP and UDP</small></h1>
+    <div class="hero-status"><span aria-hidden="true"></span>Experimental &middot; runnable tunnel plus modular foundation</div>
+    <h1>YUME <small>Stealth transport, built for embedding.</small></h1>
     <p>
-      YUME carries TCP and UDP inside one persistent, browser-shaped connection. Hybrid
-      session keys, per-message encryption, and directional epochs protect the inner
-      tunnel. Client and daemon build from the same tree.
+      YUME currently carries TCP and UDP inside one persistent, browser-shaped
+      connection. Its working 0.2 client and daemon remain available while YTP/1
+      turns that tunnel core into reusable authenticated streams and packet channels.
     </p>
     <div class="cta-row">
-      <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Build from source</a>
-      <a class="btn secondary" href="{{ '/docs/STEALTH/' | relative_url }}">Read stealth model</a>
+      <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Run the current tunnel</a>
+      <a class="btn secondary" href="{{ '/docs/WHY_YUME/' | relative_url }}">Why YUME</a>
+      <a class="btn secondary" href="{{ '/docs/STEALTH/' | relative_url }}">Stealth model</a>
       <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume" target="_blank" rel="noopener">View source</a>
     </div>
   </div>
@@ -43,16 +44,16 @@ section_nav:
       </svg>
     </div>
     <div class="release-copy">
-      <div class="meta">Release channel</div>
-      <div class="panel-title" id="release-version">No published release yet</div>
+      <div class="meta">Development line</div>
+      <div class="panel-title" id="release-version">{{ site.product_version }}</div>
       <div class="meta-row">
-        <span id="release-date">Build from source in the meantime</span>
+        <span id="release-date">No published stable release</span>
         <span id="release-assets"></span>
       </div>
       <ul class="card-list card-list-spaced">
-        <li>Publication is gated on an independent security review</li>
-        <li>Lifecycle, scale, soak, and WAN gates also require approval</li>
-        <li>Source, executable tests, and public contracts remain authoritative</li>
+        <li>The default transition build keeps the previously tested 0.2 tunnel runnable</li>
+        <li>YTP/1 and the modular engine are experimental, pre-freeze foundations</li>
+        <li>The replacement does not remove working paths before parity</li>
       </ul>
     </div>
     <div class="panel-foot">
@@ -65,20 +66,20 @@ section_nav:
 
   <div class="release-strip" aria-label="Transport at a glance">
     <div class="release-stat">
-      <strong>Linux x86-64</strong>
-      <span>The first qualification target</span>
+      <strong>Runnable now</strong>
+      <span>0.2 client, daemon, SOCKS, TCP, and UDP</span>
     </div>
     <div class="release-stat">
-      <strong>ML-KEM-1024 + X25519</strong>
-      <span>Plus a mandatory random PSK</span>
+      <strong>Modular next</strong>
+      <span>Named streams, packets, identity, and policy</span>
     </div>
     <div class="release-stat">
-      <strong>Ed25519 + ML-DSA-87</strong>
-      <span>Composite client identity, both verified</span>
+      <strong>Hybrid by contract</strong>
+      <span>Classical and post-quantum components</span>
     </div>
     <div class="release-stat">
-      <strong>One captured profile</strong>
-      <span>Immutable browser and cover identity</span>
+      <strong>Profile-matched ingress</strong>
+      <span>Real cover separated from YTP semantics</span>
     </div>
   </div>
 
@@ -101,47 +102,47 @@ section_nav:
         <span class="layer">Directional epochs</span>
       </div>
     </div>
-    <div class="disguise-note">One connection carries both. The cover site answers ordinary browser requests on the same listener.</div>
+    <div class="disguise-note">This map describes the runnable 0.2 transport. The modular replacement must preserve genuine cover behavior before it can take over.</div>
   </figure>
 </section>
 
 <section id="status" data-reveal="drift">
   <h2 class="section-title">Current boundary</h2>
   <p class="section-lead">
-    YUME is experimental development software. This page describes what exists in the
-    tree and keeps unsupported paths explicit.
+    YUME is experimental development software with a deliberate coexistence
+    boundary: keep the tunnel useful while rebuilding its internals.
   </p>
   <div class="notice">
     <div class="status-pill warn">Development line {{ site.product_version }}: no stable release published</div>
     <p>
-      The release workflow refuses to publish unless an independent security review is
-      complete and the documented lifecycle, scale, soak, WAN, and same-session gates are
-      approved. None of those are signed off yet, so the supported way to run YUME today is
-      to build this tree.
+      The default build produces the runnable 0.2 <code>yume</code> and
+      <code>yumed</code> tunnel. YTP/1, the dependency-clean session engine,
+      schema 1, and the replacement ABI are built alongside it, but they do not
+      yet form an authenticated end-to-end tunnel.
     </p>
     <p>
-      No stable-release transport throughput or latency result has been published.
-      The older public WAN run used 1.x and does not describe the current transport. Current
-      limits and open network gates are in the
-      <a href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}#performance-and-network-qualification">implementation status</a>.
+      Breaking the new wire and schema is acceptable during development;
+      deleting working behavior before its replacement reaches parity is not.
+      Exact implementation and evidence limits are in the
+      <a href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">implementation status</a>.
     </p>
   </div>
   <div class="grid grid-spaced">
     <div class="card">
-      <h3>Existing evidence</h3>
-      <p>The historical Linux x86-64 <code>yume</code> / <code>yumed</code> command-line slice with its explicitly selected Go TLS helper; that evidence does not qualify the new native default.</p>
+      <h3>Runnable product</h3>
+      <p>The 0.2 client and daemon retain SOCKS, forwards, packet routing, composite authentication, profile-matched TLS/H2 ingress, and a real cover backend while the replacement matures.</p>
     </div>
     <div class="card">
-      <h3>In progress</h3>
-      <p>The desktop GUI has headless Linux checks for connect, stop, and reconnect. Its interactive window, tray, accessibility, and cross-platform behavior remain unqualified. Android has earlier non-connected ARM64 evidence, but it is not synchronized to the current candidate; its connected VPN, routing, leak-policy, and release gates remain open.</p>
+      <h3>Foundation retained</h3>
+      <p>The tree includes bounded YTP/1 codecs, the session engine, opt-in hybrid security, TLS 1.3, duplex H2 carrier, TCP ByteChannel, and direct-route providers, strict schema-1 configuration, setup and doctor tools, layering checks, and build-tree ABI consumers.</p>
     </div>
     <div class="card">
-      <h3>Not qualified</h3>
-      <p>macOS, Windows, and embedded targets. They are not part of the first release surface and are not published here.</p>
+      <h3>Still unwired</h3>
+      <p>The provider candidates are not connected to a live YTP/1 endpoint. The build-tree ABI can carry authenticated transport-v2 named streams, but schema 1 still needs a genuine front door, admission and provider composition, runtime adapters, stream and packet wiring, and full security qualification.</p>
     </div>
     <div class="card">
-      <h3>Explicitly disabled</h3>
-      <p>Remote command execution. Policy and wire inputs are reserved, but direct and relayed execution fail closed.</p>
+      <h3>Switch-over rule</h3>
+      <p>Transport-v2/AUTH-v2 is incompatible with YTP/1 by design. The old runtime leaves the default only after tunnel, cover, routing, embedding, packaging, and qualification parity.</p>
     </div>
   </div>
 </section>
@@ -149,9 +150,9 @@ section_nav:
 <section id="install">
   <h2 class="section-title">Install</h2>
   <p class="section-lead">
-    YUME builds from source on Linux x86-64. Full builds use the checksum-pinned,
-    patched OpenSSL source and prepare the supported nghttp2 revision when the system
-    copy is too old.
+    YUME builds from source on Linux x86-64. The default build keeps the
+    runnable tunnel and also compiles the modular foundation for focused tests.
+    Full builds use the pinned transport dependencies recorded by the tree.
   </p>
   <div class="download-grid">
     <article class="download-card download-card-wide">
@@ -163,7 +164,8 @@ section_nav:
         tree into <code>build/bin</code>.
       </p>
       <div class="link-row">
-        <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Quick start</a>
+        <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Runnable quick start</a>
+        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md" target="_blank" rel="noopener">YTP/1 foundation</a>
         <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/blob/main/ezbuild.sh" target="_blank" rel="noopener">ezbuild.sh</a>
       </div>
       <div class="card-meta">Produces <code>build/bin/yume</code> and <code>build/bin/yumed</code>.</div>
@@ -173,8 +175,9 @@ section_nav:
       <span class="chip">Linux amd64</span>
       <h3>Release artifacts</h3>
       <p class="section-lead">
-        When a stable tag is published, the release workflow attaches exactly two artifacts
-        plus their integrity sidecars. Nothing else is a YUME release.
+        No stable artifact is published. The release workflow and artifact
+        contract remain gated on exact-candidate security, lifecycle, network,
+        packaging, and reproducibility evidence.
       </p>
       <ul class="card-list">
         <li><code>yume-amd64-linux.tar.xz</code>: client bundle with <code>yume</code>, the temporarily retained Chrome TLS helper, notices, setup guide, and <code>manifest.json</code></li>
@@ -191,13 +194,14 @@ section_nav:
       <span class="chip">Debian</span>
       <h3>Packages</h3>
       <p class="section-lead">
-        The Debian source packaging produces five binary packages. BaseFWX is packaged
-        separately and must satisfy the pinned version floor.
+        Debian metadata preserves the runnable client and daemon package split.
+        The replacement SDK remains experimental until its endpoint, stream,
+        and packet paths pass the installed-consumer gates.
       </p>
       <ul class="card-list">
         <li><code>yume</code>, <code>yume-daemon</code></li>
-        <li><code>libyume1</code>, <code>libyume-dev</code>: stable C ABI</li>
         <li><code>yume-gui</code>: optional, skipped with <code>DEB_BUILD_PROFILES=nogui</code></li>
+        <li>No <code>libyume1</code> or <code>libyume-dev</code> package until the replacement ABI is functional and reviewed</li>
       </ul>
       <div class="link-row">
         <a class="btn secondary" href="{{ '/docs/PACKAGING/' | relative_url }}">Packaging guide</a>
@@ -208,17 +212,16 @@ section_nav:
       <span class="chip">Other surfaces</span>
       <h3>GUI, Android, and embedding</h3>
       <p class="section-lead">
-        The desktop GUI (<code>yume-gui</code>) is a Dear ImGui + GLFW application in the same
-        tree, off by default. It drives the same in-process client runtime as the CLI through
-        the shared facade library, but it is still a development preview. The CLI remains the
-        supported automation surface. The Android client and any third-party embedder go
-        through <code>libyume</code>, the stable C ABI, whose compatibility rules are
-        documented separately.
+        The desktop GUI (<code>yume-gui</code>) remains an optional 0.2 development
+        preview and still uses the existing facade. It is not deleted merely
+        because the replacement ABI is incomplete. Android and third-party
+        embedders must not treat the replacement ABI candidate as stable until
+        its functional and lifecycle gates pass.
       </p>
       <div class="link-row">
-        <a class="btn secondary" href="{{ '/docs/ABI/' | relative_url }}">Stable C ABI</a>
+        <a class="btn secondary" href="{{ '/docs/ABI/' | relative_url }}">Replacement ABI status</a>
         <a class="btn secondary" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">Implementation status</a>
-        <a class="btn secondary" href="{{ '/docs/HOST_CONTROLLER/' | relative_url }}">Host controller</a>
+        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs" target="_blank" rel="noopener">0.2 contracts</a>
       </div>
     </article>
   </div>
@@ -227,58 +230,60 @@ section_nav:
 <section id="security" data-reveal="drift">
   <h2 class="section-title">Tunnel protection</h2>
   <p class="section-lead">
-    Every layer below is mandatory in the current transport. There is no public-key-only mode, no
-    plaintext fallback, and no flag that downgrades the wire.
+    The replacement keeps YUME's hybrid, fail-closed identity while tightening
+    per-client transport credentials, service policy, and resource contracts.
   </p>
   <div class="table-scroll">
     <table class="compare-table">
       <thead>
         <tr>
           <th>Layer</th>
-          <th>Current development tree</th>
+          <th>Runnable 0.2 transport</th>
+          <th>YTP/1 replacement contract</th>
         </tr>
       </thead>
       <tbody>
         <tr>
           <td>Client identity</td>
           <td>Composite Ed25519 + ML-DSA-87; both signatures verified. Admin requires a second, distinct identity from a separate admin store.</td>
+          <td>Per-client composite transport identity plus explicit trust in the server's composite public identity; every required component must verify.</td>
         </tr>
         <tr>
           <td>Key establishment</td>
           <td>ML-KEM-1024 + X25519 + a random pre-shared key, bound to the TLS exporter.</td>
+          <td>ML-KEM-1024 + X25519 + a distinct access PSK per client identity, with exact roles, identities, transcript, capabilities, parameters, and exporter bound into the schedule.</td>
         </tr>
         <tr>
           <td>Record layer</td>
           <td>One-use AES-256-GCM keys per message, with independent directional epochs.</td>
+          <td>One-use directional keys, bounded rekey work, 31-bit streams, connection and stream credit, and allocation limits before attacker-controlled work.</td>
         </tr>
         <tr>
-          <td>Rekey policy</td>
+          <td>Policy surface</td>
           <td>Default Extreme: 256 KiB, 512 DATA frames, or 500 ms of sender activity. Authenticated Normal, Soft, and bounded Ultimate policies widen the active epoch for less hybrid-rekey overhead.</td>
+          <td>No security-mode switch or suite negotiation in YTP/1. Named service capabilities are authenticated, then every OPEN is independently authorized and bounded.</td>
         </tr>
         <tr>
           <td>Carrier</td>
           <td>Persistent TLS 1.3 + HTTP/2 + WebSocket on one connection, using one immutable captured profile. The default native backend uses an opt-in capability in the pinned OpenSSL source to reproduce the fixture's ClientHello structure.</td>
+          <td>TLS 1.3 secure channel and genuine duplex HTTP/2 carrier, separated from the engine and from independently versioned browser-profile evidence.</td>
         </tr>
         <tr>
-          <td>Admission</td>
-          <td>Keyed active-probe admission. Public-node startup requires an obfs secret; unauthenticated and malformed paths never reach AUTH.</td>
-        </tr>
-        <tr>
-          <td>Cover traffic</td>
-          <td>A separate supervised cover site bound to loopback answers ordinary browser requests on the same listener.</td>
+          <td>Admission and cover</td>
+          <td>Keyed active-probe admission gates AUTH; a supervised loopback cover site answers ordinary requests on the same listener.</td>
+          <td>Cheap replay-protected admission promotes only valid traffic. Invalid or absent admission continues as ordinary website or reverse-proxy traffic with no YUME-shaped response.</td>
         </tr>
       </tbody>
     </table>
   </div>
   <div class="notice">
     <p>
-      <strong>What this is not.</strong> YUME raises the cost of blocking and can reduce
-      metadata exposure depending on the route. It is not impossible to block, not immune to
-      stateful DPI, and not identical to the target browser on the wire. The active native
-      backend closes the six pinned ClientHello structure rows,
-      but resumed sessions, same-session browser comparison, full carrier behavior, traffic
-      timing/volume, classifier testing, and deployed soak are separate gates. The older
-      helper's evidence does not automatically qualify the native replacement.
+      <strong>Evidence, not slogans.</strong> YUME can raise the cost of blocking
+      and reduce some metadata exposure. It is not impossible to block, immune
+      to stateful DPI, or identical to a browser. Existing 0.2 captures do not
+      automatically qualify the replacement provider; resumed sessions,
+      same-session comparisons, carrier semantics, timing and volume,
+      classifier testing, and deployed soak remain separate gates.
       <code>yumed</code> is a terminating single-hop proxy, not an
       onion relay: the server sees traffic as it exits. Read the
       <a href="{{ '/docs/STEALTH/' | relative_url }}">stealth model</a> and the
@@ -290,10 +295,9 @@ section_nav:
 <section id="run" data-reveal="drift">
   <h2 class="section-title">Build, provision, connect</h2>
   <p class="section-lead">
-    Both secret files hold exactly 64 lowercase hex characters (32 random bytes), carry no
-    group or world permission bits, and must be distributed out of band. <code>yume-setup
-    init</code> generates the whole server and device kit if you would rather not do it by
-    hand.
+    This workflow is the runnable transport-v2 path. <code>yume-setup init</code>
+    generates its server and client kit. Admission and inner-PSK files carry no
+    group or world permission bits and must be distributed out of band.
   </p>
   <div class="workflow-grid">
     <div class="workflow-step">
@@ -347,6 +351,12 @@ cd yume
   </div>
   <div class="notice">
     <p>
+      The separate <code>yume-setup-ytp1</code> and
+      <code>yume-doctor-ytp1</code> commands exercise experimental schema-1
+      provisioning. Their kits do not drive the current <code>yume</code> or
+      <code>yumed</code> binaries.
+    </p>
+    <p>
       Binding port 443 needs <code>sudo</code> or <code>cap_net_bind_service</code>.
       Cloudflare in HTTP mode terminates TLS and breaks YUME. Use Spectrum or another TCP
       passthrough if you front the daemon with it.
@@ -388,7 +398,12 @@ cd yume
 
 <section id="docs" data-reveal="drift">
   <h2 class="section-title">Read by task</h2>
-  <p class="section-lead">Website pages are generated from the repository’s canonical Markdown.</p>
+  <p class="section-lead">
+    Start with the runnable 0.2 reference or the replacement foundation for the
+    task you are actually doing. Website pages are generated from the
+    repository's canonical Markdown; archived contracts remain visibly
+    versioned rather than being erased.
+  </p>
   {% include doc-catalog.html groups="Start here|Operating|Internals and status" group_field="home_group" %}
 </section>
 

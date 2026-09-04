@@ -108,11 +108,13 @@ ParsedCidr parse_cidr(const std::string& cidr) {
     };
 }
 
+// Empty when no resolver is configured. start() refuses in that case, so a
+// client is never handed a resolver the operator did not choose.
 std::vector<std::string> packet_dns_servers(const ServerConfig& cfg) {
     if (parse_ipv4(cfg.dns_server).has_value()) {
         return {cfg.dns_server};
     }
-    return {"1.1.1.1"};
+    return {};
 }
 
 bool parse_ipv4_packet(const crypto::Bytes& packet,
@@ -167,6 +169,14 @@ public:
         if (cfg_.packet_mtu < 576 || cfg_.packet_mtu > 65535) {
             throw std::runtime_error("--packet-mtu must be in range 576..65535");
         }
+        if (!packet_dns_configured(cfg_)) {
+            throw std::runtime_error(
+                "packet egress requires an explicit DNS resolver: every "
+                "client in packet mode is told to resolve names through it, "
+                "so whoever runs that resolver sees every hostname your users "
+                "look up. Set --dns-server <IPv4> (or dns_server in the "
+                "config) to an address you accept as that observer");
+        }
         cidr_ = parse_cidr(cfg_.packet_cidr);
         next_client_ = cidr_.first_client;
 #if defined(__linux__)
@@ -187,7 +197,7 @@ public:
         util::log_info("packet egress active: tun=" + cfg_.packet_tun_name +
                        " cidr=" + cfg_.packet_cidr +
                        " mtu=" + std::to_string(cfg_.packet_mtu) +
-                       " dns=" + packet_dns_servers(cfg_).front());
+                       " dns=" + cfg_.dns_server);
         start_read();
 #else
         throw std::runtime_error("--packet-egress tun is supported only on Linux");
@@ -465,6 +475,10 @@ private:
     std::unique_ptr<boost::asio::posix::stream_descriptor> tun_;
 #endif
 };
+
+bool packet_dns_configured(const ServerConfig& cfg) noexcept {
+    return parse_ipv4(cfg.dns_server).has_value();
+}
 
 PacketTunEgress::PacketTunEgress(boost::asio::io_context& io, ServerConfig cfg)
     : impl_(std::make_unique<Impl>(io, std::move(cfg))) {}

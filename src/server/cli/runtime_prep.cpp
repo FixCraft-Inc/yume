@@ -89,6 +89,7 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
         return 1;
     }
 
+
     if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
         cfg.auth_keys_meta = cfg.auth_keys + ".json";
     }

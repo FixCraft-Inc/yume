@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -84,7 +85,9 @@ struct RuntimeController::Impl {
         status.running = false;
         status.message = "stopped by local runtime request";
         if (manager) manager->stop();
-        if (io) io->stop();
+        // Manager::stop cancels every persistent producer and posts bounded
+        // session shutdown. Keep the context alive so those handlers can
+        // release Session-owned callbacks instead of stranding self-cycles.
     }
 };
 
@@ -272,11 +275,44 @@ bool RuntimeController::stop() {
         workers = std::move(impl_->workers);
     }
 
-    if (local_runtime) local_runtime->stop();
-    if (manager) manager->stop();
-    if (io) io->stop();
+    // The moved-out workers are joinable, so nothing between here and the
+    // join loop may unwind past it: destroying a joinable std::thread calls
+    // std::terminate, and this function also runs from the destructor. A
+    // teardown failure is therefore contained, the join still happens, and
+    // the failure is reported through the status message instead of an
+    // exception.
+    std::string teardown_error;
+    const auto contain = [&teardown_error](const char* stage, auto&& step) {
+        try {
+            step();
+        } catch (const std::exception& ex) {
+            if (teardown_error.empty()) {
+                teardown_error = std::string(stage) + ": " + ex.what();
+            }
+        } catch (...) {
+            if (teardown_error.empty()) {
+                teardown_error = std::string(stage) + ": unknown error";
+            }
+        }
+    };
+    if (local_runtime) {
+        contain("local runtime stop", [&] { local_runtime->stop(); });
+    }
+    if (manager) {
+        contain("manager stop", [&] { manager->stop(); });
+    }
+    // Do not stop the context before its shutdown handlers run. Manager
+    // cancellation removes the accept/timer work, and each session has a
+    // bounded transport-close deadline, so run() can drain and return.
     for (auto& worker : workers) {
         if (worker.joinable()) worker.join();
+    }
+    if (io) {
+        contain("io context stop", [&] { io->stop(); });
+    }
+    if (!teardown_error.empty()) {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        impl_->status.message = "stopped; teardown error: " + teardown_error;
     }
     return true;
 }

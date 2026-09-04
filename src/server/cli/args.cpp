@@ -16,6 +16,7 @@
 
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "server/cli/cluster.hpp"
 #include "server/cli/help.hpp"
 #include "server/cli/misc.hpp"
@@ -153,8 +154,12 @@ bool parse_server_cli_args(int argc,
             cfg.auth_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
             if (!parse_int_strict(argv[++i], &cfg.threads) ||
-                cfg.threads < 0 || cfg.threads > 256) {
-                yume::util::log_error("--threads: expected an integer in 0..256");
+                cfg.threads < 0 ||
+                cfg.threads > yume::policy::kMaxIoThreads) {
+                yume::util::log_error(
+                    "--threads: expected an integer in 0.." +
+                    std::to_string(yume::policy::kMaxIoThreads) +
+                    " (0 selects one worker per hardware thread)");
                 return false;
             }
             result.config_overrides.threads = true;
@@ -280,8 +285,6 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--real-backend" && i + 1 < argc) {
             cfg.real_backend = argv[++i];
             cfg.real_http = true;
-        } else if (arg == "--real-secret" && i + 1 < argc) {
-            cfg.real_secret = argv[++i];
         } else if (arg == "--real-secret-file" && i + 1 < argc) {
             cfg.real_secret_file = resolve_cli_path(argv[++i]);
         } else if (arg == "--operator-identity") {

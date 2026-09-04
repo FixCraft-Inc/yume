@@ -1,496 +1,485 @@
-# YUME ABI policy
+# YUME C ABI v1
 
-YUME exposes a stable C ABI through `libyume.so.1` when configured with
-`-DYUME_BUILD_SHARED_ABI=ON`.
+`include/yume/yume.h` is the experimental candidate for YUME's future stable
+cross-language interface. It defines role-neutral endpoints and handles for
+authenticated named byte streams and packet channels; it does not expose CLI
+commands, a JSON operation bus, private C++ classes, or provider selection. The
+current implementation boundary is stated below.
 
-The ABI is intentionally C-only. It exposes build information plus opaque
-runtime handles for embedders:
+The ABI line, product version, YTP version, and config schema are independent.
+During `0.3.0-dev*`, this replacement surface is still allowed to break without
+an ABI-version bump. The opt-in candidate is a build-tree-only, unversioned
+`libyume.so`; it is not `libyume.so.1`. ABI v1 and SONAME `libyume.so.1` freeze
+at `0.3.0-rc1` only after the functional and installed-consumer gates in this
+document pass.
 
-- `yume_client`
-- `yume_server`
-- `yume_stream`
-- `yume_packet`
+## Current development candidate
 
-External projects must include only `<yume/yume.h>`. They must not include
-`src/client/cli/entry.hpp`, `client::Tunnel`, `facade::InProcClient`,
-`server::RuntimeController`, Boost.Asio types, OpenSSL handles, STL types, or
-any other private C++ implementation header.
+When explicitly enabled for a development build, the `0.3.0-dev1` library
+currently implements build/compatibility metadata, strict schema-1 config
+parsing, runtime and endpoint construction, bounded diagnostics, callback
+containment, cancellation, and teardown. With the default transport-v2 graph
+present, it can start client and server endpoints and carry authenticated named
+byte streams through open, accept, read, write, half-close, close, and destroy.
+The integration probe exercises that path against a provisioned real server.
 
-## Project-neutral boundary
+This is not a live YTP/1 endpoint. A schema-1 endpoint still fails start with
+`YUME_STATUS_UNSUPPORTED`: the opt-in TLS, H2 carrier, security, and route
+provider candidates are not composed into a production front door or ABI
+backend. Packet handles and destination-routed OPEN are also unsupported. The
+library remains build-tree-only, unversioned, uninstalled, and unfrozen.
 
-This ABI belongs to YUME and is not tied to any application that embeds it.
-Service names and payload schemas are defined by each embedder; YUME provides
-authenticated, policy-gated byte streams and does not assign application
-meaning to them. Examples in this document use `example-service-v1` only as a
-placeholder. No external project's names, message schemas, or authorization
-rules are part of the YUME ABI contract.
+The remaining sections distinguish current transport-v2 behavior from the
+candidate contract and gates that still must pass before installation or ABI
+freeze.
 
-## Why C ABI first
+## Configuration dialects and the backend seam
 
-The CLI, GUI, facade, and transport internals can keep evolving without
-freezing compiler, standard library, exception, allocator, or object-layout
-details. A C ABI gives C and C++ embedders a stable link target while YUME keeps
-its internal transport code private.
+One runtime is attached behind a single internal seam, so the same public
+symbols serve every backend and a later swap changes no exported name.
 
-## ABI v1 runtime surface
+A configuration document must name its role. A document that also carries
+`"schema": 1` is a YTP/1 document and is parsed by the strict schema-1 parser.
+Any other role-bearing document is the runnable transport-v2 dialect. The
+dialect is never inferred from which parser happens to accept the bytes: the
+role and `schema` fields select it. Both parsers reject unknown keys, so a
+document offered to the wrong parser fails instead of loading with silently
+dropped fields. The transport-v2 client parser shares one closed key table
+with the `yume` CLI (`src/config/client_document_keys.hpp`); a misspelled
+security key such as `tls_pin` is an error, never "not configured".
 
-`libyume.so.1` supports:
+| Dialect | Start | Byte streams | Packets |
+| --- | --- | --- | --- |
+| transport-v2 | starts the runnable client or daemon | open, accept, read, write, half-close | `YUME_STATUS_UNSUPPORTED` |
+| schema 1 (YTP/1) | `YUME_STATUS_UNSUPPORTED` | `YUME_STATUS_UNSUPPORTED` | `YUME_STATUS_UNSUPPORTED` |
 
-- Client/server create, destroy, start, stop, and status calls.
-- Local-runtime operations by name: `yume_client_request_json` and
-  `yume_server_request_json`. Both write the same `{ok,result|error}` operation
-  envelope. The server call works without IPC but intentionally exposes only
-  bounded read operations: status/info, sessions/events, directory, and
-  federation status/topology. Unknown and disallowed operations are handled
-  `ok=false` responses; malformed JSON/non-object args and a stopped runtime
-  remain typed ABI errors. The normative operation list and compatibility rules
-  are in [CONTROL_API.md](CONTROL_API.md).
-- Start from a JSON string or a config file path.
-- Caller-owned JSON output buffers. If the buffer is too small, functions
-  return `YUME_STATUS_BUFFER_TOO_SMALL` and report the required byte count.
-- Per-handle last-error strings with `yume_handle_last_error`.
-- Per-thread free-function errors with `yume_last_error`.
-- Direct named service streams with blocking timeout-based C calls:
-  `yume_client_open_stream`, `yume_server_register_service`,
-  `yume_server_accept_stream`, `yume_stream_peer_json`,
-  `yume_stream_read`, `yume_stream_write`, `yume_stream_shutdown_write`,
-  `yume_stream_close`, and `yume_stream_destroy`. As with packet handles,
-  `close` reports transport cleanup status and retains the handle for error
-  inspection. `destroy` accepts `NULL`, closes if needed, and frees the handle;
-  its cleanup is best-effort because it cannot return a status. A prior
-  `close` is optional.
-- One negotiated packet-native channel with `yume_client_open_packet`,
-  `yume_packet_status_json`, `yume_packet_write_batch`,
-  `yume_packet_read_batch`, `yume_packet_close`, and `yume_packet_destroy`.
+Streams are opened by a client endpoint and accepted by a server endpoint. The
+backend refuses the direction it does not own with
+`YUME_STATUS_INVALID_ARGUMENT`, so neither role can silently behave like the
+other. A server-initiated open is a separate reviewed capability rather than an
+accident of symmetry.
 
-### Status values
+`yume_endpoint_register_service` advertises a service the peer may open. On a
+transport-v2 endpoint the running runtime is the authority, so registration
+must follow `yume_endpoint_start` and returns `YUME_STATUS_INVALID_STATE`
+before it. A successful stop discards those runtime registrations; after a
+restart the caller registers them again. On a schema-1 endpoint the
+registration is additionally checked against the immutable service table in
+the configuration and remains attached across stop and restart.
 
-ABI status values are machine-readable and stable within ABI v1. Diagnostic
-text from `yume_strerror`, `yume_handle_last_error`, or `yume_last_error` must
-not be parsed to recover one of them.
+A named service stream carries no destination. Declare the shorter prefix size
+to say so:
 
-| Macro | Value | Meaning |
-| --- | ---: | --- |
-| `YUME_STATUS_OK` | 0 | The ABI call completed; for a JSON operation, inspect its envelope for handled success/failure. |
-| `YUME_STATUS_INVALID_ARGUMENT` | -1 | A required pointer/value or argument shape is invalid. |
-| `YUME_STATUS_BUFFER_TOO_SMALL` | -2 | Caller-owned output storage is absent or too small; `needed` reports the required bytes when available. |
-| `YUME_STATUS_INTERNAL_ERROR` | -3 | An internal, I/O, or otherwise unclassified failure occurred. |
-| `YUME_STATUS_NOT_RUNNING` | -4 | The relevant runtime/handle is stopped, closing, or unavailable. |
-| `YUME_STATUS_ALREADY_RUNNING` | -5 | A conflicting runtime generation is already active or still unwinding. |
-| `YUME_STATUS_TIMEOUT` | -6 | A positive caller deadline expired. |
-| `YUME_STATUS_NOT_FOUND` | -7 | A requested resource was not found. |
-| `YUME_STATUS_PERMISSION_DENIED` | -8 | Policy, authorization, platform profile, or socket protection denied the operation. |
-| `YUME_STATUS_PARSE_ERROR` | -9 | Caller-controlled configuration or JSON could not be parsed or represented. |
-| `YUME_STATUS_WOULD_BLOCK` | -10 | A zero-time poll could not complete immediately. |
-| `YUME_STATUS_RESOURCE_EXHAUSTED` | -11 | A bounded queue, request-input limit, identifier space, or other resource cannot admit more work. |
-
-The ABI v1 stream API is synchronous by design. Async callbacks can be added in
-a later ABI version without forcing embedders into YUME's internal threading
-model now. All ABI timeout values are measured at millisecond granularity; they
-are not rounded to whole seconds. For stream and packet operations:
-
-- `yume_client_open_stream` and `yume_client_open_packet` require a positive
-  deadline for their request/ack exchange. A zero timeout returns
-  `YUME_STATUS_WOULD_BLOCK` without sending an `OPEN` request.
-- `yume_server_accept_stream`, `yume_stream_read`, and `yume_stream_write` use a
-  zero timeout as a nonblocking poll. No pending stream/data/admission slot
-  returns `YUME_STATUS_WOULD_BLOCK`.
-- An expired positive deadline returns `YUME_STATUS_TIMEOUT`.
-- A stream read that returns `YUME_STATUS_OK` with `bytes_read == 0` is clean
-  peer EOF. A reset, local close, or transport close returns
-  `YUME_STATUS_NOT_RUNNING` and preserves the close reason in the handle error.
-- A single `yume_stream_write` is limited to 256 KiB. A larger call returns
-  `YUME_STATUS_INVALID_ARGUMENT` and admits nothing, so callers must chunk.
-  This is the first limit a bulk writer meets, before any queue bound below.
-- Stream writes are all-or-none admissions to a bounded transport queue.
-  `bytes_written` is set to the complete input size only after admission.
-  Server-accepted streams use a per-session FIFO capped at 64 complete writes
-  and 4 MiB; poll/deadline waits reserve capacity only while live, and close or
-  server stop wakes every waiter. A successful return therefore means the
-  write reached bounded Session/transport ownership, not merely that a strand
-  callback was posted.
-
-`yume_client_request_json` uses its timeout as a caller-wait deadline; zero is
-a nonblocking wait. A queued handler is cancelled if the deadline expires
-before it starts. Once a handler has started, it may finish after the caller
-receives `YUME_STATUS_TIMEOUT`, including completing a mutation. Timeout is
-therefore not a rollback result and a caller must not blindly retry a mutating
-operation. [CONTROL_API.md](CONTROL_API.md) defines the exact operation
-contracts and the independent remote-admin deadline.
-
-The two generic request calls serialize requests per handle. Their sizing call
-executes a well-formed request once. If its completed handled response does not
-fit, YUME retains one pending serialized response on that handle and identifies
-its operation plus normalized argument object by a fixed-size digest, not by
-retaining plaintext request JSON. The next call with the same operation and
-normalized arguments copies the pending response without re-executing the
-handler; another too-small buffer leaves it pending, and successful delivery
-consumes and wipes it. A different well-formed request discards the pending
-response before executing. Callers should therefore make the sizing retry
-immediately. `NULL`, an empty string, and `{}` normalize to the same empty
-argument object. A typed transport/lifecycle/deadline failure has no completed
-response to cache; the timeout mutation caveat above still applies.
-Operation names are bounded to 128 bytes and serialized argument JSON to 1 MiB,
-excluding their terminating NULs; larger caller inputs return
-`YUME_STATUS_RESOURCE_EXHAUSTED` before dispatch.
-
-`yume_server_stop` and `yume_server_destroy` interrupt an in-flight
-`yume_server_accept_stream` wait. The accept call returns
-`YUME_STATUS_NOT_RUNNING` after the runtime begins stopping.
-
-The packet API is additive within ABI v1 and SONAME `libyume.so.1`.
-`YUME_FEATURE_PACKET_BULK` detects it; `YUME_FEATURE_PQ_MLKEM1024` accurately
-reports the ML-KEM-1024 ratchet primitive while the older ML-KEM-768 bit is
-retained for source compatibility. Packet write inputs are copied before
-return and admitted all-or-none. Reads copy complete packets into caller-owned
-contiguous storage and caller-owned offset/length arrays. If the first packet
-does not fit, `YUME_STATUS_BUFFER_TOO_SMALL` reports its size without consuming
-it. For batch reads and writes, zero timeout means poll, saturation returns
-`YUME_STATUS_WOULD_BLOCK`, and an expired positive deadline returns
-`YUME_STATUS_TIMEOUT`. Client or packet stop interrupts blocking packet calls.
-
-`yume_client_status_json` returns:
-
-```json
-{
-  "running": true,
-  "ready": true,
-  "message": "",
-  "socket_path": "",
-  "exit_code": 0,
-  "server_tls_fingerprint_sha256": "lowercase-hex-sha256-of-tls-leaf",
-  "server_capabilities": ["packet_bulk_v1"],
-  "packet_bulk_supported": true,
-  "started_unix_ms": 1780000000000
-}
+```c
+yume_open_options options;
+memset(&options, 0, sizeof(options));
+options.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE;   /* no destination field */
+options.abi_version = YUME_ABI_VERSION;
+options.service = (yume_string_view){name, name_length};
+options.kind = YUME_SERVICE_BYTE_STREAM;
 ```
 
-The TLS fingerprint field is the actual negotiated server leaf certificate
-fingerprint. It is present as an empty string before the client is connected.
+Passing `sizeof(options)` declares that the nested `yume_destination` is
+present, and a zeroed descriptor is then a truncated destination rather than an
+absent one.
 
-## Start JSON schema
+Because the ABI receives configuration as bytes rather than as a file, there
+is no document location to resolve relative credential paths against. Set
+`yume_runtime_options.config_base_dir`, or use absolute paths. A NULL value
+selects the process working directory, which is rarely what an embedded host
+wants.
 
-`yume_client_start_json` and `yume_server_start_json` parse the same JSON keys
-as the facade config files. Relative path fields are resolved against the
-`base_dir` argument. Unknown keys are ignored for forward compatibility, but
-the root must be an object and known keys with the wrong JSON type fail with
-`YUME_STATUS_PARSE_ERROR` instead of silently falling back to defaults.
+A build configured with `YUME_BUILD_TRANSPORT_V2=OFF` links no runtime at all.
+The library still exports the identical surface, and the transport-v2 dialect
+is refused with a typed unsupported status.
 
-Android and other in-process VPN embedders may configure
-`yume_client_set_socket_protector` before starting a client. YUME invokes the
-callback synchronously for every primary, secondary, direct, or SOCKS-proxy
-carrier socket after opening it and before connecting it. Returning zero aborts
-the connection with `YUME_STATUS_PERMISSION_DENIED`. The callback must be
-thread-safe, must not re-enter the same client, and its callback/user-data pair
-must remain valid until it is cleared or `yume_client_destroy` returns.
+## Minimal embedding
 
-The callback does not protect Boost.Asio's hostname-resolution sockets, which
-run before the carrier socket is opened. Until an embedder-supplied/protected
-resolver boundary is implemented, an Android `VpnService` integration should
-resolve on the underlying network and pass a numeric `server` address while
-retaining the certificate name in `tls_server_name`; otherwise DNS can recurse
-through the VPN route.
+The call sequence, client side. Every struct is sized, so set `struct_size` and
+`abi_version` on each one and check every status.
 
-Pre-ready stop is a tested cancellation boundary. Resolver, direct/proxy
-connect, SOCKS, OpenSSL TLS, HTTP/2/AUTH/server-info, and Chrome-helper IPC
-operations poll the shared stop predicate in bounded slices; helper
-cancellation also kills and reaps the child. C ABI start admission publishes a
-generation before configuration parsing or file I/O, so a concurrent
-`yume_client_stop` cannot complete and then be followed by a late runtime
-start. The lifecycle suite covers a stalled TLS peer, while the ABI suite uses
-a FIFO config fixture to cover cancellation before runtime handoff.
+```c
+#include <yume/yume.h>
 
-Android omits the CMake `VERSION` and `SOVERSION` properties and packages an
-unversioned `libyume.so` with an unversioned SONAME. `YUME_ABI_VERSION` is still
-1, so check it at runtime rather than expecting an Android `libyume.so.1`.
-Non-Android builds retain the ABI-version properties and use platform-native
-artifact naming; Linux ELF builds provide the `libyume.so.1` SONAME and normal
-versioned symlink chain.
+yume_runtime_options options;
+memset(&options, 0, sizeof(options));
+options.struct_size = sizeof(options);
+options.abi_version = YUME_ABI_VERSION;
+options.config_base_dir = "/etc/yume";   /* relative credential paths */
 
-Android integrations should use the client-only ABI build
-profile. The separate Android checkout has earlier ABI-v1 ARM64
-device evidence, but it has not been synchronized or qualified against the
-current native tree, and its connected VPN/routing/release
-path is not qualified. In particular, matched
-server credentials/routed traffic, IPv6/DNS/leak behavior, dependency
-provenance, and connected lifecycle/backpressure remain open. The client-only
-profile preserves the ABI v1 export surface for loaders, but server lifecycle calls report
-`YUME_STATUS_PERMISSION_DENIED` or `YUME_STATUS_NOT_RUNNING`; no server runtime
-is linked into the APK. Client, stream, and packet behavior is unchanged.
+yume_runtime* runtime = NULL;
+yume_runtime_create(&options, &runtime);
 
-Packet-native v1 is IPv4-only. An Android VPN must install an explicit IPv6
-block or otherwise prove there is no bypass; passing IPv6 into the current
-packet channel is a fatal protocol error. An accepted outbound batch remains
-owned by the sender while it waits in bounded, cancellation-aware slices for
-transport capacity; temporary saturation no longer discards the dequeued batch
-or closes the packet channel. Saturation/recovery and stop wakeup are covered
-by the packet contract tests. Device/NDK/JNI and IPv6-policy qualification are
-still separate Android gates.
+/* The document must name its role. See "Configuration dialects" above. */
+yume_config* config = NULL;
+yume_config_parse_json(runtime, json_bytes, json_size, &config);
 
-Minimum server-side embed shape for a named service:
+yume_endpoint* endpoint = NULL;
+yume_endpoint_create(runtime, config, &endpoint);
+yume_config_destroy(config);            /* the endpoint copied what it needs */
 
-```json
-{
-  "listen_address": "127.0.0.1",
-  "listen_port": 4433,
-  "tls_cert": "server.crt",
-  "tls_key": "server.key",
-  "auth_keys": "authorized_keys",
-  "auth_keys_meta": "auth_keys.meta",
-  "operator_keys": "operator_keys",
-  "operator_keys_meta": "operator_keys.meta",
-  "threads": 0,
-  "max_sessions": 256,
-  "bulk_key_max_sessions": 64,
-  "accept_rate_limit": 100,
-  "egress_mbps": 0,
-  "allow_services": ["example-service-v1"],
-  "ipc_enable": false,
-  "obfuscation": true,
-  "obfs_secret_file": "obfs.secret",
-  "inner_psk_file": "inner.psk"
-}
+yume_endpoint_start(endpoint, 30000);   /* now YUME_ENDPOINT_RUNNING */
+
+yume_open_options open_options;
+memset(&open_options, 0, sizeof(open_options));
+open_options.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE;  /* no destination */
+open_options.abi_version = YUME_ABI_VERSION;
+open_options.service = (yume_string_view){"my-service-v1", 13};
+open_options.kind = YUME_SERVICE_BYTE_STREAM;
+
+yume_stream* stream = NULL;
+yume_endpoint_open_stream(endpoint, &open_options, 20000, &stream);
+
+size_t written = 0;
+yume_stream_write(stream, "ping", 4, &written, 20000);
+
+char buffer[4096];
+size_t received = 0;
+yume_stream_read(stream, buffer, sizeof(buffer), &received, 20000);
+
+yume_stream_shutdown_write(stream, 20000);   /* drains accepted writes first */
+yume_stream_close(stream, 0);      /* immediate; nonzero is rejected */
+yume_stream_destroy(stream);
+
+yume_endpoint_stop(endpoint, 0);   /* synchronous; nonzero is unsupported */
+yume_endpoint_destroy(endpoint);
+yume_runtime_destroy(runtime);
 ```
 
-`listen_address` is optional. Empty or omitted means bind `0.0.0.0`; set
-`127.0.0.1` for loopback-only tests and embedded local services.
+A server endpoint calls `yume_endpoint_register_service` **after**
+`yume_endpoint_start`, then `yume_endpoint_accept_stream` instead of
+`yume_endpoint_open_stream`.
 
-`operator_keys` and `operator_keys_meta` are optional and physically separate
-from regular user authorization. The capacity fields have the same meaning as
-the daemon flags: `threads: 0` selects hardware-aware automatic sizing,
-`max_sessions` is the aggregate tracked-session cap,
-`bulk_key_max_sessions` is the default for explicitly shared regular keys,
-`accept_rate_limit` is aggregate accepts per second, and `egress_mbps` is the
-optional weighted-fair link cap (`0` disables shaping).
+The complete working version of both sides, including peer-identity checks and
+teardown on every failure path, is
+[`src/abi/stream_integration_probe.c`](../src/abi/stream_integration_probe.c).
+It runs in CI as `yume_abi_stream_integration` against a real provisioned
+server, so it cannot drift from the shipped surface.
 
-An embedded federation bootstrap uses the same server start schema as the
-daemon configuration:
+## Intended installed interface
 
-```json
-{
-  "federation_enable": true,
-  "cluster_bootstrap": true,
-  "federation_identity": "federation.key",
-  "federation_operator_ca": "federation-ca.pem",
-  "federation_peers": []
-}
+After the install gates close, consumers will include one header and link the
+installed target or pkg-config module:
+
+```c
+#include <yume/yume.h>
 ```
 
-`cluster_bootstrap` is a Boolean and defaults to `false`. It requires
-`federation_enable: true` and permits an empty outbound `federation_peers`
-array so the node can operate with authenticated inbound peer links only. When
-federation is enabled without bootstrap mode, at least one outbound peer is
-required. The flag does not enable multi-hop transit; federation remains
-single-hop as specified in
-[the federation transit design](protocol/YUME_2_0_FEDERATION_TRANSIT.md).
-
-Minimum client-side embed shape:
-
-```json
-{
-  "server": "127.0.0.1",
-  "port": 4433,
-  "identity": "client-auth.key",
-  "socks_port": 0,
-  "tunnels": 1,
-  "service_streams_only": true,
-  "tls_ca_cert": "server.crt",
-  "tls_server_name": "embedder.local",
-  "tls_pin": "lowercase-hex-sha256-of-tls-leaf",
-  "accept_monitoring": false,
-  "auto_attach_local": false,
-  "obfuscation": true,
-  "obfs_secret_file": "obfs.secret",
-  "inner_psk_file": "inner.psk"
-}
+```cmake
+find_package(yume 0.3 CONFIG REQUIRED)
+target_link_libraries(my_service PRIVATE yume::yume)
 ```
-
-`tls_pin` is optional when `tls_ca_cert`/`tls_server_name` are sufficient, but
-embedders that already have a manifest pin should pass it and may also compare
-`server_tls_fingerprint_sha256` in `yume_client_status_json`. Readers continue
-to accept the legacy `tls_pin_sha256` alias; writers emit only `tls_pin`.
-In-process clients are non-interactive: a normal-mode server is rejected unless
-`accept_monitoring` is explicitly true. Keep it false when operator identity
-verification is required; no terminal consent prompt is attempted through the
-ABI. The legacy `anonym_*` fields authenticate CA-authorized operator identity;
-they do not prove a no-logging policy or anonymity.
-
-`socks_bind` is optional. Empty or omitted keeps the historical wildcard bind;
-set an IP literal such as `127.0.0.1`, `0.0.0.0`, `::1`, or `::` to choose the
-SOCKS listener address explicitly.
-
-For a headless packet embed, keep `socks_port` at zero, start the authenticated
-client, then call `yume_client_open_packet`. The in-process runtime selects its
-headless engine mode without synthesizing a SOCKS listener. `tunnels` must be
-in `1..16`; a single packet-bulk carrier is the minimal embedded profile.
-
-Per-key service authorization lives in `auth_keys.meta` under the authenticated
-client key fingerprint:
-
-```json
-{
-  "0123456789abcdef...": {
-    "permissions": {
-      "allow_services": ["example-service-v1"]
-    }
-  }
-}
-```
-
-## Named service streams
-
-Native service streams are not raw TCP forwards and do not expose `Tunnel`.
-Clients open an authenticated `OPEN` payload with:
-
-```json
-{"proto":"service.v1","service":"example-service-v1"}
-```
-
-The stream then rides through the same TLS 1.3, HTTP/2/WebSocket carrier,
-mandatory hybrid directional ratchet, and server policy gates as normal YUME
-streams. Legacy hopping, padding, and jitter are absent from the pinned 2.0
-profile.
-
-Server-side accept is explicit and fail-closed:
-
-- The server config must list the service in `allow_services`.
-- The connected auth key must list the service in
-  `permissions.allow_services`.
-- The embedder must call `yume_server_register_service`.
-- If any gate is missing, the server rejects the `OPEN`.
-
-`allow_services` is separate from `allow_local_ip`, `control_full`,
-application codecs, and exec permissions.
-
-After `yume_server_accept_stream` returns a stream, the embedder can call
-`yume_stream_peer_json`:
-
-```json
-{
-  "service": "example-service-v1",
-  "peer": "authenticated-peer-id",
-  "auth_fingerprint_sha256": "composite-identity-sha256",
-  "session_id": "authenticated-peer-id",
-  "server_session_id": "42",
-  "remote_addr": "203.0.113.10"
-}
-```
-
-`auth_fingerprint_sha256` is the SHA-256 fingerprint of the domain-separated,
-length-prefixed DER encodings of both authenticated public-key halves and is the
-stable field to use for device binding.
-`session_id` is a stable peer id for the accepted stream; `server_session_id` is
-the server's internal numeric session id serialized as a string for log
-correlation only.
-
-## Compatibility rules
-
-- `YUME_ABI_VERSION` tracks the source-level C ABI line.
-- `libyume.so.1` tracks binary runtime compatibility.
-- Existing exported functions must keep their names, return conventions, and
-  argument meaning for the lifetime of SONAME `1`.
-- Structs that cross the ABI must start with `struct_size`.
-- New fields may only be appended to public structs.
-- Callers should zero-initialize `yume_build_info` and pass the size they know.
-  `yume_get_build_info` accepts any buffer at least
-  `YUME_BUILD_INFO_MIN_SIZE`, writes only complete fields that fit, and reports
-  the library's known layout size in `struct_size`. Callers must not read fields
-  that do not fit in the smaller of their size and the returned `struct_size`.
-- Functions must not throw exceptions across the ABI.
-- Build/version strings are owned by the library and remain valid for the
-  process lifetime. Error-string lifetimes follow the thread-local rules in
-  the Handle Lifetime section below.
-- Do not expose internal C++ headers from `src/`.
-
-## Symbol control
-
-`src/abi/yume.map` is the canonical list of exported symbols. Everything else
-that needs to know the public surface derives from it, so the platforms cannot
-drift apart:
-
-| Platform | Mechanism |
-|---|---|
-| ELF | version script (`--version-script=yume.map`) |
-| Mach-O | `-exported_symbols_list`, generated from `yume.map` at configure time |
-| PE | nothing required: symbols are private unless declared `__declspec(dllexport)`, which only `YUME_API` carries |
-
-This matters beyond tidiness. `libyume` absorbs YUME's internal static
-libraries and may also absorb static third-party archives such as liboqs and
-argon2. Without symbol control, implementation symbols can leak into the
-public namespace, which breaks the "exactly these functions" contract and lets
-an embedder bind to an internal implementation.
-
-Linux CI runs four CTest cases; other platforms register the applicable subset:
-
-- `yume_abi_header_matches_map` is pure text and needs no compiler. It catches a
-  function declared `YUME_API` in the header but missing from the version
-  script (hidden at link time, fails only for the embedder) and the reverse.
-- `yume_abi_exports` inspects the built library with `nm` and requires the
-  exported set to equal the declared set exactly. Runs on ELF and Mach-O.
-- `yume_abi_debian_symbols_match_map` diffs the version script against
-  `debian/libyume1.symbols` for exact set equality.
-- `yume_abi_installed_consumer` compiles and links against the installed
-  library to prove the published surface is usable.
-
-All four run in Linux CI, which also builds `libyume` with
-`-DYUME_BUILD_SHARED_ABI=ON`.
-Adding a public function therefore means editing `include/yume/yume.h`,
-`src/abi/yume.map`, and `debian/libyume1.symbols` together; the build fails
-otherwise. Document it here in the same change.
-
-## Handle lifetime
-
-Handle arguments must be live objects of the correct type returned by this ABI.
-Destroy functions accept `NULL`; no other call probes arbitrary or stale
-pointers. Callers must synchronize destruction with every other operation on
-the same handle, including `yume_handle_last_error`.
-
-`yume_client_start_*` and `yume_client_stop` may run concurrently on one live
-client handle. Stop cancels either configuration admission or the active
-runtime generation and joins runtime teardown; another start is rejected until
-the first start call has returned. Destruction still requires exclusive handle
-ownership. Service OPEN deadlines send a matching CLOSE and tombstone that
-8-bit stream id until connection shutdown, preventing a delayed ACK/DATA frame
-from being mistaken for a later stream; exhausting the remaining ids returns
-`YUME_STATUS_RESOURCE_EXHAUSTED`.
-
-Errors are stored per handle. `yume_handle_last_error` copies the selected
-error into thread-local storage, so its return pointer remains valid until the
-next `yume_handle_last_error` call on that thread, regardless of which handle
-is queried next.
-
-Free functions that can produce a detailed diagnostic, such as
-`yume_generate_pq_keypair`, store it separately for `yume_last_error`. That
-pointer remains valid until the next free-function error update on the same
-thread.
-
-## Build behavior
-
-The normal build prepares the pinned BaseFWX and patched OpenSSL dependencies;
-it keeps the ABI library off by default:
 
 ```bash
-./ezbuild.sh
+cc service.c $(pkg-config --cflags --libs yume)
 ```
 
-Enable it explicitly when building SDK/install artifacts:
+No private YUME header or transitive private library will be part of the
+contract. The installed CMake target and pkg-config file must carry every
+required public link flag.
 
-```bash
-YUME_CMAKE_ARGS="-DYUME_BUILD_SHARED_ABI=ON" ./ezbuild.sh
+## Handles and ownership
+
+The five opaque handle types are:
+
+- `yume_runtime`: callback delivery and child-endpoint coordination;
+- `yume_config`: one immutable, validated transport-v2 or schema-1
+  configuration;
+- `yume_endpoint`: a role-neutral client or server endpoint;
+- `yume_stream`: one authenticated named byte stream; and
+- `yume_packet`: one authenticated named packet channel.
+
+Every successful `*_create`, `*_parse`, `*_open`, or `*_accept` transfers one
+handle to the caller. The matching destroy function accepts null. A config is
+immutable after parsing and may be used to create more than one endpoint in
+the runtime that parsed it. Cross-runtime use fails with
+`YUME_STATUS_INVALID_ARGUMENT`. An endpoint copies the validated configuration
+state it needs, so destroying the config after endpoint creation is safe.
+
+Destroy is a cancellation boundary. Runtime and endpoint destruction request
+stop, wake blocked calls, join owned work, and then release storage. Stream and
+packet destruction close the logical channel if needed. Because destroy cannot
+report a cleanup error, applications that need the result call `stop` or
+`close` first.
+
+The caller must not race destruction of a handle with another operation on
+that same handle, use a handle after destruction, or alias an output-handle
+pointer with an input object. Runtime destruction stops child endpoint state
+but does not free caller-owned child handles. Child handles keep the shared
+implementation state they need alive; applications still close/destroy streams
+and packets before their endpoint and destroy endpoints before the runtime.
+
+## Thread safety
+
+Version and manifest functions are thread-safe and have no mutable state.
+Config handles are immutable and may be inspected concurrently. Endpoint
+lifecycle, service registration, open, and accept calls are serialized inside
+the endpoint and may be called from different application threads.
+
+A stream supports one active reader and one active writer concurrently.
+Write-side shutdown belongs to the write direction. Callers must not overlap
+two operations in the same direction; the handle's direction mutexes are a
+defensive serialization boundary, not an extension of a caller deadline. A
+packet handle will use the same one-reader/one-writer rule once packets are
+implemented. The caller must otherwise synchronize operations on one handle.
+
+YUME does not hold state or diagnostic mutexes while invoking application
+callbacks. It may retain endpoint lifecycle sequencing across a callback so
+state-event order cannot interleave. Callback arguments and strings are
+borrowed for that invocation only. To avoid self-deadlock, callbacks may
+re-enter only the side-effect-free version/status queries and
+`yume_handle_get_diagnostic`. Lifecycle, I/O, and registration calls return
+`YUME_STATUS_INVALID_STATE`; the `void` destroy functions are ignored and
+ownership remains with the caller. Exceptions thrown by C++ callbacks are
+contained before returning through the C boundary.
+
+## Runtime callbacks and bounds
+
+`yume_runtime_options` configures the maximum simultaneous callback count and
+optional log/event callbacks. Zero selects the bounded default. The ABI layer
+does not expose an executor-count knob: execution resources belong to the
+selected backend. Endpoint-state events are currently delivered synchronously
+on the initiating lifecycle thread. The log callback field is accepted for
+forward compatibility, but the current ABI backends emit no log records.
+
+Log and event callbacks are observational and must not be used as the source of
+an authentication, authorization, close, or resource-limit decision. Callback
+delivery is bounded; excess simultaneous observations may be dropped. The
+current event surface reports endpoint-state changes only. Secrets, raw
+credentials, PSKs, plaintext, and packet contents are never callback fields.
+
+The socket-protection callback is endpoint-scoped. It runs synchronously after
+an outbound socket is created and before connect. Its `uintptr_t` argument
+holds the platform-native socket value. Returning zero fails closed
+and the current transport-v2 start reports `YUME_STATUS_IO_ERROR` with a
+diagnostic. The callback and its user data must stay valid until cleared or
+endpoint destruction finishes. No ABI re-entry is allowed from this callback.
+
+## Strict configuration
+
+`yume_config_parse_json` accepts a pointer plus explicit byte count; the input
+does not need a trailing NUL and is copied before return. Input is limited to
+1 MiB and 16 nesting levels before either parser builds its full object model.
+Every document requires a `client` or `server` role. A numeric `"schema": 1`
+selects the strict replacement parser, which validates closed endpoint, suite,
+credential, cover, service/adapter, and resource-limit objects. Omitting
+`schema` selects the transport-v2 parser.
+
+Unknown keys, wrong types, inline private material, unsupported providers, and
+unsafe combinations are errors, and no partial config handle is published. One
+qualification applies to the transport-v2 dialect only: it still accepts four
+alias spellings (`io_threads`, `allow_udp`, `tls_pin_sha256`, `codec`) because
+a released consumer emits one of them, while every writer emits the canonical
+key.
+
+Both dialects report the first failure with an RFC 6901 JSON pointer when it
+is attributable to one member, and an empty pointer when it is not, such as
+malformed JSON or a document-wide validation failure. The two are separate
+statuses: a document that is not well formed for its dialect is
+`YUME_STATUS_PARSE_ERROR`, and a document that parses but does not describe a
+usable endpoint is `YUME_STATUS_INVALID_ARGUMENT`. A
+pointer or message longer than its fixed ABI field is marked by
+`YUME_DIAGNOSTIC_JSON_POINTER_TRUNCATED` or
+`YUME_DIAGNOSTIC_MESSAGE_TRUNCATED`. Config paths remain references;
+permission and trust-material
+checks that require the filesystem occur at endpoint start and in
+`yume-doctor-ytp1`.
+
+YTP/1 has exactly one provider composition, reported by
+`yume_get_compatibility`. It is not selected by the application and has no
+fallback.
+
+## Endpoint lifecycle
+
+An endpoint moves through these visible states:
+
+```text
+CREATED -> STARTING -> RUNNING -> STOPPING -> STOPPED
+   |               \-> FAILED -> STOPPING -> STOPPED
+   \-----------------------> STOPPING -> STOPPED
 ```
 
-Debian packaging enables the ABI library by default and installs only the C ABI
-surface plus package metadata:
+`yume_endpoint_start` is blocking. A transport-v2 client uses a positive
+millisecond deadline; zero selects the backend's 30-second default. A
+transport-v2 server accepts only zero because server startup currently has no
+caller-bounded deadline. Schema-1 start accepts the descriptor but returns
+`YUME_STATUS_UNSUPPORTED`. Success means the client completed authenticated
+establishment or the server is accepting work. Failure never publishes a
+partially started backend.
 
-- `libyume1`: runtime shared library.
-- `libyume-dev`: `yume.h`, CMake config, and pkg-config metadata.
-- `yume`: CLI client, docs, and examples.
-- `yume-daemon`: `yumed`, its disabled-by-default service, and daemon
-  configuration/runtime directories.
-- `yume-gui`: optional GUI, omitted by `DEB_BUILD_PROFILES=nogui`.
+A start failure carries the runtime's typed outcome rather than one generic
+code, so an embedder does not have to read the diagnostic prose to tell the
+cases apart. A refused bind is `YUME_STATUS_PERMISSION_DENIED`, a runtime that
+is already running or is still stopping is `YUME_STATUS_INVALID_STATE` or
+`YUME_STATUS_WOULD_BLOCK`, an exhausted resource is
+`YUME_STATUS_RESOURCE_EXHAUSTED`, and a failure with no more specific
+classification stays `YUME_STATUS_IO_ERROR`. Never infer a status from the
+message. `stop` is synchronous, idempotent after a start
+attempt, and currently accepts only zero. A successful transport-v2 stop also
+discards registrations owned by that stopped runtime, so callers re-register
+services after restarting it; immutable schema-1 registrations remain.
+Explicit stop, runtime destruction, or endpoint destruction may take an
+endpoint directly from `CREATED` through `STOPPING` to `STOPPED` without
+starting a backend.
 
-## Future expansion
+Services are registered by a canonical name and kind. Resource controls remain
+in immutable configuration and the selected runtime; the ABI descriptor does
+not duplicate them. Names contain 1 through 128 bytes of lowercase ASCII
+namespace segments separated by `.`; `-` and `_` are allowed only inside a
+segment. Service names are unique by `(name, kind)` within an endpoint. A
+schema-1 registration must match the immutable service table and occurs before
+start. A transport-v2 server registers byte-stream services after start so the
+running runtime remains the authority.
+Registration is endpoint-local; there is no process-global provider or service
+registry. A server OPEN is dispatched
+only after the authenticated identity, advertised capability, service policy,
+and resource reservation all succeed. Route providers are reached through the
+same dispatcher and cannot bypass those checks.
 
-New public runtime features should extend the opaque C handles first. Do not
-export C++ transport classes, GUI models, raw tunnel streams, or broad LAN
-bridging as the native embed interface.
+## Open and accept
+
+`yume_open_options` contains a service name, stream/packet kind, and an
+optional typed destination. Custom named services omit the suffix or use
+destination kind `NONE`. Hostname, IPv4, and IPv6 descriptors are validated
+strictly, including a nonzero port, but destination-routed ABI OPEN currently
+returns `YUME_STATUS_UNSUPPORTED` before sending anything. The opt-in direct
+route provider belongs to the uncomposed YTP/1 graph and is not silently used
+by the transport-v2 ABI backend. There is no generic JSON metadata channel.
+
+Open and accept publish an output handle only on success. A timeout before an
+OPEN is admitted sends nothing. A timeout after an OPEN crossed the wire
+causes the transport-v2 bridge to close and permanently retire its 8-bit
+service-stream identifier for that tunnel, so a late ACK or DATA frame cannot
+alias a new stream. YTP/1 separately owns 31-bit odd/even identifiers in its
+session engine, but that engine is not the current ABI backend.
+
+The accepted stream exposes a sized `yume_peer_identity`: authenticated state,
+peer role, an optional composite fingerprint, an opaque transport
+`peer_label`, and service. The label carries no application meaning: it is not
+a device, account, or enrollment record. On the transport-v2 server, the
+client fingerprint is present after composite authentication. On the client,
+the server is authenticated by the outer TLS channel and the composite
+fingerprint field remains zero because that backend does not expose one.
+
+## Stream I/O
+
+Timeouts are milliseconds:
+
+- `0` polls current state without waiting;
+- every positive value is one finite relative deadline for the backend
+  operation; and
+- there is no infinite-timeout sentinel.
+
+These rules apply to open, accept, read, write, and write-side shutdown. A
+zero-timeout client OPEN returns `WOULD_BLOCK` without sending OPEN. Lifecycle
+and immediate-close timeouts are operation-specific as described above.
+
+Reads may be partial. `YUME_STATUS_OK` with a positive byte count returns data.
+`YUME_STATUS_EOF` means the peer shut down its write side and all buffered data
+has been returned. A local cancellation or reset is a typed non-EOF status.
+
+Writes copy the complete input into a bounded queue before returning OK and
+report the complete size in `bytes_written`. Admission is all-or-none. A zero-
+timeout full queue returns `WOULD_BLOCK`; an expiring positive deadline returns
+`TIMEOUT`; neither consumes the input or sends a partial record. A zero-length
+write is a successful no-op on an open stream.
+
+`shutdown_write` sends an authenticated half-close after prior writes. `close`
+cancels both directions and releases retained inbound credit. Data received
+after terminal close is a protocol failure and is never delivered.
+
+## Packet I/O
+
+Packet writes take an array of borrowed views. The implementation validates
+the count, every pointer and length, total bytes, and queue capacity before it
+copies or admits any packet. A successful batch preserves every packet
+boundary; a failed batch admits none.
+
+Packet reads copy complete packets into caller storage and report their
+offsets/sizes in caller-owned slots. If the first queued packet does not fit,
+`BUFFER_TOO_SMALL` reports the required storage and leaves it queued. Later
+packets are not skipped to manufacture a partial success.
+
+## Sized structures
+
+Every extensible structure starts with `struct_size` and `abi_version`. Callers
+zero the complete object, set those fields, and pass both the pointer and
+allocated size where required. The library:
+
+1. rejects a prefix smaller than the published `*_MIN_SIZE`;
+2. writes only complete fields that fit in both sizes;
+3. reports its known layout in `struct_size`; and
+4. ignores zeroed trailing storage from a newer caller.
+
+This append-only rule applies to build, compatibility, status, diagnostic, and
+peer-identity structures. It is not permission to reinterpret or reorder an
+existing field.
+
+Sized input structures use the same append-only rule. The library reads only
+complete fields contained by `struct_size`; omitted optional suffix fields use
+their documented zero/default behavior. The current service descriptor's
+complete `(name, kind)` layout is required, while the destination suffix of an
+OPEN may be absent and is then treated as destination kind `NONE`.
+
+## Status and diagnostics
+
+Machine decisions use `yume_status`; applications never parse error text.
+`yume_get_status_info` maps a known status to its stable name. Retry safety is
+operation-specific: a generic status never authorizes automatic replay of an
+OPEN, write, or lifecycle call.
+
+Each handle stores its own last diagnostic. A successful status-returning
+operation clears the previous diagnostic on that handle; side-effect-free
+queries and the diagnostic query itself do not. `yume_handle_get_diagnostic`
+copies the status, truncation flags, optional JSON pointer, and bounded human
+message into caller storage. Diagnostics contain no private key, PSK, token,
+plaintext, destination payload, or raw peer credential.
+
+No C++ exception may cross the ABI, callback, thread entry, destructor, or
+`noexcept` cleanup boundary. Unexpected exceptions are contained and reported
+as `YUME_STATUS_INTERNAL_ERROR` after local state is made safe.
+
+## Compatibility manifest
+
+`yume_get_compatibility` reports together:
+
+- product version;
+- YTP name and numeric version;
+- config schema and ABI version;
+- suite components and each concrete provider identity (an unwired component
+  is reported as `unwired`, never as a provider that merely exists in the
+  source tree);
+- cryptographic backend; and
+- evidence profile name/version.
+
+Provider/suite mismatch is a hard `YUME_STATUS_INCOMPATIBLE`. YTP/1 never
+negotiates a weaker suite and never retries through another provider.
+
+## Export and freeze gates
+
+`src/abi/yume.map` is the canonical 32-symbol set. CMake derives the Mach-O
+list and validates the built ELF/Mach-O/PE surface from it. The same change
+must update:
+
+- `include/yume/yume.h`;
+- `src/abi/yume.map`;
+- `debian/libyume1.symbols`;
+- CMake/pkg-config exports;
+- strict-C and C++ header consumers;
+- clean-prefix CMake and pkg-config consumers; and
+- this document.
+
+The current opt-in gate is build-tree-only. It checks the exact symbol set,
+header/map/Debian-symbol agreement, strict C/C++ header consumption, metadata,
+both config dialects, lifecycle/callback containment, diagnostics, ownership,
+transport-v2 start and authenticated named-stream traffic, plus the intentional
+typed `UNSUPPORTED` schema-1, packet, and routed-OPEN boundaries. The
+clean-prefix CMake and pkg-config fixtures are future acceptance material, not
+a claim that the candidate is currently installed.
+
+Before ABI v1 freezes, the clean-prefix matrix must link without private YUME
+dependencies, exchange an authenticated custom byte stream, exercise packet
+lifecycle, deadlines, cancellation, and teardown, and pass sanitizer and
+failure-injection qualification. Until those gates pass, the source remains
+`0.3.0-dev*`, the ABI package remains disabled, and the surface must not be
+described as frozen or generally installed.

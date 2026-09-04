@@ -246,6 +246,7 @@ struct Keyset {
     std::vector<fs::path> client_keys;
     fs::path obfs_secret;
     fs::path inner_psk;
+    fs::path cover_index;
 };
 
 void write_secret_file(const fs::path& path) {
@@ -292,6 +293,7 @@ Keyset generate_keyset(const Args& args, const fs::path& workdir) {
         {},
         workdir / ".secrets" / "obfs.hex",
         workdir / ".secrets" / "inner-psk.hex",
+        workdir / "cover-index.html",
     };
 
     run_checked({
@@ -350,6 +352,10 @@ Keyset generate_keyset(const Args& args, const fs::path& workdir) {
     write_text(ks.authorized_keys_meta.string(), metadata.dump(2) + "\n");
     write_secret_file(ks.obfs_secret);
     write_secret_file(ks.inner_psk);
+    // yumed refuses to start without a cover source: with none, the HTTP/2
+    // decoy would serve a page identical on every deployment.
+    write_text(ks.cover_index.string(),
+               "<!doctype html><title>example</title><p>It works.</p>\n");
     return ks;
 }
 
@@ -400,6 +406,7 @@ public:
             "--obfs-secret-file", ks_.obfs_secret.string(),
             "--inner-psk-file", ks_.inner_psk.string(),
             "--real-backend", "loopback://127.0.0.1:" + std::to_string(cover_port_),
+            "--real-index", ks_.cover_index.string(),
             "--boring",
         };
         if (args_.rekey_window > 0) {

@@ -362,8 +362,8 @@ private:
     // Transport security. Everything the 2.0 runtime treats as mandatory is
     // stated, not offered: prepare_v2_security_config() refuses a config with
     // obfuscation or inner crypto disabled and force-sets inner_required, and
-    // the server advertises inner_mode="ratchet" regardless of the legacy
-    // light/heavy/dual fields. The three inputs below are the ones the runtime
+    // the server advertises inner_mode="ratchet" regardless of the surviving
+    // inner_dual field. The four inputs below are the ones the runtime
     // genuinely reads and cannot start without.
     void render_transport_security_card(bool running, ui::Colors const& c, float sc) {
         if (ui::begin_auto_card("##transport_security")) {
@@ -413,6 +413,17 @@ private:
                 cfg_.real_backend = buf;
             }
             ImGui::PopID();
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            file_picker("Cover index page",
+                        "Pick the HTML page the HTTP/2 decoy serves",
+                        cfg_.real_index_path,
+                        "(required)",
+                        "The cover backend answers HTTP/1.1 only, so the "
+                        "HTTP/2 decoy needs its own page. There is no "
+                        "built-in default: a page compiled into the daemon "
+                        "would be identical on every YUME server and would "
+                        "identify this one. A captured upstream response or a "
+                        "static cover root satisfies the same requirement.");
             ImGui::EndDisabled();
         }
         ui::end_card();

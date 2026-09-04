@@ -26,6 +26,7 @@
 #include "core/version.hpp"
 #include "facade/session/client_session.hpp"
 #include "facade/config/config_io.hpp"
+#include "facade/config/gui_preferences.hpp"
 #include "facade/logging/log_sink.hpp"
 #include "facade/session/server_session.hpp"
 #include "facade/model/status.hpp"

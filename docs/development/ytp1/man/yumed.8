@@ -1,0 +1,56 @@
+.TH YUMED 8 "2026-08-31" "YUME 0.3.0-dev1" "YUME Manual"
+.SH NAME
+yumed \- YUME secure-session web-front-door daemon
+.SH SYNOPSIS
+.B yumed
+.BI "--config " path
+.RI [ --validate ]
+.RI [ --diagnostic-level " level" ]
+.br
+.B yumed
+.B --version
+.SH DESCRIPTION
+.B yumed
+is the intended server runtime for YUME Transport Protocol 1. It will own the
+genuine HTTP/2 website or reverse-proxy front door, cheap replay-protected
+admission, TLS 1.3 promotion, authenticated named services, and explicit direct
+TCP/UDP routing.
+.PP
+The current 0.3.0-dev1 tree does not yet implement that production runtime.
+Setup and doctor can generate and validate a server kit, but no current command
+starts a qualified public YTP/1 listener. See
+.B docs/IMPLEMENTATION_STATUS.md
+before deployment.
+.SH OPTIONS
+.TP
+.BI "--config " path
+Select one strict server schema-1 configuration. Listen addresses, cover,
+credentials, services, routes, and limits have no CLI override.
+.TP
+.B --validate
+Validate configuration and credentials without listening.
+.TP
+.BI "--diagnostic-level " level
+Select bounded local diagnostic verbosity. Never log key, PSK, exporter, AUTH,
+or application plaintext values.
+.TP
+.B --version
+Print the complete compatibility manifest.
+.SH PUBLIC INGRESS CONTRACT
+Invalid, missing, expired, replayed, or mismatched admission remains ordinary
+cover traffic and must not produce a YUME-specific public response. Promotion
+to the session engine occurs only after the exact TLS, HTTP/2, admission, and
+provider contracts pass. There is no fallback secure-channel backend or YTP
+suite downgrade.
+.SH PRIVILEGE
+Run as a dedicated unprivileged user. Prefer a high port or grant only the
+specific low-port binding capability needed for 443. The key-holding process
+does not need a shell, firewall administration, package management, or
+arbitrary filesystem access.
+.SH OUTSIDE YTP/1
+Federation, transit, directory, relay applications, reverse administration,
+server command execution, host-controller modes, product codecs, security
+modes, helper TLS backends, and the command/control facade are not part of
+YTP/1. Current transport-v2 surfaces remain a separate runnable lane.
+.SH SEE ALSO
+.BR yume (1)

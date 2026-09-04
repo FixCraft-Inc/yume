@@ -125,9 +125,8 @@ std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> Session::r
 }
 
 void Session::notify_server_shutdown(const std::string& reason) {
-    // RuntimeController stops the io_context immediately after Manager::stop
-    // returns. Publish terminal ServiceStream state before the strand post so
-    // accepted handles cannot depend on that post running to wake their waits.
+    // Publish terminal ServiceStream state before the strand post so accepted
+    // handles do not depend on later executor progress to wake their waits.
     stop_service_streams(reason.empty() ? "server stopping" : reason);
     boost::asio::post(strand_, [self = shared_from_this(), reason]() {
         if (self->close_state_ != CloseState::Open) {
@@ -412,15 +411,6 @@ bool Session::frame_allowed_by_authorization_tier(const protocol::Frame& frame) 
     if (authorization_tier_ == authorization::SessionTier::PreauthServiceOnly) {
         if (type == protocol::OPEN) {
             crypto::Bytes payload = frame.payload;
-            if (inner_key_.has_value() &&
-                (frame.header.flags & protocol::kFlagInnerEncrypted) != 0) {
-                if (!decrypt_inner_payload(type,
-                                           frame.header.stream_id,
-                                           frame.payload,
-                                           &payload)) {
-                    return false;
-                }
-            }
             const std::string payload_text(payload.begin(), payload.end());
             context.service_open =
                 authorization::preauth_service_open_payload(payload_text);
@@ -488,7 +478,10 @@ void Session::handle_frame(protocol::Frame frame,
 
         authenticated_ = true;
         if (v2_h2_carrier_) {
-            if (!v2_h2_carrier_->EnableAuthenticatedReceiveWindow()) {
+            // Transport-v2 waits for YUME authentication before admitting the
+            // larger bounded receive window. Other providers can admit at a
+            // different, explicitly checked carrier boundary.
+            if (!v2_h2_carrier_->EnableAdmittedReceiveWindow()) {
                 close_with_reason(
                     "failed to expand authenticated HTTP/2 receive window: " +
                     v2_h2_carrier_->error());
@@ -621,17 +614,6 @@ void Session::handle_frame(protocol::Frame frame,
         }
     }
 
-    if (inner_key_.has_value() &&
-        (frame.header.type == protocol::OPEN || frame.header.type == protocol::DATA ||
-         frame.header.type == protocol::EXEC || frame.header.type == protocol::CLOSE ||
-         frame.header.type == protocol::RLISTEN || frame.header.type == protocol::CONTROL)) {
-        if ((frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
-            util::log_warn("session " + std::to_string(session_id_) + ": missing inner encryption flag");
-            close_with_reason("missing inner encryption flag on authenticated frame type " +
-                              std::to_string(frame.header.type));
-            return;
-        }
-    }
 
     if (!frame_allowed_by_authorization_tier(frame)) {
         util::log_warn("session " + std::to_string(session_id_) +
@@ -723,15 +705,6 @@ void Session::handle_data(const protocol::Frame& frame,
                           runtime::InboundCredit inbound_credit) {
     crypto::Bytes decrypted_payload;
     const crypto::Bytes* payload = &frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted_payload)) {
-            util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed for stream " +
-                           std::to_string(frame.header.stream_id));
-            close_with_reason("DATA decrypt failed for stream " + std::to_string(frame.header.stream_id));
-            return;
-        }
-        payload = &decrypted_payload;
-    }
     std::function<void(
         const crypto::Bytes&,
         runtime::InboundCredit)> federated_data;
@@ -775,14 +748,6 @@ std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok)
         *ok = true;
     }
     crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(protocol::CLOSE, frame.header.stream_id, frame.payload, &payload)) {
-            if (ok) {
-                *ok = false;
-            }
-            return {};
-        }
-    }
     return std::string(payload.begin(), payload.end());
 }
 
@@ -963,10 +928,6 @@ void Session::handle_exec(const protocol::Frame& frame) {
     const std::string msg = "EXEC disabled for safety";
     crypto::Bytes payload(msg.begin(), msg.end());
     uint16_t flags = 0;
-            if (inner_key_.has_value()) {
-                payload = encrypt_inner_payload(protocol::DATA, frame.header.stream_id, payload);
-                flags |= protocol::kFlagInnerEncrypted;
-            }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
     async_write_frame(resp);
     send_control_close(frame.header.stream_id, "");
@@ -975,10 +936,6 @@ void Session::handle_exec(const protocol::Frame& frame) {
 void Session::send_open_reply(uint8_t stream_id, bool ok, const std::string& message) {
     crypto::Bytes payload(message.begin(), message.end());
     uint16_t flags = ok ? protocol::kFlagOpenOk : 0;
-    if (inner_key_.has_value()) {
-        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     async_write_frame(resp);
 }
@@ -1045,6 +1002,15 @@ void Session::begin_close() {
         flush_v2_h2_wire_on_strand();
     }
     close_state_ = CloseState::Closing;
+    // An H2 exact read stores its higher-level completion in the Session, and
+    // that completion captures the Session so it can resume frame parsing.
+    // Once closing starts it must never resume. Drop the member-owned callback
+    // now so io_context destruction cannot strand a Session -> callback ->
+    // Session cycle if the underlying TLS read is cancelled without dispatch.
+    v2_h2_read_handler_ = {};
+    v2_h2_read_target_ = nullptr;
+    v2_h2_read_size_ = 0U;
+    v2_h2_read_copied_ = 0U;
     stop_service_streams(
         close_reason_.empty() ? "session closing" : close_reason_);
     // Cover requests run before YUME authentication and may be blocked on a
@@ -1223,14 +1189,6 @@ void Session::begin_close() {
         }
     }
     ratchet_blocked_writes_.clear();
-    if (inner_key_.has_value()) {
-        security::secure_erase(*inner_key_);
-        inner_key_.reset();
-    }
-    if (inner_key_alt_.has_value()) {
-        security::secure_erase(*inner_key_alt_);
-        inner_key_alt_.reset();
-    }
 
     maybe_finish_close();
 }

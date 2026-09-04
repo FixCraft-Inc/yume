@@ -91,7 +91,6 @@ public:
     std::vector<CloseHandler> shutdown();
     bool is_stopped() const;
 
-    void set_inner_key(const Bytes& key);
     void set_ratchet(std::unique_ptr<ratchet::SessionRatchet> ratchet);
     // Send-side traffic-shape obfuscation. `pad_multiple` (clamped to
     // [0, 256]) rounds every outbound frame payload up to that multiple
@@ -244,8 +243,6 @@ private:
     void resume_writes_after_rekey();
     void handle_frame(const protocol::Frame& frame,
                       InboundCredit inbound_credit = {});
-    Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
-    bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
     void request_transport_close(const std::string& reason);
 
     mutable std::mutex state_mu_;
@@ -287,7 +284,6 @@ private:
     ExecHandler exec_handler_;
     uint8_t next_stream_id_{1};
     bool stopped_{false};
-    std::optional<Bytes> inner_key_;
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     diagnostics::IntervalTimer outbound_rekey_wait_;

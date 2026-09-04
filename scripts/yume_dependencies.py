@@ -17,8 +17,9 @@ DEFAULT_MANIFEST = ROOT / "config" / "dependencies.json"
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?")
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
-REQUIRED_FIELDS = {"repository", "revision", "minimum_version"}
-OPTIONAL_FIELDS = {"patch_series"}
+LICENSE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,63}")
+REQUIRED_FIELDS = {"repository", "revision", "minimum_version", "license"}
+OPTIONAL_FIELDS = {"patch_license", "patch_series", "source_version"}
 FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 
 
@@ -64,6 +65,16 @@ def load_dependencies(path: pathlib.Path = DEFAULT_MANIFEST) -> dict[str, dict[s
                 f"{name}.revision must be an exact lowercase 40-hex commit")
         require(VERSION_RE.fullmatch(fields["minimum_version"]) is not None,
                 f"{name}.minimum_version is invalid")
+        if "source_version" in fields:
+            require(VERSION_RE.fullmatch(fields["source_version"]) is not None,
+                    f"{name}.source_version is invalid")
+        require(("patch_series" in fields) == ("patch_license" in fields),
+                f"{name}.patch_series and patch_license must be declared together")
+        require(LICENSE_RE.fullmatch(fields["license"]) is not None,
+                f"{name}.license must be one SPDX license identifier")
+        if "patch_license" in fields:
+            require(LICENSE_RE.fullmatch(fields["patch_license"]) is not None,
+                    f"{name}.patch_license must be one SPDX license identifier")
         if "patch_series" in fields:
             patch_series = pathlib.PurePosixPath(fields["patch_series"])
             require(not patch_series.is_absolute() and ".." not in patch_series.parts,

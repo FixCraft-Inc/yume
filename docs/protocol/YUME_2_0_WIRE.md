@@ -1,5 +1,10 @@
 # YUME transport v2 wire contract
 
+> **Current transport-v2 contract:** this wire remains in the runnable default
+> product during the transition. It is incompatible with the experimental
+> [YTP/1 replacement](YTP_1.md); neither protocol silently downgrades to the
+> other.
+
 Status: normative development contract for the current transport v2 source.
 The release version remains gated on exact-Chrome same-session capture,
 external conformance/classification, matched WAN, an uninterrupted deployed

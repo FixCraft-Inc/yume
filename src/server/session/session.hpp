@@ -178,7 +178,9 @@ private:
     // Connection header, so a 404 ends the (possibly keep-alive) connection
     // rather than lie about reuse.
     void send_disguise_404(const std::string& path);
-    std::string load_real_index();
+    // Nullopt when no configured cover source can be read; there is no
+    // built-in page, because a constant one is a deployment-wide fingerprint.
+    std::optional<std::string> load_real_index();
     std::string build_hidden_blob();
     void send_auth_challenge();
 
@@ -332,13 +334,6 @@ private:
     void send_control_fin(uint8_t stream_id, const std::string& reason);
     StreamIdReservation reserve_stream_id();
     bool stream_id_in_use_locked(uint8_t stream_id) const;
-    bool decrypt_inner_payload(uint8_t frame_type,
-                               uint8_t stream_id,
-                               const crypto::Bytes& input,
-                               crypto::Bytes* output);
-    crypto::Bytes encrypt_inner_payload(uint8_t frame_type,
-                                        uint8_t stream_id,
-                                        const crypto::Bytes& input);
 
     void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
     void start_remote_read(uint8_t stream_id);
@@ -487,12 +482,8 @@ private:
     authorization::SessionTier authorization_tier_{
         authorization::SessionTier::Unauthenticated};
     std::string auth_error_;
-    std::optional<crypto::Bytes> inner_key_;
-    std::optional<crypto::Bytes> inner_key_alt_;
     std::string inner_mode_;
-    std::string inner_alt_mode_;
     std::string inner_kdf_;
-    std::string inner_alt_kdf_;
     boost::asio::steady_timer idle_timer_;
     boost::asio::steady_timer frame_read_timer_;
     boost::asio::steady_timer ratchet_timer_;

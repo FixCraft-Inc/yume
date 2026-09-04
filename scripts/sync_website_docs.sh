@@ -43,7 +43,9 @@ render_doc() {
             -e 's@\]\(release/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/release/\1/\2)@g' \
             -e 's@\]\(agents/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/agents/\1.md\2)@g' \
             -e 's@\]\(man/([A-Za-z0-9_.-]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/man/\1\2)@g' \
+            -e 's@\]\(development/([^#)]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/development/\1\2)@g' \
             -e 's@\]\((YUME_2_0_[A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/protocol/\1/\2)@g' \
+            -e 's@\]\((YTP_[A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/protocol/\1/\2)@g' \
             -e 's@\]\(docs/([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/\1/\2)@g' \
             -e 's@\]\(\.\./([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/\1/\2)@g' \
             -e 's@\]\(([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/\1/\2)@g' \

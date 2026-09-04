@@ -1,11 +1,33 @@
 # Filtering, robots, and self-DPI
 
+> **Transport-v2 surface:** this document records probe, cover, and diagnostic
+> behavior in the runnable 0.2 product. Its evidence does not automatically
+> qualify the unwired YTP/1 front door.
+
 ## Stealth boundary
 
 `--robots-deny`, IP filtering, and self-DPI do not change the TLS profile,
 ALPN, HTTP/2 carrier preface, obfs token, or YUME frame format. Robots is a
 normal HTTP-facade response for `GET`/`HEAD /robots.txt`; packet and stream
 traffic still rides inside the existing encrypted YUME `DATA` frames.
+
+### There is no default cover page
+
+`yumed` ships no built-in cover page. One compiled into the daemon would be
+byte-identical on every deployment, so a single HTTP/2 request would identify
+the server as YUME no matter what the HTTP/1.1 cover backend serves.
+
+Startup therefore requires two separate things and refuses without either:
+
+- `real_backend`, a real local HTTP server that answers unauthenticated
+  HTTP/1.1 requests and is health-checked at start; and
+- a source for the HTTP/2 decoy: `upstream_response_dir` or
+  `upstream_response` (captured real responses, the closest fit),
+  `real_root` (a static site, whose `index.html` is also the decoy page), or
+  `real_index_path` (a single page).
+
+If a configured source disappears at run time, the daemon answers with the
+profile's ordinary 404 rather than substituting a page of its own.
 
 ## Server filters
 

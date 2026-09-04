@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -206,6 +207,114 @@ void test_admission_cancel_and_stop_wake_waiters() {
                {}, &needs_dispatch) == Result::Accepted);
     reentrant_stop.stop("reentrant stop");
     assert(stop_completions == 1U);
+}
+
+// Regression: write() returns Accepted when the transport admits a frame, not
+// when it drains. shutdown_write used to emit FIN immediately, so under load
+// the FIN overtook the final record and the peer saw EOF instead of the reply.
+// That silently truncated the most ordinary request/response exchange there is.
+void test_shutdown_write_waits_for_accepted_writes_to_drain() {
+    using ServiceStream = yume::runtime::ServiceStream;
+    ServiceStream stream("drain", "peer");
+    ServiceStream::WriteCompletion pending;
+    bool fin_sent = false;
+
+    stream.set_callbacks(
+        [&pending](ServiceStream::Bytes,
+                   std::uint32_t,
+                   ServiceStream::WriteCompletion completion,
+                   std::string*) {
+            // Hold the completion: the frame is admitted but not yet drained.
+            pending = std::move(completion);
+            return ServiceStream::WriteResult::Accepted;
+        },
+        [](std::string) {},
+        [&fin_sent](std::string) { fin_sent = true; });
+
+    const char payload = 'x';
+    std::string error;
+    assert(stream.write(&payload, 1U, 0U, &error) ==
+           ServiceStream::WriteResult::Accepted);
+    assert(!fin_sent);
+
+    // With the write still in flight and no deadline to wait on, shutdown must
+    // fail rather than send a FIN that would overtake it.
+    assert(stream.shutdown_write(&error, 0U) ==
+           ServiceStream::ShutdownWriteResult::WouldBlock);
+    assert(!fin_sent);
+    assert(!error.empty());
+
+    // A bounded wait times out for the same reason while the write is stuck.
+    assert(stream.shutdown_write(&error, 30U) ==
+           ServiceStream::ShutdownWriteResult::Timeout);
+    assert(!fin_sent);
+
+    // Draining the write releases the shutdown.
+    assert(pending);
+    pending(true, {});
+    assert(stream.shutdown_write(&error, 5000U) ==
+           ServiceStream::ShutdownWriteResult::Sent);
+    assert(fin_sent);
+
+    // Idempotent: a second shutdown neither fails nor re-sends.
+    fin_sent = false;
+    assert(stream.shutdown_write(&error, 5000U) ==
+           ServiceStream::ShutdownWriteResult::Sent);
+    assert(!fin_sent);
+}
+
+void test_shutdown_write_reports_failed_accepted_write() {
+    using ServiceStream = yume::runtime::ServiceStream;
+    ServiceStream stream("failed-write", "peer");
+    ServiceStream::WriteCompletion pending;
+    bool fin_sent = false;
+    stream.set_callbacks(
+        [&pending](ServiceStream::Bytes,
+                   std::uint32_t,
+                   ServiceStream::WriteCompletion completion,
+                   std::string*) {
+            pending = std::move(completion);
+            return ServiceStream::WriteResult::Accepted;
+        },
+        [](std::string) {},
+        [&fin_sent](std::string) { fin_sent = true; });
+
+    const char payload = 'x';
+    std::string error;
+    assert(stream.write(&payload, 1U, 0U, &error) ==
+           ServiceStream::WriteResult::Accepted);
+    pending(false, "injected transport failure");
+    assert(stream.shutdown_write(&error, 5000U) ==
+           ServiceStream::ShutdownWriteResult::Closed);
+    assert(error == "injected transport failure");
+    assert(!fin_sent);
+}
+
+void test_shutdown_write_callback_failure_is_terminal() {
+    using ServiceStream = yume::runtime::ServiceStream;
+    ServiceStream stream("failed-fin", "peer");
+    unsigned int attempts = 0U;
+    unsigned int closes = 0U;
+    stream.set_callbacks(
+        [](ServiceStream::Bytes,
+           std::uint32_t,
+           ServiceStream::WriteCompletion,
+           std::string*) { return ServiceStream::WriteResult::Accepted; },
+        [&closes](std::string) { ++closes; },
+        [&attempts](std::string) {
+            ++attempts;
+            throw std::runtime_error("injected FIN failure");
+        });
+
+    std::string error;
+    assert(stream.shutdown_write(&error, 5000U) ==
+           ServiceStream::ShutdownWriteResult::Failed);
+    assert(attempts == 1U);
+    assert(closes == 1U);
+    assert(stream.shutdown_write(&error, 5000U) ==
+           ServiceStream::ShutdownWriteResult::Closed);
+    assert(attempts == 1U);
+    assert(closes == 1U);
 }
 
 void test_service_stream_admission_gate_serializes_stop() {
@@ -424,6 +533,9 @@ int main() {
     test_admission_cancel_reuses_one_scheduled_wake();
     test_admission_cancel_and_stop_wake_waiters();
     test_service_stream_admission_gate_serializes_stop();
+    test_shutdown_write_waits_for_accepted_writes_to_drain();
+    test_shutdown_write_reports_failed_accepted_write();
+    test_shutdown_write_callback_failure_is_terminal();
 
     return 0;
 }

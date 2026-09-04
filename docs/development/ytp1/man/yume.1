@@ -1,0 +1,84 @@
+.TH YUME 1 "2026-08-31" "YUME 0.3.0-dev1" "YUME Manual"
+.SH NAME
+yume \- YUME stealth-transport client and tunnel adapters
+.SH SYNOPSIS
+.B yume
+.BI "--config " path
+.RI [ --validate ]
+.RI [ --diagnostic-level " level" ]
+.br
+.B yume
+.B --version
+.br
+.B yume
+.B setup init
+.BI "--host " host
+.BI "--output " directory
+.br
+.B yume
+.B doctor
+.BI "--config " path
+.SH DESCRIPTION
+YUME 0.3 is an embeddable stealth universal transport for authenticated named byte
+streams and packet channels. The client CLI is intended to expose the included
+SOCKS5, named-service, and packet adapters as consumers of the same future
+installed C ABI intended for external applications after freeze.
+.PP
+The current 0.3.0-dev1 tree does not yet implement the production client
+runtime or authenticated YTP/1 data path. The schema-1 setup and doctor tools,
+strict parser, YTP/1 kernel, provider candidates, and build-tree ABI are
+development foundations. The ABI can exercise the separate transport-v2
+backend, but
+.BR yume_endpoint_start (3)
+on a schema-1 endpoint fails closed with
+.B YUME_STATUS_UNSUPPORTED
+until the native security, TLS/HTTP/2, route, and adapter providers are
+composed.
+.SH OPTIONS
+.TP
+.BI "--config " path
+Select one strict role-tagged schema-1 configuration. Network and security
+policy are read only from the validated file and have no CLI overrides.
+.TP
+.B --validate
+Validate the selected configuration and exit without opening a network
+listener or connection.
+.TP
+.BI "--diagnostic-level " level
+Select bounded diagnostic verbosity. Diagnostics never include private keys,
+PSKs, admission material, TLS exporters, or application plaintext.
+.TP
+.B --version
+Print the product, YTP, config, ABI, provider, cryptographic-backend, and
+evidence-profile compatibility manifest.
+.SH CONFIGURATION
+Schema 1 contains endpoint, exact suite, credential references, cover profile,
+enabled services/adapters, and resource limits. Unknown keys, aliases, wrong
+types, inline private secrets, unsupported providers, and unsafe combinations
+are rejected with a JSON-pointer diagnostic. YTP/1 has no cryptographic suite
+negotiation or fallback.
+.SH SETUP AND DOCTOR
+The explicitly enabled experimental executables are named
+.B yume-setup-ytp1
+and
+.BR yume-doctor-ytp1 .
+They generate a permission-safe server/client transport kit and validate
+schema, credentials, cover behavior, and limits without printing secrets.
+The doctor checks restrictive file modes and safe file identity but does not
+inspect file ownership or consume a separate compatibility manifest. See
+.B docs/development/ytp1/README.md
+and
+.B docs/IMPLEMENTATION_STATUS.md
+in the source tree.
+.SH OUTSIDE YTP/1
+The 0.2 CLI options for security modes, inline secrets, forwards, attached
+commands, federation, relay applications, directory/chat/file features,
+product codecs, self-DPI, helper TLS backend selection, and GUI/facade control
+are not YTP/1 compatibility surfaces. They remain available through the
+runnable transport-v2 lane until reviewed replacement or retirement.
+.SH EXIT STATUS
+Zero indicates the requested validation or metadata operation completed.
+Runtime or configuration failures use a nonzero exit and a bounded diagnostic.
+Unauthenticated public ingress never receives a CLI diagnostic.
+.SH SEE ALSO
+.BR yumed (8)

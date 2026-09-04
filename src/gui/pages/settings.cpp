@@ -9,6 +9,7 @@
 #include <imgui.h>
 
 #include "facade/config/config_io.hpp"
+#include "facade/config/gui_preferences.hpp"
 #include "ui/design.hpp"
 
 namespace yume::gui {

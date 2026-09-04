@@ -38,8 +38,6 @@ struct ServerInfoPayload {
     bool server_inner_active = false;
     std::string server_inner_mode;
     bool server_cap_pq = false;
-    bool server_cap_argon2 = false;
-    bool server_cap_pbkdf2 = false;
 };
 
 ServerInfoPayload parse_server_info_payload(const protocol::Frame& frame);

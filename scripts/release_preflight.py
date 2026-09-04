@@ -21,7 +21,7 @@ from generate_transport_profiles import ProfileError, active_profile_metadata
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PROFILE = "linux-desktop-0.2.0"
+PROFILE = "linux-desktop-0.3.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
 BUNDLE_DIRECTORY = "yume-amd64-linux"
@@ -119,10 +119,10 @@ def source_commit() -> str:
 
 
 def version_for_tag(tag: str) -> str:
-    match = re.fullmatch(r"v0\.2\.0(?:-(rc[1-9][0-9]*))?", tag)
+    match = re.fullmatch(r"v0\.3\.0(?:-(rc[1-9][0-9]*))?", tag)
     require(match is not None,
-            "linux-desktop-0.2.0 accepts only v0.2.0-rcN or v0.2.0 tags")
-    return f"0.2.0-{match.group(1)}" if match.group(1) else "0.2.0"
+            "linux-desktop-0.3.0 accepts only v0.3.0-rcN or v0.3.0 tags")
+    return f"0.3.0-{match.group(1)}" if match.group(1) else "0.3.0"
 
 
 def validate_tag(tag: str | None, version: str, commit: str) -> None:
@@ -158,7 +158,7 @@ def validate_workflow_guards() -> None:
     openssl = openssl_dependency()
     liboqs = liboqs_dependency()
     required_release = (
-        "linux-desktop-0.2.0",
+        "linux-desktop-0.3.0",
         "libbrotli-dev",
         'go-version: "1.26.5"',
         "check-latest: false",
@@ -179,7 +179,7 @@ def validate_workflow_guards() -> None:
         "package_linux_release.py",
         BUNDLE_NAME,
         SERVER_NAME,
-        "linux-desktop-0.2.0-prepared.tar",
+        "linux-desktop-0.3.0-prepared.tar",
         "yume_openssl_ensure",
         'YUME_OPENSSL_FORCE_PINNED: "1"',
         "--same-permissions",
@@ -213,6 +213,8 @@ def validate_workflow_guards() -> None:
         require(needle in ci_yml, f"ci.yml is missing required guard: {needle}")
     require(openssl["minimum_version"] == "3.5.0",
             "OpenSSL dependency minimum changed without updating release guards")
+    require(openssl.get("source_version") == "3.5.7",
+            "OpenSSL dependency source version must match the pinned source archive")
     require("find_package(OpenSSL 3.5 REQUIRED)" in cmake,
             "CMake must reject OpenSSL versions without ML-DSA-87")
     require('YUME_OPENSSL_FORCE_PINNED: "1"' in codeql_yml,
@@ -223,6 +225,8 @@ def validate_workflow_guards() -> None:
             "OpenSSL helper source commit does not match dependency metadata")
     require(openssl.get("patch_series") == "patches/openssl/series",
             "OpenSSL dependency metadata must name the downstream patch series")
+    require(openssl.get("patch_license") == "AGPL-3.0-or-later",
+            "OpenSSL dependency metadata must declare the downstream patch license")
     openssl_series = ROOT / openssl["patch_series"]
     require(openssl_series.is_file(), "OpenSSL patch series is missing")
     require("0001-yume-chrome-clienthello.patch" in
@@ -257,7 +261,7 @@ def validate_workflow_guards() -> None:
     lowered = release_yml.lower()
     for marker in forbidden:
         require(marker not in lowered,
-                f"linux-desktop-0.2.0 workflow includes unsupported marker: {marker}")
+                f"linux-desktop-0.3.0 workflow includes unsupported marker: {marker}")
 
 
 def cache_value(cache: str, name: str) -> str | None:
@@ -534,7 +538,7 @@ def validate_artifacts(directory: pathlib.Path, version: str, commit: str,
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Validate the YUME 0.2.0 Linux release lane")
+    parser = argparse.ArgumentParser(description="Validate the YUME 0.3.0 Linux release lane")
     parser.add_argument("--profile", default=PROFILE)
     parser.add_argument("--tag")
     parser.add_argument("--skip-ref-fetch", action="store_true")

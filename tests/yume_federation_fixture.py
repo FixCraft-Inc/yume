@@ -95,6 +95,7 @@ class NodeFiles:
     peer_ca_bundle: Path
     obfs_secret: Path
     inner_psk: Path
+    cover_index: Path
     history_dir: Path
     relay_receive_dir: Path
     home: Path
@@ -280,6 +281,13 @@ def make_node(yumed: Path, root: Path) -> NodeFiles:
     write_secret(obfs_secret)
     inner_psk = root / "inner-psk.hex"
     write_secret(inner_psk)
+    # yumed refuses to start without a cover source: with none, the HTTP/2
+    # decoy would serve a page identical on every YUME deployment.
+    cover_index = root / "cover-index.html"
+    cover_index.write_text(
+        "<!doctype html><title>example</title><p>It works.</p>\n",
+        encoding="utf-8",
+    )
     history_dir = root / "history"
     relay_receive_dir = root / "received"
     home = root / "home"
@@ -299,6 +307,7 @@ def make_node(yumed: Path, root: Path) -> NodeFiles:
         peer_ca_bundle=root / "peer-ca-bundle.pem",
         obfs_secret=obfs_secret,
         inner_psk=inner_psk,
+        cover_index=cover_index,
         history_dir=history_dir,
         relay_receive_dir=relay_receive_dir,
         home=home,
@@ -379,6 +388,8 @@ def server_argv(
         str(node.inner_psk),
         "--real-backend",
         f"loopback://127.0.0.1:{cover_port}",
+        "--real-index",
+        str(node.cover_index),
         "--server-id",
         node_id,
         "--server-name",

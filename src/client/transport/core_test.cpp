@@ -132,38 +132,6 @@ void test_open_round_trip() {
     assert(open_payload == "{\"ok\":1}");
 }
 
-void test_inner_crypto_round_trip() {
-#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
-    Recorder recorder;
-    yume::client::TransportCore core(recorder.writer(), recorder.closer());
-    core.start();
-    core.set_inner_key({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-                        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32});
-
-    std::vector<uint8_t> received;
-    bool delivered = false;
-    core.register_stream(9,
-                         [&](const std::vector<uint8_t>& data,
-                             yume::client::TransportCore::InboundCredit) {
-                             delivered = true;
-                             received = data;
-                         },
-                         [&](const std::string&) {});
-
-    const std::vector<uint8_t> payload{'h', 'e', 'l', 'l', 'o'};
-    core.send_data(9, payload);
-
-    assert(recorder.writes.size() == 1);
-    const auto frame = yume::protocol::decode_frame(recorder.writes.back());
-    assert((frame.header.flags & yume::protocol::kFlagInnerEncrypted) != 0);
-    assert(frame.payload != payload);
-
-    core.feed_tls_bytes(recorder.writes.back());
-    assert(delivered);
-    assert(received == payload);
-#endif
-}
-
 void test_incremental_frame_decoder_handles_fragmented_concatenated_frames() {
     Recorder recorder;
     yume::client::TransportCore core(recorder.writer(), recorder.closer());
@@ -1249,7 +1217,6 @@ void test_ratchet_sends_bounded_data_while_rekey_ack_is_in_flight() {
 
 int main() {
     test_open_round_trip();
-    test_inner_crypto_round_trip();
     test_incremental_frame_decoder_handles_fragmented_concatenated_frames();
     test_inbound_credit_follows_complete_frames_and_partial_shutdown();
     test_padded_frame_round_trip();

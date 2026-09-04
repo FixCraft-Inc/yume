@@ -57,7 +57,6 @@ public:
         std::unique_ptr<ratchet::SessionRatchet> ratchet = {});
 
     void start();
-    void set_inner_key(const Bytes& key);
     // Send-side obfs shape. `pad_multiple` is forwarded to TransportCore
     // for per-frame padding; `jitter_ms_max` is consumed here in the
     // tunnel's write_handler to defer the actual TLS write by a uniform

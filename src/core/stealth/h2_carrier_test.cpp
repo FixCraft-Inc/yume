@@ -188,12 +188,15 @@ void FullSessionRoundTrip() {
     expected_connect_with_auth.push_back({"origin", secret_origin});
     assert(requests[0].headers == expected_connect_with_auth);
     assert(server.AcceptCarrier(requests[0].stream_id));
-    // Production enables this only after YUME authentication. A full 256-KiB
-    // ratchet epoch must then cross in one direction without waiting for
-    // reverse WINDOW_UPDATE traffic between partial sends.
-    assert(server.EnableAuthenticatedReceiveWindow());
-    assert(server.EnableAuthenticatedReceiveWindow());
+    // Production enables this only after its role-specific carrier-admission
+    // checks. A full ratchet epoch must then cross without waiting for reverse
+    // WINDOW_UPDATE traffic between partial sends.
+    assert(server.EnableAdmittedReceiveWindow());
+    assert(server.EnableAdmittedReceiveWindow());
     Pump(server, client);
+    assert(client.carrier_active());
+    assert(client.EnableAdmittedReceiveWindow());
+    assert(client.EnableAdmittedReceiveWindow());
     Pump(client, server);
     assert(client.carrier_active() && server.carrier_active());
 

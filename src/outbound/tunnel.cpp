@@ -132,10 +132,6 @@ void Tunnel::start() {
     read_tls();
 }
 
-void Tunnel::set_inner_key(const Bytes& key) {
-    core_.set_inner_key(key);
-}
-
 void Tunnel::set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max) {
     core_.set_obfs_shape(pad_multiple, jitter_ms_max);
     obfs_jitter_ms_max_.store(jitter_ms_max, std::memory_order_relaxed);

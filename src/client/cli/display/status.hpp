@@ -16,11 +16,9 @@ namespace yume::client {
 struct ConnectionStatusSummary {
     std::string server;
     std::string version;
-    std::string inner_kdf_name;
     std::vector<std::string> verified_proof_sources;
     bool obfuscation_enabled = false;
     bool inner_established = false;
-    bool inner_heavy = false;
     bool have_inner_caps = false;
     bool server_inner_dual = false;
     bool server_inner_active = false;

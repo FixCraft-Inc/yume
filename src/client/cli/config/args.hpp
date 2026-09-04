@@ -39,8 +39,6 @@ struct ParsedArgs {
     bool tunnel_count_override{false};
     bool obfuscation{true};
     bool obfuscation_override{false};
-    std::string obfs_secret;
-    bool obfs_secret_override{false};
     std::string obfs_secret_file;
     bool obfs_secret_file_override{false};
     std::string inner_psk_file;
@@ -60,7 +58,6 @@ struct ParsedArgs {
     int dest_port{0};
     bool inner_crypto{false};
     bool inner_crypto_override{false};
-    bool inner_heavy{true};
     int rekey_window{0};
     bool rekey_window_override{false};
     bool use_udp{false};

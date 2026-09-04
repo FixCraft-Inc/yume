@@ -1,5 +1,77 @@
 # Changelog
 
+## [Unreleased 0.3.0-dev1]
+
+The product version moved to `0.3.0-dev1`. The runnable `yume` and `yumed`
+binaries keep speaking the transport-v2 wire `0.2.0-dev6` recorded in the next
+section; the wire, AUTH, relay, YTP/1, schema, ABI, and evidence-profile
+versions are independent axes. `docs/IMPLEMENTATION_STATUS.md` is the current
+boundary for what the 0.3 foundation implements, tests, and still gates.
+
+### Added
+
+- **YTP/1 replacement foundation.** Dependency-pure engine and protocol
+  kernel, numeric config schema 1, the role-neutral C ABI v1 candidate with a
+  transport-v2 backend that carries authenticated named byte streams, and the
+  opt-in TLS 1.3, HTTP/2 duplex carrier, hybrid session-security, and Asio
+  byte-channel provider candidates. None of it is a live YTP/1 endpoint.
+- **Own liboqs dependency edge.** YUME's ML-KEM key generation in
+  `core/security/inner_crypto.cpp` links liboqs through YUME's own CMake
+  discovery (`yume_liboqs`, `YUME_HAS_OQS`) instead of inheriting it from the
+  BaseFWX build. `YUME_REQUIRE_OQS` fails configuration when liboqs is
+  missing.
+
+### Changed
+
+- **Client configuration keys are a closed set.** The `yume` CLI parser and
+  the facade parser used by the GUI and the C ABI share one key table in
+  `src/config/client_document_keys.hpp`. An unknown key is an error, a
+  retired key names its replacement, and integral fields reject values they
+  cannot represent instead of wrapping. Both parsers previously ignored
+  unknown keys, so a misspelled `tls_pin` silently disabled pinning.
+- **Obfuscation jitter and worker threads are bounded.** `obfs_jitter_ms`
+  and `threads` were only checked for representability, so a config could
+  ask for roughly 49 days of delay on every outbound frame or a thread
+  count that exhausts the process limit at start. Both parsers now
+  enforce `policy::kMaxObfsJitterMs` and `policy::kMaxIoThreads`.
+- **Inline `obfs_secret` is refused at parse time.** The client and server
+  configuration fields that carried an inline admission secret were rejected
+  at start since transport v2; the field and its plumbing are gone and every
+  parser now rejects the key with the file-based replacement named.
+- **Server teardown always joins its workers.** `RuntimeController::stop()`
+  contains a throwing runtime or manager stop, joins every worker, and
+  reports the contained failure in the status message. Previously a throw
+  between the move and the join would destroy a joinable thread and
+  terminate the process, including from the destructor.
+- **A cancelled endpoint start reaches `STOPPED`.** The C ABI no longer
+  strands a handle in `STARTING` when a runtime stop races a start; the
+  endpoint moves to `STOPPED` and emits a `CANCELLED` event.
+- **Registration shape and H2 regression test renamed.** The only control
+  registration format the client sends was called "legacy"; it is now
+  `ControlRegistration`, and the retained transport-v2 H2 regression test is
+  `yume_transport_v2_h2_regression_test`.
+- **Share-file KDF label is pinned.** New `.yss` share files always request
+  Argon2id explicitly, so the `BASEFWX_USER_KDF` environment variable can no
+  longer downgrade them to PBKDF2 or fail encoding with an unsupported label.
+  Existing files are read from their serialized label as before.
+- **Manual pages and front-door documents name the product version.** The
+  `.TH` headers and the README, documentation map, and status page state
+  `0.3.0-dev1` and describe `0.2.0-dev6` only as the transport-v2 wire.
+  `tests/test_project_metadata.py` now fails when they drift.
+- **Third-party attribution corrected.** The GUI credits page names OpenSSL
+  as the ML-DSA-87 provider and the downstream OpenSSL patch overlay, and no
+  longer calls BaseFWX the core crypto engine or claims ML-DSA comes from
+  liboqs.
+
+### Removed
+
+- **`docs/release/RELEASE-NOTES-1.1.md`.** It described a stable 1.1 release
+  that never happened and was installed into every package. Git history keeps
+  it.
+- **Unused dependency-manifest parsing in CMake.** The BaseFWX repository and
+  revision fields were parsed and never used; `ezbuild.sh` remains the
+  enforcement point for the pin.
+
 ## [Unreleased 0.2.0-dev6]
 
 Product and transport versions were rebaselined to reflect YUME's experimental

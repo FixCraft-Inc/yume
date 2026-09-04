@@ -82,7 +82,6 @@ ShareBundle& ShareBundle::operator=(const ShareBundle& other) {
     anonym_pubkey = other.anonym_pubkey;
     pq_public_key_pem = other.pq_public_key_pem;
     inner_crypto = other.inner_crypto;
-    inner_heavy = other.inner_heavy;
     tunnel_count = other.tunnel_count;
     require_operator_identity = other.require_operator_identity;
     allow_udp = other.allow_udp;
@@ -126,7 +125,6 @@ ShareBundle& ShareBundle::operator=(ShareBundle&& other) {
     anonym_pubkey = std::move(other.anonym_pubkey);
     pq_public_key_pem = std::move(other.pq_public_key_pem);
     inner_crypto = other.inner_crypto;
-    inner_heavy = other.inner_heavy;
     tunnel_count = other.tunnel_count;
     require_operator_identity = other.require_operator_identity;
     allow_udp = other.allow_udp;
@@ -142,10 +140,6 @@ void ShareBundle::clear_secrets() noexcept {
     basefwx::crypto::SecureClear(auth_private_key_pem);
     basefwx::crypto::SecureClear(obfs_secret);
     basefwx::crypto::SecureClear(inner_psk);
-}
-
-BackupInputs::~BackupInputs() {
-    basefwx::crypto::SecureClear(obfs_secret);
 }
 
 namespace {
@@ -333,7 +327,6 @@ nlohmann::json bundle_to_json(const ShareBundle& b,
 
     nlohmann::json client_settings;
     client_settings["inner_crypto"] = b.inner_crypto;
-    client_settings["inner_heavy"] = b.inner_heavy;
     client_settings["inner_psk"] = b.inner_psk;
     client_settings["tunnels"] = b.tunnel_count;
     client_settings["require_operator_identity"] =
@@ -419,7 +412,6 @@ bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* erro
     if (j.contains("client_settings")) {
         const auto& cs = j["client_settings"];
         out->inner_crypto    = cs.value("inner_crypto", true);
-        out->inner_heavy     = cs.value("inner_heavy", true);
         out->inner_psk       = cs.value("inner_psk", std::string{});
         out->tunnel_count = static_cast<std::uint8_t>(
             std::clamp(cs.value("tunnels", 1), 1, 16));
@@ -515,9 +507,18 @@ std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
 
     basefwx::crypto::SecureBytes plaintext{
         std::vector<std::uint8_t>(serialised.begin(), serialised.end())};
+    // The share-file KDF is a YUME format decision. BaseFWX resolves its
+    // default "auto" label through the BASEFWX_USER_KDF environment variable,
+    // so leaving the default would let the process environment downgrade new
+    // share files to PBKDF2. Argon2id is a hard BaseFWX build requirement
+    // (BASEFWX_REQUIRE_ARGON2), so the explicit label always resolves. The
+    // decoder reads the serialized label and needs no matching option.
+    basefwx::fwxaes::Options encrypt_options;
+    encrypt_options.user_kdf.label = "argon2id";
     std::vector<std::uint8_t> encrypted;
     try {
-        encrypted = basefwx::fwxaes::EncryptRaw(plaintext.bytes(), password);
+        encrypted = basefwx::fwxaes::EncryptRaw(
+            plaintext.bytes(), password, encrypt_options);
     } catch (const std::exception& ex) {
         if (error) *error = std::string("encrypt failed: ") + ex.what();
         return {};
@@ -1267,13 +1268,6 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
                           &out->obfs_secret, error)) {
         return false;
     }
-    if (in.obfs_secret_path.empty() && !in.obfs_secret.empty()) {
-        if (!valid_secret_hex(in.obfs_secret)) {
-            if (error) *error = "admission secret must contain exactly 64 lowercase hex characters";
-            return false;
-        }
-        out->obfs_secret = in.obfs_secret;
-    }
     if (!load_secret_text(in.inner_psk_path, "inner PSK",
                           &out->inner_psk, error)) {
         return false;
@@ -1285,7 +1279,6 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
     out->tls_server_name     = in.tls_server_name;
     out->anonym_pubkey       = in.anonym_pubkey;
     out->inner_crypto        = in.inner_crypto;
-    out->inner_heavy         = in.inner_heavy;
     out->tunnel_count        = std::clamp<std::uint8_t>(in.tunnel_count, 1, 16);
     out->require_operator_identity = in.require_operator_identity;
     out->allow_udp           = in.allow_udp;
@@ -1410,7 +1403,6 @@ bool apply_imported_bundle(const ShareBundle& bundle,
             cfg["anonym_pubkey"] = bundle.anonym_pubkey;
         }
         cfg["inner_crypto"] = bundle.inner_crypto;
-        cfg["inner_heavy"] = bundle.inner_heavy;
         cfg["tunnels"] = std::clamp<int>(bundle.tunnel_count, 1, 16);
         cfg["require_anonym"] = bundle.require_operator_identity;
         cfg["udp"] = bundle.allow_udp;

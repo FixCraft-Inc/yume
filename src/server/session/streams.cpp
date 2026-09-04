@@ -104,10 +104,6 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
 
     crypto::Bytes payload(remote->read_buf.data(), remote->read_buf.data() + bytes);
     uint16_t flags = 0;
-    if (inner_key_.has_value()) {
-        payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
 
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, std::move(payload)};
     queue_frame_on_strand(frame);
@@ -177,10 +173,6 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
 
     crypto::Bytes payload(udp->read_buf.data(), udp->read_buf.data() + bytes);
     uint16_t flags = 0;
-    if (inner_key_.has_value()) {
-        payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
 
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, std::move(payload)};
     queue_frame_on_strand(frame);

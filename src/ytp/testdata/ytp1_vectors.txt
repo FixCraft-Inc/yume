@@ -1,0 +1,19 @@
+# YTP/1 protocol-kernel canonical encoding vectors
+#
+# Multi-byte integers are unsigned, big-endian. These are public synthetic
+# fixtures, not credentials or cryptographic test keys. The FNV-1a value is
+# only an encoding-regression checksum; it makes no cryptographic claim.
+
+frame_header_data_stream_1_payload_3 = 010500000000000100000003
+
+open_named_bytestream_echo = 01010000000400006563686f
+
+open_tcp_dns_direct_tcp_example_com_443 = 01010103000a000e6469726563742e74637001bb0b6578616d706c652e636f6d
+
+capabilities_echo_8_udp_4 = 0100000201000004000000086563686f0200000300000004756470
+
+auth_accepted_client_mandatory_fields = 010300030000007c000100010000004b5954502f313a544c5331333a48323a454432353531392b4d4c2d4453412d38373a5832353531392b4d4c2d4b454d2d313032343a484b44462d5348413235363a4145532d3235362d47434d0002000100000018010101010101010101200c10202020200620062000400100000300010000000101
+
+# KeyScheduleInput fixture from ytp1_kernel_test.cpp:
+key_schedule_input_size = 3657
+key_schedule_input_fnv1a64 = 6ab12ea0049e3c94

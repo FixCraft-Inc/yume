@@ -1,5 +1,9 @@
 # YUME operations
 
+> **Runnable transport-v2 path:** this is the current operator reference. The
+> [YTP/1 foundation page](development/ytp1/README.md#configuration-authority) covers an
+> experimental schema-1 surface that does not drive these binaries.
+
 This page covers the release, deployment, and service workflows that operators need after the first successful connection.
 
 ## Release verification
@@ -69,7 +73,7 @@ Group=yume
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/usr/local/bin/yumed --listen 443 --cert /etc/yume/server.crt --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys --obfs-secret-file /etc/yume/secrets/admission.hex --inner-psk-file /etc/yume/secrets/inner.hex --real-backend loopback://127.0.0.1:3000
+ExecStart=/usr/local/bin/yumed --listen 443 --cert /etc/yume/server.crt --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys --obfs-secret-file /etc/yume/secrets/admission.hex --inner-psk-file /etc/yume/secrets/inner.hex --real-backend loopback://127.0.0.1:3000 --real-index /etc/yume/cover-index.html
 Restart=on-failure
 RestartSec=3
 
@@ -272,7 +276,7 @@ boundary.
 
 For new deployments, `yume-setup init` creates the protected admission/inner
 secret files, TLS and operator-identity chain, safe key stores, configs, and a
-first device profile in one owner-only directory. `yume-setup issue-key`
+first client profile in one owner-only directory. `yume-setup issue-key`
 handles individual, bounded bulk, and separate admin/operator credentials
 without manual PEM concatenation or JSON editing. See `docs/QUICKSTART.md`.
 
@@ -328,10 +332,12 @@ Markdown stays in the repository root. Generated files under
 `website/docs/` are ignored and must not be edited by hand.
 
 Run `bash scripts/sync_website_docs.sh`, then
-`bash scripts/sync_website_docs.sh --check` and
-`python3 scripts/check_website_catalog.py`. The check mode compares every
-generated page with its canonical source without writing files. The catalog
-check validates source routes, source markers, and fenced-code language tags.
+`python3 scripts/check_website_catalog.py`. CI and Pages follow that order and
+build only from the freshly generated mirror. Because `website/docs/**/*.md`
+is ignored, running `--check` on a clean checkout would compare canonical
+sources with an absent mirror; after local generation it can confirm that no
+later local edit changed the mirror. The catalog check validates source routes,
+source markers, and fenced-code language tags.
 `website/docs/index.html` remains hand-written, and `docs/agents/` stays outside
 the website reader path.
 

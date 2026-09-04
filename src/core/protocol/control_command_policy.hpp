@@ -19,12 +19,12 @@ namespace yume::control {
 
 // CONTROL frames can be as large as the authenticated data-frame ceiling, but
 // command names and retained metadata are intentionally much smaller.  These
-// limits bound both per-session legacy registration state and the manager's
+// limits bound both per-session registration state and the manager's
 // 512-entry lifecycle history.
 inline constexpr std::size_t kMaxControlCommandBytes = 64U;
-inline constexpr std::size_t kMaxLegacyHostnameBytes = 255U;
-inline constexpr std::size_t kMaxLegacyIpBytes = 64U;
-inline constexpr std::size_t kMaxLegacyRegistrationStringBytes = 280U;
+inline constexpr std::size_t kMaxRegistrationHostnameBytes = 255U;
+inline constexpr std::size_t kMaxRegistrationIpBytes = 64U;
+inline constexpr std::size_t kMaxRegistrationStringBytes = 280U;
 
 inline constexpr std::size_t kMaxLifecycleMessageBytes = 256U;
 inline constexpr std::size_t kMaxLifecycleDetailBytes = 1024U;
@@ -36,7 +36,7 @@ inline constexpr std::size_t kMaxLifecycleExitIpBytes = 64U;
 inline constexpr std::size_t kMaxLifecycleErrorCodeBytes = 64U;
 inline constexpr std::size_t kMaxLifecycleAggregateStringBytes = 1536U;
 
-struct LegacyControlRegistration {
+struct ControlRegistration {
     std::string hostname;
     std::string wan_ip;
     bool server_in_charge{false};
@@ -52,8 +52,8 @@ bool is_valid_lifecycle_state(std::string_view value) noexcept;
 // Strict wire parsers reject unknown fields, implicit JSON conversions,
 // control characters, invalid state/IP values, and every per-field or
 // aggregate overrun.  They never throw on peer-controlled input.
-std::optional<LegacyControlRegistration>
-try_legacy_control_registration_from_json(
+std::optional<ControlRegistration>
+try_control_registration_from_json(
     const nlohmann::json& json,
     std::string* error = nullptr) noexcept;
 

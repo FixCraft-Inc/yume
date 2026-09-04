@@ -60,8 +60,6 @@ struct ClientConfig {
     std::string inner_psk_file;
     std::shared_ptr<yume::security::Secret32> obfs_secret_material;
     std::shared_ptr<yume::security::Secret32> inner_psk_material;
-    // Legacy 1.x literal. The 2.0 connection path rejects it.
-    std::string obfs_secret;
     // --obfs-pad-multiple <N>. Round every outbound frame payload up to
     // a multiple of N bytes via trailing pad bytes + 1-byte length. 0 =
     // off. Clamped to [0, 256]. The peer must understand kFlagPadded
@@ -71,7 +69,6 @@ struct ClientConfig {
     // random delay in [0, ms]. 0 = no delay.
     std::uint32_t obfs_jitter_ms{0};
     bool inner_crypto{true};
-    bool inner_heavy{true};
     // --rekey-window <N>. Concurrent directional epoch offers this client
     // accepts inbound and, capped by the server's advertised depth, uses
     // outbound. One outstanding exchange caps a saturated direction at one

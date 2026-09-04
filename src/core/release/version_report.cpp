@@ -22,7 +22,9 @@
 #include "core/security/inner_crypto.hpp"
 #include "core/version.hpp"
 
-#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
+// liboqs reaches this file through YUME's own dependency edge (yume_liboqs),
+// inherited from yume_secure_core. It does not depend on BaseFWX's build.
+#if defined(YUME_HAS_OQS) && YUME_HAS_OQS
 #include <oqs/oqs.h>
 #endif
 
@@ -79,7 +81,7 @@ PqBuildInfo collect_pq_build_info() {
         return info;
     }
     info.provider = "liboqs";
-#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS && defined(OQS_VERSION_TEXT)
+#if defined(YUME_HAS_OQS) && YUME_HAS_OQS && defined(OQS_VERSION_TEXT)
     info.version = OQS_VERSION_TEXT;
 #endif
     info.algorithms = "ML-KEM-768, ML-KEM-1024";

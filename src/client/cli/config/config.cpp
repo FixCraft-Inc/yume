@@ -13,12 +13,14 @@
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 
+#include "config/client_document_keys.hpp"
 #include "config/ratchet_profile_json.hpp"
 #include "core/security/ratchet.hpp"
 #include "core/runtime/atomic_file.hpp"
@@ -26,6 +28,7 @@
 #include "client/cli/config/platform.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "util.hpp"
 #include "util_json.hpp"
 
@@ -54,6 +57,11 @@ bool validate_client_config_json_types(const nlohmann::json& document,
     if (error) error->clear();
     if (!document.is_object()) {
         if (error) *error = "client config root must be a JSON object";
+        return false;
+    }
+    if (const auto key_error =
+            yume::config::client_document_key_error(document)) {
+        if (error) *error = key_error->what();
         return false;
     }
     const auto require_all = [&](std::initializer_list<const char*> keys,
@@ -94,7 +102,7 @@ bool validate_client_config_json_types(const nlohmann::json& document,
     if (!require_all(
             {"server", "identity", "admin_identity", "socks_bind",
              "packet_tun_name", "obfs_secret_file", "inner_psk_file",
-             "obfs_secret", "pq_public_key", "anonym_pubkey",
+             "pq_public_key", "anonym_pubkey",
              "anonym_pubkey_material_id", "anonym_ca_cert",
              "anonym_ca_material_id", "auth_key_material_id",
              "tls_ca_cert", "tls_ca_material_id", "tls_server_name",
@@ -112,7 +120,7 @@ bool validate_client_config_json_types(const nlohmann::json& document,
         return false;
     }
     if (!require_all(
-            {"obfuscation", "inner_crypto", "inner_heavy", "udp",
+            {"obfuscation", "inner_crypto", "udp",
              "allow_udp", "allow_local_ip", "server_in_charge",
              "allow_exec", "allow_embedded_master", "require_anonym",
              "accept_monitoring", "service_streams_only", "boring",
@@ -131,9 +139,40 @@ bool validate_client_config_json_types(const nlohmann::json& document,
             is_int, "an integer representable as int")) {
         return false;
     }
-    if (!require_all({"obfs_jitter_ms"}, is_u32,
-                     "an integer in 0..4294967295")) {
+    // Bounded, not merely representable. Jitter delays every outbound frame,
+    // so a large value is a self-inflicted hang, and a thread count typo
+    // would exhaust the process thread limit at start. The facade parser
+    // enforces the same two ceilings in its validate().
+    const auto in_bound = [](const nlohmann::json& value,
+                             std::uint64_t limit) {
+        if (value.is_number_unsigned()) {
+            return value.get<std::uint64_t>() <= limit;
+        }
+        if (!value.is_number_integer()) return false;
+        const auto signed_value = value.get<std::int64_t>();
+        return signed_value >= 0 &&
+               static_cast<std::uint64_t>(signed_value) <= limit;
+    };
+    const auto jitter = document.find("obfs_jitter_ms");
+    if (jitter != document.end() &&
+        !in_bound(*jitter, policy::kMaxObfsJitterMs)) {
+        if (error) {
+            *error = "obfs_jitter_ms must be an integer in 0.." +
+                     std::to_string(policy::kMaxObfsJitterMs);
+        }
         return false;
+    }
+    for (const char* key : {"threads", "io_threads"}) {
+        const auto it = document.find(key);
+        if (it != document.end() &&
+            !in_bound(*it, static_cast<std::uint64_t>(
+                               policy::kMaxIoThreads))) {
+            if (error) {
+                *error = std::string(key) + " must be an integer in 0.." +
+                         std::to_string(policy::kMaxIoThreads);
+            }
+            return false;
+        }
     }
     const auto pad = document.find("obfs_pad_multiple");
     if (pad != document.end() && (!is_u32(*pad) ||
@@ -176,13 +215,32 @@ bool validate_client_config_json_types(const nlohmann::json& document,
     return true;
 }
 
+// Must reject what it cannot represent rather than wrap. Casting a negative
+// straight to uint32_t turned "obfs_jitter_ms": -1 into ~49 days of jitter
+// instead of a config error. The server-side parser of the same name in
+// server/cli/config_load.cpp enforces the same rules.
 std::uint32_t json_non_negative_u32(const nlohmann::json& document,
                                     const char* key) {
     const auto& value = document.at(key);
+    std::uint64_t parsed = 0;
     if (value.is_number_unsigned()) {
-        return static_cast<std::uint32_t>(value.get<std::uint64_t>());
+        parsed = value.get<std::uint64_t>();
+    } else if (value.is_number_integer()) {
+        const auto signed_value = value.get<std::int64_t>();
+        if (signed_value < 0) {
+            throw std::runtime_error(std::string(key) +
+                                     " must be a non-negative integer");
+        }
+        parsed = static_cast<std::uint64_t>(signed_value);
+    } else {
+        throw std::runtime_error(std::string(key) +
+                                 " must be a non-negative integer");
     }
-    return static_cast<std::uint32_t>(value.get<std::int64_t>());
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(std::string(key) +
+                                 " must be in 0..4294967295");
+    }
+    return static_cast<std::uint32_t>(parsed);
 }
 
 }  // namespace
@@ -237,11 +295,6 @@ bool load_client_config_file(const ParsedArgs& args,
         if (!validate_client_config_json_types(json, &validation_error)) {
             throw std::runtime_error(validation_error);
         }
-        if (json.contains("tls_stealth_rotate") ||
-            json.contains("tls_stealth_rotation_interval")) {
-            throw std::runtime_error(
-                "TLS profile rotation keys were removed in YUME 0.2.0-dev6");
-        }
         if (json.contains("server") && cfg->server.empty()) {
             cfg->server = json["server"].get<std::string>();
         }
@@ -284,9 +337,6 @@ bool load_client_config_file(const ParsedArgs& args,
             cfg->inner_psk_file = resolve_cfg_path(
                 json["inner_psk_file"].get<std::string>());
         }
-        if (json.contains("obfs_secret")) {
-            cfg->obfs_secret = json["obfs_secret"].get<std::string>();
-        }
         if (json.contains("obfs_pad_multiple") && !args.obfs_pad_multiple_override) {
             cfg->obfs_pad_multiple = static_cast<std::uint16_t>(
                 json_non_negative_u32(json, "obfs_pad_multiple"));
@@ -297,9 +347,6 @@ bool load_client_config_file(const ParsedArgs& args,
         }
         if (json.contains("inner_crypto") && !args.inner_crypto_override) {
             cfg->inner_crypto = json["inner_crypto"].get<bool>();
-        }
-        if (json.contains("inner_heavy")) {
-            cfg->inner_heavy = json["inner_heavy"].get<bool>();
         }
         if (json.contains("rekey_window") && !args.rekey_window_override) {
             const int window = json["rekey_window"].get<int>();
@@ -598,7 +645,6 @@ void apply_cli_config_overrides(const ParsedArgs& args,
         cfg->inner_crypto = args.inner_crypto;
     }
     if (args.inner_crypto) {
-        cfg->inner_heavy = args.inner_heavy;
     }
     if (args.rekey_window_override) {
         cfg->rekey_window = ratchet::ClampRekeyWindow(
@@ -916,14 +962,6 @@ bool save_client_config_file(const ParsedArgs& args,
             }
             return false;
         }
-        if (json.contains("tls_stealth_rotate") ||
-            json.contains("tls_stealth_rotation_interval")) {
-            if (error) {
-                *error = "existing client config is not usable: TLS profile "
-                         "rotation keys were removed in YUME 0.2.0-dev6";
-            }
-            return false;
-        }
         std::string validation_error;
         if (!validate_client_config_json_types(json, &validation_error)) {
             if (error) {
@@ -940,9 +978,6 @@ bool save_client_config_file(const ParsedArgs& args,
     json.erase("allow_udp");
     json.erase("tls_pin_sha256");
     json.erase("codec");
-    json.erase("obfs_secret");
-    json.erase("inner_hop");
-    json.erase("hop_interval_ms");
     json.erase("tls_stealth_rotate");
     json.erase("tls_stealth_rotation_interval");
     json["server"] = cfg.server;
@@ -960,7 +995,6 @@ bool save_client_config_file(const ParsedArgs& args,
     if (cfg.obfs_pad_multiple > 0) json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
     if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
     json["inner_crypto"] = cfg.inner_crypto;
-    json["inner_heavy"] = cfg.inner_heavy;
     json["rekey_window"] = cfg.rekey_window;
     yume::config::WriteSecurityProfile(json, cfg.security_profile);
     json["udp"] = cfg.allow_udp;

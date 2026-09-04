@@ -25,6 +25,7 @@
 #include "core/version.hpp"
 #include "core/stealth/cover_profile.hpp"
 #include "core/stealth/http_profile.hpp"
+#include "config/client_document_keys.hpp"
 #include "config/ratchet_profile_json.hpp"
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
@@ -65,6 +66,9 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     if (!j.is_object()) {
         throw std::runtime_error("config root must be a JSON object");
     }
+    if (auto key_error = yume::config::client_document_key_error(j)) {
+        throw std::move(*key_error);
+    }
     client::ClientConfig c;
     read_opt(j, cfg_key::server, c.server);
     read_opt(j, cfg_key::port, c.port);
@@ -77,13 +81,11 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
         j, cfg_key::threads, cfg_key::io_threads, c.io_threads);
     read_opt(j, cfg_key::tunnels, c.tunnel_count);
     read_opt(j, cfg_key::obfuscation, c.obfuscation);
-    read_opt(j, cfg_key::obfs_secret, c.obfs_secret);
     read_opt(j, cfg_key::obfs_secret_file, c.obfs_secret_file);
     read_opt(j, cfg_key::inner_psk_file, c.inner_psk_file);
     read_opt(j, cfg_key::obfs_pad_multiple, c.obfs_pad_multiple);
     read_opt(j, cfg_key::obfs_jitter_ms, c.obfs_jitter_ms);
     read_opt(j, cfg_key::inner_crypto, c.inner_crypto);
-    read_opt(j, cfg_key::inner_heavy, c.inner_heavy);
     read_opt(j, cfg_key::rekey_window, c.rekey_window);
     c.security_profile = yume::config::ParseSecurityProfile(
         j, c.security_profile);
@@ -151,11 +153,6 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::app_codec_listen_port, c.app_codec_listen_port);
     read_opt(j, cfg_key::tls_stealth_enabled, c.tls_stealth_enabled);
     read_opt(j, cfg_key::tls_stealth_profile, c.tls_stealth_profile);
-    if (j.contains(cfg_key::tls_stealth_rotate) ||
-        j.contains(cfg_key::tls_stealth_rotation_interval)) {
-        throw std::runtime_error(
-            "TLS profile rotation keys were removed in YUME 0.2.0-dev6");
-    }
     read_opt(j, cfg_key::tls_fingerprint_log, c.tls_fingerprint_log);
     read_opt(j, cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path);
     read_opt(j, cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify);
@@ -219,8 +216,10 @@ std::optional<client::ClientConfig> load_client(
 std::optional<client::ClientConfig> parse_client_json(
     std::string_view text,
     std::filesystem::path const& base_dir,
-    std::string* err) {
+    std::string* err,
+    std::string* json_pointer) {
     if (err) err->clear();
+    if (json_pointer) json_pointer->clear();
     json j;
     try {
         j = json::parse(text.begin(), text.end());
@@ -230,6 +229,12 @@ std::optional<client::ClientConfig> parse_client_json(
     }
     try {
         return client_from_json(j, base_dir);
+    } catch (yume::config::DocumentError const& e) {
+        // Attributable to one member, so the caller gets its location as
+        // data instead of having to read it out of the message.
+        if (err) *err = e.what();
+        if (json_pointer) *json_pointer = e.json_pointer();
+        return std::nullopt;
     } catch (std::exception const& e) {
         if (err) *err = e.what();
         return std::nullopt;
@@ -263,7 +268,6 @@ bool serialize_client_json(
         {cfg_key::obfs_pad_multiple, c.obfs_pad_multiple},
         {cfg_key::obfs_jitter_ms, c.obfs_jitter_ms},
         {cfg_key::inner_crypto, c.inner_crypto},
-        {cfg_key::inner_heavy, c.inner_heavy},
         {cfg_key::rekey_window, c.rekey_window},
         {cfg_key::udp, c.allow_udp},
         {cfg_key::allow_local_ip, c.allow_local_ip},
@@ -367,6 +371,16 @@ ValidationReport validate(client::ClientConfig const& c) {
     }
     if (c.obfs_pad_multiple > 256) {
         r.errors.emplace_back("obfs_pad_multiple: must be 0..256");
+    }
+    if (c.obfs_jitter_ms > policy::kMaxObfsJitterMs) {
+        r.errors.emplace_back(
+            "obfs_jitter_ms: must be 0.." +
+            std::to_string(policy::kMaxObfsJitterMs));
+    }
+    if (c.io_threads < 0 || c.io_threads > policy::kMaxIoThreads) {
+        r.errors.emplace_back(
+            "threads: must be 0.." + std::to_string(policy::kMaxIoThreads) +
+            " (0 = automatic)");
     }
     if (c.rekey_window < yume::ratchet::kMinRekeyWindow ||
         c.rekey_window > yume::ratchet::kMaxRekeyWindow) {

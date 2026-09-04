@@ -3,7 +3,7 @@ libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
 
 Name: yume
-Description: YUME stable C ABI
+Description: YUME authenticated session-layer C ABI
 Version: @YUME_PACKAGE_VERSION@
 Libs: -L${libdir} -lyume
 Cflags: -I${includedir}

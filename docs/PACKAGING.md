@@ -1,347 +1,90 @@
-# YUME packaging
+# YUME transition packaging
 
-This page covers local installs, man pages, and Debian package builds.
+## Current install contract
 
-## Package split
+The default CMake graph builds and installs the runnable transport-v2 product:
 
-The Debian source packaging currently produces five YUME binary packages:
+- `yume` and `yumed`;
+- the transport-v2 `yume-setup` provisioner;
+- current executable manuals and transition documentation;
+- optional current GUI and supporting tools when their build options are
+  enabled.
 
-- `libyume1`: the stable C ABI runtime library.
-- `libyume-dev`: the public C header, CMake config, and pkg-config file.
-- `yume`: the command-line client, docs, and examples.
-- `yume-daemon`: the `yumed` server daemon, disabled `yumed.service`,
-  locked service user, `/etc/yume` config, and state/log/run directories.
-- `yume-gui`: the optional desktop GUI, built unless
-  `DEB_BUILD_PROFILES=nogui` is set.
-
-BaseFWX is packaged separately as `basefwx`, the current `libbasefwx` SONAME
-package, and `libbasefwx-dev`. The exact minimum comes from
-`config/dependencies.json` and `debian/control`; do not copy it into another
-package guide.
-BaseFWX Debian archive builds must use packaged dependencies, including
-`liboqs-dev`; vendored liboqs is only a local development override.
-Full YUME builds require the exact patched OpenSSL source selected by
-`scripts/ensure-openssl.sh`: composite
-identities use the ML-DSA-87 provider and the default in-process ClientHello
-emitter requires YUME's additive patch. CMake rejects a stock `libssl-dev`, even
-when its version is 3.5 or newer.
-The prepared Linux desktop archive is a separate contract: it links the
-checksum-verified liboqs and patched OpenSSL revisions statically,
-and rejects any `DT_RPATH`, `DT_RUNPATH`, dynamic `liboqs.so`, `libssl`, or
-`libcrypto` dependency before copying an executable into the artifact.
-`libyume` is the stable native C embed ABI. ABI v1 exposes build metadata,
-opaque client/server handles, and direct named service streams for projects
-that need to embed YUME as their secure transport. YUME's `yume_core`,
-`yume_client_lib`, `yume_server`, and `yume_facade` targets remain internal
-static libraries so CLI/GUI/session refactors do not accidentally become ABI
-breaks. See `docs/ABI.md` for the compatibility rules.
-
-## Install from a build tree
+The YTP/1 engine and codec foundations also compile in this graph, but their
+operator and ABI surfaces are explicit experiments. The schema-1 tools may be
+installed with `YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=ON`; they are named
+`yume-setup-ytp1` and `yume-doctor-ytp1` so a schema-1 kit cannot be mistaken
+for input to the runnable binaries. `YUME_BUILD_SHARED_ABI=ON` builds the
+unversioned ABI candidate and its tests only in the build tree. It adds no ABI
+header, library, CMake-package, or pkg-config install rule.
 
 ```bash
-source scripts/ensure-openssl.sh
-yume_openssl_ensure
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DYUME_STATIC_OPENSSL=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DYUME_BUILD_TESTING=ON \
+  -DYUME_BUILD_SHARED_ABI=ON \
+  -DYUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=ON
 cmake --build build -j"$(nproc)"
-sudo cmake --install build
-sudo mandb
+ctest --test-dir build --output-on-failure
+cmake --install build --prefix "$PWD/install"
 ```
 
-Installed files:
+The current experimental tests link the build-tree target directly. They
+compile the public header as strict C, exercise the C++ contract, validate the
+exported symbol set, parse both configuration dialects, and run an authenticated
+transport-v2 named stream against a provisioned server. Schema-1 start, packet
+channels, and destination-routed OPEN remain typed unsupported boundaries. The
+clean-prefix CMake and pkg-config fixtures are retained as future freeze gates;
+the build does not currently invoke them.
 
-- `yume` and `yumed` go to the configured binary directory, usually
-  `/usr/local/bin`.
-- `yume-gui` goes to the configured binary directory when
-  `YUME_BUILD_GUI=ON`.
-- `yume(1)` goes to `share/man/man1`.
-- `yumed(8)` goes to `share/man/man8`.
-- `yume-gui(1)` goes to `share/man/man1` when the GUI is built.
-- `libyume.so.1`, `include/yume/yume.h`, CMake config, and pkg-config
-  metadata are installed when `YUME_BUILD_SHARED_ABI=ON`.
-- Markdown docs go to `share/doc/yume`.
+## Replacement package target after freeze
 
-Use a different prefix with:
+- future `libyume1`: the frozen ABI runtime and no public C++ implementation
+  surface.
+- future `libyume-dev`: the C header, CMake package, pkg-config file, and
+  contract documentation.
+- future `yume`: the config-only client CLI plus setup, doctor, SOCKS5,
+  named-service, and packet adapters once implemented.
+- future `yume-daemon`: the config-only server runtime and direct TCP/UDP
+  service adapters once implemented.
+
+The current `yume`, `yume-daemon`, and optional `yume-gui` Debian packages
+continue to carry the transport-v2 product during the transition. No
+`libyume1` or `libyume-dev` binary package should be emitted from the unwired
+replacement scaffold. A future replacement GUI should consume the installed C
+ABI like any external application after that ABI becomes functional.
+
+Package descriptions and dependencies must match the exact candidate payload;
+metadata is never proof that a runtime or ABI data path works.
+
+## ABI rules
+
+The experimental build-tree artifact is unversioned `libyume.so`, not
+`libyume.so.1`. It exports only the symbols in `src/abi/yume.map` and must not
+be distributed as a frozen runtime package until its functional gates pass.
+Every ABI change still synchronizes the public header, map, candidate Debian
+symbols, strict C/C++ consumers, and [ABI.md](ABI.md). The dormant CMake,
+pkg-config, and clean-prefix fixtures must be synchronized when installation is
+implemented. C++ engine and provider headers remain private.
+
+YTP, config, ABI, provider, cryptographic backend, and evidence profile have
+independent versions. Package version changes must not silently change any
+wire or ABI axis.
+
+## Source and provenance
+
+The deterministic source dependency record is
+`docs/release/SBOM.spdx.json`. Run:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
-  -DYUME_STATIC_OPENSSL=ON
-cmake --build build -j"$(nproc)"
-sudo cmake --install build
-sudo mandb
+python3 scripts/check_dependency_sbom.py --check
+python3 scripts/yume_dependencies.py verify
 ```
 
-## Install only the man pages
-
-For a manual development install:
-
-```bash
-sudo install -Dm644 docs/man/yume.1 /usr/local/share/man/man1/yume.1
-sudo install -Dm644 docs/man/yumed.8 /usr/local/share/man/man8/yumed.8
-sudo mandb
-
-man yume
-man yumed
-```
-
-## Build a Debian package
-
-The CMake project has CPack rules for Debian packages.
-
-```bash
-source scripts/ensure-openssl.sh
-yume_openssl_ensure
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
-  -DYUME_STATIC_OPENSSL=ON
-cmake --build build -j"$(nproc)"
-(cd build && cpack -G DEB)
-```
-
-Install the result:
-
-```bash
-sudo apt install ./build/yume_*.deb
-man yume
-man yumed
-```
-
-The CPack `.deb` is a single upstream convenience package. It includes the
-binaries, man pages, and installed Markdown docs. That means users do not
-need to install the man pages separately when they install `yume_*.deb`.
-When `YUME_BUILD_SHARED_ABI=ON`, CPack switches to component packages for
-DEB/TGZ output and uses the older upstream convenience split:
-`libyume1`, `libyume-dev`, `yume`, and, when enabled, `yume-gui`.
-Use the `debian/` packaging for archive-style source package review and the
-`yume-daemon` systemd/sysusers/tmpfiles split.
-
-CPack uses `dpkg-shlibdeps` for the remaining dynamic dependencies. The patched
-OpenSSL stays embedded. If dependency scanning is wrong for a cross toolchain,
-disable it:
-
-```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
-  -DYUME_DEB_SHLIBDEPS=OFF \
-  -DYUME_STATIC_OPENSSL=ON \
-  -DYUME_BUILD_SHARED_ABI=ON
-cmake --build build -j"$(nproc)"
-(cd build && cpack -G DEB)
-```
-
-## Build a Debian package with ezbuild
-
-The easy path is:
-
-```bash
-./ezbuild.sh --deb
-```
-
-`ezbuild.sh` installs dependencies, prepares BaseFWX, configures the build,
-compiles YUME, and runs CPack. The `.deb` is printed at the end. For release
-evidence, use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh --deb`; pinned mode
-refuses local BaseFWX changes and checks out the configured dependency commit.
-
-Useful variants:
-
-```bash
-# Separate build directory
-YUME_BUILD_DIR=build-deb ./ezbuild.sh --deb
-
-# Extra CMake arguments
-YUME_CMAKE_ARGS="-DCMAKE_INSTALL_PREFIX=/usr -DYUME_NATIVE_OPT=OFF" ./ezbuild.sh --deb
-
-# Minimal/static package
-./ezbuild.sh --minimal --deb
-```
-
-## Cross-architecture packages
-
-`--arch` sets the target architecture metadata for CMake/CPack and lets
-the script choose matching vendored dependency prefixes when available.
-
-```bash
-YUME_BUILD_DIR=build-arm64 \
-YUME_TOOLCHAIN_FILE=/path/to/toolchain-arm64.cmake \
-./ezbuild.sh --arch armv8 --deb
-```
-
-Common mappings:
-
-| ezbuild arch | Debian arch |
-| --- | --- |
-| `x86_64`, `amd64` | `amd64` |
-| `x86`, `i386`, `i686` | `i386` |
-| `aarch64`, `arm64`, `armv8` | `arm64` |
-| `armv7`, `armhf` | `armhf` |
-| `mips`, `mipsel`, `mips64el` | same Debian name |
-
-For cross builds, `ezbuild.sh --deb` disables `dpkg-shlibdeps`
-automatically because host dependency scanning is usually wrong for
-foreign binaries. Prefer static/minimal packages for simple distribution,
-or provide a complete target sysroot and package dependencies manually. A
-target sysroot must contain the target-architecture patched OpenSSL selected by
-the build inputs;
-neither stock OpenSSL nor the native-host fallback is accepted for a cross
-build. No cross target is currently qualified. `YUME_TRANSPORT_CORE_ONLY`
-remains the intentionally crypto-free exception.
-
-## Debian main packaging
-
-Debian main does not accept upstream-built `.deb` files directly. This repo
-contains a `debian/` scaffold, but archive binary builds are currently blocked:
-Debian's system OpenSSL does not carry YUME's downstream ClientHello control,
-while embedding a private TLS library needs an explicit archive security-update
-policy. The normal CMake capability check therefore fails closed instead of
-producing a package whose default backend fails at runtime. The scaffold covers:
-
-- `debian/control`: source and binary package metadata.
-- `debian/rules`: debhelper/CMake build entrypoint.
-- `debian/changelog`: Debian package changelog.
-- `debian/copyright`: machine-readable license and `Files-Excluded`.
-- `debian/watch`: upstream release scanner.
-- `debian/tests/*`: autopkgtest smoke and `libyume-dev` ABI consumer tests.
-
-Run the lightweight source-package check before a full package build:
-
-```bash
-scripts/check_debian_source.sh
-```
-
-It creates and validates the upstream orig tarball, checks for accidentally
-included local/private artifacts, runs `dpkg-source -b`, and removes the
-generated source-package files when it exits.
-
-Once Debian has an approved patched-library policy, build the Debian-style
-binary package locally:
-
-```bash
-dpkg-buildpackage -us -uc -b
-```
-
-Build a source package for review:
-
-```bash
-scripts/make_debian_orig.sh
-dpkg-buildpackage -S -us -uc
-```
-
-The helper refuses to overwrite an existing archive, writes
-`../yume_<version>.orig.tar.xz`, and excludes bundled dependency trees,
-vendored binaries, build directories, logs, bytecode, local agent/cache/secret
-overlays, and the `debian/` directory. It validates its own completed listing
-before atomically publishing the output. The source package then contains the
-upstream tarball plus Debian packaging metadata as a separate Debian tarball.
-Development versions use Debian's sorting-safe spelling (`X.Y.Z-devN` becomes
-`E:X.Y.Z~devN` with the packaging-only epoch). The epoch preserves upgrade
-ordering across the upstream maturity reset and is omitted from archive
-filenames. `scripts/check_debian_source.sh` rejects a mismatch between
-`src/core/version.hpp` and the top Debian changelog entry.
-
-The Debian scaffold requests:
-
-```text
--DYUME_USE_BASEFWX=ON
--DYUME_USE_SYSTEM_BASEFWX=ON
--DYUME_USE_BUNDLED_NLOHMANN=OFF
--DYUME_BUILD_SHARED_ABI=ON
-```
-
-That means YUME must build against a separately packaged BaseFWX development
-library and a system OpenSSL that exposes YUME's capability. No current Debian
-archive library does, so this is not yet a usable binary-package path. The
-intended package chain is:
-
-```text
-basefwx          optional command-line frontend
-libbasefwx3      runtime shared library
-libbasefwx-dev   headers, CMake config, pkg-config metadata
-libyume1         stable C ABI runtime library
-libyume-dev      yume.h, CMake config, pkg-config metadata
-yume             client binary, docs, and examples
-yume-daemon      yumed server, disabled yumed.service, /etc/yume config
-yume-gui         optional desktop frontend, omitted by DEB_BUILD_PROFILES=nogui
-```
-
-The source-build default leaves `YUME_BUILD_SHARED_ABI=OFF` so a plain CMake
-build still produces only `yume` and `yumed`. Debian turns it on because
-library packages are part of the distribution contract. The C ABI should grow
-through opaque handles and named service streams only; do not install private
-C++ headers or expose raw `Tunnel` / server runtime classes.
-
-CPack follows the same rule: no ABI option means one convenience package;
-ABI enabled means component packages. This keeps quick source builds simple
-while making SDK/package builds explicit.
-
-Local CPack dependency scanning uses `dpkg-shlibdeps`. It can only infer
-Debian package dependencies for libraries that were themselves installed from
-Debian packages. If ML-KEM/liboqs is staged manually under `/usr/local`, the
-generated local `.deb` assumes the target machine has that same library path
-available. For archive-style packages, build through `debian/` against a
-packaged `liboqs-dev` instead. The scaffold's `libssl3t64 (>= 3.5.0)` dependency
-records only the provider floor; it does not satisfy the downstream-patch
-requirement. Do not publish Debian binary packages until the library policy and
-runtime metadata are resolved.
-
-For local testing, build BaseFWX first:
-
-```bash
-(cd basefwx && dpkg-buildpackage -us -uc -b)
-sudo apt install ./libbasefwx3_*.deb ./libbasefwx-dev_*.deb ./basefwx_*.deb
-dpkg-buildpackage -us -uc -b
-```
-
-If you cannot install packages on the build machine, extract the BaseFWX
-packages and point the YUME build at that prefix:
-
-```bash
-rm -rf /tmp/yume-basefwx-prefix
-mkdir -p /tmp/yume-basefwx-prefix
-dpkg-deb -x libbasefwx3_*.deb /tmp/yume-basefwx-prefix
-dpkg-deb -x libbasefwx-dev_*.deb /tmp/yume-basefwx-prefix
-basefwx_deb_version="$(dpkg-deb -f ./libbasefwx3_*.deb Version)"
-printf 'libbasefwx 3 libbasefwx3 (>= %s)\n' "${basefwx_deb_version}" > debian/shlibs.local
-BASEFWX_PREFIX=/tmp/yume-basefwx-prefix/usr \
-BASEFWX_LIBDIR=/tmp/yume-basefwx-prefix/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
-dpkg-buildpackage -d -us -uc -b
-rm -f debian/shlibs.local
-```
-
-For Debian main, BaseFWX itself must not hide a vendored or prebuilt liboqs.
-If liboqs is not already available as a Debian package, it needs to be
-packaged separately first. The local BaseFWX packaging can use
-`../vendor/linux-x86_64` for ML-KEM-1024 while testing, but that mode is not
-the final archive-ready form.
-
-Before asking for sponsorship:
-
-- Replace `Closes: #nnnnnn` in `debian/changelog` with the real ITP bug.
-- Replace the maintainer email if `debian@fixcraft.jp` is not real.
-- Run `lintian` on the `.changes` file.
-- Run the package in a clean build environment such as `sbuild` or
-  `pbuilder`.
-- Confirm the upstream tarball produced by `uscan` excludes `basefwx/`,
-  `vendor/`, `third_party/`, build outputs, logs, and bytecode.
-- Package liboqs separately or build against an existing Debian liboqs-dev
-  package before claiming BaseFWX is Debian-main ready.
-
-Typical new-package path:
-
-1. File ITP bugs against Debian WNPP for the new source packages.
-2. Build clean source packages for BaseFWX and YUME.
-3. Upload them to mentors.debian.net.
-4. File RFS bugs or contact `debian-mentors`.
-5. A Debian Developer reviews and sponsors the uploads.
-6. Because these are new packages, they go through the NEW queue before they
-   can enter Debian.
-
-## Validate ASCII diagrams
-
-The man pages and `docs/EXPLAINED.md` use fixed-width ASCII diagrams.
-Run this before release:
-
-```bash
-python3 scripts/check_ascii_diagrams.py
-groff -man -Tutf8 docs/man/yume.1 >/tmp/yume.man.txt
-groff -man -Tutf8 docs/man/yumed.8 >/tmp/yumed.man.txt
-```
-
-The checker rejects old small boxes, unexpected box widths, and boxed rows
-without padding.
+The manifest distinguishes a minimum compatible version from the exact bundled
+source version. It also records downstream patch-series licensing separately
+from the upstream source license; the generated SPDX conclusion combines both
+for a modified source. These checks validate declared source metadata and
+reproduce the checked-in inventory. They do not establish source ancestry and
+do not constitute a binary SBOM, vulnerability assessment, license opinion, or
+release signature. Candidate packages still require exact dependency, linkage,
+reproducibility, signature, and installed-file evidence.

@@ -17,6 +17,8 @@
 #include <nlohmann/json.hpp>
 
 #include "config/ratchet_profile_json.hpp"
+#include "config/server_document_keys.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "server/cli/config_json_types.hpp"
 #include "server/cli/misc.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
@@ -176,6 +178,14 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
                 yume::util::log_error(validation_error);
                 return false;
             }
+            // The key set is closed and shared with the facade parser, so a
+            // typo cannot read as "leave the default" on one loader while the
+            // other refuses it.
+            if (const auto key_error =
+                    yume::config::server_document_key_error(json)) {
+                yume::util::log_error(key_error->what());
+                return false;
+            }
             if (json.contains("transport_profile")) {
                 cfg.transport_profile =
                     json["transport_profile"].get<std::string>();
@@ -214,13 +224,23 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             // The admin store must be reachable from a config file, not only
             // from --admin-keys. Without this the dual-key requirement is
             // unreachable for every config-driven deployment: the key is
-            // written by tools/yume_setup.py and was silently ignored, so the
-            // second factor could never be verified. CLI wins, as above.
+            // written by tools/yume_setup_transport_v2.py and was silently
+            // ignored, so the second factor could never be verified. CLI
+            // wins, as above.
             if (json.contains("admin_keys") && cfg.admin_keys.empty()) {
                 cfg.admin_keys = resolve_cfg_path(json["admin_keys"].get<std::string>());
             }
             if (json.contains("threads") && !overrides.threads) {
-                cfg.threads = json["threads"].get<int>();
+                const int threads = json["threads"].get<int>();
+                if (threads < 0 || threads > yume::policy::kMaxIoThreads) {
+                    yume::util::log_error(
+                        "threads must be 0.." +
+                        std::to_string(yume::policy::kMaxIoThreads) +
+                        " (0 selects one worker per hardware thread); " +
+                        std::to_string(threads) + " was requested");
+                    return false;
+                }
+                cfg.threads = threads;
             }
             if (json.contains("obfuscation") && !overrides.obfuscation) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
@@ -233,9 +253,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             }
             if (json.contains("inner_required") && !overrides.inner_required) {
                 cfg.inner_required = json["inner_required"].get<bool>();
-            }
-            if (json.contains("inner_heavy")) {
-                cfg.inner_heavy = json["inner_heavy"].get<bool>();
             }
             if (json.contains("pq_auto_generate") && !overrides.pq_auto_generate) {
                 cfg.pq_auto_generate = json["pq_auto_generate"].get<bool>();
@@ -259,11 +276,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             }
             if (json.contains("allow_monero_rpc_codec")) {
                 cfg.allow_monero_rpc_codec = json["allow_monero_rpc_codec"].get<bool>();
-                if (cfg.allow_monero_rpc_codec) {
-                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::builtin::kMoneroRpcCodecId);
-                }
-            } else if (json.contains("allow_monero_rpc")) {
-                cfg.allow_monero_rpc_codec = json["allow_monero_rpc"].get<bool>();
                 if (cfg.allow_monero_rpc_codec) {
                     yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::builtin::kMoneroRpcCodecId);
                 }
@@ -293,7 +305,7 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
                 }
                 return true;
             };
-            if (!read_codec_allow("codec_allow") || !read_codec_allow("allow_codecs")) {
+            if (!read_codec_allow("allow_codecs")) {
                 return false;
             }
             if (json.contains("allow_services")) {
@@ -323,20 +335,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
                     cfg.preauth_services.push_back(item.get<std::string>());
                 }
             }
-            if (json.contains("monero_rpc_backend")) {
-                std::string parse_error;
-                auto ep = yume::app_codec::parse_endpoint_spec(json["monero_rpc_backend"].get<std::string>(),
-                                                               yume::app_codec::builtin::kMoneroRpcDefaultHost,
-                                                               yume::app_codec::builtin::kMoneroRpcDefaultPort,
-                                                               &parse_error);
-                if (ep.has_value()) {
-                    cfg.monero_rpc_backend_host = ep->host;
-                    cfg.monero_rpc_backend_port = ep->port;
-                } else {
-                    yume::util::log_error("monero_rpc_backend: " + parse_error);
-                    return false;
-                }
-            }
             if (json.contains("monero_rpc_backend_host")) {
                 cfg.monero_rpc_backend_host = json["monero_rpc_backend_host"].get<std::string>();
             }
@@ -357,9 +355,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
                 cfg.real_backend = json["real_backend"].get<std::string>();
                 cfg.real_http = true;
             }
-            if (json.contains("real_secret") && cfg.real_secret.empty()) {
-                cfg.real_secret = json["real_secret"].get<std::string>();
-            }
             if (json.contains("real_secret_file") && cfg.real_secret_file.empty()) {
                 cfg.real_secret_file = resolve_cfg_path(json["real_secret_file"].get<std::string>());
             }
@@ -371,14 +366,25 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
                 cfg.inner_psk_file = resolve_cfg_path(
                     json["inner_psk_file"].get<std::string>());
             }
-            if (json.contains("obfs_secret")) {
-                cfg.obfs_secret = json["obfs_secret"].get<std::string>();
-            }
             if (json.contains("obfs_pad_multiple") && cfg.obfs_pad_multiple == 0) {
                 cfg.obfs_pad_multiple = json_obfs_pad_multiple(json);
             }
             if (json.contains("obfs_jitter_ms") && cfg.obfs_jitter_ms == 0) {
-                cfg.obfs_jitter_ms = json_non_negative_u32(json, "obfs_jitter_ms");
+                // Session::do_write delays every batch by 0..this value, so an
+                // unbounded setting is a self-inflicted stall rather than a
+                // stealth choice. Same ceiling as the client parser.
+                const auto jitter =
+                    json_non_negative_u32(json, "obfs_jitter_ms");
+                if (jitter > yume::policy::kMaxObfsJitterMs) {
+                    yume::util::log_error(
+                        "obfs_jitter_ms must be 0.." +
+                        std::to_string(yume::policy::kMaxObfsJitterMs) +
+                        " milliseconds; " + std::to_string(jitter) +
+                        " would delay every outbound batch by up to " +
+                        std::to_string(jitter / 1000U) + " seconds");
+                    return false;
+                }
+                cfg.obfs_jitter_ms = jitter;
             }
             if (json.contains("tls_handshake_timeout_ms") && !overrides.tls_handshake_timeout) {
                 cfg.tls_handshake_timeout_ms = json_non_negative_u32(json, "tls_handshake_timeout_ms");
@@ -577,15 +583,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             if (json.contains("accept_yume_clients") && !overrides.accept_yume_clients) {
                 cfg.accept_yume_clients = json["accept_yume_clients"].get<bool>();
             }
-            if (json.contains("deny_default") && !overrides.client_deny_action) {
-                auto action = yume::server::host::parse_deny_action(json["deny_default"].get<std::string>());
-                if (action.has_value()) {
-                    cfg.client_deny_action = *action;
-                } else {
-                    yume::util::log_error("deny_default must be close, reset, or drop");
-                    return false;
-                }
-            }
             if (json.contains("client_deny_action") && !overrides.client_deny_action) {
                 auto action = yume::server::host::parse_deny_action(json["client_deny_action"].get<std::string>());
                 if (action.has_value()) {
@@ -597,9 +594,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             }
             if (json.contains("exposure_check_hostname") && !overrides.exposure_check_hostname) {
                 cfg.exposure_check_hostname = json["exposure_check_hostname"].get<std::string>();
-            }
-            if (json.contains("exposure_check") && !overrides.exposure_check_hostname) {
-                cfg.exposure_check_hostname = json["exposure_check"].get<std::string>();
             }
             if (json.contains("routes")) {
                 std::string route_error;

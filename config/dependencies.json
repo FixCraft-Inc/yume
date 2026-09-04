@@ -3,19 +3,24 @@
   "dependencies": {
     "basefwx": {
       "repository": "https://github.com/F1xGOD/basefwx.git",
-      "revision": "e6ffbb79daa02bf62c31c3ae6513d5c603ec8dcd",
-      "minimum_version": "3.8.0"
+      "revision": "a42b5c2512f1e52be1f0e7c05d8ffac1ba2e62ea",
+      "minimum_version": "3.8.0",
+      "license": "LGPL-3.0-or-later"
     },
     "openssl": {
       "repository": "https://github.com/openssl/openssl.git",
       "revision": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
       "minimum_version": "3.5.0",
-      "patch_series": "patches/openssl/series"
+      "source_version": "3.5.7",
+      "patch_series": "patches/openssl/series",
+      "patch_license": "AGPL-3.0-or-later",
+      "license": "Apache-2.0"
     },
     "liboqs": {
       "repository": "https://github.com/open-quantum-safe/liboqs.git",
       "revision": "5a1a854b0dc9f2141bdc771c555ee60c37950183",
-      "minimum_version": "0.16.0"
+      "minimum_version": "0.16.0",
+      "license": "MIT"
     }
   }
 }

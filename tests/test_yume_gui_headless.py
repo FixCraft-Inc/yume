@@ -110,10 +110,10 @@ def case_wrong_types(gui: Path, home: Path) -> None:
 def case_invalid_server_config(gui: Path, home: Path) -> None:
     """Parses, but omits material the 2.0 runtime cannot start without.
 
-    obfs_secret_file, inner_psk_file and real_backend are all mandatory in
-    prepare_v2_security_config().  A config missing them must be reported as
-    invalid rather than started and then failed, and the report must name the
-    fields so the user can act on it.
+    obfs_secret_file, inner_psk_file, real_backend and a cover source for the
+    HTTP/2 decoy are all mandatory in prepare_v2_security_config().  A config
+    missing them must be reported as invalid rather than started and then
+    failed, and the report must name the fields so the user can act on it.
     """
     cfg = home / "server-incomplete.json"
     cfg.write_text(
@@ -133,7 +133,12 @@ def case_invalid_server_config(gui: Path, home: Path) -> None:
             f"the runtime cannot start\n--- stdout ---\n{result.stdout}"
         )
     combined = result.stdout + result.stderr
-    for field in ("obfs_secret_file", "inner_psk_file", "real_backend"):
+    for field in (
+        "obfs_secret_file",
+        "inner_psk_file",
+        "real_backend",
+        "real_index_path",
+    ):
         if field not in combined:
             raise Failure(
                 f"incomplete server config: report never mentions {field}\n"

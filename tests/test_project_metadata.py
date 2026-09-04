@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -56,7 +57,7 @@ class MetadataTests(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/check_source_archive_listing.py",
                         root / "scripts/check_source_archive_listing.py")
         (root / "src/core/version.hpp").write_text(
-            'constexpr const char kVersion[] = "0.2.0-dev6";\n',
+            'inline constexpr char kVersion[] = "0.3.0-dev1";\n',
             encoding="utf-8")
         (root / "README.md").write_text("public\n", encoding="utf-8")
         (root / "CONTRIBUTING.md").write_text("public untracked\n",
@@ -97,7 +98,7 @@ class MetadataTests(unittest.TestCase):
             return handle.getnames()
 
     def assert_source_archive_boundary(self, names: list[str]) -> None:
-        prefix = "yume-0.2.0~dev6"
+        prefix = "yume-0.3.0~dev1"
         self.assertIn(f"{prefix}/README.md", names)
         self.assertIn(f"{prefix}/docs/AGENTS.md", names)
         self.assertIn(f"{prefix}/docs/_site/manual.txt", names)
@@ -121,16 +122,33 @@ class MetadataTests(unittest.TestCase):
         dependencies = load_dependencies()
         self.assertRegex(dependencies["basefwx"]["revision"], r"^[0-9a-f]{40}$")
         self.assertEqual(dependencies["openssl"]["minimum_version"], "3.5.0")
+        self.assertEqual(dependencies["openssl"]["source_version"], "3.5.7")
         self.assertEqual(
             dependencies["openssl"]["revision"],
             "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
         )
         self.assertEqual(dependencies["openssl"]["patch_series"],
                          "patches/openssl/series")
+        self.assertEqual(dependencies["openssl"]["patch_license"],
+                         "AGPL-3.0-or-later")
         series = ROOT / dependencies["openssl"]["patch_series"]
         self.assertTrue(series.is_file())
         self.assertIn("0001-yume-chrome-clienthello.patch",
                       series.read_text(encoding="utf-8"))
+        sbom = json.loads(
+            (ROOT / "docs/release/SBOM.spdx.json").read_text(encoding="utf-8")
+        )
+        openssl_package = next(
+            package for package in sbom["packages"]
+            if package["name"] == "openssl"
+        )
+        self.assertEqual(openssl_package["versionInfo"], "3.5.7")
+        self.assertEqual(openssl_package["licenseDeclared"], "Apache-2.0")
+        self.assertEqual(
+            openssl_package["licenseConcluded"],
+            "Apache-2.0 AND AGPL-3.0-or-later",
+        )
+        self.assertIn("patches/openssl/series", openssl_package["comment"])
         self.assertEqual(dependencies["liboqs"]["minimum_version"], "0.16.0")
         self.assertEqual(
             dependencies["liboqs"]["revision"],
@@ -144,12 +162,133 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(profile["tls_wire_profile"].is_file())
         self.assertGreaterEqual(len(profile["tls_wire_candidates"]), 1)
 
+    def test_reader_facing_docs_state_the_product_version(self) -> None:
+        """The website and vcpkg had drift checks; the human-facing docs did
+        not, so all three front-door documents drifted into calling the
+        transport-v2 wire version the product version and labelling the
+        binaries with it. The product version is derived here rather than
+        hardcoded so a version bump forces these documents forward."""
+        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        product = re.search(
+            r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+        wire = re.search(
+            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+
+        for relative in ("README.md", "docs/README.md",
+                         "docs/IMPLEMENTATION_STATUS.md"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            # assertTrue, not assertIn: a failed assertIn would dump the
+            # whole document into the report.
+            self.assertTrue(
+                product in text,
+                f"{relative} must state the product version {product}")
+            # The wire version may appear, but only where the prose says it is
+            # the transport-v2 wire. Otherwise it reads as the product version.
+            for paragraph in text.split("\n\n"):
+                if wire not in paragraph:
+                    continue
+                self.assertRegex(
+                    paragraph.replace("\n", " "),
+                    r"transport-v2 wire|wire `?" + re.escape(wire),
+                    f"{relative} mentions {wire} without saying it is the "
+                    "transport-v2 wire version")
+
+    def test_manual_pages_state_the_product_version(self) -> None:
+        """The roff header names the product a page belongs to. It carried
+        the transport-v2 wire version until the front-door documents were
+        corrected, so pin it to the product version as well."""
+        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        product = re.search(
+            r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+        wire = re.search(
+            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
+        ).group(1)
+        for relative in ("docs/man/yume.1", "docs/man/yumed.8",
+                         "docs/man/yume-gui.1"):
+            first_line = (ROOT / relative).read_text(
+                encoding="utf-8").splitlines()[0]
+            self.assertTrue(
+                first_line.startswith(".TH "),
+                f"{relative} must open with a .TH header")
+            self.assertIn(
+                f'"YUME {product}"', first_line,
+                f"{relative} header must name product version {product}")
+            self.assertNotIn(
+                wire, first_line,
+                f"{relative} header must not carry wire version {wire}")
+
     def test_product_and_transport_versions_are_coherent(self) -> None:
         version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
-        self.assertIn('kVersion[] = "0.2.0-dev6"', version_header)
-        self.assertIn("kTransportVersion = kVersion", version_header)
+        self.assertIn('kVersion[] = "0.3.0-dev1"', version_header)
+        self.assertIn('kRuntimeTransport = "transport-v2"', version_header)
+        self.assertIn('kTransportVersion = "0.2.0-dev6"', version_header)
+        self.assertIn("kTransportProfile = kEvidenceProfile", version_header)
+        self.assertIn('kYtpVersion = "YTP/1"', version_header)
+        self.assertIn("kYtpVersionNumber = 1", version_header)
+        self.assertIn('kYtpMaturity = "experimental-unwired"', version_header)
+        self.assertIn("kConfigSchema = 1", version_header)
+        self.assertIn("kAbiVersion = 1", version_header)
+        self.assertIn('kTransportSuite = "ytp1-tls13-h2"', version_header)
         vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
-        self.assertEqual(vcpkg["version-string"], "0.2.0-dev6")
+        self.assertEqual(vcpkg["version-string"], "0.3.0-dev1")
+
+        setup = runpy.run_path(str(ROOT / "tools/yume_setup_ytp1.py"))
+        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor_ytp1.py"))
+        self.assertEqual(setup["PRODUCT_VERSION"], "0.3.0-dev1")
+        for tool in (setup, doctor):
+            self.assertEqual(tool["PROFILE"], "chrome151-node24-v1")
+            self.assertEqual(tool["SUITE"]["id"], "ytp1-tls13-h2")
+            self.assertEqual(tool["SUITE"]["secure_channel"], "tls13-native")
+            self.assertEqual(tool["SUITE"]["front_door"], "h2-web")
+            self.assertEqual(tool["SUITE"]["carrier"], "h2-duplex")
+            self.assertEqual(tool["SUITE"]["session"], "ytp1-hybrid")
+            self.assertEqual(
+                tool["IDENTITY_DOMAIN"],
+                b"yume/ytp/1/composite-identity/v1",
+            )
+
+    def test_runnable_transport_and_experimental_surfaces_are_separated(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertRegex(
+            cmake,
+            r'option\(YUME_BUILD_TRANSPORT_V2[\s\S]*?\n\s*ON\)',
+        )
+        self.assertRegex(
+            cmake,
+            r'option\(YUME_BUILD_SHARED_ABI[\s\S]*?\n\s*OFF\)',
+        )
+        self.assertIn("tools/yume_setup_transport_v2.py", cmake)
+        self.assertIn("tools/yume_setup_ytp1.py", cmake)
+        self.assertIn("YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS", cmake)
+        self.assertNotIn("YUME_BUILD_LEGACY_02", cmake)
+
+        source_cmake = (ROOT / "src/CMakeLists.txt").read_text(
+            encoding="utf-8")
+        self.assertIn("if(YUME_BUILD_TRANSPORT_V2)", source_cmake)
+        # The build-tree-only candidate deliberately has no numbered SONAME,
+        # but it still needs the normal unversioned ELF SONAME so consumers do
+        # not record a build-directory-relative DT_NEEDED entry.
+        self.assertNotIn("NO_SONAME ON", source_cmake)
+        self.assertNotIn("SOVERSION 1", source_cmake)
+        self.assertNotIn("install(TARGETS yume_abi", source_cmake)
+
+        control = (ROOT / "debian/control").read_text(encoding="utf-8")
+        rules = (ROOT / "debian/rules").read_text(encoding="utf-8")
+        self.assertNotIn("Package: libyume1", control)
+        self.assertNotIn("Package: libyume-dev", control)
+        self.assertIn("Package: yume\n", control)
+        self.assertIn("Package: yume-daemon\n", control)
+        self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", rules)
+        self.assertIn("-DYUME_BUILD_SHARED_ABI=OFF", rules)
+        self.assertIn("-DYUME_STATIC_OPENSSL=OFF", rules)
+
+        debian_readme = (ROOT / "debian/README.source").read_text(
+            encoding="utf-8")
+        self.assertIn("deliberately fails against stock Debian", debian_readme)
+        self.assertIn("patches/openssl/series", debian_readme)
 
     def test_debian_daemon_bootstrap_contract_is_complete(self) -> None:
         config = json.loads(
@@ -175,16 +314,16 @@ class MetadataTests(unittest.TestCase):
             self.assertIn(required, readme)
 
     def test_installed_documentation_keeps_authoritative_links(self) -> None:
-        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         for document in (
-                "CONTRIBUTING.md", "docs/CONTROL_API.md",
-                "docs/IMPLEMENTATION_STATUS.md"):
-            self.assertIn(document, cmake)
-        self.assertIn("install(DIRECTORY docs/", cmake)
-        self.assertIn("install(DIRECTORY docs/protocol/", cmake)
+                "CONTRIBUTING.md", "docs/ABI.md", "docs/WHY_YUME.md",
+                "docs/protocol/YTP_1.md", "docs/IMPLEMENTATION_STATUS.md"):
+            self.assertTrue((ROOT / document).is_file(), document)
 
         documentation_map = (ROOT / "docs/README.md").read_text(
             encoding="utf-8")
+        self.assertIn("ABI.md", documentation_map)
+        self.assertIn("WHY_YUME.md", documentation_map)
+        self.assertIn("protocol/YTP_1.md", documentation_map)
         self.assertIn("IMPLEMENTATION_STATUS.md", documentation_map)
         self.assertIn("docs/agents/", documentation_map)
 
@@ -195,6 +334,7 @@ class MetadataTests(unittest.TestCase):
             workflow = (ROOT / ".github/workflows" / workflow_name).read_text(
                 encoding="utf-8")
             self.assertIn("bash scripts/sync_website_docs.sh", workflow)
+            self.assertNotIn("sync_website_docs.sh --check", workflow)
 
         pages_workflow = (ROOT / ".github/workflows/pages.yml").read_text(
             encoding="utf-8")
@@ -253,7 +393,8 @@ class MetadataTests(unittest.TestCase):
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertRegex(
             cmake,
-            r'option\(YUME_STATIC_OPENSSL[\s\S]*?runtime libssl dependency"\s+ON\)',
+            r'option\(YUME_STATIC_OPENSSL[\s\S]*?runtime libssl dependency"'
+            r'\s+\$\{YUME_BUILD_TRANSPORT_V2\}\)',
         )
         self.assertIn("SSL_OP_YUME_CHROME_CLIENT_HELLO", cmake)
         self.assertIn("SSL_CTRL_YUME_CHROME_CLIENT_HELLO", cmake)
@@ -274,6 +415,37 @@ class MetadataTests(unittest.TestCase):
             path = self.write_json(pathlib.Path(temporary), "dependencies.json", document)
             with self.assertRaises(DependencyError):
                 load_dependencies(path)
+
+    def test_dependency_patch_metadata_is_complete_and_typed(self) -> None:
+        original = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+        invalid_documents = []
+
+        missing_license = copy.deepcopy(original)
+        del missing_license["dependencies"]["openssl"]["patch_license"]
+        invalid_documents.append(missing_license)
+
+        orphan_license = copy.deepcopy(original)
+        del orphan_license["dependencies"]["openssl"]["patch_series"]
+        invalid_documents.append(orphan_license)
+
+        invalid_source_version = copy.deepcopy(original)
+        invalid_source_version["dependencies"]["openssl"]["source_version"] = "main"
+        invalid_documents.append(invalid_source_version)
+
+        invalid_patch_license = copy.deepcopy(original)
+        invalid_patch_license["dependencies"]["openssl"]["patch_license"] = (
+            "Apache-2.0 AND AGPL-3.0-or-later"
+        )
+        invalid_documents.append(invalid_patch_license)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            for index, document in enumerate(invalid_documents):
+                path = self.write_json(
+                    directory, f"dependencies-{index}.json", document
+                )
+                with self.subTest(index=index), self.assertRaises(DependencyError):
+                    load_dependencies(path)
 
     def test_profile_fixture_cannot_escape_repository(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
@@ -301,12 +473,12 @@ class MetadataTests(unittest.TestCase):
             with self.assertRaises(ProfileError):
                 generate(path)
 
-    def test_active_profile_must_match_authenticated_profile(self) -> None:
+    def test_active_profile_must_match_evidence_profile(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as temporary:
             path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
             with self.assertRaises(ProfileError):
-                generate(path, authenticated_profile_id="different-profile-v1")
+                generate(path, evidence_profile_id="different-profile-v1")
 
     def test_helper_build_ids_must_be_unique(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
@@ -356,7 +528,7 @@ class MetadataTests(unittest.TestCase):
                 generate(path)
 
     def test_source_archive_rejects_private_and_malformed_paths(self) -> None:
-        prefix = "yume-0.2.0~dev6"
+        prefix = "yume-0.3.0~dev1"
         rejected = rejected_paths([
             f"{prefix}/README.md",
             f"{prefix}/docs/AGENTS.md",
@@ -394,7 +566,7 @@ class MetadataTests(unittest.TestCase):
             root = pathlib.Path(temporary) / "repo"
             self.make_source_archive_fixture(root)
             names = self.create_source_archive(root)
-            self.assertIn("yume-0.2.0~dev6/CONTRIBUTING.md", names)
+            self.assertIn("yume-0.3.0~dev1/CONTRIBUTING.md", names)
             self.assert_source_archive_boundary(names)
 
     def test_git_orig_archive_applies_explicit_public_path_filter(self) -> None:
@@ -419,7 +591,7 @@ class MetadataTests(unittest.TestCase):
             names = self.create_source_archive(root)
             # Intentional non-ignored untracked public files remain part of
             # the live candidate, while even tracked local overlays do not.
-            self.assertIn("yume-0.2.0~dev6/CONTRIBUTING.md", names)
+            self.assertIn("yume-0.3.0~dev1/CONTRIBUTING.md", names)
             self.assert_source_archive_boundary(names)
 
     def test_orig_archive_creation_invokes_validator_fail_closed(self) -> None:
@@ -436,7 +608,7 @@ class MetadataTests(unittest.TestCase):
                 stderr=subprocess.PIPE, env=environment)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(
-                (root.parent / "yume_0.2.0~dev6.orig.tar.xz").exists())
+                (root.parent / "yume_0.3.0~dev1.orig.tar.xz").exists())
 
     def test_orig_archive_tmpdir_inside_repo_is_not_enumerated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -453,7 +625,7 @@ raise SystemExit(97 if list(root.glob("tmp.*")) else 0)
                 encoding="utf-8")
             names = self.create_source_archive(
                 root, {"TMPDIR": str(root)})
-            prefix = "yume-0.2.0~dev6"
+            prefix = "yume-0.3.0~dev1"
             self.assertFalse(any(
                 pathlib.PurePosixPath(name).parts[0] == prefix and
                 len(pathlib.PurePosixPath(name).parts) == 2 and
@@ -497,7 +669,7 @@ exec "${REAL_LN}" "$@"
                     check=False, text=True, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, env=environment)
                 self.assertNotEqual(result.returncode, 0)
-                archive = parent / "yume_0.2.0~dev6.orig.tar.xz"
+                archive = parent / "yume_0.3.0~dev1.orig.tar.xz"
                 if mode == "directory":
                     self.assertTrue(archive.is_dir())
                 else:
@@ -508,6 +680,7 @@ exec "${REAL_LN}" "$@"
         options = (ROOT / "debian/source/options").read_text(encoding="utf-8")
         self.assertIn(r"\.private", options)
         self.assertIn(r"\.secrets", options)
+        self.assertIn(r"website/docs/.*\.md", options)
         self.assertIn(r"(^|/)\.DS_Store$", options)
         self.assertIn(r"^(AGENTS\.md|AI_NOTES\.md|opencode\.json)$", options)
 

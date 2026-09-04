@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Provision a real stack and drive named streams through the public C ABI."""
+"""Provision a real stack and drive named streams through the public C ABI v1."""
 
 from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-import ctypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -66,7 +65,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", type=Path, required=True)
     parser.add_argument("--yumed", type=Path, required=True)
-    parser.add_argument("--library", type=Path, required=True)
     return parser.parse_args()
 
 
@@ -97,117 +95,6 @@ def pick_port() -> int:
 def write_secret(path: Path) -> None:
     path.write_text(secrets.token_bytes(32).hex())
     path.chmod(0o600)
-
-
-@contextmanager
-def stalled_tls_peer() -> Iterator[tuple[int, threading.Event]]:
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    listener.settimeout(10)
-    accepted = threading.Event()
-    release = threading.Event()
-
-    def serve() -> None:
-        connection: socket.socket | None = None
-        try:
-            connection, _ = listener.accept()
-            accepted.set()
-            release.wait(timeout=15)
-        finally:
-            if connection is not None:
-                connection.close()
-
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    try:
-        yield int(listener.getsockname()[1]), accepted
-    finally:
-        release.set()
-        listener.close()
-        thread.join(timeout=5)
-
-
-def check_pre_ready_stop(
-    library_path: Path,
-    config_path: Path,
-    peer_accepted: threading.Event,
-) -> None:
-    library = ctypes.CDLL(str(library_path))
-    library.yume_client_create.argtypes = []
-    library.yume_client_create.restype = ctypes.c_void_p
-    library.yume_client_start_file.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_char_p,
-        ctypes.c_uint32,
-    ]
-    library.yume_client_start_file.restype = ctypes.c_int
-    library.yume_client_stop.argtypes = [ctypes.c_void_p]
-    library.yume_client_stop.restype = ctypes.c_int
-    library.yume_client_destroy.argtypes = [ctypes.c_void_p]
-    library.yume_client_destroy.restype = None
-
-    handle = library.yume_client_create()
-    if not handle:
-        raise RuntimeError("failed to create ABI client for cancellation test")
-
-    start_result: list[int] = []
-    stop_result: list[int] = []
-    starter: threading.Thread | None = None
-    stopper: threading.Thread | None = None
-    try:
-        starter = threading.Thread(
-            target=lambda: start_result.append(
-                int(
-                    library.yume_client_start_file(
-                        handle, os.fsencode(config_path), 15_000
-                    )
-                )
-            )
-        )
-        starter.start()
-        if not peer_accepted.wait(timeout=10):
-            raise RuntimeError("ABI client did not reach the stalled TLS peer")
-        starter.join(timeout=0.01)
-        if not starter.is_alive():
-            raise RuntimeError(
-                f"ABI start did not remain blocked at stalled TLS peer: {start_result}"
-            )
-
-        stop_started = threading.Event()
-
-        def stop_client() -> None:
-            stop_started.set()
-            stop_result.append(int(library.yume_client_stop(handle)))
-
-        stopper = threading.Thread(target=stop_client)
-        stopper.start()
-        if not stop_started.wait(timeout=1):
-            raise RuntimeError("ABI stop worker did not start")
-        stopper.join(timeout=3)
-        if stopper.is_alive():
-            raise RuntimeError("ABI stop blocked behind pre-ready start")
-        if stop_result != [0]:
-            raise RuntimeError(f"ABI stop failed during pre-ready start: {stop_result}")
-
-        starter.join(timeout=5)
-        if starter.is_alive():
-            raise RuntimeError("ABI start did not observe concurrent stop")
-        if start_result == [0]:
-            raise RuntimeError("cancelled ABI start unexpectedly reported success")
-    finally:
-        if starter is not None and starter.is_alive():
-            library.yume_client_stop(handle)
-            starter.join(timeout=20)
-        if stopper is not None and stopper.is_alive():
-            stopper.join(timeout=20)
-        if starter is not None and starter.is_alive():
-            raise RuntimeError("cannot safely destroy ABI handle with start in flight")
-        if stopper is not None and stopper.is_alive():
-            raise RuntimeError("cannot safely destroy ABI handle with stop in flight")
-        library.yume_client_stop(handle)
-        library.yume_client_destroy(handle)
 
 
 def main() -> int:
@@ -302,12 +189,20 @@ def main() -> int:
         inner_psk = root / "inner-psk.hex"
         write_secret(obfs_secret)
         write_secret(inner_psk)
+        # yumed refuses to start without a cover source: with none, the
+        # HTTP/2 decoy would serve a page identical on every deployment.
+        cover_index = root / "cover-index.html"
+        cover_index.write_text(
+            "<!doctype html><title>example</title><p>It works.</p>\n",
+            encoding="utf-8",
+        )
 
         port = pick_port()
         server_config = root / "server.json"
         server_config.write_text(
             json.dumps(
                 {
+                    "role": "server",
                     "listen_address": "127.0.0.1",
                     "listen_port": port,
                     "tls_cert": str(cert),
@@ -320,6 +215,7 @@ def main() -> int:
                     "inner_psk_file": str(inner_psk),
                     "inner_crypto": True,
                     "real_backend": f"loopback://127.0.0.1:{cover_port}",
+                    "real_index_path": str(cover_index),
                     "allow_services": [SERVICE],
                     "ipc_enable": False,
                     "boring": True,
@@ -333,6 +229,7 @@ def main() -> int:
                 {
                     # Carrier admission intentionally requires the HTTP/2
                     # authority and TLS SNI to name the same host.
+                    "role": "client",
                     "server": "localhost",
                     "port": port,
                     "identity": str(client_key),
@@ -354,32 +251,6 @@ def main() -> int:
                 indent=2,
             )
         )
-
-        with stalled_tls_peer() as (stalled_port, accepted):
-            stalled_config = root / "client-stalled-tls.json"
-            stalled_values = json.loads(client_config.read_text())
-            stalled_values["port"] = stalled_port
-            stalled_config.write_text(json.dumps(stalled_values, indent=2))
-
-            cancellation_error: list[BaseException] = []
-
-            def run_cancellation_check() -> None:
-                try:
-                    check_pre_ready_stop(
-                        args.library, stalled_config, accepted
-                    )
-                except BaseException as error:  # propagated on the main thread
-                    cancellation_error.append(error)
-
-            cancellation = threading.Thread(target=run_cancellation_check)
-            cancellation.start()
-            if not accepted.wait(timeout=10):
-                raise RuntimeError("ABI client did not connect to stalled TLS peer")
-            cancellation.join(timeout=10)
-            if cancellation.is_alive():
-                raise RuntimeError("ABI cancellation regression did not finish")
-            if cancellation_error:
-                raise cancellation_error[0]
 
         output = run_checked(
             [str(args.probe), str(server_config), str(client_config)],

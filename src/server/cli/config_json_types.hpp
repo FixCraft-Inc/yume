@@ -67,10 +67,9 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
     if (!require_all(
             {"transport_profile", "listen_address", "dns_server", "tls_cert",
              "tls_key", "auth_keys", "auth_keys_meta", "admin_keys",
-             "pq_private_key", "monero_rpc_backend",
-             "monero_rpc_backend_host", "real_index_path", "real_root",
-             "real_backend", "real_secret", "real_secret_file",
-             "obfs_secret_file", "inner_psk_file", "obfs_secret",
+             "pq_private_key", "monero_rpc_backend_host", "real_index_path", "real_root",
+             "real_backend", "real_secret_file",
+             "obfs_secret_file", "inner_psk_file",
              "client_filter_mode", "egress_filter_mode", "filter_geolite",
              "packet_egress", "packet_tun_name", "packet_cidr",
              "upstream_response_dir", "anonym_proof_mode", "anonym_api",
@@ -78,17 +77,16 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
              "anonym_sub_key", "anonym_sub_cert", "server_name", "server_id",
              "outbound_proxy", "ipc_path", "federation_identity",
              "federation_operator_ca", "operator_keys", "operator_keys_meta",
-             "host_mode", "deny_default", "client_deny_action",
-             "exposure_check_hostname", "exposure_check"},
+             "host_mode", "client_deny_action",
+             "exposure_check_hostname"},
             [](const nlohmann::json& value) { return value.is_string(); },
             "a string")) {
         return false;
     }
     if (!require_all(
             {"obfuscation", "inner_crypto", "inner_dual", "inner_required",
-             "inner_heavy", "pq_auto_generate", "allow_embedded_master",
              "allow_exec", "allow_local_ip", "control_full",
-             "allow_monero_rpc_codec", "allow_monero_rpc", "real_http",
+             "allow_monero_rpc_codec", "real_http",
              "robots_deny", "benchmark_enable", "boring", "anonym",
              "relay_enable", "directory_enable", "ipc_enable",
              "federation_enable", "cluster_bootstrap",
@@ -113,7 +111,7 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
         return false;
     }
     if (!require_all(
-            {"codec_allow", "allow_codecs", "allow_services",
+            {"allow_codecs", "allow_services",
              "preauth_services", "filter_lists", "federation_peers", "routes",
              "listeners"},
             [](const nlohmann::json& value) { return value.is_array(); },
@@ -121,7 +119,7 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
         return false;
     }
 
-    for (const char* key : {"codec_allow", "allow_codecs", "allow_services",
+    for (const char* key : {"allow_codecs", "allow_services",
                             "preauth_services", "filter_lists"}) {
         const auto it = document.find(key);
         if (it == document.end()) continue;

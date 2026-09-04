@@ -426,7 +426,43 @@ bool test_cli_load_is_type_strict_and_transactional(
                    "security-float.json",
                    R"({"security_mode":"ultimate","security_custom":{"epoch_bytes":262144.5,"epoch_frames":1,"epoch_active_ms":500}})",
                    no_overrides),
-               "custom security limits must require exact integer JSON");
+               "custom security limits must require exact integer JSON") &&
+           // The server key set is closed and shared with the facade parser,
+           // so a typo is an error rather than "leave the default", and
+           // inline secret material never reaches ServerConfig.
+           expect(
+               rejects_without_mutation(
+                   "unknown-server-key.json",
+                   R"({"lisen_address":"0.0.0.0"})", no_overrides),
+               "CLI must reject an unknown server config key") &&
+           expect(
+               rejects_without_mutation(
+                   "inline-obfs-secret.json", R"({"obfs_secret":"00"})",
+                   no_overrides),
+               "CLI must reject an inline admission secret") &&
+           expect(
+               rejects_without_mutation(
+                   "inline-real-secret.json", R"({"real_secret":"hunter2"})",
+                   no_overrides),
+               "CLI must reject an inline cover-backend secret") &&
+           // Representable is not the same as usable. Session::do_write
+           // delays every batch by 0..obfs_jitter_ms, and threads becomes a
+           // worker count, so both carry the same ceilings as the client.
+           expect(
+               rejects_without_mutation(
+                   "unbounded-jitter.json",
+                   R"({"obfs_jitter_ms":4294967295})", no_overrides),
+               "CLI must reject an unbounded server obfs_jitter_ms") &&
+           expect(
+               rejects_without_mutation(
+                   "unbounded-threads.json", R"({"threads":100000})",
+                   no_overrides),
+               "CLI must reject a thread count beyond the policy ceiling") &&
+           expect(
+               rejects_without_mutation(
+                   "negative-threads.json", R"({"threads":-1})",
+                   no_overrides),
+               "CLI must reject a negative thread count");
 }
 
 bool test_facade_round_trip(const std::filesystem::path& base) {
@@ -500,7 +536,6 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
     saved.admin_keys = "saved-admin-keys";
     saved.allow_embedded_master = true;
     saved.preauth_services = {"bootstrap-v1"};
-    saved.obfs_secret = "inline-secret-must-not-survive";
     const auto saved_path = base / "facade-yumed.json";
     if (!expect(yume::facade::config_io::save_server(saved, saved_path, &error),
                 "facade config should save") ||

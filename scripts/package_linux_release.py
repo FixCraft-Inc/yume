@@ -20,7 +20,7 @@ import tempfile
 from generate_transport_profiles import ProfileError, active_profile_metadata
 
 
-PROFILE = "linux-desktop-0.2.0"
+PROFILE = "linux-desktop-0.3.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
 BUNDLE_DIRECTORY = "yume-amd64-linux"
@@ -120,7 +120,7 @@ def normalized_tar(output: pathlib.Path, root: pathlib.Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build the YUME 0.2.0 Linux x86-64 release bundle")
+    parser = argparse.ArgumentParser(description="Build the YUME 0.3.0 Linux x86-64 release bundle")
     parser.add_argument("--yume", required=True, type=pathlib.Path)
     parser.add_argument("--yumed", required=True, type=pathlib.Path)
     parser.add_argument("--helper", required=True, type=pathlib.Path)

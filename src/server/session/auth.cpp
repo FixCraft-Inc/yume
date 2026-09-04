@@ -7,7 +7,6 @@
  *   - send_auth_challenge   — server-issued AUTH challenge
  *   - handle_auth           — client AUTH-response verification (key
  *                             match, optional inner ML-KEM handshake)
- *   - decrypt/encrypt_inner_payload — legacy inner AEAD
  */
 
 #include "server/session/session.hpp"
@@ -135,61 +134,6 @@ void Session::send_auth_challenge() {
 #else
     close_with_reason("YUME 2.0 AUTH requires BaseFWX");
 #endif
-}
-
-bool Session::decrypt_inner_payload(uint8_t frame_type,
-                                    uint8_t stream_id,
-                                    const crypto::Bytes& input,
-                                    crypto::Bytes* output) {
-    if (!output) {
-        return false;
-    }
-    if (!inner_key_.has_value()) {
-        *output = input;
-        return true;
-    }
-    auto try_decrypt = [&](const crypto::Bytes& key) -> bool {
-        try {
-            *output = inner::decrypt_payload(key, frame_type, stream_id, input);
-            return true;
-        } catch (...) {
-            return false;
-        }
-    };
-
-    if (try_decrypt(*inner_key_)) {
-        return true;
-    }
-    if (!inner_key_alt_.has_value()) {
-        return false;
-    }
-    if (try_decrypt(*inner_key_alt_)) {
-        // Assigning over the optional would free the superseded key without
-        // clearing it, and copying rather than moving would leave a second
-        // live copy in the alternate slot until reset().
-        if (inner_key_) security::secure_erase(*inner_key_);
-        inner_key_ = std::move(inner_key_alt_);
-        inner_key_alt_.reset();
-        if (!inner_alt_mode_.empty()) {
-            inner_mode_ = inner_alt_mode_;
-        }
-        inner_alt_mode_.clear();
-        if (!inner_alt_kdf_.empty()) {
-            inner_kdf_ = inner_alt_kdf_;
-        }
-        inner_alt_kdf_.clear();
-        return true;
-    }
-    return false;
-}
-
-crypto::Bytes Session::encrypt_inner_payload(uint8_t frame_type,
-                                             uint8_t stream_id,
-                                             const crypto::Bytes& input) {
-    if (!inner_key_.has_value()) {
-        return input;
-    }
-    return inner::encrypt_payload(*inner_key_, frame_type, stream_id, input);
 }
 
 bool Session::handle_auth(const protocol::Frame& frame) {

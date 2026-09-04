@@ -1,3 +1,14 @@
+yume (1:0.3.0~dev1-1) UNRELEASED; urgency=medium
+
+  * Begin the modular YTP/1 and schema-1 replacement alongside the working
+    transport-v2 client, daemon, provisioning path, and optional GUI.
+  * Keep the unwired role-neutral ABI and schema-1 operator tools out of binary
+    packages until their live endpoint, stream, and packet gates pass.
+  * Separate the 0.3 product version from transport-v2's authenticated wire
+    identity so a development-version change does not silently break peers.
+
+ -- FixCraft Maintainers <debian@fixcraft.jp>  Mon, 31 Aug 2026 23:30:00 -0700
+
 yume (1:0.2.0~dev6-1) UNRELEASED; urgency=medium
 
   * Rebaseline the experimental product and transport version as 0.2.0-dev6.

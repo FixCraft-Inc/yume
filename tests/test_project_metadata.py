@@ -563,6 +563,32 @@ class MetadataTests(unittest.TestCase):
             ),
         )
 
+        # The same rule one level down. Vendoring a header that itself pulls a
+        # header the tree does not carry moves the fall-through rather than
+        # closing it: the first attempt at this vendored the multi-header
+        # json_fwd.hpp, which includes nlohmann/detail/abi_macros.hpp, and CI
+        # went from a template-mismatch error to a missing-file error.
+        # Commented includes are how the amalgamation records its provenance
+        # and do not count.
+        live = re.compile(r"^\s*#\s*include\s*<(nlohmann/[^>]+)>", re.MULTILINE)
+        unsatisfied: dict[str, list[str]] = {}
+        for vendored in sorted(bundled.rglob("*.hpp")):
+            text = vendored.read_text(encoding="utf-8", errors="ignore")
+            for header in live.findall(text):
+                name = header.split("/", 1)[1]
+                if not (bundled / name).is_file():
+                    unsatisfied.setdefault(header, []).append(vendored.name)
+        self.assertEqual(
+            unsatisfied,
+            {},
+            "vendored nlohmann headers include headers the vendored tree does "
+            "not provide, so they resolve against the host: "
+            + "; ".join(
+                f"{header} (from {', '.join(sorted(users))})"
+                for header, users in sorted(unsatisfied.items())
+            ),
+        )
+
     def test_source_archive_rejects_private_and_malformed_paths(self) -> None:
         prefix = "yume-0.3.0~dev1"
         rejected = rejected_paths([

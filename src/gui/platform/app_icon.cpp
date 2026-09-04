@@ -226,21 +226,31 @@ void install_to_user_xdg() {
 
     // Best-effort cache refresh across the three big DE families. Each
     // is forked + detached so a missing tool doesn't slow startup.
-    //   * update-desktop-database  — GTK/XDG launcher index
-    //   * gtk-update-icon-cache     — GTK icon theme cache
-    //   * kbuildsycoca6/5           — KDE Plasma's app database
-    // All exit codes are swallowed; the user can re-run them manually if
-    // their compositor still hasn't picked up the new icon.
-    (void)std::system("update-desktop-database "
-                      "\"$HOME/.local/share/applications\" "
-                      ">/dev/null 2>&1 &");
-    (void)std::system("gtk-update-icon-cache "
-                      "-q -t -f \"$HOME/.local/share/icons/hicolor\" "
-                      ">/dev/null 2>&1 &");
-    (void)std::system("command -v kbuildsycoca6 >/dev/null 2>&1 && "
-                      "kbuildsycoca6 --noincremental >/dev/null 2>&1 &");
-    (void)std::system("command -v kbuildsycoca5 >/dev/null 2>&1 && "
-                      "kbuildsycoca5 --noincremental >/dev/null 2>&1 &");
+    //   * update-desktop-database  - GTK/XDG launcher index
+    //   * gtk-update-icon-cache    - GTK icon theme cache
+    //   * kbuildsycoca6/5          - KDE Plasma's app database
+    // All exit codes are swallowed. The command is backgrounded, so the
+    // status describes the shell rather than the tool, a missing tool is the
+    // expected case, and the user can re-run any of them by hand if their
+    // compositor still has not picked up the new icon.
+    //
+    // Assign the status rather than casting the call to void: glibc declares
+    // system() warn_unused_result, and GCC does not accept a (void) cast as
+    // acknowledgement the way Clang does.
+    const auto refresh_detached = [](const char* command) noexcept {
+        const int ignored_status = std::system(command);
+        (void)ignored_status;
+    };
+    refresh_detached("update-desktop-database "
+                     "\"$HOME/.local/share/applications\" "
+                     ">/dev/null 2>&1 &");
+    refresh_detached("gtk-update-icon-cache "
+                     "-q -t -f \"$HOME/.local/share/icons/hicolor\" "
+                     ">/dev/null 2>&1 &");
+    refresh_detached("command -v kbuildsycoca6 >/dev/null 2>&1 && "
+                     "kbuildsycoca6 --noincremental >/dev/null 2>&1 &");
+    refresh_detached("command -v kbuildsycoca5 >/dev/null 2>&1 && "
+                     "kbuildsycoca5 --noincremental >/dev/null 2>&1 &");
 #else
     (void)kIsLinuxLike;  // suppress unused warning on non-Linux
 #endif

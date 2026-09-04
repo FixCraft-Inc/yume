@@ -238,7 +238,15 @@ jobs:
   # so a data race could reach main with nothing objecting.
   thread-sanitize:
     needs: [preflight]
-    runs-on: ubuntu-22.04
+    # The only lane not on ubuntu-22.04. Every other job matches the runner
+    # release.yml builds on, so CI compiles with the release toolchain. This
+    # one ships nothing, and ubuntu-22.04's libtsan 11 reports a false "double
+    # lock of a mutex" against std::mutex objects living in heap blocks that a
+    # start/stop test recycles. The same suite with the same TSAN_OPTIONS is
+    # clean under a current TSan, and every acquisition of the mutex it names
+    # is a scoped guard, so the alternative was to switch the deadlock
+    # detector off and lose real lock-order coverage with it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Checkout

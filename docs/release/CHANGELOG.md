@@ -32,7 +32,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   with `YUME_SANITIZE=thread` and runs the full suite, and a `fuzz` job builds
   the Clang harnesses and runs each briefly against the seeded corpus. Neither
   had ever run automatically, so a data race or a parser crash could reach
-  `main` with nothing objecting.
+  `main` with nothing objecting. `thread-sanitize` is the one lane not on
+  `ubuntu-22.04`: it ships nothing, and that image's libtsan 11 reports a
+  false double lock against mutexes in recycled heap storage.
 
 ### Changed
 
@@ -176,6 +178,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   every `<nlohmann/...>` include in the sources and in the vendored headers
   themselves. The dependency and its version are unchanged, so the notices and
   SBOM are too.
+- **The GUI icon refresh acknowledges `system()` properly.**
+  `gui/platform/app_icon.cpp` deliberately ignores the status of four
+  best-effort desktop-cache refreshes and said so with a `(void)` cast, which
+  GCC does not accept as acknowledgement of `warn_unused_result` the way
+  Clang does. It went unseen locally because Ubuntu enables `_FORTIFY_SOURCE`
+  by default at `-O2` and Debian does not, and fortify is what marks
+  `system()` as `__wur`. The status is now assigned and discarded through one
+  helper. The behaviour is unchanged: these are backgrounded commands whose
+  status describes the shell, and a missing tool is the expected case.
 - **`-Wstringop-overread` is demoted to a warning on GCC 11.** GCC 11
   propagates an exact string length proved at the call site into libstdc++'s
   `std::string` move assignment, then reports an overread against the

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import pathlib
@@ -526,6 +527,43 @@ class MetadataTests(unittest.TestCase):
             path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
             with self.assertRaises(ProfileError):
                 generate(path)
+
+    def test_vendored_json_matches_its_recorded_upstream_hashes(self) -> None:
+        """Vendored nlohmann files are verbatim upstream release assets.
+
+        third_party/nlohmann_json/PROVENANCE.md records the release URL and
+        sha256 of each file. Pinning them here means a local edit to a
+        25,000-line amalgamation cannot pass quietly: updating is a
+        re-download plus a hash update, and anything else fails. A deviation
+        that ever becomes unavoidable belongs in a named patch applied on top
+        of the pristine asset, the way patches/openssl/series does.
+        """
+        vendor = ROOT / "third_party" / "nlohmann_json"
+        provenance = vendor / "PROVENANCE.md"
+        self.assertTrue(provenance.is_file(), "vendored nlohmann provenance is missing")
+        recorded = dict(
+            re.findall(
+                r"^(\S+\.hpp)\s+sha256\s+([0-9a-f]{64})$",
+                provenance.read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+        )
+        self.assertEqual(
+            sorted(recorded),
+            ["json.hpp", "json_fwd.hpp"],
+            "PROVENANCE.md must record a sha256 for each vendored header",
+        )
+        for name, digest in sorted(recorded.items()):
+            path = vendor / "nlohmann" / name
+            self.assertTrue(path.is_file(), f"vendored {name} is missing")
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertEqual(
+                actual,
+                digest,
+                f"{path.relative_to(ROOT)} does not match the upstream asset "
+                f"recorded in PROVENANCE.md. Re-download it rather than "
+                f"editing it, then update the hash.",
+            )
 
     def test_vendored_json_tree_supplies_every_included_header(self) -> None:
         """The bundled nlohmann tree must satisfy every <nlohmann/...> include.

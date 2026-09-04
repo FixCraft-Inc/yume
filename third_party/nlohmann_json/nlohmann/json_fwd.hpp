@@ -6,30 +6,27 @@
 // SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
 // SPDX-License-Identifier: MIT
 
-// Amalgamated forward-declaration header for the vendored single-header
-// nlohmann/json 3.11.3.
-//
-// Upstream ships two distributions. The multi-header json_fwd.hpp pulls
-// nlohmann/detail/abi_macros.hpp, which the single-header amalgamation beside
-// this file does not provide, so that form cannot be vendored here. This is
-// the amalgamated equivalent: the ABI and namespace macros followed by the
-// declarations, both copied verbatim out of json.hpp so the two cannot
-// disagree about the inline namespace they open.
-//
-// It must stay free of any live #include <nlohmann/...>. This directory is
-// first on the include path, so a header it fails to provide is silently
-// answered by whatever the build host has installed, which mixes two versions
-// of the library into one translation unit. tests/test_project_metadata.py
-// enforces both halves of that.
-
-#ifndef INCLUDE_NLOHMANN_JSON_FWD_AMALGAMATED_HPP_
-#define INCLUDE_NLOHMANN_JSON_FWD_AMALGAMATED_HPP_
+#ifndef INCLUDE_NLOHMANN_JSON_FWD_HPP_
+#define INCLUDE_NLOHMANN_JSON_FWD_HPP_
 
 #include <cstdint> // int64_t, uint64_t
 #include <map> // map
 #include <memory> // allocator
 #include <string> // string
 #include <vector> // vector
+
+// #include <nlohmann/detail/abi_macros.hpp>
+//     __ _____ _____ _____
+//  __|  |   __|     |   | |  JSON for Modern C++
+// |  |  |__   |  |  | | | |  version 3.11.3
+// |_____|_____|_____|_|___|  https://github.com/nlohmann/json
+//
+// SPDX-FileCopyrightText: 2013-2023 Niels Lohmann <https://nlohmann.me>
+// SPDX-License-Identifier: MIT
+
+
+
+// This file contains all macro definitions affecting or depending on the ABI
 
 #ifndef JSON_SKIP_LIBRARY_VERSION_CHECK
     #if defined(NLOHMANN_JSON_VERSION_MAJOR) && defined(NLOHMANN_JSON_VERSION_MINOR) && defined(NLOHMANN_JSON_VERSION_PATCH)
@@ -120,73 +117,60 @@
     }  // namespace nlohmann
 #endif
 
-#ifndef INCLUDE_NLOHMANN_JSON_FWD_HPP_
-    #define INCLUDE_NLOHMANN_JSON_FWD_HPP_
 
-    #include <cstdint> // int64_t, uint64_t
-    #include <map> // map
-    #include <memory> // allocator
-    #include <string> // string
-    #include <vector> // vector
+/*!
+@brief namespace for Niels Lohmann
+@see https://github.com/nlohmann
+@since version 1.0.0
+*/
+NLOHMANN_JSON_NAMESPACE_BEGIN
 
-    // #include <nlohmann/detail/abi_macros.hpp>
+/*!
+@brief default JSONSerializer template argument
 
+This serializer ignores the template arguments and uses ADL
+([argument-dependent lookup](https://en.cppreference.com/w/cpp/language/adl))
+for serialization.
+*/
+template<typename T = void, typename SFINAE = void>
+struct adl_serializer;
 
-    /*!
-    @brief namespace for Niels Lohmann
-    @see https://github.com/nlohmann
-    @since version 1.0.0
-    */
-    NLOHMANN_JSON_NAMESPACE_BEGIN
+/// a class to store JSON values
+/// @sa https://json.nlohmann.me/api/basic_json/
+template<template<typename U, typename V, typename... Args> class ObjectType =
+         std::map,
+         template<typename U, typename... Args> class ArrayType = std::vector,
+         class StringType = std::string, class BooleanType = bool,
+         class NumberIntegerType = std::int64_t,
+         class NumberUnsignedType = std::uint64_t,
+         class NumberFloatType = double,
+         template<typename U> class AllocatorType = std::allocator,
+         template<typename T, typename SFINAE = void> class JSONSerializer =
+         adl_serializer,
+         class BinaryType = std::vector<std::uint8_t>, // cppcheck-suppress syntaxError
+         class CustomBaseClass = void>
+class basic_json;
 
-    /*!
-    @brief default JSONSerializer template argument
+/// @brief JSON Pointer defines a string syntax for identifying a specific value within a JSON document
+/// @sa https://json.nlohmann.me/api/json_pointer/
+template<typename RefStringType>
+class json_pointer;
 
-    This serializer ignores the template arguments and uses ADL
-    ([argument-dependent lookup](https://en.cppreference.com/w/cpp/language/adl))
-    for serialization.
-    */
-    template<typename T = void, typename SFINAE = void>
-    struct adl_serializer;
+/*!
+@brief default specialization
+@sa https://json.nlohmann.me/api/json/
+*/
+using json = basic_json<>;
 
-    /// a class to store JSON values
-    /// @sa https://json.nlohmann.me/api/basic_json/
-    template<template<typename U, typename V, typename... Args> class ObjectType =
-    std::map,
-    template<typename U, typename... Args> class ArrayType = std::vector,
-    class StringType = std::string, class BooleanType = bool,
-    class NumberIntegerType = std::int64_t,
-    class NumberUnsignedType = std::uint64_t,
-    class NumberFloatType = double,
-    template<typename U> class AllocatorType = std::allocator,
-    template<typename T, typename SFINAE = void> class JSONSerializer =
-    adl_serializer,
-    class BinaryType = std::vector<std::uint8_t>, // cppcheck-suppress syntaxError
-    class CustomBaseClass = void>
-    class basic_json;
+/// @brief a minimal map-like container that preserves insertion order
+/// @sa https://json.nlohmann.me/api/ordered_map/
+template<class Key, class T, class IgnoredLess, class Allocator>
+struct ordered_map;
 
-    /// @brief JSON Pointer defines a string syntax for identifying a specific value within a JSON document
-    /// @sa https://json.nlohmann.me/api/json_pointer/
-    template<typename RefStringType>
-    class json_pointer;
+/// @brief specialization that maintains the insertion order of object keys
+/// @sa https://json.nlohmann.me/api/ordered_json/
+using ordered_json = basic_json<nlohmann::ordered_map>;
 
-    /*!
-    @brief default specialization
-    @sa https://json.nlohmann.me/api/json/
-    */
-    using json = basic_json<>;
-
-    /// @brief a minimal map-like container that preserves insertion order
-    /// @sa https://json.nlohmann.me/api/ordered_map/
-    template<class Key, class T, class IgnoredLess, class Allocator>
-    struct ordered_map;
-
-    /// @brief specialization that maintains the insertion order of object keys
-    /// @sa https://json.nlohmann.me/api/ordered_json/
-    using ordered_json = basic_json<nlohmann::ordered_map>;
-
-    NLOHMANN_JSON_NAMESPACE_END
+NLOHMANN_JSON_NAMESPACE_END
 
 #endif  // INCLUDE_NLOHMANN_JSON_FWD_HPP_
-
-#endif  // INCLUDE_NLOHMANN_JSON_FWD_AMALGAMATED_HPP_

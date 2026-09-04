@@ -176,6 +176,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   every `<nlohmann/...>` include in the sources and in the vendored headers
   themselves. The dependency and its version are unchanged, so the notices and
   SBOM are too.
+- **`-Wstringop-overread` is demoted to a warning on GCC 11.** GCC 11
+  propagates an exact string length proved at the call site into libstdc++'s
+  `std::string` move assignment, then reports an overread against the
+  short-string branch a string of that length can never take. It fired on
+  `client/transfer/share_file.cpp`, where a 64-character secret is validated
+  and then moved. The diagnostic's location is inside the system header, so an
+  in-source pragma does not suppress it, and GCC 12 and later do not emit it.
+  Demoted rather than disabled, and only for GCC 11, so the release toolchain
+  still prints it if it ever fires on something real. This had been invisible
+  because every CI build lane failed earlier, in the vendored JSON header.
 - **The CI OpenSSL guard counts lanes instead of assuming three.**
   `release_preflight.py` required exactly three occurrences of the
   dependency-setup block and of `-DYUME_STATIC_OPENSSL=ON`. The invariant is

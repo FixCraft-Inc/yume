@@ -165,10 +165,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   A host whose distribution nlohmann matched the bundled 3.11.3 built fine,
   which is why every developer and build-host lane was green while every CI
   lane failed inside the vendored header: Ubuntu 22.04 ships 3.10.5, which
-  declares `basic_json` and `json_pointer` differently. The matching 3.11.3
-  `json_fwd.hpp` is now vendored alongside it, and a metadata test fails if
-  any `<nlohmann/...>` include is not satisfied by the vendored tree. The
-  dependency and its version are unchanged, so the notices and SBOM are too.
+  declares `basic_json` and `json_pointer` differently. An amalgamated
+  `json_fwd.hpp`, extracted verbatim from the vendored `json.hpp` so the two
+  cannot disagree about the inline namespace they open, now sits beside it.
+  Upstream's multi-header `json_fwd.hpp` cannot be used here because it pulls
+  `nlohmann/detail/abi_macros.hpp`, which the single-header amalgamation does
+  not ship. A metadata test enforces both halves: every `<nlohmann/...>`
+  include in the sources is satisfied by the vendored tree, and no vendored
+  header includes one that is not. The dependency and its version are
+  unchanged, so the notices and SBOM are too.
 - **The CI OpenSSL guard counts lanes instead of assuming three.**
   `release_preflight.py` required exactly three occurrences of the
   dependency-setup block and of `-DYUME_STATIC_OPENSSL=ON`. The invariant is

@@ -159,7 +159,7 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
         }
         crypto::EVP_PKEY_ptr pubkey = load_fixcraft_pubkey(input.anonym_pubkey);
         if (!pubkey) {
-            fail(&result, "FAILED TO LOAD LEGACY EXTERNAL PROOF KEY");
+            fail(&result, "FAILED TO LOAD EXTERNAL PROOF KEY");
             return result;
         }
         if (!verify_signature(pubkey.get(),

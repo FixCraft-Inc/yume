@@ -89,6 +89,12 @@ is no document location to resolve relative credential paths against. Set
 selects the process working directory, which is rarely what an embedded host
 wants.
 
+Transport-v2 client and server configuration reject explicit JSON `null` for
+known fields. Omit an optional field to select its documented default.
+Embedded transport-v2 servers reject `anonym=true` at start with
+`YUME_STATUS_INVALID_ARGUMENT`. Operator-proof generation, refresh, and
+associated logging policy are owned by the standalone `yumed` lifecycle.
+
 A build configured with `YUME_BUILD_TRANSPORT_V2=OFF` links no runtime at all.
 The library still exports the identical surface, and the transport-v2 dialect
 is refused with a typed unsupported status.
@@ -154,7 +160,7 @@ The complete working version of both sides, including peer-identity checks and
 teardown on every failure path, is
 [`src/abi/stream_integration_probe.c`](../src/abi/stream_integration_probe.c).
 It runs in CI as `yume_abi_stream_integration` against a real provisioned
-server, so it cannot drift from the shipped surface.
+server and checks the implemented interface.
 
 ## Intended installed interface
 
@@ -267,10 +273,10 @@ credential, cover, service/adapter, and resource-limit objects. Omitting
 
 Unknown keys, wrong types, inline private material, unsupported providers, and
 unsafe combinations are errors, and no partial config handle is published. One
-qualification applies to the transport-v2 dialect only: it still accepts four
-alias spellings (`io_threads`, `allow_udp`, `tls_pin_sha256`, `codec`) because
-a released consumer emits one of them, while every writer emits the canonical
-key.
+exception applies to transport-v2 client config: Android's config writer emits
+`tls_pin_sha256`, which is accepted alongside `tls_pin`. Native writers emit
+`tls_pin`, and it takes precedence if both are present. Other client keys use
+one spelling: `threads`, `udp`, and `app_codec`.
 
 Both dialects report the first failure with an RFC 6901 JSON pointer when it
 is attributable to one member, and an empty pointer when it is not, such as

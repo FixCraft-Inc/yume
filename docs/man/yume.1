@@ -53,7 +53,14 @@ carrier remains HTTP/2 for the full connection and carries masked WebSocket
 binary messages after a Chrome-shaped page/asset prime and RFC 8441 extended
 CONNECT. Its mandatory inner channel combines ephemeral ML-KEM-1024, X25519,
 and a random file PSK with salted HKDF, then uses one-use AES-256-GCM message
-keys and independent directional epochs.
+keys and independent directional epochs. AUTH v2 verifies the composite
+Ed25519 and ML-DSA-87 client identity and binds authentication and the key
+schedule to the live TLS exporter. The client authenticates the server through
+TLS trust, optional leaf pinning, and optional operator proof.
+.PP
+The product version is 0.3.0-dev1; these commands speak transport-v2 wire
+0.2.0-dev6. The experimental YTP/1 replacement and its schema-1 tools are
+separate. A schema-1 configuration does not drive this client.
 .PP
 The client can expose a local SOCKS5 proxy, run one command through the
 tunnel, create local or reverse forwards, attach to relay clients, or
@@ -953,7 +960,8 @@ Allow or deny file relay features.
 Allow or deny byte relay features.
 .TP
 .BI "--relay-key-file " path
-Relay key file.
+Protected JSON relay-key record produced by the relay key generator.
+Bare base64 files are rejected.
 .SH RUNTIME OPTIONS
 .TP
 .BI "--tunnels " n

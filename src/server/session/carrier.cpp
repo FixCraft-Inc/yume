@@ -23,7 +23,9 @@
 #include <boost/beast/http/status.hpp>
 
 #include "server/session/session.hpp"
+#include "core/runtime/bounded_file.hpp"
 #include "core/security/secure_erase.hpp"
+#include "server/runtime/cover_response.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 #include "server/host/host_routes.hpp"
@@ -39,11 +41,6 @@ namespace yume::server {
 using namespace detail;
 
 namespace {
-// Cap on a single static-file cover response. A real asset page is far under
-// this; the bound keeps one connection from mapping an operator's large file
-// into memory. Misses/oversize fall through to the profile 404.
-constexpr std::size_t kMaxRealFileBytes = 8U * 1024U * 1024U;
-
 // Keep-alive bounds for the masquerade responder. A real nginx keeps the
 // connection open across a page's assets; these cap how long/how many so a
 // decoy connection cannot be held open indefinitely.
@@ -455,16 +452,18 @@ std::optional<std::string> Session::load_real_index() {
     // source that disappears at runtime returns nullopt so the caller answers
     // with the profile's ordinary 404 instead.
     if (!cfg_.real_root.empty()) {
-        auto file = static_site::read_under_root(cfg_.real_root, "index.html", kMaxRealFileBytes);
+        auto file = static_site::read_under_root(
+            cfg_.real_root, "index.html", cover_response::kMaxResponseBytes);
         if (file.has_value()) {
             return std::move(file->bytes);
         }
         return std::nullopt;
     }
     if (!cfg_.real_index_path.empty()) {
-        std::ifstream in(cfg_.real_index_path, std::ios::binary);
-        if (in) {
-            std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::string contents;
+        if (runtime::read_text_file_bounded(
+                cfg_.real_index_path, cover_response::kMaxResponseBytes,
+                &contents)) {
             return contents;
         }
     }
@@ -597,7 +596,8 @@ void Session::send_real_http_response(const std::string& path, const std::string
             auto resolved = static_site::resolve_target(path, "index.html");
             if (resolved.has_value()) {
                 auto file = static_site::read_under_root(
-                    cfg_.real_root, resolved->rel_path, kMaxRealFileBytes);
+                    cfg_.real_root, resolved->rel_path,
+                    cover_response::kMaxResponseBytes);
                 if (file.has_value()) {
                     send_static_file(resolved->rel_path, std::move(*file), head_only,
                                      keep_alive, request_headers);
@@ -680,17 +680,8 @@ void Session::send_static_file(const std::string& rel_path,
     }
 
     const std::uintmax_t len = file.bytes.size();
-    // file_time_type has no portable epoch, so convert through both clocks'
-    // current now() (the standard pre-C++20 bridge). Approximate to the second,
-    // which is all HTTP dates and nginx's ETag carry anyway.
-    std::uintmax_t mtime_secs = 0;
-    {
-        const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            file.mtime - std::filesystem::file_time_type::clock::now() +
-            std::chrono::system_clock::now());
-        const std::time_t t = std::chrono::system_clock::to_time_t(sys);
-        if (t > 0) mtime_secs = static_cast<std::uintmax_t>(t);
-    }
+    const std::uintmax_t mtime_secs =
+        file.mtime > 0 ? static_cast<std::uintmax_t>(file.mtime) : 0;
     // nginx computes the ETag as "<hex-mtime>-<hex-length>"; match it so a
     // byte-level comparison against real nginx lines up.
     const std::string etag = "\"" + etag_hex(mtime_secs) + "-" + etag_hex(len) + "\"";

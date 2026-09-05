@@ -500,7 +500,7 @@ InteractiveConsoleSession start_interactive_console(
                 }
                 tunnel->register_stream(
                     stream_id,
-                    [stream_id](const Tunnel::Bytes& data,
+                    [](const Tunnel::Bytes& data,
                                 Tunnel::InboundCredit) {
                         std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
                         std::cout.flush();

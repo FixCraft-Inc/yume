@@ -257,23 +257,19 @@ bool load_relay_secret_file(const std::filesystem::path& path,
     nlohmann::json json;
     RelayJsonWiper json_wiper{json};
     try {
-        if (content.front() == '{') {
-            json = nlohmann::json::parse(content);
-            if (json.value("format", "") != kRelayKeyFormat) {
-                if (error) {
-                    *error = "unsupported relay key file format: " +
-                        path.string();
-                }
-                return false;
-            }
-            loaded_secret = json.value("secret_b64", "");
-        } else {
-            loaded_secret = content;
+        json = nlohmann::json::parse(content);
+        if (!json.is_object() || !json.contains("format") ||
+            !json["format"].is_string() ||
+            json["format"].get_ref<const std::string&>() != kRelayKeyFormat ||
+            !json.contains("secret_b64") || !json["secret_b64"].is_string()) {
+            if (error) *error = "invalid relay key file record: " + path.string();
+            return false;
         }
-    } catch (const std::exception& ex) {
+        loaded_secret = json["secret_b64"].get<std::string>();
+    } catch (const std::exception&) {
         if (error) {
-            *error = "failed to parse relay key file " + path.string() +
-                ": " + ex.what();
+            // JSON parser diagnostics can contain the secret being parsed.
+            *error = "failed to parse relay key file: " + path.string();
         }
         return false;
     }

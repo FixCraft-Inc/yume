@@ -11,6 +11,10 @@
  * HTTP/2 semantics for the entire connection can distinguish that boundary.
  */
 
+#include <boost/asio/buffer.hpp>
+#include <boost/beast/http/parser.hpp>
+#include <boost/beast/http/string_body.hpp>
+
 #include "core/stealth/obfs_h2.hpp"
 
 #include <algorithm>
@@ -556,68 +560,40 @@ crypto::Bytes encode_response_headers(const H2ResponseSpec& response,
 std::optional<H2ResponseSpec> parse_http1_response_for_h2(
     std::string_view response,
     std::size_t body_cap) {
-    constexpr std::size_t kMaxHeaderBytes = 64u * 1024u;
-    const auto headers_end = response.find("\r\n\r\n");
-    if (headers_end == std::string_view::npos || headers_end > kMaxHeaderBytes) {
-        return std::nullopt;
-    }
-    const auto first_line_end = response.find("\r\n");
-    if (first_line_end == std::string_view::npos || first_line_end > headers_end) {
-        return std::nullopt;
-    }
-    const std::string_view status_line = response.substr(0, first_line_end);
-    if (!status_line.starts_with("HTTP/1.")) {
-        return std::nullopt;
-    }
-    const auto first_space = status_line.find(' ');
-    if (first_space == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto second_space = status_line.find(' ', first_space + 1);
-    const auto status_text = status_line.substr(
-        first_space + 1,
-        (second_space == std::string_view::npos ? status_line.size() : second_space) -
-            first_space - 1);
-    unsigned int status = 0;
-    const auto parsed = std::from_chars(
-        status_text.data(), status_text.data() + status_text.size(), status);
-    if (parsed.ec != std::errc() || parsed.ptr != status_text.data() + status_text.size() ||
-        status < 100 || status > 599) {
-        return std::nullopt;
-    }
+    constexpr std::size_t kMaxHeaderBytes = 64U * 1024U;
+    constexpr std::size_t kMaxCaptureBytes = 8U * 1024U * 1024U;
+    if (response.size() > kMaxCaptureBytes) return std::nullopt;
+    // The same HTTP parser used by backend traffic validates framing and
+    // removes chunk framing before H2 DATA serialization. Content-Encoding
+    // remains untouched: compressed bytes are application representation data.
+    boost::beast::http::response_parser<boost::beast::http::string_body> parser;
+    parser.header_limit(kMaxHeaderBytes);
+    parser.body_limit(kMaxCaptureBytes);
+    parser.eager(true);
+    boost::system::error_code ec;
+    const auto consumed = parser.put(boost::asio::buffer(response), ec);
+    if (ec == boost::beast::http::error::need_more) ec.clear();
+    if (!ec && !parser.is_done()) parser.put_eof(ec);
+    if (ec || !parser.is_done() || consumed != response.size()) return std::nullopt;
+    const auto& parsed = parser.get();
+    if ((parsed.version() != 10 && parsed.version() != 11) ||
+        parsed.result_int() < 200 || parsed.result_int() > 599) return std::nullopt;
 
     H2ResponseSpec out;
-    out.status = static_cast<std::uint16_t>(status);
-    std::size_t pos = first_line_end + 2;
-    while (pos < headers_end) {
-        const auto end = response.find("\r\n", pos);
-        if (end == std::string_view::npos || end > headers_end) {
-            return std::nullopt;
-        }
-        const auto line = response.substr(pos, end - pos);
-        pos = end + 2;
-        if (line.empty() || line.front() == ' ' || line.front() == '\t') {
-            return std::nullopt;
-        }
-        const auto colon = line.find(':');
-        if (colon == std::string_view::npos) {
-            return std::nullopt;
-        }
-        std::string name = lower_ascii(trim_ascii(line.substr(0, colon)));
-        const auto value = trim_ascii(line.substr(colon + 1));
-        if (!valid_header_name(name) || !valid_header_value(value)) {
-            return std::nullopt;
-        }
+    out.status = static_cast<std::uint16_t>(parsed.result_int());
+    for (const auto& field : parsed) {
+        const auto raw_name = field.name_string();
+        std::string name = lower_ascii(std::string_view(raw_name.data(), raw_name.size()));
+        const auto raw_value = field.value();
+        const std::string_view value(raw_value.data(), raw_value.size());
+        if (!valid_header_name(name) || !valid_header_value(value)) return std::nullopt;
         if (!h2_forbidden_header(name) && name != "content-length") {
-            out.headers.emplace_back(std::move(name), std::string(value));
+            out.headers.emplace_back(std::move(name), value);
         }
-        if (out.headers.size() > 64) {
-            return std::nullopt;
-        }
+        if (out.headers.size() > 64) return std::nullopt;
     }
-
-    const auto body = response.substr(headers_end + 4);
-    const std::size_t keep = std::min(body.size(), body_cap);
+    const auto& body = parsed.body();
+    const auto keep = std::min(body.size(), body_cap);
     out.body.assign(body.begin(), body.begin() + static_cast<std::ptrdiff_t>(keep));
     return out;
 }
@@ -722,8 +698,7 @@ crypto::Bytes encode_settings_ack() {
 }
 
 H2InboundDecoder::H2InboundDecoder(bool server_side)
-    : server_side_(server_side),
-      state_(server_side ? State::kAwaitingPreface : State::kAwaitingHeaders) {
+    : state_(server_side ? State::kAwaitingPreface : State::kAwaitingHeaders) {
     inbound_buf_.reserve(4096);
     decoded_buf_.reserve(4096);
     outbound_replies_.reserve(256);

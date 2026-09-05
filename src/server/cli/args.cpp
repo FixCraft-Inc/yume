@@ -227,11 +227,6 @@ bool parse_server_cli_args(int argc,
             result.config_overrides.packet_mtu = true;
         } else if (arg == "--bench") {
             cfg.benchmark_enable = true;
-        } else if (arg == "--inner-required") {
-            cfg.inner_crypto = true;
-            cfg.inner_required = true;
-            result.config_overrides.inner_crypto = true;
-            result.config_overrides.inner_required = true;
         } else if (arg == "--allow-exec") {
             cfg.allow_exec = true;
         } else if (arg == "--allow-local-ip") {
@@ -295,8 +290,8 @@ bool parse_server_cli_args(int argc,
             result.config_overrides.anonym_proof_mode = true;
         } else if (arg == "--operator-proof-api" && i + 1 < argc) {
             cfg.anonym_api = argv[++i];
-        } else if (arg == "--operator-proof-token" && i + 1 < argc) {
-            cfg.anonym_token = argv[++i];
+        } else if (arg == "--operator-proof-token-file" && i + 1 < argc) {
+            cfg.anonym_token_file = resolve_cli_path(argv[++i]);
         } else if (arg == "--operator-ca-key" && i + 1 < argc) {
             cfg.anonym_ca_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--operator-ca-cert" && i + 1 < argc) {

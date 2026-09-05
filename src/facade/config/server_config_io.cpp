@@ -68,8 +68,6 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::obfs_secret_file, s.obfs_secret_file);
     read_opt(j, cfg_key::inner_psk_file, s.inner_psk_file);
     read_opt(j, cfg_key::inner_crypto, s.inner_crypto);
-    read_opt(j, cfg_key::inner_dual, s.inner_dual);
-    read_opt(j, cfg_key::inner_required, s.inner_required);
     read_opt(j, cfg_key::rekey_window, s.rekey_window);
     s.security_profile = yume::config::ParseSecurityProfile(
         j, s.security_profile);
@@ -126,7 +124,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::anonym, s.anonym);
     read_opt(j, cfg_key::anonym_proof_mode, s.anonym_proof_mode);
     read_opt(j, cfg_key::anonym_api, s.anonym_api);
-    read_opt(j, cfg_key::anonym_token, s.anonym_token);
+    read_opt(j, cfg_key::anonym_token_file, s.anonym_token_file);
     read_opt(j, cfg_key::anonym_ca_key, s.anonym_ca_key);
     read_opt(j, cfg_key::anonym_ca_cert, s.anonym_ca_cert);
     read_opt(j, cfg_key::anonym_sub_key, s.anonym_sub_key);
@@ -232,6 +230,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     resolve_config_path(s.obfs_secret_file, base);
     resolve_config_path(s.inner_psk_file, base);
     resolve_config_path(s.real_secret_file, base);
+    resolve_config_path(s.anonym_token_file, base);
     resolve_config_path(s.anonym_ca_key, base);
     resolve_config_path(s.anonym_ca_cert, base);
     resolve_config_path(s.anonym_sub_key, base);
@@ -350,8 +349,6 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::obfs_secret_file, s.obfs_secret_file},
         {cfg_key::inner_psk_file, s.inner_psk_file},
         {cfg_key::inner_crypto, s.inner_crypto},
-        {cfg_key::inner_dual, s.inner_dual},
-        {cfg_key::inner_required, s.inner_required},
         {cfg_key::rekey_window, s.rekey_window},
         {cfg_key::reverse_port_min, s.reverse_port_min},
         {cfg_key::reverse_port_max, s.reverse_port_max},
@@ -377,7 +374,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::anonym, s.anonym},
         {cfg_key::anonym_proof_mode, s.anonym_proof_mode},
         {cfg_key::anonym_api, s.anonym_api},
-        {cfg_key::anonym_token, s.anonym_token},
+        {cfg_key::anonym_token_file, s.anonym_token_file},
         {cfg_key::anonym_ca_key, s.anonym_ca_key},
         {cfg_key::anonym_ca_cert, s.anonym_ca_cert},
         {cfg_key::anonym_sub_key, s.anonym_sub_key},
@@ -494,16 +491,14 @@ ValidationReport validate(server::ServerConfig const& s) {
         r.errors.emplace_back(
             "real_backend: must be loopback://<loopback-ip-literal>:<port>");
     }
-    // The cover backend answers HTTP/1.1 only. The HTTP/2 decoy needs its own
-    // source, and there is no built-in page, because one compiled into the
-    // daemon would be identical on every deployment.
+    // Ordinary H1/H2 GET/HEAD share the backend. Separate probe paths still
+    // require configured cover material; a built-in page identifies the daemon.
     if (s.real_http && s.upstream_response_dir.empty() &&
         s.upstream_response_file.empty() && s.upstream_response_bytes.empty() &&
         s.real_root.empty() && s.real_index_path.empty()) {
         r.errors.emplace_back(
             "real_index_path/real_root/upstream_response_dir: one cover source "
-            "is required for the HTTP/2 decoy; real_backend answers HTTP/1.1 "
-            "only");
+            "is required for separate probe paths alongside the ordinary H1/H2 backend");
     }
     if (!s.obfuscation || !s.inner_crypto) {
         r.errors.emplace_back(

@@ -36,7 +36,6 @@ using RequestValidator = bool (*)(const HttpRequest& request, std::string* reaso
 struct CodecDescriptor {
     std::string id;
     std::vector<std::string> aliases;
-    std::string permission_key;
     std::string display_name;
     Endpoint default_endpoint;
     std::size_t max_request_body{0};

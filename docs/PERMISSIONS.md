@@ -4,8 +4,8 @@
 > reference this permission model. The schema-1 design is preserved
 > separately in the [YTP/1 foundation page](development/ytp1/README.md#identity-and-authorization).
 
-YUME splits authentication from authorization and uses three physical identity
-stores:
+YUME authenticates composite identities and checks their permissions separately.
+Its three identity stores and two metadata files are:
 
 - `authorized_keys` lists regular composite Ed25519 + ML-DSA-87 identities.
   Regular identities are either `individual` (the default, one authenticated
@@ -52,8 +52,9 @@ and `--allow-exec` / persisted `allow_exec=true` fail clearly on the client.
 This fail-closed state remains until child processes have portable bounded
 cancellation and join semantics.
 
-Administrative access requires an enabled build feature, explicit server
-permission, and a distinct identity in `admin_keys`.
+An EXEC implementation would need bounded child-process shutdown and the
+build, server, target-key, and authenticated controller checks before it could
+be enabled.
 
 ## File layout
 
@@ -167,24 +168,11 @@ abuse.
 
 ## Permission fields
 
-> **Development warning:** the current tree accepts exact relay
-> protocol version 2 only. It fails closed on channel kind, endpoint role,
-> message-state transition, record schema/order, transcript identity/context,
-> and target `allow_chat/file/bytes` policy. Canonical Ed25519 + ML-DSA-87 peer
-> signatures and ephemeral ML-KEM-1024 + X25519 establishment feed a
-> per-channel epoch/message ratchet. Ordinary channels require the already-
-> derived out-of-band relay PSK; admin forbids that password path and requires
-> an explicit peer pin in addition to the trusted-relay permission predicate.
-> TOFU state is written only after the complete handshake verifies. POSIX file
-> receive uses a configured descriptor-confined, exclusive/no-follow owner-only
-> sink with declared/chunk/cumulative/time bounds and partial cleanup; Windows
-> file/bytes receive remains unadvertised and fails closed. Each endpoint
-> retains at most 64 incoming and 64 outgoing invites for two minutes, and the
-> server retains at most 4096. POSIX relay-key, history, and peer-trust storage
-> reject unsafe links/ownership/modes; Windows secure mutable trust/history
-> storage remains fail closed. These controls have focused negative tests, but
-> this unsigned tree has no external audit or release qualification. The table
-> below is implemented development policy, not a release claim.
+Relay channels use exact protocol version 2, composite peer signatures, hybrid
+key establishment, and directional ratchets. Ordinary channels require a
+relay PSK. Admin channels require an explicit peer pin and reject password
+credentials. See the [relay contract](protocol/YUME_2_0_WIRE.md) for handshake,
+resource, storage, and platform limits.
 
 | Field | Default | What it grants | Server flag required |
 | --- | --- | --- | --- |
@@ -193,7 +181,6 @@ abuse.
 | `control_full` | invalid in metadata | Open TCP/UDP streams to *any* address only after a distinct admin factor | `--control-full`, `YUME_FEATURE_FULL_CONTROL=ON`, and verified admin identity |
 | `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
 | `allow_services` | deny | Use native embed named-service streams, for example `["example-service-v1"]` | server config `allow_services` plus `yume_endpoint_register_service` |
-| `allow_monero_rpc` | deny | Compatibility alias for the built-in Monero RPC application codec against the server's loopback monerod backend | `--codec-allow monero-rpc` |
 | `allow_inbound_admin` | invalid in metadata | Runtime opt-in for this admin-authenticated target | verified admin identity plus client opt-in |
 | `allow_outbound_admin` | invalid in metadata | Runtime opt-in for this admin-authenticated operator caller | `operator_keys`, verified admin identity, and client opt-in |
 | `allow_chat` | individual: allow; bulk: deny | This key can use the chat relay | none |
@@ -207,11 +194,14 @@ Top-level resource fields are separate from `permissions`:
 | `key_type` | `individual` | `individual` or explicitly shared `bulk` regular key |
 | `weight` | `1.0` | Fair-egress multiplier in `0.1..100`; `1.5` receives 1.5 times the share of a competing `1.0` identity |
 | `max_sessions` | 1 / server bulk default | Per-key authenticated-session cap; values above 1 require `key_type: bulk` |
-| `priority` | unset | Legacy integer weight compatibility; prefer decimal `weight` |
 | `federation_peer_id` | unset | Unique local namespace assigned to one authenticated federation identity; bulk identities cannot use it |
 | `federation_psk_file` | unset | Required with `federation_peer_id`; owner-only 32-byte pairwise AUTH-v2 PSK, resolved relative to the metadata file |
 
-`alias` is a free-form label used in logs.
+`alias` is a label used in logs. `last_seen` is an integer timestamp maintained
+by key-management operations. These entry fields and the `permissions` fields
+form a closed schema. Unknown fields, top-level permission flags, and
+wrong-typed values are errors. Use `weight` for scheduling and
+`permissions.allow_codecs` for codec access.
 
 Facade append and update operations verify that a referenced federation PSK
 already satisfies the same protected-file contract enforced by `yumed`,

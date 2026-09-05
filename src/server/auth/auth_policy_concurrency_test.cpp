@@ -48,8 +48,8 @@ void assert_restrictive_policy(const yume::server::AuthKeyPolicyMap& policies,
     if (!it->second.allow_file.has_value() || *it->second.allow_file) {
         throw std::runtime_error("restrictive file policy was not preserved");
     }
-    if (it->second.priority != 42) {
-        throw std::runtime_error("authorization priority was not preserved");
+    if (it->second.weight != 1.5) {
+        throw std::runtime_error("authorization weight was not preserved");
     }
 }
 
@@ -60,7 +60,7 @@ void test_concurrent_policy_reads_and_last_seen_updates() {
     {
         std::ofstream output(meta_path);
         output << "{\n  \"" << fingerprint
-               << "\": {\"priority\": 42, \"permissions\": "
+               << "\": {\"weight\": 1.5, \"permissions\": "
                   "{\"allow_file\": false}}\n}\n";
     }
 

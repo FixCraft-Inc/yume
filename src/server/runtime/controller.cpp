@@ -70,6 +70,9 @@ struct RuntimeController::Impl {
     mutable std::mutex mtx;
     ServerConfig cfg;
     Status status;
+    // stop() must record its result even when allocation keeps failing. Only
+    // status(), called by an observer, materializes this static message.
+    const char* stop_message{nullptr};
     std::unique_ptr<boost::asio::io_context> io;
     std::shared_ptr<Manager> manager;
     std::shared_ptr<LocalRuntime> local_runtime;
@@ -120,6 +123,7 @@ bool RuntimeController::start(
         std::lock_guard<std::mutex> lock(impl_->mtx);
         impl_->status.running = false;
         impl_->status.message = std::move(msg);
+        impl_->stop_message = nullptr;
         return false;
     };
 
@@ -152,6 +156,11 @@ bool RuntimeController::start(
     }
     impl_->runtime_stop_requested.store(false, std::memory_order_release);
 
+    if (cfg.anonym) {
+        return fail_with(
+            "operator identity proof requires yumed",
+            runtime::OperationStatus::InvalidArgument);
+    }
     std::string security_error;
     if (!prepare_v2_security_config(cfg, false, &security_error)) {
         return fail_with(security_error.empty()
@@ -244,6 +253,7 @@ bool RuntimeController::start(
             impl_->status.ipc_path = ipc_path;
             impl_->status.started = std::chrono::system_clock::now();
             impl_->status.message = ipc_warning.empty() ? "running" : ipc_warning;
+            impl_->stop_message = nullptr;
             impl_->io = std::move(io);
             impl_->manager = std::move(manager);
             impl_->local_runtime = std::move(runtime);
@@ -276,7 +286,7 @@ bool RuntimeController::stop() {
         }
         impl_->running.store(false);
         impl_->status.running = false;
-        impl_->status.message = "stopped";
+        impl_->stop_message = "stopping";
         local_runtime = std::move(impl_->local_runtime);
         manager = std::move(impl_->manager);
         io = std::move(impl_->io);
@@ -286,41 +296,45 @@ bool RuntimeController::stop() {
     // The moved-out workers are joinable, so nothing between here and the
     // join loop may unwind past it: destroying a joinable std::thread calls
     // std::terminate, and this function also runs from the destructor. A
-    // teardown failure is therefore contained, the join still happens, and
-    // the failure is reported through the status message instead of an
-    // exception.
-    std::string teardown_error;
-    const auto contain = [&teardown_error](const char* stage, auto&& step) {
+    // teardown failure is therefore recorded without allocating, and workers
+    // settle before an observer can format the diagnostic. In particular,
+    // do not concatenate ex.what() here: bad_alloc can be sustained.
+    const char* teardown_error = nullptr;
+    const auto contain = [&teardown_error](const char* message,
+                                          auto&& step) noexcept {
         try {
             step();
-        } catch (const std::exception& ex) {
-            if (teardown_error.empty()) {
-                teardown_error = std::string(stage) + ": " + ex.what();
-            }
         } catch (...) {
-            if (teardown_error.empty()) {
-                teardown_error = std::string(stage) + ": unknown error";
-            }
+            if (!teardown_error) teardown_error = message;
         }
     };
     if (local_runtime) {
-        contain("local runtime stop", [&] { local_runtime->stop(); });
+        contain("stopped; teardown error: local runtime stop",
+                [&] { local_runtime->stop(); });
     }
     if (manager) {
-        contain("manager stop", [&] { manager->stop(); });
+        contain("stopped; teardown error: manager stop",
+                [&] { manager->stop(); });
     }
-    // Do not stop the context before its shutdown handlers run. Manager
-    // cancellation removes the accept/timer work, and each session has a
-    // bounded transport-close deadline, so run() can drain and return.
+    // Successful cancellation removes persistent accept/timer work and posts
+    // bounded session shutdown, which must drain normally. If cancellation
+    // threw, an accept or timer may still be live: joining first would wait
+    // forever. This exceptional path stops executor progress before joining;
+    // it cannot promise graceful delivery or session-specific cleanup.
+    if (teardown_error && io) {
+        contain("stopped; teardown error: io context stop",
+                [&] { io->stop(); });
+    }
     for (auto& worker : workers) {
         if (worker.joinable()) worker.join();
     }
     if (io) {
-        contain("io context stop", [&] { io->stop(); });
+        contain("stopped; teardown error: io context stop",
+                [&] { io->stop(); });
     }
-    if (!teardown_error.empty()) {
+    {
         std::lock_guard<std::mutex> lock(impl_->mtx);
-        impl_->status.message = "stopped; teardown error: " + teardown_error;
+        impl_->stop_message = teardown_error ? teardown_error : "stopped";
     }
     return true;
 }
@@ -359,6 +373,7 @@ RuntimeController::Status RuntimeController::status() const {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     Status out = impl_->status;
     out.running = impl_->running.load();
+    if (impl_->stop_message) out.message = impl_->stop_message;
     if (impl_->manager) {
         out.active_sessions = impl_->manager->list_endpoint_statuses().size();
     }

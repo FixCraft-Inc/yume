@@ -174,9 +174,7 @@ private:
 
 class SocksServer {
 public:
-    // Single-tunnel constructor — every accepted SOCKS session binds
-    // to the same tunnel. Kept for compatibility with embedders that
-    // don't (yet) use the multi-tunnel path.
+    // The attached-client CLI binds all accepted sessions to one tunnel.
     SocksServer(boost::asio::io_context& io, int port, std::shared_ptr<Tunnel> tunnel, bool allow_udp);
     SocksServer(boost::asio::io_context& io,
                 std::string bind_host,
@@ -184,11 +182,7 @@ public:
                 std::shared_ptr<Tunnel> tunnel,
                 bool allow_udp);
 
-    // Pool-based constructor — each accepted SOCKS session picks a
-    // tunnel from the pool at accept time and is bound to it for the
-    // session's lifetime. This lifts the single-TLS-connection
-    // throughput cap that a multiplexed tunnel hits at high
-    // concurrency.
+    // A pooled session selects its tunnel at accept and keeps it until close.
     SocksServer(boost::asio::io_context& io,
                 int port,
                 std::shared_ptr<TunnelPool> pool,

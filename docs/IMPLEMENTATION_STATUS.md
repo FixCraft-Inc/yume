@@ -114,9 +114,9 @@ must not be advertised as working:
 - external active-probe, classifier, performance, soak, fuzz, sanitizer, and
   security-review gates.
 
-The replacement ABI attaches a runtime through one backend seam. A default
-build compiles the transport-v2 backend, so `yume_endpoint_start` really starts
-the runnable client or daemon, `yume_endpoint_register_service`,
+The replacement ABI attaches a runtime through one backend seam. When the ABI
+library is explicitly enabled, its transport-v2 backend starts the runnable
+client or daemon through `yume_endpoint_start`. `yume_endpoint_register_service`,
 `yume_endpoint_open_stream`, and `yume_endpoint_accept_stream` carry
 authenticated named byte streams, and `yume_stream_read`/`write`/
 `shutdown_write`/`close` move real bytes with typed transport failures. A
@@ -126,23 +126,45 @@ dialect into the other runtime. Packet channels remain unsupported on both
 backends. The working `yume` and `yumed` binaries remain a separate, explicit
 product path during the transition.
 
-## Retained runnable 0.2 product
+## Default transport-v2 runtime
 
-The default transition build continues to produce the runnable 0.2 `yume` and
-`yumed` tunnel, including its transport-v2/AUTH-v2 implementation and the
-dependencies needed by that working path. It is not called a fallback or
-deprecated implementation: it remains the current runnable product until the
-replacement passes its tunnel, cover, routing, embedding, packaging, and
-qualification parity gates.
+The default build produces `yume` and `yumed` with transport v2 and AUTH v2.
+The quick start, operations guide, control API, and transport-v2 wire reference
+describe that implementation. It remains the default until YTP/1 passes tunnel,
+cover, routing, embedding, packaging, and qualification parity.
 
-The current quick start, operations guide, control API, and transport-v2
-protocol documents remain authoritative for the runnable product. Historical
-contracts remain available in signed Git history. Transport v2 and its
-configuration are incompatible with YTP/1 and schema 1;
-coexistence does not add an automatic converter, downgrade, suite fallback, or
-migration promise. Optional and
-product-specific 0.2 surfaces are reviewed individually rather than deleted
-solely because the replacement architecture does not yet model them.
+The GUI, federation, relay applications, and codecs are working parts of this
+runtime. Their replacement or retirement is planned separately from the first
+YTP/1 endpoint.
+
+The runnable product enforces these boundaries:
+
+- POSIX bounded/private file readers reject embedded NUL paths and refuse
+  FIFOs without waiting for a writer. Static-root reads use directory
+  descriptors and reject symlinks in every path component. Captured HTTP
+  response normalization preserves body bytes and validates complete framing.
+  The [cover reference](FILTERING_SELF_DPI.md)
+  records platform support and the remaining GNU-tar/tool/resource limits.
+- CLI and facade configuration share closed key sets and reject explicit
+  null values. Inner encryption is mandatory; the daemon has no separate
+  `inner_dual`, `inner_required`, or `--inner-required` input. Authorization
+  metadata also has a closed schema, with policy
+  fields nested under `permissions`. Daemon authorization loading uses the same
+  bounded reader and identity parser as key management, preserving the grouped
+  reload lock.
+  Field/range validation remains separately implemented and needs further
+  consolidation.
+- Operator-proof startup and refresh are owned by `yumed`. The GUI and
+  transport-v2 server ABI backend reject `anonym=true` with an invalid-argument
+  result because their embedded runtime does not own that lifecycle.
+- Worker exception containment keeps the process serving queued work. It
+  cannot identify or close the session whose handler threw; session cleanup
+  remains the handler's responsibility.
+- Embedded server stop drains successful cancellation before joining workers.
+  If cancellation throws, it records the failed stage without allocation and
+  stops the executor before joining. Status reads report that stage; graceful
+  delivery and complete session cleanup are not guaranteed on this failure path.
+  Local IPC retains its listening descriptor through serving-thread join.
 
 ## Security boundary
 

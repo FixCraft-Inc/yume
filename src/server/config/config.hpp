@@ -40,8 +40,6 @@ struct ServerConfig {
     int threads{0};
     bool obfuscation{true};
     bool inner_crypto{true};
-    bool inner_dual{false};
-    bool inner_required{false};
     // Concurrent directional epoch offers accepted from one session, and the
     // ceiling on this server's own sending window. Higher values lift the
     // per-round-trip transfer ceiling on high-RTT links without changing the
@@ -94,7 +92,7 @@ struct ServerConfig {
     bool anonym{false};
     std::string anonym_proof_mode{std::string(yume::policy::kAnonymProofModeAuto)};
     std::string anonym_api;
-    std::string anonym_token;
+    std::string anonym_token_file;
     std::string anonym_hash;
     std::string anonym_sig;
     std::string anonym_ts;
@@ -181,7 +179,7 @@ struct ServerConfig {
     // handshake. A peer that opens TCP and starts TLS but never sends
     // ClientHello (slow-loris style) holds a session slot until the
     // OS keepalive eventually fires; this deadline closes the socket
-    // sooner. 0 = no deadline (legacy behaviour). --public-node sets
+    // sooner. 0 = no deadline. --public-node sets
     // this to 10000 (10 s) when the operator hasn't overridden;
     // generous enough that any legitimate client finishes in time.
     std::uint32_t tls_handshake_timeout_ms{0};
@@ -201,7 +199,7 @@ struct ServerConfig {
     std::uint32_t bulk_key_max_sessions{64};
     // --accept-rate-limit <conns-per-sec>. Shared fixed-window accounting on
     // all accept paths: at most this many new connections in each 1 s
-    // accounting interval. 0 = unlimited (legacy). --public-node defaults
+    // accounting interval. 0 = unlimited. --public-node defaults
     // to 100 (legitimate clients reconnect once on disconnect, not
     // hundreds per second; pure scanner / DoS traffic does). Refused
     // connections are closed immediately on accept.
@@ -229,7 +227,7 @@ struct ServerConfig {
     std::string operator_keys;
     std::string operator_keys_meta;
     bool boring{false};
-    // Host-controller mode: off (legacy), private (WAN host, no yume clients
+    // Host-controller mode: off (tunnel only), private (WAN host, no yume clients
     // by default), relay (host + yume client tunnel).
     host::HostMode host_mode{host::HostMode::Off};
     // When false, YUME AUTH / carrier paths are rejected with disguise.

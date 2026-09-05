@@ -16,6 +16,10 @@ yumed \- YUME server daemon
 .B bash
 .PP
 .B yumed
+.B --completion
+.B bash
+.PP
+.B yumed
 .B --help
 .br
 .B yumed
@@ -25,12 +29,20 @@ yumed \- YUME server daemon
 is the YUME server. It listens for authenticated YUME clients, validates
 their auth keys, negotiates transport capabilities, and opens outbound
 target sockets for allowed streams. It can also serve a real HTTP facade
-for non-YUME requests, enforce operator-identity/no-log mode, manage authorized
+for non-YUME requests, provide operator-authority proof and privacy-minimizing
+logging, manage authorized
 keys, and expose relay/directory features when enabled.
 .PP
 For an accepted 2.0 tunnel, yumed is the public TLS/HTTP/2 endpoint. A
 separately supervised Node.js 24 process on loopback supplies the genuine
 cover site and never receives tunnel records or secrets.
+.PP
+The product version is 0.3.0-dev1; this daemon speaks transport-v2 wire
+0.2.0-dev6. AUTH v2 verifies composite Ed25519 and ML-DSA-87 client identities
+bound to the live TLS exporter. ML-KEM-1024, X25519, and the random file PSK
+contribute to establishment; an admin session requires a separate second
+identity. The experimental YTP/1 replacement and its schema-1 tools are
+separate. A schema-1 configuration does not drive this daemon.
 .SH BASIC SETUP
 .PP
 .nf
@@ -53,6 +65,13 @@ is used.
 .TP
 .B --credits
 Print third-party attribution and exit.
+.TP
+.BI "--completion " shell
+Print a shell completion script and exit. The only supported value is
+.BR bash .
+The subcommand form
+.B "yumed completion bash"
+is equivalent.
 .TP
 .BI "--config " path
 Read server configuration from a JSON file.
@@ -191,7 +210,15 @@ Country lookup archive, GeoLite2-Country
 .B .mmdb ,
 or compact YUME
 .B geoip_country_ipv4.db .
-Archives are extracted at startup; hot-path lookup is in-memory.
+Archives are copied into a new owner-only temporary directory and extracted at
+startup; validation and extraction consume the same private snapshot. Only
+regular files and directories with relative, traversal-free names are accepted.
+Backslashes, control-character escapes, links, and special files are refused.
+Hot-path lookup is in-memory.
+Archive extraction requires Linux and GNU tar. Other platforms refuse archives;
+use an unpacked list or database. Extraction still relies on the shell and tool
+search path and has no complete compressed-size, member-count, expanded-size,
+disk, or decompression-time budget; use trusted operator archives only.
 .TP
 .BI "--filter-memory-mib " n
 Approximate memory cap for loaded filter data. Use
@@ -247,10 +274,11 @@ DNS names, redirects, and non-loopback targets are rejected.
 Allow private and loopback destinations when key policy permits it.
 .TP
 .B --allow-exec
-Enable server-side command execution when the binary was built with
-.BR YUME_FEATURE_EXEC .
-Default builds warn and ignore this flag. Per-key policy must also permit
-execution, and
+Reserved relayed EXEC policy input. It does not enable command execution:
+direct EXEC is denied, and current clients neither advertise nor accept
+inbound EXEC. Builds without
+.B YUME_FEATURE_EXEC
+warn and ignore this flag, and
 .B --public-node
 rejects the flag.
 .TP
@@ -269,9 +297,7 @@ Emit precise timing diagnostics in a Debug or RelWithDebInfo developer build.
 Release and MinSizeRel binaries compile these hooks out and warn that the
 option is unavailable.
 .SH SECURITY OPTIONS
-.TP
-.B --inner-required
-Redundant compatibility spelling for the mandatory 2.0 inner channel. The
+The inner channel is mandatory. The
 ML-KEM-1024 + X25519 + PSK suite and per-message AES-256-GCM keys cannot be
 disabled or peer-selected. Authenticated bounded ratchet policies may widen
 the hybrid epoch budget without changing those algorithms. There are no
@@ -280,15 +306,18 @@ flags to select an inner mode, a hop layer, or a transport Argon2 stage.
 .TP
 .B --real
 Serve real HTTP for non-YUME requests on the same port.
+.TP
 .BI "--real-index " path
 HTML file served for
-.BR / .
+.BR / ,
+limited to 8 MiB.
 .TP
 .BI "--real-root " dir
 Serve GET/HEAD static files under
 .IR dir
 as the masquerade cover (implies
 .BR --real ).
+Each response is limited to 8 MiB.
 Files are returned with the correct MIME type,
 .BR Content-Length ,
 .BR Last-Modified ,
@@ -300,7 +329,9 @@ and
 and directory paths serve
 .IR dir /index.html.
 Path resolution rejects traversal, encoded-slash tricks, control bytes, and
-symlinks that escape the root; misses and non-GET/HEAD methods return the
+every symlink component, including ancestors of the configured root. POSIX
+directory descriptors pin resolution; platforms without this support, including
+Windows, refuse static-root reads. Misses and non-GET/HEAD methods return the
 profile 404. The same root backs the HTTP/1.1 probe and the H2 decoy. Pair with
 .B --hide-in-the-crowd nginx
 for the closest header fit.
@@ -317,6 +348,11 @@ is refused by both configuration loaders.
 Publish an operator identity proof and minimize identifying log fields where
 supported. The proof authenticates CA-authorized operator control; it cannot prove that
 the host does not inspect or retain traffic.
+This lifecycle belongs to standalone
+.BR yumed .
+Embedded servers, including the GUI and transport-v2 ABI backend, reject
+.B anonym=true
+at start.
 .TP
 .BI "--operator-proof-mode " mode
 Proof policy:
@@ -330,8 +366,11 @@ External proof API URL, used by
 .B fixcraft
 proof mode.
 .TP
-.BI "--operator-proof-token " string
-External proof API token.
+.BI "--operator-proof-token-file " path
+Owner-only file containing the external proof API token. The file must be a
+regular non-symlink owned by the current user, have no group or world
+permissions, contain 1 to 4096 bytes, and contain no HTTP control characters.
+There is no inline configuration or command-line token form.
 .TP
 .BI "--operator-ca-key " path
 Operator CA private key.
@@ -348,16 +387,23 @@ operator and its subject should identify the server name/alias.
 .TP
 .BI "--upstream-response " path
 Serve a captured HTTP response to failed probes instead of the synthetic
-profile-driven reply. Line endings are normalised, so a capture taken with
-\fBcurl -i\fR works unmodified. Improves fidelity, but does not make the reply
-equivalent to a live upstream. Empty uses the synthetic profile.
+profile-driven reply. Header LF endings are normalized to CRLF; body bytes and
+chunk framing are preserved. Use \fBcurl --http1.1 --raw -i\fR to retain transfer
+framing. The capture must contain one complete HTTP/1.x final response;
+malformed, conflicting, truncated, or trailing framing is refused. HTTP/2
+conversion removes chunk framing before DATA emission. Replay is not equivalent
+to a live upstream. Headers are limited to 64 KiB and the normalized response
+to 8 MiB.
+Empty uses the synthetic profile.
 .TP
 .BI "--upstream-response-dir " dir
 Load every \fI*.http\fR and \fI*.response\fR file in \fIdir\fR and rotate
 between them per probe, which avoids the "every probe gets the same capture"
 tell of a single file. If both this and
 .B --upstream-response
-are set, the directory wins.
+are set, the directory wins. A reload scans at most 4096 directory entries,
+accepts at most 256 matching files, limits each normalized response to 8 MiB,
+and retains at most 64 MiB in aggregate.
 .TP
 .BI "--upstream-response-ttl " seconds
 With
@@ -405,7 +451,7 @@ Allow an application codec id or alias (for example
 Repeat for multiple codecs.
 .TP
 .B --allow-monero-rpc
-Legacy alias for
+Convenience spelling for
 .BI "--codec-allow " monero-rpc .
 .TP
 .BI "--service-allow " name
@@ -490,7 +536,7 @@ Implies
 .TP
 .BI "--cluster-join " spec
 Dial a peer using the short form
-.BI [id@]host[:port]?psk_file=path&carrier_secret_file=path[&pin=sha256] .
+.BI [id@]host[:port]?psk_file=path\:&carrier_secret_file=path\:[&pin=sha256] .
 Bracket IPv6 addresses as
 .BR [2001:db8::1]:443 .
 IPv6 joins require an explicit peer-id prefix, for example

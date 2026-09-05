@@ -533,6 +533,20 @@ void TestServerControllerStartStopReloadStress() {
 }  // namespace
 
 int main() {
+    {
+        yume::server::RuntimeController controller;
+        yume::server::ServerConfig cfg;
+        cfg.listen_port = 15443;
+        cfg.anonym = true;
+        std::string error;
+        yume::runtime::OperationStatus status{};
+        Expect(!controller.start(cfg, &error, &status), "embedded proof mode was accepted");
+        Expect(status == yume::runtime::OperationStatus::InvalidArgument,
+               "embedded proof mode did not report typed invalid config");
+        Expect(error.find("operator identity proof") != std::string::npos,
+               "embedded proof mode failed for an unrelated reason");
+        Expect(!controller.running(), "refused proof mode left runtime running");
+    }
     TestLogSubscriberReentryAndExceptions();
     TestInProcAdmissionCancellation();
     TestInProcPreReadyCancellation();

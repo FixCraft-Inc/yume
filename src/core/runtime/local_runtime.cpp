@@ -289,11 +289,15 @@ void Server::stop() {
     if (server_fd_ >= 0) {
         wake_listener(path_);
         ::shutdown(server_fd_, SHUT_RDWR);
-        ::close(server_fd_);
-        server_fd_ = -1;
     }
     if (thread_.joinable()) {
         thread_.join();
+    }
+    // The serving thread may still read this descriptor while accept wakes.
+    // Keep both the value and its open-file identity until that thread settles.
+    if (server_fd_ >= 0) {
+        ::close(server_fd_);
+        server_fd_ = -1;
     }
     running_ = false;
     cleanup_path();
@@ -428,8 +432,11 @@ void Server::serve_loop() {
 
 void Server::cleanup_path() {
 #if !defined(_WIN32)
-    std::error_code ec;
-    std::filesystem::remove(path_, ec);
+    // This also runs from the destructor during allocation failure. Building
+    // a filesystem::path from the string may allocate before remove() enters
+    // its error-code overload. The owned endpoint is a socket, never a
+    // directory; unlink preserves no-follow removal without allocating.
+    if (!path_.empty()) (void)::unlink(path_.c_str());
 #endif
 }
 

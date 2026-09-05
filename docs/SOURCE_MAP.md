@@ -1,24 +1,20 @@
 # YUME source map
 
-Where the code is and which parts are load-bearing. Read this before
-[ARCHITECTURE.md](ARCHITECTURE.md): that document describes the YTP/1
-replacement contracts, which are not yet the running system.
+The default client and daemon use transport v2. YTP/1 is the experimental
+replacement described in [ARCHITECTURE.md](ARCHITECTURE.md). This map covers both.
 
 ## Vocabulary
-
-The project's own terms, because several are used everywhere and expanded
-almost nowhere.
 
 | Term | Means |
 | --- | --- |
 | **YTP/1** | **YUME Transport Protocol 1.** The replacement wire protocol. Version 1 of a new protocol, not "YUME 1". Its kernel is `src/ytp/`, its contract is [protocol/YTP_1.md](protocol/YTP_1.md). |
-| **transport v2** | The wire protocol that ships and works today, `0.2.0-dev6`. Independent of the product version. Contract in [protocol/YUME_2_0_WIRE.md](protocol/YUME_2_0_WIRE.md). |
+| **transport v2** | The protocol used by the default client and daemon, `0.2.0-dev6`. Independent of the product version. Contract in [protocol/YUME_2_0_WIRE.md](protocol/YUME_2_0_WIRE.md). |
 | **AUTH v2** | The authentication and key-schedule layer of transport v2: composite Ed25519 + ML-DSA-87 identity, ML-KEM-1024 + X25519 + PSK establishment, then a directional AEAD ratchet. |
 | **schema 1** | The strict numeric configuration schema for YTP/1 (`src/config/v1/`). Unrelated to transport-v2 JSON config. |
 | **ABI v1** | The role-neutral C interface in `include/yume/yume.h`. Its version is independent of every wire and product version. |
-| **admission** | The cheap, replay-protected check a client passes before the server will promote a connection to a YUME carrier. Failing it gets the ordinary cover response, not an error. |
-| **cover** | The genuine website or reverse proxy a non-YUME visitor sees. Configure it, or the default stub fingerprints the deployment. |
-| **carrier** | The outer connection that YUME records ride inside: TLS 1.3 plus HTTP/2, optionally WebSocket-framed. |
+| **admission** | The cheap, replay-protected check a client passes before the server will promote a connection to a YUME carrier. Failed admission never reaches AUTH; the current extended-CONNECT refusal is a bounded HTTP 404. |
+| **cover** | The genuine website or reverse proxy a non-YUME visitor sees. Transport v2 refuses startup without a configured cover source; there is no built-in fallback site. |
+| **carrier** | The outer connection that YUME records ride inside. Transport v2 requires TLS 1.3 and HTTP/2 with an RFC 8441 WebSocket carrier; the YTP/1 candidate uses duplex HTTP/2. |
 | **obfs secret** | The admission key. `obfs_secret_file` and `obfs_secret_material` are live. An inline `obfs_secret` key is refused by every parser and no field carries it. |
 | **anonym** | Operator-authority proof and privacy-minimizing logging. It proves who runs the server, **not** that nothing is logged. |
 | **BaseFWX** | A separate pinned repository providing cryptographic primitives. Not a subdirectory of this project despite living at `basefwx/`. |
@@ -30,10 +26,7 @@ Do not bump one to match another.
 
 ## Two stacks live here
 
-This is the single most important thing to know, and nothing in the code tells
-you which one you are looking at.
-
-| | Shipping product | Replacement foundation |
+| | Default runtime | Replacement foundation |
 | --- | --- | --- |
 | Frame type | `protocol::Frame` (`core/protocol/protocol.hpp`) | `ytp1` codecs (`ytp/protocol.hpp`) |
 | Session | `server::Session` (`server/session/`) | `engine::SessionEngine` (`engine/session_engine.cpp`) |
@@ -50,11 +43,13 @@ the two depending on which file you started from. Check the directory first.
 | Path | Owns |
 | --- | --- |
 | `core/` | Framing, crypto, AUTH v2 ratchet, stealth (TLS/H2/WebSocket), runtime primitives, app codecs |
-| `outbound/` | The client's `TransportCore`: frame dispatch, write scheduling, credit. Also, confusingly, server-side egress forwarding in `forward.cpp` |
+| `outbound/` | The client's `TransportCore`: frame dispatch, write scheduling, credit. Also server-side egress forwarding in `forward.cpp` |
 | `client/` | CLI, SOCKS, forwards, packet/TUN, relay, transfer |
 | `server/` | `yumed`: sessions, auth, host controller, federation, filters |
 | `facade/` | `yume_embed` (config marshalling, in-process client, log ring, and the transport backend behind `session/endpoint_backend.hpp`) and `yume_facade` (desktop session objects, traffic meter, key management) |
 | `gui/` | Optional desktop app. Links `yume_facade` only |
+| `platform/` | Platform-neutral executable-location interface plus the one configure-selected Linux/POSIX, macOS, or Windows implementation |
+| `tools/` | Optional operational and qualification executables: the read-only federation map, self-test harness, and focused transport/cryptography benchmarks |
 
 ### Cross-stack embedding boundary
 
@@ -62,6 +57,7 @@ the two depending on which file you started from. Check the directory first.
 | --- | --- |
 | `abi/` | The opt-in C ABI translation unit: handles, input validation, diagnostics, callback rules, and backend leasing. It reaches transport v2 only through `yume_embed`; it parses schema 1 through `config/v1`, whose endpoint remains unsupported. |
 | `include/yume/` | The public candidate C header. It is build-tree-only and unfrozen. |
+| `common/` | Dependency-pure contracts shared across replacement layers and the ABI; currently the canonical service-name grammar and bound |
 
 ### Replacement foundation
 
@@ -112,12 +108,10 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
 
 ## Rough edges
 
-Real, measured, and worth knowing before you go in.
-
 - **`server::Session` is one large class across many files.** The bodies are split across `session.cpp`,
   `carrier.cpp`, `control.cpp`, `streams.cpp`, `auth.cpp`, `open.cpp`,
   `open_transport.cpp`, `codecs.cpp`, `ext.cpp`, `services.cpp`, and
-  `reverse_listener.cpp`, divided by file size rather than by subsystem.
+  `reverse_listener.cpp`, with shared state in `session.hpp`.
   Tracing one behaviour means jumping between several of them.
 - **`Cli::run_parsed` is a large, deeply nested entry point** in
   `client/cli/entry.cpp`.
@@ -135,7 +129,15 @@ Real, measured, and worth knowing before you go in.
   (`config/client_document_keys.hpp`, `config/server_document_keys.hpp`), so a
   new key or bound has to be added to both. They still diverge on which
   numeric ranges they enforce and where, and the facade server parser reads a
-  narrower set of fields than it validates.
+  narrower set of fields than it validates. The shared closed-key validator
+  rejects explicit JSON `null` in every parser; an absent optional field can
+  still select its documented default. Other value rules remain duplicated.
+- **Authorization parsing is shared; publication belongs to the caller.**
+  `server/auth/authorized_identity_store.*` owns the identity grammar used by
+  CLI/facade key management and daemon startup/reload. They use
+  `core/runtime/bounded_file.*` for bounded regular-file reads. The daemon's
+  `server/auth/auth.cpp` still owns policy assembly within the Manager's
+  grouped snapshot transaction; parser reuse does not replace that lock.
 - **Four error-handling conventions coexist.** Exceptions in core, client, and
   server. `runtime::OperationStatus`. `engine::StatusCode`. And facade's `bool`
   plus `std::string* err`. The C ABI wraps all of them at its boundary.

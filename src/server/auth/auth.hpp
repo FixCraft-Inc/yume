@@ -30,7 +30,6 @@ struct AuthKeyPolicy {
     std::optional<bool> allow_exec;
     std::optional<bool> allow_local_ip;
     std::optional<bool> control_full;
-    std::optional<bool> allow_monero_rpc;
     std::vector<std::string> allowed_codecs;
     std::vector<std::string> allowed_services;
     std::optional<bool> allow_inbound_admin;
@@ -38,7 +37,6 @@ struct AuthKeyPolicy {
     std::optional<bool> allow_chat;
     std::optional<bool> allow_file;
     std::optional<bool> allow_bytes;
-    std::optional<std::uint32_t> priority;
     std::optional<double> weight;
     std::optional<std::uint32_t> max_sessions;
     AuthKeyType key_type{AuthKeyType::Individual};

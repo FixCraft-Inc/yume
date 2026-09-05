@@ -10,7 +10,6 @@
 #include <openssl/sha.h>
 
 #include <mutex>
-#include <fstream>
 #include <filesystem>
 #include <ctime>
 #include <algorithm>
@@ -21,10 +20,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/encoding/hex.hpp"
 #include "core/runtime/atomic_file.hpp"
+#include "core/runtime/bounded_file.hpp"
+#include "server/auth/authorized_identity_store.hpp"
 #include "core/runtime/file_transaction_lock.hpp"
 #include "server/auth/auth_metadata_json.hpp"
 #include "server/federation/types.hpp"
@@ -41,52 +41,6 @@ std::optional<bool> read_policy_bool(const nlohmann::json& entry, const char* ke
         if (permissions.contains(key) && permissions[key].is_boolean()) {
             return permissions[key].get<bool>();
         }
-    }
-    if (entry.contains(key) && entry[key].is_boolean()) {
-        return entry[key].get<bool>();
-    }
-    return std::nullopt;
-}
-
-std::optional<std::uint32_t> read_policy_uint(const nlohmann::json& entry,
-                                              const char* key,
-                                              std::uint32_t min_value,
-                                              std::uint32_t max_value) {
-    const auto read_value = [&](const nlohmann::json& value) {
-        std::uint64_t parsed = 0;
-        if (value.is_number_unsigned()) {
-            parsed = value.get<std::uint64_t>();
-        } else if (value.is_number_integer()) {
-            const auto signed_value = value.get<std::int64_t>();
-            if (signed_value < 0) {
-                throw std::runtime_error(
-                    std::string("auth key policy ") + key + " must be in " +
-                    std::to_string(min_value) + ".." +
-                    std::to_string(max_value));
-            }
-            parsed = static_cast<std::uint64_t>(signed_value);
-        } else {
-            throw std::runtime_error(
-                std::string("auth key policy ") + key + " must be an integer");
-        }
-        if (parsed < min_value || parsed > max_value) {
-            throw std::runtime_error(
-                std::string("auth key policy ") + key + " must be in " +
-                std::to_string(min_value) + ".." +
-                std::to_string(max_value));
-        }
-        return std::optional<std::uint32_t>(
-            static_cast<std::uint32_t>(parsed));
-    };
-
-    if (entry.contains("permissions") && entry["permissions"].is_object()) {
-        const auto& permissions = entry["permissions"];
-        if (permissions.contains(key)) {
-            return read_value(permissions[key]);
-        }
-    }
-    if (entry.contains(key)) {
-        return read_value(entry[key]);
     }
     return std::nullopt;
 }
@@ -151,22 +105,15 @@ std::optional<std::uint32_t> read_policy_max_sessions(const nlohmann::json& entr
 
 void RejectAdminPrivilegeInVisitorStore(const AuthKeyPolicy& policy,
                                         const std::string& fingerprint) {
-    // Admin is no longer expressible as a flag on a visitor key. It requires a
-    // second, distinct key from the separate admin store, proven by its own
-    // signature over the AUTH transcript.
-    //
-    // This throws rather than clearing the flag, and it applies to Individual
-    // keys as well as Bulk. Silently downgrading would leave an operator
-    // believing a key is privileged when it is not -- which is the mirror of the
-    // failure this whole design exists to prevent. A loud refusal at startup is
-    // the only safe reading of an admin flag in the wrong file.
+    // Admin requires a distinct key in the admin store and its own AUTH
+    // signature. Reject metadata grants instead of silently ignoring them.
     if (policy.allow_inbound_admin.value_or(false) ||
         policy.allow_outbound_admin.value_or(false) ||
         policy.control_full.value_or(false)) {
         throw std::runtime_error(
             "auth key policy for " + fingerprint +
-            " grants admin or full control, which visitor keys can no longer "
-            "carry. Admin now requires a second key listed in --admin-keys; "
+            " grants admin or full control, which visitor metadata cannot "
+            "grant. Admin requires a second key listed in --admin-keys; "
             "remove allow_inbound_admin / allow_outbound_admin / control_full "
             "from this file and enrol the operator's admin key instead");
     }
@@ -192,7 +139,6 @@ void validate_key_policy(const AuthKeyPolicy& policy,
     if (policy.allow_exec.value_or(false) ||
         policy.allow_local_ip.value_or(false) ||
         policy.control_full.value_or(false) ||
-        policy.allow_monero_rpc.value_or(false) ||
         !policy.allowed_codecs.empty() ||
         !policy.allowed_services.empty() ||
         policy.allow_inbound_admin.value_or(false) ||
@@ -227,15 +173,6 @@ void read_policy_codecs(const nlohmann::json& entry, std::vector<std::string>* o
         if (permissions.contains("allow_codecs")) {
             read_array(permissions["allow_codecs"]);
         }
-        if (permissions.contains("codec_allow")) {
-            read_array(permissions["codec_allow"]);
-        }
-    }
-    if (entry.contains("allow_codecs")) {
-        read_array(entry["allow_codecs"]);
-    }
-    if (entry.contains("codec_allow")) {
-        read_array(entry["codec_allow"]);
     }
 }
 
@@ -267,9 +204,6 @@ void read_policy_strings(const nlohmann::json& entry,
             read_array(permissions[key]);
         }
     }
-    if (entry.contains(key)) {
-        read_array(entry[key]);
-    }
 }
 
 }  // namespace
@@ -278,7 +212,6 @@ bool AuthKeyPolicy::empty() const {
     return !allow_exec.has_value() &&
            !allow_local_ip.has_value() &&
            !control_full.has_value() &&
-           !allow_monero_rpc.has_value() &&
            allowed_codecs.empty() &&
            allowed_services.empty() &&
            !allow_inbound_admin.has_value() &&
@@ -286,7 +219,6 @@ bool AuthKeyPolicy::empty() const {
            !allow_chat.has_value() &&
            !allow_file.has_value() &&
            !allow_bytes.has_value() &&
-           !priority.has_value() &&
            !weight.has_value() &&
            !max_sessions.has_value() &&
            key_type == AuthKeyType::Individual &&
@@ -298,97 +230,28 @@ double AuthKeyPolicy::effective_weight() const {
     if (weight.has_value()) {
         return *weight;
     }
-    if (priority.has_value()) {
-        return std::clamp(static_cast<double>(*priority) / 50.0, 0.1, 100.0);
-    }
     return 1.0;
 }
 
 namespace {
 
-bool is_pem_whitespace(char value) {
-    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
-}
-
-std::optional<crypto::Bytes> take_public_pem_block(
-    std::string_view contents, std::size_t& cursor, const char* what) {
-    while (cursor < contents.size() && is_pem_whitespace(contents[cursor])) {
-        ++cursor;
-    }
-    if (cursor == contents.size()) return std::nullopt;
-
-    static constexpr std::string_view kBegin = "-----BEGIN PUBLIC KEY-----";
-    static constexpr std::string_view kEnd = "-----END PUBLIC KEY-----";
-    if (!contents.substr(cursor).starts_with(kBegin)) {
-        throw std::runtime_error(std::string(what) +
-                                 " contains non-PEM or malformed data");
-    }
-    const std::size_t start = cursor;
-    const std::size_t end_start = contents.find(kEnd, cursor + kBegin.size());
-    if (end_start == std::string_view::npos) {
-        throw std::runtime_error(std::string(what) +
-                                 " contains an unterminated public-key PEM block");
-    }
-    cursor = end_start + kEnd.size();
-    if (cursor < contents.size() && !is_pem_whitespace(contents[cursor])) {
-        throw std::runtime_error(std::string(what) +
-                                 " contains trailing data after a PEM block");
-    }
-    return crypto::Bytes(contents.begin() + static_cast<std::ptrdiff_t>(start),
-                         contents.begin() + static_cast<std::ptrdiff_t>(cursor));
-}
-
-// Reads composite identities from a PEM file. Each identity is two consecutive
-// blocks -- Ed25519 then ML-DSA-87 -- stored as one canonical blob so the pair
-// is matched atomically. A trailing odd block is an error rather than a
-// silently ignored line: a half-written identity in an authorized-keys file
-// should stop the server, not quietly authorize nothing.
+// Called under the Manager's existing grouped file transaction during reload.
+// CLI, facade and daemon share the canonical composite store grammar.
 std::vector<crypto::Bytes> load_composite_store(const std::string& path,
                                                 const char* what) {
+    if (path.empty()) return {};
+    std::string contents;
+    std::string error;
+    if (!runtime::read_text_file_bounded(path, 64U * 1024U * 1024U, &contents, &error)) {
+        throw std::runtime_error(std::string(what) + ": " + error);
+    }
+    std::vector<AuthorizedIdentity> identities;
+    if (!parse_authorized_identity_store(contents, &identities, &error)) {
+        throw std::runtime_error(std::string(what) + ": " + error);
+    }
     std::vector<crypto::Bytes> keys;
-    if (path.empty()) return keys;
-
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) {
-        throw std::runtime_error(std::string("failed to open ") + what);
-    }
-    constexpr std::streamoff kMaximumStoreBytes = 64 * 1024 * 1024;
-    const std::streamoff size = input.tellg();
-    if (size < 0 || size > kMaximumStoreBytes) {
-        throw std::runtime_error(std::string(what) + " is too large");
-    }
-    std::string contents(static_cast<std::size_t>(size), '\0');
-    input.seekg(0);
-    if (size != 0 &&
-        !input.read(contents.data(), static_cast<std::streamsize>(size))) {
-        throw std::runtime_error(std::string("failed to read ") + what);
-    }
-
-    std::size_t cursor = 0;
-    while (true) {
-        auto classical = take_public_pem_block(contents, cursor, what);
-        if (!classical.has_value()) break;
-        auto pq = take_public_pem_block(contents, cursor, what);
-        if (!pq.has_value()) {
-            throw std::runtime_error(
-                std::string(what) +
-                " contains an incomplete composite identity: every entry must be "
-                "an Ed25519 public key followed by an ML-DSA-87 public key");
-        }
-
-        crypto::Bytes bundle = std::move(*classical);
-        bundle.push_back('\n');
-        bundle.insert(bundle.end(), pq->begin(), pq->end());
-        crypto::CompositePublicKey composite =
-            crypto::parse_composite_identity(bundle);
-        if (!composite.valid()) {
-            throw std::runtime_error(
-                std::string(what) +
-                ": every entry must be an Ed25519 public key followed by an "
-                "ML-DSA-87 public key");
-        }
-        keys.push_back(crypto::composite_canonical_encoding(composite));
-    }
+    keys.reserve(identities.size());
+    for (auto& identity : identities) keys.push_back(std::move(identity.canonical));
     return keys;
 }
 
@@ -422,40 +285,19 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         return policies;
     }
 
-    constexpr std::uintmax_t kMaximumMetadataBytes =
-        16U * 1024U * 1024U;
-    std::error_code status_error;
-    const bool exists = std::filesystem::exists(meta_path, status_error);
-    if (status_error) {
-        throw std::runtime_error(
-            "failed to inspect auth_keys_meta: " + status_error.message());
+    std::string contents;
+    std::string error;
+    bool existed = false;
+    if (!runtime::read_optional_text_file_bounded(
+            meta_path, 16U * 1024U * 1024U, true, &contents, &existed, &error)) {
+        throw std::runtime_error("failed to read auth_keys_meta: " + error);
     }
-    if (!exists) {
-        return policies;
-    }
-    const auto size = std::filesystem::file_size(meta_path, status_error);
-    if (status_error) {
-        throw std::runtime_error(
-            "failed to inspect auth_keys_meta size: " +
-            status_error.message());
-    }
-    if (size > kMaximumMetadataBytes) {
-        throw std::runtime_error("auth_keys_meta exceeds 16 MiB");
-    }
-
-    std::ifstream in(meta_path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("failed to open auth_keys_meta");
-    }
-
-    nlohmann::json meta = nlohmann::json::object();
+    if (!existed) return policies;
+    nlohmann::json meta;
     try {
-        in >> meta;
+        meta = nlohmann::json::parse(contents);
     } catch (const std::exception& ex) {
         throw std::runtime_error(std::string("failed to parse auth_keys_meta: ") + ex.what());
-    }
-    if (in.bad()) {
-        throw std::runtime_error("failed to finish reading auth_keys_meta");
     }
     if (!meta.is_object()) {
         throw std::runtime_error("auth_keys_meta root must be an object");
@@ -470,18 +312,13 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         policy.allow_exec = read_policy_bool(it.value(), "allow_exec");
         policy.allow_local_ip = read_policy_bool(it.value(), "allow_local_ip");
         policy.control_full = read_policy_bool(it.value(), "control_full");
-        policy.allow_monero_rpc = read_policy_bool(it.value(), "allow_monero_rpc");
         read_policy_codecs(it.value(), &policy.allowed_codecs);
         read_policy_strings(it.value(), "allow_services", &policy.allowed_services);
-        if (policy.allow_monero_rpc.value_or(false)) {
-            app_codec::add_codec_unique(&policy.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId);
-        }
         policy.allow_inbound_admin = read_policy_bool(it.value(), "allow_inbound_admin");
         policy.allow_outbound_admin = read_policy_bool(it.value(), "allow_outbound_admin");
         policy.allow_chat = read_policy_bool(it.value(), "allow_chat");
         policy.allow_file = read_policy_bool(it.value(), "allow_file");
         policy.allow_bytes = read_policy_bool(it.value(), "allow_bytes");
-        policy.priority = read_policy_uint(it.value(), "priority", 1, 100);
         policy.weight = read_policy_weight(it.value());
         policy.max_sessions = read_policy_max_sessions(it.value());
         policy.key_type = read_key_type(it.value());
@@ -620,7 +457,6 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     append("allow_exec", policy.allow_exec);
     append("allow_local_ip", policy.allow_local_ip);
     append("control_full", policy.control_full);
-    append("allow_monero_rpc", policy.allow_monero_rpc);
     if (!policy.allowed_codecs.empty()) {
         std::ostringstream joined;
         for (std::size_t i = 0; i < policy.allowed_codecs.size(); ++i) {
@@ -646,9 +482,6 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     append("allow_chat", policy.allow_chat);
     append("allow_file", policy.allow_file);
     append("allow_bytes", policy.allow_bytes);
-    if (policy.priority.has_value()) {
-        parts.emplace_back("priority=" + std::to_string(*policy.priority));
-    }
     if (policy.weight.has_value()) {
         std::ostringstream value;
         value << *policy.weight;
@@ -700,44 +533,17 @@ bool update_auth_meta(const std::string& meta_path,
     std::lock_guard<std::mutex> lock(auth_meta_file_mutex);
 
     nlohmann::json meta = nlohmann::json::object();
-    std::error_code status_error;
-    const bool exists = std::filesystem::exists(meta_path, status_error);
-    if (status_error) {
-        if (error) {
-            *error = "cannot inspect auth metadata '" + meta_path + "': " +
-                     status_error.message();
-        }
+    std::string contents;
+    bool existed = false;
+    if (!runtime::read_optional_text_file_bounded(
+            meta_path, 16U * 1024U * 1024U, true, &contents, &existed, error)) {
         return false;
     }
-    if (exists) {
-        constexpr std::uintmax_t kMaximumMetadataBytes =
-            16U * 1024U * 1024U;
-        const auto size = std::filesystem::file_size(meta_path, status_error);
-        if (status_error || size > kMaximumMetadataBytes) {
-            if (error) {
-                *error = status_error
-                             ? "cannot inspect auth metadata size: " +
-                                   status_error.message()
-                             : "auth metadata file is too large";
-            }
-            return false;
-        }
-        std::ifstream in(meta_path, std::ios::binary);
-        if (!in) {
-            if (error) *error = "cannot open auth metadata: " + meta_path;
-            return false;
-        }
+    if (existed) {
         try {
-            in >> meta;
+            meta = nlohmann::json::parse(contents);
         } catch (const std::exception& ex) {
-            if (error) {
-                *error = "cannot parse auth metadata '" + meta_path +
-                         "': " + ex.what();
-            }
-            return false;
-        }
-        if (in.bad()) {
-            if (error) *error = "cannot finish reading auth metadata: " + meta_path;
+            if (error) *error = std::string("cannot parse auth metadata: ") + ex.what();
             return false;
         }
         if (!validate_auth_metadata_json_types(meta, error)) return false;

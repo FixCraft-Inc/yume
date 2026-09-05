@@ -22,12 +22,10 @@ namespace yume::runtime {
 // transport is both a denial of service and the loudest possible signal to a
 // prober.
 //
-// Containing here drops only the connection whose handler threw. The exception
-// unwinds that handler, releasing the shared_ptr it was holding, so the session
-// destructs and its socket closes. Every other session keeps being served.
-// That is why this re-enters run() instead of stopping the context. Asio
-// permits re-entry after a handler throws, and the throwing handler has already
-// been consumed, so re-entry resumes with the next one rather than spinning.
+// This boundary keeps the worker alive and resumes the next handler. It has
+// no session ownership: other reads, writes, or timers may still retain the
+// failed session. Session handlers must settle their own state and cancel
+// outstanding work. Process containment alone does not establish cleanup.
 //
 // This is a backstop, not a licence to throw across an executor boundary.
 // Handlers at a trust boundary must still reject bad input rather than throw.

@@ -39,18 +39,6 @@ namespace cfg_key = keys;
 
 namespace {
 
-template <typename T>
-void read_canonical_or_legacy(json const& j,
-                              const char* canonical,
-                              const char* legacy,
-                              T& value) {
-    if (j.contains(canonical)) {
-        read_opt(j, canonical, value);
-    } else {
-        read_opt(j, legacy, value);
-    }
-}
-
 std::string format_endpoint_spec(std::string_view host, int port) {
     std::string endpoint;
     if (host.find(':') != std::string_view::npos) {
@@ -77,8 +65,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::socks_bind, c.socks_bind_host);
     read_opt(j, cfg_key::socks_port, c.socks_port);
     read_opt(j, cfg_key::packet_tun_name, c.packet_tun_name);
-    read_canonical_or_legacy(
-        j, cfg_key::threads, cfg_key::io_threads, c.io_threads);
+    read_opt(j, cfg_key::threads, c.io_threads);
     read_opt(j, cfg_key::tunnels, c.tunnel_count);
     read_opt(j, cfg_key::obfuscation, c.obfuscation);
     read_opt(j, cfg_key::obfs_secret_file, c.obfs_secret_file);
@@ -89,7 +76,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::rekey_window, c.rekey_window);
     c.security_profile = yume::config::ParseSecurityProfile(
         j, c.security_profile);
-    read_canonical_or_legacy(j, cfg_key::udp, cfg_key::allow_udp, c.allow_udp);
+    read_opt(j, cfg_key::udp, c.allow_udp);
     read_opt(j, cfg_key::allow_local_ip, c.allow_local_ip);
     read_opt(j, cfg_key::server_in_charge, c.server_in_charge);
     read_opt(j, cfg_key::server_in_charge_port, c.server_in_charge_port);
@@ -104,8 +91,11 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::auth_key_material_id, c.auth_key_material_id);
     read_opt(j, cfg_key::tls_ca_cert, c.tls_ca_cert);
     read_opt(j, cfg_key::tls_server_name, c.tls_server_name);
-    read_canonical_or_legacy(
-        j, cfg_key::tls_pin, cfg_key::tls_pin_sha256, c.tls_pin_sha256);
+    // Android SharedYumeSessionConfig writes tls_pin_sha256. Native writers
+    // use tls_pin, which takes precedence if both are present.
+    read_opt(j, j.contains(cfg_key::tls_pin) ? cfg_key::tls_pin
+                                          : cfg_key::tls_pin_sha256,
+             c.tls_pin_sha256);
     read_opt(j, cfg_key::transport_profile, c.transport_profile);
     read_opt(j, cfg_key::tls_backend, c.tls_backend);
     read_opt(j, cfg_key::tls_helper_path, c.tls_helper_path);
@@ -131,8 +121,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::relay_receive_dir, c.relay_receive_dir);
     read_opt(j, cfg_key::relay_key_file, c.relay_key_file);
     read_opt(j, cfg_key::auto_attach_local, c.auto_attach_local);
-    read_canonical_or_legacy(
-        j, cfg_key::app_codec, cfg_key::codec, c.app_codec);
+    read_opt(j, cfg_key::app_codec, c.app_codec);
     if (j.contains(cfg_key::app_codec_listen)) {
         std::string endpoint_spec;
         read_opt(j, cfg_key::app_codec_listen, endpoint_spec);

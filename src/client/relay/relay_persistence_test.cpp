@@ -264,13 +264,15 @@ int main() {
     assert(!load_relay_secret_file(relay_link, &loaded, &error));
     assert(!write_relay_secret_file(relay_link, secret_b64, &error));
 
-    const auto legacy_key = temp.path() / "relay-key-v1.txt";
-    const std::vector<std::uint8_t> legacy_bytes(
+    const auto bare_key = temp.path() / "relay-key-v1.txt";
+    const std::vector<std::uint8_t> bare_bytes(
         secret_b64.begin(), secret_b64.end());
     assert(security::WriteFileExclusive0600(
-        legacy_key, std::span<const std::uint8_t>(legacy_bytes), &error));
-    assert(load_relay_secret_file(legacy_key, &loaded, &error));
-    assert(loaded == secret_b64);
+        bare_key, std::span<const std::uint8_t>(bare_bytes), &error));
+    const std::string loaded_before_refusal = loaded;
+    assert(!load_relay_secret_file(bare_key, &loaded, &error));
+    assert(loaded == loaded_before_refusal);
+    assert(error.find(secret_b64) == std::string::npos);
 
     const auto rejected_history_root =
         temp.path() / "history-rejected-append";

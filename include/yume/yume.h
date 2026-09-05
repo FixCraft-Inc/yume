@@ -323,10 +323,9 @@ YUME_API void yume_runtime_destroy(yume_runtime* runtime) YUME_NOEXCEPT;
  * inline private material, provider mismatch, and unsafe combinations fail
  * with a diagnostic.
  *
- * One boundary is deliberate and differs from the schema-1 dialect: the
- * transport-v2 client dialect still accepts four spellings that alias a
- * canonical key, because a released consumer emits one of them. Writers emit
- * only the canonical spelling.
+ * The transport-v2 client accepts tls_pin_sha256 because the Android config
+ * writer emits it. Native writers use tls_pin, which takes precedence when
+ * both are present. The schema-1 dialect has no aliases.
  *
  * Both dialects report an RFC 6901 JSON pointer for a failure attributable to
  * one member, and an empty pointer when the failure belongs to no single

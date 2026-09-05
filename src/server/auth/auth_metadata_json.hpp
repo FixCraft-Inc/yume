@@ -7,17 +7,19 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
 namespace yume::server {
 
-// Validate every metadata value consumed by the authorization policy loader
-// or key-management surfaces. Unknown keys remain available for extensions,
-// but a known key with the wrong JSON type is never silently ignored.
+// Daemon loading and key-management edits use the same closed schema.
+// Permissions belong under "permissions" so a second spelling cannot mask
+// a misspelled or conflicting policy.
 inline bool validate_auth_metadata_json_types(const nlohmann::json& metadata,
                                               std::string* error) {
     if (error) error->clear();
@@ -27,15 +29,29 @@ inline bool validate_auth_metadata_json_types(const nlohmann::json& metadata,
     }
     constexpr const char* kBooleanKeys[] = {
         "allow_exec",          "allow_local_ip",      "control_full",
-        "allow_monero_rpc",    "allow_inbound_admin", "allow_outbound_admin",
+        "allow_inbound_admin", "allow_outbound_admin",
         "allow_chat",          "allow_file",          "allow_bytes",
     };
     constexpr const char* kStringArrayKeys[] = {
-        "allow_codecs", "codec_allow", "allow_services",
+        "allow_codecs", "allow_services",
     };
+    constexpr auto kEntryKeys = std::to_array<std::string_view>({
+        "alias", "last_seen", "permissions", "weight", "max_sessions",
+        "key_type", "federation_peer_id", "federation_psk_file",
+    });
 
     const auto validate_policy_object = [&](const nlohmann::json& policy,
                                             const std::string& prefix) {
+        for (auto it = policy.begin(); it != policy.end(); ++it) {
+            const auto matches = [&](const char* key) { return it.key() == key; };
+            if (!std::any_of(std::begin(kBooleanKeys), std::end(kBooleanKeys),
+                             matches) &&
+                !std::any_of(std::begin(kStringArrayKeys),
+                             std::end(kStringArrayKeys), matches)) {
+                if (error) *error = prefix + "unknown field " + it.key();
+                return false;
+            }
+        }
         for (const char* key : kBooleanKeys) {
             const auto it = policy.find(key);
             if (it != policy.end() && !it->is_boolean()) {
@@ -58,13 +74,6 @@ inline bool validate_auth_metadata_json_types(const nlohmann::json& metadata,
                 return false;
             }
         }
-        const auto priority = policy.find("priority");
-        if (priority != policy.end() &&
-            !priority->is_number_integer() &&
-            !priority->is_number_unsigned()) {
-            if (error) *error = prefix + "priority must be an integer";
-            return false;
-        }
         return true;
     };
 
@@ -74,6 +83,13 @@ inline bool validate_auth_metadata_json_types(const nlohmann::json& metadata,
         if (!entry.is_object()) {
             if (error) *error = prefix + "must be an object";
             return false;
+        }
+        for (auto field = entry.begin(); field != entry.end(); ++field) {
+            if (std::find(kEntryKeys.begin(), kEntryKeys.end(), field.key()) ==
+                kEntryKeys.end()) {
+                if (error) *error = prefix + "unknown field " + field.key();
+                return false;
+            }
         }
         const auto alias = entry.find("alias");
         if (alias != entry.end() && !alias->is_string()) {
@@ -101,7 +117,6 @@ inline bool validate_auth_metadata_json_types(const nlohmann::json& metadata,
             if (error) *error = prefix + "permissions must be an object";
             return false;
         }
-        if (!validate_policy_object(entry, prefix)) return false;
         if (permissions != entry.end() &&
             !validate_policy_object(*permissions, prefix + "permissions ")) {
             return false;

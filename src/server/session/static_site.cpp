@@ -6,10 +6,12 @@
 
 #include "server/session/static_site.hpp"
 
+#include "core/runtime/bounded_file.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <fstream>
+#include <limits>
 #include <system_error>
 #include <vector>
 
@@ -169,6 +171,8 @@ ByteRange parse_byte_range(std::string_view range_header, std::uint64_t file_siz
         std::uint64_t acc = 0;
         for (char c : s) {
             if (c < '0' || c > '9') return false;
+            if (acc > (std::numeric_limits<std::uint64_t>::max() -
+                       static_cast<std::uint64_t>(c - '0')) / 10U) return false;
             acc = acc * 10 + static_cast<std::uint64_t>(c - '0');
         }
         v = acc;
@@ -222,38 +226,14 @@ ByteRange parse_byte_range(std::string_view range_header, std::uint64_t file_siz
 std::optional<FileContents> read_under_root(const std::string& root,
                                             const std::string& rel_path,
                                             std::size_t max_bytes) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
+    auto directory = runtime::FileRoot::open(root);
+    if (!directory) return std::nullopt;
 
-    const fs::path root_canon = fs::weakly_canonical(fs::path(root), ec);
-    if (ec) return std::nullopt;
-    const fs::path full = fs::weakly_canonical(root_canon / fs::path(rel_path), ec);
-    if (ec) return std::nullopt;
-
-    // Component-wise containment: full must be root_canon or a descendant.
-    // weakly_canonical has already resolved any symlink, so a link pointing
-    // outside the root yields an outside path that fails this check. Compare
-    // components (not string prefixes) so "/srv/www" does not match
-    // "/srv/www-secret".
-    auto rit = root_canon.begin();
-    auto fit = full.begin();
-    for (; rit != root_canon.end(); ++rit, ++fit) {
-        if (fit == full.end() || *fit != *rit) return std::nullopt;
-    }
-
-    if (!fs::is_regular_file(full, ec) || ec) return std::nullopt;
-    const auto size = fs::file_size(full, ec);
-    if (ec || size > max_bytes) return std::nullopt;
-
-    std::ifstream in(full, std::ios::binary);
-    if (!in) return std::nullopt;
     FileContents out;
-    out.bytes.resize(static_cast<std::size_t>(size));
-    if (size != 0) {
-        in.read(out.bytes.data(), static_cast<std::streamsize>(size));
-        if (static_cast<std::uintmax_t>(in.gcount()) != size) return std::nullopt;
+    if (!directory->read_text(rel_path, max_bytes, &out.bytes, nullptr,
+                              &out.mtime)) {
+        return std::nullopt;
     }
-    out.mtime = fs::last_write_time(full, ec);  // best-effort; ec ignored
     return out;
 }
 

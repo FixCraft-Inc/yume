@@ -113,7 +113,6 @@ private:
             boost::asio::buffer(backend_buf_),
             [self](const boost::system::error_code& ec, std::size_t n) {
                 if (ec) {
-                    boost::system::error_code shutdown_ec;
                     self->client_stream_.async_shutdown(
                         [self](const boost::system::error_code&) {
                             boost::system::error_code close_ec;

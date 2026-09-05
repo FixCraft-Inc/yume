@@ -149,12 +149,13 @@ sudo ./build/bin/yumed \
   --real-index /etc/yume/cover-index.html
 ```
 
-`--real-index` is not optional. The cover backend answers HTTP/1.1 only, so
-the HTTP/2 decoy needs its own page and the daemon ships no built-in one: a
-page compiled into `yumed` would be byte-identical on every YUME deployment
-and would identify the server to anyone who sends it one HTTP/2 request.
-`--real-root <dir>` or a captured `--upstream-response-dir <dir>` satisfies
-the same requirement.
+This configuration requires a cover source such as `--real-index` in addition
+to the backend. Ordinary HTTP/1.1 and HTTP/2 GET/HEAD requests reach Node;
+separate partial-preface, malformed-probe, and admission-disabled paths can
+use the decoy page. The daemon ships no built-in page. `--real-root <dir>` or
+`--upstream-response-dir <dir>` satisfies the same startup requirement. See
+[probe and cover behavior](FILTERING_SELF_DPI.md) for the current file-read,
+captured-replay, and failure-response limitations.
 
 `yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
 to Node. Node never receives tunnel payloads, identities, or secret material.

@@ -358,15 +358,15 @@ int main() {
            std::string(64, 'a'));
     assert(!exported_settings.contains("relay_trust_dir"));
 
-    ShareBundle legacy_bundle;
-    legacy_bundle.server_host = "192.0.2.11";
-    legacy_bundle.anonym_ca_cert_pem = "combined-legacy-ca";
-    const auto legacy_encoded = encode_share(legacy_bundle, password, &error);
-    const auto legacy_decoded = decode_share(legacy_encoded, password, &error);
-    assert(legacy_decoded.has_value());
-    assert(legacy_decoded->tls_ca_cert_pem == legacy_bundle.anonym_ca_cert_pem);
-    assert(legacy_decoded->relay_trust_mode == "tofu");
-    assert(legacy_decoded->relay_peer_pins.empty());
+    ShareBundle shared_ca_bundle;
+    shared_ca_bundle.server_host = "192.0.2.11";
+    shared_ca_bundle.anonym_ca_cert_pem = "shared-operator-tls-ca";
+    const auto shared_ca_encoded = encode_share(shared_ca_bundle, password, &error);
+    const auto shared_ca_decoded = decode_share(shared_ca_encoded, password, &error);
+    assert(shared_ca_decoded.has_value());
+    assert(shared_ca_decoded->tls_ca_cert_pem == shared_ca_bundle.anonym_ca_cert_pem);
+    assert(shared_ca_decoded->relay_trust_mode == "tofu");
+    assert(shared_ca_decoded->relay_peer_pins.empty());
 
     ShareBundle invalid_bundle = bundle;
     invalid_bundle.relay_trust_mode = "TOFU";

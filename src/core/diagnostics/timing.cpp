@@ -18,9 +18,7 @@ std::atomic<bool> g_timing_forced{false};
 std::atomic<bool> g_timing_enabled{false};
 
 bool timing_env_enabled() {
-    return util::env_flag("YUME_TIMING", false) ||
-           util::env_flag("YUME_TRACE_TIMING", false) ||
-           util::env_flag("YUME_PROFILE", false);
+    return util::env_flag("YUME_TIMING", false);
 }
 
 }  // namespace

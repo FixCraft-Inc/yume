@@ -522,7 +522,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
 
             connect_timer->async_wait(boost::asio::bind_executor(
                 self->strand_,
-                [self, stream_id, remote, connect_timed_out](
+                [self, remote, connect_timed_out](
                     const boost::system::error_code& ec) {
                     if (ec) {
                         return;

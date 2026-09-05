@@ -6,11 +6,9 @@
 
 This document defines the JSON operation envelope used by local runtime IPC and
 by the in-process embedder entry points `client::RuntimeController::request` and
-`server::RuntimeController::request`. The 1.x C ABI reached this bus through
-`yume_client_request_json` / `yume_server_request_json`; those symbols no longer
-exist, and the replacement role-neutral ABI deliberately exposes typed
-lifecycle calls instead of a JSON operation bus. This contract is independent
-of transport v2 and of `YUME_ABI_VERSION`.
+`server::RuntimeController::request`. The replacement role-neutral ABI exposes
+typed lifecycle calls instead of this JSON operation bus. This contract is
+independent of transport v2 and of `YUME_ABI_VERSION`.
 
 ## Envelope and error layers
 
@@ -29,45 +27,28 @@ or:
 `result` may be an object, array, Boolean, or another operation-specific JSON
 value. `error` is diagnostic text and must never be parsed to recover a status.
 
-The C calls have a separate outer status layer:
+These C++ entry points accept a nonempty operation name and a JSON argument
+object. Pass `{}` for no arguments. Local IPC receives one newline-delimited
+JSON request with `op` and optional object `args`; received messages are capped
+at 1 MiB. There is no generic C request function or response-sizing cache in
+the current ABI.
 
-- invalid handles/op names or a non-object `args_json` return
-  `YUME_STATUS_INVALID_ARGUMENT`;
-- malformed or numerically unrepresentable JSON returns
-  `YUME_STATUS_PARSE_ERROR`;
-- an unavailable runtime returns `YUME_STATUS_NOT_RUNNING`;
-- request transport/deadline failure returns its typed ABI status;
-- a handled operation failure returns `YUME_STATUS_OK` and `ok=false` in the
-  output envelope;
-- sizing follows the normal ABI rule: `out == NULL` or insufficient storage
-  returns `YUME_STATUS_BUFFER_TOO_SMALL`, and `needed` includes the final NUL.
-
-The generic C request calls serialize requests per handle. A sizing call still
-executes the operation, but YUME retains its completed handled response when it
-does not fit. An immediate retry with the same operation and normalized
-argument object copies that pending response without running the handler again;
-successful delivery consumes it, while another too-small buffer preserves it.
-Only one response is pending per handle, and a different well-formed request
-discards it before execution, so callers should keep each sizing/retry pair
-together. The cache uses a fixed-size digest rather than retaining plaintext
-request JSON. `NULL`, an empty string, and `{}` are equivalent empty argument
-objects. Typed transport, lifecycle, and deadline failures do not produce a
-cacheable handled response.
-
-`args_json == NULL` or an empty string means `{}`. Any nonempty value must
-encode an object. The operation name must be a nonempty exact string. Operation
-names are limited to 128 bytes and serialized arguments to 1 MiB, excluding
-their terminating NULs; exceeding a bound returns
-`YUME_STATUS_RESOURCE_EXHAUSTED` before dispatch.
+The client controller reports IPC/connect/read/parse failures through its
+`std::string* error` and returns an empty object. The embedded server controller
+also exposes `runtime::OperationStatus`: invalid input, an unavailable runtime,
+and an internal failure have distinct statuses. A handled operation returns
+`Success` even when the envelope contains `ok=false`. Check the outer failure
+channel before interpreting the envelope. The replacement ABI's typed lifecycle
+and stream contract is documented separately in [ABI.md](ABI.md).
 
 ## Authority and deadlines
 
-The client request entry point runs as the connected local client identity. Its
-explicit timeout bounds how long the caller waits and whether a queued handler
-may start. If the deadline expires before the handler starts, that handler is
-cancelled. If it has already started, it may finish after the caller receives
-`YUME_STATUS_TIMEOUT`, including completing a mutation. A timeout is therefore
-not a rollback result and callers must not blindly retry a mutating operation.
+The client request entry point runs as the connected local client identity.
+Its timeout configures socket send/receive timeouts after connecting; it is not
+an overall operation deadline and does not cancel a queued or running handler.
+An operation can complete a mutation after its caller stops waiting. A timeout
+is therefore not a rollback result and callers must not blindly retry a
+mutating operation.
 Remote `admin.*` operations also have an independent internal 8-second
 request deadline and depend on an authenticated admin relay channel plus
 remote authorization.
@@ -81,6 +62,18 @@ exposes only bounded read operations. It has no timeout parameter. Mutating
 admin-socket operations such as `runtime.stop`, `runtime.disconnect`, session
 killing, and rules reload return a handled `ok=false` envelope here. Use typed
 lifecycle and facade methods for embedded mutations.
+
+Embedded server startup rejects `anonym=true` with an invalid-argument result.
+Operator-proof generation, refresh, and associated logging policy belong to
+standalone `yumed`.
+
+Embedded server stop preserves graceful drain when cancellation succeeds. If a
+teardown step throws, the controller stops executor progress before joining its
+workers and records the first failed stage in its status message. This
+diagnostic is not a typed teardown result or a guarantee that all session work
+settled gracefully; the embedding stop seam remains `void noexcept`.
+Local IPC shutdown wakes the listener and keeps its descriptor open until the
+serving thread has joined, preventing concurrent descriptor mutation or reuse.
 
 ## Client operations
 
@@ -184,9 +177,7 @@ Every current item contains the five required fields shown above: integer
 `ts_ms` within the signed 64-bit range, nonempty string `peer_id`, string
 `peer_name`, `direction` equal to `in` or `out`, and string `text`. The
 protected on-disk record is a closed internal schema with exactly those five
-fields. That storage rule does not close the public response schema: ABI-v1
-consumers must ignore unknown additive result fields under the compatibility
-rules below.
+fields. That storage rule does not close the public response schema: facade callers read the documented result fields and ignore additional fields.
 Protection, I/O, protected-scan, directory-scan, or record-integrity failure
 yields `available:false`, a nonempty diagnostic, and an empty `items` array; it
 is never silently reported as empty history.
@@ -326,32 +317,13 @@ No field implies multi-hop forwarding. The design that could change this is
 explicitly unimplemented in
 [`protocol/YUME_2_0_FEDERATION_TRANSIT.md`](protocol/YUME_2_0_FEDERATION_TRANSIT.md).
 
-## Compatibility
+## Interface changes
 
-### Compatibility migrations
+This JSON facade is a development interface, separate from the C ABI in
+[ABI.md](ABI.md). Update its callers and tests with any changed operation or
+field. Do not add fallback requests for an earlier development shape.
 
-The current pre-GUI/Android synchronization snapshot intentionally replaces
-four earlier, unqualified development shapes:
-
-- `invite.accept` and `invite.reject` take `invite_selector`, not the
-  misleading `invite_id` name, because an unambiguous display name is also valid;
-- deleting all history requires explicit `{"all":true}` rather than an empty
-  object;
-- `history.list` returns the bounded availability document above rather than
-  a bare array;
-- federation timestamps use `last_handshake_ms`, not
-  `last_handshake_ts`.
-
-GUI and Android consumers must migrate all four together and must not implement
-fallback retries with the old mutation schemas.
-
-Within ABI v1, the envelope, outer-status split, operation names documented as
-public, required input meaning, and existing required result fields do not
-change incompatibly. Implementations may add result fields. Callers must ignore
-unknown fields and must not depend on object key order or diagnostic wording.
-
-The product remains pre-1.0, so adding a new operation or optional field does
-not require a transport or ABI version bump. Removing/renaming an operation,
-changing an existing field's type/meaning, or turning a handled operation
-failure into an outer ABI failure requires an explicit compatibility decision
-and synchronized consumer migration.
+The current operations use `invite_selector` for invite acceptance/rejection,
+require `{"all":true}` to delete all history, return the bounded `history.list`
+document, and report federation timestamps as `last_handshake_ms`.
+Callers should read the documented result fields and ignore JSON object order.

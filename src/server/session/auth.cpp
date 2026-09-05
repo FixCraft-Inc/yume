@@ -313,14 +313,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         const bool key_exec = decision.policy_.allow_exec.value_or(false);
         const bool key_local_ip =
             decision.policy_.allow_local_ip.value_or(false);
-        // Full control and admin no longer come from the visitor key's policy --
-        // load_auth_policies refuses those flags outright now. They come from a
-        // verified second factor: a distinct key in the separate admin store
-        // that signed this transcript under the admin domain. That is the only
-        // route, so a misedited policy file cannot produce an admin session.
+        // Full control comes from the separately verified admin identity.
+        // Visitor metadata cannot grant it.
         const bool key_control_full = decision.admin_authenticated_;
-        const bool key_monero_rpc =
-            decision.policy_.allow_monero_rpc.value_or(false);
         for (const auto& codec : decision.policy_.allowed_codecs) {
             const std::string id = app_codec::canonical_codec_id(codec);
             if (app_codec::contains_codec(cfg_.allowed_codecs, id)) {
@@ -335,10 +330,6 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                           service) != cfg_.allowed_services.end()) {
                 decision.allowed_services_.insert(service);
             }
-        }
-        if (key_monero_rpc && app_codec::contains_codec(cfg_.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) {
-            decision.allowed_codecs_.insert(
-                std::string(app_codec::builtin::kMoneroRpcCodecId));
         }
 #if YUME_FEATURE_EXEC
         decision.allow_exec_ = key_exec && cfg_.allow_exec;
@@ -369,9 +360,8 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 #endif
         decision.allow_monero_rpc_ = decision.allowed_codecs_.count(
             std::string(app_codec::builtin::kMoneroRpcCodecId)) != 0;
-        if ((key_monero_rpc ||
-             app_codec::contains_codec(decision.policy_.allowed_codecs,
-                                       app_codec::builtin::kMoneroRpcCodecId)) &&
+        if (app_codec::contains_codec(decision.policy_.allowed_codecs,
+                                     app_codec::builtin::kMoneroRpcCodecId) &&
             !app_codec::contains_codec(cfg_.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": Monero RPC codec requested by key but server has not enabled --codec-allow monero-rpc");

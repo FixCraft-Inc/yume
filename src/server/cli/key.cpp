@@ -33,8 +33,10 @@
 #include "core/security/secure_erase.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "core/runtime/atomic_file.hpp"
+#include "core/runtime/bounded_file.hpp"
 #include "core/runtime/file_transaction_lock.hpp"
 #include "server/auth/auth.hpp"
+#include "server/auth/authorized_identity_store.hpp"
 #include "server/auth/auth_metadata_json.hpp"
 #include "server/cli/config_json_types.hpp"
 #include "server/cli/numeric_parse.hpp"
@@ -47,141 +49,6 @@ namespace {
 constexpr std::uintmax_t kMaximumKeyStoreBytes = 64U * 1024U * 1024U;
 constexpr std::uintmax_t kMaximumJsonFileBytes = 16U * 1024U * 1024U;
 
-struct AuthorizedIdentity {
-    crypto::Bytes canonical;
-    std::string pem;
-    std::string fingerprint;
-};
-
-bool read_bounded_file(const std::filesystem::path& path,
-                       std::uintmax_t maximum_bytes,
-                       bool allow_missing,
-                       std::string* contents,
-                       bool* existed,
-                       std::string* error) {
-    if (contents) contents->clear();
-    if (existed) *existed = false;
-
-    std::error_code status_error;
-    const bool exists = std::filesystem::exists(path, status_error);
-    if (status_error) {
-        if (error) {
-            *error = "cannot inspect '" + path.string() + "': " +
-                     status_error.message();
-        }
-        return false;
-    }
-    if (!exists) {
-        if (allow_missing) return true;
-        if (error) *error = "file does not exist: " + path.string();
-        return false;
-    }
-    if (existed) *existed = true;
-
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) {
-        if (error) *error = "cannot open '" + path.string() + "'";
-        return false;
-    }
-    const std::streamoff size = input.tellg();
-    if (size < 0 || static_cast<std::uintmax_t>(size) > maximum_bytes) {
-        if (error) *error = "file is too large: " + path.string();
-        return false;
-    }
-    std::string value(static_cast<std::size_t>(size), '\0');
-    input.seekg(0);
-    if (size != 0 &&
-        !input.read(value.data(), static_cast<std::streamsize>(size))) {
-        if (error) *error = "cannot read '" + path.string() + "'";
-        return false;
-    }
-    if (input.bad()) {
-        if (error) *error = "cannot finish reading '" + path.string() + "'";
-        return false;
-    }
-    if (contents) *contents = std::move(value);
-    return true;
-}
-
-bool is_pem_whitespace(char value) noexcept {
-    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
-}
-
-std::optional<std::string_view> take_public_pem_block(
-    std::string_view contents,
-    std::size_t* cursor,
-    std::string* error) {
-    while (*cursor < contents.size() && is_pem_whitespace(contents[*cursor])) {
-        ++*cursor;
-    }
-    if (*cursor == contents.size()) return std::nullopt;
-
-    static constexpr std::string_view kBegin = "-----BEGIN PUBLIC KEY-----";
-    static constexpr std::string_view kEnd = "-----END PUBLIC KEY-----";
-    if (!contents.substr(*cursor).starts_with(kBegin)) {
-        if (error) *error = "authorized key store contains non-PEM data";
-        return std::nullopt;
-    }
-    const std::size_t start = *cursor;
-    const std::size_t end = contents.find(kEnd, start + kBegin.size());
-    if (end == std::string_view::npos) {
-        if (error) *error = "authorized key store contains an unterminated PEM block";
-        return std::nullopt;
-    }
-    *cursor = end + kEnd.size();
-    if (*cursor < contents.size() && !is_pem_whitespace(contents[*cursor])) {
-        if (error) *error = "authorized key store has trailing data after a PEM block";
-        return std::nullopt;
-    }
-    return contents.substr(start, *cursor - start);
-}
-
-bool parse_authorized_identities(std::string_view contents,
-                                 std::vector<AuthorizedIdentity>* identities,
-                                 std::string* error) {
-    if (!identities) return false;
-    if (error) error->clear();
-    identities->clear();
-    std::size_t cursor = 0;
-    while (true) {
-        const auto classical = take_public_pem_block(contents, &cursor, error);
-        if (!classical.has_value()) {
-            if (cursor == contents.size()) return true;
-            return false;
-        }
-        const auto pq = take_public_pem_block(contents, &cursor, error);
-        if (!pq.has_value()) {
-            if (error && error->empty()) {
-                *error = "authorized key store contains an incomplete composite "
-                         "identity";
-            }
-            return false;
-        }
-
-        crypto::Bytes bundle(classical->begin(), classical->end());
-        bundle.push_back('\n');
-        bundle.insert(bundle.end(), pq->begin(), pq->end());
-        auto composite = crypto::parse_composite_identity(bundle);
-        if (!composite.valid()) {
-            if (error) {
-                *error = "every authorized entry must be an Ed25519 public key "
-                         "followed by an ML-DSA-87 public key";
-            }
-            return false;
-        }
-
-        AuthorizedIdentity entry;
-        entry.canonical = crypto::composite_canonical_encoding(composite);
-        entry.fingerprint =
-            crypto::composite_fingerprint_from_canonical(entry.canonical);
-        const auto normalized = crypto::encode_composite_identity(
-            composite.classical.get(), composite.pq.get());
-        entry.pem.assign(normalized.begin(), normalized.end());
-        if (entry.pem.empty() || entry.pem.back() != '\n') entry.pem.push_back('\n');
-        identities->push_back(std::move(entry));
-    }
-}
-
 bool load_authorized_store(const std::filesystem::path& path,
                            bool allow_missing,
                            std::vector<AuthorizedIdentity>* identities,
@@ -190,26 +57,16 @@ bool load_authorized_store(const std::filesystem::path& path,
                            bool* existed = nullptr) {
     if (original_contents) original_contents->clear();
     std::string contents;
-    if (!read_bounded_file(path, kMaximumKeyStoreBytes, allow_missing,
-                           &contents, existed, error)) {
+    if (!runtime::read_optional_text_file_bounded(
+            path, kMaximumKeyStoreBytes, allow_missing,
+            &contents, existed, error)) {
         return false;
     }
-    if (!parse_authorized_identities(contents, identities, error)) {
+    if (!parse_authorized_identity_store(contents, identities, error)) {
         return false;
     }
     if (original_contents) *original_contents = std::move(contents);
     return true;
-}
-
-std::string serialize_authorized_store(
-    const std::vector<AuthorizedIdentity>& identities,
-    std::optional<std::size_t> skip = std::nullopt) {
-    std::string contents;
-    for (std::size_t i = 0; i < identities.size(); ++i) {
-        if (skip.has_value() && *skip == i) continue;
-        contents += identities[i].pem;
-    }
-    return contents;
 }
 
 bool load_json_object(const std::filesystem::path& path,
@@ -223,8 +80,9 @@ bool load_json_object(const std::filesystem::path& path,
     if (original_contents) original_contents->clear();
     std::string contents;
     bool file_existed = false;
-    if (!read_bounded_file(path, kMaximumJsonFileBytes, allow_missing,
-                           &contents, &file_existed, error)) {
+    if (!runtime::read_optional_text_file_bounded(
+            path, kMaximumJsonFileBytes, allow_missing,
+            &contents, &file_existed, error)) {
         return false;
     }
     if (existed) *existed = file_existed;
@@ -491,13 +349,15 @@ bool append_authorized_public_key(const yume::server::ServerConfig& cfg,
     // identity, which the server correctly rejects at startup.
     std::string pem_text;
     std::string error;
-    if (!read_bounded_file(public_key_path, kMaximumKeyStoreBytes, false,
-                           &pem_text, nullptr, &error)) {
+    if (!runtime::read_optional_text_file_bounded(
+            public_key_path, kMaximumKeyStoreBytes, false,
+            &pem_text, nullptr, &error)) {
         yume::util::log_error(error);
         return false;
     }
     std::vector<AuthorizedIdentity> candidate_identities;
-    if (!parse_authorized_identities(pem_text, &candidate_identities, &error) ||
+    if (!parse_authorized_identity_store(pem_text, &candidate_identities,
+                                         &error) ||
         candidate_identities.size() != 1) {
         yume::util::log_error(
             "not a composite identity: " + public_key_path +
@@ -616,7 +476,9 @@ bool append_authorized_public_key(const yume::server::ServerConfig& cfg,
 
     if (!already_authorized) {
         identities.push_back(std::move(candidate));
-        if (!atomic_write(store, serialize_authorized_store(identities), &error)) {
+        if (!atomic_write(store,
+                          serialize_authorized_identity_store(identities),
+                          &error)) {
             const std::string write_error = error;
             std::vector<std::string> rollback_errors;
             std::string rollback_error;
@@ -762,8 +624,6 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         std::string threads = prompt("threads", std::to_string(cfg.threads));
         std::string obfs = prompt("obfuscation (true/false)", cfg.obfuscation ? "true" : "false");
         std::string inner = prompt("inner_crypto (true/false)", cfg.inner_crypto ? "true" : "false");
-        std::string inner_dual = prompt("inner_dual (true/false)", cfg.inner_dual ? "true" : "false");
-        std::string inner_required = prompt("inner_required (true/false)", cfg.inner_required ? "true" : "false");
         std::string pq = prompt("pq_private_key", cfg.pq_private_key);
         std::string allow_embedded_master = prompt(
             "allow_embedded_master (true/false)",
@@ -777,7 +637,8 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         std::string anonym = prompt("anonym (true/false)", cfg.anonym ? "true" : "false");
         std::string anonym_proof_mode = prompt("anonym_proof_mode", cfg.anonym_proof_mode);
         std::string anonym_api = prompt("anonym_api", cfg.anonym_api);
-        std::string anonym_token = prompt("anonym_token", cfg.anonym_token);
+        std::string anonym_token_file =
+            prompt("anonym_token_file", cfg.anonym_token_file);
         std::string anonym_ca_key = prompt("anonym_ca_key", cfg.anonym_ca_key);
         std::string anonym_ca_cert = prompt("anonym_ca_cert", cfg.anonym_ca_cert);
         std::string anonym_sub_key = prompt("anonym_sub_key", cfg.anonym_sub_key);
@@ -818,9 +679,6 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
             json["threads"] = require_int("threads", threads);
             json["obfuscation"] = require_bool("obfuscation", obfs);
             json["inner_crypto"] = require_bool("inner_crypto", inner);
-            json["inner_dual"] = require_bool("inner_dual", inner_dual);
-            json["inner_required"] =
-                require_bool("inner_required", inner_required);
             if (!pq.empty()) json["pq_private_key"] = pq;
             json["allow_embedded_master"] = require_bool(
                 "allow_embedded_master", allow_embedded_master);
@@ -837,7 +695,9 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
             json["anonym_proof_mode"] =
                 yume::policy::normalize_anonym_proof_mode(anonym_proof_mode);
             if (!anonym_api.empty()) json["anonym_api"] = anonym_api;
-            if (!anonym_token.empty()) json["anonym_token"] = anonym_token;
+            if (!anonym_token_file.empty()) {
+                json["anonym_token_file"] = anonym_token_file;
+            }
             if (!anonym_ca_key.empty()) json["anonym_ca_key"] = anonym_ca_key;
             if (!anonym_ca_cert.empty()) json["anonym_ca_cert"] = anonym_ca_cert;
             if (!anonym_sub_key.empty()) json["anonym_sub_key"] = anonym_sub_key;
@@ -1085,7 +945,8 @@ CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const S
         }
         const std::string fingerprint = identities[*target].fingerprint;
         if (!atomic_write(cfg.auth_keys,
-                          serialize_authorized_store(identities, target),
+                          serialize_authorized_identity_store(identities,
+                                                              target),
                           &error)) {
             yume::util::log_error("failed to rewrite auth_keys: " + error +
                                   auth_keys_write_hint(cfg.auth_keys));

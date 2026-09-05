@@ -32,7 +32,9 @@ namespace yume::crypto {
 namespace {
 
 constexpr std::size_t kSha256Bytes = 32U;
+#if !YUME_USE_BASEFWX
 constexpr std::size_t kChaCha20Poly1305TagBytes = 16U;
+#endif
 
 }  // namespace
 
@@ -676,9 +678,7 @@ CompositePublicKey parse_composite_identity(const Bytes& pem_bundle) {
 
 Bytes composite_canonical_encoding(const CompositePublicKey& key) {
     if (!key.valid()) return {};
-    // The domain label keeps this value in a different space from a bare
-    // single-key encoding, so a composite identity can never be confused with a
-    // legacy one.
+    // Separate composite fingerprints from single-key encodings.
     static constexpr std::string_view kDomain = "yume/2.0/composite-identity/v1";
     Bytes input(kDomain.begin(), kDomain.end());
     for (EVP_PKEY* half : {key.classical.get(), key.pq.get()}) {

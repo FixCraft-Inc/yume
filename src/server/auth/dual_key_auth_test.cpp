@@ -530,9 +530,9 @@ void test_auth_policy_loader_is_type_strict_and_exact() {
             [&] { (void)yume::server::load_auth_policies(meta.string()); }));
     }
     write_file(meta,
-               R"({"abc":{"priority":42,"permissions":{"allow_chat":false}}})");
+               R"({"abc":{"weight":1.5,"permissions":{"allow_chat":false}}})");
     const auto policies = yume::server::load_auth_policies(meta.string());
-    assert(policies.at("abc").priority == 42);
+    assert(policies.at("abc").weight == 1.5);
     assert(policies.at("abc").allow_chat == false);
 
     const auto directory = dir.path / "metadata-directory";

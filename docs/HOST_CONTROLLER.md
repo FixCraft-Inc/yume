@@ -1,8 +1,7 @@
 # YUME host controller
 
-> **Transport-v2 surface:** this integration belongs to the runnable 0.2
-> product. It is not part of the experimental YTP/1 ABI and will be reviewed as
-> an application consumer only after that ABI has a live data path.
+> **Transport-v2 surface:** this integration belongs to the transport-v2 runtime. It is not part of the experimental YTP/1 ABI and will be reviewed as
+> a consumer of the replacement after its endpoint and install gates pass.
 
 `yumed` can act as the single WAN-facing host on a machine. Backends bind
 loopback TCP only; `yumed` terminates TLS and dials inward. This
@@ -16,7 +15,7 @@ public WAN cutover matrix still needs real deployment testing.
 
 | `host_mode` | YUME clients | Typical use |
 | --- | --- | --- |
-| `off` | yes (default) | Legacy tunnel daemon only |
+| `off` | yes (default) | Tunnel daemon |
 | `private` | no | WAN HTTPS/TCP shield; disguise for probes |
 | `relay` | yes | Host routing plus YUME client tunnel/relay |
 
@@ -45,7 +44,7 @@ Move your public service to loopback and route through `yumed`:
 ```
 
 Only `loopback://<ip-literal>:<port>` backends are implemented today. Use
-`127.0.0.1`, `127.0.0.0/8`, or `[::1]`; `localhost`, `unix://`, `codec://`,
+a literal address in `127.0.0.0/8` or `[::1]`; `localhost`, `unix://`, `codec://`,
 and `service://` are rejected until those backend drivers exist.
 
 The HTTP reverse proxy is HTTP/1.x. In `host_mode=private` with YUME clients
@@ -114,7 +113,7 @@ is direct TCP or behind a Cloudflare HTTP proxy. `runtime.info` includes
 YUME stealth requires true TCP passthrough (e.g. Cloudflare Spectrum), not
 orange-cloud HTTP mode.
 
-## Node as library
+## Backend choices
 
 Do not bind backends on `0.0.0.0`. Prefer:
 

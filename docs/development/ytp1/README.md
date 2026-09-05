@@ -132,8 +132,9 @@ capability bytes, the registered service kind and policy, destination policy
 for the built-in TCP/UDP encodings, and stream, pending-open, queue, packet,
 and route limits. A `RouteProvider` receives only an `AuthorizedRouteRequest`
 built after those checks. Federation, directory, relay applications, reverse
-administration, command execution, host-controller modes, product codecs, and
-dynamic plugins are outside the first YTP/1 path and have no schema-1 aliases.
+administration, the reserved, disabled transport-v2 EXEC relay-policy
+surface, host-controller modes, product codecs, and dynamic plugins are outside
+the first YTP/1 path and have no schema-1 aliases.
 
 ## Packet channels
 

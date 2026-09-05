@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -41,11 +40,13 @@
 #include "core/encoding/hex.hpp"
 #include "core/security/crypto.hpp"
 #include "core/runtime/atomic_file.hpp"
+#include "core/runtime/bounded_file.hpp"
 #include "core/runtime/file_transaction_lock.hpp"
 #include "core/security/secure_erase.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/security/secret_file.hpp"
 #include "server/auth/auth.hpp"
+#include "server/auth/authorized_identity_store.hpp"
 #include "server/auth/auth_metadata_json.hpp"
 #include "server/federation/types.hpp"
 
@@ -102,170 +103,22 @@ bool resource_paths_alias(const std::filesystem::path& lhs,
 #endif
 }
 
-struct ParsedIdentity {
-    crypto::Bytes canonical;
-    std::string pem;
-    std::string fingerprint;
-};
-
-bool read_bounded_file(const std::filesystem::path& path,
-                       std::uintmax_t maximum_bytes,
-                       bool allow_missing,
-                       std::string* contents,
-                       bool* existed,
-                       std::string* error) {
-    if (contents) contents->clear();
-    if (existed) *existed = false;
-    std::error_code status_error;
-    const bool exists = std::filesystem::exists(path, status_error);
-    if (status_error) {
-        if (error) {
-            *error = "cannot inspect '" + path.string() + "': " +
-                     status_error.message();
-        }
-        return false;
-    }
-    if (!exists) {
-        if (allow_missing) return true;
-        if (error) *error = "file does not exist: " + path.string();
-        return false;
-    }
-    if (existed) *existed = true;
-
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) {
-        if (error) *error = "cannot open '" + path.string() + "'";
-        return false;
-    }
-    const std::streamoff size = input.tellg();
-    if (size < 0 || static_cast<std::uintmax_t>(size) > maximum_bytes) {
-        if (error) *error = "file is too large: " + path.string();
-        return false;
-    }
-    std::string value(static_cast<std::size_t>(size), '\0');
-    input.seekg(0);
-    if (size != 0 &&
-        !input.read(value.data(), static_cast<std::streamsize>(size))) {
-        if (error) *error = "cannot read '" + path.string() + "'";
-        return false;
-    }
-    if (input.bad()) {
-        if (error) *error = "cannot finish reading '" + path.string() + "'";
-        return false;
-    }
-    if (contents) *contents = std::move(value);
-    return true;
-}
-
-bool is_pem_whitespace(char value) noexcept {
-    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
-}
-
-std::optional<std::string_view> take_public_pem_block(
-    std::string_view contents,
-    std::size_t* cursor,
-    std::string* error) {
-    while (*cursor < contents.size() && is_pem_whitespace(contents[*cursor])) {
-        ++*cursor;
-    }
-    if (*cursor == contents.size()) return std::nullopt;
-
-    static constexpr std::string_view kBegin = "-----BEGIN PUBLIC KEY-----";
-    static constexpr std::string_view kEnd = "-----END PUBLIC KEY-----";
-    if (!contents.substr(*cursor).starts_with(kBegin)) {
-        if (error) *error = "authorized key store contains non-PEM data";
-        return std::nullopt;
-    }
-    const std::size_t start = *cursor;
-    const std::size_t end = contents.find(kEnd, start + kBegin.size());
-    if (end == std::string_view::npos) {
-        if (error) {
-            *error = "authorized key store contains an unterminated PEM block";
-        }
-        return std::nullopt;
-    }
-    *cursor = end + kEnd.size();
-    if (*cursor < contents.size() && !is_pem_whitespace(contents[*cursor])) {
-        if (error) {
-            *error = "authorized key store has trailing data after a PEM block";
-        }
-        return std::nullopt;
-    }
-    return contents.substr(start, *cursor - start);
-}
-
-bool parse_identity_store(std::string_view contents,
-                          std::vector<ParsedIdentity>* identities,
-                          std::string* error) {
-    if (!identities) return false;
-    identities->clear();
-    if (error) error->clear();
-    std::size_t cursor = 0;
-    while (true) {
-        const auto classical = take_public_pem_block(contents, &cursor, error);
-        if (!classical.has_value()) {
-            if (cursor == contents.size()) return true;
-            return false;
-        }
-        const auto pq = take_public_pem_block(contents, &cursor, error);
-        if (!pq.has_value()) {
-            if (error && error->empty()) {
-                *error = "authorized key store contains an incomplete "
-                         "composite identity";
-            }
-            return false;
-        }
-        crypto::Bytes bundle(classical->begin(), classical->end());
-        bundle.push_back('\n');
-        bundle.insert(bundle.end(), pq->begin(), pq->end());
-        auto composite = crypto::parse_composite_identity(bundle);
-        if (!composite.valid()) {
-            if (error) {
-                *error = "every authorized entry must be an Ed25519 public "
-                         "key followed by an ML-DSA-87 public key";
-            }
-            return false;
-        }
-        ParsedIdentity identity;
-        identity.canonical = crypto::composite_canonical_encoding(composite);
-        identity.fingerprint =
-            crypto::composite_fingerprint_from_canonical(identity.canonical);
-        const auto normalized = crypto::encode_composite_identity(
-            composite.classical.get(), composite.pq.get());
-        identity.pem.assign(normalized.begin(), normalized.end());
-        if (identity.pem.empty() || identity.pem.back() != '\n') {
-            identity.pem.push_back('\n');
-        }
-        identities->push_back(std::move(identity));
-    }
-}
-
 bool load_identity_store(const std::filesystem::path& path,
                          bool allow_missing,
-                         std::vector<ParsedIdentity>* identities,
+                         std::vector<server::AuthorizedIdentity>* identities,
                          std::string* error,
                          std::string* original_contents = nullptr,
                          bool* existed = nullptr) {
     if (original_contents) original_contents->clear();
     std::string contents;
-    if (!read_bounded_file(path, kMaximumKeyStoreBytes, allow_missing,
-                           &contents, existed, error) ||
-        !parse_identity_store(contents, identities, error)) {
+    if (!runtime::read_optional_text_file_bounded(
+            path, kMaximumKeyStoreBytes, allow_missing,
+            &contents, existed, error) ||
+        !server::parse_authorized_identity_store(contents, identities, error)) {
         return false;
     }
     if (original_contents) *original_contents = std::move(contents);
     return true;
-}
-
-std::string serialize_identity_store(
-    const std::vector<ParsedIdentity>& identities,
-    std::optional<std::size_t> skip = std::nullopt) {
-    std::string serialized;
-    for (std::size_t i = 0; i < identities.size(); ++i) {
-        if (skip.has_value() && *skip == i) continue;
-        serialized += identities[i].pem;
-    }
-    return serialized;
 }
 
 bool load_metadata(const std::filesystem::path& path,
@@ -278,8 +131,9 @@ bool load_metadata(const std::filesystem::path& path,
     if (original_contents) original_contents->clear();
     std::string contents;
     bool file_existed = false;
-    if (!read_bounded_file(path, kMaximumMetadataBytes, allow_missing,
-                           &contents, &file_existed, error)) {
+    if (!runtime::read_optional_text_file_bounded(
+            path, kMaximumMetadataBytes, allow_missing,
+            &contents, &file_existed, error)) {
         return false;
     }
     if (existed) *existed = file_existed;
@@ -332,8 +186,8 @@ bool restore_snapshot(const std::filesystem::path& path,
 // identity this file may report.
 std::optional<std::string> fingerprint_composite_pem(const std::string& bundle,
                                                      std::string* err) {
-    std::vector<ParsedIdentity> identities;
-    if (!parse_identity_store(bundle, &identities, err) ||
+    std::vector<server::AuthorizedIdentity> identities;
+    if (!server::parse_authorized_identity_store(bundle, &identities, err) ||
         identities.size() != 1) {
         if (err && err->empty()) {
             *err = "expected exactly one composite identity";
@@ -493,8 +347,9 @@ std::optional<KeyPair> generate_ml_kem_768(
 std::optional<std::string> fingerprint_pubkey_file(
     std::filesystem::path const& pub_path, std::string* err) {
     std::string contents;
-    if (!read_bounded_file(pub_path, kMaximumKeyStoreBytes, false,
-                           &contents, nullptr, err)) {
+    if (!runtime::read_optional_text_file_bounded(
+            pub_path, kMaximumKeyStoreBytes, false,
+            &contents, nullptr, err)) {
         return std::nullopt;
     }
     // Reports the same composite identity the server authorizes on. A single
@@ -573,9 +428,7 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
     if (auto ac = p.find("allow_codecs"); ac != p.end()) {
         read_codec_array(*ac);
     }
-    if (auto ac = it->find("allow_codecs"); ac != it->end()) {
-        read_codec_array(*ac);
-    }
+
     auto read_string_array = [](nlohmann::json const& arr, std::vector<std::string>& out) {
         if (!arr.is_array()) return;
         for (auto const& item : arr) {
@@ -587,9 +440,7 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
     if (auto as = p.find("allow_services"); as != p.end()) {
         read_string_array(*as, e.allow_services);
     }
-    if (auto as = it->find("allow_services"); as != it->end()) {
-        read_string_array(*as, e.allow_services);
-    }
+
 }
 
 void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
@@ -757,7 +608,7 @@ std::vector<AuthorizedKeyEntry> list_authorized(
     if (!transaction_lock.Acquire({auth_keys_file, meta_file}, &error)) {
         return out;
     }
-    std::vector<ParsedIdentity> identities;
+    std::vector<server::AuthorizedIdentity> identities;
     if (!load_identity_store(auth_keys_file, true, &identities, &error)) {
         return out;
     }
@@ -783,8 +634,8 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
                        std::string* err) {
     if (err) err->clear();
     std::string error;
-    std::vector<ParsedIdentity> candidates;
-    if (!parse_identity_store(pem, &candidates, &error) ||
+    std::vector<server::AuthorizedIdentity> candidates;
+    if (!server::parse_authorized_identity_store(pem, &candidates, &error) ||
         candidates.size() != 1) {
         if (err) {
             *err = error.empty() ? "expected exactly one composite identity"
@@ -792,7 +643,7 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
         }
         return false;
     }
-    ParsedIdentity candidate = std::move(candidates.front());
+    server::AuthorizedIdentity candidate = std::move(candidates.front());
 
     runtime::FileTransactionLock transaction_lock;
     if (!transaction_lock.Acquire(
@@ -808,7 +659,7 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
         return false;
     }
 
-    std::vector<ParsedIdentity> identities;
+    std::vector<server::AuthorizedIdentity> identities;
     std::string original_store;
     bool store_existed = false;
     if (!load_identity_store(auth_keys_file, true, &identities, &error,
@@ -817,7 +668,7 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
         return false;
     }
     if (std::any_of(identities.begin(), identities.end(),
-                    [&](const ParsedIdentity& identity) {
+                    [&](const server::AuthorizedIdentity& identity) {
                         return identity.canonical == candidate.canonical;
                     })) {
         if (err) *err = "key already authorized";
@@ -825,14 +676,14 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
     }
 
     if (!admin_keys_file.empty()) {
-        std::vector<ParsedIdentity> admin_identities;
+        std::vector<server::AuthorizedIdentity> admin_identities;
         if (!load_identity_store(admin_keys_file, true, &admin_identities,
                                  &error)) {
             if (err) *err = "existing admin_keys is not usable: " + error;
             return false;
         }
         if (std::any_of(admin_identities.begin(), admin_identities.end(),
-                        [&](const ParsedIdentity& identity) {
+                        [&](const server::AuthorizedIdentity& identity) {
                             return identity.canonical == candidate.canonical;
                         })) {
             if (err) {
@@ -896,7 +747,8 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
     }
 
     identities.push_back(std::move(candidate));
-    if (!atomic_write(auth_keys_file, serialize_identity_store(identities),
+    if (!atomic_write(auth_keys_file,
+                      server::serialize_authorized_identity_store(identities),
                       &error)) {
         const std::string write_error = error;
         std::string auth_rollback_error;
@@ -934,13 +786,14 @@ bool remove_authorized(std::filesystem::path const& auth_keys_file,
         if (err) *err = "cannot lock authorization transaction: " + error;
         return false;
     }
-    std::vector<ParsedIdentity> identities;
+    std::vector<server::AuthorizedIdentity> identities;
     if (!load_identity_store(auth_keys_file, false, &identities, &error)) {
         if (err) *err = "existing auth_keys is not usable: " + error;
         return false;
     }
     const auto match = std::find_if(
-        identities.begin(), identities.end(), [&](const ParsedIdentity& entry) {
+        identities.begin(), identities.end(),
+        [&](const server::AuthorizedIdentity& entry) {
             return entry.fingerprint == fingerprint;
         });
     if (match == identities.end()) {
@@ -956,7 +809,9 @@ bool remove_authorized(std::filesystem::path const& auth_keys_file,
     const auto index = static_cast<std::size_t>(
         std::distance(identities.begin(), match));
     if (!atomic_write(auth_keys_file,
-                      serialize_identity_store(identities, index), &error)) {
+                      server::serialize_authorized_identity_store(identities,
+                                                                  index),
+                      &error)) {
         if (err) {
             *err = "authorization removal failed or could not be proven "
                    "durable: " + error;
@@ -997,13 +852,14 @@ bool update_authorized(std::filesystem::path const& auth_keys_file,
         if (err) *err = "cannot lock authorization transaction: " + error;
         return false;
     }
-    std::vector<ParsedIdentity> identities;
+    std::vector<server::AuthorizedIdentity> identities;
     if (!load_identity_store(auth_keys_file, false, &identities, &error)) {
         if (err) *err = "existing auth_keys is not usable: " + error;
         return false;
     }
     const auto identity = std::find_if(
-        identities.begin(), identities.end(), [&](const ParsedIdentity& entry) {
+        identities.begin(), identities.end(),
+        [&](const server::AuthorizedIdentity& entry) {
             return entry.fingerprint == fingerprint;
         });
     if (identity == identities.end()) {

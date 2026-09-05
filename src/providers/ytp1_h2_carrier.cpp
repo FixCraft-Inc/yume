@@ -1357,7 +1357,7 @@ Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
     }
     // YTP application records may exceed HTTP/2's 65,535-byte initial
     // per-stream window. Promotion expands the already-admitted carrier to the
-    // legacy provider's fixed, bounded 8-MiB receive window; otherwise a record
+    // transport-v2 provider's fixed 8-MiB receive window; otherwise a record
     // larger than the initial window could never reach ReceivedRecord and its
     // move-owned credit could never be released.
     if (!admitted_h2->EnableAdmittedReceiveWindow()) {

@@ -148,7 +148,6 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
             args.emplace_back(std::to_string(cfg.server_in_charge_port));
         }
     }
-    if (cfg.allow_exec) args.emplace_back("--allow-exec");
     add_arg(args, "--operator-ca-cert", cfg.anonym_ca_cert);
     add_arg(args, "--tls-ca", cfg.tls_ca_cert);
     add_arg(args, "--tls-name", cfg.tls_server_name);

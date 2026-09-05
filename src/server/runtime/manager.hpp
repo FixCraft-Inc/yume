@@ -204,9 +204,12 @@ public:
     // half-loaded cache because we swap a shared_ptr atomically.
     std::string upstream_response_pick() const;
 
-    // Synchronous load of the configured --upstream-response-dir into
-    // the cache. Returns the number of files successfully loaded.
-    // Called once at startup and (if TTL > 0) by the periodic timer.
+    // Synchronous bounded load of the configured --upstream-response-dir into
+    // the cache. Returns the number of files successfully loaded. Excessive
+    // directory/file counts leave the previous snapshot intact; oversize or
+    // malformed individual captures are skipped, and the aggregate cap stops
+    // adding later files in sorted order. Called once at startup and (if TTL
+    // > 0) by the periodic timer.
     std::size_t reload_upstream_responses();
 
     bool register_service(

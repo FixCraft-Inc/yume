@@ -185,9 +185,7 @@ function(yume_apply_perf_opts target)
             $<$<CONFIG:Release>:-O3>
             $<$<CONFIG:RelWithDebInfo>:-O3>
             $<$<CONFIG:MinSizeRel>:-O3>
-            $<$<CONFIG:Release>:-fomit-frame-pointer>
-            $<$<CONFIG:RelWithDebInfo>:-fomit-frame-pointer>
-            $<$<CONFIG:MinSizeRel>:-fomit-frame-pointer>
+            $<$<AND:$<STREQUAL:${_yume_sanitize},none>,$<CONFIG:Release,RelWithDebInfo,MinSizeRel>>:-fomit-frame-pointer>
             $<$<CONFIG:Release>:-funroll-loops>
             $<$<CONFIG:RelWithDebInfo>:-funroll-loops>
             $<$<CONFIG:MinSizeRel>:-funroll-loops>
@@ -1097,7 +1095,6 @@ add_library(yume_transport_core
     outbound/core.cpp
     outbound/write.cpp
     outbound/dispatch.cpp
-    outbound/crypto.cpp
 )
 
 target_include_directories(yume_transport_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -1186,10 +1183,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/runtime/identity_admission.cpp
         server/runtime/weighted_egress_limiter.cpp
         server/runtime/admin_relationships.cpp
+        server/runtime/cover_response.cpp
         server/runtime/manager.cpp
         server/runtime/manager_relay.cpp
         server/runtime/security_config.cpp
         server/packet/tun_egress.cpp
+        server/auth/authorized_identity_store.cpp
         server/auth/auth.cpp
         server/session/session.cpp
         server/session/control.cpp
@@ -1226,6 +1225,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yumed
         main_server.cpp
         server/cli/anonym.cpp
+        server/cli/operator_proof_token.cpp
         server/cli/curl_json_transport.cpp
         server/cli/args.cpp
         server/cli/cluster.cpp
@@ -1254,6 +1254,22 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 
     if(YUME_BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(yume_operator_proof_token_test
+            server/cli/operator_proof_token.cpp
+            server/cli/operator_proof_token_test.cpp
+            server/cli/curl_json_transport.cpp)
+        target_include_directories(yume_operator_proof_token_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(yume_operator_proof_token_test PRIVATE yume_core)
+        if(MSVC)
+            target_compile_options(yume_operator_proof_token_test PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(yume_operator_proof_token_test PRIVATE -UNDEBUG)
+        endif()
+        yume_apply_perf_opts(yume_operator_proof_token_test)
+        add_test(NAME yume_operator_proof_token_test
+            COMMAND yume_operator_proof_token_test)
+
         add_executable(yume_anonym_curl_transport_test
             server/cli/curl_json_transport.cpp
             server/cli/curl_json_transport_test.cpp)
@@ -1262,6 +1278,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_link_libraries(yume_anonym_curl_transport_test PRIVATE yume_core)
         target_compile_definitions(yume_anonym_curl_transport_test PRIVATE
             YUME_CURL_TRANSPORT_TESTING=1)
+        if(MSVC)
+            target_compile_options(yume_anonym_curl_transport_test PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(yume_anonym_curl_transport_test PRIVATE -UNDEBUG)
+        endif()
         # perf_opts, not warnings alone: this links yume_core, which is built
         # with LTO. Under Clang an LTO archive is bitcode and a consumer
         # without -flto cannot link it ("file format not recognized"). GCC
@@ -1639,6 +1660,13 @@ add_test(NAME yume_server_startup_admission_test
     COMMAND yume_server_startup_admission_test)
 set_tests_properties(yume_server_startup_admission_test PROPERTIES TIMEOUT 30)
 
+add_executable(yume_cover_response_test
+    server/runtime/cover_response_test.cpp
+)
+target_link_libraries(yume_cover_response_test PRIVATE yume_server)
+yume_apply_perf_opts(yume_cover_response_test)
+add_test(NAME yume_cover_response_test COMMAND yume_cover_response_test)
+
 add_executable(yume_signal_dispatch_test util_signal_test.cpp)
 target_link_libraries(yume_signal_dispatch_test PRIVATE yume_core)
 yume_apply_perf_opts(yume_signal_dispatch_test)
@@ -1770,6 +1798,13 @@ if(TARGET yume_client_lib)
     yume_link_atomic_if_needed(yume_share_file_test PRIVATE)
     yume_apply_perf_opts(yume_share_file_test)
     add_test(NAME yume_share_file_test COMMAND yume_share_file_test)
+
+    add_executable(yume_share_bundle_lifetime_test
+        client/transfer/share_bundle_lifetime_test.cpp)
+    target_link_libraries(yume_share_bundle_lifetime_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_share_bundle_lifetime_test PRIVATE)
+    yume_apply_perf_opts(yume_share_bundle_lifetime_test)
+    add_test(NAME yume_share_bundle_lifetime_test COMMAND yume_share_bundle_lifetime_test)
 
     add_executable(yume_packet_channel_contract_test
         client/packet/channel_contract_test.cpp)
@@ -1985,6 +2020,20 @@ if(TARGET yume_server)
     add_test(NAME yume_server_local_runtime_test
         COMMAND yume_server_local_runtime_test)
 
+    if(UNIX)
+        add_executable(yume_server_controller_teardown_test
+            server/runtime/controller_teardown_test.cpp)
+        target_link_libraries(yume_server_controller_teardown_test
+            PRIVATE yume_server Threads::Threads)
+        yume_link_atomic_if_needed(yume_server_controller_teardown_test PRIVATE)
+        yume_apply_perf_opts(yume_server_controller_teardown_test)
+        foreach(_case drain stop-once stop-persistent destruct-once destruct-persistent)
+            add_test(NAME yume_server_teardown_${_case}
+                COMMAND yume_server_controller_teardown_test ${_case})
+            set_tests_properties(yume_server_teardown_${_case} PROPERTIES TIMEOUT 15)
+        endforeach()
+    endif()
+
     add_executable(yume_server_control_survival_test
         server/session/control_survival_test.cpp)
     target_link_libraries(yume_server_control_survival_test
@@ -2063,6 +2112,7 @@ add_executable(yume_static_site_test
     server/session/static_site.cpp
 )
 target_include_directories(yume_static_site_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_static_site_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_static_site_test PRIVATE)
 yume_apply_perf_opts(yume_static_site_test)
 add_test(NAME yume_static_site_test COMMAND yume_static_site_test)
@@ -2153,6 +2203,13 @@ target_link_libraries(yume_worker_loop_test PRIVATE yume_core Threads::Threads)
 yume_link_atomic_if_needed(yume_worker_loop_test PRIVATE)
 yume_apply_perf_opts(yume_worker_loop_test)
 add_test(NAME yume_worker_loop_test COMMAND yume_worker_loop_test)
+
+add_executable(yume_bounded_file_test
+    core/runtime/bounded_file_test.cpp
+)
+target_link_libraries(yume_bounded_file_test PRIVATE yume_core)
+yume_apply_perf_opts(yume_bounded_file_test)
+add_test(NAME yume_bounded_file_test COMMAND yume_bounded_file_test)
 
 add_executable(yume_service_stream_test
     core/runtime/service_stream_test.cpp
@@ -2481,18 +2538,12 @@ endif()
 # loaders. They are executables rather than CTest cases because a fuzz run is
 # time-bounded by the operator, not by a pass/fail assertion.
 if(YUME_BUILD_FUZZERS)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR
-            "YUME_BUILD_FUZZERS requires Clang; got ${CMAKE_CXX_COMPILER_ID}")
-    endif()
-
     function(yume_add_fuzzer name source)
         add_executable(${name} "${CMAKE_SOURCE_DIR}/tests/fuzz/${source}")
         target_link_libraries(${name} PRIVATE ${ARGN})
-        target_compile_options(${name} PRIVATE
-            -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined)
-        target_link_options(${name} PRIVATE
-            -fsanitize=fuzzer,address,undefined)
+        # Coverage and ASan/UBSan are inherited by libraries and harnesses.
+        # Only these executables own libFuzzer's main function.
+        target_link_options(${name} PRIVATE -fsanitize=fuzzer)
         yume_apply_perf_opts(${name})
     endfunction()
 

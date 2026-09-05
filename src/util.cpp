@@ -1020,9 +1020,8 @@ std::size_t relay_read_buf_size() {
         if (const char* raw = std::getenv("YUME_RELAY_READ_BUF")) {
             try {
                 const long v = std::stol(raw);
-                // Transport 2.0 cannot protect an application frame larger
-                // than one 256 KiB epoch. Keep the read buffer within that
-                // invariant even when an old 1.x tuning value is present.
+                // Keep the operator-selected read size within one 256 KiB
+                // transport epoch.
                 if (v >= 4 && v <= 256) {
                     kib = static_cast<std::size_t>(v);
                 }

@@ -388,7 +388,7 @@ def build_yume_args(args: argparse.Namespace, socks_port: int) -> list[str]:
         "--port", str(args.port),
         "--socks", str(socks_port),
         "--profile", args.client_profile,
-        "--hide-in-the-crowd", args.client_http_profile or args.client_profile,
+        "--hide-in-the-crowd", args.client_profile,
         "--self-dpi",
         "--tls-backend", args.tls_backend,
     ]
@@ -421,7 +421,7 @@ def build_local_yume_args(args: argparse.Namespace,
         "--tls-ca", str(keyset["server_cert"]),
         "--socks", str(socks_port),
         "--profile", args.client_profile,
-        "--hide-in-the-crowd", args.client_http_profile or args.client_profile,
+        "--hide-in-the-crowd", args.client_profile,
         "--self-dpi",
         "--obfs-secret-file", str(keyset["obfs_secret"]),
         "--inner-psk-file", str(keyset["inner_psk"]),
@@ -819,9 +819,6 @@ def parse_args() -> argparse.Namespace:
                     help="local yumed HTTP disguise profile for active-probe responses")
     ap.add_argument("--client-profile", default="chrome", choices=["chrome"],
                     help="pinned YUME outer TLS/H2 cover profile")
-    ap.add_argument("--client-http-profile", default=None,
-                    choices=["chrome"],
-                    help="compatibility spelling for the pinned cover profile")
     ap.add_argument("--tls-backend", default="openssl-chrome151",
                     choices=["openssl-chrome151", "chrome151", "openssl-diagnostic"],
                     help="client TLS backend; chrome151 requires a helper-enabled build")
@@ -935,7 +932,6 @@ def main() -> int:
         "urls": urls,
         "server_profile": args.server_profile if local_mode else "remote-unknown",
         "client_profile": args.client_profile,
-        "client_http_profile": args.client_http_profile or args.client_profile,
     }
 
     yume_log = outdir / "yume.log"
@@ -1051,7 +1047,7 @@ def main() -> int:
             port,
             args.tls_name or server,
             outdir / "server-probe",
-            args.client_http_profile or args.client_profile,
+            args.client_profile,
         )
     finally:
         if yume_proc is not None:

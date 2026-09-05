@@ -84,6 +84,8 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
         (cfg.anonym && !require_file("anonym_ca_cert", cfg.anonym_ca_cert)) ||
         (cfg.anonym && !require_file("anonym_sub_key", cfg.anonym_sub_key)) ||
         (cfg.anonym && !require_file("anonym_sub_cert", cfg.anonym_sub_cert)) ||
+        (cfg.anonym &&
+         !require_file("anonym_token_file", cfg.anonym_token_file)) ||
         (cfg.real_http && cfg.real_backend.empty() &&
          !require_file("real_index_path", cfg.real_index_path))) {
         return 1;

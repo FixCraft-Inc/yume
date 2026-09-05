@@ -13,10 +13,9 @@
 
 namespace yume::client {
 
-// The legacy wire/config name is "anonym", but this proof has a deliberately
-// narrower security meaning: it authenticates that the endpoint signing key
-// is authorized by a CA selected by the client. It cannot establish that the
-// server operator does not inspect, retain, or correlate traffic.
+// The "anonym" proof authenticates an endpoint signing key against the
+// client's selected authority. It cannot establish how the operator handles
+// traffic or logs.
 
 struct AnonymProofInput {
     std::vector<std::string> announced_proof_sources;
@@ -34,10 +33,6 @@ struct AnonymProofInput {
     bool initial_sub_ok = false;
     bool initial_ca_ok = false;
 };
-
-// Historical type name retained for wire/source compatibility. The result
-// proves only that a server key is authorized by a client-selected operator
-// CA. It does not prove anonymity, non-monitoring, or non-logging behavior.
 
 struct AnonymProofResult {
     bool fixcraft_ok = false;

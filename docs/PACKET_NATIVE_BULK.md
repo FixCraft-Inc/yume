@@ -5,31 +5,28 @@
 > contract documented in the
 > [YTP/1 foundation page](development/ytp1/README.md#packet-channels).
 
-This is the v1 packet-native path for making Yume behave more like a
-packet VPN under load without giving up the current DPI profile.
+Packet-bulk mode carries batches of IP packets through one authenticated
+YUME stream.
 
 ## Shape
 
 - Outer carrier stays the existing browser-oriented TLS 1.3 / HTTP/2-opening
   connection. No raw UDP mode is introduced for the default stealth path.
-- Inner crypto stays mandatory when the peer requires it. Packet batches
+- Inner crypto is mandatory. Packet batches
   are carried inside normal encrypted `DATA` frames, so the AEAD AAD still
   binds the frame type and stream id.
 - The capability is `packet_bulk_v1`. A capable client opens one long-lived
-  stream with `proto=packet-bulk-v1`; old servers reject it cleanly instead
-  of misrouting it as TCP or UDP.
+  stream with `proto=packet-bulk-v1` after the server advertises support.
 - The stream payload is a `YBP1` batch: header, monotonic 63-bit sequence,
   packet count, then raw IP packets as length-prefixed byte strings.
 
-## Why this fixes the native-direct ceiling
+## Packet and stream routing
 
-The old native-direct route created one Yume stream per lwIP TCP flow. Many
-browser flows therefore meant many coroutine loops, JNI reads/writes, server
-sockets, stream buffers, OPEN/CLOSE frames, and per-stream backpressure
-decisions. A speedtest or modern browser page could turn small-object fanout
-into scheduler pressure before the TLS pipe was full.
+Routing each TCP flow through a separate YUME stream requires per-flow sockets,
+buffers, OPEN/CLOSE frames, and backpressure. Packet mode moves the TUN boundary
+into YUME and shares one packet channel across application flows.
 
-Packet-bulk mode moves the TUN boundary into Yume:
+An Android packet adapter follows this sequence:
 
 - Android reads TUN packets, batches them for up to a small byte/time budget,
   and sends one encrypted `DATA` frame on the packet stream.
@@ -38,8 +35,8 @@ Packet-bulk mode moves the TUN boundary into Yume:
 - Downstream packets follow the same stream back to Android and are written
   directly to the TUN fd.
 
-This preserves the "looks like Chrome talking to nginx" outer traffic shape
-while removing per-application-stream work from the hot path.
+The outer TLS/H2 carrier remains the same. Android integration is a separate
+qualification target.
 
 ## Server egress v1
 
@@ -131,20 +128,11 @@ indefinitely on capacity. Deterministic saturation/recovery and stop tests pin
 these guarantees. This closes the source-side loss defect but does not by
 itself qualify the Android always-on VPN path.
 
-## No packet C ABI in this tree
+## Packet C ABI work
 
-The 0.2 C ABI that exposed this engine through `yume_client_open_packet` and
-the opaque `yume_packet` handle was replaced by the role-neutral ABI v1
-candidate. That candidate starts and stops the transport, but
-`yume_endpoint_open_packet` still returns `YUME_STATUS_UNSUPPORTED`, so it
-opens no packet channel, and the `yume-abi-tun` diagnostic adapter that drove
-the old handle is no longer a build target.
-
-Until the replacement ABI has a live packet channel, this tree can produce
-**no** packet-ABI throughput result. Use `yume --packet-tun` for the in-process
-adapter. The retired `yume-abi-tun`/`iperf3` procedure is preserved in the
-[0.2 archive](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/PACKET_NATIVE_BULK.md) and in Git history; do not
-run it against this tree.
+`yume_endpoint_open_packet` returns `YUME_STATUS_UNSUPPORTED`. Completing it
+and restoring the `yume-abi-tun` diagnostic adapter remain integration work.
+Use `yume --packet-tun` to exercise the current in-process adapter.
 
 ## Security invariants
 

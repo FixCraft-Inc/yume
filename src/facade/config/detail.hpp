@@ -21,7 +21,7 @@
 
 namespace yume::facade::config_io::detail {
 
-// Reads `key` into `dst` when present and non-null. Integral targets are
+// Reads `key` into `dst` when present. Explicit null is invalid. Integral targets are
 // range-checked instead of narrowed: nlohmann's get<std::uint32_t>() would
 // turn "obfs_jitter_ms": -1 into ~49 days of jitter and get<std::uint16_t>()
 // would fold 65792 into 256, so a value the field cannot represent is a
@@ -29,7 +29,7 @@ namespace yume::facade::config_io::detail {
 template <typename T>
 void read_opt(nlohmann::json const& j, const char* key, T& dst) {
     auto it = j.find(key);
-    if (it == j.end() || it->is_null()) {
+    if (it == j.end()) {
         return;
     }
     if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>) {

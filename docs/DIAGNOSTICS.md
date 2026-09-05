@@ -21,9 +21,8 @@ are also developer builds so endpoint profiling can opt in to the same hooks.
 Fast-math stays disabled in every mode.
 
 In a developer build, pass `--timing` to `yume` and `yumed`, or set
-`YUME_TIMING=1`. `YUME_TRACE_TIMING=1` and `YUME_PROFILE=1` are compatibility
-aliases. A production binary warns that `--timing` is unavailable; timing
-environment variables have no activation path in that binary.
+`YUME_TIMING=1`. A production binary warns that `--timing` is unavailable and
+ignores `YUME_TIMING`.
 
 ## One implementation, bounded hook points
 
@@ -142,10 +141,13 @@ as code rather than checking in opaque binaries, and includes the hostile HPACK
 encodings the decoder regressions pin.
 
 `YUME_BUILD_FUZZERS` builds libFuzzer harnesses for the parsers that consume
-input from outside a trust boundary, and requires Clang. Each harness carries
-its own ASan and UBSan instrumentation, so it does not combine with
-`YUME_SANITIZE`, and it forces `YUME_LTO=OFF` for the same reason a sanitizer
-build does. The harnesses are never installed.
+input from outside a trust boundary, and requires Clang. It selects
+`YUME_SANITIZE=address+undefined` and `YUME_LTO=OFF`, with coverage and
+ASan/UBSan checks in source-built parser libraries as well as the harnesses.
+Only the harness executables link libFuzzer's main function. Other sanitizer
+selections require a separate build. Prebuilt dependencies remain outside this
+instrumentation, and the harnesses are never installed. Verify parser compile
+commands and object instrumentation when retaining qualification evidence.
 
 | Harness | Parser | Reached by |
 | --- | --- | --- |

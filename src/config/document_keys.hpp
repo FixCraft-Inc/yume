@@ -55,6 +55,9 @@ inline std::optional<DocumentError> document_key_error(
             return member_error(key, "unknown " + std::string(dialect) +
                                          " config key: " + std::string(key));
         }
+        if (item.value().is_null()) {
+            return member_error(key, std::string(key) + ": null is not a configured value; omit the key instead");
+        }
     }
     return std::nullopt;
 }

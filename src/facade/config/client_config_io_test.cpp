@@ -28,6 +28,8 @@
 
 namespace {
 
+using json = nlohmann::json;
+
 class TemporaryDirectory {
 public:
     TemporaryDirectory() {
@@ -278,7 +280,7 @@ bool test_atomic_file_replace_and_cleanup(const std::filesystem::path& base) {
     return true;
 }
 
-bool test_facade_canonical_and_legacy_parse(
+bool test_facade_canonical_and_android_pin_parse(
     const std::filesystem::path& base) {
     std::string error;
     auto canonical = yume::facade::config_io::parse_client_json(
@@ -289,19 +291,16 @@ bool test_facade_canonical_and_legacy_parse(
             "admin_identity":"admin.key",
             "packet_tun_name":"yume0",
             "threads":7,
-            "io_threads":99,
             "tunnels":3,
             "obfs_pad_multiple":64,
             "obfs_jitter_ms":17,
             "udp":true,
-            "allow_udp":false,
             "server_in_charge":true,
             "server_in_charge_port":3001,
             "tls_pin":"canonical-pin",
-            "tls_pin_sha256":"legacy-pin",
+            "tls_pin_sha256":"android-pin",
             "non_interactive":true,
             "app_codec":"monero-rpc",
-            "codec":"ignored-legacy-codec",
             "app_codec_listen":"[::1]:19090",
             "anonym_pubkey_material_id":"operator-public",
             "anonym_ca_material_id":"operator-ca",
@@ -326,9 +325,9 @@ bool test_facade_canonical_and_legacy_parse(
         return false;
     }
     if (!expect(canonical->io_threads == 7,
-                "canonical threads must take precedence over io_threads") ||
+                "threads must parse") ||
         !expect(canonical->allow_udp,
-                "canonical udp must take precedence over allow_udp") ||
+                "udp must parse") ||
         !expect(canonical->tls_pin_sha256 == "canonical-pin",
                 "canonical tls_pin must take precedence") ||
         !expect(canonical->identity == (base / "client.key").string(),
@@ -375,23 +374,11 @@ bool test_facade_canonical_and_legacy_parse(
         return false;
     }
 
-    auto legacy = yume::facade::config_io::parse_client_json(
-        R"({
-            "io_threads":5,
-            "allow_udp":true,
-            "tls_pin_sha256":"legacy-only-pin",
-            "codec":"monero-rpc"
-        })",
-        base, &error);
-    return expect(legacy.has_value(), "facade should accept legacy aliases") &&
-           expect(legacy->io_threads == 5,
-                  "legacy io_threads should remain readable") &&
-           expect(legacy->allow_udp,
-                  "legacy allow_udp should remain readable") &&
-           expect(legacy->tls_pin_sha256 == "legacy-only-pin",
-                  "legacy tls_pin_sha256 should remain readable") &&
-           expect(legacy->app_codec == "monero-rpc",
-                  "legacy codec should remain readable");
+    auto android = yume::facade::config_io::parse_client_json(
+        R"({"tls_pin_sha256":"android-pin"})", base, &error);
+    return expect(android.has_value(), "facade should read the Android pin key") &&
+           expect(android->tls_pin_sha256 == "android-pin",
+                  "Android pin must be preserved");
 }
 
 bool test_facade_rejects_malformed_values(
@@ -472,9 +459,9 @@ bool expect_canonical_document(const nlohmann::json& document) {
            expect(!document.contains("io_threads") &&
                       !document.contains("allow_udp") &&
                       !document.contains("tls_pin_sha256"),
-                  "writer should omit legacy aliases") &&
+                  "writer should omit unsupported aliases") &&
            expect(!document.contains("obfs_secret"),
-                  "writer must not serialize inline legacy secrets") &&
+                  "writer must not serialize inline secrets") &&
            expect(document.value("admin_identity", std::string{}) ==
                       "admin.key",
                   "writer should preserve admin identity") &&
@@ -586,43 +573,33 @@ bool test_facade_save_surfaces_serialization_failure(
 
 bool test_cli_alias_load_and_canonical_save(
     const std::filesystem::path& base) {
-    const auto legacy_path = base / "legacy-yume.json";
-    if (!write_json(legacy_path, {
-            {"server", "legacy.example"},
-            {"io_threads", 5},
-            {"allow_udp", true},
-            {"tls_pin_sha256", "legacy-pin"},
-            {"codec", "monero-rpc"},
+    const auto android_path = base / "android-yume.json";
+    if (!write_json(android_path, {
+            {"server", "android.example"},
+            {"tls_pin_sha256", "android-pin"},
         })) {
-        return expect(false, "should write legacy client config fixture");
+        return expect(false, "should write Android client config fixture");
     }
     yume::client::ParsedArgs load_args;
-    load_args.config_path = legacy_path.string();
+    load_args.config_path = android_path.string();
     load_args.config_specified = true;
-    yume::client::ClientConfig legacy;
+    yume::client::ClientConfig android;
     std::string load_error;
     if (!expect(yume::client::load_client_config_file(
-                    load_args, "", &legacy, &load_error),
-                "CLI should load legacy aliases") ||
+                    load_args, "", &android, &load_error),
+                "CLI should load Android TLS pin") ||
         !expect(load_error.empty(),
-                "valid legacy config load should not report an error")) {
+                "valid Android config load should not report an error")) {
         return false;
     }
-    if (!expect(legacy.io_threads == 5 && legacy.allow_udp,
-                "CLI should accept legacy scheduling aliases") ||
-        !expect(legacy.tls_pin_sha256 == "legacy-pin",
-                "CLI should accept legacy TLS pin alias") ||
-        !expect(legacy.app_codec == "monero-rpc",
-                "CLI should accept legacy codec alias")) {
+    if (!expect(android.tls_pin_sha256 == "android-pin",
+                "CLI should preserve the Android TLS pin")) {
         return false;
     }
 
     const auto saved_path = base / "cli-yume.json";
     if (!write_json(saved_path, {
-            {"io_threads", 99},
-            {"allow_udp", false},
             {"tls_pin_sha256", "stale-pin"},
-            {"codec", "stale-codec"},
         })) {
         return expect(false, "should write CLI canonicalization fixture");
     }
@@ -643,7 +620,7 @@ bool test_cli_alias_load_and_canonical_save(
            expect(!document->contains("codec") &&
                       !document->contains("inner_hop") &&
                       !document->contains("hop_interval_ms"),
-                  "CLI save should remove retired aliases");
+                  "CLI save should write current keys");
 }
 
 // The client key set is closed and shared by both parsers. An unknown key is
@@ -660,6 +637,23 @@ bool test_client_key_set_is_closed(const std::filesystem::path& base) {
         !expect(error.find("tls_pinn") != std::string::npos,
                 "unknown-key error should name the key")) {
         return false;
+    }
+    for (const auto& alias : {json{{"io_threads", 4}, {"threads", 2}},
+                              json{{"allow_udp", true}, {"udp", false}},
+                              json{{"codec", "monero-rpc"},
+                                   {"app_codec", "monero-rpc"}}}) {
+        if (!expect(!yume::facade::config_io::parse_client_json(
+                        alias.dump(), base, &error),
+                    "facade must refuse removed aliases")) return false;
+        const auto alias_path = base / "unsupported-alias.json";
+        if (!write_json(alias_path, alias)) return false;
+        yume::client::ParsedArgs alias_args;
+        alias_args.config_path = alias_path.string();
+        alias_args.config_specified = true;
+        yume::client::ClientConfig alias_config;
+        if (!expect(!yume::client::load_client_config_file(
+                        alias_args, "", &alias_config, &error),
+                    "CLI must refuse removed aliases")) return false;
     }
     auto inline_secret = yume::facade::config_io::parse_client_json(
         R"({"server":"example.test","obfs_secret":"00"})", base, &error);
@@ -1023,7 +1017,7 @@ bool test_cli_save_preserves_malformed_existing_config(
 int main() {
     try {
         const TemporaryDirectory temporary;
-        return test_facade_canonical_and_legacy_parse(temporary.path()) &&
+        return test_facade_canonical_and_android_pin_parse(temporary.path()) &&
                        test_facade_rejects_malformed_values(temporary.path()) &&
                        test_typed_config_load_errors(temporary.path()) &&
                        test_server_bootstrap_config_round_trip(

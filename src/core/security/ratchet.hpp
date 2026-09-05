@@ -22,8 +22,8 @@ namespace yume::ratchet {
 
 using Bytes = std::vector<std::uint8_t>;
 
-// Compatibility names for the default Extreme profile. Runtime enforcement
-// uses the negotiated RatchetPolicy stored by each directional chain.
+// Extreme-profile limits used by the boundary tests. Each runtime chain
+// enforces the RatchetPolicy authenticated for that direction.
 inline constexpr std::size_t kEpochByteLimit =
     static_cast<std::size_t>(kExtremePolicy.epoch_byte_limit);
 inline constexpr std::uint64_t kEpochMessageLimit =
@@ -41,36 +41,17 @@ static_assert(kRekeyByteLead < kEpochByteLimit);
 static_assert(kRekeyMessageLead < kEpochMessageLimit);
 static_assert(kRekeyTimeLead < kEpochActiveLimit);
 
-// Authenticated-ACK deadline bounds (dev6). These bound *liveness* only: how
-// long this endpoint waits for the authenticated REKEY_ACK that answers an
-// offer it already sent. They are deliberately not security parameters. The
-// negotiated per-epoch byte, application-frame and sender-active-time limits in
-// `RatchetPolicy` are what bound the cryptographic blast radius, they are
-// enforced independently by sender and receiver, and no round-trip measurement
-// may widen them. Raising the deadline can only postpone a fail-closed
-// shutdown; it can never let one epoch key protect more plaintext.
-//
-// The floor reproduces the previous fixed deadline exactly, so a session that
-// never obtains an RTT sample behaves as it did before. The cap is the reviewed
-// upper bound on how long a stalled exchange may hold its retained ephemeral
-// ML-KEM/X25519 private keys, and is deliberately below the 60 s transport
-// keepalive stall bound so the ratchet still fails closed first.
+// ACK deadlines bound liveness and retained ephemeral-key lifetime. They do
+// not widen epoch budgets: both peers enforce byte/frame limits, while active
+// time is sender-local because delivery can be delayed by the network.
+// The 30 s cap closes a stalled rekey before the 60 s transport stall timeout.
 inline constexpr auto kMinRekeyAckDeadline = std::chrono::seconds(5);
 inline constexpr auto kMaxRekeyAckDeadline = std::chrono::seconds(30);
 static_assert(kMinRekeyAckDeadline < kMaxRekeyAckDeadline);
 
-// Bounded multi-epoch window (dev3). One pending exchange caps a byte-saturated
-// direction at `kEpochByteLimit` per rekey round trip, which is about 35 Mbit/s
-// at 60 ms and 52 Mbit/s at 40 ms. A window of `w` authenticated, strictly
-// contiguous future epochs raises that to `w * kEpochByteLimit` per round trip
-// without touching any per-epoch limit: every epoch still carries at most
-// 256 KiB, 512 application frames, and 500 ms of activity.
-//
-// The window is negotiated per connection and each endpoint advertises what it
-// will accept inbound, so a peer can never force more than the advertised
-// number of ML-KEM encapsulations or retained epoch roots. Depth also bounds
-// the break-in recovery gap: an endpoint compromise exposes at most `w`
-// prepared future epochs instead of one.
+// Each peer advertises how many future epochs it will accept. A deeper
+// window can hide ACK latency but retains more roots under process compromise.
+// Pending epochs stay contiguous and do not widen any per-epoch limit.
 inline constexpr std::uint16_t kMinRekeyWindow = 1;
 inline constexpr std::uint16_t kMaxRekeyWindow = 64;
 inline constexpr std::uint16_t kDefaultRekeyWindow = 8;

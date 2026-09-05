@@ -277,11 +277,14 @@ if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND CMAKE_BUILD_TYPE MA
     message(WARNING "YUME_BUILD_SELFTEST=ON with CMAKE_BUILD_TYPE=Debug will produce misleading throughput numbers")
 endif()
 
-# Dangerous-feature build gates. Each gate must be explicitly turned ON at
-# configure time to compile the feature. The runtime CLI flag and the per-key
-# meta entry are the second and third locks. Stock builds ship with all three
-# OFF; the corresponding flags are still recognised but warn and stay disabled.
-option(YUME_FEATURE_EXEC "Compile in server-side command execution path" OFF)
+# Dangerous-feature and reserved-policy build gates. Each gate must be
+# explicitly turned ON at configure time. The runtime CLI flag and the per-key
+# meta entry are the second and third locks. YUME_FEATURE_EXEC only activates
+# reserved relayed-EXEC policy evaluation: direct EXEC is denied and current
+# clients neither advertise nor accept inbound EXEC, so it does not enable a
+# command backend. Stock builds ship with all three gates OFF; the corresponding
+# flags are still recognised but warn and stay disabled.
+option(YUME_FEATURE_EXEC "Compile in reserved relayed EXEC policy handling" OFF)
 option(YUME_FEATURE_LAN_BRIDGE "Compile in LAN/private-IP bridging path" OFF)
 option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
 
@@ -449,13 +452,23 @@ if(_yume_sanitize STREQUAL "" OR _yume_sanitize STREQUAL "off")
     set(_yume_sanitize "none")
 endif()
 
-# The fuzz harnesses carry their own instrumentation rather than going through
-# YUME_SANITIZE, so they miss the forcing below. They need it for the same
-# reason: LTO rewrites across the boundaries the instrumentation reports
-# against, and under Clang it also leaves every archive as bitcode that a
-# non-IPO target cannot link.
+# Instrument parser libraries as well as their harnesses. Instrumenting only
+# LLVMFuzzerTestOneInput leaves out-of-line parser bodies without coverage or
+# sanitizer checks. The harness alone links libFuzzer's main; every compiled
+# dependency gets coverage and the ordinary ASan/UBSan configuration below.
 if(YUME_BUILD_FUZZERS)
-    set(YUME_LTO OFF CACHE BOOL "Enable link-time optimization for yume builds" FORCE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "YUME_BUILD_FUZZERS requires Clang")
+    endif()
+    if(NOT _yume_sanitize STREQUAL "none" AND
+       NOT _yume_sanitize STREQUAL "address+undefined")
+        message(FATAL_ERROR
+            "YUME_BUILD_FUZZERS requires address+undefined sanitizers; use a separate build for other sanitizer selections")
+    endif()
+    set(YUME_SANITIZE "address+undefined" CACHE STRING
+        "Sanitizers to instrument this build with: none, address, undefined, address+undefined, thread" FORCE)
+    set(_yume_sanitize "address+undefined")
+    add_compile_options(-fsanitize=fuzzer-no-link)
 endif()
 
 if(NOT _yume_sanitize STREQUAL "none")

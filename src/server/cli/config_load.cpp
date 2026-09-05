@@ -103,6 +103,9 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     if (!cfg.real_secret_file.empty()) {
         cfg.real_secret_file = resolve_cfg_path(cfg.real_secret_file);
     }
+    if (!cfg.anonym_token_file.empty()) {
+        cfg.anonym_token_file = resolve_cfg_path(cfg.anonym_token_file);
+    }
     if (!cfg.anonym_ca_key.empty()) {
         cfg.anonym_ca_key = resolve_cfg_path(cfg.anonym_ca_key);
     }
@@ -247,12 +250,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             }
             if (json.contains("inner_crypto") && !overrides.inner_crypto) {
                 cfg.inner_crypto = json["inner_crypto"].get<bool>();
-            }
-            if (json.contains("inner_dual") && !overrides.inner_dual) {
-                cfg.inner_dual = json["inner_dual"].get<bool>();
-            }
-            if (json.contains("inner_required") && !overrides.inner_required) {
-                cfg.inner_required = json["inner_required"].get<bool>();
             }
             if (json.contains("pq_auto_generate") && !overrides.pq_auto_generate) {
                 cfg.pq_auto_generate = json["pq_auto_generate"].get<bool>();
@@ -488,8 +485,10 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             if (json.contains("anonym_api") && cfg.anonym_api.empty()) {
                 cfg.anonym_api = json["anonym_api"].get<std::string>();
             }
-            if (json.contains("anonym_token") && cfg.anonym_token.empty()) {
-                cfg.anonym_token = json["anonym_token"].get<std::string>();
+            if (json.contains("anonym_token_file") &&
+                cfg.anonym_token_file.empty()) {
+                cfg.anonym_token_file = resolve_cfg_path(
+                    json["anonym_token_file"].get<std::string>());
             }
             if (json.contains("anonym_ca_key") && cfg.anonym_ca_key.empty()) {
                 cfg.anonym_ca_key = resolve_cfg_path(json["anonym_ca_key"].get<std::string>());

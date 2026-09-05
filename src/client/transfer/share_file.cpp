@@ -53,11 +53,10 @@
 
 namespace yume::share {
 
-ShareBundle::ShareBundle(const ShareBundle& other) try {
+// Delegation completes the object before assignment can throw, so its
+// destructor wipes partial secret copies before their strings are destroyed.
+ShareBundle::ShareBundle(const ShareBundle& other) : ShareBundle() {
     *this = other;
-} catch (...) {
-    clear_secrets();
-    throw;
 }
 ShareBundle& ShareBundle::operator=(const ShareBundle& other) {
     if (this == &other) return *this;
@@ -91,11 +90,8 @@ ShareBundle& ShareBundle::operator=(const ShareBundle& other) {
     return *this;
 }
 
-ShareBundle::ShareBundle(ShareBundle&& other) try {
+ShareBundle::ShareBundle(ShareBundle&& other) : ShareBundle() {
     *this = std::move(other);
-} catch (...) {
-    clear_secrets();
-    throw;
 }
 
 ShareBundle& ShareBundle::operator=(ShareBundle&& other) {
@@ -394,10 +390,8 @@ bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* erro
         out->tls_ca_cert_pem = j["tls"].value("ca_cert_pem", std::string{});
         out->tls_server_name = j["tls"].value("server_name", std::string{});
     }
-    // v1 bundles written before TLS material became explicit carried only
-    // the operator CA. Those exporters used that CA for both operator proof
-    // and their private TLS issuer, so preserve their ready-to-connect
-    // behavior without changing the outer file version.
+    // Android ShareFile.kt applies this same .yss rule when TLS CA is omitted.
+    // Keep both importers consistent when separating these trust inputs.
     if (out->tls_ca_cert_pem.empty() && !out->anonym_ca_cert_pem.empty()) {
         out->tls_ca_cert_pem = out->anonym_ca_cert_pem;
     }

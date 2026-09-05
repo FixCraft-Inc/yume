@@ -1,105 +1,54 @@
 # YUME documentation
 
-YUME is moving from its working 0.2 tunnel toward an embeddable stealth
-universal transport with a stable C ABI. The product version is `0.3.0-dev1`.
-Its default transition build keeps the runnable `yume` and `yumed` runtime,
-which speaks the transport-v2 wire `0.2.0-dev6`, available while YTP/1,
-schema 1, and the new session engine are developed alongside it. The
-replacement is not yet an end-to-end tunnel and does not make the working
-runtime disposable.
+YUME `0.3.0-dev1` is development software. The default `yume` and `yumed`
+binaries use the transport-v2 wire `0.2.0-dev6`. YTP/1 is an experimental
+replacement whose components do not yet form a working endpoint.
 
-Source and executable tests are authoritative when prose disagrees. Product,
-wire, configuration, ABI, provider, cryptographic-backend, and evidence-profile
-versions are independent and are reported together by the compatibility
-manifest.
+## Run YUME
 
-## Choose the correct documentation track
+- [Quick start](QUICKSTART.md): build, generate credentials, and connect.
+- [Operations](OPERATIONS.md): configuration, services, keys, and release verification.
+- [Permissions](PERMISSIONS.md): identities, destination access, and administration.
+- [Client manual](man/yume.1), [daemon manual](man/yumed.8), and [GUI manual](man/yume-gui.1).
+- [Packet mode](PACKET_NATIVE_BULK.md) and [preventing SOCKS bypass](LEAK_TIGHT.md).
+- [Diagnostics](DIAGNOSTICS.md) and [self-test tools](SELFTEST.md).
 
-- [Quick start](QUICKSTART.md), [operations](OPERATIONS.md),
-  [permissions](PERMISSIONS.md), [diagnostics](DIAGNOSTICS.md),
-  [packet-native bulk mode](PACKET_NATIVE_BULK.md), [preventing SOCKS
-  bypass](LEAK_TIGHT.md), and the [client](man/yume.1) and
-  [daemon](man/yumed.8) manuals describe the current runnable
-  transport-v2/AUTH-v2 product.
-- The complete signed 0.2 contracts, diagrams, manuals, and product records
-  are in Git at [`f0cc9e7`](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/README.md). They are not mirrored into
-  the working tree; Git is the archive.
-- Active transport-v2 references remain at their stable source paths while the
-  runtime builds by default: the [wire contract](protocol/YUME_2_0_WIRE.md),
-  [control API](CONTROL_API.md), [security modes](SECURITY_MODES.md),
-  [probe and cover behavior](FILTERING_SELF_DPI.md),
-  [application codecs](APP_CODECS.md), and
-  [host controller](HOST_CONTROLLER.md). The
-  [federation transit document](protocol/YUME_2_0_FEDERATION_TRANSIT.md) remains
-  design-only.
-- The documents below describe the modular replacement and mark every path
-  that is still a contract or scaffold rather than live runtime behavior.
+## Understand the transport
 
-## Build and inspect the replacement foundation
+- [YUME explained](EXPLAINED.md): a connection from application to destination.
+- [Why YUME](WHY_YUME.md): the transport's goals and dependencies.
+- [Implementation status](IMPLEMENTATION_STATUS.md): supported paths and open release gates.
+- [Transport-v2 wire](protocol/YUME_2_0_WIRE.md), [security modes](SECURITY_MODES.md),
+  and [probe and cover behavior](FILTERING_SELF_DPI.md).
+- [Stealth](STEALTH.md) and [transport profiles](TRANSPORT_PROFILES.md): capture
+  requirements and measured limits.
+- [Control API](CONTROL_API.md), [application codecs](APP_CODECS.md), and
+  [host controller](HOST_CONTROLLER.md).
 
-- The [YTP/1 foundation page](development/ytp1/README.md) is the one
-  development reference for the replacement: the experimental
-  `yume-setup-ytp1` / `yume-doctor-ytp1` path, the schema-1, authorization,
-  packet, and diagnostics contracts, and the verification gates. Its
-  setup-to-SOCKS runtime is not implemented yet, and nothing there is
-  installed as current-runtime documentation.
-- [Packaging](PACKAGING.md) defines the installed binaries, SDK, and package
-  boundaries.
-- [C ABI](ABI.md) is the experimental candidate for a future stable
-  cross-language contract. In a default build it starts the runnable
-  transport-v2 runtime and carries authenticated named byte streams. Packet
-  channels and the YTP/1 backend are not live yet.
-- [Implementation status](IMPLEMENTATION_STATUS.md) is the single public record
-  of what is implemented, tested, qualified, or still gated.
+## Develop and embed YUME
 
-The top-level [yume.1](man/yume.1) and [yumed.8](man/yumed.8) pages document the
-runnable transport-v2 binaries installed by the default build. The intended
-replacement CLI sketches are preserved under
-[`docs/development/ytp1/man/`](development/ytp1/README.md), not installed as
-if they worked. The existing optional GUI belongs to the runnable 0.2 surface; it
-is not yet an installed-ABI consumer for the replacement.
+Start with the [source map](SOURCE_MAP.md) and [contributor guide](../CONTRIBUTING.md).
+The [C ABI](ABI.md) is an opt-in build-tree library. Its transport-v2 backend
+supports named streams. Packet channels and schema-1 endpoint start remain
+unsupported, and the install contract is unfrozen.
 
-## Design and security
+The replacement has its own references:
 
-- [Source map](SOURCE_MAP.md) says which directory owns what, which of the two
-  stacks you are looking at, where the layering is enforced, and the known
-  rough edges. Start here.
-- [Architecture](ARCHITECTURE.md) defines the fixed dependency flow and
-  provider ownership.
-- [YUME Transport Protocol 1](protocol/YTP_1.md) is the normative contract for
-  the implemented YTP/1 kernel, session engine, and opt-in native provider
-  candidates. It explicitly marks them as uncomposed into a live YTP/1 front
-  door, runtime, or ABI backend, and as unqualified.
-- [Threat model](THREAT_MODEL.md) defines the YTP/1 actor, credential,
-  admission, authorization, resource, and evidence boundaries.
-- [Transport profiles](TRANSPORT_PROFILES.md) separates browser evidence from
-  authenticated YTP semantics.
-- [Why YUME](WHY_YUME.md) explains the product category, originality
-  declaration, and reproducible dependency policy.
+- [YTP/1 development guide](development/ytp1/README.md): build options,
+  schema-1 setup tools, and integration work.
+- [Architecture](ARCHITECTURE.md) and [YTP/1 protocol](protocol/YTP_1.md).
+- [Threat model](THREAT_MODEL.md).
 
-## Version and freeze policy
+The [federation transit proposal](protocol/YUME_2_0_FEDERATION_TRANSIT.md) is
+design-only. Current federation is single-hop.
 
-The modular development line begins at `0.3.0-dev1` with YTP/1, numeric config
-schema 1, and a replacement C ABI v1 candidate. Breaking changes are permitted
-during `0.3.0-dev*`. These interfaces freeze independently only after their
-release gates pass; the replacement ABI must not be presented as stable merely
-because it currently uses version number 1.
+## Reference ownership
 
-YTP/1 requires exactly one cryptographic and transport composition. It does
-not negotiate suites or parse transport-v2/AUTH-v2 peers. That deliberate wire
-break is separate from the build transition: the working 0.2 binaries remain
-available until the replacement reaches tunnel, cover, routing, embedding,
-packaging, and qualification parity. The YTP/1 constants and codecs exist; the
-opt-in security, TLS, H2 carrier, TCP ByteChannel, and direct-route candidates
-also exist, but their live YTP/1 composition and runtime do not yet.
+Source and executable tests take precedence when prose disagrees. Update the
+relevant contract with each behavior change. Keep product, wire, configuration,
+ABI, provider, and evidence-profile versions independent.
 
-## Evidence and release material
-
-Release material lives under `docs/release/`. The deterministic source
-dependency inventory is [SBOM.spdx.json](release/SBOM.spdx.json); it is not by
-itself proof of source ancestry or independent implementation. Security,
-performance, setup, and ingress claims require reproducible candidate-specific
-evidence; historical development results are not release qualification.
-
-Contributors should also read [CONTRIBUTING.md](../CONTRIBUTING.md). Durable
-automation context is isolated under [docs/agents/](agents/README.md).
+[Packaging](PACKAGING.md) defines installation and package contents.
+[Development notes](release/CHANGELOG.md) record changes, and
+[SBOM.spdx.json](release/SBOM.spdx.json) lists declared dependencies.
+[Automation guidance](agents/README.md) covers repository-specific checks.

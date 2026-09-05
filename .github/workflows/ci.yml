@@ -50,6 +50,12 @@ jobs:
         run: |
           python3 ./scripts/release_preflight.py
 
+      - name: Validate declared dependency SBOM
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: |
+          python3 ./scripts/check_dependency_sbom.py --check
+
       # Pure text checks over the public ABI contract. No compiler needed, so
       # they run before anything expensive and fail fast on a header/version
       # script mismatch.
@@ -367,9 +373,8 @@ jobs:
 
       - name: Configure (libFuzzer)
         run: |
-          # YUME_BUILD_FUZZERS forces YUME_LTO=OFF: the harnesses carry their
-          # own ASan+UBSan instrumentation, and LTO rewrites across exactly the
-          # boundaries that instrumentation reports against.
+          # YUME_BUILD_FUZZERS enables coverage and ASan+UBSan in parser
+          # libraries as well as harnesses, and forces YUME_LTO=OFF.
           CC=clang CXX=clang++ cmake -S . -B build-fuzz \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DYUME_BUILD_TESTING=ON \

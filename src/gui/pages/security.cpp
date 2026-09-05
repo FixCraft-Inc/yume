@@ -57,7 +57,7 @@ public:
         ImGui::Dummy(ImVec2(0, 8 * sc));
         if (ui::begin_auto_card("##security_materials")) {
             static char const* const kTabs[] = {
-                "Operator CAs", "Auth keys", "TLS CAs", "Legacy proof keys"
+                "Operator CAs", "Auth keys", "TLS CAs", "External proof keys"
             };
             active_tab_ = ui::segmented_control(
                 "##security_tabs", kTabs, 4, active_tab_);
@@ -368,10 +368,10 @@ private:
                 import_title = "Import TLS CA";
                 break;
             case sm::MaterialType::AnonymPubkey:
-                section = "Legacy external proof keys";
-                hint = "Compatibility keys for older external proof authorities. Prefer an operator CA and delegated server certificate.";
-                empty = "No legacy proof keys imported.";
-                import_title = "Import legacy proof key";
+                section = "External proof keys";
+                hint = "Signing keys for an external operator-proof service. Operator CAs use the separate CA tab.";
+                empty = "No external proof keys imported.";
+                import_title = "Import external proof key";
                 break;
         }
         ui::section_label(section);

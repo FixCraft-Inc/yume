@@ -5,6 +5,7 @@
  */
 
 #include "server/cli/curl_json_transport.hpp"
+#include "server/cli/operator_proof_token.hpp"
 
 #include "core/security/secret_file.hpp"
 #include "util.hpp"
@@ -153,9 +154,8 @@ public:
 
     static PrivateTemporaryDirectory Create() {
 #if !defined(__linux__)
-        // The curl fallback is a static-Linux compatibility path. Other
-        // platforms use the in-process HTTPS transport and stay fail-closed
-        // if an environment override tries to select this implementation.
+        // This fallback is available only on static Linux builds. Other
+        // platforms use the in-process HTTPS transport.
         throw std::runtime_error(
             "private curl transport is supported only on Linux");
 #else
@@ -761,6 +761,10 @@ std::string https_authority(const HttpsEndpoint& endpoint) {
 
 void validate_http_field_value(std::string_view value,
                                std::string_view field_name) {
+    if (value.size() > kMaxOperatorProofTokenBytes) {
+        throw std::invalid_argument(
+            std::string(field_name) + " exceeds the 4096-byte limit");
+    }
     if (contains_http_control(value)) {
         throw std::invalid_argument(
             std::string(field_name) +

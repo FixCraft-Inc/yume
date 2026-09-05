@@ -162,6 +162,10 @@ void LoadContract() {
     auto bytes = secret.CopyBytes();
     assert(bytes.size() == 32 && bytes.front() == 0xaa && bytes.back() == 0xaa);
 
+    const auto nul_path = std::filesystem::path(secret_path.string() + '\0' + "ignored");
+    assert(Throws([&] { (void)yume::security::LoadSecretFile32(nul_path); }));
+    assert(Throws([&] { (void)yume::security::ReadPrivateKeyFileStrict(nul_path); }));
+
     Write(secret_path, good + "\n", 0600);
     assert(Throws([&] { (void)yume::security::LoadSecretFile32(secret_path); }));
     Write(secret_path, std::string(64, 'A'), 0600);
@@ -184,6 +188,16 @@ void PrivateKeyLoadContract() {
     const auto contents = yume::security::ReadPrivateKeyFileStrict(key_path);
     assert(std::string(contents.begin(), contents.end()) == pem);
 
+    const auto token_path = base / "operator-proof.token";
+    Write(token_path, "private-token", 0600);
+    const auto token = yume::security::read_private_file_strict(
+        token_path, 32, "operator proof token");
+    assert(std::string(token.begin(), token.end()) == "private-token");
+    assert(Throws([&] {
+        (void)yume::security::read_private_file_strict(
+            token_path, 4, "operator proof token");
+    }));
+
     // Anything another account can read is not a usable signing identity.
     for (mode_t unsafe : {mode_t{0640}, mode_t{0604}, mode_t{0660},
                           mode_t{0666}}) {
@@ -195,6 +209,16 @@ void PrivateKeyLoadContract() {
     Write(key_path, pem, 0600);
 
     // A symlink is refused outright rather than followed to whatever it names.
+    const auto fifo_path = base / "fifo.key";
+    assert(::mkfifo(fifo_path.c_str(), 0600) == 0);
+    ::alarm(3);
+    assert(Throws([&] {
+        (void)yume::security::ReadPrivateKeyFileStrict(fifo_path);
+    }));
+    assert(Throws([&] {
+        (void)yume::security::LoadSecretFile32(fifo_path);
+    }));
+    ::alarm(0);
     const auto link_path = base / "identity-link.key";
     assert(::symlink(key_path.c_str(), link_path.c_str()) == 0);
     assert(Throws([&] {

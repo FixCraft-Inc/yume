@@ -49,6 +49,12 @@ namespace yume::gui {
 
 namespace {
 
+// Only the Linux AppIndicator path writes per-status icon files. The Windows
+// and macOS paths carry their own icon handling, and the no-tray stub has
+// none, so defining these unconditionally left them orphaned on any build
+// without the Linux tray and broke it under -Werror=unused-function.
+#if YUME_GUI_TRAY_LINUX
+
 std::string write_icon_for_status(TrayStatus const& st,
                                   std::filesystem::path const& icon_dir) {
     return tray_icon::write_status_png(st, icon_dir,
@@ -61,6 +67,8 @@ void remove_icon_files(std::vector<std::string> const& paths) {
         std::filesystem::remove(p, ec);
     }
 }
+
+#endif  // YUME_GUI_TRAY_LINUX
 
 }  // namespace
 

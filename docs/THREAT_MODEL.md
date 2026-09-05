@@ -32,8 +32,8 @@ Each authorized client identity has:
 - admission material appropriate to the front-door design.
 
 Server setup stores client identity, access PSK, and authorization together.
-A deployment-wide inner PSK is forbidden because compromise would collapse
-every client into one trust principal. Private credentials are referenced by strict
+Each client has a separate access PSK so theft of one PSK does not expose a
+secret shared by every client. Private credentials are referenced by strict
 config paths, created and read with owner-only permissions, and never embedded
 inline or printed by setup/doctor.
 
@@ -143,16 +143,12 @@ Claims therefore name the exact profile and evidence environment. YUME does
 not claim byte-identical browser behavior, DPI-proof transport, universal
 indistinguishability, or anonymity.
 
-## Replacement scope separation
+## Replacement scope
 
-Federation/transit, directory, relay applications, reverse forwarding,
-administration relationships, server command execution, host-controller modes,
-product-specific codecs, GUI/facade coupling, helper TLS fallback, runtime
-security modes, and dynamic plugins are not part of the first YTP/1 path. The
-runnable transport-v2 implementations remain a separate explicit lane; they
-must not be silently reachable from the replacement provider graph. Removal is
-a later reviewed milestone after replacement or retirement evidence, not an
-assumed property of the current tree.
+The first YTP/1 endpoint targets direct routing, named services, and packet
+adapters. Federation, relay applications, host-controller modes, the GUI, and
+reserved EXEC policy remain on the transport-v2 track. Their integration or
+retirement requires a separate decision. See [implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Evidence required for release
 

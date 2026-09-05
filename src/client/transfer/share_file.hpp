@@ -54,6 +54,8 @@ using RelayPeerPins = std::map<std::string, std::string>;
 // All fields are optional except server.host + server.port.
 // Anything not set at export time is omitted from the bundle JSON so
 // older or future fields don't pollute. Importer ignores unknown fields.
+// Copies and moves wipe owned secrets on destruction, including partial
+// construction failure. A move copies secrets before clearing the source.
 struct ShareBundle {
     ShareBundle() = default;
     ShareBundle(const ShareBundle& other);
@@ -87,7 +89,7 @@ struct ShareBundle {
     std::string tls_ca_cert_pem;              // empty = system trust store
     std::string tls_server_name;              // empty = server_host
 
-    // Operator-identity trust material / PQ (legacy serialized field names).
+    // Operator-identity trust material and PQ options.
     std::string anonym_ca_cert_pem;          // empty = none
     std::string anonym_pubkey;               // empty = none
     std::string pq_public_key_pem;           // empty = none

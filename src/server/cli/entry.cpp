@@ -45,6 +45,7 @@
 
 #include "core/protocol/runtime_policy.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/security/secure_erase.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/cli/anonym.hpp"
 #include "server/cli/args.hpp"
@@ -54,6 +55,7 @@
 #include "server/runtime/local_runtime.hpp"
 #include "server/cli/local.hpp"
 #include "server/cli/misc.hpp"
+#include "server/cli/operator_proof_token.hpp"
 #include "server/cli/runtime_prep.hpp"
 #include "server/cli/startup_checks.hpp"
 #include "util.hpp"
@@ -69,6 +71,7 @@ using yume::server::cli::cert_fingerprint_sha256;
 using yume::server::cli::get_self_path;
 using yume::server::cli::load_server_config_file_and_resolve_paths;
 using yume::server::cli::load_pq_public_b64;
+using yume::server::cli::load_operator_proof_token_file;
 using yume::server::cli::parse_proof_ts;
 using yume::server::cli::prepare_server_runtime_files;
 using yume::server::cli::read_file_bytes;
@@ -82,6 +85,18 @@ using yume::server::cli::sha256_hex;
 using yume::server::cli::sign_pq_pub_with_key;
 using yume::server::cli::StartupCheckOptions;
 using yume::server::cli::prepare_server_startup_config;
+
+class StringWiper final {
+public:
+    explicit StringWiper(std::string& value) noexcept : value_(value) {}
+    ~StringWiper() { yume::security::secure_erase(value_); }
+
+    StringWiper(const StringWiper&) = delete;
+    StringWiper& operator=(const StringWiper&) = delete;
+
+private:
+    std::string& value_;
+};
 
 bool parse_env_bool(const char* name, bool fallback) {
     const char* raw = std::getenv(name);
@@ -322,9 +337,6 @@ int Server::run(int argc, char** argv) {
             "Use --dns-server 1.1.1.1 or set YUME_DNS_SERVER=1.1.1.1 to bypass system DNS.");
     }
 #endif
-    if (cfg.inner_dual || cfg.inner_required) {
-        cfg.inner_crypto = true;
-    }
     cfg.reverse_port_min = std::clamp(cfg.reverse_port_min, 1, 65535);
     cfg.reverse_port_max = std::clamp(cfg.reverse_port_max, 1, 65535);
     if (cfg.reverse_port_min > cfg.reverse_port_max) {
@@ -360,6 +372,19 @@ int Server::run(int argc, char** argv) {
         return 1;
     }
 
+    std::string operator_proof_token;
+    StringWiper operator_proof_token_wiper(operator_proof_token);
+    if (cfg.anonym && !cfg.anonym_token_file.empty()) {
+        try {
+            operator_proof_token =
+                load_operator_proof_token_file(cfg.anonym_token_file);
+        } catch (const std::exception& ex) {
+            yume::util::log_error(
+                std::string("cannot load operator proof token: ") + ex.what());
+            return 1;
+        }
+    }
+
     OperatorProofState operator_proof_state;
     auto& anonym_last_ts = operator_proof_state.last_timestamp_;
     const char* anonym_local_sign_env = std::getenv("YUME_ANONYM_LOCAL_SIGN");
@@ -391,7 +416,7 @@ int Server::run(int argc, char** argv) {
             }
             std::string pq_sign_key = !cfg.anonym_sub_key.empty() ? cfg.anonym_sub_key : cfg.anonym_ca_key;
             auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_proof_mode, cfg.anonym_api,
-                                            cfg.anonym_token, cfg.anonym_ca_key,
+                                            operator_proof_token, cfg.anonym_ca_key,
                                             cfg.anonym_sub_key, cfg.anonym_sub_cert,
                                             pq_public_path, pq_sign_key, anonym_local_sign,
                                             cfg.outbound_proxy_url);
@@ -506,6 +531,7 @@ int Server::run(int argc, char** argv) {
     if (cfg.anonym) {
         refresh_thread = std::jthread(
             [&manager, &cfg, &anonym_last_ts, &refresh_mu, &refresh_cv,
+             &operator_proof_token,
              anonym_local_sign](std::stop_token stop_token) {
             // request_stop() alone does not wake std::condition_variable.
             // Bind notification to the token so jthread destruction cannot
@@ -548,7 +574,7 @@ int Server::run(int argc, char** argv) {
                     }
                     std::string pq_sign_key = !cfg.anonym_sub_key.empty() ? cfg.anonym_sub_key : cfg.anonym_ca_key;
                     auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_proof_mode, cfg.anonym_api,
-                                                    cfg.anonym_token, cfg.anonym_ca_key,
+                                                    operator_proof_token, cfg.anonym_ca_key,
                                                     cfg.anonym_sub_key, cfg.anonym_sub_cert,
                                                     pq_public_path, pq_sign_key, anonym_local_sign,
                                                     cfg.outbound_proxy_url);

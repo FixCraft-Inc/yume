@@ -221,11 +221,7 @@ App::App(Options opts) : opts_(std::move(opts)) {
         }
     }
 
-    // Logs, Settings and Credits are workspace-agnostic. They used to be
-    // instantiated once per workspace, which gave each of them two
-    // independent copies of its own scroll position, filter and expansion
-    // state; switching workspaces silently swapped which copy you were
-    // looking at. They are Common now, so there is exactly one of each.
+    // Common pages retain their UI state when the workspace changes.
     pages_.push_back({make_dashboard_page(), NavScope::Common});
     pages_.push_back({make_connect_page(), NavScope::Client});
     pages_.push_back({make_security_page(), NavScope::Client});

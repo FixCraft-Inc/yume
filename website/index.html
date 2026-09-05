@@ -116,9 +116,10 @@ section_nav:
     <div class="status-pill warn">Development line {{ site.product_version }}: no stable release published</div>
     <p>
       The default build produces the runnable 0.2 <code>yume</code> and
-      <code>yumed</code> tunnel. YTP/1, the dependency-clean session engine,
-      schema 1, and the replacement ABI are built alongside it, but they do not
-      yet form an authenticated end-to-end tunnel.
+      <code>yumed</code> tunnel. YTP/1, the session engine, and schema 1 form a
+      separate replacement foundation. Its providers and the build-tree ABI
+      library are explicit opt-ins. The providers do not yet form a live YTP/1
+      endpoint; the ABI currently carries transport-v2 named streams.
     </p>
     <p>
       Breaking the new wire and schema is acceptable during development;
@@ -133,7 +134,7 @@ section_nav:
       <p>The 0.2 client and daemon retain SOCKS, forwards, packet routing, composite authentication, profile-matched TLS/H2 ingress, and a real cover backend while the replacement matures.</p>
     </div>
     <div class="card">
-      <h3>Foundation retained</h3>
+      <h3>Components with focused tests</h3>
       <p>The tree includes bounded YTP/1 codecs, the session engine, opt-in hybrid security, TLS 1.3, duplex H2 carrier, TCP ByteChannel, and direct-route providers, strict schema-1 configuration, setup and doctor tools, layering checks, and build-tree ABI consumers.</p>
     </div>
     <div class="card">
@@ -142,7 +143,7 @@ section_nav:
     </div>
     <div class="card">
       <h3>Switch-over rule</h3>
-      <p>Transport-v2/AUTH-v2 is incompatible with YTP/1 by design. The old runtime leaves the default only after tunnel, cover, routing, embedding, packaging, and qualification parity.</p>
+      <p>Transport-v2/AUTH-v2 is incompatible with YTP/1 by design. Transport v2 remains the default until tunnel, cover, routing, embedding, packaging, and qualification parity.</p>
     </div>
   </div>
 </section>
@@ -278,14 +279,10 @@ section_nav:
   </div>
   <div class="notice">
     <p>
-      <strong>Evidence, not slogans.</strong> YUME can raise the cost of blocking
-      and reduce some metadata exposure. It is not impossible to block, immune
-      to stateful DPI, or identical to a browser. Existing 0.2 captures do not
-      automatically qualify the replacement provider; resumed sessions,
-      same-session comparisons, carrier semantics, timing and volume,
-      classifier testing, and deployed soak remain separate gates.
-      <code>yumed</code> is a terminating single-hop proxy, not an
-      onion relay: the server sees traffic as it exits. Read the
+      Whole-session browser comparisons, classifiers, WAN tests, and soak
+      qualification remain open. <code>yumed</code> terminates the tunnel and
+      sees the authenticated client and destination. Application TLS can protect
+      content end to end. Read the
       <a href="{{ '/docs/STEALTH/' | relative_url }}">stealth model</a> and the
       <a href="{{ '/docs/THREAT_MODEL/' | relative_url }}">threat model</a> before deploying it.
     </p>

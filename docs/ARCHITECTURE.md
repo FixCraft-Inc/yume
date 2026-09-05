@@ -1,9 +1,8 @@
 # YUME architecture
 
-This describes the **YTP/1 replacement** contracts. It is not a map of the code
-that runs today: the shipping transport-v2 product is roughly 117k of the tree's
-168k lines and is not covered here. For that, and for which of the two stacks a
-given file belongs to, read the [source map](SOURCE_MAP.md) first.
+This document defines the experimental YTP/1 replacement. The
+[source map](SOURCE_MAP.md) covers the default transport-v2 runtime and shows
+where both implementations live.
 
 The modular YTP/1 replacement has downward-only client and server
 compositions:
@@ -19,10 +18,6 @@ server: FrontDoor -> AcceptedCarrier --------------------+      -> StreamDispatc
 An application may supply or consume the endpoints at these boundaries. The
 session engine does not know about sockets, TLS libraries, HTTP/2 libraries,
 JSON, configuration files, command-line parsing, or GUI state.
-
-This is not yet the runnable tunnel graph. The default-built transport-v2
-architecture remains documented in the
-[signed 0.2 snapshot](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/ARCHITECTURE.md) until replacement parity.
 
 ## Core contracts
 

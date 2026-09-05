@@ -326,7 +326,7 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("WHY_YUME.md", documentation_map)
         self.assertIn("protocol/YTP_1.md", documentation_map)
         self.assertIn("IMPLEMENTATION_STATUS.md", documentation_map)
-        self.assertIn("docs/agents/", documentation_map)
+        self.assertRegex(documentation_map, r"\]\(agents/README\.md\)")
 
     def test_website_documentation_uses_one_sync_path(self) -> None:
         sync_script = (ROOT / "scripts/sync_website_docs.sh").read_text(
@@ -384,11 +384,132 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("--tls_cert <path>", server_help)
         self.assertIn("--tls_key <path>", server_help)
         self.assertIn("--allow-exec", server_help)
+        self.assertIn("--completion <shell>", server_help)
         self.assertIn("--admin-keys ", server_man)
         self.assertIn("--keys-admin", server_man)
         self.assertIn("--tls_cert ", server_man)
         self.assertIn("--tls_key ", server_man)
         self.assertIn("--allow-exec", server_man)
+        self.assertIn('--completion " shell', server_man)
+
+    def test_disabled_exec_contract_is_consistent(self) -> None:
+        client_args = (ROOT / "src/client/cli/config/args.cpp").read_text(
+            encoding="utf-8")
+        self.assertIn("--allow-exec is unavailable", client_args)
+
+        controller = (ROOT / "src/client/runtime/controller.cpp").read_text(
+            encoding="utf-8")
+        self.assertNotIn(
+            'args.emplace_back("--allow-exec")',
+            controller,
+            "the subprocess controller must not emit an option the client "
+            "parser refuses",
+        )
+
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            'option(YUME_FEATURE_EXEC "Compile in reserved relayed EXEC '
+            'policy handling" OFF)',
+            cmake,
+        )
+        self.assertNotIn(
+            'option(YUME_FEATURE_EXEC "Compile in server-side command '
+            'execution path" OFF)',
+            cmake,
+        )
+
+        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+            encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        startup = (ROOT / "src/server/cli/startup_checks.cpp").read_text(
+            encoding="utf-8")
+        self.assertIn("Reserved relayed EXEC policy input", server_help)
+        self.assertNotIn("Enable server command execution", server_help)
+        self.assertIn("Reserved relayed EXEC policy input", server_man)
+        self.assertNotIn("Enable server-side command execution", server_man)
+        self.assertIn(
+            "the reserved relayed EXEC policy remains disabled", startup)
+        self.assertNotIn(
+            "rebuild with that option to enable server-side command execution",
+            startup,
+        )
+
+    def test_yumed_completion_alias_is_documented(self) -> None:
+        server_args = (ROOT / "src/server/cli/args.cpp").read_text(
+            encoding="utf-8")
+        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+            encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        self.assertIn(
+            '(arg == "completion" || arg == "--completion")',
+            server_args,
+        )
+        self.assertIn("yumed --completion bash", server_help)
+        self.assertIn("--completion <shell>", server_help)
+        self.assertIn(".B --completion", server_man)
+        self.assertIn('.BI "--completion " shell', server_man)
+        self.assertIn("yumed completion bash", server_man)
+
+    def test_operator_proof_token_is_file_only(self) -> None:
+        server_keys = (
+            ROOT / "src/config/server_document_keys.hpp"
+        ).read_text(encoding="utf-8")
+        server_config = (
+            ROOT / "src/server/config/config.hpp"
+        ).read_text(encoding="utf-8")
+        server_args = (ROOT / "src/server/cli/args.cpp").read_text(
+            encoding="utf-8")
+        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+            encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        facade_io = (
+            ROOT / "src/facade/config/server_config_io.cpp"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"anonym_token_file"', server_keys)
+        self.assertIn('{"anonym_token",', server_keys)
+        self.assertIn("std::string anonym_token_file;", server_config)
+        self.assertNotIn("std::string anonym_token;", server_config)
+        self.assertIn('arg == "--operator-proof-token-file"', server_args)
+        self.assertNotIn('arg == "--operator-proof-token"', server_args)
+        self.assertIn("--operator-proof-token-file <path>", server_help)
+        self.assertNotIn("--operator-proof-token <str>", server_help)
+        self.assertIn('.BI "--operator-proof-token-file " path', server_man)
+        self.assertNotIn('.BI "--operator-proof-token " string', server_man)
+        self.assertIn("cfg_key::anonym_token_file", facade_io)
+        self.assertNotIn("cfg_key::anonym_token,", facade_io)
+
+    def test_source_map_names_every_top_level_source_directory(self) -> None:
+        source_map = (ROOT / "docs/SOURCE_MAP.md").read_text(encoding="utf-8")
+        source_directories = sorted(
+            path.name for path in (ROOT / "src").iterdir() if path.is_dir()
+        )
+        for directory in source_directories:
+            self.assertIn(
+                f"`{directory}/",
+                source_map,
+                f"docs/SOURCE_MAP.md does not name src/{directory}/",
+            )
+
+    def test_cover_response_limits_are_documented(self) -> None:
+        limits = (ROOT / "src/server/runtime/cover_response.hpp").read_text(
+            encoding="utf-8")
+        for declaration in (
+                "kMaxResponseBytes = 8U * 1024U * 1024U",
+                "kMaxResponseFiles = 256U",
+                "kMaxDirectoryEntries = 4096U",
+                "kMaxCacheBytes = 64U * 1024U * 1024U"):
+            self.assertIn(declaration, limits)
+
+        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+            encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        for claim in ("maximum 8 MiB", "4096 entries", "256 captures",
+                      "64 MiB total"):
+            self.assertIn(claim, server_help)
+        for claim in ("limited to 8 MiB", "4096 directory entries",
+                      "256 matching files", "64 MiB in aggregate"):
+            self.assertIn(claim, server_man)
 
     def test_native_openssl_runtime_contract_is_fail_closed(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")

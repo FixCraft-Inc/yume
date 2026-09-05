@@ -250,13 +250,13 @@ void test_padded_frame_round_trip() {
         assert(frame.payload == payload);
     }
 
-    // pad_multiple = 0 keeps the legacy byte-for-byte encoding.
-    auto legacy = encode_frame(DATA, 7, 0, payload, 0);
-    const uint16_t legacy_flags = uint16_t(legacy[6] << 8) | uint16_t(legacy[7]);
-    assert((legacy_flags & kFlagPadded) == 0);
-    assert(legacy.size() == 8 + payload.size());
-    const auto legacy_frame = decode_frame(legacy);
-    assert(legacy_frame.payload == payload);
+    // A zero padding multiple emits only the header and payload.
+    auto unpadded = encode_frame(DATA, 7, 0, payload, 0);
+    const uint16_t unpadded_flags = uint16_t(unpadded[6] << 8) | uint16_t(unpadded[7]);
+    assert((unpadded_flags & kFlagPadded) == 0);
+    assert(unpadded.size() == 8 + payload.size());
+    const auto unpadded_frame = decode_frame(unpadded);
+    assert(unpadded_frame.payload == payload);
 }
 
 void test_padded_frame_rejects_bad_length() {

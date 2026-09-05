@@ -36,7 +36,6 @@ using obfs::OuterCarrierEvent;
 using obfs::OuterCarrierEventKind;
 using obfs::OuterCarrierStreamClass;
 
-constexpr std::uint8_t kH2Data = 0x00;
 constexpr std::uint8_t kH2Headers = 0x01;
 constexpr std::uint8_t kH2Settings = 0x04;
 constexpr std::uint8_t kH2Ping = 0x06;

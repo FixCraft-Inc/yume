@@ -183,7 +183,6 @@ private:
 
     boost::asio::ip::tcp::acceptor acceptor_;
     std::string listen_host_;
-    int listen_port_{0};
     std::string pid_path_;
     std::string target_host_;
     int target_port_{0};
@@ -247,7 +246,6 @@ private:
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     std::shared_ptr<Tunnel> tunnel_;
     std::string listen_host_;
-    int listen_port_{0};
     std::string pid_path_;
     std::string target_host_;
     int target_port_{0};

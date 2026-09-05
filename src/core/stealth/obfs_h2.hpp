@@ -213,7 +213,6 @@ private:
     void handle_data_payload(const std::uint8_t* payload, std::size_t len, std::uint8_t flags);
     void enqueue_reply(const crypto::Bytes& bytes);
 
-    bool server_side_{true};
     State state_{State::kAwaitingPreface};
     bool preface_seen_{false};
     bool headers_seen_{false};

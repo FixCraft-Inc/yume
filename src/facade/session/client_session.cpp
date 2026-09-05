@@ -66,7 +66,7 @@ bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
         std::string e;
         auto path = sm::material_path(cfg.anonym_pubkey_material_id, &e);
         if (!path) {
-            if (err) *err = e.empty() ? "legacy proof key material unavailable" : e;
+            if (err) *err = e.empty() ? "external proof key material unavailable" : e;
             return false;
         }
         cfg.anonym_pubkey = path->string();

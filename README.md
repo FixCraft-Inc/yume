@@ -1,16 +1,11 @@
 # YUME
 
-YUME is an experimental embeddable stealth universal transport. The product
-version is `0.3.0-dev1`. During this transition its default build keeps the
-runnable `yume` client and `yumed` daemon, which speak the transport-v2 wire
-`0.2.0-dev6`, available while the modular YTP/1 engine, schema-1 configuration,
-and replacement C ABI are built alongside them.
+YUME carries TCP, UDP, and packet traffic over an authenticated, browser-shaped
+transport. It includes a client, daemon, optional desktop GUI, and an
+experimental C API for embedding.
 
-There is no stable product release yet. Linux x86-64 command-line builds are
-the first qualification target. Other platforms, the GUI, and external
-consumers still have open release gates. The product label, runnable transport,
-replacement wire, configuration, ABI, provider, and evidence-profile versions
-are separate axes recorded in source and synchronized package metadata.
+The product version is `0.3.0-dev1`. YUME is development software with no
+stable release. Linux x86-64 is the first qualification target.
 
 - Website: <https://yume.fixcraft.jp>
 - Source: <https://github.com/FixCraft-Inc/yume>
@@ -32,40 +27,25 @@ The runnable transport currently uses:
   session key establishment
 - one-use AES-256-GCM message keys with independent directional epochs
 
-The default transport profile follows one committed browser and cover-server
-capture. It closes the currently pinned ClientHello structure checks. It has
-not passed the full browser-parity, classifier, wide-area, resumption, and
-long-running soak gates. YUME should not be described as identical to the
-target browser, impossible to block, or anonymous by itself.
+The default build uses the transport-v2 wire `0.2.0-dev6`. Its profile follows
+a pinned browser and cover-server capture. ClientHello structure checks pass,
+but complete-session browser comparisons, classifiers, WAN tests, and soak
+qualification remain open. See [implementation status](docs/IMPLEMENTATION_STATUS.md).
 
-`yumed` is a terminating proxy. It knows which authenticated client opened a
-stream and which destination it exits to. Application TLS can still protect
-content end to end. Direct federation is implemented in the 0.2 product, but
-transit is limited to one hop and is not onion routing.
+`yumed` terminates the tunnel and sees the authenticated client and requested
+destination. Use application TLS to protect content end to end. Federation
+connects directly trusted servers and is limited to one hop.
 
-## Replacement transport
+## Experimental YTP/1 work
 
-The YTP/1 replacement (YUME Transport Protocol 1, a new protocol whose
-version is unrelated to the product version) turns the tunnel core into
-authenticated named byte
-streams and packet channels. Applications see peer identity and capabilities;
-service authorization and resource policy run before dispatch. SOCKS5, direct
-TCP/UDP routing, and packet tunnelling become included adapters on the same
-public interface instead of defining the wire protocol.
+YTP/1 (YUME Transport Protocol 1) is the replacement protocol under development.
+Its engine, codecs, schema-1 configuration, and provider tests exist. They do
+not yet form a working client/server endpoint. Transport v2 remains the default
+until the replacement passes the [parity gates](docs/IMPLEMENTATION_STATUS.md).
 
-The dependency direction is `ByteChannel → SecureChannel → Carrier →
-SessionEngine → StreamDispatcher → StreamHandler/RouteProvider`. The
-dependency-clean engine, bounded YTP/1 codecs, strict schema-1 parser, setup and
-doctor tools, and replacement ABI candidate exist. Opt-in hybrid security, TLS
-1.3, duplex H2 carrier, TCP ByteChannel, and direct TCP/UDP route providers
-also exist as isolated candidates. They are not composed with a live YTP/1
-front door, admission path, runtime, or adapters and therefore do not form an
-end-to-end replacement tunnel.
-
-The replacement deliberately breaks wire and configuration compatibility. It
-does not require disabling the working product early: the 0.2 runtime remains
-until the replacement passes tunnel, cover, routing, embedding, packaging, and
-qualification parity gates.
+The opt-in C ABI already carries authenticated named byte streams through
+transport v2. Packet channels and the YTP/1 backend remain unsupported.
+See the [C ABI reference](docs/ABI.md) and [YTP/1 development guide](docs/development/ytp1/README.md).
 
 ## Build
 
@@ -88,10 +68,9 @@ Direct CMake builds must activate the same patched OpenSSL installation. See
 [the contributor guide](CONTRIBUTING.md) before using a direct build as release
 evidence.
 
-## Provisioning during the transition
+## Set up a tunnel
 
-The current `yume-setup` command generates the runnable transport-v2 server and
-client kit:
+The `yume-setup` command generates a transport-v2 server and client kit:
 
 ```bash
 sudo cmake --install build
@@ -103,18 +82,10 @@ yume-setup init \
   --client-name laptop
 ```
 
-The separate `yume-setup-ytp1` and `yume-doctor-ytp1` commands exercise the
-replacement's schema-1 credential and configuration contracts. Their kits do
-not yet drive the runnable `yume` or `yumed` binaries. Read the current
-[quick start](docs/QUICKSTART.md) and [operations guide](docs/OPERATIONS.md) for
-the tunnel, and the
-[YTP/1 foundation page](docs/development/ytp1/README.md) for the YTP/1
-scaffold.
-
-The runnable setup helper retains its owner-only credential handling and
-out-of-band secret-distribution rules. For a real deployment, supply the
-operator CA inputs described in the current quick start and remove offline CA
-material from the server host.
+Follow the [quick start](docs/QUICKSTART.md) to configure cover traffic and
+operator trust, then connect the client. The setup helper creates private
+credential files. Distribute them through a trusted channel and keep the
+operator CA's private key off the server.
 
 ## Main components
 
@@ -122,14 +93,10 @@ material from the server host.
 | --- | --- |
 | `yume` | Client, SOCKS endpoint, forwards, packet routing, and attached tools |
 | `yumed` | TLS/H2 endpoint, authentication, policy enforcement, and proxy exit |
-| replacement `libyume` | Opt-in build-tree C ABI; transport-v2 named streams work, while schema-1 start and packets remain unsupported |
+| `libyume` | Opt-in build-tree C ABI; transport-v2 named streams work, while schema-1 start and packets remain unsupported |
 | `yume-gui` | Optional Dear ImGui desktop client and server UI, still a preview |
 | `yume-setup` | Runnable transport-v2 server and client-kit provisioner |
 | `yume-setup-ytp1` / `yume-doctor-ytp1` | Experimental schema-1 generator and validator |
-
-The static site under `website/` publishes project and release information. It
-does not control a local YUME process and never handles runtime configuration
-or keys.
 
 ## Documentation
 
@@ -147,21 +114,6 @@ Start with the [documentation map](docs/README.md). The main reader paths are:
   for security claims and known residuals
 - [architecture](docs/ARCHITECTURE.md), [C ABI](docs/ABI.md), and
   [YTP/1](docs/protocol/YTP_1.md) for replacement integration work
-
-The project declares YUME's wire and implementation original to this
-repository and does not offer Xray, VLESS, or REALITY wire compatibility. The
-deterministic SBOM check validates declared source dependencies; it does not
-prove source ancestry.
-
-## Project status
-
-No stable release artifact or public endpoint is available today. Current
-source includes focused unit and integration coverage for the carrier, AUTH,
-ratchet, permissions, ABI, services, and direct federation. Exact-candidate
-release builds, sanitizer reconciliation, sustained lifecycle and network
-tests, browser comparison, independent review, and platform qualification are
-still required. The [implementation status](docs/IMPLEMENTATION_STATUS.md)
-keeps that boundary in one place.
 
 ## License
 

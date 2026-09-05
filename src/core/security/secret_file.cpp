@@ -627,7 +627,13 @@ Secret32 LoadSecretFile32(const std::filesystem::path& path) {
     (void)path;
     throw std::runtime_error("YUME 2.0 protected secret files are currently Linux/POSIX only");
 #else
-    const int raw_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (path.empty() || path.native().find('\0') != std::string::npos) {
+        throw std::runtime_error("protected secret file path is invalid");
+    }
+    // Validate the opened type before any potentially blocking read. O_RDONLY
+    // alone waits for a writer on a FIFO before fstat can reject it.
+    const int raw_fd = ::open(
+        path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (raw_fd < 0) {
         throw std::system_error(errno, std::generic_category(),
                                 "open protected YUME secret file");
@@ -700,45 +706,55 @@ Secret32 LoadSecretFile32(const std::filesystem::path& path) {
 #endif
 }
 
-std::vector<std::uint8_t> ReadPrivateKeyFileStrict(
-    const std::filesystem::path& path) {
+std::vector<std::uint8_t> read_private_file_strict(
+    const std::filesystem::path& path,
+    std::size_t maximum_bytes,
+    std::string_view description) {
+    const std::string label = description.empty()
+        ? std::string("private file")
+        : std::string(description);
 #if defined(_WIN32)
     (void)path;
+    (void)maximum_bytes;
     throw std::runtime_error(
-        "YUME protected private key files are currently Linux/POSIX only");
+        "YUME protected " + label +
+        " files are currently Linux/POSIX only");
 #else
-    if (path.empty()) {
-        throw std::runtime_error("private key path is empty");
+    if (path.empty() || path.native().find('\0') != std::string::npos) {
+        throw std::runtime_error(label + " path is invalid");
     }
-    const int raw_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    // Opening a FIFO for reading blocks before fstat unless O_NONBLOCK is set.
+    const int raw_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (raw_fd < 0) {
         throw std::system_error(errno, std::generic_category(),
-                                "open YUME private key file");
+                                "open YUME " + label + " file");
     }
     FileDescriptor fd(raw_fd);
     struct stat info {};
     if (::fstat(fd.get(), &info) != 0) {
         throw std::system_error(errno, std::generic_category(),
-                                "stat YUME private key file");
+                                "stat YUME " + label + " file");
     }
     if (!S_ISREG(info.st_mode)) {
-        throw std::runtime_error("YUME private key path must be a regular file");
+        throw std::runtime_error(
+            "YUME " + label + " path must be a regular file");
     }
-    // A key owned by another account is not this process's identity, even when
-    // a privileged process happens to be able to read it.
+    // Private material owned by another account is not this process's secret,
+    // even when a privileged process happens to be able to read it.
     if (info.st_uid != ::geteuid()) {
         throw std::runtime_error(
-            "YUME private key file " + path.string() +
+            "YUME " + label + " file " + path.string() +
             " must be owned by the current user");
     }
     if ((info.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
         throw std::runtime_error(
-            "YUME private key file " + path.string() +
+            "YUME " + label + " file " + path.string() +
             " must not be group/world accessible (chmod 600)");
     }
     if (info.st_size < 0 ||
-        static_cast<std::uintmax_t>(info.st_size) > kMaxPrivateKeyFileBytes) {
-        throw std::runtime_error("YUME private key file size is out of range");
+        static_cast<std::uintmax_t>(info.st_size) > maximum_bytes) {
+        throw std::runtime_error(
+            "YUME " + label + " file size is out of range");
     }
 
     std::vector<std::uint8_t> contents(static_cast<std::size_t>(info.st_size));
@@ -750,17 +766,40 @@ std::vector<std::uint8_t> ReadPrivateKeyFileStrict(
         if (count < 0) {
             secure_erase(contents);
             throw std::system_error(errno, std::generic_category(),
-                                    "read YUME private key file");
+                                    "read YUME " + label + " file");
         }
         if (count == 0) {
             secure_erase(contents);
             throw std::runtime_error(
-                "YUME private key file shrank while being read");
+                "YUME " + label + " file shrank while being read");
         }
         offset += static_cast<std::size_t>(count);
     }
+    std::uint8_t extra = 0;
+    while (true) {
+        const ssize_t count = ::read(fd.get(), &extra, 1);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) {
+            secure_erase(contents);
+            throw std::system_error(
+                errno, std::generic_category(),
+                "verify YUME " + label + " file length");
+        }
+        if (count != 0) {
+            secure_erase(contents);
+            throw std::runtime_error(
+                "YUME " + label + " file grew while being read");
+        }
+        break;
+    }
     return contents;
 #endif
+}
+
+std::vector<std::uint8_t> ReadPrivateKeyFileStrict(
+    const std::filesystem::path& path) {
+    return read_private_file_strict(
+        path, kMaxPrivateKeyFileBytes, "private key");
 }
 
 }  // namespace yume::security

@@ -65,7 +65,7 @@ struct RelayMessagePolicyDecision {
     std::string_view reason{"relay message rejected"};
 };
 
-// Strict wire parsers. Unlike the legacy configuration parser
+// Strict wire parsers. Unlike the configuration parser
 // channel_kind_from_string(), these reject missing, misspelled, mixed-case, or
 // future values instead of silently turning them into a chat channel.
 std::optional<ChannelKind> try_relay_channel_kind(std::string_view value);

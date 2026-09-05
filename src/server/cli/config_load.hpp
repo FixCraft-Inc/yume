@@ -19,8 +19,6 @@ struct ServerConfigOverrides {
     bool threads = false;
     bool obfuscation = false;
     bool inner_crypto = false;
-    bool inner_dual = false;
-    bool inner_required = false;
     bool pq_auto_generate = false;
     bool anonym = false;
     bool anonym_proof_mode = false;

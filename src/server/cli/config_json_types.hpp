@@ -73,7 +73,7 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
              "client_filter_mode", "egress_filter_mode", "filter_geolite",
              "packet_egress", "packet_tun_name", "packet_cidr",
              "upstream_response_dir", "anonym_proof_mode", "anonym_api",
-             "anonym_token", "anonym_ca_key", "anonym_ca_cert",
+             "anonym_token_file", "anonym_ca_key", "anonym_ca_cert",
              "anonym_sub_key", "anonym_sub_cert", "server_name", "server_id",
              "outbound_proxy", "ipc_path", "federation_identity",
              "federation_operator_ca", "operator_keys", "operator_keys_meta",
@@ -84,7 +84,7 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
         return false;
     }
     if (!require_all(
-            {"obfuscation", "inner_crypto", "inner_dual", "inner_required",
+            {"obfuscation", "inner_crypto",
              "allow_exec", "allow_local_ip", "control_full",
              "allow_monero_rpc_codec", "real_http",
              "robots_deny", "benchmark_enable", "boring", "anonym",

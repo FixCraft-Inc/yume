@@ -12,6 +12,10 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -108,8 +112,21 @@ void test_unsafe_combinations_fail_closed() {
         file, prefix +
                   "\"key_type\":\"bulk\",\"permissions\":{"
                   "\"allow_services\":[\"example-service-v1\"]}}}");
+    require_rejected(
+        file, prefix + "\"codec_allow\":[\"monero-rpc\"]}}");
+    require_rejected(
+        file, prefix +
+                  "\"permissions\":{\"codec_allow\":[\"monero-rpc\"]}}}");
     require_rejected(file, prefix + "\"weight\":0}}");
     require_rejected(file, prefix + "\"key_type\":\"shared\"}}");
+    for (const std::string field : {"priority", "allow_monero_rpc"}) {
+        require_rejected(file, prefix + "\"" + field + "\":1}}");
+        require_rejected(file, prefix + "\"permissions\":{\"" + field +
+                                   "\":true}}}");
+    }
+    require_rejected(file, prefix + "\"allow_chat\":false}}");
+    require_rejected(file, prefix +
+                              "\"permissions\":{\"allow_chatt\":false}}}");
     const std::string psk = "\",\"federation_psk_file\":\"" +
                             file.secret_path() + "\"}}";
     require_rejected(file, prefix +
@@ -182,6 +199,22 @@ void test_federation_peer_id_uniqueness() {
 }  // namespace
 
 int main() {
+#if !defined(_WIN32)
+    {
+        TemporaryPolicyFile file;
+        require(::mkfifo(file.path().c_str(), 0600) == 0, "cannot create policy FIFO");
+        ::alarm(3);
+        bool refused = false;
+        try { (void)yume::server::load_auth_policies(file.path()); }
+        catch (const std::runtime_error&) { refused = true; }
+        require(refused, "daemon accepted policy FIFO");
+        refused = false;
+        try { (void)yume::server::load_authorized_keys(file.path()); }
+        catch (const std::runtime_error&) { refused = true; }
+        require(refused, "daemon accepted identity FIFO");
+        ::alarm(0);
+    }
+#endif
     test_bulk_weight_and_limit();
     test_unsafe_combinations_fail_closed();
     test_federation_peer_id_grammar();

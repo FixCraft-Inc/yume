@@ -20,7 +20,7 @@ namespace {
 // must not also be able to fill the disk through this path.
 constexpr std::int64_t kContainedLogIntervalMs = 5000;
 
-void note_contained(const std::string& label,
+void note_contained(const char* label,
                     std::atomic<std::size_t>* contained,
                     const char* detail) noexcept {
     if (contained) {
@@ -28,9 +28,9 @@ void note_contained(const std::string& label,
     }
     try {
         util::log_warn_rate_limited(
-            "worker-exception:" + label,
-            label + " worker contained an exception from a completion handler. "
-                    "The connection it was serving was dropped: " + detail,
+            std::string("worker-exception:") + label,
+            std::string(label) + " worker contained a completion-handler exception; "
+                    "session cleanup is not established: " + detail,
             kContainedLogIntervalMs);
     } catch (...) {
         // Logging must never be the reason a worker dies.
@@ -42,7 +42,7 @@ void note_contained(const std::string& label,
 void run_worker(boost::asio::io_context& io,
                 const char* role,
                 std::atomic<std::size_t>* contained) noexcept {
-    const std::string label = role ? role : "worker";
+    const char* label = role ? role : "worker";
     for (;;) {
         try {
             io.run();

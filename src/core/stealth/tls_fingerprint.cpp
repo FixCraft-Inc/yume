@@ -440,16 +440,9 @@ std::string calculate_akamai_hash(const JA3Components& components) {
 
 namespace {
 
-// Built once from the active cover profile. This used to be reconstructed --
-// four vectors, two strings and two hashes -- on every call, including once per
-// SSL_CTX during connection setup.
-//
-// The cipher/extension/group/sigalg lists are no longer literals here. They are
-// generated into cover_profile::Profile from config/transport_profiles.json, so
-// the cover identity has exactly one owner, and
-// scripts/generate_transport_profiles.py pins their gap against the captured
-// browser ClientHello. Do not reintroduce a second table: a divergence that is
-// not declared in the registry now fails generation.
+// Cache the fingerprint across SSL_CTX instances. The generated cover profile
+// owns the cipher, extension, group and signature lists; its generator checks
+// declared differences from the captured ClientHello.
 const std::vector<BrowserFingerprint>& cached_browser_fingerprints() {
     static const std::vector<BrowserFingerprint> kFingerprints = [] {
         const auto& cover = cover_profile::active();

@@ -21,7 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
+#include <ctime>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -65,13 +65,13 @@ ByteRange parse_byte_range(std::string_view range_header, std::uint64_t file_siz
 
 struct FileContents {
     std::string bytes;
-    std::filesystem::file_time_type mtime;
+    std::time_t mtime{};
 };
 
-// Read `rel_path` beneath `root`, verifying via canonicalization that the real
-// path stays inside `root` (this is what defeats a symlink pointing outside),
-// that it is a regular file, and that its size is at most `max_bytes`. Returns
-// nullopt on any failure so the caller falls back to the profile 404.
+// Open root and each child through pinned directory descriptors. Reject all
+// symlinks and parent components; read bytes and mtime from the same regular
+// file handle under max_bytes. Unsupported platforms and read failures return
+// nullopt so the caller falls back to the profile 404.
 std::optional<FileContents> read_under_root(const std::string& root,
                                             const std::string& rel_path,
                                             std::size_t max_bytes);

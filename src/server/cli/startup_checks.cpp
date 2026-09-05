@@ -18,6 +18,7 @@
 #include "server/host/host_types.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/packet/tun_egress.hpp"
+#include "server/runtime/cover_response.hpp"
 #include "server/runtime/security_config.hpp"
 #include "util.hpp"
 
@@ -25,8 +26,6 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -202,7 +201,7 @@ bool validate_app_codecs(const yume::server::ServerConfig& cfg) {
             yume::util::log_info("application codec enabled: " + codec->id + " -> " +
                                  cfg.monero_rpc_backend_host + ":" +
                                  std::to_string(cfg.monero_rpc_backend_port) +
-                                 " (per-key " + codec->permission_key + " or allow_codecs is still required)");
+                                 " (per-key allow_codecs is required)");
         } else {
             yume::util::log_info("application codec enabled: " + codec->id);
         }
@@ -263,29 +262,14 @@ bool load_upstream_response(yume::server::ServerConfig& cfg) {
         return true;
     }
 
-    // Load the captured response once at startup. Normalise lone \n into
-    // \r\n so operators who captured with `curl -i` still produce valid
-    // HTTP wire bytes when we replay. Already-\r\n stays unchanged.
-    std::ifstream in(cfg.upstream_response_file, std::ios::binary);
-    if (!in) {
-        yume::util::log_error("--upstream-response: cannot open " + cfg.upstream_response_file);
-        return false;
-    }
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string raw = ss.str();
+    // Load once at startup through the same no-follow, regular-file, bounded
+    // path as directory captures. Lone LF is normalized for `curl -i`
+    // captures, and the post-normalization representation remains bounded.
     std::string normalized;
-    normalized.reserve(raw.size() + raw.size() / 16);
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-        char c = raw[i];
-        if (c == '\n' && (i == 0 || raw[i - 1] != '\r')) {
-            normalized += '\r';
-        }
-        normalized += c;
-    }
-    if (normalized.rfind("HTTP/1.", 0) != 0) {
-        yume::util::log_error("--upstream-response: " + cfg.upstream_response_file +
-                              " does not start with 'HTTP/1.' — expected a captured HTTP/1.x response");
+    std::string error;
+    if (!yume::server::cover_response::load_file(
+            cfg.upstream_response_file, &normalized, &error)) {
+        yume::util::log_error("--upstream-response: " + error);
         return false;
     }
     cfg.upstream_response_bytes = std::move(normalized);
@@ -428,7 +412,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
         violations.emplace_back("--public-node requires --obfs-secret-file so active probes cannot reach AUTH through structural path matching");
     }
     if (cfg.allow_exec) {
-        violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");
+        violations.emplace_back("--allow-exec is forbidden by --public-node (the reserved EXEC policy must stay disabled on a public endpoint)");
     }
     if (cfg.allow_local_ip) {
         violations.emplace_back("--allow-local-ip is forbidden by --public-node (LAN bridging from a public endpoint exposes the host's private network)");
@@ -438,9 +422,6 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     }
     if (!cfg.inner_crypto) {
         violations.emplace_back("inner_crypto=false is forbidden by --public-node (inner crypto is the only post-handshake confidentiality; a public node MUST require it)");
-    }
-    if (!cfg.inner_required) {
-        violations.emplace_back("--public-node requires --inner-required (clients without inner crypto must be rejected)");
     }
     if (cfg.auth_keys.empty()) {
         violations.emplace_back("--public-node requires --auth-keys to be set (otherwise the daemon accepts no clients, or worse, accepts everyone if you later loosen this)");
@@ -455,7 +436,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     yume::util::log_info("--public-node active; the following protections are enforced at startup:");
     yume::util::log_info("  - HTTP/2 carrier obfuscation required (it cannot be disabled)");
     yume::util::log_info("  - protected --obfs-secret-file required (missing/wrong admission stays in the web masquerade)");
-    yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
+    yume::util::log_info("  - reserved or dangerous policy flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
     yume::util::log_info("  - inner crypto required (no plaintext transport)");
     yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
     yume::util::log_info("  - random inner PSK is expanded once with HKDF; no transport Argon2 admission surface");
@@ -472,15 +453,13 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
 void log_obfs_tuning(const yume::server::ServerConfig& cfg) {
     if (cfg.obfs_pad_multiple > 0) {
         yume::util::log_info("--obfs-pad-multiple " + std::to_string(cfg.obfs_pad_multiple) +
-                             ": every outbound frame payload is padded to a multiple of this size. "
-                             "Connecting clients MUST run a yume build that knows kFlagPadded (>= 1.0 post-padding); "
-                             "older clients will fail to parse the stream.");
+                             ": outbound frame payloads are padded to this multiple.");
     }
     if (cfg.obfs_jitter_ms > 0) {
         yume::util::log_info("--obfs-jitter-ms " + std::to_string(cfg.obfs_jitter_ms) +
                              ": each batched write is deferred by 0.." +
                              std::to_string(cfg.obfs_jitter_ms) +
-                             " ms. Adds bounded timing variation and latency; no ML/DPI immunity is implied.");
+                             " ms.");
     }
 }
 
@@ -586,7 +565,8 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     if (cfg.allow_exec) {
         yume::util::log_warn(
             "--allow-exec ignored: build was configured without -DYUME_FEATURE_EXEC=ON; "
-            "rebuild with that option to enable server-side command execution");
+            "the reserved relayed EXEC policy remains disabled. This setting does not "
+            "enable command execution");
     }
 #endif
 #if !YUME_FEATURE_LAN_BRIDGE

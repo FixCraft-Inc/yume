@@ -71,9 +71,9 @@ std::string private_key_pem() {
 json record(std::string id, std::string path = {}) {
     json value = {
         {"id", std::move(id)},
-        {"display_name", "Legacy key"},
+        {"display_name", "Test key"},
         {"type", "auth_key"},
-        {"source_label", "Legacy"},
+        {"source_label", "Test"},
         {"fingerprint", "0123456789ab"},
         {"imported_encrypted", false},
         {"created_at_epoch_ms", 1},
@@ -84,6 +84,7 @@ json record(std::string id, std::string path = {}) {
 
 json metadata(json materials) {
     return {
+        {"schema", 1},
         {"embedded_anonym_ca_enabled", false},
         {"materials", std::move(materials)},
     };
@@ -163,17 +164,21 @@ void test_malformed_metadata() {
     };
 
     expect_rejected("[]");
+    expect_rejected(R"({"materials":[]})");
+    expect_rejected(metadata(json::array({record("1-0123456789abcdef")})).dump());
+    expect_rejected(metadata(json::array({record(
+        "0123456789abcdef0123456789abcdef", "/tmp/escape.pem")})).dump());
     expect_rejected(R"({"materials":"wrong"})");
     expect_rejected(R"({"schema":18446744073709551615,"materials":[]})");
     expect_rejected(R"({"materials":[{"id":7}]})");
     expect_rejected(metadata(json::array({record("../escape")})).dump());
-    auto wrong_type = record("1-0123456789abcdef");
+    auto wrong_type = record("0123456789abcdef0123456789abcdef");
     wrong_type["type"] = "future_key";
     expect_rejected(metadata(json::array({wrong_type})).dump());
-    auto wrong_fingerprint = record("1-0123456789abcdef");
+    auto wrong_fingerprint = record("0123456789abcdef0123456789abcdef");
     wrong_fingerprint["fingerprint"] = "ABC";
     expect_rejected(metadata(json::array({wrong_fingerprint})).dump());
-    auto negative_created_at = record("1-0123456789abcdef");
+    auto negative_created_at = record("0123456789abcdef0123456789abcdef");
     negative_created_at["created_at_epoch_ms"] = -1;
     expect_rejected(metadata(json::array({negative_created_at})).dump());
 
@@ -188,7 +193,7 @@ void test_malformed_metadata() {
          ++index) {
         char suffix[17]{};
         std::snprintf(suffix, sizeof(suffix), "%016zx", index);
-        records.push_back(record(std::string("1-") + suffix));
+        records.push_back(record(std::string("0000000000000000") + suffix));
     }
     reset_store();
     write_text(metadata_path(), metadata(std::move(records)).dump());
@@ -196,13 +201,13 @@ void test_malformed_metadata() {
     assert(error.find("record limit") != std::string::npos);
 }
 
-void test_legacy_migration_and_confinement(const std::string& pem) {
+void test_import_and_confinement(const std::string& pem) {
     reset_store();
-    const std::string legacy_id = "1-0123456789abcdef";
-    const fs::path derived = sm::store_dir() / (legacy_id + ".key.pem");
+    const std::string material_id = "0123456789abcdef0123456789abcdef";
+    const fs::path derived = sm::store_dir() / (material_id + ".key.pem");
     write_text(derived, pem);
     write_text(metadata_path(),
-               metadata(json::array({record(legacy_id, "/tmp/escape.pem")}))
+               metadata(json::array({record(material_id)}))
                    .dump(2));
 
     std::string error;
@@ -237,7 +242,7 @@ void test_legacy_migration_and_confinement(const std::string& pem) {
     fs::create_symlink(victim, derived);
     assert(sm::list(sm::MaterialType::AuthKey, &error).empty());
     assert(!error.empty());
-    assert(!sm::material_path(legacy_id, &error));
+    assert(!sm::material_path(material_id, &error));
     assert(!error.empty());
     assert(read_text(victim) == "unchanged");
 
@@ -375,7 +380,7 @@ int main() {
     test_default_ca();
     test_default_ca_remove_race();
     test_malformed_metadata();
-    test_legacy_migration_and_confinement(pem);
+    test_import_and_confinement(pem);
     test_metadata_publish_rollback(pem);
     test_remove_metadata_publish_rollback(pem);
     test_import_limits_and_concurrency(pem);

@@ -264,6 +264,8 @@ def validate_workflow_guards() -> None:
         require(needle in liboqs_helper,
                 f"liboqs helper is missing required release guard: {needle}")
     require("branches: [main, DEV]" in ci_yml, "ci.yml must cover main and DEV")
+    require("scripts/check_dependency_sbom.py --check" in ci_yml,
+            "CI preflight must reject stale declared-dependency SBOM metadata")
     require(release_yml.count("-B build-helper-") >= 2,
             "release.yml must configure two clean helper build directories")
     forbidden = (

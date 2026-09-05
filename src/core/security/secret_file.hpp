@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace yume::security {
@@ -65,6 +66,15 @@ Secret32 LoadSecretFile32(const std::filesystem::path& path);
 
 // Largest private key file this loader will read into memory.
 inline constexpr std::size_t kMaxPrivateKeyFileBytes = 64U * 1024U;
+
+// Reads arbitrary private material through the same descriptor-confined
+// owner/mode/type checks as private keys. The returned bytes are bounded by
+// `maximum_bytes`; callers must wipe them after use. `description` is used in
+// diagnostics only and must not contain secret material.
+std::vector<std::uint8_t> read_private_file_strict(
+    const std::filesystem::path& path,
+    std::size_t maximum_bytes,
+    std::string_view description);
 
 // Reads a private key file under the same POSIX contract as the secret files:
 // a regular non-symlink file owned by the effective user, with no group or

@@ -390,11 +390,17 @@ void test_http1_decoy_conversion_and_h2_end_stream() {
         "Server: profile-server\r\n"
         "Content-Type: text/plain\r\n"
         "Connection: close\r\n"
-        "Content-Length: 999\r\n\r\n"
+        "Content-Length: 10\r\n\r\n"
         "not found\n";
     auto parsed = yume::obfs::parse_http1_response_for_h2(http1);
     assert(parsed.has_value());
     assert(parsed->status == 404);
+    assert(!yume::obfs::parse_http1_response_for_h2(
+        "HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\nshort"));
+    auto chunked = yume::obfs::parse_http1_response_for_h2(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "3\r\na\nb\r\n0\r\n\r\n");
+    assert(chunked && chunked->body == yume::crypto::Bytes({'a', '\n', 'b'}));
     assert(parsed->body == yume::crypto::Bytes(
         {'n', 'o', 't', ' ', 'f', 'o', 'u', 'n', 'd', '\n'}));
 

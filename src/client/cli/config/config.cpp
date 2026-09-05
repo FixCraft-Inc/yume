@@ -111,7 +111,7 @@ bool validate_client_config_json_types(const nlohmann::json& document,
              "instance_name", "preferred_name", "preferred_id",
              "relay_mode", "relay_trust_mode", "relay_trust_dir",
              "history_dir", "relay_receive_dir", "relay_key_file",
-             "app_codec", "codec", "app_codec_listen",
+             "app_codec", "app_codec_listen",
              "app_codec_listen_host", "tls_stealth_profile",
              "tls_fingerprint_log_path", "tls_fingerprint_test_endpoint",
              "security_mode"},
@@ -121,7 +121,7 @@ bool validate_client_config_json_types(const nlohmann::json& document,
     }
     if (!require_all(
             {"obfuscation", "inner_crypto", "udp",
-             "allow_udp", "allow_local_ip", "server_in_charge",
+             "allow_local_ip", "server_in_charge",
              "allow_exec", "allow_embedded_master", "require_anonym",
              "accept_monitoring", "service_streams_only", "boring",
              "non_interactive", "allow_inbound_admin",
@@ -134,7 +134,7 @@ bool validate_client_config_json_types(const nlohmann::json& document,
         return false;
     }
     if (!require_all(
-            {"port", "socks_port", "threads", "io_threads", "tunnels",
+            {"port", "socks_port", "threads", "tunnels",
              "server_in_charge_port", "app_codec_listen_port"},
             is_int, "an integer representable as int")) {
         return false;
@@ -162,13 +162,13 @@ bool validate_client_config_json_types(const nlohmann::json& document,
         }
         return false;
     }
-    for (const char* key : {"threads", "io_threads"}) {
-        const auto it = document.find(key);
+    {
+        const auto it = document.find("threads");
         if (it != document.end() &&
             !in_bound(*it, static_cast<std::uint64_t>(
                                policy::kMaxIoThreads))) {
             if (error) {
-                *error = std::string(key) + " must be an integer in 0.." +
+                *error = "threads must be an integer in 0.." +
                          std::to_string(policy::kMaxIoThreads);
             }
             return false;
@@ -317,11 +317,9 @@ bool load_client_config_file(const ParsedArgs& args,
         if (json.contains("packet_tun_name") && !args.packet_tun_override) {
             cfg->packet_tun_name = json["packet_tun_name"].get<std::string>();
         }
-        const char* threads_key = json.contains("threads")
-            ? "threads"
-            : (json.contains("io_threads") ? "io_threads" : nullptr);
-        if (threads_key && cfg->io_threads == 0 && !args.io_threads_override) {
-            cfg->io_threads = json[threads_key].get<int>();
+        if (json.contains("threads") && cfg->io_threads == 0 &&
+            !args.io_threads_override) {
+            cfg->io_threads = json["threads"].get<int>();
         }
         if (json.contains("tunnels") && !args.tunnel_count_override) {
             cfg->tunnel_count = json["tunnels"].get<int>();
@@ -358,11 +356,8 @@ bool load_client_config_file(const ParsedArgs& args,
         }
         cfg->security_profile = yume::config::ParseSecurityProfile(
             json, cfg->security_profile);
-        const char* udp_key = json.contains("udp")
-            ? "udp"
-            : (json.contains("allow_udp") ? "allow_udp" : nullptr);
-        if (udp_key && !args.udp_override) {
-            cfg->allow_udp = json[udp_key].get<bool>();
+        if (json.contains("udp") && !args.udp_override) {
+            cfg->allow_udp = json["udp"].get<bool>();
         }
         if (json.contains("allow_local_ip") && !args.allow_local_ip_override) {
             cfg->allow_local_ip = json["allow_local_ip"].get<bool>();
@@ -412,6 +407,7 @@ bool load_client_config_file(const ParsedArgs& args,
         if (json.contains("tls_server_name") && cfg->tls_server_name.empty()) {
             cfg->tls_server_name = json["tls_server_name"].get<std::string>();
         }
+        // Android SharedYumeSessionConfig writes tls_pin_sha256.
         const char* tls_pin_key = json.contains("tls_pin")
             ? "tls_pin"
             : (json.contains("tls_pin_sha256") ? "tls_pin_sha256" : nullptr);
@@ -517,8 +513,6 @@ bool load_client_config_file(const ParsedArgs& args,
         }
         if (json.contains("app_codec") && !args.app_codec_override) {
             cfg->app_codec = json["app_codec"].get<std::string>();
-        } else if (json.contains("codec") && !args.app_codec_override) {
-            cfg->app_codec = json["codec"].get<std::string>();
         }
         if (json.contains("app_codec_listen") && !args.app_codec_listen_override) {
             std::string parse_error;
@@ -971,15 +965,8 @@ bool save_client_config_file(const ParsedArgs& args,
             return false;
         }
     }
-    // Normalize files written by older facade/CLI versions. Canonical keys
-    // below win on read; removing aliases also prevents inline 1.x secrets or
-    // retired ratchet/profile controls from surviving a save operation.
-    json.erase("io_threads");
-    json.erase("allow_udp");
+    // Save the canonical spelling of Android's accepted TLS pin key.
     json.erase("tls_pin_sha256");
-    json.erase("codec");
-    json.erase("tls_stealth_rotate");
-    json.erase("tls_stealth_rotation_interval");
     json["server"] = cfg.server;
     if (cfg.port > 0) json["port"] = cfg.port;
     if (!cfg.identity.empty()) json["identity"] = cfg.identity;

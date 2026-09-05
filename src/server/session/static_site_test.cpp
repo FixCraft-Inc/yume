@@ -102,11 +102,12 @@ void test_parse_byte_range() {
     assert(parse_byte_range("bytes=abc-1", 1000).status == S::Absent);
     assert(parse_byte_range("bytes=5-1", 1000).status == S::Absent);
     assert(parse_byte_range("bytes=0-9,20-29", 1000).status == S::Absent);
+    assert(parse_byte_range("bytes=18446744073709551616-", 1000).status == S::Absent);
 }
 
 void test_read_under_root_and_symlink_escape() {
     const fs::path base =
-        fs::temp_directory_path() /
+        fs::canonical(fs::temp_directory_path()) /
         ("yume_static_site_test_" + std::to_string(std::random_device{}()));
     fs::remove_all(base);
     const fs::path root = base / "www";
@@ -119,6 +120,11 @@ void test_read_under_root_and_symlink_escape() {
     }
 
     auto index = read_under_root(root.string(), "index.html", 1 << 20);
+#if defined(_WIN32)
+    assert(!index);  // Confined directory reads are unsupported here.
+    fs::remove_all(base);
+    return;
+#endif
     assert(index.has_value() && index->bytes == "<h1>hi</h1>");
     auto app = read_under_root(root.string(), "assets/app.js", 1 << 20);
     assert(app.has_value() && app->bytes == "console.log(1)");

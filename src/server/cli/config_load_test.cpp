@@ -75,7 +75,7 @@ bool test_cli_config_load(const std::filesystem::path& base) {
     const auto config_path = base / "yumed.json";
     {
         std::ofstream config(config_path);
-        config << R"({"listen_address":"127.0.0.1","listen_port":9443,"auth_keys":"authorized_keys","admin_keys":"admin_keys","allow_embedded_master":true,"preauth_services":["bootstrap-v1"],"cluster_bootstrap":true,"federation_peers":[{"id":"edge","url":"yume://edge.example:443","psk_file":"secrets/edge.psk","carrier_secret_file":"secrets/edge.carrier"}]})";
+        config << R"({"listen_address":"127.0.0.1","listen_port":9443,"auth_keys":"authorized_keys","admin_keys":"admin_keys","anonym_token_file":"secrets/operator-proof.token","allow_embedded_master":true,"preauth_services":["bootstrap-v1"],"cluster_bootstrap":true,"federation_peers":[{"id":"edge","url":"yume://edge.example:443","psk_file":"secrets/edge.psk","carrier_secret_file":"secrets/edge.carrier"}]})";
         if (!config) {
             std::cerr << "FAIL: could not write CLI config fixture\n";
             return false;
@@ -98,6 +98,12 @@ bool test_cli_config_load(const std::filesystem::path& base) {
     }
     if (!expect(cfg.admin_keys == (base / "admin_keys").string(),
                 "admin_keys should resolve relative to the config")) {
+        return false;
+    }
+    if (!expect(
+            cfg.anonym_token_file ==
+                (base / "secrets/operator-proof.token").string(),
+            "anonym_token_file should resolve relative to the config")) {
         return false;
     }
     if (!expect(cfg.listen_address == "127.0.0.1",
@@ -301,19 +307,46 @@ bool test_cli_config_load(const std::filesystem::path& base) {
         return false;
     }
 
-    std::vector<std::string> removed_arguments{
-        "yumed", "--allow-remote-server-admin"};
-    std::vector<char*> removed_argv;
-    for (auto& argument : removed_arguments) {
-        removed_argv.push_back(argument.data());
+    std::vector<std::string> token_arguments{
+        "yumed", "--operator-proof-token-file", "secrets/cli-proof.token"};
+    std::vector<char*> token_argv;
+    for (auto& argument : token_arguments) {
+        token_argv.push_back(argument.data());
     }
-    yume::server::ServerConfig removed_cfg;
-    yume::server::cli::ServerCliParseResult removed_result;
-    return expect(!yume::server::cli::parse_server_cli_args(
-                      static_cast<int>(removed_argv.size()),
-                      removed_argv.data(), base.string(), removed_cfg,
-                      &removed_result),
-                  "retired --allow-remote-server-admin must fail unknown");
+    yume::server::ServerConfig token_cfg;
+    yume::server::cli::ServerCliParseResult token_result;
+    if (!expect(yume::server::cli::parse_server_cli_args(
+                    static_cast<int>(token_argv.size()), token_argv.data(),
+                    base.string(), token_cfg, &token_result),
+                "operator proof token file argument should parse") ||
+        !expect(token_cfg.anonym_token_file ==
+                    (base / "secrets/cli-proof.token").string(),
+                "operator proof token file should resolve from the CLI "
+                "working directory")) {
+        return false;
+    }
+
+    const auto rejects_removed_argument = [&](const std::string& option,
+                                               const std::string& value) {
+        std::vector<std::string> arguments{"yumed", option};
+        if (!value.empty()) arguments.push_back(value);
+        std::vector<char*> argv;
+        for (auto& argument : arguments) argv.push_back(argument.data());
+        yume::server::ServerConfig removed_cfg;
+        yume::server::cli::ServerCliParseResult removed_result;
+        return !yume::server::cli::parse_server_cli_args(
+            static_cast<int>(argv.size()), argv.data(), base.string(),
+            removed_cfg, &removed_result);
+    };
+    return expect(rejects_removed_argument(
+                      "--inner-required", ""),
+                  "the mandatory inner channel must not have a redundant flag") &&
+           expect(rejects_removed_argument(
+                      "--allow-remote-server-admin", ""),
+                  "retired --allow-remote-server-admin must fail unknown") &&
+           expect(rejects_removed_argument(
+                      "--operator-proof-token", "inline-secret"),
+                  "retired inline operator proof token flag must fail unknown");
 }
 
 bool test_cli_rejects_malformed_collections(
@@ -445,6 +478,11 @@ bool test_cli_load_is_type_strict_and_transactional(
                    "inline-real-secret.json", R"({"real_secret":"hunter2"})",
                    no_overrides),
                "CLI must reject an inline cover-backend secret") &&
+           expect(
+               rejects_without_mutation(
+                   "inline-operator-proof-token.json",
+                   R"({"anonym_token":"inline-secret"})", no_overrides),
+               "CLI must reject an inline operator proof token") &&
            // Representable is not the same as usable. Session::do_write
            // delays every batch by 0..obfs_jitter_ms, and threads becomes a
            // worker count, so both carry the same ceilings as the client.
@@ -467,8 +505,38 @@ bool test_cli_load_is_type_strict_and_transactional(
 
 bool test_facade_round_trip(const std::filesystem::path& base) {
     std::string error;
+    for (const auto* key : {"inner_dual", "inner_required"}) {
+        const nlohmann::json document = {{key, false}};
+        const auto path = base / (std::string(key) + "-unsupported.json");
+        { std::ofstream output(path); output << document.dump(); }
+        yume::server::ServerConfig config;
+        yume::server::cli::ServerConfigLoadContext context;
+        context.config_path = path.string();
+        context.config_specified = true;
+        if (!expect(!yume::server::cli::load_server_config_file_and_resolve_paths(
+                        config, context, {}),
+                    "CLI accepted a redundant inner-channel setting") ||
+            !expect(!yume::facade::config_io::parse_server_json(
+                        document.dump(), base, &error),
+                    "facade accepted a redundant inner-channel setting")) {
+            return false;
+        }
+    }
+    for (const auto* key : {"anonym", "listen_port", "anonym_token_file", "preauth_services"}) {
+        nlohmann::json document = {{key, nullptr}};
+        const auto path = base / (std::string(key) + "-null.json");
+        { std::ofstream output(path); output << document.dump(); }
+        yume::server::ServerConfig config;
+        yume::server::cli::ServerConfigLoadContext context;
+        context.config_path = path.string();
+        context.config_specified = true;
+        if (!expect(!yume::server::cli::load_server_config_file_and_resolve_paths(
+                        config, context, {}), "CLI accepted explicit null") ||
+            !expect(!yume::facade::config_io::parse_server_json(document.dump(), base, &error),
+                    "facade accepted explicit null")) return false;
+    }
     auto parsed = yume::facade::config_io::parse_server_json(
-        R"({"admin_keys":"parsed-admin-keys","preauth_services":["bootstrap-v1"],"cluster_bootstrap":true})",
+        R"({"admin_keys":"parsed-admin-keys","anonym_token_file":"secrets/operator-proof.token","preauth_services":["bootstrap-v1"],"cluster_bootstrap":true})",
         base, &error);
     if (!expect(parsed.has_value(), "facade JSON should parse") ||
         !expect(error.empty(), "facade parse should not report an error")) {
@@ -485,6 +553,21 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
     }
     if (!expect(parsed->cluster_bootstrap,
                 "facade should parse cluster_bootstrap=true")) {
+        return false;
+    }
+    if (!expect(parsed->anonym_token_file ==
+                    (base / "secrets/operator-proof.token").string(),
+                "facade should resolve anonym_token_file relative to the "
+                "config")) {
+        return false;
+    }
+
+    auto inline_token = yume::facade::config_io::parse_server_json(
+        R"({"anonym_token":"inline-secret"})", base, &error);
+    if (!expect(!inline_token.has_value(),
+                "facade must reject an inline operator proof token") ||
+        !expect(error.find("anonym_token_file") != std::string::npos,
+                "inline token failure should name the file replacement")) {
         return false;
     }
 
@@ -534,6 +617,7 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
     yume::server::ServerConfig saved;
     saved.listen_address = "127.0.0.1";
     saved.admin_keys = "saved-admin-keys";
+    saved.anonym_token_file = "secrets/saved-proof.token";
     saved.allow_embedded_master = true;
     saved.preauth_services = {"bootstrap-v1"};
     const auto saved_path = base / "facade-yumed.json";
@@ -549,7 +633,15 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
         if (!expect(input.good() || input.eof(),
                     "saved facade server config should be readable") ||
             !expect(!document.contains("obfs_secret"),
-                    "server writer must not serialize inline legacy secrets")) {
+                    "server writer must not serialize inline secrets") ||
+            !expect(!document.contains("anonym_token"),
+                    "server writer must not serialize an inline proof token") ||
+            !expect(!document.contains("inner_dual") &&
+                        !document.contains("inner_required"),
+                    "server writer must not offer optional inner encryption") ||
+            !expect(document.value("anonym_token_file", "") ==
+                        "secrets/saved-proof.token",
+                    "server writer should serialize the proof token path")) {
             return false;
         }
     }
@@ -564,6 +656,9 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
                   "facade should serialize and restore listen_address") &&
            expect(loaded->allow_embedded_master,
                   "facade should serialize and restore allow_embedded_master") &&
+           expect(loaded->anonym_token_file ==
+                      (base / "secrets/saved-proof.token").string(),
+                  "facade should serialize and restore anonym_token_file") &&
            expect(loaded->preauth_services ==
                       std::vector<std::string>{"bootstrap-v1"},
                   "facade should serialize and restore preauth_services");

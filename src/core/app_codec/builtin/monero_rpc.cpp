@@ -167,7 +167,6 @@ const CodecDescriptor& monero_rpc_descriptor() {
     static const CodecDescriptor kDescriptor{
         std::string(kMoneroRpcCodecId),
         {std::string(kMoneroRpcAlias), "monero"},
-        "allow_monero_rpc",
         "Monero RPC",
         Endpoint{std::string(kMoneroRpcDefaultHost), kMoneroRpcDefaultPort},
         kMoneroRpcMaxRequestBody,

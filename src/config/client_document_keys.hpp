@@ -40,7 +40,6 @@ inline constexpr auto kClientDocumentKeys = std::to_array<std::string_view>({
     "allow_inbound_admin",
     "allow_local_ip",
     "allow_outbound_admin",
-    "allow_udp",
     "anonym_ca_cert",
     "anonym_ca_material_id",
     "anonym_pubkey",
@@ -52,7 +51,6 @@ inline constexpr auto kClientDocumentKeys = std::to_array<std::string_view>({
     "auth_key_material_id",
     "auto_attach_local",
     "boring",
-    "codec",
     "display_name",
     "history_dir",
     "history_enabled",
@@ -60,7 +58,6 @@ inline constexpr auto kClientDocumentKeys = std::to_array<std::string_view>({
     "inner_crypto",
     "inner_psk_file",
     "instance_name",
-    "io_threads",
     "non_interactive",
     "obfs_jitter_ms",
     "obfs_pad_multiple",
@@ -100,6 +97,8 @@ inline constexpr auto kClientDocumentKeys = std::to_array<std::string_view>({
     "tls_fingerprint_verify",
     "tls_helper_path",
     "tls_pin",
+    // Android SharedYumeSessionConfig still writes this top-level key.
+    // Remove it when that writer switches to tls_pin.
     "tls_pin_sha256",
     "tls_server_name",
     "tls_stealth_enabled",

@@ -8,21 +8,174 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
-#include <chrono>
-#include <cstdio>
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
+#include <utility>
 
 #include <nlohmann/json.hpp>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <sddl.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace yume::server {
 
 namespace {
+
+void remove_path_noexcept(const std::filesystem::path& path) noexcept {
+    namespace fs = std::filesystem;
+    if (path.empty()) return;
+
+    try {
+        std::error_code status_error;
+        const auto status = fs::symlink_status(path, status_error);
+        if (!status_error && fs::is_directory(status)) {
+            std::error_code permission_error;
+            fs::permissions(path, fs::perms::owner_all,
+                            fs::perm_options::add, permission_error);
+
+            std::error_code iteration_error;
+            for (auto it = fs::recursive_directory_iterator(
+                     path, fs::directory_options::none, iteration_error);
+                 !iteration_error && it != fs::recursive_directory_iterator();
+                 it.increment(iteration_error)) {
+                std::error_code member_error;
+                const auto member_status = it->symlink_status(member_error);
+                if (!member_error && fs::is_directory(member_status)) {
+                    fs::permissions(it->path(), fs::perms::owner_all,
+                                    fs::perm_options::add, member_error);
+                }
+            }
+        }
+        std::error_code ignored;
+        (void)fs::remove_all(path, ignored);
+    } catch (...) {
+        // Cleanup is best effort and must not throw from an owning destructor.
+    }
+}
+
+class ScopedPathCleanup final {
+public:
+    explicit ScopedPathCleanup(std::filesystem::path path)
+        : path_(std::move(path)) {}
+
+    ScopedPathCleanup(const ScopedPathCleanup&) = delete;
+    ScopedPathCleanup& operator=(const ScopedPathCleanup&) = delete;
+
+    ScopedPathCleanup(ScopedPathCleanup&& other) noexcept
+        : path_(std::move(other.path_)) {
+        other.path_.clear();
+    }
+    ScopedPathCleanup& operator=(ScopedPathCleanup&&) = delete;
+
+    ~ScopedPathCleanup() { remove(); }
+
+    const std::filesystem::path& path() const noexcept { return path_; }
+
+    void release() noexcept { path_.clear(); }
+
+private:
+    void remove() noexcept {
+        if (path_.empty()) return;
+        remove_path_noexcept(path_);
+        path_.clear();
+    }
+
+    std::filesystem::path path_;
+};
+
+#if defined(_WIN32)
+
+constexpr unsigned kPrivateDirectoryCreateAttempts = 128;
+std::atomic<std::uint64_t> g_private_directory_sequence{0};
+
+class LocalSecurityDescriptor final {
+public:
+    LocalSecurityDescriptor() = default;
+    LocalSecurityDescriptor(const LocalSecurityDescriptor&) = delete;
+    LocalSecurityDescriptor& operator=(const LocalSecurityDescriptor&) = delete;
+
+    ~LocalSecurityDescriptor() {
+        if (value_) (void)::LocalFree(value_);
+    }
+
+    PSECURITY_DESCRIPTOR* out() noexcept { return &value_; }
+    PSECURITY_DESCRIPTOR get() const noexcept { return value_; }
+
+private:
+    PSECURITY_DESCRIPTOR value_{nullptr};
+};
+
+#endif
+
+ScopedPathCleanup create_private_runtime_directory() {
+    namespace fs = std::filesystem;
+#if defined(_WIN32)
+    LocalSecurityDescriptor descriptor;
+    if (::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;FA;;;SY)(A;;FA;;;OW)", SDDL_REVISION_1,
+            descriptor.out(), nullptr) == 0) {
+        throw std::runtime_error(
+            "failed to prepare private filter directory security descriptor");
+    }
+
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor.get();
+    attributes.bInheritHandle = FALSE;
+
+    const fs::path parent = fs::temp_directory_path();
+    for (unsigned attempt = 0; attempt < kPrivateDirectoryCreateAttempts;
+         ++attempt) {
+        const auto sequence =
+            g_private_directory_sequence.fetch_add(1, std::memory_order_relaxed);
+        const fs::path candidate =
+            parent / ("yume-filter-" +
+                      std::to_string(::GetCurrentProcessId()) + "-" +
+                      std::to_string(sequence));
+        if (::CreateDirectoryW(candidate.c_str(), &attributes) != 0) {
+            return ScopedPathCleanup(candidate);
+        }
+        const DWORD create_error = ::GetLastError();
+        if (create_error != ERROR_ALREADY_EXISTS &&
+            create_error != ERROR_FILE_EXISTS) {
+            throw std::runtime_error(
+                "failed to create private filter directory: Windows error " +
+                std::to_string(create_error));
+        }
+    }
+    throw std::runtime_error(
+        "failed to create private filter directory: name attempts exhausted");
+#else
+    std::string pattern =
+        (fs::temp_directory_path() / "yume-filter-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) == nullptr) {
+        const int create_error = errno;
+        throw std::runtime_error(
+            "failed to create private filter directory: " +
+            std::error_code(create_error, std::generic_category()).message());
+    }
+    return ScopedPathCleanup(fs::path(std::move(pattern)));
+#endif
+}
 
 std::string lower_ascii(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -149,15 +302,109 @@ std::string shell_quote(const std::filesystem::path& path) {
     return out;
 }
 
+std::string tar_command_prefix(bool listing) {
+    // GNU tar accepts process-spawning checkpoint actions through TAR_OPTIONS.
+    // Never let a privileged daemon inherit those options. The C locale keeps
+    // the verbose mode field stable for the type check below.
+    std::string prefix = "TAR_OPTIONS='' LC_ALL=C tar ";
+#if defined(__linux__)
+    // The Linux release uses GNU tar. Escape control characters so one archive
+    // member produces one output line; safe_archive_member then refuses the
+    // backslash escape rather than interpreting it as a path.
+    if (listing) prefix += "--quoting-style=escape ";
+#else
+    (void)listing;
+#endif
+    return prefix;
+}
+
 bool safe_archive_member(const std::string& name) {
-    if (name.empty() || name.front() == '/' || name.find('\\') != std::string::npos) {
+    if (name.empty() || name.find('\\') != std::string::npos ||
+        name.find('\0') != std::string::npos) {
         return false;
     }
     std::filesystem::path p(name);
+    if (p.is_absolute() || p.has_root_name() || p.has_root_directory()) {
+        return false;
+    }
     for (const auto& part : p) {
         if (part == "..") return false;
     }
     return true;
+}
+
+std::size_t validate_archive_member_names(
+    const std::filesystem::path& list_path) {
+    std::ifstream members(list_path);
+    if (!members) {
+        throw std::runtime_error("cannot read tar member list");
+    }
+
+    std::size_t count = 0;
+    std::string member;
+    while (std::getline(members, member)) {
+        if (!safe_archive_member(member)) {
+            throw std::runtime_error("unsafe archive member: " + member);
+        }
+        ++count;
+    }
+    if (members.bad()) {
+        throw std::runtime_error("cannot finish reading tar member list");
+    }
+    return count;
+}
+
+std::size_t validate_archive_member_types(
+    const std::filesystem::path& list_path) {
+    std::ifstream members(list_path);
+    if (!members) {
+        throw std::runtime_error("cannot read verbose tar member list");
+    }
+
+    std::size_t count = 0;
+    std::string member;
+    while (std::getline(members, member)) {
+        // In tar's verbose listing the first mode character is the archive
+        // member type. Filter data needs only real directories and regular
+        // files; rejecting links and special files keeps extraction from
+        // turning an operator archive into a filesystem traversal primitive.
+        if (member.empty() || (member.front() != '-' && member.front() != 'd')) {
+            const char type = member.empty() ? '?' : member.front();
+            throw std::runtime_error(
+                "unsupported archive member type '" + std::string(1, type) +
+                "'");
+        }
+        ++count;
+    }
+    if (members.bad()) {
+        throw std::runtime_error(
+            "cannot finish reading verbose tar member list");
+    }
+    return count;
+}
+
+void validate_extracted_archive(const std::filesystem::path& directory) {
+    namespace fs = std::filesystem;
+    std::error_code iteration_error;
+    for (auto it = fs::recursive_directory_iterator(directory, iteration_error);
+         !iteration_error && it != fs::recursive_directory_iterator();
+         it.increment(iteration_error)) {
+        std::error_code status_error;
+        const auto status = it->symlink_status(status_error);
+        if (status_error) {
+            throw std::runtime_error(
+                "cannot inspect extracted archive member: " +
+                status_error.message());
+        }
+        if (!fs::is_regular_file(status) && !fs::is_directory(status)) {
+            throw std::runtime_error(
+                "archive extracted an unsupported member type");
+        }
+    }
+    if (iteration_error) {
+        throw std::runtime_error(
+            "cannot inspect extracted archive: " + iteration_error.message());
+    }
 }
 
 std::vector<std::filesystem::path> default_country_dirs() {
@@ -572,31 +819,87 @@ std::filesystem::path IpFilter::extract_archive(const std::filesystem::path& arc
                                                 const std::string& label,
                                                 std::string* error) {
     namespace fs = std::filesystem;
+#if !defined(__linux__)
+    (void)label;
+    if (error) *error = "filter archive extraction requires Linux with GNU tar; use an unpacked list or database";
+    return {};
+#endif
     try {
-        if (runtime_dir_.empty()) {
-            const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-            runtime_dir_ = fs::temp_directory_path() / ("yume-filter-" + std::to_string(stamp));
-            fs::create_directories(runtime_dir_);
+        std::optional<ScopedPathCleanup> new_runtime_dir;
+        fs::path runtime_dir = runtime_dir_;
+        if (runtime_dir.empty()) {
+            new_runtime_dir.emplace(create_private_runtime_directory());
+            runtime_dir = new_runtime_dir->path();
         }
-        const fs::path target = runtime_dir_ / (label + "-" + std::to_string(lists_loaded_ + 1));
-        fs::create_directories(target);
+        const std::string extraction_name =
+            label + "-" + std::to_string(lists_loaded_ + 1);
+        const fs::path target = runtime_dir / extraction_name;
+        std::error_code create_error;
+        const bool target_created = fs::create_directory(target, create_error);
+        if (create_error || !target_created) {
+            throw std::runtime_error(
+                "cannot create exclusive extraction directory" +
+                (create_error ? ": " + create_error.message() : std::string{}));
+        }
+        ScopedPathCleanup target_cleanup(target);
 
-        const fs::path list_path = target / ".members";
-        std::string list_cmd = "tar -tf " + shell_quote(archive) + " > " + shell_quote(list_path);
-        if (std::system(list_cmd.c_str()) != 0) {
+        // A private snapshot makes the member checks and extraction consume
+        // the same bytes even if the operator-supplied path is replaced while
+        // the daemon starts. Only this process can reach the snapshot.
+        const fs::path snapshot_path =
+            runtime_dir / ("." + extraction_name + ".tar.xz");
+        std::error_code copy_error;
+        const bool copied = fs::copy_file(
+            archive, snapshot_path, fs::copy_options::none, copy_error);
+        if (copy_error || !copied) {
+            throw std::runtime_error(
+                "cannot snapshot archive" +
+                (copy_error ? ": " + copy_error.message() : std::string{}));
+        }
+        ScopedPathCleanup snapshot_cleanup(snapshot_path);
+
+        const fs::path name_list_path =
+            runtime_dir / ("." + extraction_name + ".members");
+        ScopedPathCleanup name_list_cleanup(name_list_path);
+        const std::string name_list_cmd =
+            tar_command_prefix(true) + "-tJf " + shell_quote(snapshot_path) +
+            " > " + shell_quote(name_list_path);
+        if (std::system(name_list_cmd.c_str()) != 0) {
             throw std::runtime_error("tar list failed");
         }
-        std::ifstream members(list_path);
-        std::string member;
-        while (std::getline(members, member)) {
-            if (!safe_archive_member(member)) {
-                throw std::runtime_error("unsafe archive member: " + member);
-            }
+
+        const fs::path type_list_path =
+            runtime_dir / ("." + extraction_name + ".member-types");
+        ScopedPathCleanup type_list_cleanup(type_list_path);
+        const std::string type_list_cmd =
+            tar_command_prefix(true) + "--numeric-owner -tJvf " +
+            shell_quote(snapshot_path) + " > " + shell_quote(type_list_path);
+        if (std::system(type_list_cmd.c_str()) != 0) {
+            throw std::runtime_error("verbose tar list failed");
         }
-        std::string extract_cmd = "tar -xJf " + shell_quote(archive) + " -C " + shell_quote(target);
+
+        const std::size_t name_count =
+            validate_archive_member_names(name_list_path);
+        const std::size_t type_count =
+            validate_archive_member_types(type_list_path);
+        if (name_count != type_count) {
+            throw std::runtime_error("tar member listings disagree");
+        }
+
+        const std::string extract_cmd =
+            tar_command_prefix(false) +
+            "--no-same-owner --no-same-permissions --no-overwrite-dir "
+            "-xJf " + shell_quote(snapshot_path) + " -C " + shell_quote(target);
         if (std::system(extract_cmd.c_str()) != 0) {
             throw std::runtime_error("tar extract failed");
         }
+        validate_extracted_archive(target);
+
+        if (new_runtime_dir.has_value()) {
+            runtime_dir_ = runtime_dir;
+            new_runtime_dir->release();
+        }
+        target_cleanup.release();
         return target;
     } catch (const std::exception& ex) {
         if (error) *error = "failed to extract " + archive.string() + ": " + ex.what();
@@ -702,8 +1005,7 @@ std::size_t IpFilter::estimated_memory_bytes() const {
 
 void IpFilter::cleanup_runtime_dir() {
     if (runtime_dir_.empty()) return;
-    std::error_code ec;
-    std::filesystem::remove_all(runtime_dir_, ec);
+    remove_path_noexcept(runtime_dir_);
     runtime_dir_.clear();
 }
 

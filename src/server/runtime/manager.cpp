@@ -22,14 +22,13 @@
 #include "server/filter/ip_filter.hpp"
 #include "server/host/socket_util.hpp"
 #include "server/packet/tun_egress.hpp"
+#include "server/runtime/cover_response.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"
 
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <random>
-#include <sstream>
 #include <string_view>
 #include <stdexcept>
 #include <vector>
@@ -261,10 +260,7 @@ void Manager::start() {
         }
     }
 
-    // Pick the bind endpoint. Empty listen_address means legacy:
-    // bind any (0.0.0.0). A non-empty listen_address parses as an
-    // IPv4 or IPv6 literal; cfg validation (in main_server.cpp's
-    // --public-node block) rejected private ranges already.
+    // An empty address binds 0.0.0.0. Explicit addresses must be IP literals.
     boost::asio::ip::tcp::endpoint ep;
     if (cfg_.listen_address.empty()) {
         ep = boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), cfg_.listen_port);
@@ -453,36 +449,53 @@ std::size_t Manager::reload_upstream_responses() {
     // confuses operators reading logs side-by-side with the dir
     // contents.
     std::vector<fs::path> files;
-    for (const auto& entry : fs::directory_iterator(cfg_.upstream_response_dir, ec)) {
-        if (!entry.is_regular_file()) continue;
+    std::size_t directory_entries = 0;
+    fs::directory_iterator iterator(cfg_.upstream_response_dir, ec);
+    const fs::directory_iterator end;
+    for (; !ec && iterator != end; iterator.increment(ec)) {
+        const auto& entry = *iterator;
+        if (++directory_entries > cover_response::kMaxDirectoryEntries) {
+            util::log_warn(
+                "--upstream-response-dir: directory entry limit exceeded; "
+                "keeping the previous capture set");
+            return 0;
+        }
+        std::error_code entry_ec;
+        if (!entry.is_regular_file(entry_ec) || entry_ec) continue;
         const auto ext = entry.path().extension().string();
         if (ext == ".http" || ext == ".response") {
             files.push_back(entry.path());
+            if (files.size() > cover_response::kMaxResponseFiles) {
+                util::log_warn(
+                    "--upstream-response-dir: capture count limit exceeded; "
+                    "keeping the previous capture set");
+                return 0;
+            }
         }
     }
+    if (ec) {
+        util::log_warn("--upstream-response-dir: cannot enumerate " +
+                       cfg_.upstream_response_dir + ": " + ec.message());
+        return 0;
+    }
     std::sort(files.begin(), files.end());
+    std::size_t loaded_bytes = 0;
     for (const auto& path : files) {
-        std::ifstream in(path, std::ios::binary);
-        if (!in) {
-            util::log_warn("--upstream-response-dir: cannot open " + path.string());
-            continue;
-        }
-        std::stringstream ss; ss << in.rdbuf();
-        std::string raw = ss.str();
         std::string normalized;
-        normalized.reserve(raw.size() + raw.size() / 16);
-        for (std::size_t i = 0; i < raw.size(); ++i) {
-            char c = raw[i];
-            if (c == '\n' && (i == 0 || raw[i - 1] != '\r')) {
-                normalized += '\r';
-            }
-            normalized += c;
-        }
-        if (normalized.rfind("HTTP/1.", 0) != 0) {
-            util::log_warn("--upstream-response-dir: " + path.string() +
-                           " does not start with 'HTTP/1.' (skipped)");
+        std::string error;
+        if (!cover_response::load_file(path, &normalized, &error)) {
+            util::log_warn("--upstream-response-dir: " + error +
+                           " (skipped)");
             continue;
         }
+        if (normalized.size() >
+            cover_response::kMaxCacheBytes - loaded_bytes) {
+            util::log_warn(
+                "--upstream-response-dir: aggregate capture size limit "
+                "reached; remaining captures skipped");
+            break;
+        }
+        loaded_bytes += normalized.size();
         loaded.push_back(std::move(normalized));
     }
     const std::size_t count = loaded.size();

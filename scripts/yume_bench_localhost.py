@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for the canonical YUME 2.0 local benchmark."""
+"""Run the local YUME benchmark with process CPU and memory sampling."""
 
 from __future__ import annotations
 
@@ -27,8 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the in-process YUME 2.0 local benchmark. The old 1.x "
-            "no-inner/light/heavy/hop matrix has been retired."
+            "Run the in-process YUME benchmark and record process resources."
         )
     )
     parser.add_argument(

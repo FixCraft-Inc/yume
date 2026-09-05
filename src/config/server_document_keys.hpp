@@ -44,7 +44,7 @@ inline constexpr auto kServerDocumentKeys = std::to_array<std::string_view>({
     "anonym_proof_mode",
     "anonym_sub_cert",
     "anonym_sub_key",
-    "anonym_token",
+    "anonym_token_file",
     "auth_keys",
     "auth_keys_meta",
     "benchmark_enable",
@@ -68,9 +68,7 @@ inline constexpr auto kServerDocumentKeys = std::to_array<std::string_view>({
     "filter_memory_mib",
     "host_mode",
     "inner_crypto",
-    "inner_dual",
     "inner_psk_file",
-    "inner_required",
     "ipc_enable",
     "ipc_path",
     "listen_address",
@@ -121,6 +119,9 @@ inline constexpr auto kServerDocumentKeys = std::to_array<std::string_view>({
 // Keys that were accepted by an earlier development wire. See
 // yume::config::RetiredDocumentKey for the contract.
 inline constexpr auto kRetiredServerKeys = std::to_array<RetiredDocumentKey>({
+    {"anonym_token",
+     "inline operator proof tokens are refused; store the token in an "
+     "owner-only file and set anonym_token_file"},
     {"obfs_secret",
      "inline admission secrets are refused; store the secret in an "
      "owner-only file and set obfs_secret_file"},

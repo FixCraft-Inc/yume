@@ -1,13 +1,28 @@
 # Contributing to YUME
 
-YUME is experimental security and networking software. Small patches still
-need an explicit trust boundary, bounded failure behavior, and evidence that
-matches the claim being made.
+YUME is experimental security and networking software. Read the
+[documentation map](docs/README.md) and the relevant protocol or API contract
+before editing a subsystem. Keep changes focused and verify the behavior they
+affect.
 
-Read the [documentation map](docs/README.md) and the relevant
-architecture/protocol page before editing a subsystem. If this checkout has a
-machine-local `.private/ai/AGENTS.md`, use it only as a navigation overlay and
-verify its claims against tracked source and tests.
+## Project direction
+
+YUME develops its own embeddable stealth transport and wire protocols. Xray,
+VLESS, and REALITY are comparison subjects, not implementation sources or
+compatibility targets. Keep the independent implementation and declared
+dependency boundary described in [Why YUME](docs/WHY_YUME.md).
+
+Review changes in the order stealth, security, then usable speed. A comparison
+must preserve authentication, channel binding, ratchet limits, authorization,
+and resource bounds; weakening those to improve a score changes the product
+being measured. Record an intentional behavior change and its evidence rather
+than calling it a behavior-preserving cleanup.
+
+Keep ownership and dependency direction explicit. The current source graph is
+in [SOURCE_MAP.md](docs/SOURCE_MAP.md); the replacement contracts are in
+[ARCHITECTURE.md](docs/ARCHITECTURE.md). Preserve the runnable transport until
+its replacement passes the documented parity gates. A smaller file, a familiar
+competitor feature, or a passing build alone is not an architectural benefit.
 
 ## Build
 
@@ -50,27 +65,21 @@ qualified the current candidate. Long remote matrices should run detached and
 write a final machine-readable summary; polling them repeatedly is not useful
 evidence.
 
+`YUME_BUILD_FUZZERS=ON` requires Clang and selects
+`YUME_SANITIZE=address+undefined`, disables LTO, and adds fuzz coverage to
+source-built libraries as well as the harnesses. Use a separate build directory
+for TSan. Verify instrumentation in the parser objects and compile commands
+before treating a fuzz run as parser coverage; harness-only flags are insufficient.
+
 ## C++, API, and naming
 
-- `.clang-format` at the repository root describes the style already in the
-  tree. It was tuned against clang-format 19 by measuring the diff over a
-  sample spanning every layer, not chosen from taste.
-- **Do not run it over whole files or the tree.** That would rewrite about
-  51,000 lines across 547 files and bury real history under reflowed
-  whitespace. Format only what you touch:
+Use `.clang-format` for changed lines and `.clang-tidy` for focused analysis.
+Avoid reformatting unrelated code. For example:
 
-  ```bash
-  git-clang-format --diff     # preview what your change would reformat
-  git-clang-format            # apply it to the staged change
-  ```
-
-- `.clang-tidy` carries a curated check set with a written reason for every
-  exclusion. It is not a gate, and it is not exhaustive on purpose: enabling
-  everything produced noise nobody would act on. Run it on files you touch:
-
-  ```bash
-  clang-tidy -p <build-dir> src/path/to/file.cpp
-  ```
+```bash
+git-clang-format --diff
+clang-tidy -p <build-dir> src/path/to/file.cpp
+```
 
 - For new or meaningfully touched YUME code, use `PascalCase` for types, enums,
   and enum values; `snake_case` for functions and methods; `kPascalCase` for
@@ -93,6 +102,11 @@ evidence.
   the replacement ABI candidate, and helper IPC v1 are different identifiers.
   Preserve existing versioned cryptographic domains and wire labels; add new
   domains for intentional protocol migrations.
+
+YUME has no deployed users. Remove compatibility shims without a current
+consumer, and update active in-tree callers together. New features and planned
+work still need deliberate design decisions. An old name or an uncalled
+function alone does not prove that a feature is obsolete.
 
 ## Experimental replacement ABI changes
 
@@ -126,13 +140,12 @@ them from canonical Markdown before validating and building the site. Local
 after generation but is not a clean-checkout drift gate. Every fenced block in
 published Markdown must have a language tag. Do not leave a corrected contract
 only in a private review note.
-Dated handoffs, machine evidence, rejected experiments, dirty-tree inventories,
-and task queues belong in the ignored `.private/ai/` overlay or Git history.
-Public automation context belongs under `docs/agents/` and must contain no
-secrets, private paths, or dated machine state.
+Keep public docs focused on setup, behavior, design, and supported interfaces.
+Keep machine evidence, task queues, and agent handoffs in the ignored private
+overlay. Public [automation guidance](docs/agents/README.md) contains only
+repository facts that apply to a fresh clone.
 
-The `website/` tree is the static publication site, not a browser control panel
-for YUME. Edit canonical Markdown under `docs/`, not generated
+The `website/` tree publishes the static project site. Edit canonical Markdown under `docs/`, not generated
 `website/docs/*.md`, and keep website claims within the implementation,
 threat, stealth, packaging, and release documents. Preserve
 accurate no-release and no-JavaScript defaults; enable artifact links only

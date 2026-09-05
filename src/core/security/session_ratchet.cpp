@@ -80,8 +80,7 @@ public:
 #endif
          std::uint16_t outbound_window, std::uint16_t inbound_window,
          RatchetPolicy outbound_policy, RatchetPolicy inbound_policy)
-        : role_(role),
-          outbound_window_(ClampRekeyWindow(outbound_window)),
+        : outbound_window_(ClampRekeyWindow(outbound_window)),
           inbound_window_(ClampRekeyWindow(inbound_window)),
           outbound_(role == EndpointRole::Client ? Direction::ClientToServer
                                                  : Direction::ServerToClient,
@@ -521,7 +520,6 @@ private:
 #endif
     }
 
-    EndpointRole role_;
     std::uint16_t outbound_window_;
     std::uint16_t inbound_window_;
     mutable std::mutex mu_;

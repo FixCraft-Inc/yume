@@ -1,11 +1,59 @@
 # YUME explained
 
-YUME is a stealth universal transport. Its modular replacement keeps that
-role: the core abstraction is an authenticated peer opening a named byte
-stream or packet channel over one carrier. The runnable transport-v2 tunnel
-remains available while the replacement is completed.
+YUME is an independently implemented, embeddable stealth universal transport.
+Its own wire protocols carry application traffic over authenticated carriers.
+The runnable transport-v2 tunnel and the experimental YTP/1 replacement are
+separate implementations. The replacement's core abstraction is an
+authenticated peer opening a named byte stream or packet channel.
 
-## The dependency path
+## The runnable transport-v2 path
+
+The current `yume` and `yumed` commands use transport v2. A direct connection
+follows this path:
+
+1. An application reaches the client through SOCKS5, a forward, packet routing,
+   or the experimental ABI's supported named-stream interface.
+2. The client establishes TLS 1.3 to `yumed`, with certificate/hostname checks
+   and configured trust policy. `yumed` terminates public TLS and HTTP/2. The
+   reference cover site runs in a separate loopback Node process; it receives
+   ordinary web requests, not tunnel records or credentials.
+3. The client primes the page and assets over HTTP/2, then requests an RFC 8441
+   WebSocket carrier. The server checks keyed, replay-protected admission
+   before sending an AUTH challenge. HTTP/2 remains active for the whole
+   connection.
+4. AUTH v2 verifies the composite Ed25519 and ML-DSA-87 client identity and
+   binds it to the live TLS exporter. ML-KEM-1024, X25519, and the random file
+   PSK contribute to session establishment. An admin session requires a
+   separate second identity. The protected `AUTH_OK` arrives only after the
+   inner channel is active.
+5. YUME frames multiplex application traffic through WebSocket binary messages
+   inside HTTP/2 DATA. Independent directional ratchets use one-use
+   AES-256-GCM message keys. Stream credit, bounded queues, and backpressure
+   control how much work each connection can retain.
+6. `yumed` applies destination and authorization policy before opening egress.
+   The destination sees the server's egress address. The server knows the
+   authenticated client and destination; independent application TLS can still
+   protect the application content end to end.
+
+The client authenticates the server through TLS trust, optional leaf pinning,
+and optional operator proof. The server's client-identity stores do not supply
+a server identity to the client. The admission secret and inner PSK are
+separate deployment gates.
+
+Missing or invalid admission never reaches AUTH. The exact cover response
+depends on the request path: the current rejected extended CONNECT receives a
+bounded synthetic 404, which differs from the reference Node response. YUME
+emits no synthetic idle traffic, and encrypted timing, size, and volume remain
+observable.
+
+The [transport-v2 wire contract](protocol/YUME_2_0_WIRE.md) owns the exact
+framing, admission, key schedule, and remaining profile differences. The
+[source map](SOURCE_MAP.md) identifies the running components. The sections
+below describe the intended YTP/1 replacement; its providers do not yet form a
+live endpoint. The current ABI carries transport-v2 named streams, while its
+packet operations remain unsupported.
+
+## The replacement dependency path
 
 ```text
 ByteChannel
@@ -37,7 +85,7 @@ ByteChannel
 There is no global mutable registry, reflection configuration, runtime
 `dlopen()`, provider fallback, or YTP/1 suite negotiation.
 
-## The connection path
+## The replacement connection path
 
 The intended direct tunnel route is:
 
@@ -90,12 +138,6 @@ downgrade or retry with a weaker provider. Ratcheting is described as
 post-compromise-oriented until recovery assumptions have formal and
 experimental support.
 
-These are normative requirements. The current `0.3.0-dev1` tree has an
-opt-in, build-tree-only OpenSSL security-provider candidate with focused
-real-key handshake, record, and rekey tests. It is still unwired from the
-native TLS/HTTP/2 runtime and public ABI, is not production-qualified, and has
-not completed external protocol/cryptography review.
-
 ## Capabilities and policy
 
 AUTH binds a bounded canonical service-capability manifest. Every OPEN is still
@@ -109,25 +151,22 @@ all meet explicit bounds before allocation.
 
 ## Embedding
 
-Future stable consumers will include only `<yume/yume.h>` and link the
-installed replacement library. The current role-neutral ABI candidate exposes runtime, immutable config,
-endpoint, stream, and packet handles with blocking timeout calls over the
-asynchronous implementation. Applications never need a CLI, private header,
-Boost.Asio, OpenSSL, nghttp2, or JSON operation bus.
+The [C ABI candidate](ABI.md) exposes runtime, immutable configuration,
+endpoint, stream, and packet handles through `<yume/yume.h>`. It provides
+blocking calls with timeouts over the asynchronous engine. The current
+build-tree library supports transport-v2 named streams.
 
-The experimental C++20 provider SDK is source-level and intended only for
-trusted in-process providers. Out-of-process plugins are deferred until a real
-consumer justifies a protocol and threat model.
+Trusted in-process providers use the experimental C++20 SDK. Out-of-process
+plugins remain a separate design decision.
 
 ## Product boundary
 
 The first complete YTP/1 path targets direct routing, SOCKS5, named-service,
-and packet adapters; those adapters are not wired yet. GUI, federation,
-transit, directory, relay applications, reverse administration, command
-execution, and product-specific codecs remain separate transport-v2 surfaces
-rather than prerequisites for the first replacement tunnel. Dynamic plugins
-and cryptographic suite negotiation are outside YTP/1.
+and packet adapters; those adapters are not wired yet. GUI, direct single-hop
+federation, directory, relay applications, reverse administration, and
+product-specific codecs remain separate transport-v2 surfaces. Transit is
+design-only, and command execution is reserved and disabled. None is a
+prerequisite for the first replacement tunnel. Dynamic plugins and
+cryptographic suite negotiation are outside YTP/1.
 
-The current implementation boundary is tracked in
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md); this description does not
-turn an unwired component into supported runtime behavior.
+See [implementation status](IMPLEMENTATION_STATUS.md) for the integration gates.

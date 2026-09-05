@@ -145,15 +145,7 @@ bool is_lower_hex(std::string_view value) {
 }
 
 bool valid_material_id(std::string_view id) {
-    if (id.size() == kRandomIdBytes * 2U && is_lower_hex(id)) return true;
-
-    const std::size_t separator = id.find('-');
-    if (separator == std::string_view::npos || separator == 0 ||
-        separator > 16U || id.size() - separator - 1U != 16U) {
-        return false;
-    }
-    return is_lower_hex(id.substr(0, separator)) &&
-           is_lower_hex(id.substr(separator + 1U));
+    return id.size() == kRandomIdBytes * 2U && is_lower_hex(id);
 }
 
 bool valid_fingerprint(std::string_view fingerprint) {
@@ -324,9 +316,8 @@ bool parse_material_record(const json& item,
         return false;
     }
 
-    if (const auto path = item.find("path"); path != item.end() &&
-        !path->is_string()) {
-        if (error) *error = "legacy secure material path must be a string";
+    if (item.contains("path")) {
+        if (error) *error = "secure material records derive their path from id and type";
         return false;
     }
     if (const auto encrypted = item.find("imported_encrypted");
@@ -406,22 +397,11 @@ bool read_store_state(MaterialStoreState* state, std::string* error) {
         if (error) *error = "secure material metadata root must be an object";
         return false;
     }
-    if (const auto schema = root.find("schema"); schema != root.end()) {
-        if (!schema->is_number_integer() && !schema->is_number_unsigned()) {
-            if (error) *error = "unsupported secure material metadata schema";
-            return false;
-        }
-        try {
-            if (schema->get<std::int64_t>() != kMetadataSchema) {
-                if (error) {
-                    *error = "unsupported secure material metadata schema";
-                }
-                return false;
-            }
-        } catch (const json::exception&) {
-            if (error) *error = "unsupported secure material metadata schema";
-            return false;
-        }
+    const auto schema = root.find("schema");
+    if (schema == root.end() || !schema->is_number_integer() ||
+        *schema != kMetadataSchema) {
+        if (error) *error = "unsupported secure material metadata schema";
+        return false;
     }
     if (const auto embedded = root.find("embedded_anonym_ca_enabled");
         embedded != root.end()) {

@@ -48,8 +48,6 @@ bool prepare_v2_security_config(ServerConfig& cfg,
                     "YUME 2.0 Chrome profile rejects configured obfs "
                     "padding/jitter; the committed capture contains neither");
     }
-    cfg.inner_required = true;
-
     if (cfg.real_backend.empty()) {
         return fail(error,
                     "YUME 2.0 requires --real-backend "
@@ -62,12 +60,8 @@ bool prepare_v2_security_config(ServerConfig& cfg,
                     "loopback://<loopback-ip-literal>:<port>");
     }
 
-    // The H2 decoy answers an active probe from a captured upstream response
-    // or from the configured cover site. With neither, it used to serve a page
-    // compiled into the daemon, byte-identical on every YUME deployment: one
-    // GET over H2 would then identify the server as YUME regardless of what
-    // the HTTP/1.1 cover backend serves. There is no safe default here, so
-    // startup refuses instead of shipping a global fingerprint.
+    // Ordinary H1/H2 GET/HEAD share the backend. Separate admission-failure
+    // and malformed/partial-probe paths need configured cover material too.
     if (cfg.real_http && cfg.upstream_response_dir.empty() &&
         cfg.upstream_response_file.empty() &&
         cfg.upstream_response_bytes.empty() && cfg.real_root.empty() &&
@@ -83,8 +77,8 @@ bool prepare_v2_security_config(ServerConfig& cfg,
             "impersonating (best fit); --real-root <dir> to serve a real "
             "static site, whose <dir>/index.html is also used as the decoy "
             "page; or --real-index <file> for a single-page cover. "
-            "--real-backend alone is not enough: it answers HTTP/1.1 only, so "
-            "the HTTP/2 decoy would have nothing to serve");
+            "--real-backend serves ordinary HTTP/1.1 and HTTP/2 GET/HEAD, "
+            "but separate probe paths still require configured cover material");
     }
 
     std::string probe_error;

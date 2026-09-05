@@ -207,9 +207,9 @@ public:
                     if (auto m = sm::get(id)) return m->display_name;
                     return std::string("unknown (id=") + id + ")";
                 };
-                ui::muted_text("Legacy external proof key: %s",
+                ui::muted_text("External proof key: %s",
                                material_label(cfg_.anonym_pubkey_material_id,
-                                              "embedded legacy key").c_str());
+                                              "embedded FixCraft key").c_str());
                 ui::muted_text("TLS CA: %s",
                                material_label(cfg_.tls_ca_material_id,
                                               "system trust store").c_str());

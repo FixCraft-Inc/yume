@@ -15,15 +15,11 @@
 
 namespace yume {
 
-// Product maturity is independent from every wire and embedding contract.
-// The 0.3 development line currently ships the working transport-v2 product
-// while YTP/1 is built and tested as an experimental replacement foundation.
+// Product maturity is independent of the wire and embedding versions.
 inline constexpr char kVersion[] = "0.3.0-dev1";
 
-// Do not derive this exact transport-v2 wire value from kVersion. It is
-// authenticated by AUTH v2 and admission, so changing product maturity must
-// not silently create a new wire protocol. These compatibility names remain
-// for the current transport-v2 implementation until YTP/1 reaches parity.
+// AUTH v2 and admission authenticate this value. A product version change
+// must not change the wire identity.
 inline constexpr std::string_view kRuntimeTransport = "transport-v2";
 inline constexpr std::string_view kTransportVersion = "0.2.0-dev6";
 

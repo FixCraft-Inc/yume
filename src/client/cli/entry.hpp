@@ -93,7 +93,7 @@ struct ClientConfig {
     std::string tls_ca_material_id;
     std::string tls_server_name;
     std::string tls_pin_sha256;
-    // The in-process patched OpenSSL emitter is the default. The legacy helper
+    // The in-process patched OpenSSL emitter is the default. The optional helper
     // and stock OpenSSL diagnostic emitter remain explicit alternatives only;
     // no backend silently falls back to either one.
     std::string transport_profile{yume::kTransportProfile};

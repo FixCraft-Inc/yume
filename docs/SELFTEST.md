@@ -246,9 +246,8 @@ run with the system Node.
 Likewise, the browser version recorded in `report.json` must match the pinned
 Chrome fixture before its PCAP is used as fingerprint evidence.
 
-`scripts/yume_bench_localhost.py` is now only a convenience wrapper for the
-canonical built-in local benchmark. It also samples the benchmark
-process from the outside and writes a resource report under
+`scripts/yume_bench_localhost.py` runs the built-in benchmark, samples its
+process resources, and writes a report under
 `yume-bench-results/local-<UTC>/resources.json`:
 
 ```bash

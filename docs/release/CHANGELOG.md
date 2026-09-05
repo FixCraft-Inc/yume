@@ -1,4 +1,8 @@
-# Changelog
+# Development changelog
+
+YUME has no stable release. These entries record development work, including
+withdrawn version plans and test builds. They are not support contracts. See
+[implementation status](../IMPLEMENTATION_STATUS.md) for current support.
 
 ## [Unreleased 0.3.0-dev1]
 
@@ -28,6 +32,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   reach the session. `tests/fuzz/run_fuzzers.sh` seeds the corpora, enforces a
   per-target budget, and fails on any artifact, so CI, a build host and a local
   run are the same invocation. `docs/DIAGNOSTICS.md` records it.
+- **Fuzz instrumentation reaches parser libraries.** The fuzz profile selects
+  ASan+UBSan and coverage instrumentation for source-built dependencies as well
+  as the harnesses. Instrumenting only the entry point left out-of-line parser
+  bodies without coverage feedback or sanitizer checks. Other sanitizer
+  selections require a separate build directory. Optimized sanitizer builds
+  retain frame pointers. The ratchet no longer stores an unused copy of its
+  constructor role; directional setup still uses the original parameter.
 - **ThreadSanitizer and fuzzing are CI gates.** A `thread-sanitize` job builds
   with `YUME_SANITIZE=thread` and runs the full suite, and a `fuzz` job builds
   the Clang harnesses and runs each briefly against the seeded corpus. Neither
@@ -38,6 +49,59 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Share-bundle construction wipes partial secret copies.** Copy and move
+  constructors delegate to a completed empty object before assignment, so
+  allocation failure runs secret cleanup before member destruction. The old
+  constructor failure handlers accessed already-destroyed strings. A focused
+  regression checks secret bytes at deallocation on success and at each
+  allocation failure, including a later public-field copy.
+- **The control reference describes the current C++/IPC interface.** Removed
+  claims about deleted generic C request calls, cached sizing retries, and
+  queued-handler cancellation. Local socket timeouts do not provide an overall
+  operation deadline or rollback.
+- **File and cover boundaries fail closed.** POSIX bounded/private readers
+  reject embedded NUL paths and open nonblocking before rejecting FIFOs.
+  Static-root reads pin each directory
+  descriptor, refuse symlink components, and take file bytes and modification
+  seconds from the same handle. HTTP byte-range integers reject overflow.
+  Unsupported platforms refuse confined static reads and archive extraction;
+  Linux archive tool trust and extraction resource budgets remain open.
+- **Captured HTTP responses preserve their bodies.** Header-only LF
+  normalization replaces whole-response rewriting. A bounded HTTP parser
+  refuses invalid or incomplete framing, and H2 conversion decodes chunked
+  bodies before DATA emission.
+- **CLI and embedded validation agree on explicit null.** Known transport-v2
+  fields reject null through the shared closed-key validator. Daemon identity
+  loading uses the canonical key-management parser and bounded reader while
+  retaining the five-resource startup/reload transaction.
+- **Embedded operator proof is refused explicitly.** The server runtime
+  reports an invalid argument for `anonym=true`; generation, refresh, and
+  logging policy remain owned by `yumed`. GUI controls reflect that boundary,
+  and Bash completion treats the operator token argument as a file path.
+- **Standalone security regressions now execute their assertions and link the
+  production helpers they exercise.** The early-declared operator-token and
+  curl-transport tests explicitly undefine `NDEBUG` in optimized builds, and
+  the static-site regression links `yume_core` for the shared bounded reader.
+  The warnings-as-errors qualification build caught both build-graph gaps.
+- **Operator proof tokens are file-only.** The inline `anonym_token` config key
+  and `--operator-proof-token` argv surface are refused. External proof tokens
+  now come from `anonym_token_file` / `--operator-proof-token-file`, loaded
+  through an owner-only, no-follow, regular-file check with a 4096-byte bound.
+- **BaseFWX dependency evidence is current and CI-enforced.** The YUME pin now
+  names remotely reachable BaseFWX `8a8ab66`, whose current workflows include
+  the retired-media repair missing from the previous pin. The deterministic
+  source-dependency SBOM is regenerated from that manifest, and CI now runs
+  its drift checker before building.
+- **Authorization metadata uses a closed schema.** Permissions belong under
+  `permissions`, codec access uses `allow_codecs`, and scheduling uses `weight`.
+  Unknown fields and alternate spellings are rejected.
+- **Configuration and key stores accept their current writer formats.** Client
+  configuration uses `threads`, `udp`, and `app_codec`; Android's
+  `tls_pin_sha256` remains accepted until its config writer changes. Relay keys
+  require the generated JSON record, and GUI material metadata requires schema
+  1 with random IDs. The unused `inner_dual`, `inner_required`, and
+  `--inner-required` server inputs are removed. Inner encryption remains
+  mandatory. The carrier diagnostic uses one `--client-profile` option.
 - **Client configuration keys are a closed set.** The `yume` CLI parser and
   the facade parser used by the GUI and the C ABI share one key table in
   `src/config/client_document_keys.hpp`. An unknown key is an error, a
@@ -53,11 +117,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   configuration fields that carried an inline admission secret were rejected
   at start since transport v2; the field and its plumbing are gone and every
   parser now rejects the key with the file-based replacement named.
-- **Server teardown always joins its workers.** `RuntimeController::stop()`
-  contains a throwing runtime or manager stop, joins every worker, and
-  reports the contained failure in the status message. Previously a throw
-  between the move and the join would destroy a joinable thread and
-  terminate the process, including from the destructor.
+- **Server teardown contains cancellation failures before joining.**
+  `RuntimeController::stop()` records the first failed stage without allocating.
+  Successful cancellation drains shutdown handlers normally; a cancellation
+  failure stops the I/O context before joining so a pending accept cannot hang
+  the caller. Later status reads format the diagnostic. Local IPC socket-path
+  cleanup also avoids allocation during destruction. IPC shutdown retains the
+  listening descriptor until its serving thread joins, removing an accept/stop
+  data race and premature descriptor reuse. This closes the teardown
+  abort and join-hang paths without claiming graceful session cleanup after
+  failed cancellation.
 - **A cancelled endpoint start reaches `STOPPED`.** The C ABI no longer
   strands a handle in `STARTING` when a runtime stop races a start; the
   endpoint moves to `STOPPED` and emits a `CANCELLED` event.
@@ -78,15 +147,20 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   longer calls BaseFWX the core crypto engine or claims ML-DSA comes from
   liboqs.
 
-- **No built-in cover page, and a cover source is required.** `yumed` shipped a
-  redirect stub compiled into the binary. It was byte-identical on every
-  deployment, and the HTTP/2 decoy served it whenever only `real_backend` was
-  configured, so a single HTTP/2 request identified the server as YUME
-  regardless of what the HTTP/1.1 cover backend served. Startup now refuses
+- **No built-in cover page, and a cover source is required.** `yumed` contained
+  a compiled redirect stub that probes reaching the decoy path could identify.
+  Startup now refuses
   unless one of `upstream_response_dir`, `upstream_response`, `real_root`, or
-  `real_index_path` is set alongside `real_backend`, which answers HTTP/1.1
-  only. A configured source that disappears at run time yields the profile's
-  ordinary 404 rather than a substitute page.
+  `real_index_path` is set alongside `real_backend` for `real_http` operation.
+  Ordinary HTTP/1.1 and recognized HTTP/2 GET/HEAD requests already reach the
+  same backend. Separate partial/malformed and admission-disabled probe paths
+  can use the decoy. The cover reference records their remaining differences.
+- **Cover material has explicit file and cache bounds.** A configured index,
+  static asset, or captured response is capped at 8 MiB and read through the
+  regular-file, no-follow bounded reader. Rotated captures are limited to 256
+  matching files, 4,096 directory entries, and 64 MiB retained in aggregate,
+  so a bad operator path or periodic reload cannot grow the daemon without a
+  ceiling.
 - **Packet-mode DNS has no default.** The resolver was silently `1.1.1.1` when
   none was configured, making a third party the observer of every hostname a
   tunnelled client resolved. `--packet-egress tun` now refuses to start until
@@ -131,8 +205,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   an exception that escapes a thread entry point calls `std::terminate`, so
   any peer able to reach a throwing handler could abort the daemon. Both
   workers now go through `runtime::run_worker`, which contains the exception,
-  drops only the connection whose handler threw, re-enters `run()` for every
-  other session, and records the occurrence in a rate-limited warning.
+  re-enters `run()` for queued work, and records the occurrence in a
+  rate-limited warning. The worker does not identify or close the offending
+  session; another pending operation can still retain it.
   Containment is a backstop: a handler at a trust boundary must still reject
   bad input rather than throw.
 - **One frame-payload bound, not three.** `server::detail::kMaxFrameSize` was
@@ -178,6 +253,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   every `<nlohmann/...>` include in the sources and in the vendored headers
   themselves. The dependency and its version are unchanged, so the notices and
   SBOM are too.
+- **The tray builds without a tray.** `gui/platform/tray.cpp` defined
+  `write_icon_for_status` and `remove_icon_files` unconditionally, but only
+  the Linux AppIndicator path uses them. Any build without that path, which
+  includes every host missing `libayatana-appindicator`, left them orphaned
+  and failed under `-Werror=unused-function`. They are now guarded by
+  `YUME_GUI_TRAY_LINUX`, matching where they are used. The Windows, macOS and
+  no-tray paths never referenced them.
 - **The GUI icon refresh acknowledges `system()` properly.**
   `gui/platform/app_icon.cpp` deliberately ignores the status of four
   best-effort desktop-cache refreshes and said so with a `(void)` cast, which
@@ -645,7 +727,7 @@ validation are complete.
   and best-effort sensitive-buffer erasure. Sanitizer and soak validation remain
   outstanding; detached EXEC workers are bounded but not cancellable/joined.
 
-## [v1.1] - TBD
+## [Withdrawn v1.1 development plan]
 
 ### Added
 - **`--cluster-join <spec>`** + **`--cluster-bootstrap`** on `yumed`. Friendly shorthand over the existing `--peer '<json>'` federation surface: `--cluster-join [id@]host[:port][?pin=<sha256>]` parses into the same FederationPeer JSON the daemon already consumes. `--cluster-bootstrap` marks a node as a cluster entry point so federation works without an outbound peer list. Bracketed IPv6 is supported with an explicit valid `id@` prefix. Implies `--federation-enable`.
@@ -677,7 +759,7 @@ validation are complete.
 ### Fixed
 - **Use-after-free on KEM secret wipe.** SecretGuard stores raw `Bytes*` pointers and SecureClears them from its destructor. Reverse-construction-order destruction meant a SecretGuard declared BEFORE the locals it tracked accessed already-freed vector storage on scope exit. Manifested as `malloc(): unaligned tcache chunk detected` immediately after PQ keypair validation on `--pq-auto-generate` startup. Closed first by reordering (commit 66153f6), then by structural replacement with SecureBytes (commit 58c39a7).
 - **Pre-existing yume_server link break** from the `f6db161` session.cpp split: `epoch_now_ms` was anonymous-namespace-local in session.cpp but referenced from session_control.cpp. Exposed at file scope in session.hpp; duplicate copy in federation_link.cpp removed.
-- **Argon2 admission was not aggregate.** `argon2_env_limits()` previously returned `{0,0,0}` by default, making the parameter guard a no-op. It now seeds per-derivation ceilings (`time=12, memory=512 MiB, parallelism=8`), and positive environment values may deliberately lower or raise them. The server additionally reserves each Argon2 derivation against manager-owned aggregate memory/job limits before allocation; move-only RAII leases release accounting on all exits. Defaults are 512 MiB aggregate and four jobs, configurable through CLI or JSON. The `has_argon2_limits` gate this enabled was dead code and is removed; the client local-cap check stays for old-server backwards compatibility.
+- **Argon2 admission was not aggregate.** `argon2_env_limits()` previously returned `{0,0,0}` by default, making the parameter guard a no-op. It now seeds per-derivation ceilings (`time=12, memory=512 MiB, parallelism=8`), and positive environment values may deliberately lower or raise them. The server additionally reserves each Argon2 derivation against manager-owned aggregate memory/job limits before allocation; move-only RAII leases release accounting on all exits. Defaults are 512 MiB aggregate and four jobs, configurable through CLI or JSON. The unused `has_argon2_limits` gate was removed. The client also checked its local cap in that implementation.
 
 ## [withdrawn v1.0] - 2026-05-16
 
@@ -718,7 +800,8 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
   operations, packaging, permissions, release notes, and project website.
 
 ### Changed
-- Wire format, authentication key file format, anonym CA / sub-key file format, and the `yume-obfs-v2` HTTP/2 token format were test-published in 1.0 and are treated as the compatibility base for the 1.1 stable line.
+- The 1.0 test build included its wire, authentication-key, anonym CA/sub-key,
+  and `yume-obfs-v2` token formats. The proposed 1.1 stable line was withdrawn.
 - Server-to-server federation links are pinned to **TLS 1.3 only** (no fallback to earlier TLS versions) — see commit `f13fbdb`.
 - Build pipeline rewritten end-to-end vs the BETA cycle: smoke-gate before heavy builds, GUI added for desktop OSes, dynamic "busybox" artifacts dropped (they were misleadingly named — a glibc-dynamic binary can't run on a real busybox/musl target), only verified-static `*-busybox-static` ships, macOS job is matrix-ized so Intel can be added in a follow-up by uncommenting one matrix entry.
 - Website's `assetMap` aligned with the new release-artifact set: GUI download cards for Linux / macOS / Windows added; dynamic-busybox cards dropped.
@@ -730,11 +813,13 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
 ### Notes
 - **Threat model recap** (full version in `docs/STEALTH.md` and `docs/EXPLAINED.md`): YUME defends the **transport**. The route you choose decides who can see the client, who can see the target, and how much trust is placed in the YUME server. YUME does **not** by itself provide anonymity — combine with Tor egress, Tor-over-YUME, or YUME-Tor-YUME for that.
 - **OpenWRT MIPS** is intentionally **not** built in CI because cross-builds against the OpenWRT SDK are slow and brittle on hosted runners; maintainers attach the MIPS artifacts manually when a release is cut. The static BusyBox builds cover most embedded use.
-- **Intel macOS** is not built in 1.0. The `build-macos` workflow is matrix-ized so an Intel entry is a one-line uncomment in `.github/workflows/release.yml`. Rosetta 2 covers Intel Macs running the arm64 binary.
+- **Intel macOS** had no 1.0 build. Rosetta 2 runs x86-64 software on Apple
+  silicon; it cannot run an arm64 binary on an Intel Mac.
 - **Windows GUI cross-build is best-effort** in 1.0: marked `continue-on-error: true` because the GUI-specific vcpkg packages (Freetype, GLFW3) on a fresh runner can take significantly longer than the CLI path and may time out. If the cross-build fails the CLI tarball still ships and the GUI lands in a follow-up.
 - **Performance**: one April 2026 WAN run measured about 234 Mbps download and
   36 Mbps upload on the 1.x SOCKS path. CPU cost was not isolated, so the prior
   "<1 % typical, <5 % always" wording was not supported by that dataset. This
   historical result does not describe the current transport.
-- **Compatibility policy for the 1.x line**: authorised-key files (`--auth-keys`), anonym CA / sub-key files, and the `yume-obfs-v2` token format carry forward unchanged. The BaseFWX inner format is byte-compatible across the 3.6.x and 3.7.x lines for non-plugin-tagged blobs per BaseFWX's own compatibility policy.
+- The proposed 1.x compatibility policy was withdrawn with that development
+  line. Current transport contracts are documented separately.
 - **License**: AGPL-3.0-or-later across YUME binaries, source, and libyume. Bundled BaseFWX code follows its own split policy: LGPL library/API/runtime, GPL standalone tools, MIT OR Apache-2.0 example plugin templates. See `LICENSE`.

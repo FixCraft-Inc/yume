@@ -32,6 +32,7 @@
 #include "core/protocol/control_protocol.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/runtime/inbound_credit.hpp"
+#include "core/runtime/write_ready_ring.hpp"
 #include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "server/auth/auth.hpp"
@@ -382,7 +383,20 @@ private:
     void mark_write_stream_ready_on_strand(std::uint8_t stream_id);
     PendingWrite pop_write_stream_head_on_strand(std::uint8_t stream_id);
     bool write_queues_empty_on_strand() const noexcept;
-    void do_write();
+    struct WriteBatchState;
+
+    void do_write() noexcept;
+    // Settle every write still queued for the TLS path. Their only dispatch
+    // comes from a write completion, so a transport that can no longer write
+    // leaves this as their last owner.
+    void fail_queued_writes_on_strand(
+        const boost::system::error_code& ec) noexcept;
+    void dispatch_write_batch_on_strand(
+        const std::shared_ptr<WriteBatchState>& state);
+    void settle_write_batch_on_strand(
+        const std::shared_ptr<WriteBatchState>& batch_state,
+        const boost::system::error_code& ec,
+        std::size_t bytes) noexcept;
     std::chrono::milliseconds reserve_egress_delay(std::size_t bytes) const;
     bool should_pause_inbound_reads_on_strand() const;
     void maybe_resume_inbound_reads_on_strand();
@@ -494,6 +508,14 @@ private:
     boost::asio::steady_timer frame_read_timer_;
     boost::asio::steady_timer ratchet_timer_;
     boost::asio::steady_timer transport_shutdown_timer_;
+    // Holds one delayed write batch. Owned by the session so close cancels it
+    // and the batch settles instead of being destroyed with the handler.
+    boost::asio::steady_timer delayed_write_timer_;
+    // The dispatched batch, held by the session as well as by the completion
+    // handler. Asio can fail inside its own executor delivery and destroy the
+    // handler with every reference it carried, so this is what still answers
+    // those callers at terminal close.
+    std::shared_ptr<WriteBatchState> in_flight_write_;
     boost::asio::steady_timer http_idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 
@@ -736,14 +758,24 @@ private:
         std::function<void(const boost::system::error_code&, std::size_t)> handler;
     };
 
+    // Completion ownership for writes stored in a dispatched batch, shared
+    // by dispatch and its asynchronous handlers.
+    struct WriteBatchState {
+        std::vector<PendingWrite> batch;
+        bool settled{false};
+    };
+
     struct RatchetBlockedWrite {
         protocol::Frame frame;
         std::function<void(const boost::system::error_code&, std::size_t)> handler;
     };
 
     std::array<std::deque<PendingWrite>, 256> write_queues_;
-    std::array<std::deque<std::uint8_t>, 5> write_ready_streams_;
-    std::array<std::int8_t, 256> write_ready_priority_{};
+    // One list per frame_write_priority() result. Allocation-free, so a
+    // stream can never carry a ready marker without a matching entry. See
+    // core/runtime/write_ready_ring.hpp.
+    static constexpr std::size_t kWritePriorities = 5;
+    runtime::WriteReadyRing<kWritePriorities> write_ready_streams_;
     std::deque<PendingWrite> v2_h2_pending_app_writes_;
     std::size_t v2_h2_app_write_frames_{0};
     std::size_t v2_h2_app_write_bytes_{0};

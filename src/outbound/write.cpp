@@ -55,17 +55,14 @@ bool bulk_capacity_available(std::size_t payload_bytes,
 
 }  // namespace
 
-void TransportCore::mark_stream_ready_locked(uint8_t stream_id) {
-    if (ready_priority_[stream_id] >= 0 || write_queues_[stream_id].empty()) {
+void TransportCore::mark_stream_ready_locked(uint8_t stream_id) noexcept {
+    if (ready_streams_.marked(stream_id) || write_queues_[stream_id].empty()) {
         return;
     }
     const int priority = std::clamp(
-        frame_write_priority(write_queues_[stream_id].front().frame), 0, 4);
-    // Publish the scheduler entry before its marker. A marker without a
-    // matching entry would suppress every later mark for this stream and
-    // strand its queued frames for the transport's lifetime.
-    ready_streams_[static_cast<std::size_t>(priority)].push_back(stream_id);
-    ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
+        frame_write_priority(write_queues_[stream_id].front().frame), 0,
+        static_cast<int>(kWritePriorities) - 1);
+    ready_streams_.mark(stream_id, static_cast<std::size_t>(priority));
 }
 
 bool TransportCore::try_queue_write_locked(PendingWrite& write) {
@@ -77,15 +74,9 @@ bool TransportCore::try_queue_write_locked(PendingWrite& write) {
     } catch (...) {
         return false;
     }
-    try {
-        mark_stream_ready_locked(stream_id);
-    } catch (...) {
-        // Undo the insertion rather than leave a frame the scheduler can
-        // never select. pop_back on a nonempty deque does not throw.
-        write = std::move(write_queues_[stream_id].back());
-        write_queues_[stream_id].pop_back();
-        return false;
-    }
+    // Marking is allocation-free, so a queued frame always has a scheduler
+    // entry and the enqueue needs no second rollback arm.
+    mark_stream_ready_locked(stream_id);
     ++queued_frames_;
     return true;
 }
@@ -101,13 +92,9 @@ TransportCore::PendingWrite TransportCore::pop_stream_head_locked(uint8_t stream
     if (queued_frames_ > 0) {
         --queued_frames_;
     }
-    try {
-        mark_stream_ready_locked(stream_id);
-    } catch (...) {
-        // The head is already owned by the caller and must reach its
-        // completion. A failed re-mark only defers this stream's remaining
-        // frames to the next enqueue or to shutdown, which settles them.
-    }
+    // Re-marking cannot fail, so the stream's remaining frames stay
+    // schedulable without depending on a later enqueue to rescue them.
+    mark_stream_ready_locked(stream_id);
     return write;
 }
 

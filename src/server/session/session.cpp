@@ -65,8 +65,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , frame_read_timer_(stream_.get_executor())
     , ratchet_timer_(stream_.get_executor())
     , transport_shutdown_timer_(stream_.get_executor())
+    , delayed_write_timer_(stream_.get_executor())
     , http_idle_timer_(stream_.get_executor()) {
-    write_ready_priority_.fill(-1);
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;
@@ -1145,6 +1145,9 @@ void Session::begin_close() {
     frame_read_timer_.cancel(ec);
     ratchet_timer_.cancel();
     preface_timer_.cancel();
+    // Cancelling posts the delayed batch's handler with operation_aborted,
+    // which settles it. maybe_finish_close then runs from there.
+    delayed_write_timer_.cancel(ec);
     if (manager_) {
         contain_teardown([&] { manager_->unregister_session(this); });
         if (packet_stream_.has_value()) {
@@ -1287,6 +1290,9 @@ void Session::shutdown_transport() {
 
 void Session::finish_transport_close() {
     if (close_state_ == CloseState::Closed) return;
+    // Terminal close. Anything still queued can never be written, so this is
+    // the backstop owner for it whichever path arrived here.
+    fail_queued_writes_on_strand(boost::asio::error::operation_aborted);
     boost::system::error_code ec;
     transport_shutdown_timer_.cancel(ec);
     closed_ = true;

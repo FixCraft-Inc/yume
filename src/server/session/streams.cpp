@@ -28,6 +28,22 @@ namespace {
 // allocation failed does not need another allocation to succeed.
 constexpr const char* kCarrierWriteFailed = "carrier failed";
 constexpr const char* kFlushScheduleFailed = "flush failed";
+constexpr const char* kWriteDispatchFailed = "write failed";
+
+// Refusing a write and closing the session are two obligations, and the
+// refusal runs first so the caller learns the outcome in order. A completion
+// belongs to a stream owner outside this session, so it must not be able to
+// take the close with it.
+void settle_refusal(
+    const std::function<void(const boost::system::error_code&, std::size_t)>&
+        handler,
+    const boost::system::error_code& ec) noexcept {
+    if (!handler) return;
+    try {
+        handler(ec, 0);
+    } catch (...) {
+    }
+}
 
 }  // namespace
 
@@ -486,7 +502,8 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
             const auto now = std::chrono::steady_clock::now();
             if (application && ratchet_->ApplicationWriteBlocked(frame, now)) {
                 if (ratchet_blocked_writes_.size() >= kMaxWriteQueueSize) {
-                    if (handler) handler(boost::asio::error::no_buffer_space, 0);
+                    settle_refusal(handler,
+                                   boost::asio::error::no_buffer_space);
                     close_with_reason("ratchet application queue overrun");
                     return;
                 }
@@ -496,9 +513,8 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 } catch (...) {
                     // Nothing was queued and `blocked` still owns the
                     // completion, so settle it once instead of dropping it.
-                    if (blocked.handler) {
-                        blocked.handler(boost::asio::error::no_buffer_space, 0);
-                    }
+                    settle_refusal(blocked.handler,
+                                   boost::asio::error::no_buffer_space);
                     close_with_reason(
                         "ratchet application queue allocation failed");
                     return;
@@ -589,7 +605,7 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 throw std::runtime_error("unexpected pre-protected frame type");
             }
         } catch (const std::exception& ex) {
-            if (handler) handler(boost::asio::error::fault, 0);
+            settle_refusal(handler, boost::asio::error::fault);
             close_with_reason("ratchet seal failed: " + std::string(ex.what()));
             return;
         }
@@ -631,21 +647,16 @@ void Session::flush_ratchet_blocked_writes_on_strand() {
         for (; index < pending.size(); ++index) {
             auto& write = pending[index];
             if (close_state_ != CloseState::Open) {
-                if (write.handler) {
-                    write.handler(boost::asio::error::operation_aborted, 0);
-                }
+                settle_refusal(write.handler,
+                               boost::asio::error::operation_aborted);
                 continue;
             }
             queue_frame_on_strand(write.frame, std::move(write.handler));
         }
     } catch (...) {
         for (std::size_t rest = index; rest < pending.size(); ++rest) {
-            auto& write = pending[rest];
-            if (!write.handler) continue;
-            try {
-                write.handler(boost::asio::error::operation_aborted, 0);
-            } catch (...) {
-            }
+            settle_refusal(pending[rest].handler,
+                           boost::asio::error::operation_aborted);
         }
         close_with_reason("ratchet application queue flush failed");
         return;
@@ -692,14 +703,14 @@ void Session::queue_encoded_write_on_strand(
     std::function<void(const boost::system::error_code&, std::size_t)> handler) {
     if (v2_h2_tunnel_active_) {
         if (!v2_h2_carrier_ || close_state_ != CloseState::Open) {
-            if (handler) handler(boost::asio::error::operation_aborted, 0);
+            settle_refusal(handler, boost::asio::error::operation_aborted);
             return;
         }
         const std::size_t app_bytes = data ? data->size() : 0U;
         if (v2_h2_app_write_frames_ >= kMaxWriteQueueSize ||
             app_bytes > kH2AppWriteMaxBytes ||
             v2_h2_app_write_bytes_ > kH2AppWriteMaxBytes - app_bytes) {
-            if (handler) handler(boost::asio::error::no_buffer_space, 0);
+            settle_refusal(handler, boost::asio::error::no_buffer_space);
             close_with_reason("v2 H2 application write queue overrun");
             return;
         }
@@ -713,9 +724,8 @@ void Session::queue_encoded_write_on_strand(
         } catch (...) {
             // push_back is strongly exception safe: nothing was submitted and
             // `pending` still owns its completion.
-            if (pending.handler) {
-                pending.handler(boost::asio::error::no_buffer_space, 0);
-            }
+            settle_refusal(pending.handler,
+                           boost::asio::error::no_buffer_space);
             close_with_reason(
                 "v2 H2 application write queue allocation failed");
             return;
@@ -741,14 +751,7 @@ void Session::queue_encoded_write_on_strand(
             v2_h2_app_write_bytes_ =
                 app_bytes <= v2_h2_app_write_bytes_
                     ? v2_h2_app_write_bytes_ - app_bytes : 0U;
-            if (rolled_back.handler) {
-                try {
-                    rolled_back.handler(boost::asio::error::fault, 0);
-                } catch (...) {
-                    // The close below is the session's own cleanup and must
-                    // not depend on an embedder completion behaving.
-                }
-            }
+            settle_refusal(rolled_back.handler, boost::asio::error::fault);
             close_carrier_write_failure();
             return;
         }
@@ -773,9 +776,7 @@ void Session::enqueue_tls_write_on_strand(
     std::size_t payload_size,
     std::function<void(const boost::system::error_code&, std::size_t)> handler) {
     if (close_state_ != CloseState::Open) {
-        if (handler) {
-            handler(boost::asio::error::operation_aborted, 0);
-        }
+        settle_refusal(handler, boost::asio::error::operation_aborted);
         return;
     }
 
@@ -784,9 +785,7 @@ void Session::enqueue_tls_write_on_strand(
                       ": write queue overflow (" + std::to_string(write_queue_depth_) +
                       " pending), closing to prevent SSL corruption");
         close_with_reason("write queue overrun - too many pending frames");
-        if (handler) {
-            handler(boost::asio::error::operation_aborted, 0);
-        }
+        settle_refusal(handler, boost::asio::error::operation_aborted);
         return;
     }
 
@@ -798,25 +797,14 @@ void Session::enqueue_tls_write_on_strand(
     } catch (...) {
         // Nothing was queued and `pending` still owns the completion, so
         // settle it here rather than dropping it during unwind.
-        if (pending.handler) {
-            pending.handler(boost::asio::error::no_buffer_space, 0);
-        }
+        settle_refusal(pending.handler,
+                       boost::asio::error::no_buffer_space);
         close_with_reason("write queue allocation failed");
         return;
     }
-    try {
-        mark_write_stream_ready_on_strand(stream_id);
-    } catch (...) {
-        // Undo the insertion rather than leave a frame the scheduler can
-        // never select. pop_back on a nonempty deque does not throw.
-        PendingWrite rolled_back = std::move(write_queues_[stream_id].back());
-        write_queues_[stream_id].pop_back();
-        if (rolled_back.handler) {
-            rolled_back.handler(boost::asio::error::no_buffer_space, 0);
-        }
-        close_with_reason("write scheduler allocation failed");
-        return;
-    }
+    // Marking is allocation-free, so a queued frame always has a scheduler
+    // entry and the enqueue needs no second rollback arm.
+    mark_write_stream_ready_on_strand(stream_id);
     ++write_queued_frames_;
     write_queued_bytes_ += queued_bytes;
     write_queue_depth_++;
@@ -885,18 +873,15 @@ void Session::maybe_resume_inbound_reads_on_strand() {
 }
 
 void Session::mark_write_stream_ready_on_strand(std::uint8_t stream_id) {
-    if (write_ready_priority_[stream_id] >= 0 ||
+    if (write_ready_streams_.marked(stream_id) ||
         write_queues_[stream_id].empty()) {
         return;
     }
     const auto& head = write_queues_[stream_id].front();
     const int priority = std::clamp(
-        frame_write_priority(head.frame_type, head.payload_size), 0, 4);
-    // Publish the scheduler entry before its marker. A marker without a
-    // matching entry would suppress every later mark for this stream and
-    // strand its queued frames for the session's lifetime.
-    write_ready_streams_[static_cast<std::size_t>(priority)].push_back(stream_id);
-    write_ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
+        frame_write_priority(head.frame_type, head.payload_size), 0,
+        static_cast<int>(kWritePriorities) - 1);
+    write_ready_streams_.mark(stream_id, static_cast<std::size_t>(priority));
 }
 
 Session::PendingWrite Session::pop_write_stream_head_on_strand(
@@ -910,13 +895,9 @@ Session::PendingWrite Session::pop_write_stream_head_on_strand(
     const std::size_t bytes = write.data ? write.data->size() : 0;
     write_queued_bytes_ = bytes <= write_queued_bytes_
         ? write_queued_bytes_ - bytes : 0;
-    try {
-        mark_write_stream_ready_on_strand(stream_id);
-    } catch (...) {
-        // The head is already owned by the caller and must reach its
-        // completion. A failed re-mark only defers this stream's remaining
-        // frames to the next enqueue or to close, which settles them.
-    }
+    // Re-marking cannot fail, so the stream's remaining frames stay
+    // schedulable without depending on a later enqueue to rescue them.
+    mark_write_stream_ready_on_strand(stream_id);
     return write;
 }
 
@@ -929,16 +910,17 @@ std::optional<std::uint8_t> Session::select_next_write_on_strand(
     const std::unordered_set<uint8_t>& batch_streams) {
     auto select = [&](bool allow_already_selected_stream)
         -> std::optional<std::uint8_t> {
-        for (std::size_t priority = 0;
-             priority < write_ready_streams_.size(); ++priority) {
-            auto& ready = write_ready_streams_[priority];
-            const std::size_t candidates = ready.size();
+        for (std::size_t priority = 0; priority < kWritePriorities;
+             ++priority) {
+            // One pass per priority. rotate_front keeps a skipped stream in
+            // its list, so the candidate count bounds the pass.
+            const std::size_t candidates = write_ready_streams_.size(priority);
             for (std::size_t i = 0; i < candidates; ++i) {
-                const auto stream_id = ready.front();
-                ready.pop_front();
-                if (write_ready_priority_[stream_id] !=
-                        static_cast<std::int8_t>(priority) ||
-                    write_queues_[stream_id].empty()) {
+                const auto head_id = write_ready_streams_.front(priority);
+                if (!head_id.has_value()) break;
+                const auto stream_id = *head_id;
+                if (write_queues_[stream_id].empty()) {
+                    write_ready_streams_.take_front(priority);
                     continue;
                 }
                 const auto& head = write_queues_[stream_id].front();
@@ -949,10 +931,10 @@ std::optional<std::uint8_t> Session::select_next_write_on_strand(
                 const bool new_stream = allow_already_selected_stream ||
                     batch_streams.count(stream_id) == 0;
                 if (fits && new_stream) {
-                    write_ready_priority_[stream_id] = -1;
+                    write_ready_streams_.take_front(priority);
                     return stream_id;
                 }
-                ready.push_back(stream_id);
+                write_ready_streams_.rotate_front(priority);
             }
         }
         return std::nullopt;
@@ -965,7 +947,94 @@ std::optional<std::uint8_t> Session::select_next_write_on_strand(
     return stream_id;
 }
 
-void Session::do_write() {
+void Session::settle_write_batch_on_strand(
+    const std::shared_ptr<WriteBatchState>& batch_state,
+    const boost::system::error_code& ec,
+    std::size_t bytes) noexcept {
+    // Own it locally first. Callers pass the session's own member, and this
+    // clears that member below; without a copy the reset could free the state
+    // while it is still being read. Copying a shared_ptr cannot throw.
+    const std::shared_ptr<WriteBatchState> state = batch_state;
+    // Every write in the batch has already left the queue, so this is the only
+    // place left that can answer its caller. Exactly one of the write
+    // completion, the delayed-write cancellation and the failure path below
+    // reaches it.
+    if (!state || state->settled) return;
+    state->settled = true;
+    if (in_flight_write_ == state) in_flight_write_.reset();
+    auto batch = std::move(state->batch);
+    const std::size_t count = batch.size();
+    if (write_queue_depth_ >= count) {
+        write_queue_depth_ -= static_cast<uint32_t>(count);
+    } else {
+        write_queue_depth_ = 0;
+    }
+    for (auto& item : batch) {
+        if (!item.handler) continue;
+        const std::size_t item_bytes = (!ec && item.data) ? item.data->size()
+                                                          : bytes;
+        try {
+            item.handler(ec, item_bytes);
+        } catch (...) {
+            // A completion belongs to a stream owner outside this scheduler.
+            // Its siblings still have to be settled.
+        }
+    }
+}
+
+void Session::fail_queued_writes_on_strand(
+    const boost::system::error_code& ec) noexcept {
+    // A dispatched batch whose completion never arrived is settled here too.
+    // It has already left the queue, so nothing below would find it.
+    settle_write_batch_on_strand(in_flight_write_, ec, 0);
+    // Queued writes are dispatched only from a write completion, so once the
+    // transport can no longer write, nothing will ever reach them again. This
+    // is their last owner. Draining in place avoids the allocation a holding
+    // container would need on a path that already failed.
+    while (!write_queues_empty_on_strand()) {
+        bool drained = false;
+        for (std::size_t stream_id = 0; stream_id < write_queues_.size();
+             ++stream_id) {
+            auto& queue = write_queues_[stream_id];
+            if (queue.empty()) continue;
+            PendingWrite write = std::move(queue.front());
+            queue.pop_front();
+            drained = true;
+            if (write_queued_frames_ > 0) --write_queued_frames_;
+            const std::size_t bytes = write.data ? write.data->size() : 0;
+            write_queued_bytes_ = bytes <= write_queued_bytes_
+                ? write_queued_bytes_ - bytes : 0;
+            if (write_queue_depth_ > 0) --write_queue_depth_;
+            settle_refusal(write.handler, ec);
+        }
+        if (!drained) break;
+    }
+    write_queued_frames_ = 0;
+    write_queued_bytes_ = 0;
+    write_ready_streams_.reset();
+}
+
+void Session::do_write() noexcept {
+    std::shared_ptr<WriteBatchState> state;
+    try {
+        // Keep shared ownership of entries already inserted into the batch
+        // while dispatch assembles and submits the write.
+        state = std::make_shared<WriteBatchState>();
+        dispatch_write_batch_on_strand(state);
+        return;
+    } catch (...) {
+        // Whatever dispatch had already popped is still owned by `state`.
+    }
+    write_in_flight_ = false;
+    settle_write_batch_on_strand(state, boost::asio::error::no_buffer_space, 0);
+    try {
+        close_with_reason(kWriteDispatchFailed);
+    } catch (...) {
+    }
+}
+
+void Session::dispatch_write_batch_on_strand(
+    const std::shared_ptr<WriteBatchState>& state) {
     if (write_queues_empty_on_strand()) {
         write_in_flight_ = false;
         if (close_state_ != CloseState::Open) {
@@ -975,13 +1044,19 @@ void Session::do_write() {
     }
     write_in_flight_ = true;
 
-    std::vector<PendingWrite> batch;
+    auto& batch = state->batch;
     std::size_t batch_count = 0;
     std::size_t total_bytes = 0;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     diagnostics::Stopwatch selector_timer(YUME_TIMING_ENABLED());
 #endif
     std::unordered_set<uint8_t> batch_streams;
+    // Reserve both containers before the first pop. A write that has left the
+    // queue but not yet reached the batch has no owner at all, so nothing
+    // between the pop and the push may allocate. Reserving here instead can
+    // only fail while the queue is still intact.
+    batch.reserve(kMaxWriteBatchFrames);
+    batch_streams.reserve(kMaxWriteBatchFrames);
     while (!write_queues_empty_on_strand() &&
            batch_count < kMaxWriteBatchFrames) {
         const auto stream_id =
@@ -990,15 +1065,24 @@ void Session::do_write() {
             break;
         }
         PendingWrite write = pop_write_stream_head_on_strand(*stream_id);
-        total_bytes += write.data ? write.data->size() : 0;
-        batch_streams.insert(*stream_id);
+        const std::size_t write_bytes = write.data ? write.data->size() : 0;
+        // Hand it to the owner first. push_back cannot allocate against the
+        // reservation above, so the batch holds it before the set insert or
+        // anything later can throw.
         batch.push_back(std::move(write));
+        total_bytes += write_bytes;
+        batch_streams.insert(*stream_id);
         ++batch_count;
     }
     if (batch_count == 0) {
         write_in_flight_ = false;
         return;
     }
+    // From here the session owns the batch as well as do_write. A completion
+    // that asio never delivers, because its own executor machinery failed,
+    // destroys the handler and every reference it held; the session's
+    // reference is what still answers those callers at terminal close.
+    in_flight_write_ = state;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     YUME_TIMING_LOG(
         "server.transport", "write_batch",
@@ -1030,33 +1114,40 @@ void Session::do_write() {
 #endif
     auto on_complete = [self,
                         batch_data,
-                        batch = std::move(batch),
-                        batch_count
+                        state
 #if YUME_ENABLE_DEV_DIAGNOSTICS
                         , tls_write_timer
 #endif
                        ](const boost::system::error_code& ec,
                                      std::size_t bytes) mutable {
+        // Settle first. Everything after this allocates — diagnostics, read
+        // resumption, the error message — and a throw there escapes into the
+        // executor, so nothing that can fail may run while the batch is still
+        // unanswered.
+        self->settle_write_batch_on_strand(state, ec, bytes);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
-        YUME_TIMING_LOG(
-            "server.tls", "write",
-            "session=" + std::to_string(self->session_id_) +
-            " bytes=" + std::to_string(bytes) +
-            " requested=" + std::to_string(batch_data->size()) +
-            " us=" + std::to_string(tls_write_timer.elapsed_ns() / 1000U));
+        try {
+            YUME_TIMING_LOG(
+                "server.tls", "write",
+                "session=" + std::to_string(self->session_id_) +
+                " bytes=" + std::to_string(bytes) +
+                " requested=" + std::to_string(batch_data->size()) +
+                " us=" + std::to_string(tls_write_timer.elapsed_ns() / 1000U));
+        } catch (...) {
+            // Diagnostics never decide whether the session keeps running.
+        }
 #endif
-        if (self->write_queue_depth_ >= batch_count) {
-            self->write_queue_depth_ -= static_cast<uint32_t>(batch_count);
-        } else {
-            self->write_queue_depth_ = 0;
-        }
+        // This batch is no longer in flight whatever happened to it. Only the
+        // success path below starts another, and it sets the flag again; a
+        // failure that left it set would block the close from finishing until
+        // the close deadline fired.
+        self->write_in_flight_ = false;
         if (!ec) {
-            self->maybe_resume_inbound_reads_on_strand();
-        }
-        for (auto& item : batch) {
-            if (item.handler) {
-                const std::size_t item_bytes = (!ec && item.data) ? item.data->size() : bytes;
-                item.handler(ec, item_bytes);
+            try {
+                self->maybe_resume_inbound_reads_on_strand();
+            } catch (...) {
+                // Resuming reads is best effort; the next dispatch below is
+                // what keeps the queue moving.
             }
         }
         if (ec) {
@@ -1064,20 +1155,47 @@ void Session::do_write() {
                 self->shutdown_transport();
                 return;
             }
-            std::string error_msg = "frame write failed: " + describe_error_code(ec);
-            if (ec.category().name() == std::string("ssl") ||
-                ec == boost::asio::ssl::error::stream_truncated) {
-                error_msg = "SSL/TLS write error: " + error_msg + " [client must reconnect]";
+            // No further dispatch happens after a failed write, so the
+            // writes still queued behind this batch have no other owner.
+            self->fail_queued_writes_on_strand(ec);
+            // Building the description allocates. Closing is the obligation;
+            // describing the cause is not allowed to prevent it.
+            try {
+                std::string error_msg =
+                    "frame write failed: " + describe_error_code(ec);
+                if (ec.category().name() == std::string("ssl") ||
+                    ec == boost::asio::ssl::error::stream_truncated) {
+                    error_msg = "SSL/TLS write error: " + error_msg +
+                                " [client must reconnect]";
+                }
+                self->close_with_reason(error_msg);
+            } catch (...) {
+                self->close_with_reason(kWriteDispatchFailed);
             }
-            self->close_with_reason(error_msg);
             return;
         }
         self->do_write();
     };
 
-    auto fire_write = [self, batch_data, on_complete = std::move(on_complete)]() mutable {
-        boost::asio::async_write(self->stream_, boost::asio::buffer(*batch_data),
-                                 boost::asio::bind_executor(self->strand_, std::move(on_complete)));
+    auto fire_write = [self, batch_data, state,
+                       on_complete = std::move(on_complete)]() mutable {
+        try {
+            boost::asio::async_write(
+                self->stream_, boost::asio::buffer(*batch_data),
+                boost::asio::bind_executor(self->strand_,
+                                           std::move(on_complete)));
+        } catch (...) {
+            // The write never started, so nothing will complete it. Settle
+            // the batch here and close instead of stalling the queue behind
+            // a write_in_flight_ that no completion will ever clear.
+            self->write_in_flight_ = false;
+            self->settle_write_batch_on_strand(
+                state, boost::asio::error::no_buffer_space, 0);
+            try {
+                self->close_with_reason(kWriteDispatchFailed);
+            } catch (...) {
+            }
+        }
     };
 
     // Per-batch send-side jitter. Defers the actual async_write by a
@@ -1097,11 +1215,36 @@ void Session::do_write() {
         fire_write();
         return;
     }
-    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
-    timer->expires_after(delay_ms);
-    timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {
-        if (!ec) fire_write();
-    });
+    // The delay timer belongs to the session so close can cancel it. A
+    // cancelled or failed wait never starts the write, so it settles the
+    // batch it was holding rather than destroying those completions. Only one
+    // batch is ever delayed at a time: write_in_flight_ stays set until the
+    // completion runs, and the next dispatch only starts from there.
+    delayed_write_timer_.expires_after(delay_ms);
+    delayed_write_timer_.async_wait(boost::asio::bind_executor(
+        strand_,
+        [self, state, fire_write = std::move(fire_write)](
+            const boost::system::error_code& ec) mutable {
+            if (!ec) {
+                fire_write();
+                return;
+            }
+            self->write_in_flight_ = false;
+            self->settle_write_batch_on_strand(
+                state, boost::asio::error::operation_aborted, 0);
+            if (self->close_state_ == CloseState::Open) {
+                // Still usable, so the queue behind this batch keeps its
+                // ordinary dispatch.
+                self->do_write();
+                return;
+            }
+            // Closing. Dispatch only resumes from a write completion, and
+            // this batch produced none, so the rest of the queue has no
+            // other owner left.
+            self->fail_queued_writes_on_strand(
+                boost::asio::error::operation_aborted);
+            self->maybe_finish_close();
+        }));
 }
 
 }  // namespace yume::server

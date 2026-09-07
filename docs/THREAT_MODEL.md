@@ -128,9 +128,11 @@ insertion. `try_send_data` reports refusal through its completion, while
 `wait_send_data` returns an admission status without invoking the completion.
 TransportCore shutdown drains queued writes without allocating. Session close
 falls back to closing the socket if the close deadline cannot be armed.
-Server TLS dispatch and delayed-write failure ownership remain open, as listed
-in [implementation status](IMPLEMENTATION_STATUS.md). These fixes do not prove
-complete cleanup under arbitrary allocation or callback failure.
+Server TLS dispatch preserves ownership through batch assembly and retains
+undelivered completions until terminal close. Asynchronous delivery failure
+does not itself close the session, as described in
+[implementation status](IMPLEMENTATION_STATUS.md). These fixes do not prove
+complete cleanup under arbitrary allocation, callback or lifecycle failure.
 
 Bounds reduce supported-process blast radius. They do not guarantee
 availability against an attacker controlling the link or external OS/resource

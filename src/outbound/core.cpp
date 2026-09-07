@@ -32,14 +32,16 @@ std::optional<uint8_t> TransportCore::select_next_write_locked(
     std::size_t current_batch_bytes,
     const std::unordered_set<uint8_t>& batch_streams) {
     auto select = [&](bool allow_already_selected_stream) -> std::optional<uint8_t> {
-        for (std::size_t priority = 0; priority < ready_streams_.size(); ++priority) {
-            auto& ready = ready_streams_[priority];
-            const std::size_t candidates = ready.size();
+        for (std::size_t priority = 0; priority < kWritePriorities; ++priority) {
+            // One pass per priority. rotate_front keeps a skipped stream in
+            // its list, so the candidate count bounds the pass.
+            const std::size_t candidates = ready_streams_.size(priority);
             for (std::size_t i = 0; i < candidates; ++i) {
-                const uint8_t stream_id = ready.front();
-                ready.pop_front();
-                if (ready_priority_[stream_id] != static_cast<std::int8_t>(priority) ||
-                    write_queues_[stream_id].empty()) {
+                const auto head = ready_streams_.front(priority);
+                if (!head.has_value()) break;
+                const uint8_t stream_id = *head;
+                if (write_queues_[stream_id].empty()) {
+                    ready_streams_.take_front(priority);
                     continue;
                 }
                 const auto& write = write_queues_[stream_id].front();
@@ -50,10 +52,10 @@ std::optional<uint8_t> TransportCore::select_next_write_locked(
                 const bool new_stream = allow_already_selected_stream ||
                     batch_streams.count(stream_id) == 0;
                 if (fits && new_stream) {
-                    ready_priority_[stream_id] = -1;
+                    ready_streams_.take_front(priority);
                     return stream_id;
                 }
-                ready.push_back(stream_id);
+                ready_streams_.rotate_front(priority);
             }
         }
         return std::nullopt;
@@ -66,16 +68,12 @@ std::optional<uint8_t> TransportCore::select_next_write_locked(
     return stream_id;
 }
 
-TransportCore::TransportCore() {
-    ready_priority_.fill(-1);
-}
+TransportCore::TransportCore() = default;
 
 TransportCore::TransportCore(WriteHandler write_handler,
                              std::function<void(const std::string&)> close_transport_handler)
     : write_handler_(std::move(write_handler))
-    , close_transport_handler_(std::move(close_transport_handler)) {
-    ready_priority_.fill(-1);
-}
+    , close_transport_handler_(std::move(close_transport_handler)) {}
 
 void TransportCore::set_write_handler(WriteHandler handler) {
     std::lock_guard<std::mutex> lock(state_mu_);
@@ -199,10 +197,7 @@ TransportCore::CloseHandlers TransportCore::shutdown() {
         // This closes the check-to-wait race: a waiter arriving after the
         // notification still observes shutdown while holding write_mu_.
         write_admission_stopped_ = true;
-        for (auto& ready : ready_streams_) {
-            ready.clear();
-        }
-        ready_priority_.fill(-1);
+        ready_streams_.reset();
         // An active carrier write retains its reservation until its final
         // completion. Keeping write_in_flight_ set prevents a late callback
         // from starting another dispatch after shutdown.

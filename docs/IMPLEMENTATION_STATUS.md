@@ -180,9 +180,20 @@ The runnable product enforces these boundaries:
   payload on refusal. Both carrier write paths record the completion owner
   before submission. TransportCore shutdown drains queued writes without
   allocating and contains their callbacks. Session close releases its socket
-  directly if it cannot arm the close deadline. Failure handling in server
-  TLS batch dispatch, delayed writes and scheduler re-marking remains open;
-  exactly-once settlement across all session failure paths is not established.
+  directly if it cannot arm the close deadline.
+- Both write schedulers use a fixed ready list. Marking, selection and
+  rotation do not allocate, so scheduler allocation failure cannot leave a
+  queued stream unselectable.
+- Server TLS batch settlement is idempotent, contains each callback and
+  releases retained queue depth. Close cancels the session-owned send-delay
+  timer, whose cancellation handler settles the held batch. Write failures
+  and terminal transport close drain queued TLS writes. Batch storage is
+  reserved before queue removal, and each removed write enters the batch
+  before later allocations. The session retains the dispatched batch so
+  terminal close can settle it even if asynchronous delivery destroys its
+  handler. Write refusals contain callback exceptions. Delivery failure can
+  still leave the session open until a timeout or explicit close; immediate
+  cleanup and settlement across all lifecycle failures remain unestablished.
 - Embedded server stop drains successful cancellation before joining workers.
   If cancellation throws, it records the failed stage without allocation and
   stops the executor before joining. Status reads report that stage; graceful

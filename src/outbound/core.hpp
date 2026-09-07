@@ -25,6 +25,7 @@
 #include "core/protocol/protocol.hpp"
 #include "core/diagnostics/timing.hpp"
 #include "core/runtime/inbound_credit.hpp"
+#include "core/runtime/write_ready_ring.hpp"
 #include "core/security/session_ratchet.hpp"
 
 namespace yume::outbound {
@@ -239,7 +240,7 @@ private:
     std::optional<uint8_t> select_next_write_locked(
         std::size_t current_batch_bytes,
         const std::unordered_set<uint8_t>& batch_streams);
-    void mark_stream_ready_locked(uint8_t stream_id);
+    void mark_stream_ready_locked(uint8_t stream_id) noexcept;
     // Queue one write and its scheduler entry as a single transaction. On
     // failure nothing is queued and `write` still owns its completion.
     bool try_queue_write_locked(PendingWrite& write);
@@ -263,8 +264,11 @@ private:
     WriteHandler write_handler_;
     std::function<void(const std::string&)> close_transport_handler_;
     std::array<std::deque<PendingWrite>, 256> write_queues_;
-    std::array<std::deque<uint8_t>, 5> ready_streams_;
-    std::array<std::int8_t, 256> ready_priority_{};
+    // One list per frame_write_priority() result. Allocation-free, so a
+    // stream can never carry a ready marker without a matching entry. See
+    // core/runtime/write_ready_ring.hpp.
+    static constexpr std::size_t kWritePriorities = 5;
+    runtime::WriteReadyRing<kWritePriorities> ready_streams_;
     std::size_t queued_frames_{0};
     std::size_t outstanding_bulk_frames_{0};
     std::size_t outstanding_bulk_bytes_{0};

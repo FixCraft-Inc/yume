@@ -1704,6 +1704,16 @@ yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
 
+# Isolated because it replaces global operator new: these cases hold every
+# allocation failing while the write scheduler marks, selects and rotates.
+add_executable(yume_write_ready_ring_test
+    core/runtime/write_ready_ring_test.cpp
+)
+target_link_libraries(yume_write_ready_ring_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_write_ready_ring_test PRIVATE)
+yume_apply_perf_opts(yume_write_ready_ring_test)
+add_test(NAME yume_write_ready_ring_test COMMAND yume_write_ready_ring_test)
+
 # Isolated because it replaces global operator new to inject allocation
 # failure into transport write admission.
 add_executable(yume_transport_async_failure_test

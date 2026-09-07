@@ -411,14 +411,12 @@ private:
             ImGui::PopID();
             ImGui::Dummy(ImVec2(0, 4 * sc));
             file_picker("Cover index page",
-                        "Pick the HTML page the HTTP/2 decoy serves",
+                        "Pick the HTML page for cover probe responses",
                         cfg_.real_index_path,
                         "(required)",
                         "Ordinary HTTP/1.1 and HTTP/2 GET/HEAD reach the backend. "
-                        "Separate probe paths need a cover page. There is no "
-                        "built-in default: a page compiled into the daemon "
-                        "would be identical on every YUME server and would "
-                        "identify this one. A captured upstream response or a "
+                        "Separate probe paths need a configured cover page. "
+                        "A captured upstream response or a "
                         "static cover root satisfies the same requirement.");
             ImGui::EndDisabled();
         }

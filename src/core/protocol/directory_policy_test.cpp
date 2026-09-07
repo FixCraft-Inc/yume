@@ -97,6 +97,34 @@ void CheckEndpointPolicy() {
                malformed, DirectoryNamespace::ClientVisible),
           "unknown endpoint field was accepted");
 
+    for (const auto& schema : {nlohmann::json(nullptr), nlohmann::json(1)}) {
+        malformed = ValidEndpointJson();
+        malformed["endpoint_schema"] = schema;
+        Check(!yume::control::try_directory_endpoint_from_json(
+                  malformed, DirectoryNamespace::ClientVisible, &error) &&
+                  error == "directory endpoint has missing, unknown, or invalid fields",
+              "undefined endpoint schema did not fail as an unknown field");
+    }
+    for (const auto& name : {nlohmann::json(nullptr),
+                             nlohmann::json(std::string("a\0b", 3)),
+                             nlohmann::json(std::string(1, '\x7f'))}) {
+        malformed = ValidEndpointJson();
+        malformed["server_name"] = name;
+        Check(!yume::control::try_directory_endpoint_from_json(
+                  malformed, DirectoryNamespace::ClientVisible),
+              "invalid optional directory text was accepted");
+    }
+    auto text_boundary = ValidEndpointJson();
+    text_boundary["display_name"] = std::string(
+        yume::control::kMaxDirectoryDisplayNameBytes - 2U, 'n') + "\xc3\xa9";
+    Check(yume::control::try_directory_endpoint_from_json(
+              text_boundary, DirectoryNamespace::ClientVisible).has_value(),
+          "non-ASCII directory text at the byte limit was rejected");
+    text_boundary["display_name"].get_ref<std::string&>().push_back('n');
+    Check(!yume::control::try_directory_endpoint_from_json(
+              text_boundary, DirectoryNamespace::ClientVisible),
+          "non-ASCII directory text above the byte limit was accepted");
+
     malformed = ValidEndpointJson();
     malformed["endpoint_id"] = "../peer";
     Check(!yume::control::try_directory_endpoint_from_json(
@@ -314,6 +342,14 @@ void CheckPresencePolicy() {
     malformed["unknown"] = false;
     Check(!yume::control::try_presence_announcement_from_json(malformed),
           "unknown presence field was accepted");
+
+    for (const auto& schema : {nlohmann::json(nullptr), nlohmann::json(1)}) {
+        malformed = ValidPresence();
+        malformed["presence_schema"] = schema;
+        Check(!yume::control::try_presence_announcement_from_json(malformed, &error) &&
+                  error == "presence announcement has missing, unknown, or invalid fields",
+              "undefined presence schema did not fail as an unknown field");
+    }
 }
 
 }  // namespace

@@ -5,6 +5,7 @@
  */
 
 #include "server/cli/curl_json_transport.hpp"
+#include "test_support/allocation_failure.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -94,6 +95,23 @@ std::string ReadLine(std::ifstream& input) {
 int main() {
     using yume::server::cli::detail::HttpsEndpoint;
     using yume::server::cli::detail::parse_https_endpoint;
+
+    // Both host branches formerly allocated inside Boost's noexcept overload.
+    // Keep failure active through exception propagation, as in the control
+    // parser regression, using the same isolated allocation hooks.
+    for (const std::string_view url : {
+             "https://[2001:db8:ffff:ffff:ffff:ffff:ffff:ffff]/proof",
+             "https://operator-proof.example.com/proof"}) {
+        bool caught = false;
+        yume::test::fail_allocations.store(true, std::memory_order_relaxed);
+        try {
+            (void)parse_https_endpoint(url);
+        } catch (const std::bad_alloc&) {
+            caught = true;
+        }
+        yume::test::fail_allocations.store(false, std::memory_order_relaxed);
+        if (!Require(caught, "URL allocation failure did not propagate")) return 1;
+    }
 
     const auto endpoint = parse_https_endpoint(
         "https://example.invalid:8443/proof?mode=strict");

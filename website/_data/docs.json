@@ -1,7 +1,7 @@
 [
   {
-    "title": "Runnable 0.2 quick start",
-    "summary": "Build and provision the current transport-v2/AUTH-v2 client and daemon during the modular transition.",
+    "title": "Quick start",
+    "summary": "Build, provision, and connect the transport-v2 client and daemon.",
     "url": "/docs/QUICKSTART/",
     "source": "docs/QUICKSTART.md",
     "home_group": "Start here",
@@ -10,7 +10,7 @@
   },
   {
     "title": "YTP/1 foundation",
-    "summary": "Build the replacement SDK, create a schema-1 kit with the experimental tools, and read the contracts and gates behind the unwired boundary.",
+    "summary": "Build experimental providers and create a schema-1 kit. These components do not yet form a working endpoint.",
     "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md",
     "source": "docs/development/ytp1/README.md",
     "home_group": "Start here",
@@ -18,8 +18,8 @@
     "order": 10
   },
   {
-    "title": "YUME direction explained",
-    "summary": "How the runnable tunnel and modular session-layer replacement relate.",
+    "title": "YUME explained",
+    "summary": "Follow application traffic through transport v2, then compare the planned YTP/1 connection path.",
     "url": "/docs/EXPLAINED/",
     "source": "docs/EXPLAINED.md",
     "home_group": "Start here",
@@ -28,7 +28,7 @@
   },
   {
     "title": "Why YUME",
-    "summary": "Why YUME is a secure application session layer rather than another proxy-protocol collection.",
+    "summary": "The transport's goals, security contract, and dependency choices.",
     "url": "/docs/WHY_YUME/",
     "source": "docs/WHY_YUME.md",
     "home_group": "Start here",
@@ -154,7 +154,7 @@
   },
   {
     "title": "Transport-v2 control API",
-    "summary": "The command-oriented facade retained by the runnable 0.2 product and optional GUI.",
+    "summary": "JSON operations used by transport-v2 runtime IPC and the optional GUI.",
     "url": "/docs/CONTROL_API/",
     "source": "docs/CONTROL_API.md",
     "home_group": "Internals and status",

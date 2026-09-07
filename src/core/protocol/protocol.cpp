@@ -5,6 +5,7 @@
  */
 
 #include "core/protocol/protocol.hpp"
+#include "core/protocol/frame_limits.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -16,6 +17,9 @@ std::vector<uint8_t> encode_frame(FrameType type,
                                  uint16_t flags,
                                  const std::vector<uint8_t>& payload,
                                  uint16_t pad_multiple) {
+    if (payload.size() > frame_payload_limit(type, flags)) {
+        throw std::runtime_error("encode_frame: payload exceeds the transport maximum");
+    }
     std::vector<uint8_t> padded;
     const std::vector<uint8_t>* eff_payload = &payload;
     if (pad_multiple > 0) {
@@ -28,6 +32,10 @@ std::vector<uint8_t> encode_frame(FrameType type,
         const std::size_t base = payload.size() + 1;
         const std::size_t pad_total = ((base + m - 1) / m) * m;
         const std::size_t n_zero = pad_total - base;
+        flags = static_cast<uint16_t>(flags | kFlagPadded);
+        if (pad_total > frame_payload_limit(type, flags)) {
+            throw std::runtime_error("encode_frame: padded payload exceeds the transport maximum");
+        }
         padded.resize(pad_total);
         if (!payload.empty()) {
             std::copy(payload.begin(), payload.end(), padded.begin());
@@ -39,7 +47,6 @@ std::vector<uint8_t> encode_frame(FrameType type,
         // construction.
         padded[pad_total - 1] = static_cast<uint8_t>(n_zero);
         eff_payload = &padded;
-        flags = static_cast<uint16_t>(flags | kFlagPadded);
     }
 
     const uint32_t len = static_cast<uint32_t>(eff_payload->size());
@@ -70,7 +77,12 @@ Frame decode_frame(const std::vector<uint8_t>& buffer) {
                    (static_cast<uint32_t>(buffer[2]) << 8) |
                    (static_cast<uint32_t>(buffer[3]));
 
-    if (buffer.size() < 8 + len) {
+    const uint16_t flags = static_cast<uint16_t>(buffer[6] << 8) |
+                           static_cast<uint16_t>(buffer[7]);
+    if (len > frame_payload_limit(buffer[4], flags)) {
+        throw std::runtime_error("decode_frame: payload exceeds the transport maximum");
+    }
+    if (len > buffer.size() - 8U) {
         throw std::runtime_error("decode_frame: incomplete payload");
     }
 
@@ -78,8 +90,7 @@ Frame decode_frame(const std::vector<uint8_t>& buffer) {
     frame.header.len = len;
     frame.header.type = buffer[4];
     frame.header.stream_id = buffer[5];
-    frame.header.flags = static_cast<uint16_t>(buffer[6] << 8) |
-                         static_cast<uint16_t>(buffer[7]);
+    frame.header.flags = flags;
 
     frame.payload.assign(buffer.begin() + 8, buffer.begin() + 8 + len);
 

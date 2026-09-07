@@ -41,6 +41,9 @@ public:
     // consumers simply let it fall out of scope.
     using DataHandler = std::function<void(const Bytes&, InboundCredit)>;
     using CloseHandler = std::function<void(const std::string&)>;
+    // One slot per wire stream ID. Shutdown transfers callbacks without a
+    // heap allocation, including when allocation failure caused the close.
+    using CloseHandlers = std::array<CloseHandler, 256>;
     using HalfCloseHandler = std::function<void(const std::string&)>;
     // Peer-open handlers run outside state_mu_ and must synchronously consume
     // the dispatcher's reservation with register_stream before returning true.
@@ -58,6 +61,9 @@ public:
         timeout,
         stopped,
         invalid,
+        // The transport had capacity but could not take ownership of the
+        // write, so nothing was queued, reserved, or settled.
+        failed,
     };
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     using TimingHandler = std::function<void(const std::string&,
@@ -88,7 +94,7 @@ public:
     void start(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     bool handle_keepalive_tick(std::chrono::steady_clock::time_point now, std::string* close_reason);
     bool rekey_timed_out(std::chrono::steady_clock::time_point now) const;
-    std::vector<CloseHandler> shutdown();
+    CloseHandlers shutdown();
     bool is_stopped() const;
 
     void set_ratchet(std::unique_ptr<ratchet::SessionRatchet> ratchet);
@@ -214,14 +220,17 @@ private:
     bool peer_stream_registration_complete(uint8_t stream_id);
     bool queue_frame(protocol::Frame frame, WriteCompletion handler = {},
                      bool already_protected = false);
-    void dispatch_next_write();
+    void dispatch_next_write() noexcept;
+    // Runs one dispatch. `batch` is owned by dispatch_next_write so a failure
+    // settles the popped writes instead of destroying them during unwind.
+    void dispatch_batch(std::vector<PendingWrite>& batch);
     WriteSelection select_write_item_locked(
         std::size_t current_batch_bytes,
         const std::unordered_set<uint8_t>& batch_streams,
         bool collect_timing);
     void fail_write_batch(std::vector<PendingWrite> batch,
                           const std::string& error,
-                          const std::string& close_prefix);
+                          const std::string& close_prefix) noexcept;
     void settle_write_batch(std::vector<PendingWrite> completed_batch,
                             std::vector<std::size_t> completed_sizes,
                             bool ok,
@@ -231,6 +240,9 @@ private:
         std::size_t current_batch_bytes,
         const std::unordered_set<uint8_t>& batch_streams);
     void mark_stream_ready_locked(uint8_t stream_id);
+    // Queue one write and its scheduler entry as a single transaction. On
+    // failure nothing is queued and `write` still owns its completion.
+    bool try_queue_write_locked(PendingWrite& write);
     bool write_queues_empty_locked() const noexcept;
     PendingWrite pop_stream_head_locked(uint8_t stream_id);
     void release_write_reservation_locked(const PendingWrite& write) noexcept;

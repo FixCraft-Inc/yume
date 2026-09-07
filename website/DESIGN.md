@@ -46,10 +46,15 @@ and transport passage.
 - Header: one DOM tree that compresses after 80 px of scroll
 - Homepage: selected passage nodes drift into place once
 - Documentation: the reading progress bar is functional motion
+- Diagrams: one packet travels the route on a slow loop, paused while the
+  figure is off screen
 - Reduced motion: content renders immediately, with no spatial travel
 
-Animate only `transform` and `opacity`. Scroll reveals use
-`IntersectionObserver`. If JavaScript fails, all content stays visible.
+Animate only `transform` and `opacity`, with one exception: a diagram packet
+travels its route with `offset-distance`, which is the only compositor-friendly
+way to follow a path. It earns the exception because the path is the subject of
+the figure. Scroll reveals use `IntersectionObserver`. If JavaScript fails, all
+content stays visible and the packet keeps travelling.
 
 ## CTA voice
 

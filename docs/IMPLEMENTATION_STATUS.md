@@ -139,6 +139,20 @@ YTP/1 endpoint.
 
 The runnable product enforces these boundaries:
 
+- Admission retains live replay entries when its bounded process-local cache
+  is full and refuses new admissions until capacity recovers. AUTH parsing
+  enforces exact ML-KEM-1024 widths, complete nonempty admin fields and a
+  32 KiB server-info cap. Identity-session admission rolls back allocation
+  failures, and optional `last_seen` persistence cannot reverse a published
+  AUTH decision. See the [wire contract](protocol/YUME_2_0_WIRE.md) for the
+  cache lifetime and frame limits. AUTH declarations above 64 KiB (plus up to
+  256 padding bytes) are rejected at the frame header before payload buffering.
+- Loaded private PEMs and partial share-export JSON values have nonallocating
+  cleanup guards before later allocations. Composite PEM export allocates its
+  output once, and signing contexts have RAII ownership on allocation failure.
+  Mutable-buffer erasure includes retained capacity. This is best-effort
+  secret-lifetime reduction; library scratch copies and locked memory remain
+  outside the guarantee. See [key operations](OPERATIONS.md#key-and-permission-operations).
 - POSIX bounded/private file readers reject embedded NUL paths and refuse
   FIFOs without waiting for a writer. Static-root reads use directory
   descriptors and reject symlinks in every path component. Captured HTTP
@@ -158,8 +172,17 @@ The runnable product enforces these boundaries:
   transport-v2 server ABI backend reject `anonym=true` with an invalid-argument
   result because their embedded runtime does not own that lifecycle.
 - Worker exception containment keeps the process serving queued work. It
-  cannot identify or close the session whose handler threw; session cleanup
+  cannot identify or close the session whose handler threw, so session cleanup
   remains the handler's responsibility.
+- Client write admission rolls back queue and scheduler insertion before
+  reserving capacity. `try_send_data` invokes a rejected completion;
+  `wait_send_data` returns a status without invoking it and preserves the
+  payload on refusal. Both carrier write paths record the completion owner
+  before submission. TransportCore shutdown drains queued writes without
+  allocating and contains their callbacks. Session close releases its socket
+  directly if it cannot arm the close deadline. Failure handling in server
+  TLS batch dispatch, delayed writes and scheduler re-marking remains open;
+  exactly-once settlement across all session failure paths is not established.
 - Embedded server stop drains successful cancellation before joining workers.
   If cancellation throws, it records the failed stage without allocation and
   stops the executor before joining. Status reads report that stage; graceful

@@ -1,7 +1,7 @@
 # Filtering, robots, and self-DPI
 
 > **Transport-v2 surface:** this document records probe, cover, and diagnostic
-> behavior in the runnable 0.2 product. Its evidence does not automatically
+> behavior in the default client and daemon. Its evidence does not automatically
 > qualify the unwired YTP/1 front door.
 
 ## Stealth boundary

@@ -387,12 +387,33 @@ const initDocToc = () => {
   });
 };
 
+const initDiagramMotion = () => {
+  const figures = Array.from(document.querySelectorAll(".diagram"));
+  if (!figures.length || !("IntersectionObserver" in window)) {
+    return;
+  }
+
+  // The packet travels by default, so a diagram is correct with this script
+  // absent. All this does is stop the ones nobody is looking at.
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      entry.target.classList.toggle("is-offscreen", !entry.isIntersecting);
+    });
+  }, { rootMargin: "128px 0px" });
+
+  figures.forEach((figure) => {
+    figure.classList.add("is-offscreen");
+    observer.observe(figure);
+  });
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   initThemeToggle();
   initDisabledLinks();
   initNavScrollSpy();
   initScrollMorph();
   initScrollReveals();
+  initDiagramMotion();
   initDocToc();
   const run = async () => {
     if (document.getElementById("release-version") || document.querySelector("[data-download]")) {

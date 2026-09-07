@@ -10,6 +10,8 @@ path.
 `scripts/sync_website_docs.sh` publishes `docs/*.md`, `docs/protocol/*.md`,
 `docs/release/*.md`, and `CONTRIBUTING.md`. It adds Jekyll front matter and
 rewrites repository links. Each generated page records its canonical source.
+Links to source/build files, release JSON, and automation guidance point back
+to the repository because those files have no generated site page.
 
 **Edit `docs/` at the repository root, never `website/docs/*.md`.** Anything
 written directly into the generated files is lost on the next build.
@@ -57,10 +59,8 @@ mapping, so a manual toggle wins in both directions.
 
 ## Rules worth keeping
 
-The mark is inlined as a `path` in `_includes/brand.html`. Do not go back to
-`<use href="yume-plain.svg#yume-mark">`: WebKit has never supported external
-references in `use`, so that markup rendered an empty box in Safari. Inlining
-also keeps the `fill: currentColor` tinting that an `img` would lose.
+The mark is an inline `path` in `_includes/brand.html`. Keep it inline to
+avoid cross-file SVG references and preserve `fill: currentColor` tinting.
 
 Hover and focus states should not change an element's box, so that content does
 not reflow under the pointer.

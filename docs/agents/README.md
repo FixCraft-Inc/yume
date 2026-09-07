@@ -41,6 +41,13 @@ Generate website mirrors with `scripts/sync_website_docs.sh`, then check them
 with `--check` and `scripts/check_website_catalog.py`. Edit canonical Markdown,
 not the generated copies.
 
+Route illustrations come from `docs/diagrams/*.json`. Run
+`scripts/yume_diagrams.py sync` after editing one, which rewrites the man page
+block, the Markdown block, and the animated SVG together, and
+`scripts/yume_diagrams.py check` to prove they are current. Never hand-edit the
+ASCII between the `yume-diagram` markers. See
+[diagram sources](../diagrams/README.md).
+
 Local agent instructions, task queues, machine paths, captures, and run logs
 belong in ignored private storage. A fresh clone must contain everything a
 contributor needs to build and understand YUME. Private notes can locate

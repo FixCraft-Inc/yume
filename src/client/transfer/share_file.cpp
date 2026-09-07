@@ -30,6 +30,7 @@
 
 #include "core/runtime/bounded_file.hpp"
 #include "core/security/secret_file.hpp"
+#include "core/security/secure_erase.hpp"
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -276,9 +277,9 @@ private:
     ShareBundle* bundle_;
 };
 
-nlohmann::json bundle_to_json(const ShareBundle& b,
-                              const RelayPeerPins& normalized_pins) {
-    nlohmann::json j;
+void bundle_to_json(const ShareBundle& b,
+                    const RelayPeerPins& normalized_pins,
+                    nlohmann::json& j) {
     j["magic"] = "yume-share";
     j["version"] = static_cast<int>(kFormatVersion);
     j["type"] = (b.type == BundleType::Backup) ? "backup" : "unknown";
@@ -291,18 +292,21 @@ nlohmann::json bundle_to_json(const ShareBundle& b,
         {"port", b.server_port},
     };
     if (!b.auth_private_key_pem.empty()) {
-        nlohmann::json auth;
-        auth["private_key_pem"] = b.auth_private_key_pem;
-        j["auth"] = std::move(auth);
+        // Allocate the destination slot before creating a secret JSON value.
+        // Otherwise operator[] can throw with an unwiped RHS temporary.
+        auto& private_key = j["auth"]["private_key_pem"];
+        private_key = b.auth_private_key_pem;
     }
-    nlohmann::json stealth;
+    auto& stealth = j["stealth"];
     stealth["obfuscation"] = b.obfuscation;
-    if (!b.obfs_secret.empty())       stealth["obfs_secret"] = b.obfs_secret;
+    if (!b.obfs_secret.empty()) {
+        auto& secret = stealth["obfs_secret"];
+        secret = b.obfs_secret;
+    }
     if (b.obfs_pad_multiple > 0)      stealth["obfs_pad_multiple"] = b.obfs_pad_multiple;
     if (b.obfs_jitter_ms > 0)         stealth["obfs_jitter_ms"] = b.obfs_jitter_ms;
     if (!b.tls_pin_sha256.empty())    stealth["tls_pin_sha256"] = b.tls_pin_sha256;
     if (!b.tls_stealth_profile.empty()) stealth["tls_stealth_profile"] = b.tls_stealth_profile;
-    j["stealth"] = std::move(stealth);
 
     if (!b.tls_ca_cert_pem.empty() || !b.tls_server_name.empty()) {
         nlohmann::json tls;
@@ -321,9 +325,10 @@ nlohmann::json bundle_to_json(const ShareBundle& b,
         j["pq"] = nlohmann::json{{"public_key_pem", b.pq_public_key_pem}};
     }
 
-    nlohmann::json client_settings;
+    auto& client_settings = j["client_settings"];
     client_settings["inner_crypto"] = b.inner_crypto;
-    client_settings["inner_psk"] = b.inner_psk;
+    auto& inner_psk = client_settings["inner_psk"];
+    inner_psk = b.inner_psk;
     client_settings["tunnels"] = b.tunnel_count;
     client_settings["require_operator_identity"] =
         b.require_operator_identity;
@@ -331,8 +336,6 @@ nlohmann::json bundle_to_json(const ShareBundle& b,
     client_settings["allow_local_ip"] = b.allow_local_ip;
     client_settings["relay_trust_mode"] = b.relay_trust_mode;
     client_settings["relay_peer_pins"] = normalized_pins;
-    j["client_settings"] = std::move(client_settings);
-    return j;
 }
 
 bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* error) {
@@ -483,12 +486,11 @@ std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
     // in its summary UI; the operator decides what's acceptable.
 
     std::string serialised;
-    basefwx::crypto::SecretGuard serialised_wiper;
-    serialised_wiper.Add(serialised);
+    security::ScopedErase serialised_wiper(serialised);
     try {
-        nlohmann::json document =
-            bundle_to_json(bundle, normalized_pins);
+        nlohmann::json document;
         JsonSecretWiper document_wiper(document);
+        bundle_to_json(bundle, normalized_pins, document);
         serialised = document.dump();
     } catch (const std::exception& ex) {
         if (error) *error = std::string("serialise failed: ") + ex.what();
@@ -588,8 +590,7 @@ bool load_secret_text(const std::string& path, const char* label,
     if (path.empty()) return true;
     std::string read_error;
     auto value = slurp_text_file(path, &read_error);
-    basefwx::crypto::SecretGuard value_wiper;
-    value_wiper.Add(value);
+    security::ScopedErase value_wiper(value);
     if (!valid_secret_hex(value)) {
         if (error) {
             *error = std::string(label) + ": " +

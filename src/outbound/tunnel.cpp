@@ -56,16 +56,48 @@ Tunnel::Tunnel(ClientTransportStream&& stream,
                 }
                 if (self->carrier_) {
                     const std::size_t application_bytes = data->size();
+                    // Record the completion owner before the bytes reach the
+                    // carrier. Submitting first and then failing to record
+                    // would put application bytes on the wire with nothing
+                    // left to settle their completion.
+                    CarrierCompletion pending{std::move(completion),
+                                              application_bytes};
+                    try {
+                        self->carrier_completions_.push_back(
+                            std::move(pending));
+                    } catch (...) {
+                        // push_back is strongly exception safe, so `pending`
+                        // still owns the completion. Nothing reached the
+                        // carrier, so settle it and close the transport.
+                        try {
+                            if (pending.completion) {
+                                pending.completion(
+                                    false, 0,
+                                    "H2 carrier completion queue allocation "
+                                    "failed");
+                            }
+                        } catch (...) {
+                        }
+                        try {
+                            self->close_all(
+                                "H2 carrier completion queue allocation "
+                                "failed");
+                        } catch (...) {
+                        }
+                        return;
+                    }
                     if (!self->carrier_->SendBinary(*data)) {
-                        if (completion) {
-                            completion(false, 0, self->carrier_->error());
+                        auto rolled_back =
+                            std::move(self->carrier_completions_.back());
+                        self->carrier_completions_.pop_back();
+                        if (rolled_back.completion) {
+                            rolled_back.completion(
+                                false, 0, self->carrier_->error());
                         }
                         self->close_all("H2 carrier write failed: " +
                                         self->carrier_->error());
                         return;
                     }
-                    self->carrier_completions_.push_back(
-                        {std::move(completion), application_bytes});
                     self->flush_carrier_output();
                     return;
                 }
@@ -355,7 +387,25 @@ void Tunnel::enqueue_wire_write(std::shared_ptr<Bytes> data,
         if (completion) completion({}, 0);
         return;
     }
-    wire_writes_.push_back({std::move(data), std::move(completion)});
+    WireWrite pending{std::move(data), std::move(completion)};
+    try {
+        wire_writes_.push_back(std::move(pending));
+    } catch (...) {
+        // push_back is strongly exception safe, so nothing was queued and
+        // `pending` still owns the completion. Settle it here exactly once
+        // instead of dropping it during unwind, then close the transport.
+        try {
+            if (pending.completion) {
+                pending.completion(boost::asio::error::no_buffer_space, 0);
+            }
+        } catch (...) {
+        }
+        try {
+            close_all("transport wire write queue allocation failed");
+        } catch (...) {
+        }
+        return;
+    }
     if (!wire_write_active_) start_wire_write();
 }
 
@@ -431,8 +481,12 @@ void Tunnel::complete_carrier_writes(std::size_t count,
     while (count-- > 0) {
         CarrierCompletion pending = std::move(carrier_completions_.front());
         carrier_completions_.pop_front();
-        if (pending.completion) {
+        if (!pending.completion) continue;
+        try {
             pending.completion(ok, ok ? pending.application_bytes : 0, error);
+        } catch (...) {
+            // Every carrier write in this batch still has to be settled;
+            // completion code is outside the transport trust boundary.
         }
     }
 }
@@ -639,24 +693,42 @@ void Tunnel::finish_close(const std::string& reason) {
         close_handler = std::move(close_handler_);
     }
 
-    if (reason == "interrupt" || reason == "server closed" || reason == "server shutdown") {
-        util::log_info("tunnel closed: " + reason);
-    } else {
-        util::log_warn("tunnel closed: " + reason);
-    }
+    // Every step below settles somebody else's callback, and the socket close
+    // at the end is what actually releases the descriptor. Contain each one:
+    // a single throwing embedder callback must not strand its siblings, the
+    // timers, or the connection itself.
+    const auto contain = [](auto&& step) noexcept {
+        try {
+            step();
+        } catch (...) {
+        }
+    };
+    contain([&] {
+        if (reason == "interrupt" || reason == "server closed" ||
+            reason == "server shutdown") {
+            util::log_info("tunnel closed: " + reason);
+        } else {
+            util::log_warn("tunnel closed: " + reason);
+        }
+    });
     keepalive_timer_.cancel();
     ratchet_timer_.cancel();
-    complete_carrier_writes(carrier_completions_.size(), false, reason);
+    contain([&] {
+        complete_carrier_writes(carrier_completions_.size(), false, reason);
+    });
     const auto aborted = boost::asio::error::operation_aborted;
-    for (auto& write : wire_writes_) {
-        if (write.completion) write.completion(aborted, 0);
+    while (!wire_writes_.empty()) {
+        WireWrite write = std::move(wire_writes_.front());
+        wire_writes_.pop_front();
+        if (!write.completion) continue;
+        contain([&] { write.completion(aborted, 0); });
     }
-    wire_writes_.clear();
     if (close_handler) {
-        close_handler(reason);
+        contain([&] { close_handler(reason); });
     }
     for (auto& callback : close_callbacks) {
-        callback(reason);
+        if (!callback) continue;
+        contain([&] { callback(reason); });
     }
 
     if (reason == "interrupt") {

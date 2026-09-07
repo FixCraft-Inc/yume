@@ -15,6 +15,10 @@ trap 'rm -rf "${staging_root}"' EXIT
 generated_docs="${staging_root}/docs"
 mkdir -p "${generated_docs}"
 
+# The marked ASCII blocks below are replaced by the animated SVG the website
+# inlines, so those includes have to exist before any document is rendered.
+python3 "${repo_root}/scripts/yume_diagrams.py" svg
+
 render_doc() {
     local source_path="$1"
     local output_path="$2"
@@ -37,11 +41,13 @@ render_doc() {
             -e 's@\]\(\.\./\.\./((src|tests)/[^)#]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/\1\3)@g' \
             -e 's@\]\(\.\./\.\./basefwx/([^)#]+)(#[^)]*)?\)@](https://github.com/F1xGOD/basefwx/blob/main/\1\2)@g' \
             -e 's@\]\(\.\./\.\./([^#)]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/\1\2)@g' \
+            -e 's@\]\(\.\./((src|cmake)/[^)#]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/\1\3)@g' \
             -e 's@\]\(docs/protocol/([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/protocol/\1/\2)@g' \
             -e 's@\]\(\.\./protocol/([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/protocol/\1/\2)@g' \
             -e 's@\]\(protocol/([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/protocol/\1/\2)@g' \
             -e 's@\]\(release/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/release/\1/\2)@g' \
-            -e 's@\]\(agents/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/agents/\1.md\2)@g' \
+            -e 's@\]\(release/([A-Za-z0-9_.-]+\.json)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/release/\1\2)@g' \
+            -e 's@\]\((docs/)?agents/([A-Z0-9_.-]+)\.md(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/agents/\2.md\3)@g' \
             -e 's@\]\(man/([A-Za-z0-9_.-]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/man/\1\2)@g' \
             -e 's@\]\(development/([^#)]+)(#[^)]*)?\)@](https://github.com/FixCraft-Inc/yume/blob/main/docs/development/\1\2)@g' \
             -e 's@\]\((YUME_2_0_[A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/protocol/\1/\2)@g' \
@@ -49,7 +55,8 @@ render_doc() {
             -e 's@\]\(docs/([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/\1/\2)@g' \
             -e 's@\]\(\.\./([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/\1/\2)@g' \
             -e 's@\]\(([A-Z0-9_]+)\.md(#[^)]*)?\)@]({{site.baseurl}}/docs/\1/\2)@g' \
-            "${source_path}"
+            "${source_path}" \
+        | python3 "${repo_root}/scripts/yume_diagrams.py" embed -
     } > "${output_path}"
 }
 

@@ -11,6 +11,34 @@ authenticated peer opening a named byte stream or packet channel.
 The current `yume` and `yumed` commands use transport v2. A direct connection
 follows this path:
 
+<!-- yume-diagram: direct_route -->
+```text
++--------------------------------+
+|  HUMAN APP                     |
+|  browser / curl                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  TLS / H2 / YUME frames        |
++--------------------------------+
+        |
+        | ==YUME==>
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  direct egress                 |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  sees server IP                |
++--------------------------------+
+```
+<!-- /yume-diagram -->
+
 1. An application reaches the client through SOCKS5, a forward, packet routing,
    or the experimental ABI's supported named-stream interface.
 2. The client establishes TLS 1.3 to `yumed`, with certificate/hostname checks

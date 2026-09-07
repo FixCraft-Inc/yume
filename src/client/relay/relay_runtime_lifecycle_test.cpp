@@ -5,6 +5,7 @@
  */
 
 #include "client/relay/runtime.hpp"
+#include "test_support/allocation_failure.hpp"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -171,6 +172,54 @@ struct RelayRuntimeTestPeer {
                 channel, "byte-overflow", {}, &error));
             assert(error.find("pending application queue is full") !=
                    std::string::npos);
+        }
+    }
+
+    // Sweep one allocation failure across every allocation the blocked-write
+    // path performs. The reserved pending-byte count must always describe
+    // exactly what is queued, and a refused write must not consume the
+    // caller's completion.
+    static void CheckPendingReservationRollback(RelayRuntime& runtime) {
+        for (std::size_t nth = 1;; ++nth) {
+            auto channel = MakeBlockedRekeyChannel(runtime, 11);
+            std::atomic<int> completions{0};
+            // Build every argument before arming. Failing to construct one is
+            // the caller's own failure and never reaches the channel.
+            std::string payload(4096, 'p');
+            RelayRuntime::ChannelWriteCompletion completion =
+                [&completions](bool, const std::string&) {
+                    completions.fetch_add(1, std::memory_order_relaxed);
+                };
+            std::string error;
+            error.reserve(256);
+            bool accepted = false;
+            bool escaped = false;
+            yume::test::arm_allocation_failure(nth);
+            try {
+                accepted = runtime.send_channel_payload_locked(
+                    channel, std::move(payload), std::move(completion),
+                    &error);
+            } catch (...) {
+                escaped = true;
+            }
+            const bool fired = yume::test::disarm_allocation_failure();
+            if (!fired) {
+                assert(nth > 1);
+                break;
+            }
+            assert(!escaped);
+            std::size_t queued_bytes = 0;
+            for (const auto& pending : channel.pending_applications) {
+                queued_bytes += pending.plaintext.size();
+            }
+            assert(channel.pending_application_bytes == queued_bytes);
+            if (!accepted) {
+                assert(channel.pending_applications.empty());
+                assert(channel.pending_application_bytes == 0);
+            }
+            // Neither outcome settles here: an accepted record waits for the
+            // rekey acknowledgement and a refused one keeps its completion.
+            assert(completions.load(std::memory_order_relaxed) == 0);
         }
     }
 
@@ -732,6 +781,7 @@ int main() {
     assert(local_stop_callbacks.load(std::memory_order_relaxed) == 1);
 
     RelayRuntimeTestPeer::CheckBoundedRekeyQueue(*runtime);
+    RelayRuntimeTestPeer::CheckPendingReservationRollback(*runtime);
     RelayRuntimeTestPeer::CheckRekeyAckFlush(*runtime);
     RelayRuntimeTestPeer::CheckChatIdentityRouting(*runtime);
 

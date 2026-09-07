@@ -386,9 +386,11 @@ has been returned. A local cancellation or reset is a typed non-EOF status.
 
 Writes copy the complete input into a bounded queue before returning OK and
 report the complete size in `bytes_written`. Admission is all-or-none. A zero-
-timeout full queue returns `WOULD_BLOCK`; an expiring positive deadline returns
-`TIMEOUT`; neither consumes the input or sends a partial record. A zero-length
-write is a successful no-op on an open stream.
+timeout full queue returns `WOULD_BLOCK`, an expiring positive deadline returns
+`TIMEOUT`, and a transport that had capacity but could not take ownership of
+the write returns `YUME_STATUS_IO_ERROR`. None of the three consumes the input,
+reserves capacity, or sends a partial record. A zero-length write is a
+successful no-op on an open stream.
 
 `shutdown_write` sends an authenticated half-close after prior writes. `close`
 cancels both directions and releases retained inbound credit. Data received

@@ -30,13 +30,16 @@ Do not bump one to match another.
 | --- | --- | --- |
 | Frame type | `protocol::Frame` (`core/protocol/protocol.hpp`) | `ytp1` codecs (`ytp/protocol.hpp`) |
 | Session | `server::Session` (`server/session/`) | `engine::SessionEngine` (`engine/session_engine.cpp`) |
-| Build flag | `YUME_BUILD_TRANSPORT_V2` (ON) | `YUME_BUILD_EXPERIMENTAL_YTP1_*` (all OFF) |
+| Build options | `YUME_BUILD_TRANSPORT_V2=ON` | Engine and codecs build by default. Provider options `YUME_BUILD_EXPERIMENTAL_YTP1_*` are OFF. |
 | Status | runs, tested, carries traffic | provider candidates and focused tests; no live YTP/1 endpoint |
 
 If you search for "Frame" or "how is a stream opened" you will land in one of
 the two depending on which file you started from. Check the directory first.
 
 ## Directories
+
+Implementation paths below are relative to `src/`. The candidate header in
+`include/yume/` is relative to the repository root.
 
 ### Transport-v2 implementation
 
@@ -50,6 +53,7 @@ the two depending on which file you started from. Check the directory first.
 | `gui/` | Optional desktop app. Links `yume_facade` only |
 | `platform/` | Platform-neutral executable-location interface plus the one configure-selected Linux/POSIX, macOS, or Windows implementation |
 | `tools/` | Optional operational and qualification executables: the read-only federation map, self-test harness, and focused transport/cryptography benchmarks |
+| `test_support/` | Allocation-failure hooks for isolated test executables; no production allocator or runtime dependency |
 
 ### Cross-stack embedding boundary
 
@@ -76,8 +80,9 @@ secure_core -> core -> transport_core -> outbound_transport -> {server, client_l
                                                      config_v1 + embed -> abi
 ```
 
-Two mechanisms, both in [`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake)
-and run as the CTest `yume_03_layering_check`.
+[`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake) defines two checks
+that run during configuration. CTest `yume_03_layering_check` reruns the source
+include check, without reconstructing the target link graph.
 
 `yume_assert_exact_link_dependencies` pins a target's exact direct link list. It
 is applied to the engine and YTP graph, to `yume_embed` and `yume_facade`, and to
@@ -138,6 +143,12 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
   `core/runtime/bounded_file.*` for bounded regular-file reads. The daemon's
   `server/auth/auth.cpp` still owns policy assembly within the Manager's
   grouped snapshot transaction; parser reuse does not replace that lock.
+- **Control and directory JSON share field predicates.**
+  `core/protocol/control_json_policy.hpp` owns closed-field checks, bounded
+  text, scalar type checks, client platform/variant values, and nonthrowing
+  error assignment. Each parser owns its field table, required fields,
+  relationships, aggregate byte budget, and diagnostic order. Relay payloads
+  keep their separate text and base64 rules.
 - **Four error-handling conventions coexist.** Exceptions in core, client, and
   server. `runtime::OperationStatus`. `engine::StatusCode`. And facade's `bool`
   plus `std::string* err`. The C ABI wraps all of them at its boundary.

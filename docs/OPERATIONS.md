@@ -280,6 +280,19 @@ first client profile in one owner-only directory. `yume-setup issue-key`
 handles individual, bounded bulk, and separate admin/operator credentials
 without manual PEM concatenation or JSON editing. See `docs/QUICKSTART.md`.
 
+Native private-key loading and share export guard loaded PEMs, partial JSON
+secret values, and the completed serialized plaintext before later allocations
+can fail. Composite PEM export stages both halves in OpenSSL-owned memory
+buffers before allocating its returned byte vector once. A caller receiving
+that vector owns wiping it and publishing it with restrictive permissions.
+Signing contexts are released even if signature allocation fails.
+
+Mutable-buffer cleanup wipes retained capacity, including tails left by
+shrinking a buffer. These measures reduce secret lifetime in YUME-owned
+storage. They do not lock pages or guarantee erasure of JSON parser/serializer
+scratch, caller copies, swap, core dumps, or material retained by another
+process. Keep plaintext exports and credentials out of logs and captures.
+
 List keys and aliases:
 
 ```bash

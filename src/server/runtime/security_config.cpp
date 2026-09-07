@@ -68,17 +68,11 @@ bool prepare_v2_security_config(ServerConfig& cfg,
         cfg.real_index_path.empty()) {
         return fail(
             error,
-            "no cover source is configured for the HTTP/2 decoy, and there is "
-            "no built-in page to fall back to: a constant built-in page would "
-            "be identical on every YUME server and would identify this daemon "
-            "to anyone who sends it one HTTP/2 request. Configure exactly one "
-            "of: --upstream-response-dir <dir> or --upstream-response <file> "
-            "to replay real captured responses from the site you are "
-            "impersonating (best fit); --real-root <dir> to serve a real "
-            "static site, whose <dir>/index.html is also used as the decoy "
-            "page; or --real-index <file> for a single-page cover. "
-            "--real-backend serves ordinary HTTP/1.1 and HTTP/2 GET/HEAD, "
-            "but separate probe paths still require configured cover material");
+            "no cover source is configured: set --upstream-response-dir <dir>, "
+            "--upstream-response <file>, --real-root <dir>, or --real-index <file>. "
+            "These supply captured responses or static content for probe paths. "
+            "--real-backend handles ordinary HTTP/1.1 and HTTP/2 GET/HEAD. "
+            "There is no built-in cover page");
     }
 
     std::string probe_error;

@@ -14,10 +14,20 @@
 #include <boost/system/error_code.hpp>
 
 #include "core/protocol/control_fields.hpp"
+#include "core/protocol/control_json_policy.hpp"
 #include "core/protocol/directory_policy.hpp"
 
 namespace yume::control {
 namespace {
+
+using json_policy::has_only_known_fields;
+using json_policy::is_known_client_platform;
+using json_policy::is_known_client_variant;
+using json_policy::is_safe_text;
+using json_policy::optional_bool;
+using json_policy::optional_string;
+using json_policy::required_string;
+using json_policy::set_error;
 
 constexpr std::array<std::string_view, 5> kRegistrationFields{
     "cmd", fields::hostname, "wan_ip", "server_in_charge", "allow_exec",
@@ -38,74 +48,13 @@ constexpr std::array<std::string_view, 12> kLifecycleCommandFields{
     fields::error_code,
 };
 
-void SetError(std::string* error, std::string_view message) noexcept {
-    if (!error) return;
-    try {
-        error->assign(message);
-    } catch (...) {
-    }
-}
-
-template <std::size_t Size>
-bool HasOnlyKnownFields(
-    const nlohmann::json& json,
-    const std::array<std::string_view, Size>& known) {
-    if (!json.is_object() || json.size() > known.size()) return false;
-    for (auto it = json.begin(); it != json.end(); ++it) {
-        if (std::find(known.begin(), known.end(), it.key()) == known.end()) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool IsSafeText(std::string_view value,
-                std::size_t max_bytes,
-                bool allow_empty) noexcept {
-    if (value.size() > max_bytes || (!allow_empty && value.empty())) {
-        return false;
-    }
-    return std::all_of(value.begin(), value.end(), [](unsigned char byte) {
-        return byte >= 0x20U && byte != 0x7fU;
-    });
-}
-
-bool OptionalString(const nlohmann::json& json,
-                    const char* key,
-                    std::size_t max_bytes,
-                    bool allow_empty = true) {
-    return !json.contains(key) ||
-           (json[key].is_string() &&
-            IsSafeText(json[key].get_ref<const std::string&>(), max_bytes,
-                       allow_empty));
-}
-
-bool RequiredString(const nlohmann::json& json,
-                    const char* key,
-                    std::size_t max_bytes,
-                    bool allow_empty) {
-    return json.contains(key) && json[key].is_string() &&
-           IsSafeText(json[key].get_ref<const std::string&>(), max_bytes,
-                      allow_empty);
-}
-
-bool OptionalBool(const nlohmann::json& json, const char* key) {
-    return !json.contains(key) || json[key].is_boolean();
-}
-
-bool IsKnownPlatform(std::string_view value) noexcept {
-    return value == "linux" || value == "windows" || value == "macos" ||
-           value == "android" || value == "unknown";
-}
-
-bool IsKnownVariant(std::string_view value) noexcept {
-    return value == "cli" || value == "android_vpn" || value == "unknown";
-}
-
-bool IsIpAddressOrEmpty(std::string_view value) noexcept {
+bool is_ip_address_or_empty(const std::string& value) noexcept {
     if (value.empty()) return true;
     boost::system::error_code error;
-    boost::asio::ip::make_address(value, error);
+    // Boost's string_view overload can allocate inside noexcept. Borrow the
+    // validated JSON string's terminated storage so allocation failure stays
+    // within the caller's exception boundary.
+    boost::asio::ip::make_address(value.c_str(), error);
     return !error;
 }
 
@@ -131,7 +80,7 @@ bool AccountOptionalString(const nlohmann::json& json,
 }  // namespace
 
 bool is_valid_control_command_name(std::string_view value) noexcept {
-    return IsSafeText(value, kMaxControlCommandBytes, false);
+    return is_safe_text(value, kMaxControlCommandBytes, false);
 }
 
 bool is_valid_lifecycle_state(std::string_view value) noexcept {
@@ -146,28 +95,26 @@ try_control_registration_from_json(
     std::string* error) noexcept {
     if (error) error->clear();
     try {
-        if (!HasOnlyKnownFields(json, kRegistrationFields) ||
-            !RequiredString(json, "cmd", kMaxControlCommandBytes, false) ||
+        if (!has_only_known_fields(json, kRegistrationFields) ||
+            !required_string(json, "cmd", kMaxControlCommandBytes, false) ||
             json["cmd"].get_ref<const std::string&>() != "register" ||
-            !OptionalString(json, fields::hostname,
-                            kMaxRegistrationHostnameBytes) ||
-            !OptionalString(json, "wan_ip", kMaxRegistrationIpBytes) ||
-            !OptionalBool(json, "server_in_charge") ||
-            !OptionalBool(json, "allow_exec")) {
-            SetError(error, "invalid registration fields");
+            !optional_string(json, fields::hostname,
+                             kMaxRegistrationHostnameBytes) ||
+            !optional_string(json, "wan_ip", kMaxRegistrationIpBytes) ||
+            !optional_bool(json, "server_in_charge") ||
+            !optional_bool(json, "allow_exec")) {
+            set_error(error, "invalid registration fields");
             return std::nullopt;
         }
-        const std::string_view hostname = json.contains(fields::hostname)
-            ? std::string_view(
-                  json[fields::hostname].get_ref<const std::string&>())
-            : std::string_view{};
-        const std::string_view wan_ip = json.contains("wan_ip")
-            ? std::string_view(json["wan_ip"].get_ref<const std::string&>())
-            : std::string_view{};
-        if (!IsIpAddressOrEmpty(wan_ip) ||
+        const std::string empty;
+        const std::string& hostname = json.contains(fields::hostname)
+            ? json[fields::hostname].get_ref<const std::string&>() : empty;
+        const std::string& wan_ip = json.contains("wan_ip")
+            ? json["wan_ip"].get_ref<const std::string&>() : empty;
+        if (!is_ip_address_or_empty(wan_ip) ||
             hostname.size() > kMaxRegistrationStringBytes -
                 std::min(kMaxRegistrationStringBytes, wan_ip.size())) {
-            SetError(error, "invalid registration address or size");
+            set_error(error, "invalid registration address or size");
             return std::nullopt;
         }
 
@@ -181,10 +128,10 @@ try_control_registration_from_json(
                                   json["allow_exec"].get<bool>();
         return registration;
     } catch (const std::exception&) {
-        SetError(error, "invalid registration fields");
+        set_error(error, "invalid registration fields");
         return std::nullopt;
     } catch (...) {
-        SetError(error, "invalid registration fields");
+        set_error(error, "invalid registration fields");
         return std::nullopt;
     }
 }
@@ -194,56 +141,56 @@ std::optional<ClientLifecycleEvent> try_lifecycle_command_from_json(
     std::string* error) noexcept {
     if (error) error->clear();
     try {
-        if (!HasOnlyKnownFields(json, kLifecycleCommandFields) ||
-            !RequiredString(json, "cmd", kMaxControlCommandBytes, false) ||
+        if (!has_only_known_fields(json, kLifecycleCommandFields) ||
+            !required_string(json, "cmd", kMaxControlCommandBytes, false) ||
             json["cmd"].get_ref<const std::string&>() !=
                 "client.lifecycle" ||
-            !RequiredString(json, fields::state, kMaxControlCommandBytes,
-                            false) ||
-            !RequiredString(json, fields::message,
-                            kMaxLifecycleMessageBytes, false) ||
-            !OptionalString(json, "request_id",
-                            kMaxDirectoryRequestIdBytes, false) ||
-            !OptionalString(json, fields::detail,
-                            kMaxLifecycleDetailBytes) ||
-            !OptionalString(json, fields::client_platform,
-                            kMaxLifecyclePlatformBytes, false) ||
-            !OptionalString(json, fields::client_variant,
-                            kMaxLifecycleVariantBytes, false) ||
-            !OptionalString(json, fields::client_version,
-                            kMaxLifecycleVersionBytes) ||
-            !OptionalString(json, fields::effective_protection,
-                            kMaxLifecycleProtectionBytes) ||
-            !OptionalBool(json, fields::traffic_verified) ||
-            !OptionalString(json, fields::exit_ip,
-                            kMaxLifecycleExitIpBytes) ||
-            !OptionalString(json, fields::error_code,
-                            kMaxLifecycleErrorCodeBytes)) {
-            SetError(error, "invalid lifecycle fields");
+            !required_string(json, fields::state, kMaxControlCommandBytes,
+                             false) ||
+            !required_string(json, fields::message,
+                             kMaxLifecycleMessageBytes, false) ||
+            !optional_string(json, "request_id",
+                             kMaxDirectoryRequestIdBytes, false) ||
+            !optional_string(json, fields::detail,
+                             kMaxLifecycleDetailBytes) ||
+            !optional_string(json, fields::client_platform,
+                             kMaxLifecyclePlatformBytes, false) ||
+            !optional_string(json, fields::client_variant,
+                             kMaxLifecycleVariantBytes, false) ||
+            !optional_string(json, fields::client_version,
+                             kMaxLifecycleVersionBytes) ||
+            !optional_string(json, fields::effective_protection,
+                             kMaxLifecycleProtectionBytes) ||
+            !optional_bool(json, fields::traffic_verified) ||
+            !optional_string(json, fields::exit_ip,
+                             kMaxLifecycleExitIpBytes) ||
+            !optional_string(json, fields::error_code,
+                             kMaxLifecycleErrorCodeBytes)) {
+            set_error(error, "invalid lifecycle fields");
             return std::nullopt;
         }
 
         const auto& state = json[fields::state].get_ref<const std::string&>();
         if (!is_valid_lifecycle_state(state)) {
-            SetError(error, "invalid lifecycle state");
+            set_error(error, "invalid lifecycle state");
             return std::nullopt;
         }
         if (json.contains(fields::client_platform) &&
-            !IsKnownPlatform(
+            !is_known_client_platform(
                 json[fields::client_platform].get_ref<const std::string&>())) {
-            SetError(error, "invalid lifecycle platform");
+            set_error(error, "invalid lifecycle platform");
             return std::nullopt;
         }
         if (json.contains(fields::client_variant) &&
-            !IsKnownVariant(
+            !is_known_client_variant(
                 json[fields::client_variant].get_ref<const std::string&>())) {
-            SetError(error, "invalid lifecycle variant");
+            set_error(error, "invalid lifecycle variant");
             return std::nullopt;
         }
         if (json.contains(fields::exit_ip) &&
-            !IsIpAddressOrEmpty(
+            !is_ip_address_or_empty(
                 json[fields::exit_ip].get_ref<const std::string&>())) {
-            SetError(error, "invalid lifecycle exit IP");
+            set_error(error, "invalid lifecycle exit IP");
             return std::nullopt;
         }
 
@@ -277,7 +224,7 @@ std::optional<ClientLifecycleEvent> try_lifecycle_command_from_json(
             !AccountOptionalString(json, fields::error_code,
                                    kMaxLifecycleAggregateStringBytes,
                                    &accounted)) {
-            SetError(error, "lifecycle fields exceed aggregate size limit");
+            set_error(error, "lifecycle fields exceed aggregate size limit");
             return std::nullopt;
         }
 
@@ -315,10 +262,10 @@ std::optional<ClientLifecycleEvent> try_lifecycle_command_from_json(
         }
         return event;
     } catch (const std::exception&) {
-        SetError(error, "invalid lifecycle fields");
+        set_error(error, "invalid lifecycle fields");
         return std::nullopt;
     } catch (...) {
-        SetError(error, "invalid lifecycle fields");
+        set_error(error, "invalid lifecycle fields");
         return std::nullopt;
     }
 }
@@ -343,17 +290,17 @@ std::optional<nlohmann::json> try_lifecycle_command_to_json(
         };
         std::string validation_error;
         if (!try_lifecycle_command_from_json(json, &validation_error)) {
-            SetError(error, validation_error.empty()
+            set_error(error, validation_error.empty()
                                 ? "invalid lifecycle event"
                                 : validation_error);
             return std::nullopt;
         }
         return json;
     } catch (const std::exception&) {
-        SetError(error, "failed to serialize lifecycle event");
+        set_error(error, "failed to serialize lifecycle event");
         return std::nullopt;
     } catch (...) {
-        SetError(error, "failed to serialize lifecycle event");
+        set_error(error, "failed to serialize lifecycle event");
         return std::nullopt;
     }
 }

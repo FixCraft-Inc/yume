@@ -7,10 +7,35 @@
 #include "server/runtime/identity_admission.hpp"
 
 #include <atomic>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace {
+thread_local int fail_after = -1;
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void* operator new(std::size_t size) {
+    if (fail_after == 0) throw std::bad_alloc();
+    if (fail_after > 0) --fail_after;
+    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* storage) noexcept { std::free(storage); }
+void operator delete[](void* storage) noexcept { ::operator delete(storage); }
+void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
+void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace {
 
@@ -57,10 +82,45 @@ void test_concurrent_bulk_cap() {
             "bulk identity count is incorrect");
 }
 
+void test_failed_admission_preserves_capacity() {
+    const std::string fingerprint(64, 'a');
+    for (const bool already_active : {false, true}) {
+        bool reached_success = false;
+        for (int allocation = 0; allocation < 32; ++allocation) {
+            yume::server::IdentityAdmissionController admission;
+            const std::size_t previous = already_active ? 1U : 0U;
+            if (already_active) {
+                require(admission.admit(1, fingerprint, 2), "fixture admission failed");
+            }
+            bool failed = false;
+            fail_after = allocation;
+            try {
+                reached_success = admission.admit(2, fingerprint, 2);
+            } catch (const std::bad_alloc&) {
+                failed = true;
+            }
+            fail_after = -1;
+            if (!failed) break;
+            require(admission.active_total() == previous,
+                    "failed admission published a session");
+            require(admission.active_for(fingerprint) == previous,
+                    "failed admission consumed an identity slot");
+            admission.release(2);
+            require(admission.admit(3, fingerprint, 2),
+                    "failed admission did not return capacity");
+            admission.release(3);
+            require(admission.active_for(fingerprint) == previous,
+                    "failed admission left an unreleaseable count");
+        }
+        require(reached_success, "allocation sweep never reached successful admission");
+    }
+}
+
 }  // namespace
 
 int main() {
     test_individual_and_idempotent_release();
+    test_failed_admission_preserves_capacity();
     test_concurrent_bulk_cap();
     return 0;
 }

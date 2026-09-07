@@ -14,11 +14,21 @@
 #include <unordered_set>
 
 #include "core/protocol/control_fields.hpp"
+#include "core/protocol/control_json_policy.hpp"
 
 namespace yume::control {
 namespace {
 
-constexpr std::array<std::string_view, 23> kEndpointFields{
+using json_policy::has_only_known_fields;
+using json_policy::is_known_client_platform;
+using json_policy::is_known_client_variant;
+using json_policy::is_safe_text;
+using json_policy::optional_string;
+using json_policy::required_bool;
+using json_policy::required_string;
+using json_policy::set_error;
+
+constexpr std::array<std::string_view, 22> kEndpointFields{
     fields::endpoint_id,
     fields::endpoint_kind,
     fields::display_name,
@@ -41,16 +51,13 @@ constexpr std::array<std::string_view, 23> kEndpointFields{
     fields::remote,
     fields::federation_peer_id,
     fields::remote_endpoint_id,
-    // Reserved for a future explicit endpoint schema. Keeping no aliases here
-    // makes an unexpected key fail closed today.
-    "endpoint_schema",
 };
 
 constexpr std::array<std::string_view, 6> kDirectoryFields{
     "cmd", "ok", "request_id", "server_id", "server_name", "endpoints",
 };
 
-constexpr std::array<std::string_view, 16> kPresenceFields{
+constexpr std::array<std::string_view, 15> kPresenceFields{
     "cmd",
     "request_id",
     fields::endpoint_kind,
@@ -66,42 +73,7 @@ constexpr std::array<std::string_view, 16> kPresenceFields{
     fields::allow_bytes,
     fields::allow_inbound_admin,
     fields::allow_outbound_admin,
-    // Reserved for a future explicit presence schema. It is not accepted
-    // until the parser gives it fixed semantics.
-    "presence_schema",
 };
-
-void SetError(std::string* error, std::string_view message) noexcept {
-    if (!error) return;
-    try {
-        error->assign(message);
-    } catch (...) {
-    }
-}
-
-template <std::size_t Size>
-bool HasOnlyKnownFields(
-    const nlohmann::json& json,
-    const std::array<std::string_view, Size>& known) {
-    if (!json.is_object() || json.size() > known.size()) return false;
-    for (auto it = json.begin(); it != json.end(); ++it) {
-        if (std::find(known.begin(), known.end(), it.key()) == known.end()) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool IsSafeText(std::string_view value,
-                std::size_t max_bytes,
-                bool allow_empty) noexcept {
-    if (value.size() > max_bytes || (!allow_empty && value.empty())) {
-        return false;
-    }
-    return std::all_of(value.begin(), value.end(), [](unsigned char byte) {
-        return byte >= 0x20U && byte != 0x7fU;
-    });
-}
 
 bool IsEndpointCharacter(unsigned char byte) noexcept {
     return (byte >= 'a' && byte <= 'z') ||
@@ -179,38 +151,6 @@ bool IsBoundedCanonicalBase64(std::string_view encoded,
            decoded_size <= max_decoded_bytes;
 }
 
-bool RequiredString(const nlohmann::json& json,
-                    const char* key,
-                    std::size_t max_bytes,
-                    bool allow_empty) {
-    return json.contains(key) && json[key].is_string() &&
-           IsSafeText(json[key].get_ref<const std::string&>(), max_bytes,
-                      allow_empty);
-}
-
-bool OptionalString(const nlohmann::json& json,
-                    const char* key,
-                    std::size_t max_bytes,
-                    bool allow_empty = true) {
-    return !json.contains(key) ||
-           (json[key].is_string() &&
-            IsSafeText(json[key].get_ref<const std::string&>(), max_bytes,
-                       allow_empty));
-}
-
-bool RequiredBool(const nlohmann::json& json, const char* key) {
-    return json.contains(key) && json[key].is_boolean();
-}
-
-bool IsKnownPlatform(std::string_view value) noexcept {
-    return value == "linux" || value == "windows" || value == "macos" ||
-           value == "android" || value == "unknown";
-}
-
-bool IsKnownVariant(std::string_view value) noexcept {
-    return value == "cli" || value == "android_vpn" || value == "unknown";
-}
-
 bool AddAccounted(std::size_t amount,
                   std::size_t limit,
                   std::size_t* total) noexcept {
@@ -265,15 +205,15 @@ bool EndpointFieldsValid(const EndpointInfo& endpoint,
     if (!accounted_bytes ||
         !is_valid_directory_endpoint_id(endpoint.endpoint_id,
                                         namespace_kind) ||
-        !IsSafeText(endpoint.display_name, kMaxDirectoryDisplayNameBytes,
-                    false) ||
-        !IsSafeText(endpoint.hostname, kMaxDirectoryHostnameBytes, true) ||
-        !IsKnownPlatform(endpoint.client_platform) ||
-        !IsKnownVariant(endpoint.client_variant) ||
-        !IsSafeText(endpoint.client_version,
-                    kMaxDirectoryClientVersionBytes, true) ||
-        !IsSafeText(endpoint.server_id, kMaxDirectoryServerIdBytes, true) ||
-        !IsSafeText(endpoint.server_name, kMaxDirectoryServerNameBytes, true) ||
+        !is_safe_text(endpoint.display_name, kMaxDirectoryDisplayNameBytes,
+                      false) ||
+        !is_safe_text(endpoint.hostname, kMaxDirectoryHostnameBytes, true) ||
+        !is_known_client_platform(endpoint.client_platform) ||
+        !is_known_client_variant(endpoint.client_variant) ||
+        !is_safe_text(endpoint.client_version,
+                      kMaxDirectoryClientVersionBytes, true) ||
+        !is_safe_text(endpoint.server_id, kMaxDirectoryServerIdBytes, true) ||
+        !is_safe_text(endpoint.server_name, kMaxDirectoryServerNameBytes, true) ||
         !IsBoundedCanonicalBase64(endpoint.auth_pubkey_b64,
                                   kMaxDirectoryIdentityBytes) ||
         endpoint.controller_ids.size() >
@@ -402,8 +342,8 @@ bool is_valid_directory_server_identity(
     std::string_view server_id,
     std::string_view server_name,
     bool federation_enabled) noexcept {
-    return IsSafeText(server_id, kMaxDirectoryServerIdBytes, false) &&
-           IsSafeText(server_name, kMaxDirectoryServerNameBytes, false) &&
+    return is_safe_text(server_id, kMaxDirectoryServerIdBytes, false) &&
+           is_safe_text(server_name, kMaxDirectoryServerNameBytes, false) &&
            (!federation_enabled || IsFederationPeerId(server_id));
 }
 
@@ -422,33 +362,32 @@ std::optional<EndpointInfo> try_directory_endpoint_from_json(
     DirectoryNamespace namespace_kind,
     std::string* error) noexcept {
     try {
-        if (!HasOnlyKnownFields(json, kEndpointFields) ||
-            json.contains("endpoint_schema") ||
-            !RequiredString(json, fields::endpoint_id,
-                            kMaxDirectoryEndpointIdBytes, false) ||
-            !RequiredString(json, fields::endpoint_kind, 16U, false) ||
-            !RequiredString(json, fields::display_name,
-                            kMaxDirectoryDisplayNameBytes, false) ||
-            !RequiredString(json, fields::hostname,
-                            kMaxDirectoryHostnameBytes, true) ||
-            !RequiredString(json, fields::client_platform, 16U, false) ||
-            !RequiredString(json, fields::client_variant, 16U, false) ||
-            !RequiredString(json, fields::client_version,
-                            kMaxDirectoryClientVersionBytes, true) ||
-            !RequiredString(json, fields::server_id,
-                            kMaxDirectoryServerIdBytes, true) ||
-            !OptionalString(json, fields::server_name,
-                            kMaxDirectoryServerNameBytes) ||
-            !RequiredString(json, fields::relay_mode, 16U, false) ||
-            !RequiredBool(json, fields::allow_inbound_admin) ||
-            !RequiredBool(json, fields::allow_outbound_admin) ||
-            !RequiredBool(json, fields::allow_chat) ||
-            !RequiredBool(json, fields::allow_file) ||
-            !RequiredBool(json, fields::allow_bytes) ||
-            !RequiredBool(json, fields::online) ||
-            !RequiredString(json, fields::auth_pubkey_b64,
-                            kMaxDirectoryIdentityBase64Bytes, false)) {
-            SetError(error, "directory endpoint has missing, unknown, or invalid fields");
+        if (!has_only_known_fields(json, kEndpointFields) ||
+            !required_string(json, fields::endpoint_id,
+                             kMaxDirectoryEndpointIdBytes, false) ||
+            !required_string(json, fields::endpoint_kind, 16U, false) ||
+            !required_string(json, fields::display_name,
+                             kMaxDirectoryDisplayNameBytes, false) ||
+            !required_string(json, fields::hostname,
+                             kMaxDirectoryHostnameBytes, true) ||
+            !required_string(json, fields::client_platform, 16U, false) ||
+            !required_string(json, fields::client_variant, 16U, false) ||
+            !required_string(json, fields::client_version,
+                             kMaxDirectoryClientVersionBytes, true) ||
+            !required_string(json, fields::server_id,
+                             kMaxDirectoryServerIdBytes, true) ||
+            !optional_string(json, fields::server_name,
+                             kMaxDirectoryServerNameBytes) ||
+            !required_string(json, fields::relay_mode, 16U, false) ||
+            !required_bool(json, fields::allow_inbound_admin) ||
+            !required_bool(json, fields::allow_outbound_admin) ||
+            !required_bool(json, fields::allow_chat) ||
+            !required_bool(json, fields::allow_file) ||
+            !required_bool(json, fields::allow_bytes) ||
+            !required_bool(json, fields::online) ||
+            !required_string(json, fields::auth_pubkey_b64,
+                             kMaxDirectoryIdentityBase64Bytes, false)) {
+            set_error(error, "directory endpoint has missing, unknown, or invalid fields");
             return std::nullopt;
         }
         const auto& endpoint_kind =
@@ -461,12 +400,13 @@ std::optional<EndpointInfo> try_directory_endpoint_from_json(
             json[fields::client_variant].get_ref<const std::string&>();
         if ((endpoint_kind != "client" && endpoint_kind != "server") ||
             (relay_mode != "untrusted" && relay_mode != "trusted") ||
-            !IsKnownPlatform(platform) || !IsKnownVariant(variant) ||
+            !is_known_client_platform(platform) ||
+            !is_known_client_variant(variant) ||
             !IsBoundedCanonicalBase64(
                 json[fields::auth_pubkey_b64]
                     .get_ref<const std::string&>(),
                 kMaxDirectoryIdentityBytes)) {
-            SetError(error, "directory endpoint enum or relay identity is invalid");
+            set_error(error, "directory endpoint enum or relay identity is invalid");
             return std::nullopt;
         }
 
@@ -504,18 +444,18 @@ std::optional<EndpointInfo> try_directory_endpoint_from_json(
                                 &endpoint.controller_ids) ||
             !ParseRelationships(json, fields::controlled_target_ids,
                                 &endpoint.controlled_target_ids)) {
-            SetError(error, "directory endpoint relationships are invalid");
+            set_error(error, "directory endpoint relationships are invalid");
             return std::nullopt;
         }
         const auto accounted =
             directory_endpoint_accounted_bytes(endpoint, namespace_kind);
         if (!accounted) {
-            SetError(error, "directory endpoint exceeds its identity or byte policy");
+            set_error(error, "directory endpoint exceeds its identity or byte policy");
             return std::nullopt;
         }
         return endpoint;
     } catch (const std::exception&) {
-        SetError(error, "directory endpoint parsing failed");
+        set_error(error, "directory endpoint parsing failed");
         return std::nullopt;
     }
 }
@@ -525,25 +465,25 @@ std::optional<DirectoryResponse> try_directory_response_from_json(
     DirectoryNamespace namespace_kind,
     std::string* error) noexcept {
     try {
-        if (!HasOnlyKnownFields(json, kDirectoryFields) ||
-            !RequiredString(json, "cmd", 32U, false) ||
-            !RequiredBool(json, "ok") || !json["ok"].get<bool>() ||
-            !OptionalString(json, "request_id",
-                            kMaxDirectoryRequestIdBytes, false) ||
-            !RequiredString(json, "server_id",
-                            kMaxDirectoryServerIdBytes, true) ||
-            !RequiredString(json, "server_name",
-                            kMaxDirectoryServerNameBytes, true) ||
+        if (!has_only_known_fields(json, kDirectoryFields) ||
+            !required_string(json, "cmd", 32U, false) ||
+            !required_bool(json, "ok") || !json["ok"].get<bool>() ||
+            !optional_string(json, "request_id",
+                             kMaxDirectoryRequestIdBytes, false) ||
+            !required_string(json, "server_id",
+                             kMaxDirectoryServerIdBytes, true) ||
+            !required_string(json, "server_name",
+                             kMaxDirectoryServerNameBytes, true) ||
             !json.contains("endpoints") || !json["endpoints"].is_array() ||
             json["endpoints"].size() > kMaxDirectoryEndpoints) {
-            SetError(error, "directory response envelope is invalid or oversized");
+            set_error(error, "directory response envelope is invalid or oversized");
             return std::nullopt;
         }
         const std::string_view expected_command =
             namespace_kind == DirectoryNamespace::FederationRaw
             ? "federation.directory" : "directory.list";
         if (json["cmd"].get_ref<const std::string&>() != expected_command) {
-            SetError(error, "directory response command does not match the request");
+            set_error(error, "directory response command does not match the request");
             return std::nullopt;
         }
 
@@ -553,7 +493,7 @@ std::optional<DirectoryResponse> try_directory_response_from_json(
         if (!is_valid_directory_server_identity(
                 response.server_id, response.server_name,
                 namespace_kind == DirectoryNamespace::FederationRaw)) {
-            SetError(error, "directory response server identity is invalid");
+            set_error(error, "directory response server identity is invalid");
             return std::nullopt;
         }
         response.endpoints.reserve(json["endpoints"].size());
@@ -564,7 +504,7 @@ std::optional<DirectoryResponse> try_directory_response_from_json(
                           kMaxDirectoryResponseBytes, &accounted) ||
             !AddAccounted(response.server_name.size(),
                           kMaxDirectoryResponseBytes, &accounted)) {
-            SetError(error, "directory response envelope exceeds its byte policy");
+            set_error(error, "directory response envelope exceeds its byte policy");
             return std::nullopt;
         }
         for (const auto& item : json["endpoints"]) {
@@ -572,19 +512,19 @@ std::optional<DirectoryResponse> try_directory_response_from_json(
             auto endpoint = try_directory_endpoint_from_json(
                 item, namespace_kind, &endpoint_error);
             if (!endpoint) {
-                SetError(error, endpoint_error.empty()
+                set_error(error, endpoint_error.empty()
                                     ? "directory endpoint is invalid"
                                     : endpoint_error);
                 return std::nullopt;
             }
             if (!endpoint_ids.insert(endpoint->endpoint_id).second) {
-                SetError(error, "directory response contains duplicate endpoint ids");
+                set_error(error, "directory response contains duplicate endpoint ids");
                 return std::nullopt;
             }
             if ((!endpoint->remote ||
                  namespace_kind == DirectoryNamespace::FederationRaw) &&
                 endpoint->server_id != response.server_id) {
-                SetError(error, "directory endpoint server identity is inconsistent");
+                set_error(error, "directory endpoint server identity is inconsistent");
                 return std::nullopt;
             }
             const auto endpoint_bytes =
@@ -592,14 +532,14 @@ std::optional<DirectoryResponse> try_directory_response_from_json(
             if (!endpoint_bytes ||
                 !AddAccounted(*endpoint_bytes, kMaxDirectoryResponseBytes,
                               &accounted)) {
-                SetError(error, "directory response exceeds its aggregate byte policy");
+                set_error(error, "directory response exceeds its aggregate byte policy");
                 return std::nullopt;
             }
             response.endpoints.push_back(std::move(*endpoint));
         }
         return response;
     } catch (const std::exception&) {
-        SetError(error, "directory response parsing failed");
+        set_error(error, "directory response parsing failed");
         return std::nullopt;
     }
 }
@@ -608,31 +548,30 @@ std::optional<PresenceAnnouncement> try_presence_announcement_from_json(
     const nlohmann::json& json,
     std::string* error) noexcept {
     try {
-        if (!HasOnlyKnownFields(json, kPresenceFields) ||
-            json.contains("presence_schema") ||
-            !RequiredString(json, "cmd", 32U, false) ||
+        if (!has_only_known_fields(json, kPresenceFields) ||
+            !required_string(json, "cmd", 32U, false) ||
             json["cmd"].get_ref<const std::string&>() !=
                 "presence.announce" ||
-            !OptionalString(json, "request_id",
-                            kMaxDirectoryRequestIdBytes, false) ||
-            !RequiredString(json, fields::endpoint_kind, 16U, false) ||
-            !RequiredString(json, "preferred_id",
-                            kMaxDirectoryEndpointIdBytes, true) ||
-            !RequiredString(json, "preferred_name",
-                            kMaxDirectoryDisplayNameBytes, true) ||
-            !RequiredString(json, fields::hostname,
-                            kMaxDirectoryHostnameBytes, true) ||
-            !RequiredString(json, fields::client_platform, 16U, false) ||
-            !RequiredString(json, fields::client_variant, 16U, false) ||
-            !RequiredString(json, fields::client_version,
-                            kMaxDirectoryClientVersionBytes, true) ||
-            !RequiredString(json, fields::relay_mode, 16U, false) ||
-            !RequiredBool(json, fields::allow_chat) ||
-            !RequiredBool(json, fields::allow_file) ||
-            !RequiredBool(json, fields::allow_bytes) ||
-            !RequiredBool(json, fields::allow_inbound_admin) ||
-            !RequiredBool(json, fields::allow_outbound_admin)) {
-            SetError(error, "presence announcement has missing, unknown, or invalid fields");
+            !optional_string(json, "request_id",
+                             kMaxDirectoryRequestIdBytes, false) ||
+            !required_string(json, fields::endpoint_kind, 16U, false) ||
+            !required_string(json, "preferred_id",
+                             kMaxDirectoryEndpointIdBytes, true) ||
+            !required_string(json, "preferred_name",
+                             kMaxDirectoryDisplayNameBytes, true) ||
+            !required_string(json, fields::hostname,
+                             kMaxDirectoryHostnameBytes, true) ||
+            !required_string(json, fields::client_platform, 16U, false) ||
+            !required_string(json, fields::client_variant, 16U, false) ||
+            !required_string(json, fields::client_version,
+                             kMaxDirectoryClientVersionBytes, true) ||
+            !required_string(json, fields::relay_mode, 16U, false) ||
+            !required_bool(json, fields::allow_chat) ||
+            !required_bool(json, fields::allow_file) ||
+            !required_bool(json, fields::allow_bytes) ||
+            !required_bool(json, fields::allow_inbound_admin) ||
+            !required_bool(json, fields::allow_outbound_admin)) {
+            set_error(error, "presence announcement has missing, unknown, or invalid fields");
             return std::nullopt;
         }
         const auto& endpoint_kind =
@@ -645,8 +584,8 @@ std::optional<PresenceAnnouncement> try_presence_announcement_from_json(
             json[fields::client_variant].get_ref<const std::string&>();
         if ((endpoint_kind != "client" && endpoint_kind != "server") ||
             (relay_mode != "untrusted" && relay_mode != "trusted") ||
-            !IsKnownPlatform(platform) || !IsKnownVariant(variant)) {
-            SetError(error, "presence announcement enums are invalid");
+            !is_known_client_platform(platform) || !is_known_client_variant(variant)) {
+            set_error(error, "presence announcement enums are invalid");
             return std::nullopt;
         }
 
@@ -671,7 +610,7 @@ std::optional<PresenceAnnouncement> try_presence_announcement_from_json(
             json[fields::allow_outbound_admin].get<bool>();
         return announce;
     } catch (const std::exception&) {
-        SetError(error, "presence announcement parsing failed");
+        set_error(error, "presence announcement parsing failed");
         return std::nullopt;
     }
 }

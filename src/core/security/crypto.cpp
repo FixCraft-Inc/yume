@@ -22,6 +22,7 @@
 #include <openssl/x509.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -199,17 +200,16 @@ EVP_PKEY_ptr load_private_key(const std::string& path_priv) {
     // identity file another account can read or replace must never be able to
     // sign an AUTH transcript.
     Bytes pem = security::ReadPrivateKeyFileStrict(path_priv);
+    security::ScopedErase wipe_pem(pem);
     std::unique_ptr<BIO, decltype(&BIO_free)> private_bio(
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
     if (!private_bio) {
-        security::secure_erase(pem);
         throw ssl_error("failed to open private key");
     }
     EVP_PKEY_ptr private_key(
         PEM_read_bio_PrivateKey(
             private_bio.get(), nullptr, nullptr, nullptr),
         EVP_PKEY_free);
-    security::secure_erase(pem);
     if (!private_key) {
         throw ssl_error("failed to read private key");
     }
@@ -274,28 +274,26 @@ Bytes sign_message(EVP_PKEY* privkey, const Bytes& message) {
         throw std::runtime_error("sign_message: missing private key");
     }
 
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+        EVP_MD_CTX_new(), EVP_MD_CTX_free);
     if (!ctx) {
         throw ssl_error("failed to allocate sign context");
     }
 
     const EVP_MD* md = select_digest(privkey);
-    int rc = EVP_DigestSignInit(ctx, nullptr, md, nullptr, privkey);
+    int rc = EVP_DigestSignInit(ctx.get(), nullptr, md, nullptr, privkey);
     if (rc != 1) {
-        EVP_MD_CTX_free(ctx);
         throw ssl_error("sign init failed");
     }
 
     size_t sig_len = 0;
-    rc = EVP_DigestSign(ctx, nullptr, &sig_len, message.data(), message.size());
+    rc = EVP_DigestSign(ctx.get(), nullptr, &sig_len, message.data(), message.size());
     if (rc != 1) {
-        EVP_MD_CTX_free(ctx);
         throw ssl_error("sign size failed");
     }
 
     Bytes sig(sig_len);
-    rc = EVP_DigestSign(ctx, sig.data(), &sig_len, message.data(), message.size());
-    EVP_MD_CTX_free(ctx);
+    rc = EVP_DigestSign(ctx.get(), sig.data(), &sig_len, message.data(), message.size());
     if (rc != 1) {
         throw ssl_error("sign failed");
     }
@@ -562,8 +560,8 @@ CompositeKeyPair load_composite_keypair(const std::string& path_priv) {
         throw std::runtime_error("load_composite_keypair: empty path");
     }
     Bytes pem = security::ReadPrivateKeyFileStrict(path_priv);
+    security::ScopedErase wipe_pem(pem);
     if (!has_exact_pem_sequence(pem, "PRIVATE KEY", 2)) {
-        security::secure_erase(pem);
         throw std::runtime_error(
             "composite identity must contain exactly two PEM private keys "
             "(Ed25519 then " + std::string(kCompositePqAlgorithm) + ")");
@@ -571,7 +569,6 @@ CompositeKeyPair load_composite_keypair(const std::string& path_priv) {
     std::unique_ptr<BIO, decltype(&BIO_free)> bio(
         BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
     if (!bio) {
-        security::secure_erase(pem);
         throw ssl_error("failed to open composite identity");
     }
     EVP_PKEY_ptr classical(
@@ -581,7 +578,6 @@ CompositeKeyPair load_composite_keypair(const std::string& path_priv) {
         classical ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr)
                   : nullptr,
         EVP_PKEY_free);
-    security::secure_erase(pem);
     if (!classical || !pq) {
         throw std::runtime_error(
             "composite identity must contain two PEM private keys "
@@ -607,24 +603,43 @@ CompositeKeyPair load_composite_keypair(const std::string& path_priv) {
 }
 
 Bytes encode_composite_private_pem(const CompositeKeyPair& keys) {
-    Bytes out;
-    for (EVP_PKEY* half : {keys.classical.private_key.get(),
-                           keys.pq.private_key.get()}) {
+    using Bio = std::unique_ptr<BIO, decltype(&BIO_free)>;
+    std::array<Bio, 2> bios{Bio(nullptr, BIO_free), Bio(nullptr, BIO_free)};
+    const std::array<EVP_PKEY*, 2> halves{
+        keys.classical.private_key.get(), keys.pq.private_key.get()};
+    std::array<char*, 2> data{};
+    std::array<std::size_t, 2> lengths{};
+    std::size_t total = 0;
+    for (std::size_t i = 0; i < halves.size(); ++i) {
+        EVP_PKEY* half = halves[i];
         if (half == nullptr) {
             throw std::runtime_error("encode_composite_private_pem: missing half");
         }
-        std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+        auto& bio = bios[i];
+        bio.reset(BIO_new(BIO_s_mem()));
         if (!bio) throw ssl_error("failed to allocate PEM buffer");
         if (PEM_write_bio_PrivateKey(bio.get(), half, nullptr, nullptr, 0,
                                      nullptr, nullptr) != 1) {
             throw ssl_error("failed to encode private key");
         }
-        char* data = nullptr;
-        const long length = BIO_get_mem_data(bio.get(), &data);
-        if (length <= 0 || data == nullptr) {
+        const long length = BIO_get_mem_data(bio.get(), &data[i]);
+        if (length <= 0 || data[i] == nullptr) {
             throw std::runtime_error("encode_composite_private_pem produced no output");
         }
-        out.insert(out.end(), data, data + length);
+        if (static_cast<std::size_t>(length) >
+            security::kMaxPrivateKeyFileBytes - total) {
+            throw std::runtime_error("composite private PEM exceeds the private-file limit");
+        }
+        lengths[i] = static_cast<std::size_t>(length);
+        total += lengths[i];
+    }
+    // Allocate once before copying either secret. Vector growth would release
+    // the first half without wiping it, even on a successful export.
+    Bytes out(total);
+    std::size_t offset = 0;
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        std::copy_n(data[i], lengths[i], out.begin() + offset);
+        offset += lengths[i];
     }
     return out;
 }

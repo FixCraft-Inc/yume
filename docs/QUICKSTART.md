@@ -200,8 +200,8 @@ a daily-driver laptop. See [SELFTEST.md](SELFTEST.md) for the local transport,
 real endpoint, and crypto-only benchmark boundaries.
 
 One-stream LAN results do not establish high-latency performance. The
-[implementation status](IMPLEMENTATION_STATUS.md#performance-and-network-qualification)
-lists the remaining network qualification work.
+[performance boundary](IMPLEMENTATION_STATUS.md#performance-boundary)
+sets the evidence required for a performance claim.
 
 ## Production notes
 

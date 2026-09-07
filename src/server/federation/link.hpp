@@ -79,6 +79,9 @@ private:
     };
 
     void run_loop();
+    // Last-resort record for an exception that escaped a link thread body.
+    // Allocation must not be required, so the label is a static string.
+    void note_worker_failure(const char* label) noexcept;
     void set_state(std::string state, std::string error = {});
     void reset_transport();
     // One connection attempt: TLS dial + pin, carrier admission, AUTH v2,

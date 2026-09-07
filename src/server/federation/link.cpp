@@ -141,14 +141,26 @@ void FederationLink::start() {
         return;
     }
     closing_.store(false);
+    // Both link threads are bespoke loops rather than io_context workers, so
+    // each needs its own last-resort boundary. An exception that escapes a
+    // std::thread body terminates the whole daemon, which for one federation
+    // peer is both a denial of service and a loud signal.
     worker_ = std::thread([self = shared_from_this()] {
-        self->run_loop();
+        try {
+            self->run_loop();
+        } catch (...) {
+            self->note_worker_failure("federation link worker");
+        }
     });
     directory_worker_ = std::thread([self = shared_from_this()] {
-        while (!self->wait_for_close(std::chrono::seconds(5))) {
-            if (self->is_ready()) {
-                self->request_directory();
+        try {
+            while (!self->wait_for_close(std::chrono::seconds(5))) {
+                if (self->is_ready()) {
+                    self->request_directory();
+                }
             }
+        } catch (...) {
+            self->note_worker_failure("federation directory worker");
         }
     });
 }
@@ -204,6 +216,18 @@ FederationPeerStatus FederationLink::status() const {
     out.last_handshake_ms = last_handshake_ms_;
     out.channels_active = channels_active_;
     return out;
+}
+
+void FederationLink::note_worker_failure(const char* label) noexcept {
+    closing_.store(true);
+    attempt_alive_.store(false);
+    try {
+        util::log_error(std::string(label) + " stopped after an unhandled "
+                        "exception; this federation peer will not reconnect "
+                        "until the link is restarted");
+    } catch (...) {
+        // Reporting must never be the reason the daemon terminates.
+    }
 }
 
 void FederationLink::set_state(std::string state, std::string error) {
@@ -327,6 +351,17 @@ void FederationLink::run_loop() {
         } catch (const std::exception& ex) {
             if (!closing_.load()) {
                 handle_disconnect(ex.what());
+                reset_transport();
+                if (wait_for_close(std::chrono::milliseconds(backoff_ms))) {
+                    break;
+                }
+                backoff_ms = std::min(backoff_ms * 2, 30000);
+                continue;
+            }
+        } catch (...) {
+            if (!closing_.load()) {
+                handle_disconnect("federation attempt failed with a "
+                                  "non-standard exception");
                 reset_transport();
                 if (wait_for_close(std::chrono::milliseconds(backoff_ms))) {
                     break;

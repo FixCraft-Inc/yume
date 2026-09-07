@@ -92,7 +92,14 @@ Fields are emitted in strictly increasing `field_id` order. Duplicate fields,
 out-of-order fields, an unknown critical field, unknown flag bits, oversized
 lengths, truncated values, and trailing bytes are fatal. A record carries at
 most 64 fields and field id 0 is reserved; both are fatal. AUTH records are
-limited to 64 KiB before allocation.
+limited to 64 KiB before TLV field allocation. Frame readers reject an AUTH
+payload declaration above 64 KiB at the eight-byte header, before allocating
+or requesting its payload. A padded AUTH frame may declare up to 256 extra
+bytes for padding and its length byte; the codec still caps the unpadded
+record at 64 KiB. The server also rejects other frame types at the header
+before authentication. Other frame types retain the 16 MiB payload cap.
+H2/TLS carrier buffers and bytes already received alongside a header have
+their own budgets, so this is not a total connection-memory limit.
 
 ### AUTH challenge (`record_kind = 1`)
 
@@ -100,7 +107,7 @@ limited to 64 KiB before allocation.
 | -- | -- | -- |
 | 1 | yes | UTF-8 exact transport version `0.2.0-dev6` |
 | 2 | yes | 32-byte server challenge |
-| 3 | yes | ephemeral ML-KEM-1024 public key |
+| 3 | yes | 1568-byte ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
 | 5 | yes | 32-byte PSK salt |
 | 6 | yes | 32-byte root/transcript salt |
@@ -113,7 +120,7 @@ limited to 64 KiB before allocation.
 | ID | Critical | Value |
 | -- | -- | -- |
 | 1 | yes | 32-byte client ephemeral X25519 public key |
-| 2 | yes | ML-KEM-1024 ciphertext |
+| 2 | yes | 1568-byte ML-KEM-1024 ciphertext |
 | 3 | yes | composite public identity: Ed25519 PEM followed by ML-DSA-87 PEM |
 | 4 | yes | `u16` concurrent directional epoch offers the client accepts (1..64) |
 | 5 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
@@ -124,8 +131,8 @@ limited to 64 KiB before allocation.
 
 Fields 8 and 9 are optional but **critical**: a peer that does not understand
 them must refuse the record rather than admit the session as an ordinary
-visitor. They are both-or-neither -- a response carrying one without the other
-is rejected at parse.
+visitor. Both fields must be absent or both present and nonempty. A response
+carrying only one field, or an empty field, is rejected at parse.
 
 Fields 4 through 6 are part of the record the client signs, while the complete
 challenge (including its profile field) is also in the signature input. The
@@ -174,7 +181,16 @@ the visitor and admin stores.
 Admission and this signature are verified before KEM decapsulation or any
 other avoidable expensive operation. `AUTH_OK` is sent only after the inner
 channel is active. Its encrypted record repeats both the exact version and
-exact profile before carrying the server information.
+exact profile before carrying at most 32 KiB of server information. The writer
+and reader enforce the same bound.
+
+The server publishes identity, permissions and ratchet state only after the
+signature, authorization, local PSK availability, hybrid derivation and
+identity-session admission checks succeed. Failed identity admission consumes
+no session slot. Optional `last_seen` persistence is best effort and cannot
+change a successful authentication result. Possession of the same inner PSK
+is confirmed by protected records: the client must open `AUTH_OK`, and the
+server authenticates inbound records before application dispatch.
 
 ### AUTH channel binding
 
@@ -232,9 +248,16 @@ HMAC-SHA256(obfs_secret,
 
 SNI and `:authority` must match after the configured listener-port rules. The
 server accepts the current or previous UTC hour and records the authenticated
-nonce in a bounded expiry cache before emitting AUTH. Missing, wrong,
-malformed, expired, replayed, or authority-mismatched attempts never receive
-AUTH. The current extended-`CONNECT` rejection is a bounded synthetic 404; it
+nonce in a process-wide cache before emitting AUTH. The cache retains at most
+4096 nonces for two hours. When full, it refuses new admissions until entries
+expire and never evicts a live nonce to make room. Allocation failure does
+not publish partial cache state.
+
+Missing, wrong, malformed, expired, cached-replay, authority-mismatched and
+cache-saturated attempts receive no AUTH. Replay protection is process-local:
+restart loses the cache, and wall-clock changes can affect token validity and
+expiry. It is not a persistent or cross-process replay ledger.
+The current extended-`CONNECT` rejection is a bounded synthetic 404; it
 is not byte- or header-identical to the reference Node server's 405 response
 and remains an active-probe residual.
 
@@ -310,8 +333,9 @@ Nothing else about the exchange changes:
 
 Depth `w` therefore permits up to `w * epoch_bytes` per rekey round trip while
 every negotiated per-epoch limit remains enforced. It also bounds what a peer
-can force: at most `w` ML-KEM
-encapsulations and `w` retained epoch roots per session. It also bounds the
+can retain: at most `w` prepared epoch roots per direction. This bounds
+outstanding preparation, not the total number or rate of ML-KEM operations
+over a session's lifetime. It also bounds the
 break-in recovery gap: an endpoint compromise exposes at most `w` prepared
 future epochs.
 
@@ -324,9 +348,10 @@ containment claim therefore still assumes a conforming sender; byte and frame
 containment do not.
 
 `REKEY_INIT = 13` contains the next epoch number, a fresh ML-KEM-1024 public
-key, and a fresh X25519 public key. `REKEY_ACK = 14`, sent through the independent
+key (exactly 1568 bytes), and a fresh X25519 public key. `REKEY_ACK = 14`, sent through the independent
 reverse-direction chain, contains that epoch, the ML-KEM ciphertext, and the
-responder's fresh X25519 public key.
+responder's fresh X25519 public key. The ML-KEM ciphertext is also exactly
+1568 bytes, and each X25519 public key is exactly 32 bytes.
 
 For direction `d` and epoch `e+1`:
 

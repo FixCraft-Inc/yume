@@ -134,6 +134,11 @@ in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
 Search CLI help, man pages, release material, and manually maintained website
 pages for duplicate claims. Regenerate website documentation with
 `scripts/sync_website_docs.sh`, then run `scripts/check_website_catalog.py`.
+Route illustrations are generated: edit `docs/diagrams/*.json` and run
+`scripts/yume_diagrams.py sync` instead of editing the ASCII inside a man page
+or a Markdown fence, which regenerates the man block, the Markdown block, and
+the animated SVG the website inlines. `scripts/yume_diagrams.py check` is the
+gate. See `docs/diagrams/README.md`.
 Generated `website/docs/**/*.md` files are ignored: CI and Pages regenerate
 them from canonical Markdown before validating and building the site. Local
 `--check` mode only compares an already-generated local mirror; it is useful

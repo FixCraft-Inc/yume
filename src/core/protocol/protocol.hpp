@@ -50,6 +50,7 @@ inline constexpr uint16_t kFlagInnerEncrypted = 0x8000;
 // read_frame and the asynchronous TransportCore path alike -- must refuse an
 // oversize declaration before it allocates. Unrelated to the HTTP/2 carrier's
 // own frame limits, which bound a different wire.
+// Generic cap. AUTH has the smaller codec-owned budget in frame_limits.hpp.
 inline constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
 
 struct FrameHeader {

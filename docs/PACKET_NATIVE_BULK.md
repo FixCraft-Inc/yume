@@ -8,6 +8,42 @@
 Packet-bulk mode carries batches of IP packets through one authenticated
 YUME stream.
 
+<!-- yume-diagram: packet_bulk -->
+```text
++--------------------------------+
+|  ANDROID TUN                   |
+|  VpnService capture            |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  YBP1 batch on packet stream   |
++--------------------------------+
+        |
+        | ==YUME==> encrypted DATA
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  packet_bulk_v1 decode         |
++--------------------------------+
+        |
+        | write to operator TUN
+        v
++--------------------------------+
+|  SERVER TUN/NAT                |
+|  yume-pkt0 + CIDR pool         |
++--------------------------------+
+        |
+        | routed egress
+        v
++--------------------------------+
+|  INTERNET                      |
+|  target sees NAT IP            |
++--------------------------------+
+```
+<!-- /yume-diagram -->
+
 ## Shape
 
 - Outer carrier stays the existing browser-oriented TLS 1.3 / HTTP/2-opening
@@ -124,9 +160,12 @@ retains that exact encoded payload until the bounded transport queue admits it.
 Temporary saturation is retried in bounded slices rather than closing the
 channel or skipping a sequence. Transport shutdown wakes the admission wait;
 local channel shutdown is observed between slices, so teardown cannot wait
-indefinitely on capacity. Deterministic saturation/recovery and stop tests pin
-these guarantees. This closes the source-side loss defect but does not by
-itself qualify the Android always-on VPN path.
+indefinitely on capacity. A transport that has capacity but cannot take
+ownership of the batch is a terminal refusal for that batch rather than a
+retry, because nothing was queued and no sequence was consumed. Deterministic
+saturation/recovery and stop tests pin these guarantees. This closes the
+source-side loss defect but does not by itself qualify the Android always-on
+VPN path.
 
 ## Packet C ABI work
 

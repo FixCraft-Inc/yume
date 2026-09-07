@@ -198,10 +198,12 @@ Top-level resource fields are separate from `permissions`:
 | `federation_psk_file` | unset | Required with `federation_peer_id`; owner-only 32-byte pairwise AUTH-v2 PSK, resolved relative to the metadata file |
 
 `alias` is a label used in logs. `last_seen` is an integer timestamp maintained
-by key-management operations. These entry fields and the `permissions` fields
-form a closed schema. Unknown fields, top-level permission flags, and
-wrong-typed values are errors. Use `weight` for scheduling and
-`permissions.allow_codecs` for codec access.
+by key-management operations and best effort after enrolled AUTH succeeds with
+`anonym` mode off. Persistence never gates or reverses that AUTH decision.
+These entry fields and the `permissions` fields form a closed
+schema. Unknown fields, top-level permission flags, and wrong-typed values are
+errors. Use `weight` for scheduling and `permissions.allow_codecs` for codec
+access.
 
 Facade append and update operations verify that a referenced federation PSK
 already satisfies the same protected-file contract enforced by `yumed`,

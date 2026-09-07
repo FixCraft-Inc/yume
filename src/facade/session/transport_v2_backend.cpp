@@ -399,6 +399,11 @@ public:
                 case Admission::invalid:
                     if (write_error) *write_error = "service write is too large";
                     return Result::Invalid;
+                case Admission::failed:
+                    if (write_error) {
+                        *write_error = "service write could not be queued";
+                    }
+                    return Result::Failed;
                 }
                 if (write_error) *write_error = "unknown service write admission";
                 return Result::Failed;

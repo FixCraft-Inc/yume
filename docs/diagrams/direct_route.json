@@ -1,0 +1,56 @@
+{
+  "name": "direct_route",
+  "type": "route",
+  "title": "Direct YUME route",
+  "summary": "An application reaches the target through the YUME client and yumed, which opens the outbound socket.",
+  "targets": {
+    "man": [
+      "docs/man/yume.1"
+    ],
+    "markdown": [
+      "docs/EXPLAINED.md"
+    ],
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "human_app",
+      "kind": "app",
+      "title": "HUMAN APP",
+      "sub": "browser / curl"
+    },
+    {
+      "id": "yume_client",
+      "kind": "client",
+      "title": "YUME CLIENT",
+      "sub": "TLS / H2 / YUME frames"
+    },
+    {
+      "id": "yumed_server",
+      "kind": "server",
+      "title": "YUMED SERVER",
+      "sub": "direct egress"
+    },
+    {
+      "id": "target_site",
+      "kind": "target",
+      "title": "TARGET SITE",
+      "sub": "sees server IP"
+    }
+  ],
+  "edges": [
+    {
+      "from": "human_app",
+      "to": "yume_client"
+    },
+    {
+      "from": "yume_client",
+      "to": "yumed_server",
+      "channel": "tunnel"
+    },
+    {
+      "from": "yumed_server",
+      "to": "target_site"
+    }
+  ]
+}

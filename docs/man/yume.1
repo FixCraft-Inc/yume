@@ -69,6 +69,7 @@ them.
 .SH ROUTING MODEL
 The common direct route is:
 .PP
+.\" yume-diagram: direct_route
 .nf
 +--------------------------------+
 |  HUMAN APP                     |
@@ -94,6 +95,7 @@ The common direct route is:
 |  sees server IP                |
 +--------------------------------+
 .fi
+.\" /yume-diagram
 .PP
 The client network normally sees an HTTPS-looking connection to the YUME
 server. The target normally sees the YUME server's egress IP. The server
@@ -112,6 +114,7 @@ targets resolve on the proxy side; no DNS leaks. On the server,
 .B yumed
 binds 127.0.0.1 and Tor publishes a HiddenService that forwards onion
 traffic to it.
+.\" yume-diagram: tor_hidden_service
 .nf
 +--------------------------------+
 |  HUMAN APP                     |
@@ -160,8 +163,10 @@ traffic to it.
 |  sees yumed egress IP          |
 +--------------------------------+
 .fi
+.\" /yume-diagram
 .PP
 .SS Server-side Tor egress
+.\" yume-diagram: server_tor_egress
 .nf
 +--------------------------------+
 |  HUMAN APP                     |
@@ -212,12 +217,14 @@ traffic to it.
 |  website / API                 |
 +--------------------------------+
 .fi
+.\" /yume-diagram
 .PP
 This makes the target see a Tor exit instead of the YUME server, but the
 .B yumed
 process still receives the requested target unless the application itself
 is only asking the server to connect to a Tor entry.
 .SS Tor over YUME
+.\" yume-diagram: tor_over_yume
 .nf
 +--------------------------------+
 |  TOR BROWSER                   |
@@ -261,10 +268,12 @@ is only asking the server to connect to a Tor entry.
 |  sees Tor exit                 |
 +--------------------------------+
 .fi
+.\" /yume-diagram
 .PP
 For target anonymity from the YUME server, prefer this route. The YUME
 server usually sees only a Tor guard or bridge, not the final website.
 .SS YUME over Tor
+.\" yume-diagram: yume_over_tor
 .nf
 +--------------------------------+
 |  HUMAN APP                     |
@@ -302,11 +311,13 @@ server usually sees only a Tor guard or bridge, not the final website.
 |  sees server IP                |
 +--------------------------------+
 .fi
+.\" /yume-diagram
 .PP
 This hides the client's real IP from the YUME server, but it is slower
 and the Tor exit can see that a connection is being made to the YUME
 server.
 .SS Tor -> YUME -> Tor
+.\" yume-diagram: tor_yume_tor
 .nf
 +--------------------------------+
 |  HUMAN APP                     |
@@ -358,6 +369,7 @@ server.
 |  sees exit B                   |
 +--------------------------------+
 .fi
+.\" /yume-diagram
 .PP
 This can reduce linkability for passive observers because neither edge
 sees both the real client and the final target. It is also much slower
@@ -461,7 +473,10 @@ removed on failure.
 Read and decrypt a YUME secure-store file, then publish its extracted private
 files and ready-to-use configuration beneath the imported-profile directory.
 Input is limited to 16 MiB before parsing or password-KDF work. Plaintext,
-password, and bundled secret buffers are wiped on success and failure.
+password, and bundled secret buffers owned by YUME are wiped on success and
+failure, including retained capacity. Export guards partial JSON secret values
+before later allocations. This is best-effort cleanup; it does not guarantee
+erasure of JSON library scratch, caller copies, swap, or core dumps.
 .TP
 .B --password-stdin
 Read the share password from standard input for non-interactive export or

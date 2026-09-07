@@ -49,6 +49,31 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- TransportCore shutdown transfers stream callbacks and drains queued writes
+  without allocating. Session close releases the socket if its close deadline
+  cannot be armed. Focused regressions cover allocation failure during shutdown
+  and cancellation of a live socket read; broader async ownership remains open.
+- AUTH frame declarations are checked at the header against the 64 KiB record
+  budget, allowing at most 256 extra padding bytes. The server rejects other
+  frame types before unauthenticated payload reads. Frame encoding and decoding
+  also check lengths before narrowing or adding a peer-controlled length.
+- Private PEM loading and partial share JSON construction register cleanup
+  before later allocations. Composite PEM export allocates the returned vector
+  once, signing contexts use RAII, and mutable-buffer erasure covers retained
+  capacity. Failure regressions observe storage before it is freed, including
+  OpenSSL memory-BIO growth failure. Library scratch erasure remains unproven.
+- Transport-v2 admission refuses saturation without evicting live replay
+  entries and rolls back partial insertion on allocation failure. AUTH
+  rejects empty admin fields, requires exact ML-KEM-1024 widths and enforces
+  the server-info cap on both encoding and parsing. Identity admission no
+  longer leaks a slot on allocation failure, and optional `last_seen` writes
+  cannot turn a published AUTH decision into a rejection. Valid wire bytes
+  and cryptographic domains are unchanged.
+- Control registration, lifecycle IP checks, and operator-proof URL parsing
+  avoid Boost's allocating `noexcept` string-view overload, which could abort
+  the process on allocation failure. Control and directory parsers share
+  field predicates while retaining their limits, accepted values, and
+  diagnostic order.
 - **Share-bundle construction wipes partial secret copies.** Copy and move
   constructors delegate to a completed empty object before assignment, so
   allocation failure runs secret cleanup before member destruction. The old

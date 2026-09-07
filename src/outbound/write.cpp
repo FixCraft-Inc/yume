@@ -35,6 +35,16 @@ bool is_bulk_frame(const protocol::Frame& frame) noexcept {
     return frame.header.type == protocol::DATA;
 }
 
+// Rejection reasons are shared constants rather than per-call strings. A write
+// refused because an allocation just failed must still settle its completion,
+// and building the message would allocate again.
+const std::string kRejectStopped = "transport stopped";
+const std::string kRejectBulkFull = "application write queue full";
+const std::string kRejectControlFull = "control write queue full";
+const std::string kRejectQueueAllocation =
+    "transport write queue allocation failed";
+const std::string kDispatchFailurePrefix = "write dispatch failed: ";
+
 bool bulk_capacity_available(std::size_t payload_bytes,
                              std::size_t outstanding_frames,
                              std::size_t outstanding_bytes) noexcept {
@@ -51,8 +61,33 @@ void TransportCore::mark_stream_ready_locked(uint8_t stream_id) {
     }
     const int priority = std::clamp(
         frame_write_priority(write_queues_[stream_id].front().frame), 0, 4);
-    ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
+    // Publish the scheduler entry before its marker. A marker without a
+    // matching entry would suppress every later mark for this stream and
+    // strand its queued frames for the transport's lifetime.
     ready_streams_[static_cast<std::size_t>(priority)].push_back(stream_id);
+    ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
+}
+
+bool TransportCore::try_queue_write_locked(PendingWrite& write) {
+    const uint8_t stream_id = write.frame.header.stream_id;
+    try {
+        // std::deque::push_back is strongly exception safe, so a failed
+        // allocation leaves `write` owning its completion for the caller.
+        write_queues_[stream_id].push_back(std::move(write));
+    } catch (...) {
+        return false;
+    }
+    try {
+        mark_stream_ready_locked(stream_id);
+    } catch (...) {
+        // Undo the insertion rather than leave a frame the scheduler can
+        // never select. pop_back on a nonempty deque does not throw.
+        write = std::move(write_queues_[stream_id].back());
+        write_queues_[stream_id].pop_back();
+        return false;
+    }
+    ++queued_frames_;
+    return true;
 }
 
 bool TransportCore::write_queues_empty_locked() const noexcept {
@@ -66,7 +101,13 @@ TransportCore::PendingWrite TransportCore::pop_stream_head_locked(uint8_t stream
     if (queued_frames_ > 0) {
         --queued_frames_;
     }
-    mark_stream_ready_locked(stream_id);
+    try {
+        mark_stream_ready_locked(stream_id);
+    } catch (...) {
+        // The head is already owned by the caller and must reach its
+        // completion. A failed re-mark only defers this stream's remaining
+        // frames to the next enqueue or to shutdown, which settles them.
+    }
     return write;
 }
 
@@ -94,54 +135,56 @@ bool TransportCore::queue_frame(protocol::Frame frame, WriteCompletion handler,
                                 bool already_protected) {
     bool dispatch = false;
     bool accepted = false;
-    std::string rejection;
+    const std::string* rejection = &kRejectStopped;
     const bool bulk = is_bulk_frame(frame);
     const std::size_t reserved_bytes = frame.payload.size();
     {
         std::scoped_lock lock(state_mu_, write_mu_);
         if (stopped_) {
-            rejection = "transport stopped";
+            rejection = &kRejectStopped;
         } else if (bulk &&
                    (outstanding_bulk_frames_ >= kMaxOutstandingBulkFrames ||
                     frame.payload.size() >
                         kMaxOutstandingBulkBytes - outstanding_bulk_bytes_)) {
-            rejection = "application write queue full";
+            rejection = &kRejectBulkFull;
         } else if (!bulk &&
                    (outstanding_control_frames_ >= kReservedControlFrames ||
                     frame.payload.size() >
                         kReservedControlBytes - outstanding_control_bytes_)) {
-            rejection = "control write queue full";
+            rejection = &kRejectControlFull;
         } else {
-            const uint8_t stream_id = frame.header.stream_id;
-            const bool was_empty = write_queues_[stream_id].empty();
             PendingWrite write{
                 std::move(frame), std::move(handler), already_protected,
                 bulk, reserved_bytes,
-                ++next_enqueue_order_};
-            if (bulk) {
-                ++outstanding_bulk_frames_;
-                outstanding_bulk_bytes_ += write.reserved_bytes;
+                next_enqueue_order_ + 1};
+            // Reserve capacity only once the frame and its scheduler entry are
+            // both queued. A rejected enqueue returns the completion so it is
+            // settled below exactly once, and leaves no capacity behind.
+            if (try_queue_write_locked(write)) {
+                ++next_enqueue_order_;
+                if (bulk) {
+                    ++outstanding_bulk_frames_;
+                    outstanding_bulk_bytes_ += reserved_bytes;
+                } else {
+                    ++outstanding_control_frames_;
+                    outstanding_control_bytes_ += reserved_bytes;
+                }
+                if (!write_in_flight_) {
+                    write_in_flight_ = true;
+                    dispatch = true;
+                }
+                accepted = true;
             } else {
-                ++outstanding_control_frames_;
-                outstanding_control_bytes_ += write.reserved_bytes;
+                handler = std::move(write.handler);
+                rejection = &kRejectQueueAllocation;
             }
-            write_queues_[stream_id].push_back(std::move(write));
-            ++queued_frames_;
-            if (was_empty) {
-                mark_stream_ready_locked(stream_id);
-            }
-            if (!write_in_flight_) {
-                write_in_flight_ = true;
-                dispatch = true;
-            }
-            accepted = true;
         }
     }
     if (!accepted && handler) {
-        handler(false, 0, rejection);
+        handler(false, 0, *rejection);
     }
-    if (!accepted && !bulk && rejection == "control write queue full") {
-        request_transport_close(rejection);
+    if (!accepted && !bulk && rejection == &kRejectControlFull) {
+        request_transport_close(*rejection);
     }
     if (dispatch) {
         dispatch_next_write();
@@ -163,6 +206,7 @@ TransportCore::DataWriteAdmission TransportCore::wait_send_data(
         bool dispatch = false;
         bool stopped = false;
         bool accepted = false;
+        bool enqueue_failed = false;
         ActivityHandler activity_handler;
         {
             std::scoped_lock lock(state_mu_, write_mu_);
@@ -179,26 +223,33 @@ TransportCore::DataWriteAdmission TransportCore::wait_send_data(
                     {static_cast<uint32_t>(data.size()), protocol::DATA,
                      stream_id, flags},
                     std::move(data)};
-                const bool was_empty = write_queues_[stream_id].empty();
                 PendingWrite write{
                     std::move(frame), std::move(handler), false, true,
-                    reserved_bytes, ++next_enqueue_order_};
-                ++outstanding_bulk_frames_;
-                outstanding_bulk_bytes_ += write.reserved_bytes;
-                write_queues_[stream_id].push_back(std::move(write));
-                ++queued_frames_;
-                if (was_empty) {
-                    mark_stream_ready_locked(stream_id);
+                    reserved_bytes, next_enqueue_order_ + 1};
+                if (try_queue_write_locked(write)) {
+                    ++next_enqueue_order_;
+                    ++outstanding_bulk_frames_;
+                    outstanding_bulk_bytes_ += reserved_bytes;
+                    if (!write_in_flight_) {
+                        write_in_flight_ = true;
+                        dispatch = true;
+                    }
+                    accepted = true;
+                } else {
+                    // A rejected admission never transfers ownership of the
+                    // completion, so nothing is settled here and nothing is
+                    // reserved. The caller reports the failure.
+                    data = std::move(write.frame.payload);
+                    handler = std::move(write.handler);
+                    enqueue_failed = true;
                 }
-                if (!write_in_flight_) {
-                    write_in_flight_ = true;
-                    dispatch = true;
-                }
-                accepted = true;
             }
         }
         if (stopped) {
             return DataWriteAdmission::stopped;
+        }
+        if (enqueue_failed) {
+            return DataWriteAdmission::failed;
         }
         if (accepted) {
             if (dispatch) dispatch_next_write();
@@ -357,7 +408,7 @@ TransportCore::WriteSelection TransportCore::select_write_item_locked(
 
 void TransportCore::fail_write_batch(std::vector<PendingWrite> batch,
                                      const std::string& error,
-                                     const std::string& close_prefix) {
+                                     const std::string& close_prefix) noexcept {
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
         for (const auto& item : batch) {
@@ -373,7 +424,17 @@ void TransportCore::fail_write_batch(std::vector<PendingWrite> batch,
             // Completion code is outside the scheduler trust boundary.
         }
     }
-    request_transport_close(close_prefix + error);
+    // Settling the batch is what this function exists for. Requesting the
+    // close builds a message and can itself fail under allocation pressure,
+    // so it must never be able to skip the settlement above.
+    try {
+        request_transport_close(close_prefix + error);
+    } catch (...) {
+        try {
+            request_transport_close(kRejectQueueAllocation);
+        } catch (...) {
+        }
+    }
 }
 
 void TransportCore::settle_write_batch(
@@ -406,20 +467,32 @@ void TransportCore::settle_write_batch(
                 : bytes;
         try {
             item.handler(completion_ok, item_bytes,
-                         stopped ? "transport stopped" : error);
+                         stopped ? kRejectStopped : error);
         } catch (...) {
             // Settle sibling writes even when an embedder callback fails.
         }
     }
     if (!ok) {
-        request_transport_close("write failed: " + error);
+        try {
+            request_transport_close("write failed: " + error);
+        } catch (...) {
+            try {
+                request_transport_close(kRejectQueueAllocation);
+            } catch (...) {
+            }
+        }
     } else if (dispatch) {
         dispatch_next_write();
     }
 }
 
-void TransportCore::dispatch_next_write() {
-    std::vector<PendingWrite> batch;
+// The caller has already claimed the dispatch slot, so every path out of a
+// dispatch must either hand the batch to a settlement helper or clear
+// write_in_flight_. dispatch_batch owns neither: `batch` belongs to the
+// noexcept caller below, which settles whatever survives a failure rather
+// than letting it unwind into the admitting caller or into the completion
+// handler that chained this dispatch.
+void TransportCore::dispatch_batch(std::vector<PendingWrite>& batch) {
     auto encoded = std::make_shared<Bytes>();
     std::vector<std::size_t> encoded_sizes;
     WriteHandler writer;
@@ -614,6 +687,18 @@ void TransportCore::dispatch_next_write() {
     } catch (...) {
         completion(false, 0, "transport writer threw an unknown exception");
     }
+}
+
+void TransportCore::dispatch_next_write() noexcept {
+    std::vector<PendingWrite> batch;
+    try {
+        dispatch_batch(batch);
+        return;
+    } catch (...) {
+        // Whatever dispatch_batch had already popped is still owned here.
+    }
+    fail_write_batch(std::move(batch), kRejectQueueAllocation,
+                     kDispatchFailurePrefix);
 }
 
 void TransportCore::resume_writes_after_rekey() {

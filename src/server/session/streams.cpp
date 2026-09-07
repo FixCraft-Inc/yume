@@ -22,6 +22,15 @@ namespace yume::server {
 
 using namespace detail;
 
+namespace {
+
+// Short enough for the small-string buffer, so closing a session because an
+// allocation failed does not need another allocation to succeed.
+constexpr const char* kCarrierWriteFailed = "carrier failed";
+constexpr const char* kFlushScheduleFailed = "flush failed";
+
+}  // namespace
+
 void Session::start_remote_read(uint8_t stream_id) {
     std::shared_ptr<RemoteStream> remote;
     {
@@ -481,8 +490,19 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                     close_with_reason("ratchet application queue overrun");
                     return;
                 }
-                ratchet_blocked_writes_.push_back(
-                    {frame, std::move(handler)});
+                RatchetBlockedWrite blocked{frame, std::move(handler)};
+                try {
+                    ratchet_blocked_writes_.push_back(std::move(blocked));
+                } catch (...) {
+                    // Nothing was queued and `blocked` still owns the
+                    // completion, so settle it once instead of dropping it.
+                    if (blocked.handler) {
+                        blocked.handler(boost::asio::error::no_buffer_space, 0);
+                    }
+                    close_with_reason(
+                        "ratchet application queue allocation failed");
+                    return;
+                }
 #if YUME_ENABLE_DEV_DIAGNOSTICS
                 if (YUME_TIMING_ENABLED()) {
                     if (!outbound_application_blocked_) {
@@ -603,14 +623,32 @@ void Session::flush_ratchet_blocked_writes_on_strand() {
 #endif
     auto pending = std::move(ratchet_blocked_writes_);
     ratchet_blocked_writes_.clear();
-    for (auto& write : pending) {
-        if (close_state_ != CloseState::Open) {
-            if (write.handler) {
-                write.handler(boost::asio::error::operation_aborted, 0);
+    // Every entry in this batch owns a completion. If re-queueing one throws,
+    // the remaining entries must still be settled rather than destroyed with
+    // their callers still waiting.
+    std::size_t index = 0;
+    try {
+        for (; index < pending.size(); ++index) {
+            auto& write = pending[index];
+            if (close_state_ != CloseState::Open) {
+                if (write.handler) {
+                    write.handler(boost::asio::error::operation_aborted, 0);
+                }
+                continue;
             }
-            continue;
+            queue_frame_on_strand(write.frame, std::move(write.handler));
         }
-        queue_frame_on_strand(write.frame, std::move(write.handler));
+    } catch (...) {
+        for (std::size_t rest = index; rest < pending.size(); ++rest) {
+            auto& write = pending[rest];
+            if (!write.handler) continue;
+            try {
+                write.handler(boost::asio::error::operation_aborted, 0);
+            } catch (...) {
+            }
+        }
+        close_with_reason("ratchet application queue flush failed");
+        return;
     }
     maybe_resume_inbound_reads_on_strand();
 }
@@ -633,6 +671,19 @@ void Session::arm_ratchet_timeout_on_strand() {
         }));
 }
 
+void Session::close_carrier_write_failure() {
+    // Describing the carrier's error needs an allocation that may be exactly
+    // what failed. Closing the session is the part that must always happen,
+    // so the detailed reason is best effort over a short fixed one.
+    try {
+        close_with_reason("v2 H2 carrier write failed: " +
+                          v2_h2_carrier_->error());
+        return;
+    } catch (...) {
+    }
+    close_with_reason(kCarrierWriteFailed);
+}
+
 void Session::queue_encoded_write_on_strand(
     std::shared_ptr<std::vector<uint8_t>> data,
     uint8_t frame_type,
@@ -652,18 +703,63 @@ void Session::queue_encoded_write_on_strand(
             close_with_reason("v2 H2 application write queue overrun");
             return;
         }
-        if (!v2_h2_carrier_->SendBinary(*data)) {
-            if (handler) handler(boost::asio::error::fault, 0);
-            close_with_reason("v2 H2 carrier write failed: " +
-                              v2_h2_carrier_->error());
+        // Record the completion owner before the bytes reach the carrier.
+        // Submitting first and only then recording would put application
+        // bytes on the wire with no owner left to settle their completion.
+        PendingWrite pending{std::move(data), frame_type, stream_id,
+                             payload_size, std::move(handler)};
+        try {
+            v2_h2_pending_app_writes_.push_back(std::move(pending));
+        } catch (...) {
+            // push_back is strongly exception safe: nothing was submitted and
+            // `pending` still owns its completion.
+            if (pending.handler) {
+                pending.handler(boost::asio::error::no_buffer_space, 0);
+            }
+            close_with_reason(
+                "v2 H2 application write queue allocation failed");
             return;
         }
-        v2_h2_pending_app_writes_.push_back(
-            {std::move(data), frame_type, stream_id, payload_size,
-             std::move(handler)});
         ++v2_h2_app_write_frames_;
         v2_h2_app_write_bytes_ += app_bytes;
-        schedule_v2_h2_wire_flush_on_strand();
+        bool submitted_to_carrier = true;
+        try {
+            const auto& submitted = v2_h2_pending_app_writes_.back().data;
+            submitted_to_carrier =
+                !submitted || v2_h2_carrier_->SendBinary(*submitted);
+        } catch (...) {
+            // A throwing carrier submission is a carrier failure. Roll the
+            // owner back and close rather than unwinding into the strand with
+            // the completion still queued.
+            submitted_to_carrier = false;
+        }
+        if (!submitted_to_carrier) {
+            PendingWrite rolled_back =
+                std::move(v2_h2_pending_app_writes_.back());
+            v2_h2_pending_app_writes_.pop_back();
+            --v2_h2_app_write_frames_;
+            v2_h2_app_write_bytes_ =
+                app_bytes <= v2_h2_app_write_bytes_
+                    ? v2_h2_app_write_bytes_ - app_bytes : 0U;
+            if (rolled_back.handler) {
+                try {
+                    rolled_back.handler(boost::asio::error::fault, 0);
+                } catch (...) {
+                    // The close below is the session's own cleanup and must
+                    // not depend on an embedder completion behaving.
+                }
+            }
+            close_carrier_write_failure();
+            return;
+        }
+        try {
+            schedule_v2_h2_wire_flush_on_strand();
+        } catch (...) {
+            // The bytes are with the carrier and their completion owner is
+            // recorded, but nothing is left to flush them. Close so the
+            // pending writes are settled instead of waiting forever.
+            close_with_reason(kFlushScheduleFailed);
+        }
         return;
     }
     enqueue_tls_write_on_strand(std::move(data), frame_type, stream_id,
@@ -694,17 +790,36 @@ void Session::enqueue_tls_write_on_strand(
         return;
     }
 
-    const bool was_empty = write_queues_[stream_id].empty();
     const std::size_t queued_bytes = data ? data->size() : 0;
-    write_queues_[stream_id].push_back(
-        {std::move(data), frame_type, stream_id, payload_size,
-         std::move(handler)});
+    PendingWrite pending{std::move(data), frame_type, stream_id, payload_size,
+                         std::move(handler)};
+    try {
+        write_queues_[stream_id].push_back(std::move(pending));
+    } catch (...) {
+        // Nothing was queued and `pending` still owns the completion, so
+        // settle it here rather than dropping it during unwind.
+        if (pending.handler) {
+            pending.handler(boost::asio::error::no_buffer_space, 0);
+        }
+        close_with_reason("write queue allocation failed");
+        return;
+    }
+    try {
+        mark_write_stream_ready_on_strand(stream_id);
+    } catch (...) {
+        // Undo the insertion rather than leave a frame the scheduler can
+        // never select. pop_back on a nonempty deque does not throw.
+        PendingWrite rolled_back = std::move(write_queues_[stream_id].back());
+        write_queues_[stream_id].pop_back();
+        if (rolled_back.handler) {
+            rolled_back.handler(boost::asio::error::no_buffer_space, 0);
+        }
+        close_with_reason("write scheduler allocation failed");
+        return;
+    }
     ++write_queued_frames_;
     write_queued_bytes_ += queued_bytes;
     write_queue_depth_++;
-    if (was_empty) {
-        mark_write_stream_ready_on_strand(stream_id);
-    }
     if (!write_in_flight_) {
         do_write();
     }
@@ -777,8 +892,11 @@ void Session::mark_write_stream_ready_on_strand(std::uint8_t stream_id) {
     const auto& head = write_queues_[stream_id].front();
     const int priority = std::clamp(
         frame_write_priority(head.frame_type, head.payload_size), 0, 4);
-    write_ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
+    // Publish the scheduler entry before its marker. A marker without a
+    // matching entry would suppress every later mark for this stream and
+    // strand its queued frames for the session's lifetime.
     write_ready_streams_[static_cast<std::size_t>(priority)].push_back(stream_id);
+    write_ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
 }
 
 Session::PendingWrite Session::pop_write_stream_head_on_strand(
@@ -792,7 +910,13 @@ Session::PendingWrite Session::pop_write_stream_head_on_strand(
     const std::size_t bytes = write.data ? write.data->size() : 0;
     write_queued_bytes_ = bytes <= write_queued_bytes_
         ? write_queued_bytes_ - bytes : 0;
-    mark_write_stream_ready_on_strand(stream_id);
+    try {
+        mark_write_stream_ready_on_strand(stream_id);
+    } catch (...) {
+        // The head is already owned by the caller and must reach its
+        // completion. A failed re-mark only defers this stream's remaining
+        // frames to the next enqueue or to close, which settles them.
+    }
     return write;
 }
 

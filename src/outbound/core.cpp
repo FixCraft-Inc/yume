@@ -5,6 +5,7 @@
  */
 
 #include "outbound/core.hpp"
+#include "core/protocol/frame_limits.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -19,6 +20,13 @@
 namespace yume::outbound {
 
 using namespace detail;
+
+namespace {
+
+// Shared so terminal shutdown can settle a queued write without allocating.
+const std::string kShutdownWriteReason = "transport stopped";
+
+}  // namespace
 
 std::optional<uint8_t> TransportCore::select_next_write_locked(
     std::size_t current_batch_bytes,
@@ -121,9 +129,8 @@ bool TransportCore::rekey_timed_out(
     return ratchet_ && ratchet_->rekey_timed_out(now);
 }
 
-std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
-    std::vector<CloseHandler> close_callbacks;
-    std::vector<WriteCompletion> write_callbacks;
+TransportCore::CloseHandlers TransportCore::shutdown() {
+    CloseHandlers close_callbacks;
     WriteHandler retired_write_handler;
     std::function<void(const std::string&)> retired_close_transport_handler;
     ReverseOpenHandler retired_reverse_handler;
@@ -143,11 +150,8 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
             return close_callbacks;
         }
         stopped_ = true;
-        close_callbacks.reserve(streams_.size());
         for (auto& entry : streams_) {
-            if (entry.second.on_close) {
-                close_callbacks.push_back(std::move(entry.second.on_close));
-            }
+            close_callbacks[entry.first] = std::move(entry.second.on_close);
         }
         streams_.clear();
         pending_open_.clear();
@@ -195,21 +199,10 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         // This closes the check-to-wait race: a waiter arriving after the
         // notification still observes shutdown while holding write_mu_.
         write_admission_stopped_ = true;
-        for (auto& queue : write_queues_) {
-            while (!queue.empty()) {
-                auto write = std::move(queue.front());
-                queue.pop_front();
-                release_write_reservation_locked(write);
-                if (write.handler) {
-                    write_callbacks.push_back(std::move(write.handler));
-                }
-            }
-        }
         for (auto& ready : ready_streams_) {
             ready.clear();
         }
         ready_priority_.fill(-1);
-        queued_frames_ = 0;
         // An active carrier write retains its reservation until its final
         // completion. Keeping write_in_flight_ set prevents a late callback
         // from starting another dispatch after shutdown.
@@ -221,8 +214,27 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         incomplete_inbound_credit_bytes,
         std::move(retired_credit_release_handler));
     incomplete_credit.release_now();
-    for (auto& callback : write_callbacks) {
-        callback(false, 0, "transport stopped");
+    // Admission and dispatch both observe stopped_. Drain one write at a
+    // time so shutdown needs no callback container allocation. Invoke and
+    // destroy each completion outside the mutex: it can reenter the core.
+    for (auto& queue : write_queues_) {
+        for (;;) {
+            PendingWrite write;
+            {
+                std::lock_guard<std::mutex> write_lock(write_mu_);
+                if (queue.empty()) break;
+                write = std::move(queue.front());
+                queue.pop_front();
+                --queued_frames_;
+                release_write_reservation_locked(write);
+            }
+            if (!write.handler) continue;
+            try {
+                write.handler(false, 0, kShutdownWriteReason);
+            } catch (...) {
+                // A throwing completion must not skip its siblings.
+            }
+        }
     }
     return close_callbacks;
 }
@@ -698,7 +710,8 @@ void TransportCore::feed_tls_bytes(const uint8_t* data,
                 if (!fatal_reason) {
                     const auto header = parse_header(incoming_header_.data());
                     incoming_header_bytes_ = 0;
-                    if (header.len > kMaxFramePayloadBytes) {
+                    if (header.len > protocol::frame_payload_limit(
+                                         header.type, header.flags)) {
                         fatal_reason = "frame too large";
                     } else {
                         incoming_frame_.emplace();

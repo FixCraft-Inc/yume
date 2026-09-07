@@ -8,6 +8,10 @@ on:
       - "docs/**"
       - "CONTRIBUTING.md"
       - "scripts/sync_website_docs.sh"
+      - "scripts/yume_diagrams.py"
+      - "scripts/yume_diagram_ascii.py"
+      - "scripts/yume_diagram_spec.py"
+      - "scripts/yume_diagram_svg.py"
       - "scripts/check_website_catalog.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -33,6 +37,9 @@ jobs:
 
       - name: Sync docs into website
         run: bash scripts/sync_website_docs.sh
+
+      - name: Check the generated diagrams
+        run: python3 scripts/yume_diagrams.py check
 
       - name: Validate website catalog
         run: |

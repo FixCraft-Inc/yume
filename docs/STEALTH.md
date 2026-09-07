@@ -1,6 +1,7 @@
 # YUME stealth transport
 
-Status: transport-profile and evidence analysis for the runnable 0.2 runtime.
+This page describes transport profiles and evidence for the default
+transport-v2 runtime.
 The YTP/1 foundation does not yet wire the native TLS 1.3 secure
 channel, HTTP/2 front door or carrier, replay-protected admission, or
 production YTP/1 security provider. See the current
@@ -71,10 +72,14 @@ transport has no public-key-only or empty-secret public-node mode.
 
 Admission binds the transport version, the transport profile, normalized SNI,
 an hour bucket, and a random nonce with HMAC-SHA256. The nonce enters a bounded
-replay cache. TLS SNI and HTTP/2 `:authority` must agree.
+replay cache shared by sessions in one process. It retains at most 4096
+nonces for two hours and refuses new admissions when full, preserving live
+replay entries. Restart loses that state, and clock changes affect validity
+and expiry. TLS SNI and HTTP/2 `:authority` must agree.
 
-Malformed, expired, replayed, wrong-secret, or authority-mismatched requests do
-not receive an AUTH message. They take a bounded ordinary cover path. A later
+Malformed, expired, cached-replay, wrong-secret, authority-mismatched or
+cache-saturated requests do not receive an AUTH message. They take a bounded
+cover path. A later
 PSK or transcript failure closes the admitted carrier without a plaintext YUME
 marker or downgrade response.
 
@@ -100,8 +105,10 @@ like the target cover server.
 
 ## What observers can still see
 
-A passive network observer can see the destination IP, certificate, ClientHello,
-TLS record sizes, timing, duration, and transferred volume. A hosting provider
+A passive network observer can see the destination IP, ClientHello (including
+SNI), TLS record sizes, timing, duration, and transferred volume. TLS 1.3
+encrypts the certificate exchange, although an active peer can inspect the
+certificate by connecting. A hosting provider
 can also see the daemon's outbound destinations. The terminating daemon sees
 authenticated client identities, requested targets, and decrypted YUME stream
 bytes unless an application protocol such as HTTPS protects them end to end.
@@ -191,7 +198,7 @@ process memory have different consequences. Recovery requires fresh
 uncompromised contributions. It is not correct to say that every key becomes
 useless after a fixed number of milliseconds.
 
-The archived [transport-v2 wire contract](https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs/protocol/YUME_2_0_WIRE.md)
+The [transport-v2 wire contract](protocol/YUME_2_0_WIRE.md)
 records the runnable product's record and ratchet formulas. The
 [YTP/1 kernel contract](protocol/YTP_1.md) records the replacement's canonical
 encodings, fixed security constants, and exact unfinished cryptographic/runtime

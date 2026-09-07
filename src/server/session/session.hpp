@@ -60,6 +60,7 @@ namespace yume::server {
 
 class Manager;
 struct SessionControlSurvivalTestPeer;
+struct SessionAuthPublicationTestPeer;
 struct SessionReverseListenerTestPeer;
 struct SessionStreamReservationTestPeer;
 
@@ -132,6 +133,8 @@ public:
 
 private:
     friend struct SessionControlSurvivalTestPeer;
+    friend struct SessionAuthPublicationTestPeer;
+    friend struct SessionFrameBudgetTestPeer;
 
     struct PendingWrite;
 
@@ -358,6 +361,9 @@ private:
                                bool already_protected = false);
     void flush_ratchet_blocked_writes_on_strand();
     void arm_ratchet_timeout_on_strand();
+    // Close this session after the HTTP/2 carrier refused a write, with a
+    // detailed reason only when describing it is possible.
+    void close_carrier_write_failure();
     void queue_encoded_write_on_strand(
         std::shared_ptr<std::vector<uint8_t>> data,
         uint8_t frame_type,
@@ -404,7 +410,7 @@ private:
     // The separate admin store. Deliberately not merged with authorized_keys_:
     // a key being in one list must never imply membership of the other.
     std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys_;
-    // Set only by a verified second factor in verify_auth_response(). Nothing
+    // Set only by a verified second factor in handle_auth(). Nothing
     // else may write it, and no policy flag can produce it.
     bool admin_authenticated_{false};
     std::string admin_fingerprint_;
@@ -757,6 +763,7 @@ private:
 
     friend struct SessionReverseListenerTestPeer;
     friend struct SessionStreamReservationTestPeer;
+    friend struct SessionAsyncCleanupTestPeer;
     bool transport_shutdown_in_flight_{false};
     bool closed_{false};
     std::string close_reason_;

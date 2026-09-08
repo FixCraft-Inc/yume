@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/implementation_status.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME implementation status
 
 This page is the public support boundary for the live source tree. It uses
@@ -134,8 +135,8 @@ describe that implementation. It remains the default until YTP/1 passes tunnel,
 cover, routing, embedding, packaging, and qualification parity.
 
 The GUI, federation, relay applications, and codecs are working parts of this
-runtime. Their replacement or retirement is planned separately from the first
-YTP/1 endpoint.
+runtime and remain available during stabilization. Their scope in the
+replacement remains undecided.
 
 The runnable product enforces these boundaries:
 

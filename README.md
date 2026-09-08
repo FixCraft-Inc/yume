@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME
 
 YUME carries TCP, UDP, and packet traffic over an authenticated, browser-shaped

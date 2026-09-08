@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/abi.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME C ABI v1
 
 `include/yume/yume.h` is the experimental candidate for YUME's future stable

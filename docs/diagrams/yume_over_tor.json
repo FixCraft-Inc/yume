@@ -4,9 +4,6 @@
   "title": "YUME over Tor",
   "summary": "The YUME carrier itself travels through client-side Tor, so yumed sees a Tor exit instead of the client address.",
   "targets": {
-    "man": [
-      "docs/man/yume.1"
-    ],
     "web": true
   },
   "nodes": [
@@ -26,13 +23,15 @@
       "id": "client_tor",
       "kind": "tor",
       "title": "CLIENT TOR",
-      "sub": "carries YUME carrier"
+      "sub": "carries YUME carrier",
+      "group": "CLIENT-SIDE TOR"
     },
     {
       "id": "tor_exit",
       "kind": "tor",
       "title": "TOR EXIT",
-      "sub": "client-side edge"
+      "sub": "client-side edge",
+      "group": "CLIENT-SIDE TOR"
     },
     {
       "id": "yumed_server",

@@ -1,0 +1,160 @@
+#!yume-doc 1
+name:     packet_native_bulk
+kind:     page
+title:    Packet-native bulk mode
+summary:  The current packet service and the unfinished YTP/1 packet-channel contract that replaces it.
+markdown: docs/PACKET_NATIVE_BULK.md
+web:      yes
+---
+> **Runnable transport-v2 path:** this document describes the current packet
+> service. First-class YTP/1 packet channels are an unfinished replacement
+> contract documented in the
+> [YTP/1 foundation page](development/ytp1/README.md#packet-channels).
+
+Packet-bulk mode carries batches of IP packets through one authenticated
+YUME stream.
+
+@diagram packet_bulk
+
+## Shape
+
+- Outer carrier stays the existing browser-oriented TLS 1.3 / HTTP/2-opening
+  connection. No raw UDP mode is introduced for the default stealth path.
+- Inner crypto is mandatory. Packet batches
+  are carried inside normal encrypted `DATA` frames, so the AEAD AAD still
+  binds the frame type and stream id.
+- The capability is `packet_bulk_v1`. A capable client opens one long-lived
+  stream with `proto=packet-bulk-v1` after the server advertises support.
+- The stream payload is a `YBP1` batch: header, monotonic 63-bit sequence,
+  packet count, then raw IP packets as length-prefixed byte strings.
+
+## Packet and stream routing
+
+Routing each TCP flow through a separate YUME stream requires per-flow sockets,
+buffers, OPEN/CLOSE frames, and backpressure. Packet mode moves the TUN boundary
+into YUME and shares one packet channel across application flows.
+
+An Android packet adapter follows this sequence:
+
+- Android reads TUN packets, batches them for up to a small byte/time budget,
+  and sends one encrypted `DATA` frame on the packet stream.
+- The server decodes the batch and writes packets to a server-side packet
+  egress path/NAT instead of opening one remote socket per app flow.
+- Downstream packets follow the same stream back to Android and are written
+  directly to the TUN fd.
+
+The outer TLS/H2 carrier remains the same. Android integration is a separate
+qualification target.
+
+## Server egress v1
+
+`yumed` only enables packet mode when explicitly configured:
+
+@code bash
+yumed --packet-egress tun \
+      --packet-tun-name yume-pkt0 \
+      --packet-cidr 10.89.0.0/24 \
+      --packet-mtu 1420 \
+      --dns-server 192.0.2.53
+@end
+
+`--dns-server` is required, not defaulted. Its address is handed to every
+client that enters packet mode, so whoever operates that resolver observes
+every hostname those clients look up. Startup refuses packet egress until an
+IPv4 resolver is named, so that observer is always an operator decision.
+
+The Linux TUN address and NAT are operator-prepared in v1. `yumed` attaches
+to that TUN, allocates client IPv4 addresses from the CIDR, writes validated
+client packets to the TUN, and demuxes TUN replies by destination client IP.
+If the TUN cannot be attached, packet mode fails closed and the server does
+not advertise `packet_bulk_v1`.
+
+### Optional host-network helper
+
+`yumed` deliberately does not run firewall or routing commands. Linux
+administrators who want a `wg-quick`-style setup can use the separate,
+explicit `yume-packet-quick` helper. Review its complete plan first:
+
+@code bash
+tools/yume_packet_quick.py up \
+  --listen 192.168.1.10:8443 \
+  --allow-from 192.168.1.0/24 \
+  --dry-run
+@end
+
+Then apply it through `sudo`:
+
+@code bash
+sudo tools/yume_packet_quick.py up \
+  --listen 192.168.1.10:8443 \
+  --allow-from 192.168.1.0/24
+@end
+
+The helper creates one user-owned TUN, enables IPv4 forwarding, creates one
+named nftables NAT table scoped to the packet CIDR, and, when UFW is active,
+adds only the matching TCP ingress and routed-egress rules. It prompts before
+mutation, refuses to adopt an existing interface/table, never flushes or
+changes default firewall policy, and records non-secret state under
+`/run/yume-packet-quick/`. Remove only those recorded resources with:
+
+@code bash
+sudo tools/yume_packet_quick.py down
+@end
+
+Use `--firewall none` only when another firewall manager already supplies the
+required input and forwarding policy. These changes remain opt-in and are not
+performed by normal `yumed` startup.
+
+## Linux client TUN
+
+The CLI can attach the authenticated packet channel directly to an existing
+Linux TUN without starting a SOCKS listener:
+
+@code bash
+yume --config config/yume.json --packet-tun yume-client0
+@end
+
+The interface must already exist and be accessible to the process. Yume opens
+it as `IFF_TUN|IFF_NO_PI`, prints the server-assigned IPv4 address, MTU, and
+DNS values, and moves complete IPv4 packets between the TUN and one
+`packet-bulk-v1` stream. It does not create the interface or change addresses,
+routes, DNS, firewall policy, persistence, ownership, or NAT.
+
+The reusable packet engine admits writes all-or-none, batches for at most
+2 ms up to 64 packets / 128 KiB, and bounds both directions to 1024 packets /
+4 MiB. Sequence zero is required first and every later batch must increment
+exactly. Malformed, duplicate, regressed, exhausted, IPv6, wrong-address, or
+over-MTU traffic closes the packet channel while leaving the authenticated
+tunnel available to other adapters.
+
+After the packet engine dequeues and sequence-numbers a batch, the channel
+retains that exact encoded payload until the bounded transport queue admits it.
+Temporary saturation is retried in bounded slices rather than closing the
+channel or skipping a sequence. Transport shutdown wakes the admission wait;
+local channel shutdown is observed between slices, so teardown cannot wait
+indefinitely on capacity. A transport that has capacity but cannot take
+ownership of the batch is a terminal refusal for that batch rather than a
+retry, because nothing was queued and no sequence was consumed. Deterministic
+saturation/recovery and stop tests pin these guarantees. This closes the
+source-side loss defect but does not by itself qualify the Android always-on
+VPN path.
+
+## Packet C ABI work
+
+`yume_endpoint_open_packet` returns `YUME_STATUS_UNSUPPORTED`. Completing it
+and restoring the `yume-abi-tun` diagnostic adapter remain integration work.
+Use `yume --packet-tun` to exercise the current in-process adapter.
+
+## Security invariants
+
+- No change to the v1 top-level frame header.
+- No plaintext packet payloads: packet batches are sent only after the current
+  inner crypto setup has completed, and they use the same encrypted `DATA`
+  path as TCP/UDP stream bytes.
+- Sequence numbers are part of the encrypted batch payload and are reserved
+  for replay/drop accounting in the packet engine.
+- Android IPv6 is still fail-closed for packet-native v1. The VPN must block it
+  explicitly; feeding IPv6 into native closes the packet channel, while omitting
+  an IPv6 route without a block can leak traffic outside the VPN.
+- Packet egress is an operator-controlled server network path. Firewall and
+  NAT policy for that TUN must enforce the site's allowed destinations.

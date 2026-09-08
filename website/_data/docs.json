@@ -4,189 +4,189 @@
     "summary": "Build, provision, and connect the transport-v2 client and daemon.",
     "url": "/docs/QUICKSTART/",
     "source": "docs/QUICKSTART.md",
-    "home_group": "Start here",
     "landing_group": "Start here",
-    "order": 5
+    "order": 5,
+    "home_group": "Start here"
   },
   {
     "title": "YTP/1 foundation",
     "summary": "Build experimental providers and create a schema-1 kit. These components do not yet form a working endpoint.",
     "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md",
     "source": "docs/development/ytp1/README.md",
-    "home_group": "Start here",
     "landing_group": "Start here",
-    "order": 10
+    "order": 10,
+    "home_group": "Start here"
   },
   {
     "title": "YUME explained",
     "summary": "Follow application traffic through transport v2, then compare the planned YTP/1 connection path.",
     "url": "/docs/EXPLAINED/",
     "source": "docs/EXPLAINED.md",
-    "home_group": "Start here",
     "landing_group": "Start here",
-    "order": 20
+    "order": 20,
+    "home_group": "Start here"
   },
   {
     "title": "Why YUME",
     "summary": "The transport's goals, security contract, and dependency choices.",
     "url": "/docs/WHY_YUME/",
     "source": "docs/WHY_YUME.md",
-    "home_group": "Start here",
     "landing_group": "Start here",
-    "order": 25
+    "order": 25,
+    "home_group": "Start here"
   },
   {
     "title": "Stealth transport",
     "summary": "Browser-shaped TLS, the HTTP/2 carrier, the cover site, and the remaining differences.",
     "url": "/docs/STEALTH/",
     "source": "docs/STEALTH.md",
-    "home_group": "Start here",
     "landing_group": "Security and transport",
-    "order": 30
+    "order": 30,
+    "home_group": "Start here"
   },
   {
     "title": "YTP/1 threat model",
     "summary": "The intended replacement's attacker, operator, endpoint, and metadata boundaries.",
     "url": "/docs/THREAT_MODEL/",
     "source": "docs/THREAT_MODEL.md",
-    "home_group": "Start here",
     "landing_group": "Security and transport",
-    "order": 40
+    "order": 40,
+    "home_group": "Start here"
   },
   {
     "title": "Transport-v2 security modes",
     "summary": "The authenticated rekey policies retained by the runnable tunnel and not inherited by YTP/1.",
     "url": "/docs/SECURITY_MODES/",
     "source": "docs/SECURITY_MODES.md",
-    "home_group": "Start here",
     "landing_group": "Security and transport",
-    "order": 50
+    "order": 50,
+    "home_group": "Start here"
   },
   {
     "title": "Transport-v2 permissions",
     "summary": "Current key admission, per-key metadata, and privileged-feature checks.",
     "url": "/docs/PERMISSIONS/",
     "source": "docs/PERMISSIONS.md",
-    "home_group": "Start here",
     "landing_group": "Security and transport",
-    "order": 60
+    "order": 60,
+    "home_group": "Start here"
   },
   {
     "title": "Operations",
     "summary": "Current deployment, services, release verification, limits, and troubleshooting.",
     "url": "/docs/OPERATIONS/",
     "source": "docs/OPERATIONS.md",
-    "home_group": "Operating",
     "landing_group": "Start here",
-    "order": 70
+    "order": 70,
+    "home_group": "Operating"
   },
   {
     "title": "Packaging",
     "summary": "Local installs, man pages, and the Debian package split.",
     "url": "/docs/PACKAGING/",
     "source": "docs/PACKAGING.md",
-    "home_group": "Operating",
     "landing_group": "Reference and development",
-    "order": 80
+    "order": 80,
+    "home_group": "Operating"
   },
   {
     "title": "Transport-v2 SOCKS bypass prevention",
     "summary": "Browser proxy settings, route checks, and the operating-system kill-switch boundary for the runnable tunnel.",
     "url": "/docs/LEAK_TIGHT/",
     "source": "docs/LEAK_TIGHT.md",
-    "home_group": "Operating",
     "landing_group": "Operating",
-    "order": 90
+    "order": 90,
+    "home_group": "Operating"
   },
   {
     "title": "Transport-v2 filtering and cover",
     "summary": "Current public-listener, active-probe, cover, and self-DPI behavior.",
     "url": "/docs/FILTERING_SELF_DPI/",
     "source": "docs/FILTERING_SELF_DPI.md",
-    "home_group": "Operating",
     "landing_group": "Security and transport",
-    "order": 100
+    "order": 100,
+    "home_group": "Operating"
   },
   {
     "title": "Diagnostics",
     "summary": "Current developer timing hooks, private evidence handling, and result limits.",
     "url": "/docs/DIAGNOSTICS/",
     "source": "docs/DIAGNOSTICS.md",
-    "home_group": "Operating",
     "landing_group": "Operating",
-    "order": 110
+    "order": 110,
+    "home_group": "Operating"
   },
   {
     "title": "Transport profiles",
     "summary": "How a captured browser and server identity enter the immutable registry.",
     "url": "/docs/TRANSPORT_PROFILES/",
     "source": "docs/TRANSPORT_PROFILES.md",
-    "home_group": "Operating",
     "landing_group": "Security and transport",
-    "order": 120
+    "order": 120,
+    "home_group": "Operating"
   },
   {
     "title": "Source map",
     "summary": "Which directory owns what, which of the two stacks a file belongs to, and where layering is enforced.",
     "url": "/docs/SOURCE_MAP/",
     "source": "docs/SOURCE_MAP.md",
-    "home_group": "Internals and status",
     "landing_group": "Reference and development",
-    "order": 125
+    "order": 125,
+    "home_group": "Internals and status"
   },
   {
     "title": "YTP/1 architecture",
     "summary": "Replacement component ownership, dependency direction, and runtime boundaries.",
     "url": "/docs/ARCHITECTURE/",
     "source": "docs/ARCHITECTURE.md",
-    "home_group": "Internals and status",
     "landing_group": "Reference and development",
-    "order": 130
+    "order": 130,
+    "home_group": "Internals and status"
   },
   {
     "title": "Experimental C ABI",
     "summary": "The replacement candidate's lifetime rules, statuses, symbols, and freeze gates.",
     "url": "/docs/ABI/",
     "source": "docs/ABI.md",
-    "home_group": "Internals and status",
     "landing_group": "Reference and development",
-    "order": 140
+    "order": 140,
+    "home_group": "Internals and status"
   },
   {
     "title": "Transport-v2 control API",
     "summary": "JSON operations used by transport-v2 runtime IPC and the optional GUI.",
     "url": "/docs/CONTROL_API/",
     "source": "docs/CONTROL_API.md",
-    "home_group": "Internals and status",
     "landing_group": "Reference and development",
-    "order": 145
+    "order": 145,
+    "home_group": "Internals and status"
   },
   {
     "title": "YTP/1 protocol",
     "summary": "The bounded canonical transport kernel and its still-open provider and runtime boundaries.",
     "url": "/docs/protocol/YTP_1/",
     "source": "docs/protocol/YTP_1.md",
-    "home_group": "Internals and status",
     "landing_group": "Security and transport",
-    "order": 150
+    "order": 150,
+    "home_group": "Internals and status"
   },
   {
     "title": "Implementation status",
     "summary": "What exists, what has focused tests, and what still blocks a stable release.",
     "url": "/docs/IMPLEMENTATION_STATUS/",
     "source": "docs/IMPLEMENTATION_STATUS.md",
-    "home_group": "Internals and status",
     "landing_group": "Start here",
-    "order": 160
+    "order": 160,
+    "home_group": "Internals and status"
   },
   {
     "title": "Tests and benchmarks",
     "summary": "Current transport benchmarks, focused checks, and what each result can establish.",
     "url": "/docs/SELFTEST/",
     "source": "docs/SELFTEST.md",
-    "home_group": "Internals and status",
     "landing_group": "Reference and development",
-    "order": 170
+    "order": 170,
+    "home_group": "Internals and status"
   },
   {
     "title": "Full documentation map",

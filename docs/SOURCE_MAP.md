@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/source_map.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME source map
 
 The default client and daemon use transport v2. YTP/1 is the experimental
@@ -130,13 +131,14 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
   `client/cli/config/config.cpp` and `server/cli/config_load.cpp` serve the
   CLI. `facade/config/client_config_io.cpp` and
   `facade/config/server_config_io.cpp` serve the GUI and the C ABI. Within a
-  role they share only the closed key table
-  (`config/client_document_keys.hpp`, `config/server_document_keys.hpp`), so a
-  new key or bound has to be added to both. They still diverge on which
-  numeric ranges they enforce and where, and the facade server parser reads a
-  narrower set of fields than it validates. The shared closed-key validator
-  rejects explicit JSON `null` in every parser; an absent optional field can
-  still select its documented default. Other value rules remain duplicated.
+  role they share the closed key table
+  (`config/client_document_keys.hpp`, `config/server_document_keys.hpp`) and
+  ratchet-profile parsing (`config/ratchet_profile_json.hpp`). Other field/range
+  rules, path resolution and writer coverage remain separately implemented.
+  Parsing, validation and startup apply checks at different stages, so parser
+  acceptance alone does not establish that a configuration can run. The shared
+  closed-key validator rejects explicit JSON `null` in every parser. An absent
+  optional field can still select its documented default.
 - **Authorization parsing is shared; publication belongs to the caller.**
   `server/auth/authorized_identity_store.*` owns the identity grammar used by
   CLI/facade key management and daemon startup/reload. They use
@@ -164,3 +166,12 @@ individually in `src/CMakeLists.txt`. Integration and system tests live in
 `tests/`. The end-to-end ABI data path is `yume_abi_stream_integration`, which
 provisions a real server and client and moves bytes over a named service
 stream.
+
+## Documentation tooling
+
+`docs/src/en_US/` owns documentation text and publication metadata;
+`scripts/yume_doc_spec.py` parses it once for Markdown, roff and web renderers.
+`scripts/yume_docs.py` collects and validates all outputs before replacing
+changed files. `docs/diagrams/*.json` owns figure topology and labels, while
+`@diagram` in a document owns placement. Website colors and fonts also drive
+standalone SVGs. See [the authoring guide](src/README.md).

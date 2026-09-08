@@ -4,12 +4,6 @@
   "title": "Direct YUME route",
   "summary": "An application reaches the target through the YUME client and yumed, which opens the outbound socket.",
   "targets": {
-    "man": [
-      "docs/man/yume.1"
-    ],
-    "markdown": [
-      "docs/EXPLAINED.md"
-    ],
     "web": true
   },
   "nodes": [

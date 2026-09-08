@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/ytp1_readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YTP/1 foundation: setup, contracts, and gates
 
 YUME 0.3 is being rebuilt around an experimental C ABI and YTP/1. This page

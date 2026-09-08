@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/leak_tight.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Preventing SOCKS bypass
 
 YUME's SOCKS listener carries only the connections that an application sends

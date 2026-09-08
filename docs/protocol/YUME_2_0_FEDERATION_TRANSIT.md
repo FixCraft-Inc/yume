@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/yume_2_0_federation_transit.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME transport-v2 federation transit design
 
 This is a design proposal for transport-v2 multi-hop federation. Transit is

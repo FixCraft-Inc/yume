@@ -1805,10 +1805,11 @@ tbody tr:last-child td {
   overflow-x: auto;
 }
 
+/* A grouped route is taller than a plain one, so the figure keeps whatever
+   height it was drawn at rather than being pinned to one. */
 .diagram-wide .dgm-horizontal {
   width: auto;
   max-width: none;
-  height: 10.75rem;
 }
 
 .diagram figcaption {
@@ -1838,128 +1839,21 @@ tbody tr:last-child td {
   line-height: 1.35;
 }
 
-.dgm-card {
-  fill: var(--color-cloud);
-  stroke: var(--color-rule);
-  stroke-width: 1.5;
+/* Paint, type, and motion live in the SVG itself, in scripts/yume_diagram_svg.py,
+   so one file styles a diagram whether the site inlines it, GitHub draws it from
+   Markdown, or someone opens it on its own. Its stylesheet reads the tokens
+   above first, so the theme toggle still recolours it. What is left here is the
+   page context an SVG cannot know. */
+
+/* The page already paints a ground under the figure, so the standalone one
+   would only draw a box around it. */
+.diagram {
+  --dgm-plate-opacity: 0;
 }
 
-.dgm-node-client .dgm-card,
-.dgm-node-server .dgm-card {
-  stroke: var(--color-accent);
-}
-
-.dgm-title {
-  fill: var(--color-ink);
-  font-family: var(--font-display);
-  font-size: 0.875rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.dgm-sub,
-.dgm-edge-label {
-  fill: var(--color-muted);
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-}
-
-.dgm-title-centred,
-.dgm-sub-centred,
-.dgm-edge-label-centred {
-  text-anchor: middle;
-}
-
-.dgm-glyph {
-  fill: none;
-  stroke: var(--color-accent-strong);
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.dgm-glyph-fill {
-  fill: var(--color-accent-strong);
-  stroke: none;
-}
-
-.dgm-link {
-  fill: none;
-  stroke: var(--color-accent);
-  stroke-width: 2;
-  opacity: 0.55;
-}
-
-/* A tunnelled hop is drawn as a channel with walls. The centre line fades so
-   the two rails carry it, which is what the ASCII spells as ==YUME==>. */
-.dgm-link-tunnel {
-  opacity: 0.2;
-}
-
-.dgm-link-onion {
-  stroke-dasharray: 3 4;
-}
-
-.dgm-link-rail {
-  fill: none;
-  stroke: var(--color-accent-strong);
-  stroke-width: 1.5;
-  opacity: 0.7;
-}
-
-.dgm-arrow {
-  fill: var(--color-accent-strong);
-}
-
-.dgm-marker {
-  fill: var(--color-paper);
-  stroke: var(--color-accent-strong);
-  stroke-width: 2;
-}
-
-.dgm-packet-core {
-  fill: var(--color-accent-strong);
-}
-
-.dgm-packet-glow {
-  fill: var(--color-accent);
-  opacity: 0.22;
-}
-
-@keyframes dgm-travel {
-  from {
-    offset-distance: 0%;
-  }
-
-  to {
-    offset-distance: 100%;
-  }
-}
-
-@supports (offset-path: path("M0 0")) {
-  .dgm-packet {
-    offset-path: var(--dgm-path);
-    offset-rotate: 0deg;
-    offset-distance: 0%;
-    animation: dgm-travel var(--dgm-dur, 6s) linear infinite;
-  }
-
-  /* initDiagramMotion marks figures that have left the viewport. Without
-     JavaScript nothing is marked and the packet simply keeps travelling. */
-  .diagram.is-offscreen .dgm-packet {
-    animation-play-state: paused;
-  }
-}
-
-@supports not (offset-path: path("M0 0")) {
-  .dgm-packet {
-    display: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dgm-packet {
-    offset-distance: 0%;
-    animation: none;
-  }
+/* initDiagramMotion marks figures that have left the viewport. Without
+   JavaScript nothing is marked and the carrier simply keeps moving. */
+.diagram.is-offscreen .dgm-packet,
+.diagram.is-offscreen .dgm-conduit-flow {
+  animation-play-state: paused;
 }

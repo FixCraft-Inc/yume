@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/packaging.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME transition packaging
 
 ## Current install contract

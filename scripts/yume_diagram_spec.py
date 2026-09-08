@@ -9,7 +9,7 @@ the man pages and the Markdown documentation and the animated SVG on the
 website, so every renderer reads its input through this module.
 
 The key tables are closed. An unknown key, an unknown node kind, an edge that
-names a missing node, or a label that cannot fit the fixed ASCII box widths is
+names a missing node, or a label that cannot fit an SVG card tier is
 a hard error rather than a silently dropped field.
 """
 
@@ -24,8 +24,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SPEC_DIR = REPO_ROOT / "docs" / "diagrams"
 
-# scripts/check_ascii_diagrams.py accepts these two box widths and nothing
-# else, so a manpage-width terminal renders every diagram identically.
+# A specification holds the topology and the source-language strings. A
+# translation supplies only the strings, for every diagram at once, so adding
+# a language adds one file rather than one file per figure.
+SOURCE_LANGUAGE = "en_US"
+STRINGS_DIR = REPO_ROOT / "docs" / "src"
+STRINGS_NAME = "diagrams.json"
+
+STRINGS_KEYS = {"title", "summary", "nodes", "edges", "groups"}
+STRINGS_NODE_KEYS = {"title", "sub"}
+STRINGS_EDGE_KEYS = {"label"}
+
+# SVG card tiers. ASCII uses content-sized boxes and a separate terminal budget.
 NARROW_WIDTH = 34
 WIDE_WIDTH = 72
 
@@ -47,7 +57,19 @@ NODE_KINDS = (
     "tor",
     "tun",
     "cloud",
+    "process",
+    "file",
 )
+
+# The kinds that are YUME software. The SVG gives those cards the accent rule
+# so a reader can see at a glance which hops this project runs and which it
+# only talks to. It is a software boundary, not a trust claim: yumed still
+# terminates the tunnel and sees the traffic it forwards.
+YUME_OWNED_KINDS = ("client", "server", "relay", "tun")
+
+# A group title is drawn above the nodes it encloses, so it has to stay short
+# enough not to widen the figure past the run it names.
+GROUP_TITLE_LIMIT = 28
 
 # A channel says what kind of link an edge is. It selects the ASCII arrow
 # token and the SVG stroke treatment together, so the two renderings cannot
@@ -70,8 +92,8 @@ SPEC_KEYS = {
     "nodes",
     "edges",
 }
-TARGET_KEYS = {"man", "markdown", "web"}
-NODE_KEYS = {"id", "kind", "title", "sub"}
+TARGET_KEYS = {"web"}
+NODE_KEYS = {"id", "kind", "title", "sub", "group"}
 EDGE_KEYS = {"from", "to", "label", "channel"}
 
 
@@ -85,6 +107,7 @@ class Node:
     kind: str
     title: str
     sub: str = ""
+    group: str = ""
 
 
 @dataclass
@@ -120,11 +143,27 @@ class Spec:
     edges: list[Edge] = field(default_factory=list)
 
     def box_width(self) -> int:
-        """The ASCII box width, either declared or picked from the labels."""
+        """The card size tier, either declared or picked from the labels.
+
+        Two tiers, because the SVG sizes a card without font metrics and has
+        to pick between two drawn widths. The ASCII form sizes each figure to
+        its own longest label instead, which is what `ascii_width` returns.
+        """
         longest = max(max(len(n.title), len(n.sub)) for n in self.nodes)
         if self.width:
             return self.width
         return NARROW_WIDTH if longest <= NARROW_WIDTH - 4 else WIDE_WIDTH
+
+    def ascii_width(self) -> int:
+        """The drawn box width for the ASCII form, sized to this figure.
+
+        A terminal has no font metrics to worry about, so a figure that says
+        less should be narrower rather than padded out to a shared tier. The
+        five columns are the two borders, the two-space left pad, and the
+        single trailing space before the right border.
+        """
+        longest = max(max(len(n.title), len(n.sub)) for n in self.nodes)
+        return longest + 5
 
     def edge_into(self, index: int) -> Edge | None:
         """The edge entering nodes[index], or None for the first node."""
@@ -215,6 +254,7 @@ def parse(path: Path) -> Spec:
     _parse_nodes(document, spec, path)
     _parse_edges(document, spec, path)
     _check_widths(spec, path)
+    _check_groups(spec, path)
     return spec
 
 
@@ -223,27 +263,9 @@ def _parse_targets(document: dict, spec: Spec, path: Path) -> None:
     _require(isinstance(targets, dict), path, "targets must be an object")
     _closed(targets, TARGET_KEYS, path, "targets")
 
-    for key, destination in (("man", spec.man_targets), ("markdown", spec.markdown_targets)):
-        listed = targets.get(key, [])
-        _require(
-            isinstance(listed, list) and all(isinstance(item, str) for item in listed),
-            path,
-            f"targets.{key} must be a list of repository-relative paths",
-        )
-        for item in listed:
-            target_path = REPO_ROOT / item
-            _require(".." not in Path(item).parts, path, f"targets.{key} entry {item!r} escapes the repository")
-            _require(target_path.is_file(), path, f"targets.{key} entry {item!r} does not exist")
-            destination.append(item)
-
     web = targets.get("web", True)
     _require(isinstance(web, bool), path, "targets.web must be true or false")
     spec.web = web
-    _require(
-        bool(spec.man_targets or spec.markdown_targets or spec.web),
-        path,
-        "the specification has no targets",
-    )
 
 
 def _parse_nodes(document: dict, spec: Spec, path: Path) -> None:
@@ -266,6 +288,7 @@ def _parse_nodes(document: dict, spec: Spec, path: Path) -> None:
                 kind=kind,
                 title=_string(entry, "title", path, where),
                 sub=_string(entry, "sub", path, where, required=False),
+                group=_string(entry, "group", path, where, required=False),
             )
         )
 
@@ -322,18 +345,202 @@ def _check_widths(spec: Spec, path: Path) -> None:
             )
 
 
-def load_all() -> list[Spec]:
+def is_yume_owned(kind: str) -> bool:
+    """Whether a node kind is YUME software rather than something it reaches."""
+    return kind in YUME_OWNED_KINDS
+
+
+def _check_groups(spec: Spec, path: Path) -> None:
+    """A group encloses a run of adjacent nodes and names what it encloses.
+
+    The drawing is a chain, so members have to be adjacent. The title is drawn
+    on the enclosure in the SVG and nowhere in the ASCII, which means it may
+    name the nodes it holds and may not carry a claim they do not already
+    make.
+    """
+    seen: list[str] = []
+    for index, node in enumerate(spec.nodes):
+        if not node.group:
+            continue
+        if index and spec.nodes[index - 1].group == node.group:
+            continue
+        _require(
+            node.group not in seen,
+            path,
+            f"group {node.group!r} is split; its members must be adjacent",
+        )
+        seen.append(node.group)
+    for group in seen:
+        members = [node for node in spec.nodes if node.group == group]
+        _require(
+            len(members) >= 2,
+            path,
+            f"group {group!r} has one member; a group encloses at least two",
+        )
+        _require(
+            len(group) <= GROUP_TITLE_LIMIT,
+            path,
+            f"group title {group!r} is longer than {GROUP_TITLE_LIMIT} characters",
+        )
+
+
+def groups(spec: Spec) -> list[tuple[int, int, str]]:
+    """Each run of adjacent nodes sharing a group, as (first, last, title)."""
+    runs: list[tuple[int, int, str]] = []
+    index = 0
+    while index < len(spec.nodes):
+        title = spec.nodes[index].group
+        if not title:
+            index += 1
+            continue
+        last = index
+        while last + 1 < len(spec.nodes) and spec.nodes[last + 1].group == title:
+            last += 1
+        runs.append((index, last, title))
+        index = last + 1
+    return runs
+
+
+def strings_path(language: str) -> Path:
+    if not re.fullmatch(r"[a-z]{2}(_[A-Z]{2})?", language):
+        raise SpecError(f"invalid language {language!r}")
+    return STRINGS_DIR / language / STRINGS_NAME
+
+
+def load_strings(language: str) -> dict:
+    """The translated strings for one language, or an empty set.
+
+    The source language keeps its strings in the specifications themselves,
+    so there is one place a label is written and no copy to fall out of step.
+    """
+    if language == SOURCE_LANGUAGE:
+        return {}
+    path = strings_path(language)
+    if not path.is_file():
+        return {}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SpecError(f"{_relative(path)}: invalid JSON: {exc}") from exc
+    _require(isinstance(document, dict), path, "the translation must be a JSON object")
+    return document
+
+
+def apply_strings(spec: Spec, document: dict, language: str) -> Spec:
+    """Replace a specification's drawn text with one language's strings.
+
+    A missing entry keeps the source string rather than failing, so a partly
+    finished translation still renders. `translations` reports what is
+    missing, which is where an incomplete language belongs.
+    """
+    entry = document.get(spec.name)
+    if entry is None:
+        return spec
+    path = strings_path(language)
+    _require(isinstance(entry, dict), path, f"{spec.name} must be a JSON object")
+    _closed(entry, STRINGS_KEYS, path, spec.name)
+
+    spec.title = _string(entry, "title", path, spec.name, required=False) or spec.title
+    spec.summary = _string(entry, "summary", path, spec.name, required=False) or spec.summary
+
+    nodes = entry.get("nodes", {})
+    _require(isinstance(nodes, dict), path, f"{spec.name}.nodes must be an object")
+    known = {node.id for node in spec.nodes}
+    for node_id, values in nodes.items():
+        _require(node_id in known, path, f"{spec.name}.nodes names unknown node {node_id!r}")
+        _require(isinstance(values, dict), path, f"{spec.name}.nodes.{node_id} must be an object")
+        _closed(values, STRINGS_NODE_KEYS, path, f"{spec.name}.nodes.{node_id}")
+        for node in spec.nodes:
+            if node.id != node_id:
+                continue
+            node.title = values.get("title", node.title)
+            node.sub = values.get("sub", node.sub)
+
+    edges = entry.get("edges", {})
+    _require(isinstance(edges, dict), path, f"{spec.name}.edges must be an object")
+    pairs = {f"{edge.source}->{edge.target}": edge for edge in spec.edges}
+    for key, values in edges.items():
+        _require(key in pairs, path, f"{spec.name}.edges names unknown hop {key!r}")
+        _require(isinstance(values, dict), path, f"{spec.name}.edges.{key} must be an object")
+        _closed(values, STRINGS_EDGE_KEYS, path, f"{spec.name}.edges.{key}")
+        pairs[key].label = values.get("label", pairs[key].label)
+
+    groups = entry.get("groups", {})
+    _require(isinstance(groups, dict), path, f"{spec.name}.groups must be an object")
+    titles = {node.group for node in spec.nodes if node.group}
+    for title, replacement in groups.items():
+        _require(title in titles, path, f"{spec.name}.groups names unknown group {title!r}")
+        _require(isinstance(replacement, str), path, f"{spec.name}.groups.{title} must be a string")
+        for node in spec.nodes:
+            if node.group == title:
+                node.group = replacement
+
+    _check_widths(spec, path)
+    _check_groups(spec, path)
+    return spec
+
+
+def missing_strings(spec: Spec, document: dict) -> list[str]:
+    """Every drawn string in one diagram that a translation has not supplied."""
+    entry = document.get(spec.name) or {}
+    gaps: list[str] = []
+    if "title" not in entry:
+        gaps.append(f"{spec.name}.title")
+    if "summary" not in entry:
+        gaps.append(f"{spec.name}.summary")
+    nodes = entry.get("nodes", {})
+    for node in spec.nodes:
+        values = nodes.get(node.id, {})
+        if "title" not in values:
+            gaps.append(f"{spec.name}.nodes.{node.id}.title")
+        if node.sub and "sub" not in values:
+            gaps.append(f"{spec.name}.nodes.{node.id}.sub")
+    edges = entry.get("edges", {})
+    for edge in spec.edges:
+        if not edge.label:
+            continue
+        key = f"{edge.source}->{edge.target}"
+        if "label" not in edges.get(key, {}):
+            gaps.append(f"{spec.name}.edges.{key}.label")
+    groups = entry.get("groups", {})
+    for title in sorted({node.group for node in spec.nodes if node.group}):
+        if title not in groups:
+            gaps.append(f"{spec.name}.groups.{title}")
+    return gaps
+
+
+def load_all(language: str = SOURCE_LANGUAGE) -> list[Spec]:
     """Every specification in docs/diagrams, ordered by name."""
-    specs = [parse(path) for path in sorted(SPEC_DIR.glob("*.json"))]
+    document = load_strings(language)
+    specs = [
+        apply_strings(parse(path), document, language)
+        for path in sorted(SPEC_DIR.glob("*.json"))
+    ]
     names = [spec.name for spec in specs]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise SpecError(f"duplicate diagram names: {', '.join(duplicates)}")
+    unknown = sorted(set(document) - set(names))
+    if unknown:
+        raise SpecError(
+            f"{_relative(strings_path(language))}: names unknown diagrams: {', '.join(unknown)}"
+        )
+    # Documents own placement. A figure source never repeats its consumers.
+    import yume_doc_spec
+    for doc in yume_doc_spec.load_all(language):
+        for spec in specs:
+            if spec.name not in doc.diagrams():
+                continue
+            for layer, target in doc.outputs():
+                if any(block.kind == "diagram" and block.text == spec.name and block.reaches(layer) for block in doc.blocks):
+                    (spec.man_targets if layer == "man" else spec.markdown_targets).append(target)
     return specs
 
 
-def load(name: str) -> Spec:
+def load(name: str, language: str = SOURCE_LANGUAGE) -> Spec:
+    if not NAME_RE.fullmatch(name):
+        raise SpecError(f"invalid diagram name {name!r}")
     path = SPEC_DIR / f"{name}.json"
     if not path.is_file():
         raise SpecError(f"no such diagram: {name}")
-    return parse(path)
+    return apply_strings(parse(path), load_strings(language), language)

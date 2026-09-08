@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "catalog_groups": {
+    "landing_group": [
+      "Start here",
+      "Security and transport",
+      "Operating",
+      "Reference and development"
+    ],
+    "home_group": [
+      "Start here",
+      "Operating",
+      "Internals and status"
+    ]
+  },
+  "mirror_tracked": false,
+  "cli": true
+}

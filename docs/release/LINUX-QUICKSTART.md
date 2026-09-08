@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/linux_quickstart.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME Linux x86-64 release quick start
 
 The first stable release lane targets glibc Linux on x86-64. The client archive

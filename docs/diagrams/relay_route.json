@@ -26,13 +26,15 @@
       "id": "yumed_a",
       "kind": "server",
       "title": "YUMED A",
-      "sub": "direct federation peer"
+      "sub": "direct federation peer",
+      "group": "FEDERATION CLUSTER"
     },
     {
       "id": "yumed_b",
       "kind": "server",
       "title": "YUMED B",
-      "sub": "one hop, no exit or transit"
+      "sub": "one hop, no exit or transit",
+      "group": "FEDERATION CLUSTER"
     },
     {
       "id": "yume_client_b",

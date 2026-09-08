@@ -5,22 +5,20 @@ directory. `actions/configure-pages` injects the correct `baseurl`, which is why
 every internal link goes through `relative_url` rather than a hand-written `../`
 path.
 
-## The docs here are generated, not written
+## Documentation sources
 
-`scripts/sync_website_docs.sh` publishes `docs/*.md`, `docs/protocol/*.md`,
-`docs/release/*.md`, and `CONTRIBUTING.md`. It adds Jekyll front matter and
-rewrites repository links. Each generated page records its canonical source.
-Links to source/build files, release JSON, and automation guidance point back
-to the repository because those files have no generated site page.
+Documentation text and metadata are authored in `docs/src/en_US/*.doc`
+(recursively), outside this website tree. Edit the source named by a generated
+file and run `python3 scripts/yume_docs.py sync --all-languages` from the
+repository root. This produces pages, catalog, manuals, Markdown, SVGs and
+YUME help headers. `scripts/sync_website_docs.sh` is the website-only entry
+point used by CI. It calls the same renderer.
 
-**Edit `docs/` at the repository root, never `website/docs/*.md`.** Anything
-written directly into the generated files is lost on the next build.
-`website/docs/index.html` is hand-written and is not touched by the sync, so the
-docs landing page is safe to edit here.
-
-Use a language tag on every fenced block in canonical Markdown. Use `bash` or
-`sh` for commands, `text` for wire layouts and file trees, and the matching data
-language for structured examples. The catalog check rejects untagged fences.
+`python3 scripts/yume_docs.py check --all-languages` checks tracked outputs;
+`python3 scripts/check_website_catalog.py` checks the generated website too.
+Page titles, descriptions, catalog titles and summaries come from the same
+`.doc` as the body. See [the authoring guide](../docs/src/README.md).
+`website/docs/index.html` is authored HTML; its layout remains editable here.
 
 ## Where things live
 
@@ -28,7 +26,7 @@ language for structured examples. The catalog check rejects untagged fences.
 | --- | --- |
 | `_config.yml` | Site settings. `asset_version` is the cache buster for CSS and JS. |
 | `_data/nav.yml` | The header link list. Edit here, not in the pages. |
-| `_data/docs.json` | Titles, summaries, routes, and groups for both documentation indexes. |
+| `_data/docs.json` | Generated from document headers; edit the owning `.doc` title, summary, route and catalog fields. |
 | `_includes/` | Shared chrome: `head`, `brand`, `site-header`, `section-nav`, `site-footer`, `theme-toggle`. |
 | `_layouts/page.html` | Wrapper for the hand-written pages. |
 | `_layouts/doc.html` | Wrapper for the generated Markdown docs. |
@@ -46,9 +44,10 @@ language for structured examples. The catalog check rejects untagged fences.
 header link as current), `footer_statement` (the one line that differs between
 page footers), and `section_nav` (the on-page anchor strip).
 
-**Add a documentation page.** Add the canonical Markdown under `docs/`. If it
-belongs in an index, add one entry to `_data/docs.json`. The checker validates
-its source, generated route, source marker, group, order, and fenced blocks.
+**Add a documentation page.** Create a `.doc` under `docs/src/en_US/pages/`
+with `web: yes`. Put its title, summary and optional catalog placement in that
+header and run the unified sync. Existing output paths and explicit
+`web-path` values preserve incoming links.
 
 **Change a colour.** Edit `assets/tokens.css`. Light values sit on `:root` and
 the dark palette is defined once in the `--dark-*` block and mapped onto the same
@@ -88,7 +87,7 @@ python3 -m http.server 8000 -d /tmp/yume-site
 
 CI and Pages generate the ignored mirror before catalog validation and the
 Jekyll build. Optional `bash scripts/sync_website_docs.sh --check` does not
-write files; it compares an already-generated local mirror with the canonical
+write files; it compares an already-generated local mirror with the document
 sources. It is not a clean-checkout gate because the mirror is intentionally
 absent there. The base URL matches the GitHub project-page mount.
 

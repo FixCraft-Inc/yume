@@ -7,9 +7,6 @@
     "Companion to the ROUTING MODEL section, describing `yume --tor --server <onion>`."
   ],
   "targets": {
-    "man": [
-      "docs/man/yume.1"
-    ],
     "web": true
   },
   "nodes": [

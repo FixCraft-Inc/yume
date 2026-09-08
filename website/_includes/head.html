@@ -1,11 +1,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {%- if page.layout == 'doc' %}
-<title>{{ page.title }} | YUME</title>
-<meta name="description" content="{{ page.title }} documentation generated from the YUME repository.">
+<title>{{ page.title | escape }} | YUME</title>
+<meta name="description" content="{{ page.description | escape }}">
 {%- else %}
-<title>{{ page.title }}</title>
-<meta name="description" content="{{ page.description | default: site.description | strip_newlines | strip }}">
+<title>{{ page.title | escape }}</title>
+<meta name="description" content="{{ page.description | default: site.description | strip_newlines | strip | escape }}">
 {%- endif %}
 <link rel="icon" type="image/svg+xml" href="{{ '/assets/yume-plain.svg' | relative_url }}?v={{ site.asset_version }}">
 <meta name="theme-color" content="#fffafd" media="(prefers-color-scheme: light)">

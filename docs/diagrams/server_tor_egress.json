@@ -4,9 +4,6 @@
   "title": "Server-side Tor egress",
   "summary": "yumed hands the target stream to its local Tor, so the target sees a Tor exit rather than the server address.",
   "targets": {
-    "man": [
-      "docs/man/yume.1"
-    ],
     "web": true
   },
   "nodes": [
@@ -38,19 +35,22 @@
       "id": "tor_entry",
       "kind": "tor",
       "title": "TOR ENTRY",
-      "sub": "obfs4 bridge or guard"
+      "sub": "obfs4 bridge or guard",
+      "group": "TOR CIRCUIT"
     },
     {
       "id": "tor_middle",
       "kind": "tor",
       "title": "TOR MIDDLE",
-      "sub": "relay nodes"
+      "sub": "relay nodes",
+      "group": "TOR CIRCUIT"
     },
     {
       "id": "tor_exit",
       "kind": "tor",
       "title": "TOR EXIT",
-      "sub": "target sees this IP"
+      "sub": "target sees this IP",
+      "group": "TOR CIRCUIT"
     },
     {
       "id": "target_site",

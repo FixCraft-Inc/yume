@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/agents_readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Automation guidance
 
 Use [CONTRIBUTING.md](../../CONTRIBUTING.md) for build, test, naming, and review
@@ -31,22 +32,28 @@ sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
 | YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](../development/ytp1/README.md), provider tests |
 | Product version or packaging | Version header, package metadata, README, [status](../IMPLEMENTATION_STATUS.md), [packaging](../PACKAGING.md), metadata tests |
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |
-| Documentation | Website sync and catalog checks, affected links and manuals |
+| Documentation | `docs/src` source, document and diagram sync checks, website sync and catalog checks, affected links and manuals |
 
 Keep current behavior in the linked contracts and support limits in
 [implementation status](../IMPLEMENTATION_STATUS.md). Record behavior changes
 in [development notes](../release/CHANGELOG.md).
 
-Generate website mirrors with `scripts/sync_website_docs.sh`, then check them
-with `--check` and `scripts/check_website_catalog.py`. Edit canonical Markdown,
-not the generated copies.
+Documentation is authored under `docs/src/en_US/`. Edit the `.doc` source
+named in a generated file's banner. Keep one document per aspect; share a
+`.part` only when several documents use it. Titles, descriptions, card labels,
+catalog groups and routes live in the same source as the text.
 
-Route illustrations come from `docs/diagrams/*.json`. Run
-`scripts/yume_diagrams.py sync` after editing one, which rewrites the man page
-block, the Markdown block, and the animated SVG together, and
-`scripts/yume_diagrams.py check` to prove they are current. Never hand-edit the
-ASCII between the `yume-diagram` markers. See
-[diagram sources](../diagrams/README.md).
+```sh
+python3 scripts/yume_docs.py sync --all-languages
+python3 scripts/yume_docs.py check --all-languages
+python3 scripts/check_website_catalog.py
+```
+
+The sync covers Markdown, manuals, website pages and catalog, and diagram
+SVGs. Diagram placement is `@diagram <name>` in the document, with topology
+and source labels in `docs/diagrams/<name>.json`. `en_US` is the only active
+locale; missing-content reports are preparation for translations, not proof
+that a translation is current. See [the source guide](../src/README.md).
 
 Local agent instructions, task queues, machine paths, captures, and run logs
 belong in ignored private storage. A fresh clone must contain everything a

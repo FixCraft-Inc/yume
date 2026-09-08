@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/selftest.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME benchmarks
 
 > **Runnable transport-v2 path:** these checks and evidence rules qualify the

@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/packet_native_bulk.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Packet-native bulk mode
 
 > **Runnable transport-v2 path:** this document describes the current packet
@@ -9,39 +10,47 @@ Packet-bulk mode carries batches of IP packets through one authenticated
 YUME stream.
 
 <!-- yume-diagram: packet_bulk -->
+<img src="diagrams/packet_bulk-vertical.svg" alt="Packet-native bulk path" width="400" height="704">
+
+<details>
+<summary>Text version</summary>
+
 ```text
-+--------------------------------+
-|  ANDROID TUN                   |
-|  VpnService capture            |
-+--------------------------------+
-        |
-        v
-+--------------------------------+
-|  YUME CLIENT                   |
-|  YBP1 batch on packet stream   |
-+--------------------------------+
-        |
-        | ==YUME==> encrypted DATA
-        v
-+--------------------------------+
-|  YUMED SERVER                  |
-|  packet_bulk_v1 decode         |
-+--------------------------------+
-        |
-        | write to operator TUN
-        v
-+--------------------------------+
-|  SERVER TUN/NAT                |
-|  yume-pkt0 + CIDR pool         |
-+--------------------------------+
-        |
-        | routed egress
-        v
-+--------------------------------+
-|  INTERNET                      |
-|  target sees NAT IP            |
-+--------------------------------+
++------------------------------+
+|  ANDROID TUN                 |
+|  VpnService capture          |
++---------------+--------------+
+                 \
+                  \
+                   v
+   +---------------+--------------+
+   |  YUME CLIENT                 |
+   |  YBP1 batch on packet stream |
+   +---------------+--------------+
+                    \
+                     \
+                      v ==YUME==> encrypted DATA
+      +---------------+--------------+
+      |  YUMED SERVER                |
+      |  packet_bulk_v1 decode       |
+      +---------------+--------------+
+                       \
+                        \
+                         v write to operator TUN
+         +---------------+--------------+
+         |  SERVER TUN/NAT              |
+         |  yume-pkt0 + CIDR pool       |
+         +---------------+--------------+
+                          \
+                           \
+                            v routed egress
+            +---------------+--------------+
+            |  INTERNET                    |
+            |  target sees NAT IP          |
+            +------------------------------+
 ```
+
+</details>
 <!-- /yume-diagram -->
 
 ## Shape

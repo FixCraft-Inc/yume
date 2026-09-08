@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/stealth.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME stealth transport
 
 This page describes transport profiles and evidence for the default

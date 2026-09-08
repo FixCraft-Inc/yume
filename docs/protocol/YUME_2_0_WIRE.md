@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/yume_2_0_wire.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME transport v2 wire contract
 
 > **Current transport-v2 contract:** this wire remains in the runnable default
@@ -112,7 +113,7 @@ their own budgets, so this is not a total connection-memory limit.
 | 5 | yes | 32-byte PSK salt |
 | 6 | yes | 32-byte root/transcript salt |
 | 7 | yes | `u16` concurrent directional epoch offers the server accepts (1..64) |
-| 8 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
+| 8 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 \|\| epoch_frames_u64 \|\| epoch_active_ms_u32` |
 | 9 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
 
 ### AUTH response (`record_kind = 2`)
@@ -123,7 +124,7 @@ their own budgets, so this is not a total connection-memory limit.
 | 2 | yes | 1568-byte ML-KEM-1024 ciphertext |
 | 3 | yes | composite public identity: Ed25519 PEM followed by ML-DSA-87 PEM |
 | 4 | yes | `u16` concurrent directional epoch offers the client accepts (1..64) |
-| 5 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
+| 5 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 \|\| epoch_frames_u64 \|\| epoch_active_ms_u32` |
 | 6 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
 | 7 | yes | 4691-byte composite signature: Ed25519 (64) then ML-DSA-87 (4627) |
 | 8 | yes, when present | composite admin public identity (second factor; absent for a visitor session) |

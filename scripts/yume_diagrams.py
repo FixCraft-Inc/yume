@@ -19,6 +19,7 @@ Usage:
     scripts/yume_diagrams.py sync
     scripts/yume_diagrams.py check
     scripts/yume_diagrams.py svg
+    scripts/yume_diagrams.py preview
     scripts/yume_diagrams.py embed <file|->
 
 Blocks are delimited by markers that neither roff nor Markdown renders:
@@ -40,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,10 +49,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yume_diagram_ascii
-import yume_diagram_svg
-from yume_diagram_spec import REPO_ROOT, Spec, SpecError, load, load_all
+import yume_diagram_preview
+from yume_diagram_spec import (
+    REPO_ROOT,
+    SOURCE_LANGUAGE,
+    Spec,
+    SpecError,
+    load,
+    load_all,
+    load_strings,
+    missing_strings,
+)
 
+# The rendered SVG is tracked beside the specification that produced it, so a
+# Markdown document can point at it and GitHub can draw it. The website needs
+# the same bytes under _includes to inline them, and that copy stays ignored.
+SVG_DIR = REPO_ROOT / "docs" / "diagrams"
 INCLUDE_DIR = REPO_ROOT / "website" / "_includes" / "diagrams"
+
+# A Markdown document shows the figure and keeps the ASCII one click away.
+# The layout is the stacked one, which fits a reading column at its own size.
+MARKDOWN_LAYOUT = "vertical"
 
 MARKDOWN_OPEN = "<!-- yume-diagram: {name} -->"
 MARKDOWN_CLOSE = "<!-- /yume-diagram -->"
@@ -111,26 +130,93 @@ def find_blocks(path: Path, lines: list[str]) -> list[Block]:
         location = f"{_relative(path)}:{index + 1}"
         if not name:
             raise DiagramError(f"{location}: diagram marker names no diagram")
-        if index + 1 >= len(lines) or lines[index + 1] != fence:
-            raise DiagramError(f"{location}: diagram marker is not followed by {fence!r}")
-        end = index + 2
-        while end < len(lines) and lines[end] != fence_end:
-            end += 1
-        if end >= len(lines):
-            raise DiagramError(f"{location}: diagram block is not closed by {fence_end!r}")
-        if end + 1 >= len(lines) or lines[end + 1] != close_marker:
+        close = index + 1
+        while close < len(lines) and lines[close].strip() != close_marker:
+            close += 1
+        if close >= len(lines):
             raise DiagramError(f"{location}: diagram block is not closed by {close_marker!r}")
+        body = lines[index + 1: close]
+        _require_fence(body, fence, fence_end, location)
         blocks.append(
             Block(
                 name=name,
                 open_index=index,
-                close_index=end + 1,
-                body=lines[index + 2: end],
+                close_index=close,
+                body=body,
                 line_number=index + 1,
             )
         )
-        index = end + 2
+        index = close + 1
     return blocks
+
+
+def _require_fence(body: list[str], fence: str, fence_end: str, location: str) -> None:
+    """A filled block carries exactly one literal region for the ASCII form.
+
+    An empty pair of markers is how a new diagram is placed, so it is accepted
+    and `sync` writes the body.
+    """
+    if not any(line.strip() for line in body):
+        return
+    opens = [i for i, line in enumerate(body) if line.strip() == fence]
+    if len(opens) != 1:
+        raise DiagramError(f"{location}: diagram block needs one {fence!r} line")
+    closes = [i for i, line in enumerate(body) if i > opens[0] and line.strip() == fence_end]
+    if not closes:
+        raise DiagramError(f"{location}: diagram block is not closed by {fence_end!r}")
+
+
+def svg_dir(language: str) -> Path:
+    """Where one language's rendered figures live.
+
+    The source language keeps the paths documents already point at. Another
+    language needs its own drawings, because the labels inside them are the
+    thing being translated.
+    """
+    return SVG_DIR if language == SOURCE_LANGUAGE else SVG_DIR / language
+
+
+def include_dir(language: str) -> Path:
+    return INCLUDE_DIR if language == SOURCE_LANGUAGE else INCLUDE_DIR / language
+
+
+def render_block(spec: Spec, path: Path, language: str = SOURCE_LANGUAGE) -> list[str]:
+    """Everything between the two markers, for the kind of file it lands in."""
+    pad = " " * spec.indent
+    ascii_lines = yume_diagram_ascii.render(spec).rstrip("\n").split("\n")
+    if path.suffix != ".md":
+        # roff reads a backslash as the start of an escape, and one at the end
+        # of a line joins that line to the next. A diagonal hop is drawn with
+        # backslashes, so an unescaped figure loses every hop that leans right
+        # and leaves its arrow head in a column nothing points at.
+        return [ROFF_FENCE, *(_roff_literal(line) for line in ascii_lines), ROFF_FENCE_END]
+
+    if not spec.web:
+        return [f"{pad}{MARKDOWN_FENCE}", *ascii_lines, f"{pad}{MARKDOWN_FENCE_END}"]
+
+    source = os.path.relpath(
+        svg_dir(language) / include_name(spec.name, MARKDOWN_LAYOUT), path.parent
+    )
+    import yume_diagram_svg
+    width, height = yume_diagram_svg.dimensions(spec, MARKDOWN_LAYOUT)
+    return [
+        f'{pad}<img src="{source}" alt="{html.escape(spec.title, quote=True)}"'
+        f' width="{width}" height="{height}">',
+        "",
+        f"{pad}<details>",
+        f"{pad}<summary>Text version</summary>",
+        "",
+        f"{pad}{MARKDOWN_FENCE}",
+        *ascii_lines,
+        f"{pad}{MARKDOWN_FENCE_END}",
+        "",
+        f"{pad}</details>",
+    ]
+
+
+def _roff_literal(line: str) -> str:
+    """One figure line as roff prints it, backslashes and all."""
+    return line.replace("\\", "\\e")
 
 
 def rewrite(path: Path, specs: dict[str, Spec]) -> tuple[str, list[str]]:
@@ -146,10 +232,10 @@ def rewrite(path: Path, specs: dict[str, Spec]) -> tuple[str, list[str]]:
             raise DiagramError(
                 f"{_relative(path)}:{block.line_number}: no specification named {block.name!r}"
             )
-        rendered = yume_diagram_ascii.render(spec).rstrip("\n").split("\n")
+        rendered = render_block(spec, path)
         if rendered != block.body:
             stale.append(f"{_relative(path)}:{block.line_number}: {block.name} is stale")
-        output[block.open_index + 2: block.close_index - 1] = rendered
+        output[block.open_index + 1: block.close_index] = rendered
     return "\n".join(output), stale
 
 
@@ -209,9 +295,15 @@ def include_name(name: str, layout: str) -> str:
     return f"{name}-{layout}.svg"
 
 
-def write_includes(specs: list[Spec], write: bool) -> list[str]:
-    """Generate the inline SVG the website includes. Returns stale entries."""
+def write_includes(specs: list[Spec], write: bool, language: str = SOURCE_LANGUAGE) -> list[str]:
+    """Write every rendered SVG. Returns stale entries when checking.
+
+    The same bytes land in both trees: `docs/diagrams` is tracked so Markdown
+    and GitHub can point at a file, and `website/_includes/diagrams` is the
+    ignored copy Jekyll inlines. One renderer produces both.
+    """
     stale: list[str] = []
+    tracked, inlined = svg_dir(language), include_dir(language)
     wanted = {
         include_name(spec.name, layout)
         for spec in specs
@@ -219,25 +311,37 @@ def write_includes(specs: list[Spec], write: bool) -> list[str]:
         for layout in LAYOUTS
     }
     if write:
-        INCLUDE_DIR.mkdir(parents=True, exist_ok=True)
+        for directory in (tracked, inlined):
+            directory.mkdir(parents=True, exist_ok=True)
     for spec in specs:
         if not spec.web:
             continue
         for layout in LAYOUTS:
-            path = INCLUDE_DIR / include_name(spec.name, layout)
+            import yume_diagram_svg
             rendered = yume_diagram_svg.render(spec, layout)
-            if write:
-                path.write_text(rendered, encoding="utf-8")
-            elif not path.is_file() or path.read_text(encoding="utf-8") != rendered:
-                stale.append(f"{_relative(path)} is missing or stale")
-    if write and INCLUDE_DIR.is_dir():
-        for path in sorted(INCLUDE_DIR.glob("*.svg")):
-            if path.name not in wanted:
-                path.unlink()
+            if not write:
+                # Only the tracked tree is checked. The ignored copy is
+                # rebuilt by every sync, so a fresh checkout that has never
+                # built the website must still pass.
+                path = tracked / include_name(spec.name, layout)
+                if not path.is_file() or path.read_text(encoding="utf-8") != rendered:
+                    stale.append(f"{_relative(path)} is missing or stale")
+                continue
+            for directory in (tracked, inlined):
+                (directory / include_name(spec.name, layout)).write_text(
+                    rendered, encoding="utf-8"
+                )
+    if write:
+        for directory in (tracked, inlined):
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.svg")):
+                if path.name not in wanted:
+                    path.unlink()
     return stale
 
 
-def embed(path: Path, text: str, specs: dict[str, Spec]) -> str:
+def embed(path: Path, text: str, specs: dict[str, Spec], language: str = SOURCE_LANGUAGE) -> str:
     """Replace each marked block with the website figure for that diagram."""
     lines = text.split("\n")
     blocks = find_blocks(path, lines)
@@ -250,10 +354,11 @@ def embed(path: Path, text: str, specs: dict[str, Spec]) -> str:
             )
         if not spec.web:
             continue
-        ascii_text = html.escape("\n".join(block.body))
+        ascii_text = html.escape(yume_diagram_ascii.render(spec).rstrip("\n"))
+        prefix = "" if language == SOURCE_LANGUAGE else language + "/"
         figure = [
             f'<figure class="diagram" data-diagram="{spec.name}">',
-            f"{{% include diagrams/{include_name(spec.name, 'vertical')} %}}",
+            f"{{% include diagrams/{prefix}{include_name(spec.name, 'vertical')} %}}",
             f"<figcaption>{html.escape(spec.summary)}</figcaption>",
             '<details class="diagram-text">',
             "<summary>Text version</summary>",
@@ -283,8 +388,9 @@ def command_list(_args: argparse.Namespace) -> int:
 
 
 def command_render(args: argparse.Namespace) -> int:
-    spec = load(args.name)
+    spec = load(args.name, args.language)
     if args.svg:
+        import yume_diagram_svg
         sys.stdout.write(yume_diagram_svg.render(spec, args.layout))
     else:
         sys.stdout.write(yume_diagram_ascii.render(spec))
@@ -317,11 +423,61 @@ def command_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_svg(_args: argparse.Namespace) -> int:
+def command_svg(args: argparse.Namespace) -> int:
+    language = getattr(args, "language", SOURCE_LANGUAGE)
+    specs = load_all(language)
+    write_includes(specs, write=True, language=language)
+    written = sum(len(LAYOUTS) for spec in specs if spec.web)
+    print(f"diagrams: wrote {written} inline SVG includes ({language})")
+    return 0
+
+
+def command_translations(args: argparse.Namespace) -> int:
+    """Report how much of each diagram one language has translated."""
+    language = args.language
+    if language == SOURCE_LANGUAGE:
+        print(f"diagrams: {SOURCE_LANGUAGE} is the source language, so its strings are the specifications")
+        return 0
+    document = load_strings(language)
+    specs = load_all(SOURCE_LANGUAGE)
+    total = gaps = 0
+    for spec in specs:
+        missing = missing_strings(spec, document)
+        drawn = len(missing_strings(spec, {}))
+        total += drawn
+        gaps += len(missing)
+        state = "complete" if not missing else f"{drawn - len(missing)} of {drawn}"
+        print(f"{spec.name}: {state}")
+        for entry in missing:
+            print(f"    missing  {entry}")
+    print(f"diagrams: {total - gaps} of {total} strings translated ({language})")
+    return 0
+
+
+def command_preview(_args: argparse.Namespace) -> int:
     specs = load_all()
     write_includes(specs, write=True)
-    written = sum(len(LAYOUTS) for spec in specs if spec.web)
-    print(f"diagrams: wrote {written} inline SVG includes")
+    entries = [
+        (
+            spec.name,
+            spec.summary,
+            [
+                (
+                    layout,
+                    include_name(spec.name, layout),
+                    (INCLUDE_DIR / include_name(spec.name, layout)).read_text(
+                        encoding="utf-8"
+                    ),
+                )
+                for layout in LAYOUTS
+            ],
+        )
+        for spec in specs
+        if spec.web
+    ]
+    path = INCLUDE_DIR / yume_diagram_preview.PAGE_NAME
+    path.write_text(yume_diagram_preview.page(entries), encoding="utf-8")
+    print(f"diagrams: {_relative(path)}")
     return 0
 
 
@@ -349,6 +505,7 @@ def main(argv: list[str]) -> int:
 
     render = sub.add_parser("render", help="print one diagram")
     render.add_argument("name")
+    render.add_argument("--language", default=SOURCE_LANGUAGE)
     render.add_argument("--svg", action="store_true", help="print the animated SVG")
     render.add_argument(
         "--layout", choices=LAYOUTS, default="vertical", help="SVG layout to print"
@@ -361,9 +518,19 @@ def main(argv: list[str]) -> int:
     check = sub.add_parser("check", help="verify every output without writing")
     check.set_defaults(handler=command_sync, check=True)
 
-    sub.add_parser("svg", help="write only the website SVG includes").set_defaults(
-        handler=command_svg
+    svg = sub.add_parser("svg", help="write only the website SVG includes")
+    svg.add_argument("--language", default=SOURCE_LANGUAGE)
+    svg.set_defaults(handler=command_svg)
+
+    translations = sub.add_parser(
+        "translations", help="report the translated strings for one language"
     )
+    translations.add_argument("--language", default=SOURCE_LANGUAGE)
+    translations.set_defaults(handler=command_translations)
+
+    sub.add_parser(
+        "preview", help="write every SVG and a page that shows both renderings"
+    ).set_defaults(handler=command_preview)
 
     embed_parser = sub.add_parser("embed", help="substitute website figures into Markdown")
     embed_parser.add_argument("file", help="Markdown file, or - for standard input")
@@ -372,7 +539,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
     try:
         return args.handler(args)
-    except (SpecError, DiagramError) as exc:
+    except (SpecError, DiagramError, OSError, ValueError) as exc:
         print(f"diagrams: {exc}", file=sys.stderr)
         return 1
 

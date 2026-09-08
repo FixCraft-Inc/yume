@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/threat_model.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME 0.3 threat model
 
 This threat model describes the intended YTP/1 product and explicitly separates

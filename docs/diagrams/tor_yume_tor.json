@@ -4,9 +4,6 @@
   "title": "Tor to YUME to Tor",
   "summary": "Tor on both sides of the YUME carrier, so neither edge sees both the real client and the final target.",
   "targets": {
-    "man": [
-      "docs/man/yume.1"
-    ],
     "web": true
   },
   "nodes": [
@@ -26,13 +23,15 @@
       "id": "client_tor",
       "kind": "tor",
       "title": "CLIENT TOR",
-      "sub": "obfs4 optional"
+      "sub": "obfs4 optional",
+      "group": "CLIENT-SIDE TOR"
     },
     {
       "id": "tor_exit_a",
       "kind": "tor",
       "title": "TOR EXIT A",
-      "sub": "client-side edge"
+      "sub": "client-side edge",
+      "group": "CLIENT-SIDE TOR"
     },
     {
       "id": "yumed_server",
@@ -44,13 +43,15 @@
       "id": "server_tor",
       "kind": "tor",
       "title": "SERVER TOR",
-      "sub": "obfs4 optional"
+      "sub": "obfs4 optional",
+      "group": "SERVER-SIDE TOR"
     },
     {
       "id": "tor_exit_b",
       "kind": "tor",
       "title": "TOR EXIT B",
-      "sub": "target-side edge"
+      "sub": "target-side edge",
+      "group": "SERVER-SIDE TOR"
     },
     {
       "id": "target_site",

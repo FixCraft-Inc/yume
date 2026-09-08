@@ -1,0 +1,1039 @@
+#!yume-doc 1
+name:        yumed_8
+kind:        man
+title:       yumed
+summary:     YUME server daemon
+man:         docs/man/yumed.8
+man-section: 8
+man-date:    2026-08-01
+man-source:  YUME 0.3.0-dev1
+man-manual:  YUME Manual
+---
+@synopsis
+**yumed** [ **--config** *path* ] [ *options* ]
+**yumed** **completion** **bash**
+**yumed** **--completion** **bash**
+**yumed** **--help**
+**yumed** **--version**
+@end
+
+## DESCRIPTION
+
+**yumed** is the YUME server. It listens for authenticated YUME clients,
+validates their auth keys, negotiates transport capabilities, and opens
+outbound target sockets for allowed streams. It can also serve a real HTTP
+facade for non-YUME requests, provide operator-authority proof and
+privacy-minimizing logging, manage authorized keys, and expose relay/directory
+features when enabled.
+
+For an accepted 2.0 tunnel, yumed is the public TLS/HTTP/2 endpoint. A
+separately supervised Node.js 24 process on loopback supplies the genuine cover
+site and never receives tunnel records or secrets.
+
+The product version is 0.3.0-dev1; this daemon speaks transport-v2 wire
+0.2.0-dev6. AUTH v2 verifies composite Ed25519 and ML-DSA-87 client identities
+bound to the live TLS exporter. ML-KEM-1024, X25519, and the random file PSK
+contribute to establishment; an admin session requires a separate second
+identity. The experimental YTP/1 replacement and its schema-1 tools are
+separate. A schema-1 configuration does not drive this daemon.
+
+## BASIC SETUP
+
+@code text
+sudo yumed \
+    --listen 443 \
+    --cert /etc/yume/server.crt \
+    --key /etc/yume/server.key \
+    --auth-keys /etc/yume/authorized_keys \
+    --obfs-secret-file /etc/yume/obfs.hex \
+    --inner-psk-file /etc/yume/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
+@end
+
+Port 443 requires root or **cap_net_bind_service**. After binding, the daemon
+can drop privileges unless **--root** is used.
+
+## CORE OPTIONS
+
+@options
+@opt **-h, --help**
+@cli spell: -h, --help
+@cli help: Show help
+
+Print the built-in option summary and exit.
+@opt **--version**
+@cli spell: --version
+@cli help: Show local versions and crypto capabilities
+@cli help: (YUME_UPDATE_CHECK=1 enables the GitHub check)
+
+Print local component versions and crypto capabilities, then exit.
+@opt **--credits**
+@cli spell: --credits
+@cli help: Show credits and bundled component acknowledgements
+
+Print third-party attribution and exit.
+@opt **--completion** *shell*
+@cli values: bash
+@cli spell: --completion <shell>
+@cli help: Print a completion script and exit (bash only)
+@cli column: 26
+
+Print a shell completion script and exit. The only supported value is **bash**.
+The subcommand form **yumed completion bash** is equivalent.
+@opt **--config** *path*
+@cli file: yes
+@cli spell: --config <path>
+@cli help: Config file
+
+Read server configuration from a JSON file.
+@opt **--proxy** *url*
+@cli spell: --proxy <socks5://...>
+@cli help: Route server outbound TCP through SOCKS5
+
+Route the daemon's own outbound connections through an upstream proxy.
+@opt **--bench**
+@cli spell: --bench
+@cli help: Enable authenticated built-in up/down
+@cli help: benchmark streams for yume --bench.
+@cli column: 26
+
+Enable the benchmark endpoint so a client's **--bench** run has a peer. Do not
+enable it on a public deployment.
+@opt **transport_profile**
+
+JSON-only exact authenticated transport identity. The transport-v2 runtime
+accepts only **chrome151-node24-v1**; stale identifiers fail startup and cannot
+be negotiated or downgraded.
+@opt **--listen** *port*
+@cli spell: --listen <port>
+@cli help: Override listen_port (binds 0.0.0.0:<port>)
+@cli spell: --listen <addr>:<port>
+@cli help: Bind specifically to <addr>:<port>
+@cli help: (use [::1]:443 / [::]:443 for IPv6).
+@cli help: Under --public-node, addresses in
+@cli help: RFC 1918 / loopback / link-local /
+@cli help: CGNAT / IPv6 ULA are refused at startup.
+
+Listen port.
+@opt **--cert** *path*
+@cli file: yes
+@cli spell: --cert <path>
+@cli help: TLS certificate
+
+TLS certificate.
+@opt **--key** *path*
+@cli file: yes
+@cli spell: --key <path>
+@cli help: TLS private key
+
+TLS private key.
+@opt **--tls_cert** *path*
+@cli file: yes
+@cli spell: --tls_cert <path>
+@cli help: Alias for --cert (matches the JSON key)
+
+Alias for **--cert**; matches the JSON configuration key.
+@opt **--tls_key** *path*
+@cli file: yes
+@cli spell: --tls_key <path>
+@cli help: Alias for --key (matches the JSON key)
+
+Alias for **--key**; matches the JSON configuration key.
+@opt **--auth-keys** *path*
+@cli file: yes
+@cli spell: --auth-keys <path>
+@cli help: Override auth_keys
+
+Authorized composite client identities. Each identity is an Ed25519 public key
+followed by an ML-DSA-87 public key.
+@opt **--auth-keys-meta** *path*
+@cli file: yes
+@cli spell: --auth-keys-meta <path>
+@cli help: Override per-key permissions JSON
+
+Regular-key policy JSON. Supports individual/bulk type, decimal fair-share
+weight, per-key session caps, and permissions.
+@opt **--admin-keys** *path*
+@cli file: yes
+@cli spell: --admin-keys <path>
+@cli help: Separate composite admin second-factor store
+
+Distinct composite second-factor identities for admin sessions. This store has
+no policy metadata and must be disjoint from both visitor stores.
+@opt **--operator-keys** *path*
+@cli file: yes
+@cli spell: --operator-keys <path>
+@cli help: Separate composite operator identities
+
+Physically separate composite Ed25519 + ML-DSA-87 operator/controller
+identities. Operator keys cannot be bulk. Outbound admin eligibility requires
+membership in this store plus a different identity from **admin_keys**;
+metadata alone cannot grant it.
+@opt **--operator-keys-meta** *path*
+@cli file: yes
+@cli spell: --operator-keys-meta <p>
+@cli help: Operator-key permissions JSON
+
+Non-admin policy JSON for operator identities (for example alias, weight, and
+ordinary relay permissions). It cannot grant admin or full control.
+@opt **--threads** *n*
+@cli spell: --threads <n>
+@cli help: Worker thread count (0 = auto)
+
+Worker thread count in the range 0..256. Use **0** for automatic selection.
+@opt **--max-sessions** *n*
+@cli spell: --max-sessions <N>
+@cli help: Hard cap on simultaneously-tracked
+@cli help: sessions. New accepts past the cap are
+@cli help: closed immediately. 0 = unlimited.
+@cli help: Default 256; 0 explicitly disables.
+
+Hard cap on all simultaneously tracked sessions. Default 256. Use 0 only to
+explicitly disable the cap.
+@opt **--bulk-key-max-sessions** *n*
+@cli spell: --bulk-key-max-sessions <N>
+@cli help: Default concurrent sessions for each
+@cli help: regular key marked key_type=bulk.
+@cli help: Default 64; per-key max_sessions wins.
+
+Default authenticated-session cap for each regular key marked
+**key_type=bulk**. Default 64; per-key metadata may override it.
+@opt **--rekey-window** *n*
+@cli spell: --rekey-window <N>
+@cli help: Concurrent directional epoch offers accepted
+@cli help: per session, and the ceiling on this
+@cli help: server's own sending window (1..64;
+@cli help: default 8). Each prepared epoch adds
+@cli help: one negotiated epoch budget per rekey
+@cli help: round trip on high-latency links.
+
+Concurrent directional epoch offers accepted from one session, and the ceiling
+on this server's own sending window. Range **1**-**64**, default **8**. Each
+prepared epoch adds one negotiated epoch byte budget per rekey round trip on
+high-latency links; the value is advertised in the TLS-protected AUTH challenge
+and bound into the signed transcript. It bounds how much ML-KEM work a peer can
+request. Under the default Extreme mode the budget is 256 KiB, with independent
+limits of 512 frames and 500 ms sender-active time. The JSON key
+**security_mode** selects Extreme, Normal, Soft, or a complete bounded Ultimate
+policy; see **docs/SECURITY_MODES.md**.
+@opt **--accept-rate-limit** *n*
+@cli spell: --accept-rate-limit <N>
+@cli help: Cap on accepts per second over a 1 s
+@cli help: shared accounting window. Refused accepts close
+@cli help: immediately. 0 = unlimited.
+@cli help: --public-node defaults to 100 when unset.
+
+Maximum newly accepted TCP connections per second. Use 0 for unlimited.
+@opt **--tls-handshake-timeout-ms** *ms*
+@cli spell: --tls-handshake-timeout-ms <ms>
+@cli help: Close the socket if the TLS handshake
+@cli help: doesn't complete in this many ms.
+@cli help: Slow-loris guard. 0 = no deadline
+@cli help: --public-node defaults to
+@cli help: 10000 when unset.
+
+Abort slow TLS handshakes after *ms* milliseconds.
+@opt **--egress-mbps** *n*
+@cli spell: --egress-mbps <N>
+@cli help: Weighted fair egress cap across identities.
+@cli help: 0 = disabled. One active identity can use
+@cli help: the full cap; equal identities split it.
+@cli help: auth_keys_meta weight 0.1..100 controls
+@cli help: weighted shares (default 1.0).
+
+Aggregate weighted fair server egress cap in Mbit/s. Set it at or below the
+real link limit. Active identities split the cap using metadata **weight**
+values; every bulk-key session is a separate identity.
+@opt **--reverse-port-min** *port*
+@cli spell: --reverse-port-min <p>
+@cli help: Reverse listen minimum (default {{reverse-port-min}})
+
+Minimum port for reverse forwards.
+@opt **--reverse-port-max** *port*
+@cli spell: --reverse-port-max <p>
+@cli help: Reverse listen maximum (default {{reverse-port-max}})
+
+Maximum port for reverse forwards.
+@opt **--dns-server** *ip*
+@cli spell: --dns-server <ip>
+@cli help: IPv4 resolver for outbound opens, and the resolver
+@cli help: handed to packet-mode clients. Required by
+@cli help: --packet-egress tun; no default
+
+IPv4 resolver for server-side outbound opens. It is also the resolver handed to
+every client in packet mode, so whoever runs it observes every hostname those
+clients look up. There is no default: **--packet-egress tun** refuses to start
+until this is set.
+@opt **--robots-deny**
+@cli spell: --robots-deny
+@cli help: Serve /robots.txt with Disallow: / through
+@cli help: the HTTP facade for normal probes.
+
+Serve **/robots.txt** as **Disallow: /** through the existing HTTP facade.
+Disabled by default.
+@opt **--filter-list** *spec*
+@cli spell: --filter-list <spec>
+@cli help: Load an IP/country filter list. spec is
+@cli help: <client|egress|both>:<allow|deny>:<path>
+@cli help: where path is JSON, vpn_db.bin, or .tar.xz.
+
+Load a source or egress filter list. The form is
+**client|egress|both:allow|deny:path** where *path* is JSON, **vpn_db.bin ,**
+or a **.tar.xz** archive containing one of those files.
+@opt **--filter-geolite** *path*
+@cli file: yes
+@cli spell: --filter-geolite <path>
+@cli help: Country DB or archive (archives: Linux/GNU tar).
+
+Country lookup archive, GeoLite2-Country **.mmdb ,** or compact YUME
+**geoip_country_ipv4.db .** Archives are copied into a new owner-only temporary
+directory and extracted at startup; validation and extraction consume the same
+private snapshot. Only regular files and directories with relative,
+traversal-free names are accepted. Backslashes, control-character escapes,
+links, and special files are refused. Hot-path lookup is in-memory. Archive
+extraction requires Linux and GNU tar. Other platforms refuse archives; use an
+unpacked list or database. Extraction still relies on the shell and tool search
+path and has no complete compressed-size, member-count, expanded-size, disk, or
+decompression-time budget; use trusted operator archives only.
+@opt **--filter-memory-mib** *n*
+@cli spell: --filter-memory-mib <N>
+@cli help: Approximate in-memory filter cap (0 = unlimited).
+
+Approximate memory cap for loaded filter data. Use **0** for unlimited.
+@opt **--client-filter-mode** *mode*
+@cli spell: --client-filter-mode <m>
+@cli help: Client source mode: blacklist or whitelist.
+
+Client source filter mode: **blacklist** or **whitelist**.
+@opt **--egress-filter-mode** *mode*
+@cli spell: --egress-filter-mode <m>
+@cli help: Egress destination mode: blacklist or whitelist.
+
+Destination filter mode: **blacklist** or **whitelist**.
+@opt **--packet-egress** *tun*
+@cli spell: --packet-egress tun
+@cli help: Enable packet_bulk_v1 over an operator-
+@cli help: prepared Linux TUN/NAT interface.
+
+Enable packet-native egress over an operator-prepared Linux TUN/NAT interface.
+Disabled by default. The separately installed **yume-packet-quick** helper can
+prepare and later remove a scoped TUN/NAT/UFW setup after an explicit dry run
+and administrator confirmation; yumed never invokes it.
+@opt **--packet-tun-name** *ifname*
+@cli spell: --packet-tun-name <if>
+@cli help: TUN device to attach (default yume-pkt0).
+
+TUN device to attach for packet-native mode. Default: **yume-pkt0**.
+@opt **--packet-cidr** *cidr*
+@cli spell: --packet-cidr <cidr>
+@cli help: Client IPv4 pool (default 10.89.0.0/24).
+@cli help: The .1 address is reserved for the TUN side.
+
+IPv4 pool assigned to packet-native clients. Default: **10.89.0.0/24**. The .1
+address is reserved for the TUN side.
+@opt **--packet-mtu** *n*
+@cli spell: --packet-mtu <N>
+@cli help: Packet-native MTU (default 1420).
+@cli help: Optional host setup: review yume-packet-quick up --help.
+@cli continuation: 27
+
+Packet-native MTU. Default: **1420**.
+@opt **--obfs-secret-file** *path*
+@cli file: yes
+@cli spell: --obfs-secret-file <p>
+@cli help: 32-byte admission secret as exactly 64
+@cli help: lowercase hex characters in a protected file
+@cli column: 26
+
+Load the mandatory admission secret from a protected file containing exactly 64
+lowercase hexadecimal characters encoding 32 random bytes, with no newline.
+@opt **--inner-psk-file** *path*
+@cli file: yes
+@cli spell: --inner-psk-file <p>
+@cli help: Mandatory 32-byte inner PSK in the same format
+@cli column: 26
+
+Load the separate mandatory random inner PSK in the same strict format.
+@opt **--real-backend** *url*
+@cli spell: --real-backend <url>
+@cli help: Required loopback://<IP-literal>:<port> Node site
+@cli column: 26
+@cli spell: --real-backend <url>
+@cli help: Proxy ordinary GET/HEAD to a separately
+@cli help: supervised loopback Node service
+
+Use the required genuine Node cover at
+**loopback://***IP-literal***:***port***.** DNS names, redirects, and
+non-loopback targets are rejected.
+@opt **--allow-local-ip**
+@cli spell: --allow-local-ip
+@cli help: Allow private/loopback destinations
+
+Allow private and loopback destinations when key policy permits it.
+@opt **--allow-exec**
+@cli spell: --allow-exec
+@cli help: Reserved relayed EXEC policy input; this does not
+@cli help: enable command execution. Direct EXEC and current
+@cli help: client-side inbound EXEC both fail closed.
+
+Reserved relayed EXEC policy input. It does not enable command execution:
+direct EXEC is denied, and current clients neither advertise nor accept inbound
+EXEC. Builds without **YUME_FEATURE_EXEC** warn and ignore this flag, and
+**--public-node** rejects the flag.
+@opt **--control-full**
+@cli spell: --control-full
+@cli help: Allow full server-side network control
+
+Allow unrestricted server-side network control when compile-time and key-policy
+gates also permit it.
+@opt **--root**
+@cli spell: --root
+@cli help: Keep root privileges after bind/listen
+
+Keep root privileges.
+@opt **--boring**
+@cli spell: --boring
+@cli help: Minimal logs
+
+Use minimal logs.
+@opt **--timing**
+@cli spell: --timing
+@cli help: Emit precise timing diagnostics (developer build only)
+
+Emit precise timing diagnostics in a Debug or RelWithDebInfo developer build.
+Release and MinSizeRel binaries compile these hooks out and warn that the
+option is unavailable.
+@end
+
+## SECURITY OPTIONS
+
+The inner channel is mandatory. The ML-KEM-1024 + X25519 + PSK suite and
+per-message AES-256-GCM keys cannot be disabled or peer-selected. Authenticated
+bounded ratchet policies may widen the hybrid epoch budget without changing
+those algorithms. There are no flags to select an inner mode, a hop layer, or a
+transport Argon2 stage.
+
+## HTTP FACADE AND OPERATOR IDENTITY OPTIONS
+
+@options
+@opt **--real**
+
+Serve real HTTP for non-YUME requests on the same port.
+@opt **--real-index** *path*
+@cli spell: --real-index <path>
+@cli help: HTML file for / (maximum 8 MiB)
+
+HTML file served for **/**, limited to 8 MiB.
+@opt **--real-root** *dir*
+@cli spell: --real-root <dir>
+@cli help: Serve GET/HEAD static files under <dir>
+@cli help: (maximum 8 MiB per response)
+@cli help: (implies --real; one web identity for
+@cli help: HTTP/1.1 and the H2 decoy). Pair with
+@cli help: --hide-in-the-crowd nginx for best fit.
+
+Serve GET/HEAD static files under *dir* as the masquerade cover (implies
+**--real**). Each response is limited to 8 MiB. Files are returned with the
+correct MIME type, **Content-Length**, **Last-Modified**, an nginx-style
+**ETag**, and **Accept-Ranges: bytes**; **/** and directory paths serve
+*dir*/index.html. Path resolution rejects traversal, encoded-slash tricks,
+control bytes, and every symlink component, including ancestors of the
+configured root. POSIX directory descriptors pin resolution; platforms without
+this support, including Windows, refuse static-root reads. Misses and
+non-GET/HEAD methods return the profile 404. The same root backs the HTTP/1.1
+probe and the H2 decoy. Pair with **--hide-in-the-crowd nginx** for the closest
+header fit.
+@opt **--real-secret-file** *path*
+@cli spell: --real-secret-file <path>
+@cli help: Cover-backend secret file; loaded, or created on first start
+@cli column: 28
+
+Owner-only file holding the cover-backend secret. It is read at start, or
+created with fresh random contents when it does not exist. There is no inline
+form: a secret passed on the command line or written into the configuration
+file would be readable from the process table or the file, so **real_secret**
+is refused by both configuration loaders.
+@opt **--operator-identity**
+@cli spell: --operator-identity
+@cli help: Publish an operator identity proof and enable
+@cli help: privacy-minimizing server behavior
+
+Publish an operator identity proof and minimize identifying log fields where
+supported. The proof authenticates CA-authorized operator control; it cannot
+prove that the host does not inspect or retain traffic. This lifecycle belongs
+to standalone **yumed**. Embedded servers, including the GUI and transport-v2
+ABI backend, reject **anonym=true** at start.
+@opt **--operator-proof-mode** *mode*
+@cli spell: --operator-proof-mode <m>
+@cli help: auto, local, or fixcraft
+@cli column: 28
+
+Proof policy: **auto**, **local**, or **fixcraft**.
+@opt **--operator-proof-api** *url*
+@cli spell: --operator-proof-api <url>
+@cli help: External proof API URL (fixcraft mode)
+@cli column: 29
+
+External proof API URL, used by **fixcraft** proof mode.
+@opt **--operator-proof-token-file** *path*
+@cli file: yes
+@cli spell: --operator-proof-token-file <path>
+@cli help: Owner-only proof API token file (1-4096 bytes)
+@cli column: 37
+
+Owner-only file containing the external proof API token. The file must be a
+regular non-symlink owned by the current user, have no group or world
+permissions, contain 1 to 4096 bytes, and contain no HTTP control characters.
+There is no inline configuration or command-line token form.
+@opt **--operator-ca-key** *path*
+@cli file: yes
+@cli spell: --operator-ca-key <path>
+@cli help: Operator CA private key
+
+Operator CA private key.
+@opt **--operator-ca-cert** *path*
+@cli file: yes
+@cli spell: --operator-ca-cert <path>
+@cli help: Operator CA certificate
+@cli column: 28
+
+Operator CA certificate.
+@opt **--operator-delegated-key** *path*
+@cli file: yes
+@cli spell: --operator-delegated-key <path>
+@cli help: Delegated server identity key
+@cli column: 34
+
+Delegated server identity private key.
+@opt **--operator-delegated-cert** *path*
+@cli file: yes
+@cli spell: --operator-delegated-cert <path>
+@cli help: CA-signed delegated server certificate
+@cli column: 35
+
+CA-signed delegated server certificate. Its issuer should identify the operator
+and its subject should identify the server name/alias.
+@opt **--upstream-response** *path*
+@cli spell: --upstream-response <p>
+@cli help: Replay a pre-captured real HTTP/1.x response
+@cli help: (maximum 8 MiB after line normalization)
+@cli help: with complete HTTP framing; body bytes are kept.
+@cli help: Header LF is accepted. Capture with
+@cli help: `curl --http1.1 --raw -i https://real-site/notfound > resp.http`
+@cli help: once and point this flag at it. Wins over
+@cli help: --hide-in-the-crowd when both are set.
+
+Serve a captured HTTP response to failed probes instead of the synthetic
+profile-driven reply. Header LF endings are normalized to CRLF; body bytes and
+chunk framing are preserved. Use **curl --http1.1 --raw -i** to retain transfer
+framing. The capture must contain one complete HTTP/1.x final response;
+malformed, conflicting, truncated, or trailing framing is refused. HTTP/2
+conversion removes chunk framing before DATA emission. Replay is not equivalent
+to a live upstream. Headers are limited to 64 KiB and the normalized response
+to 8 MiB. Empty uses the synthetic profile.
+@opt **--upstream-response-dir** *dir*
+@cli spell: --upstream-response-dir <d>
+@cli help: Like --upstream-response but loads every
+@cli help: *.http / *.response in the directory and
+@cli help: scans at most 4096 entries, accepts at most
+@cli help: 256 captures of 8 MiB each, and caches at
+@cli help: most 64 MiB total. It then
+@cli help: picks one at random per probe. Avoids the
+@cli help: simplest identical-capture replay check.
+@cli help: Wins over --upstream-response when
+@cli help: both are set.
+
+Load every *\*.http* and *\*.response* file in *dir* and rotate between them
+per probe, which avoids the "every probe gets the same capture" tell of a
+single file. If both this and **--upstream-response** are set, the directory
+wins. A reload scans at most 4096 directory entries, accepts at most 256
+matching files, limits each normalized response to 8 MiB, and retains at most
+64 MiB in aggregate.
+@opt **--upstream-response-ttl** *seconds*
+@cli spell: --upstream-response-ttl <s>
+@cli help: When used with --upstream-response-dir, reloads
+@cli help: the directory every <s> seconds so operators
+@cli help: can drop new captures in without restarting.
+@cli help: 0 = load once at startup (default).
+
+With **--upstream-response-dir**, reload the directory every *seconds* so new
+captures can be dropped in without restarting. 0 loads once at startup.
+@end
+
+## RELAY AND DIRECTORY OPTIONS
+
+@options
+@opt **--server-name** *name*
+@cli spell: --server-name <name>
+@cli help: Server name
+
+Display name for this server.
+@opt **--server-id** *32hex*
+@cli spell: --server-id <32hex>
+@cli help: Stable server endpoint ID
+
+Stable server endpoint ID.
+@opt **--relay-enable**
+@cli spell: --relay-enable
+@cli help: Enable client relay features
+
+Enable client relay features.
+@opt **--relay-disable**
+@cli spell: --relay-disable
+@cli help: Disable client relay features
+
+Disable client relay features.
+@opt **--directory-enable**
+@cli spell: --directory-enable
+@cli help: Enable endpoint directory
+
+Enable endpoint directory.
+@opt **--directory-disable**
+@cli spell: --directory-disable
+@cli help: Disable endpoint directory
+
+Disable endpoint directory.
+@opt **--federation-enable**
+@cli spell: --federation-enable
+@cli help: Enable static federation mode
+
+Enable static federation mode.
+@opt **--peer** *json*
+@cli spell: --peer <json>
+@cli help: Add a federation peer (raw JSON form)
+
+Add a federation peer.
+@opt **--attach-local**
+@cli spell: --attach-local
+@cli help: Attach to a local yumed
+
+Attach to a local running **yumed** instance.
+@end
+
+## APPLICATION CODEC OPTIONS
+
+Application codecs are protocol-aware shims, not raw TCP forwards. The server
+must allow a codec globally and the client key must list it in
+**auth_keys.meta**.
+
+@options
+@opt **--codec-allow** *name*
+@cli values: monero-rpc
+@cli spell: --codec-allow <name>
+@cli help: Enable a built-in/plugin application codec
+@cli help: (first built-in: monero-rpc; also requires
+@cli help: per-key allow_codecs).
+
+Allow an application codec id or alias (for example **monero-rpc**). Repeat for
+multiple codecs.
+@opt **--allow-monero-rpc**
+@cli spell: --allow-monero-rpc
+@cli help: Alias for --codec-allow monero-rpc
+
+Convenience spelling for **--codec-allow** *monero-rpc***.**
+@opt **--service-allow** *name*
+@cli spell: --service-allow <name>
+@cli help: Enable a native ABI named service stream
+@cli help: (also requires per-key allow_services
+@cli help: and yume_endpoint_register_service).
+
+Allow a native ABI named service stream. The connected key must also list the
+service in **permissions.allow_services** and the embedding process must call
+man:yume_server_register_service(3).
+@opt **--monero-rpc-backend** *host:port*
+@cli spell: --monero-rpc-backend <addr:port>
+@cli help: Loopback monerod RPC backend for the codec
+@cli help: (default 127.0.0.1:18089).
+
+Loopback backend for Monero RPC reconstruction. Default: **127.0.0.1:18089**.
+Only loopback literals are accepted.
+@end
+
+## DISGUISE OPTIONS
+
+@options
+@opt **--hide-in-the-crowd** *profile*
+@cli spell: --hide-in-the-crowd <p>
+@cli help: HTTP-layer disguise profile for the disguise
+@cli help: responses this daemon emits when probed.
+@cli help: Values: nginx, nginx-stable, apache, caddy,
+@cli help: cloudflare, express, gunicorn, none, yumed
+@cli help: (default: yumed; nginx under --public-node).
+
+Serve synthetic HTTP responses for non-YUME HTTPS probes using a named disguise
+profile. Templates use common CDN or static-site error-page shapes but are not
+native server implementations.
+@end
+
+## HOST CONTROLLER
+
+@options
+@opt **--host-mode** *mode*
+@cli spell: --host-mode <mode>
+@cli help: Host controller mode: off, private, relay.
+@cli help: private = WAN host without YUME clients by default.
+@cli help: relay = host routing plus YUME client tunnel.
+
+WAN host controller mode: **off**, **private**, or **relay**. **private**
+serves routed backends and rejects YUME clients by default. **relay** adds YUME
+client tunnel support on the same listener.
+@opt **--accept-yume-clients**
+@cli spell: --accept-yume-clients
+@cli help: Accept authenticated YUME clients (default).
+
+Accept authenticated YUME clients (default when host mode is off or relay).
+@opt **--no-yume-clients**
+@cli spell: --no-yume-clients
+@cli help: Reject YUME AUTH/carrier; disguise only.
+
+Reject YUME AUTH and carrier paths; probes receive disguise responses only.
+@opt **--client-deny-action** *action*
+@cli spell: --client-deny-action <a>
+@cli help: IP filter deny action: close, reset, drop.
+
+How client IP filter denials close sockets: **close**, **reset**, or **drop**.
+@opt **--exposure-check** *hostname*
+@cli spell: --exposure-check <host>
+@cli help: Probe whether hostname is direct TCP or CF HTTP.
+
+Probe whether the hostname is reachable via direct TCP or sits behind a
+Cloudflare HTTP proxy. Result is logged at startup and exposed in
+**runtime.info**.
+@opt **host_mode**
+
+**accept_yume_clients** **client_deny_action** **routes** **listeners**
+**exposure_check_hostname** Host-controller fields in **yumed.json**. Route and
+listener backends currently support loopback TCP URIs only
+(*loopback://127.0.0.1:PORT* or *loopback://[::1]:PORT*). See
+**HOST_CONTROLLER.md**.
+@end
+
+## FEDERATION AND CLUSTER OPTIONS
+
+Federation links are TLS 1.3 connections with server-certificate and hostname
+verification by the dialing man:yumed(8). After H2-carrier admission, the
+dialing node authenticates with exporter-bound AUTH v2 using the pairwise PSK
+and its enrolled composite identity. The remote server identity comes from its
+verified TLS certificate and hostname, plus an optional certificate pin.
+Federation does not use TLS client certificates and is not mutual TLS. Each
+peer keeps its own **authorized_keys** and **auth_keys.meta**.
+
+@options
+@opt **--cluster-bootstrap**
+@cli spell: --cluster-bootstrap
+@cli help: Mark this node as a cluster entry point;
+@cli help: federation enabled but no outbound --peer required
+@cli help: (other servers will dial in via --cluster-join)
+
+Mark this node as a cluster bootstrap that accepts incoming peer dials. Implies
+**--federation-enable**.
+@opt **--cluster-join** *spec*
+@cli spell: --cluster-join <spec>
+@cli help: Join cluster via short form; implies --federation-enable.
+@cli help: spec: [id@]host[:port]?psk_file=<path>&
+@cli help:       carrier_secret_file=<path>[&pin=<sha256>]
+@cli help: pin is 64 lowercase hex; IPv6 requires id@[host]
+@cli help: repeat for multiple peers
+
+Dial a peer using the short form
+**[id@]host[:port]?psk_file=path&carrier_secret_file=path[&pin=sha256]***.*
+Bracket IPv6 addresses as **[2001:db8::1]:443**. IPv6 joins require an explicit
+peer-id prefix, for example **peer-v6@[2001:db8::1]:443**. When supplied,
+**pin** is exactly 64 lowercase hexadecimal characters (the SHA-256 of the TLS
+leaf DER). Both secret-file parameters are mandatory. Repeat for multiple
+peers.
+@opt **--public-node**
+@cli spell: --public-node
+@cli help: Hardening preset for an internet-facing yumed.
+@cli help: Rejects --allow-exec / --allow-local-ip /
+@cli help: --control-full; requires --auth-keys and
+@cli help: both protected YUME 2.0 secret files.
+@cli help: Also implicitly sets --hide-in-the-crowd nginx
+@cli help: when no profile is otherwise selected.
+
+Internet-facing hardening preset. Rejects dangerous server flags, requires
+**--auth-keys** and a nonempty **--obfs-secret-file**, a mandatory inner PSK
+file, and the loopback Node backend, and tightens session limits.
+@opt **--federation-identity** *path*
+@cli file: yes
+@cli spell: --federation-identity <path>
+@cli help: composite identity used for peer AUTH v2
+@cli column: 31
+
+Composite identity (Ed25519 + ML-DSA-87 PEM bundle) presented when dialing
+federation peers. The peer must enroll this identity in its **--auth-keys**
+with a **federation_peer_id** and **federation_psk_file** meta entry. The
+latter is the pairwise AUTH-v2 PSK for that exact identity; relative paths are
+resolved from the metadata file. It is separate from the daemon's ordinary
+client **inner_psk_file**.
+@opt **--federation-operator-ca** *path*
+@cli file: yes
+@cli spell: --federation-operator-ca <path>
+@cli help: CA used to verify peer servers
+@cli column: 34
+
+CA bundle used by an outbound federation dialer to verify the remote **yumed**
+server certificate and hostname. This option does not configure a TLS client
+certificate; peer authorization occurs in exporter-bound AUTH v2.
+@opt **--peer** *json*
+
+Add a federation peer using raw JSON (power-user form). Each peer requires
+**psk_file** (the pairwise AUTH v2 PSK, identical on both nodes) and
+**carrier_secret_file** (the peer's admission secret, i.e. the value of its
+**--obfs-secret-file**), because YUME 2.0 federation dials pass the same
+H2-carrier admission as clients.
+
+Federation is single-hop. A node advertises only its own local endpoints to a
+peer, so every federated endpoint it knows is exactly one authenticated link
+away and a federated relay channel never transits a third node. Federation does
+not carry SOCKS, forward, reverse-forward, packet/TUN, or other exit traffic.
+In a hub-and-spoke cluster two spokes therefore cannot reach each other; give
+every pair that must communicate a direct peer entry. See
+**docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md** for the design that would
+change this and the gates it must pass first.
+@end
+
+## CLUSTER INSPECTION
+
+An attached **yumed** console accepts **help**, **status**, **sessions**,
+**directory**, **peers**, **federation**, **topology**, **disconnect**
+endpoint-id**,** stop**, and** quit**.**
+
+@options
+@opt **federation**
+
+Per-peer configuration and link liveness. Peer rows report the dial address and
+whether a TLS pin, pairwise PSK, and carrier secret were supplied; the secret
+file paths themselves are never emitted on this surface. Overall readiness,
+outbound-link readiness, and authenticated inbound-connection counts are
+separate, so an inbound-only bootstrap connection is visible without claiming
+that the node configured a dial-out link.
+@opt **topology**
+
+Draws the cluster: this node above its peers, with each peer's link state and
+active channel count. Unparsed peer entries are reported as a count, because a
+malformed entry has no usable id to name.
+
+man:yume-net-map(1) prints the same drawing from a separate read-only binary,
+and **yume-net-map --json** prints the underlying **federation.topology**
+document. Both read the daemon's own graph, so a viewer never re-derives the
+cluster from separate status calls.
+@end
+
+## AUTH_KEYS.META FORMAT
+
+**auth_keys.meta** is JSON keyed by composite identity fingerprint (hex). Each
+entry may include an **alias**, **key_type** ( **individual** or **bulk**),
+decimal fair-share **weight**, optional **max_sessions**, and a **permissions**
+object. Individual keys default to one session. Bulk keys use the server bulk
+default unless a lower per-key cap is supplied, and they cannot receive
+privileged controller, exec, LAN/full-control, codec/service, or federation
+policy. Omitted dangerous permissions default to deny; relay-side
+chat/file/bytes default to allow for individual keys and deny for bulk keys.
+
+Example:
+
+@code text
+{
+  "0d4f3a...fingerprint...": {
+    "alias": "alice",
+    "key_type": "individual",
+    "weight": 1.5,
+    "permissions": {
+      "allow_exec": true,
+      "allow_local_ip": true,
+      "allow_codecs": ["monero-rpc"],
+      "allow_services": ["example-service-v1"],
+      "allow_chat": true,
+      "allow_file": true,
+      "allow_bytes": true
+    }
+  }
+}
+@end
+
+Outbound administrator eligibility requires the visitor identity to be in the
+physically separate **operator_keys** store and a different proved identity to
+be in **admin_keys**. Visitor metadata cannot grant inbound admin, outbound
+admin, or full control. A public key present in both regular and operator
+stores is rejected.
+
+Generate fingerprints with **yumed --auth-keys** *path* **--keys-list***.* See
+**docs/PERMISSIONS.md** for the full field table.
+
+## ENVIRONMENT
+
+@options
+@opt **YUME_DNS_SERVER**
+
+Override the resolver used for server-side outbound opens when **--dns-server**
+is not set.
+@opt **YUME_ANONYM_LOCAL_SIGN**
+
+When set to **0**, disable local operator identity proof signing even if
+operator CA/delegated keys are configured. Set to **1** to force local signing
+on platforms where it is off by default.
+@opt **SUDO_UID**
+
+**/** **SUDO_GID** When started under **sudo**, these are read after
+bind/listen so PQ key files can be man:chown(2) ed before privilege drop.
+@end
+
+## KEY MANAGEMENT
+
+@options
+@opt **--keys-list**
+@cli spell: --keys-list
+@cli help: List authorized keys
+
+List authorized keys.
+@opt **--keys-add** *pub.pem*
+@cli file: yes
+@cli spell: --keys-add <pub.pem>
+@cli help: Add authorized key (visitor store)
+
+Add an authorized public key.
+@opt **--keys-admin**
+@cli spell: --keys-admin
+@cli help: With --keys-add/--keys-gen-add: enrol into the
+@cli help: separate admin store (--admin-keys). Admin still
+@cli help: requires a distinct visitor key as first factor.
+@cli continuation: 27
+
+With **--keys-add** or **--keys-gen-add**, enrol the public identity into the
+separate **--admin-keys** second-factor store instead of the regular visitor
+store. An admin session still requires a distinct regular visitor identity as
+its first factor.
+@opt **--keys-remove** *id*
+@cli spell: --keys-remove <id>
+@cli help: Remove by fingerprint or alias
+
+Remove an authorized key by fingerprint or alias.
+@opt **--keys-alias** *id* *alias*
+@cli spell: --keys-alias <id> <a>
+@cli help: Set alias
+
+Set or update a key alias.
+@opt **--keys-gen** *prefix*
+@cli file: yes
+@cli spell: --keys-gen <prefix>
+@cli help: Generate composite Ed25519+ML-DSA-87 identity (<prefix>.key/.pub)
+
+Generate a composite Ed25519 + ML-DSA-87 identity as *prefix*.key and
+*prefix*.pub*.*
+@opt **--keys-gen-add**
+@cli spell: --keys-gen-add
+@cli help: Append generated public key to auth_keys
+
+Append the generated public key to **auth_keys**.
+@opt **--ui**
+@cli spell: --ui
+@cli help: Interactive server manager
+
+Open the interactive server manager.
+@end
+
+## AUTHORIZATION MODEL
+
+Dangerous server features are behind three gates:
+
+1. compile-time feature switches, such as **YUME_FEATURE_LAN_BRIDGE**;
+2. runtime server flags, such as **--allow-local-ip**;
+3. per-key metadata in **auth_keys.meta**.
+
+A key without metadata can authenticate, but dangerous permissions default to
+deny.
+
+EXEC policy fields remain reserved, but this version has no command-execution
+backend. Direct and relayed EXEC requests fail closed regardless of build flag,
+server config, or key metadata.
+
+## EXAMPLES
+
+Start a basic server:
+
+@code text
+sudo yumed --listen 443 --cert /etc/yume/server.crt \
+    --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys \
+    --obfs-secret-file /etc/yume/obfs.hex \
+    --inner-psk-file /etc/yume/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
+@end
+
+Start the mandatory 2.0 carrier with the real loopback Node cover:
+
+@code text
+sudo yumed --listen 443 --cert server.crt --key server.key \
+    --auth-keys authorized_keys \
+    --obfs-secret-file /etc/yume/obfs.hex \
+    --inner-psk-file /etc/yume/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
+@end
+
+Block VPN-provider egress destinations using an operator-supplied archive:
+
+@code text
+sudo yumed --listen 443 --cert server.crt --key server.key \
+    --auth-keys authorized_keys \
+    --filter-list egress:deny:/etc/yume/vpn_db.tar.xz \
+    --filter-geolite /etc/yume/GeoLiteCountry.tar.xz
+@end
+
+Generate and add a client key:
+
+@code text
+yumed --auth-keys /etc/yume/authorized_keys --keys-gen /tmp/alice \
+    --keys-gen-add
+@end
+
+## FILES
+
+@options
+@opt */etc/yume/authorized_keys*
+
+Authorized client public keys.
+@opt */etc/yume/auth_keys.meta*
+
+Regular-key permissions, type, fair weight, and session cap metadata.
+@opt */etc/yume/operator_keys*
+
+Physically separate operator/controller public keys.
+@opt */etc/yume/operator_keys.meta*
+
+Explicit operator policy metadata.
+@opt */etc/yume/vpn_db.tar.xz*
+
+Optional private VPN-provider blocklist archive. This file is operator-supplied
+and should not be committed to the YUME source tree.
+@opt */etc/yume/*
+
+Common system configuration directory.
+@opt *config/yumed.json*
+
+Example local server configuration.
+@opt */usr/share/doc/yume/*
+
+Installed documentation in packaged builds.
+@end
+
+## INSTALLATION
+
+From a build tree:
+
+@code text
+./ezbuild.sh
+sudo cmake --install build
+@end
+
+Manual man-page install:
+
+@code text
+sudo install -Dm644 docs/man/yumed.8 /usr/local/share/man/man8/yumed.8
+sudo mandb
+@end
+
+Debian package builds produced by CPack install this page automatically.
+
+## SEE ALSO
+
+man:yume(1), man:ssh(1), man:tor(1), man:systemd.service(5)

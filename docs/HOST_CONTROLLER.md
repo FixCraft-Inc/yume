@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/host_controller.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME host controller
 
 > **Transport-v2 surface:** this integration belongs to the transport-v2 runtime. It is not part of the experimental YTP/1 ABI and will be reviewed as

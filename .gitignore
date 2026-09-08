@@ -114,8 +114,10 @@ bins/
 # definition. website/docs/index.html is hand-written and stays tracked.
 website/docs/*.md
 website/docs/**/*.md
-# Inline diagram SVG generated from docs/diagrams/*.json by
-# scripts/yume_diagrams.py, the same way the pages above are generated.
+# Jekyll's copy of the diagram SVGs. The canonical rendering is the tracked
+# docs/diagrams/*.svg, which Markdown and GitHub point at; scripts/yume_diagrams.py
+# writes the same bytes here so the site can inline them, and the preview page
+# it can also write lives here too.
 website/_includes/diagrams/
 /Testing/
 website/.jekyll-cache/

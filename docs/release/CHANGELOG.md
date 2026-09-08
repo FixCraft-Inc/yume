@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/changelog.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Development changelog
 
 YUME has no stable release. These entries record development work, including
@@ -14,6 +15,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Shared documentation sources.** Topic `.doc` files under `docs/src/en_US/`
+  own text, web titles and catalog metadata. One sync renders Markdown,
+  manuals, web pages, diagram assets, CLI help and completion. Locale paths
+  prepare for translations; only `en_US` is active. See
+  [the authoring guide](../src/README.md).
 - **YTP/1 replacement foundation.** Dependency-pure engine and protocol
   kernel, numeric config schema 1, the role-neutral C ABI v1 candidate with a
   transport-v2 backend that carries authenticated named byte streams, and the
@@ -711,6 +717,7 @@ Target: `v1.1`. Do not tag until the remaining release work and remote
 validation are complete.
 
 ### Added
+
 - **Static-site masquerade cover (`--real-root <dir>`).** yumed serves GET/HEAD
   for real files under one root with correct MIME, `Content-Length`,
   `Last-Modified`, nginx-style `ETag`, and `Accept-Ranges`, so the decoy is a
@@ -726,6 +733,7 @@ validation are complete.
   fit.
 
 ### Changed
+
 - **License**: YUME source, apps, daemon, proxy, GUI, and libyume are
   AGPL-3.0-or-later. Build scripts and CMake entry points now carry
   matching source headers.
@@ -742,6 +750,7 @@ validation are complete.
   carrier User-Agent follows the active profile unless explicitly overridden.
 
 ### Fixed
+
 - **Preauth privilege promotion.** Self-signed peers admitted for configured
   named services now persist as `PreauthServiceOnly`; a central gate confines
   them to service.v1 OPEN/DATA/CLOSE and PING/PONG.
@@ -755,6 +764,7 @@ validation are complete.
 ## [Withdrawn v1.1 development plan]
 
 ### Added
+
 - **`--cluster-join <spec>`** + **`--cluster-bootstrap`** on `yumed`. Friendly shorthand over the existing `--peer '<json>'` federation surface: `--cluster-join [id@]host[:port][?pin=<sha256>]` parses into the same FederationPeer JSON the daemon already consumes. `--cluster-bootstrap` marks a node as a cluster entry point so federation works without an outbound peer list. Bracketed IPv6 is supported with an explicit valid `id@` prefix. Implies `--federation-enable`.
 - **`--cluster <host[:port]>`** on `yume` (client) as a friendly alias for `--server` + `--port`.
 - **`--public-node`** on `yumed`: hardening preset for internet-facing daemons. Rejects `--allow-exec` / `--allow-local-ip` / `--control-full` / `--no-inner` / `--no-obfs`, requires `--auth-keys` and a nonempty `--obfs-secret`, defaults `--hide-in-the-crowd` to `nginx`, and applies bounded session/Argon2 defaults.
@@ -782,6 +792,7 @@ validation are complete.
 - **`X-Yume-Blob` HTTP response header removed.** It had zero consumers in the tree; the substring "Yume" was a passive fingerprint for any layer-7 inspector. The anonym blob still ships in the body (zero-width `<span>` + HTML comment) where the actual readers look.
 
 ### Fixed
+
 - **Use-after-free on KEM secret wipe.** SecretGuard stores raw `Bytes*` pointers and SecureClears them from its destructor. Reverse-construction-order destruction meant a SecretGuard declared BEFORE the locals it tracked accessed already-freed vector storage on scope exit. Manifested as `malloc(): unaligned tcache chunk detected` immediately after PQ keypair validation on `--pq-auto-generate` startup. Closed first by reordering (commit 66153f6), then by structural replacement with SecureBytes (commit 58c39a7).
 - **Pre-existing yume_server link break** from the `f6db161` session.cpp split: `epoch_now_ms` was anonymous-namespace-local in session.cpp but referenced from session_control.cpp. Exposed at file scope in session.hpp; duplicate copy in federation_link.cpp removed.
 - **Argon2 admission was not aggregate.** `argon2_env_limits()` previously returned `{0,0,0}` by default, making the parameter guard a no-op. It now seeds per-derivation ceilings (`time=12, memory=512 MiB, parallelism=8`), and positive environment values may deliberately lower or raise them. The server additionally reserves each Argon2 derivation against manager-owned aggregate memory/job limits before allocation; move-only RAII leases release accounting on all exits. Defaults are 512 MiB aggregate and four jobs, configurable through CLI or JSON. The unused `has_argon2_limits` gate was removed. The client also checked its local cap in that implementation.
@@ -791,6 +802,7 @@ validation are complete.
 Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc72592e32e74f52afd4b46247>
 
 ### Added
+
 - **First public test release** of YUME (Yume Universal Multiprotocol Engine) — an open-source post-quantum stealth transport that tunnels TCP and UDP through real TLS 1.3 sessions using the project's browser-oriented presets. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree.
 - **Three-layer stealth stack** stacked on top of TLS 1.3, all on by default and toggleable independently:
   - Browser-oriented JA3 shaping plus the original project-local, pre-canonical JA4-like diagnostic via genuine OpenSSL 3.5 `ClientHello` configuration. `--profile chrome` (Chrome 131) is the default; `--profile firefox` (Firefox 126) and `--profile safari` (Safari 18) are selectable, plus per-N-connection rotation via `--tls-stealth-rotate` / `--tls-stealth-rotation-interval`.
@@ -825,6 +837,7 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
   operations, packaging, permissions, release notes, and project website.
 
 ### Changed
+
 - The 1.0 test build included its wire, authentication-key, anonym CA/sub-key,
   and `yume-obfs-v2` token formats. The proposed 1.1 stable line was withdrawn.
 - Server-to-server federation links are pinned to **TLS 1.3 only** (no fallback to earlier TLS versions) — see commit `f13fbdb`.
@@ -832,10 +845,12 @@ Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc
 - Website's `assetMap` aligned with the new release-artifact set: GUI download cards for Linux / macOS / Windows added; dynamic-busybox cards dropped.
 
 ### Fixed
+
 - Federation TLS regression: an earlier commit used the wrong TLS-method constant (`tls_client` instead of `tlsv13_client`); pinned in `f13fbdb`.
 - 240-commit history through the ALPHA → BETA cycle accumulated and addressed: TLS-fingerprint correctness, HTTP/2 obfs token rotation, key-hop window seam handling, federation handshake edge cases, anonym-mode metadata leaks, Android VPN capture restart bugs, Windows MinGW cross-build deps, BusyBox static-link reliability across glibc/musl toolchains, GUI font rendering on Wayland vs X11 (URW Gothic Demi double-bold fix), CodeQL high-severity findings, OpenWRT SDK feed wiring, and assorted CI/website hash-rendering bugs.
 
 ### Notes
+
 - **Threat model recap** (full version in `docs/STEALTH.md` and `docs/EXPLAINED.md`): YUME defends the **transport**. The route you choose decides who can see the client, who can see the target, and how much trust is placed in the YUME server. YUME does **not** by itself provide anonymity — combine with Tor egress, Tor-over-YUME, or YUME-Tor-YUME for that.
 - **OpenWRT MIPS** is intentionally **not** built in CI because cross-builds against the OpenWRT SDK are slow and brittle on hosted runners; maintainers attach the MIPS artifacts manually when a release is cut. The static BusyBox builds cover most embedded use.
 - **Intel macOS** had no 1.0 build. Rosetta 2 runs x86-64 software on Apple

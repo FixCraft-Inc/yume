@@ -7,9 +7,6 @@
     "The packet service described by docs/PACKET_NATIVE_BULK.md."
   ],
   "targets": {
-    "markdown": [
-      "docs/PACKET_NATIVE_BULK.md"
-    ],
     "web": true
   },
   "nodes": [

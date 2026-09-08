@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/security_modes.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME security modes
 
 > **Transport-v2 surface:** these authenticated rekey policies remain part of

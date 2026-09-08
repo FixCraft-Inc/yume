@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/control_api.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME JSON control API
 
 > **Transport-v2 surface:** this is the command-oriented facade contract used

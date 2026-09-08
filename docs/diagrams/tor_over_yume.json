@@ -4,9 +4,6 @@
   "title": "Tor over YUME",
   "summary": "A local Tor circuit runs inside the YUME carrier, so yumed opens only a Tor entry and not the final target.",
   "targets": {
-    "man": [
-      "docs/man/yume.1"
-    ],
     "web": true
   },
   "nodes": [
@@ -38,13 +35,15 @@
       "id": "tor_entry",
       "kind": "tor",
       "title": "TOR ENTRY",
-      "sub": "guard or obfs4 bridge"
+      "sub": "guard or obfs4 bridge",
+      "group": "TOR CIRCUIT"
     },
     {
       "id": "tor_network",
       "kind": "tor",
       "title": "TOR NETWORK",
-      "sub": "middle relays + exit"
+      "sub": "middle relays + exit",
+      "group": "TOR CIRCUIT"
     },
     {
       "id": "target_site",

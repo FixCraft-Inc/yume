@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/quickstart.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME quick start
 
 > **Runnable transport-v2 path:** these commands drive the default-built

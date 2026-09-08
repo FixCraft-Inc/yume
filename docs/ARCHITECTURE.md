@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/architecture.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME architecture
 
 This document defines the experimental YTP/1 replacement. The

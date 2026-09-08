@@ -1,3 +1,4 @@
+.\" Generated from docs/src/en_US/man/yumed_8.doc by scripts/yume_docs.py. Edit that file, not this one.
 .TH YUMED 8 "2026-08-01" "YUME 0.3.0-dev1" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
@@ -6,8 +7,7 @@ yumed \- YUME server daemon
 [
 .B --config
 .I path
-]
-[
+] [
 .I options
 ]
 .PP
@@ -21,38 +21,40 @@ yumed \- YUME server daemon
 .PP
 .B yumed
 .B --help
-.br
+.PP
 .B yumed
 .B --version
 .SH DESCRIPTION
 .B yumed
-is the YUME server. It listens for authenticated YUME clients, validates
-their auth keys, negotiates transport capabilities, and opens outbound
-target sockets for allowed streams. It can also serve a real HTTP facade
-for non-YUME requests, provide operator-authority proof and privacy-minimizing
-logging, manage authorized
-keys, and expose relay/directory features when enabled.
+is the YUME server.
+It listens for authenticated YUME clients, validates their auth keys,
+negotiates transport capabilities, and opens outbound target sockets for
+allowed streams.
+It can also serve a real HTTP facade for non-YUME requests, provide
+operator-authority proof and privacy-minimizing logging, manage
+authorized keys, and expose relay/directory features when enabled.
 .PP
-For an accepted 2.0 tunnel, yumed is the public TLS/HTTP/2 endpoint. A
-separately supervised Node.js 24 process on loopback supplies the genuine
-cover site and never receives tunnel records or secrets.
+For an accepted 2.0 tunnel, yumed is the public TLS/HTTP/2 endpoint.
+A separately supervised Node.js 24 process on loopback supplies the
+genuine cover site and never receives tunnel records or secrets.
 .PP
 The product version is 0.3.0-dev1; this daemon speaks transport-v2 wire
-0.2.0-dev6. AUTH v2 verifies composite Ed25519 and ML-DSA-87 client identities
-bound to the live TLS exporter. ML-KEM-1024, X25519, and the random file PSK
-contribute to establishment; an admin session requires a separate second
-identity. The experimental YTP/1 replacement and its schema-1 tools are
-separate. A schema-1 configuration does not drive this daemon.
+0.2.0-dev6.
+AUTH v2 verifies composite Ed25519 and ML-DSA-87 client identities bound
+to the live TLS exporter.
+ML-KEM-1024, X25519, and the random file PSK contribute to
+establishment; an admin session requires a separate second identity.
+The experimental YTP/1 replacement and its schema-1 tools are separate.
+A schema-1 configuration does not drive this daemon.
 .SH BASIC SETUP
-.PP
 .nf
-sudo yumed \
-    --listen 443 \
-    --cert /etc/yume/server.crt \
-    --key /etc/yume/server.key \
-    --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret-file /etc/yume/obfs.hex \
-    --inner-psk-file /etc/yume/inner.hex \
+sudo yumed \e
+    --listen 443 \e
+    --cert /etc/yume/server.crt \e
+    --key /etc/yume/server.key \e
+    --auth-keys /etc/yume/authorized_keys \e
+    --obfs-secret-file /etc/yume/obfs.hex \e
+    --inner-psk-file /etc/yume/inner.hex \e
     --real-backend loopback://127.0.0.1:3000
 .fi
 .PP
@@ -63,14 +65,23 @@ After binding, the daemon can drop privileges unless
 is used.
 .SH CORE OPTIONS
 .TP
+.B -h, --help
+Print the built-in option summary and exit.
+.TP
+.B --version
+Print local component versions and crypto capabilities, then exit.
+.TP
 .B --credits
 Print third-party attribution and exit.
 .TP
 .BI "--completion " shell
-Print a shell completion script and exit. The only supported value is
+Print a shell completion script and exit.
+The only supported value is
 .BR bash .
 The subcommand form
-.B "yumed completion bash"
+.B yumed
+.B completion
+.B bash
 is equivalent.
 .TP
 .BI "--config " path
@@ -82,10 +93,12 @@ Route the daemon's own outbound connections through an upstream proxy.
 .B --bench
 Enable the benchmark endpoint so a client's
 .B --bench
-run has a peer. Do not enable it on a public deployment.
+run has a peer.
+Do not enable it on a public deployment.
 .TP
 .B transport_profile
-JSON-only exact authenticated transport identity. The transport-v2 runtime accepts only
+JSON-only exact authenticated transport identity.
+The transport-v2 runtime accepts only
 .BR chrome151-node24-v1 ;
 stale identifiers fail startup and cannot be negotiated or downgraded.
 .TP
@@ -109,36 +122,44 @@ Alias for
 matches the JSON configuration key.
 .TP
 .BI "--auth-keys " path
-Authorized composite client identities. Each identity is an Ed25519 public key
-followed by an ML-DSA-87 public key.
+Authorized composite client identities.
+Each identity is an Ed25519 public key followed by an ML-DSA-87 public
+key.
 .TP
 .BI "--auth-keys-meta " path
-Regular-key policy JSON. Supports individual/bulk type, decimal fair-share
-weight, per-key session caps, and permissions.
+Regular-key policy JSON.
+Supports individual/bulk type, decimal fair-share weight, per-key
+session caps, and permissions.
 .TP
 .BI "--admin-keys " path
-Distinct composite second-factor identities for admin sessions. This store has
-no policy metadata and must be disjoint from both visitor stores.
+Distinct composite second-factor identities for admin sessions.
+This store has no policy metadata and must be disjoint from both visitor
+stores.
 .TP
 .BI "--operator-keys " path
 Physically separate composite Ed25519 + ML-DSA-87 operator/controller
-identities. Operator keys cannot be bulk. Outbound admin eligibility requires
-membership in this store plus a different identity from
+identities.
+Operator keys cannot be bulk.
+Outbound admin eligibility requires membership in this store plus a
+different identity from
 .BR admin_keys ;
 metadata alone cannot grant it.
 .TP
 .BI "--operator-keys-meta " path
-Non-admin policy JSON for operator identities (for example alias, weight, and
-ordinary relay permissions). It cannot grant admin or full control.
+Non-admin policy JSON for operator identities (for example alias,
+weight, and ordinary relay permissions).
+It cannot grant admin or full control.
 .TP
 .BI "--threads " n
-Worker thread count in the range 0..256. Use
+Worker thread count in the range 0..256.
+Use
 .B 0
 for automatic selection.
 .TP
 .BI "--max-sessions " n
-Hard cap on all simultaneously tracked sessions. Default 256. Use 0 only to
-explicitly disable the cap.
+Hard cap on all simultaneously tracked sessions.
+Default 256.
+Use 0 only to explicitly disable the cap.
 .TP
 .BI "--bulk-key-max-sessions " n
 Default authenticated-session cap for each regular key marked
@@ -146,22 +167,27 @@ Default authenticated-session cap for each regular key marked
 Default 64; per-key metadata may override it.
 .TP
 .BI "--rekey-window " n
-Concurrent directional epoch offers accepted from one session, and the ceiling
-on this server's own sending window. Range
+Concurrent directional epoch offers accepted from one session, and the
+ceiling on this server's own sending window.
+Range
 .BR 1 - 64 ,
 default
 .BR 8 .
-Each prepared epoch adds one negotiated epoch byte budget per rekey round trip
-on high-latency links; the value is advertised in the TLS-protected AUTH
-challenge and bound into the signed transcript. It bounds how much ML-KEM work
-a peer can request. Under the default Extreme mode the budget is 256 KiB, with
-independent limits of 512 frames and 500 ms sender-active time. The JSON key
+Each prepared epoch adds one negotiated epoch byte budget per rekey
+round trip on high-latency links; the value is advertised in the
+TLS-protected AUTH challenge and bound into the signed transcript.
+It bounds how much ML-KEM work a peer can request.
+Under the default Extreme mode the budget is 256 KiB, with independent
+limits of 512 frames and 500 ms sender-active time.
+The JSON key
 .B security_mode
-selects Extreme, Normal, Soft, or a complete bounded Ultimate policy; see
+selects Extreme, Normal, Soft, or a complete bounded Ultimate policy;
+see
 .BR docs/SECURITY_MODES.md .
 .TP
 .BI "--accept-rate-limit " n
-Maximum newly accepted TCP connections per second. Use 0 for unlimited.
+Maximum newly accepted TCP connections per second.
+Use 0 for unlimited.
 .TP
 .BI "--tls-handshake-timeout-ms " ms
 Abort slow TLS handshakes after
@@ -169,8 +195,9 @@ Abort slow TLS handshakes after
 milliseconds.
 .TP
 .BI "--egress-mbps " n
-Aggregate weighted fair server egress cap in Mbit/s. Set it at or below the
-real link limit. Active identities split the cap using metadata
+Aggregate weighted fair server egress cap in Mbit/s.
+Set it at or below the real link limit.
+Active identities split the cap using metadata
 .B weight
 values; every bulk-key session is a separate identity.
 .TP
@@ -181,47 +208,60 @@ Minimum port for reverse forwards.
 Maximum port for reverse forwards.
 .TP
 .BI "--dns-server " ip
-IPv4 resolver for server-side outbound opens. It is also the resolver handed
-to every client in packet mode, so whoever runs it observes every hostname
-those clients look up. There is no default:
-.B --packet-egress tun
+IPv4 resolver for server-side outbound opens.
+It is also the resolver handed to every client in packet mode, so
+whoever runs it observes every hostname those clients look up.
+There is no default:
+.B --packet-egress
+.B tun
 refuses to start until this is set.
 .TP
 .B --robots-deny
 Serve
 .B /robots.txt
 as
-.B Disallow: /
-through the existing HTTP facade. Disabled by default.
+.B Disallow:
+.B /
+through the existing HTTP facade.
+Disabled by default.
 .TP
 .BI "--filter-list " spec
-Load a source or egress filter list. The form is
-.BI client|egress|both:allow|deny:path
+Load a source or egress filter list.
+The form is
+.B client|egress|both:allow|deny:path
 where
 .I path
 is JSON,
-.B vpn_db.bin ,
+.B vpn_db.bin
+.B ,
 or a
 .B .tar.xz
 archive containing one of those files.
 .TP
 .BI "--filter-geolite " path
 Country lookup archive, GeoLite2-Country
-.B .mmdb ,
+.B .mmdb
+.B ,
 or compact YUME
-.B geoip_country_ipv4.db .
-Archives are copied into a new owner-only temporary directory and extracted at
-startup; validation and extraction consume the same private snapshot. Only
-regular files and directories with relative, traversal-free names are accepted.
-Backslashes, control-character escapes, links, and special files are refused.
+.B geoip_country_ipv4.db
+.B .
+Archives are copied into a new owner-only temporary directory and
+extracted at startup; validation and extraction consume the same private
+snapshot.
+Only regular files and directories with relative, traversal-free names
+are accepted.
+Backslashes, control-character escapes, links, and special files are
+refused.
 Hot-path lookup is in-memory.
-Archive extraction requires Linux and GNU tar. Other platforms refuse archives;
-use an unpacked list or database. Extraction still relies on the shell and tool
-search path and has no complete compressed-size, member-count, expanded-size,
-disk, or decompression-time budget; use trusted operator archives only.
+Archive extraction requires Linux and GNU tar.
+Other platforms refuse archives; use an unpacked list or database.
+Extraction still relies on the shell and tool search path and has no
+complete compressed-size, member-count, expanded-size, disk, or
+decompression-time budget; use trusted operator archives only.
 .TP
 .BI "--filter-memory-mib " n
-Approximate memory cap for loaded filter data. Use
+Approximate memory cap for loaded filter data.
+Use
 .B 0
 for unlimited.
 .TP
@@ -239,28 +279,33 @@ or
 .TP
 .BI "--packet-egress " tun
 Enable packet-native egress over an operator-prepared Linux TUN/NAT
-interface. Disabled by default.
+interface.
+Disabled by default.
 The separately installed
 .B yume-packet-quick
 helper can prepare and later remove a scoped TUN/NAT/UFW setup after an
 explicit dry run and administrator confirmation; yumed never invokes it.
 .TP
 .BI "--packet-tun-name " ifname
-TUN device to attach for packet-native mode. Default:
+TUN device to attach for packet-native mode.
+Default:
 .BR yume-pkt0 .
 .TP
 .BI "--packet-cidr " cidr
-IPv4 pool assigned to packet-native clients. Default:
+IPv4 pool assigned to packet-native clients.
+Default:
 .BR 10.89.0.0/24 .
 The .1 address is reserved for the TUN side.
 .TP
 .BI "--packet-mtu " n
-Packet-native MTU. Default:
+Packet-native MTU.
+Default:
 .BR 1420 .
 .TP
 .BI "--obfs-secret-file " path
-Load the mandatory admission secret from a protected file containing exactly
-64 lowercase hexadecimal characters encoding 32 random bytes, with no newline.
+Load the mandatory admission secret from a protected file containing
+exactly 64 lowercase hexadecimal characters encoding 32 random bytes,
+with no newline.
 .TP
 .BI "--inner-psk-file " path
 Load the separate mandatory random inner PSK in the same strict format.
@@ -274,9 +319,10 @@ DNS names, redirects, and non-loopback targets are rejected.
 Allow private and loopback destinations when key policy permits it.
 .TP
 .B --allow-exec
-Reserved relayed EXEC policy input. It does not enable command execution:
-direct EXEC is denied, and current clients neither advertise nor accept
-inbound EXEC. Builds without
+Reserved relayed EXEC policy input.
+It does not enable command execution: direct EXEC is denied, and current
+clients neither advertise nor accept inbound EXEC.
+Builds without
 .B YUME_FEATURE_EXEC
 warn and ignore this flag, and
 .B --public-node
@@ -293,15 +339,18 @@ Keep root privileges.
 Use minimal logs.
 .TP
 .B --timing
-Emit precise timing diagnostics in a Debug or RelWithDebInfo developer build.
-Release and MinSizeRel binaries compile these hooks out and warn that the
-option is unavailable.
+Emit precise timing diagnostics in a Debug or RelWithDebInfo developer
+build.
+Release and MinSizeRel binaries compile these hooks out and warn that
+the option is unavailable.
 .SH SECURITY OPTIONS
-The inner channel is mandatory. The
-ML-KEM-1024 + X25519 + PSK suite and per-message AES-256-GCM keys cannot be
-disabled or peer-selected. Authenticated bounded ratchet policies may widen
-the hybrid epoch budget without changing those algorithms. There are no
-flags to select an inner mode, a hop layer, or a transport Argon2 stage.
+The inner channel is mandatory.
+The ML-KEM-1024 + X25519 + PSK suite and per-message AES-256-GCM keys
+cannot be disabled or peer-selected.
+Authenticated bounded ratchet policies may widen the hybrid epoch budget
+without changing those algorithms.
+There are no flags to select an inner mode, a hop layer, or a transport
+Argon2 stage.
 .SH HTTP FACADE AND OPERATOR IDENTITY OPTIONS
 .TP
 .B --real
@@ -314,7 +363,7 @@ limited to 8 MiB.
 .TP
 .BI "--real-root " dir
 Serve GET/HEAD static files under
-.IR dir
+.I dir
 as the masquerade cover (implies
 .BR --real ).
 Each response is limited to 8 MiB.
@@ -324,30 +373,37 @@ Files are returned with the correct MIME type,
 an nginx-style
 .BR ETag ,
 and
-.BR "Accept-Ranges: bytes" ;
+.B Accept-Ranges:
+.BR bytes ;
 .B /
 and directory paths serve
 .IR dir /index.html.
-Path resolution rejects traversal, encoded-slash tricks, control bytes, and
-every symlink component, including ancestors of the configured root. POSIX
-directory descriptors pin resolution; platforms without this support, including
-Windows, refuse static-root reads. Misses and non-GET/HEAD methods return the
-profile 404. The same root backs the HTTP/1.1 probe and the H2 decoy. Pair with
-.B --hide-in-the-crowd nginx
+Path resolution rejects traversal, encoded-slash tricks, control bytes,
+and every symlink component, including ancestors of the configured root.
+POSIX directory descriptors pin resolution; platforms without this
+support, including Windows, refuse static-root reads.
+Misses and non-GET/HEAD methods return the profile 404.
+The same root backs the HTTP/1.1 probe and the H2 decoy.
+Pair with
+.B --hide-in-the-crowd
+.B nginx
 for the closest header fit.
 .TP
 .BI "--real-secret-file " path
-Owner-only file holding the cover-backend secret. It is read at start, or
-created with fresh random contents when it does not exist. There is no inline
-form: a secret passed on the command line or written into the configuration
-file would be readable from the process table or the file, so
+Owner-only file holding the cover-backend secret.
+It is read at start, or created with fresh random contents when it does
+not exist.
+There is no inline form: a secret passed on the command line or written
+into the configuration file would be readable from the process table or
+the file, so
 .B real_secret
 is refused by both configuration loaders.
 .TP
 .B --operator-identity
-Publish an operator identity proof and minimize identifying log fields where
-supported. The proof authenticates CA-authorized operator control; it cannot prove that
-the host does not inspect or retain traffic.
+Publish an operator identity proof and minimize identifying log fields
+where supported.
+The proof authenticates CA-authorized operator control; it cannot prove
+that the host does not inspect or retain traffic.
 This lifecycle belongs to standalone
 .BR yumed .
 Embedded servers, including the GUI and transport-v2 ABI backend, reject
@@ -367,9 +423,10 @@ External proof API URL, used by
 proof mode.
 .TP
 .BI "--operator-proof-token-file " path
-Owner-only file containing the external proof API token. The file must be a
-regular non-symlink owned by the current user, have no group or world
-permissions, contain 1 to 4096 bytes, and contain no HTTP control characters.
+Owner-only file containing the external proof API token.
+The file must be a regular non-symlink owned by the current user, have
+no group or world permissions, contain 1 to 4096 bytes, and contain no
+HTTP control characters.
 There is no inline configuration or command-line token form.
 .TP
 .BI "--operator-ca-key " path
@@ -382,34 +439,51 @@ Operator CA certificate.
 Delegated server identity private key.
 .TP
 .BI "--operator-delegated-cert " path
-CA-signed delegated server certificate. Its issuer should identify the
-operator and its subject should identify the server name/alias.
+CA-signed delegated server certificate.
+Its issuer should identify the operator and its subject should identify
+the server name/alias.
 .TP
 .BI "--upstream-response " path
 Serve a captured HTTP response to failed probes instead of the synthetic
-profile-driven reply. Header LF endings are normalized to CRLF; body bytes and
-chunk framing are preserved. Use \fBcurl --http1.1 --raw -i\fR to retain transfer
-framing. The capture must contain one complete HTTP/1.x final response;
-malformed, conflicting, truncated, or trailing framing is refused. HTTP/2
-conversion removes chunk framing before DATA emission. Replay is not equivalent
-to a live upstream. Headers are limited to 64 KiB and the normalized response
-to 8 MiB.
+profile-driven reply.
+Header LF endings are normalized to CRLF; body bytes and chunk framing
+are preserved.
+Use
+.B curl
+.B --http1.1
+.B --raw
+.B -i
+to retain transfer framing.
+The capture must contain one complete HTTP/1.x final response;
+malformed, conflicting, truncated, or trailing framing is refused.
+HTTP/2 conversion removes chunk framing before DATA emission.
+Replay is not equivalent to a live upstream.
+Headers are limited to 64 KiB and the normalized response to 8 MiB.
 Empty uses the synthetic profile.
 .TP
 .BI "--upstream-response-dir " dir
-Load every \fI*.http\fR and \fI*.response\fR file in \fIdir\fR and rotate
-between them per probe, which avoids the "every probe gets the same capture"
-tell of a single file. If both this and
+Load every
+.I *.http
+and
+.I *.response
+file in
+.I dir
+and rotate between them per probe, which avoids the "every probe gets
+the same capture" tell of a single file.
+If both this and
 .B --upstream-response
-are set, the directory wins. A reload scans at most 4096 directory entries,
-accepts at most 256 matching files, limits each normalized response to 8 MiB,
-and retains at most 64 MiB in aggregate.
+are set, the directory wins.
+A reload scans at most 4096 directory entries, accepts at most 256
+matching files, limits each normalized response to 8 MiB, and retains at
+most 64 MiB in aggregate.
 .TP
 .BI "--upstream-response-ttl " seconds
 With
 .BR --upstream-response-dir ,
-reload the directory every \fIseconds\fR so new captures can be dropped in
-without restarting. 0 loads once at startup.
+reload the directory every
+.I seconds
+so new captures can be dropped in without restarting.
+0 loads once at startup.
 .SH RELAY AND DIRECTORY OPTIONS
 .TP
 .BI "--server-name " name
@@ -441,8 +515,9 @@ Attach to a local running
 .B yumed
 instance.
 .SH APPLICATION CODEC OPTIONS
-Application codecs are protocol-aware shims, not raw TCP forwards. The
-server must allow a codec globally and the client key must list it in
+Application codecs are protocol-aware shims, not raw TCP forwards.
+The server must allow a codec globally and the client key must list it
+in
 .BR auth_keys.meta .
 .TP
 .BI "--codec-allow " name
@@ -452,25 +527,28 @@ Repeat for multiple codecs.
 .TP
 .B --allow-monero-rpc
 Convenience spelling for
-.BI "--codec-allow " monero-rpc .
+.B --codec-allow
+.IB monero-rpc .
 .TP
 .BI "--service-allow " name
-Allow a native ABI named service stream. The connected key must also
-list the service in
+Allow a native ABI named service stream.
+The connected key must also list the service in
 .B permissions.allow_services
 and the embedding process must call
 .BR yume_server_register_service (3).
 .TP
 .BI "--monero-rpc-backend " host:port
-Loopback backend for Monero RPC reconstruction. Default:
+Loopback backend for Monero RPC reconstruction.
+Default:
 .BR 127.0.0.1:18089 .
 Only loopback literals are accepted.
 .SH DISGUISE OPTIONS
 .TP
 .BI "--hide-in-the-crowd " profile
 Serve synthetic HTTP responses for non-YUME HTTPS probes using a named
-disguise profile. Templates use common CDN or static-site error-page shapes
-but are not native server implementations.
+disguise profile.
+Templates use common CDN or static-site error-page shapes but are not
+native server implementations.
 .SH HOST CONTROLLER
 .TP
 .BI "--host-mode " mode
@@ -485,10 +563,12 @@ serves routed backends and rejects YUME clients by default.
 adds YUME client tunnel support on the same listener.
 .TP
 .B --accept-yume-clients
-Accept authenticated YUME clients (default when host mode is off or relay).
+Accept authenticated YUME clients (default when host mode is off or
+relay).
 .TP
 .B --no-yume-clients
-Reject YUME AUTH and carrier paths; probes receive disguise responses only.
+Reject YUME AUTH and carrier paths; probes receive disguise responses
+only.
 .TP
 .BI "--client-deny-action " action
 How client IP filter denials close sockets:
@@ -499,7 +579,8 @@ or
 .TP
 .BI "--exposure-check " hostname
 Probe whether the hostname is reachable via direct TCP or sits behind a
-Cloudflare HTTP proxy. Result is logged at startup and exposed in
+Cloudflare HTTP proxy.
+Result is logged at startup and exposed in
 .BR runtime.info .
 .TP
 .B host_mode
@@ -517,14 +598,16 @@ or
 See
 .BR HOST_CONTROLLER.md .
 .SH FEDERATION AND CLUSTER OPTIONS
-Federation links are TLS 1.3 connections with server-certificate and hostname
-verification by the dialing
+Federation links are TLS 1.3 connections with server-certificate and
+hostname verification by the dialing
 .BR yumed (8).
-After H2-carrier admission, the dialing node authenticates with exporter-bound
-AUTH v2 using the pairwise PSK and its enrolled composite identity. The remote
-server identity comes from its verified TLS certificate and hostname, plus an
-optional certificate pin. Federation does not use TLS client certificates and
-is not mutual TLS. Each peer keeps its own
+After H2-carrier admission, the dialing node authenticates with
+exporter-bound AUTH v2 using the pairwise PSK and its enrolled composite
+identity.
+The remote server identity comes from its verified TLS certificate and
+hostname, plus an optional certificate pin.
+Federation does not use TLS client certificates and is not mutual TLS.
+Each peer keeps its own
 .B authorized_keys
 and
 .BR auth_keys.meta .
@@ -536,46 +619,52 @@ Implies
 .TP
 .BI "--cluster-join " spec
 Dial a peer using the short form
-.BI [id@]host[:port]?psk_file=path\:&carrier_secret_file=path\:[&pin=sha256] .
+.BI [id@]host[:\:port]?\:psk_file=\:path&\:carrier_secret_file=\:path[&\:pin=\:sha256] .
 Bracket IPv6 addresses as
 .BR [2001:db8::1]:443 .
 IPv6 joins require an explicit peer-id prefix, for example
 .BR peer-v6@[2001:db8::1]:443 .
 When supplied,
 .B pin
-is exactly 64 lowercase hexadecimal characters (the SHA-256 of the TLS leaf
-DER).
-Both secret-file parameters are mandatory. Repeat for multiple peers.
+is exactly 64 lowercase hexadecimal characters (the SHA-256 of the TLS
+leaf DER).
+Both secret-file parameters are mandatory.
+Repeat for multiple peers.
 .TP
 .B --public-node
-Internet-facing hardening preset. Rejects dangerous server flags, requires
-.BR --auth-keys
+Internet-facing hardening preset.
+Rejects dangerous server flags, requires
+.B --auth-keys
 and a nonempty
 .BR --obfs-secret-file ,
-a mandatory inner PSK file, and the loopback Node backend, and tightens session
-limits.
+a mandatory inner PSK file, and the loopback Node backend, and tightens
+session limits.
 .TP
 .BI "--federation-identity " path
-Composite identity (Ed25519 + ML-DSA-87 PEM bundle) presented when dialing
-federation peers. The peer must enroll this identity in its
+Composite identity (Ed25519 + ML-DSA-87 PEM bundle) presented when
+dialing federation peers.
+The peer must enroll this identity in its
 .B --auth-keys
 with a
 .B federation_peer_id
 and
 .B federation_psk_file
-meta entry. The latter is the pairwise AUTH-v2 PSK for that exact identity;
-relative paths are resolved from the metadata file. It is separate from the
-daemon's ordinary client
+meta entry.
+The latter is the pairwise AUTH-v2 PSK for that exact identity; relative
+paths are resolved from the metadata file.
+It is separate from the daemon's ordinary client
 .BR inner_psk_file .
 .TP
 .BI "--federation-operator-ca " path
 CA bundle used by an outbound federation dialer to verify the remote
 .B yumed
-server certificate and hostname. This option does not configure a TLS client
-certificate; peer authorization occurs in exporter-bound AUTH v2.
+server certificate and hostname.
+This option does not configure a TLS client certificate; peer
+authorization occurs in exporter-bound AUTH v2.
 .TP
 .BI "--peer " json
-Add a federation peer using raw JSON (power-user form). Each peer requires
+Add a federation peer using raw JSON (power-user form).
+Each peer requires
 .B psk_file
 (the pairwise AUTH v2 PSK, identical on both nodes) and
 .B carrier_secret_file
@@ -583,48 +672,64 @@ Add a federation peer using raw JSON (power-user form). Each peer requires
 .BR --obfs-secret-file ),
 because YUME 2.0 federation dials pass the same H2-carrier admission as
 clients.
-.PP
-Federation is single-hop. A node advertises only its own local endpoints to a
-peer, so every federated endpoint it knows is exactly one authenticated link
-away and a federated relay channel never transits a third node. Federation does
-not carry SOCKS, forward, reverse-forward, packet/TUN, or other exit traffic. In
-a hub-and-spoke cluster two spokes therefore cannot reach each other; give every
-pair that must communicate a direct peer entry. See
-.B docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md
+Federation is single-hop.
+A node advertises only its own local endpoints to a peer, so every
+federated endpoint it knows is exactly one authenticated link away and a
+federated relay channel never transits a third node.
+Federation does not carry SOCKS, forward, reverse-forward, packet/TUN,
+or other exit traffic.
+In a hub-and-spoke cluster two spokes therefore cannot reach each other;
+give every pair that must communicate a direct peer entry.
+See
+.B docs/\:protocol/\:YUME_2_0_FEDERATION_TRANSIT.md
 for the design that would change this and the gates it must pass first.
 .SH CLUSTER INSPECTION
 An attached
 .B yumed
 console accepts
-.BR help ", " status ", " sessions ", " directory ", " peers ", "
-.BR federation ", " topology ", " "disconnect " endpoint-id ", " stop ", and " quit .
+.BR help ,
+.BR status ,
+.BR sessions ,
+.BR directory ,
+.BR peers ,
+.BR federation ,
+.BR topology ,
+.B disconnect
+.RB endpoint-id ,
+.RB stop ,
+.B and
+.RB quit .
 .TP
 .B federation
-Per-peer configuration and link liveness. Peer rows report the dial address and
-whether a TLS pin, pairwise PSK, and carrier secret were supplied; the secret
-file paths themselves are never emitted on this surface. Overall readiness,
-outbound-link readiness, and authenticated inbound-connection counts are
-separate, so an inbound-only bootstrap connection is visible without claiming
-that the node configured a dial-out link.
+Per-peer configuration and link liveness.
+Peer rows report the dial address and whether a TLS pin, pairwise PSK,
+and carrier secret were supplied; the secret file paths themselves are
+never emitted on this surface.
+Overall readiness, outbound-link readiness, and authenticated
+inbound-connection counts are separate, so an inbound-only bootstrap
+connection is visible without claiming that the node configured a
+dial-out link.
 .TP
 .B topology
-Draws the cluster: this node above its peers, with each peer's link state and
-active channel count. Unparsed peer entries are reported as a count, because a
-malformed entry has no usable id to name.
-.PP
+Draws the cluster: this node above its peers, with each peer's link
+state and active channel count.
+Unparsed peer entries are reported as a count, because a malformed entry
+has no usable id to name.
 .BR yume-net-map (1)
 prints the same drawing from a separate read-only binary, and
-.B "yume-net-map --json"
+.B yume-net-map
+.B --json
 prints the underlying
 .B federation.topology
-document. Both read the daemon's own graph, so a viewer never re-derives the
+document.
+Both read the daemon's own graph, so a viewer never re-derives the
 cluster from separate status calls.
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
-is JSON keyed by composite identity fingerprint (hex). Each entry may
-include an
+is JSON keyed by composite identity fingerprint (hex).
+Each entry may include an
 .BR alias ,
-.BR key_type
+.B key_type
 (
 .B individual
 or
@@ -635,11 +740,14 @@ optional
 .BR max_sessions ,
 and a
 .B permissions
-object. Individual keys default to one session. Bulk keys use the server bulk
-default unless a lower per-key cap is supplied, and they cannot receive
-privileged controller, exec, LAN/full-control, codec/service, or federation
-policy. Omitted dangerous permissions default to deny; relay-side
-chat/file/bytes default to allow for individual keys and deny for bulk keys.
+object.
+Individual keys default to one session.
+Bulk keys use the server bulk default unless a lower per-key cap is
+supplied, and they cannot receive privileged controller, exec,
+LAN/full-control, codec/service, or federation policy.
+Omitted dangerous permissions default to deny; relay-side
+chat/file/bytes default to allow for individual keys and deny for bulk
+keys.
 .PP
 Example:
 .PP
@@ -662,18 +770,22 @@ Example:
 }
 .fi
 .PP
-Outbound administrator eligibility requires the visitor identity to be in the
-physically separate
+Outbound administrator eligibility requires the visitor identity to be
+in the physically separate
 .B operator_keys
 store and a different proved identity to be in
 .BR admin_keys .
-Visitor metadata cannot grant inbound admin, outbound admin, or full control.
+Visitor metadata cannot grant inbound admin, outbound admin, or full
+control.
 A public key present in both regular and operator stores is rejected.
 .PP
 Generate fingerprints with
-.BI "yumed --auth-keys " path " --keys-list" .
+.B yumed
+.B --auth-keys
+.I path
+.BI --keys-list .
 See
-.BR docs/PERMISSIONS.md
+.B docs/PERMISSIONS.md
 for the full field table.
 .SH ENVIRONMENT
 .TP
@@ -685,14 +797,14 @@ is not set.
 .B YUME_ANONYM_LOCAL_SIGN
 When set to
 .BR 0 ,
-disable local operator identity proof signing even if operator CA/delegated
-keys are configured.
+disable local operator identity proof signing even if operator
+CA/delegated keys are configured.
 Set to
 .B 1
 to force local signing on platforms where it is off by default.
 .TP
 .B SUDO_UID
-.BR /
+.B /
 .B SUDO_GID
 When started under
 .BR sudo ,
@@ -714,13 +826,14 @@ or
 .BR --keys-gen-add ,
 enrol the public identity into the separate
 .B --admin-keys
-second-factor store instead of the regular visitor store. An admin session
-still requires a distinct regular visitor identity as its first factor.
+second-factor store instead of the regular visitor store.
+An admin session still requires a distinct regular visitor identity as
+its first factor.
 .TP
 .BI "--keys-remove " id
 Remove an authorized key by fingerprint or alias.
 .TP
-.BI "--keys-alias " id " " alias
+.BI "--keys-alias " "id alias"
 Set or update a key alias.
 .TP
 .BI "--keys-gen " prefix
@@ -737,53 +850,59 @@ Append the generated public key to
 Open the interactive server manager.
 .SH AUTHORIZATION MODEL
 Dangerous server features are behind three gates:
-.IP 1. 4
+.IP "1." 4
 compile-time feature switches, such as
 .BR YUME_FEATURE_LAN_BRIDGE ;
-.IP 2. 4
+.IP "2." 4
 runtime server flags, such as
 .BR --allow-local-ip ;
-.IP 3. 4
+.IP "3." 4
 per-key metadata in
 .BR auth_keys.meta .
 .PP
-A key without metadata can authenticate, but dangerous permissions default
-to deny.
+A key without metadata can authenticate, but dangerous permissions
+default to deny.
 .PP
-EXEC policy fields remain reserved, but this version has no command-execution
-backend. Direct and relayed EXEC requests fail closed regardless of build flag,
+EXEC policy fields remain reserved, but this version has no
+command-execution backend.
+Direct and relayed EXEC requests fail closed regardless of build flag,
 server config, or key metadata.
 .SH EXAMPLES
-.TP
 Start a basic server:
+.PP
 .nf
-sudo yumed --listen 443 --cert /etc/yume/server.crt \
-    --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret-file /etc/yume/obfs.hex \
-    --inner-psk-file /etc/yume/inner.hex \
+sudo yumed --listen 443 --cert /etc/yume/server.crt \e
+    --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys \e
+    --obfs-secret-file /etc/yume/obfs.hex \e
+    --inner-psk-file /etc/yume/inner.hex \e
     --real-backend loopback://127.0.0.1:3000
 .fi
-.TP
+.PP
 Start the mandatory 2.0 carrier with the real loopback Node cover:
+.PP
 .nf
-sudo yumed --listen 443 --cert server.crt --key server.key \
-    --auth-keys authorized_keys \
-    --obfs-secret-file /etc/yume/obfs.hex \
-    --inner-psk-file /etc/yume/inner.hex \
+sudo yumed --listen 443 --cert server.crt --key server.key \e
+    --auth-keys authorized_keys \e
+    --obfs-secret-file /etc/yume/obfs.hex \e
+    --inner-psk-file /etc/yume/inner.hex \e
     --real-backend loopback://127.0.0.1:3000
 .fi
-.TP
-Block VPN-provider egress destinations using an operator-supplied archive:
+.PP
+Block VPN-provider egress destinations using an operator-supplied
+archive:
+.PP
 .nf
-sudo yumed --listen 443 --cert server.crt --key server.key \
-    --auth-keys authorized_keys \
-    --filter-list egress:deny:/etc/yume/vpn_db.tar.xz \
+sudo yumed --listen 443 --cert server.crt --key server.key \e
+    --auth-keys authorized_keys \e
+    --filter-list egress:deny:/etc/yume/vpn_db.tar.xz \e
     --filter-geolite /etc/yume/GeoLiteCountry.tar.xz
 .fi
-.TP
+.PP
 Generate and add a client key:
+.PP
 .nf
-yumed --auth-keys /etc/yume/authorized_keys --keys-gen /tmp/alice --keys-gen-add
+yumed --auth-keys /etc/yume/authorized_keys --keys-gen /tmp/alice \e
+    --keys-gen-add
 .fi
 .SH FILES
 .TP
@@ -800,8 +919,9 @@ Physically separate operator/controller public keys.
 Explicit operator policy metadata.
 .TP
 .I /etc/yume/vpn_db.tar.xz
-Optional private VPN-provider blocklist archive. This file is
-operator-supplied and should not be committed to the YUME source tree.
+Optional private VPN-provider blocklist archive.
+This file is operator-supplied and should not be committed to the YUME
+source tree.
 .TP
 .I /etc/yume/
 Common system configuration directory.

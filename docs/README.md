@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/docs_readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME documentation
 
 YUME `0.3.0-dev1` is development software. The default `yume` and `yumed`
@@ -45,8 +46,14 @@ design-only. Current federation is single-hop.
 ## Reference ownership
 
 Source and executable tests take precedence when prose disagrees. Update the
-relevant contract with each behavior change. Keep product, wire, configuration,
-ABI, provider, and evidence-profile versions independent.
+relevant contract with each behavior change.
+
+Documents are generated. One `.doc` file under [docs/src](src/README.md)
+writes the Markdown on this map and the manual a terminal renders, so a fact
+is corrected once. Edit the source, not the page it produces.
+
+Keep product, wire, configuration, ABI, provider, and evidence-profile
+versions independent.
 
 [Packaging](PACKAGING.md) defines installation and package contents.
 [Development notes](release/CHANGELOG.md) record changes, and

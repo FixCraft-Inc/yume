@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/permissions.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME permission model
 
 > **Runnable transport-v2 path:** startup checks and the installed daemon

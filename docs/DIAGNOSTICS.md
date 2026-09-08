@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/diagnostics.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Developer diagnostics
 
 > **Runnable transport-v2 path:** these diagnostics apply to the current

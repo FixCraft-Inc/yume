@@ -15,6 +15,7 @@
 #include <boost/asio/write.hpp>
 
 #include "core/protocol/protocol.hpp"
+#include "core/protocol/frame_limits.hpp"
 
 namespace yume::protocol {
 
@@ -46,7 +47,7 @@ Frame read_frame(SyncStream& stream) {
     // Before the resize, not after: `len` is peer-supplied and a hostile
     // server can otherwise make this allocate up to 4 GiB before anything
     // parses.
-    if (len > kMaxFramePayloadBytes) {
+    if (len > frame_payload_limit(frame.header.type, frame.header.flags)) {
         throw std::runtime_error("read_frame: declared payload of " +
                                  std::to_string(len) +
                                  " bytes exceeds the transport maximum");

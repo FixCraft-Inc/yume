@@ -1,7 +1,7 @@
 ---
 layout: page
 title: "YUME: embeddable stealth universal transport"
-description: YUME keeps its runnable profile-matched hybrid tunnel while building a modular stealth universal transport with an embeddable C ABI.
+description: YUME carries TCP, UDP, and packet traffic over an authenticated, browser-shaped transport. Its experimental C ABI supports named streams.
 body_class: home-page
 footer_statement: YUME is an embeddable stealth universal transport.
 section_nav:
@@ -22,12 +22,13 @@ section_nav:
 ---
 <section class="hero" id="top">
   <div class="hero-copy">
-    <div class="hero-status"><span aria-hidden="true"></span>Experimental &middot; runnable tunnel plus modular foundation</div>
+    <div class="hero-status"><span aria-hidden="true"></span>Development software &middot; transport v2 runs &middot; YTP/1 is experimental</div>
     <h1>YUME <small>Stealth transport, built for embedding.</small></h1>
     <p>
-      YUME currently carries TCP and UDP inside one persistent, browser-shaped
-      connection. Its working 0.2 client and daemon remain available while YTP/1
-      turns that tunnel core into reusable authenticated streams and packet channels.
+      YUME carries TCP, UDP, and packet traffic inside a persistent,
+      browser-shaped connection. The client and daemon use transport v2.
+      An experimental C ABI supports authenticated named streams, and the
+      YTP/1 replacement is under development.
     </p>
     <div class="cta-row">
       <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Run the current tunnel</a>
@@ -51,9 +52,9 @@ section_nav:
         <span id="release-assets"></span>
       </div>
       <ul class="card-list card-list-spaced">
-        <li>The default transition build keeps the previously tested 0.2 tunnel runnable</li>
-        <li>YTP/1 and the modular engine are experimental, pre-freeze foundations</li>
-        <li>The replacement does not remove working paths before parity</li>
+        <li>The default build produces the transport-v2 client and daemon</li>
+        <li>The C ABI is opt-in and has no installed SDK contract</li>
+        <li>YTP/1 components do not yet form a working endpoint</li>
       </ul>
     </div>
     <div class="panel-foot">
@@ -66,26 +67,35 @@ section_nav:
 
   <div class="release-strip" aria-label="Transport at a glance">
     <div class="release-stat">
-      <strong>Runnable now</strong>
-      <span>0.2 client, daemon, SOCKS, TCP, and UDP</span>
+      <strong>Client and daemon</strong>
+      <span>SOCKS, forwards, TCP, UDP, and packet routing</span>
     </div>
     <div class="release-stat">
-      <strong>Modular next</strong>
-      <span>Named streams, packets, identity, and policy</span>
+      <strong>Experimental C ABI</strong>
+      <span>Named streams through transport v2</span>
     </div>
     <div class="release-stat">
-      <strong>Hybrid by contract</strong>
+      <strong>Hybrid authentication</strong>
       <span>Classical and post-quantum components</span>
     </div>
     <div class="release-stat">
-      <strong>Profile-matched ingress</strong>
-      <span>Real cover separated from YTP semantics</span>
+      <strong>Browser-shaped carrier</strong>
+      <span>TLS 1.3, HTTP/2, WebSocket, and cover traffic</span>
     </div>
   </div>
 
-  <figure class="disguise passage-map" data-reveal="passage" aria-label="What the network sees versus what the tunnel carries">
+  <figure class="diagram diagram-wide">
+    {% include diagrams/direct_route-horizontal.svg %}
+    <figcaption>
+      The default route is a single hop. <code>yumed</code> terminates the YUME
+      session and opens the outbound socket, so the target sees the server
+      address and the server sees the destination.
+    </figcaption>
+  </figure>
+
+  <figure class="disguise passage-map" data-reveal="passage" aria-label="Transport-v2 carrier and protected tunnel">
     <div class="disguise-row">
-      <figcaption class="disguise-label">What the network sees</figcaption>
+      <figcaption class="disguise-label">Outer carrier</figcaption>
       <div class="disguise-track">
         <span class="layer">TCP 443</span>
         <span class="layer">TLS 1.3 &middot; captured browser profile</span>
@@ -94,7 +104,7 @@ section_nav:
       </div>
     </div>
     <div class="disguise-row disguise-inner">
-      <div class="disguise-label">What it actually carries</div>
+      <div class="disguise-label">Protected tunnel</div>
       <div class="disguise-track">
         <span class="layer">ML-KEM-1024 + X25519 + PSK</span>
         <span class="layer">Composite AUTH</span>
@@ -102,48 +112,47 @@ section_nav:
         <span class="layer">Directional epochs</span>
       </div>
     </div>
-    <div class="disguise-note">This map describes the runnable 0.2 transport. The modular replacement must preserve genuine cover behavior before it can take over.</div>
+    <div class="disguise-note">Transport v2 uses this carrier. TLS encrypts the HTTP/2 and WebSocket records. Connection timing, sizes, and volume remain observable.</div>
   </figure>
 </section>
 
 <section id="status" data-reveal="drift">
   <h2 class="section-title">Current boundary</h2>
   <p class="section-lead">
-    YUME is experimental development software with a deliberate coexistence
-    boundary: keep the tunnel useful while rebuilding its internals.
+    Linux x86-64 is the first qualification target. No platform is
+    production-qualified.
   </p>
   <div class="notice">
     <div class="status-pill warn">Development line {{ site.product_version }}: no stable release published</div>
     <p>
-      The default build produces the runnable 0.2 <code>yume</code> and
-      <code>yumed</code> tunnel. YTP/1, the session engine, and schema 1 form a
-      separate replacement foundation. Its providers and the build-tree ABI
-      library are explicit opt-ins. The providers do not yet form a live YTP/1
-      endpoint; the ABI currently carries transport-v2 named streams.
+      The current product uses transport-v2 wire <code>0.2.0-dev6</code>.
+      YTP/1 is a separate replacement protocol with its own engine and
+      schema-1 configuration. Product, wire, configuration, and ABI versions
+      are independent.
     </p>
     <p>
-      Breaking the new wire and schema is acceptable during development;
-      deleting working behavior before its replacement reaches parity is not.
-      Exact implementation and evidence limits are in the
+      The default transport remains in place until YTP/1 passes tunnel, cover,
+      routing, embedding, packaging, and qualification parity. Supported paths
+      and open release gates are in the
       <a href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">implementation status</a>.
     </p>
   </div>
   <div class="grid grid-spaced">
     <div class="card">
       <h3>Runnable product</h3>
-      <p>The 0.2 client and daemon retain SOCKS, forwards, packet routing, composite authentication, profile-matched TLS/H2 ingress, and a real cover backend while the replacement matures.</p>
+      <p>The transport-v2 client and daemon support SOCKS, forwards, packet routing, composite authentication, browser-shaped TLS/H2, and a real cover backend.</p>
     </div>
     <div class="card">
-      <h3>Components with focused tests</h3>
-      <p>The tree includes bounded YTP/1 codecs, the session engine, opt-in hybrid security, TLS 1.3, duplex H2 carrier, TCP ByteChannel, and direct-route providers, strict schema-1 configuration, setup and doctor tools, layering checks, and build-tree ABI consumers.</p>
+      <h3>Experimental C ABI</h3>
+      <p>The opt-in build-tree library carries authenticated named streams through transport v2. Packet channels, schema-1 endpoint start, and an installed SDK remain unsupported.</p>
     </div>
     <div class="card">
-      <h3>Still unwired</h3>
-      <p>The provider candidates are not connected to a live YTP/1 endpoint. The build-tree ABI can carry authenticated transport-v2 named streams, but schema 1 still needs a genuine front door, admission and provider composition, runtime adapters, stream and packet wiring, and full security qualification.</p>
+      <h3>YTP/1 components</h3>
+      <p>Focused tests cover the engine, codecs, schema-1 tools, and opt-in security, TLS, HTTP/2, TCP, and direct-route providers.</p>
     </div>
     <div class="card">
-      <h3>Switch-over rule</h3>
-      <p>Transport-v2/AUTH-v2 is incompatible with YTP/1 by design. Transport v2 remains the default until tunnel, cover, routing, embedding, packaging, and qualification parity.</p>
+      <h3>Remaining integration</h3>
+      <p>YTP/1 still needs a public front door, admission, connected providers, runtime adapters, and end-to-end qualification before it can carry application traffic.</p>
     </div>
   </div>
 </section>
@@ -152,8 +161,9 @@ section_nav:
   <h2 class="section-title">Install</h2>
   <p class="section-lead">
     YUME builds from source on Linux x86-64. The default build keeps the
-    runnable tunnel and also compiles the modular foundation for focused tests.
-    Full builds use the pinned transport dependencies recorded by the tree.
+    runnable tunnel and compiles the engine and protocol foundation.
+    Add <code>--tests</code> to enable tests. Provider candidates require
+    their own build options.
   </p>
   <div class="download-grid">
     <article class="download-card download-card-wide">
@@ -161,8 +171,8 @@ section_nav:
       <h3>Build from source</h3>
       <p class="section-lead">
         <code>ezbuild.sh</code> creates the pinned BaseFWX checkout when <code>basefwx/</code>
-        is absent, verifies the OpenSSL and nghttp2 floors, and builds a portable Release
-        tree into <code>build/bin</code>.
+        is absent, prepares the checksum-pinned patched OpenSSL dependency,
+        and builds Release binaries into <code>build/bin</code>.
       </p>
       <div class="link-row">
         <a class="btn" href="{{ '/docs/QUICKSTART/' | relative_url }}">Runnable quick start</a>
@@ -213,16 +223,15 @@ section_nav:
       <span class="chip">Other surfaces</span>
       <h3>GUI, Android, and embedding</h3>
       <p class="section-lead">
-        The desktop GUI (<code>yume-gui</code>) remains an optional 0.2 development
-        preview and still uses the existing facade. It is not deleted merely
-        because the replacement ABI is incomplete. Android and third-party
-        embedders must not treat the replacement ABI candidate as stable until
-        its functional and lifecycle gates pass.
+        The desktop GUI (<code>yume-gui</code>) is an optional preview for
+        transport v2. Android is maintained in a separate repository.
+        Applications using the experimental C ABI must track its changing
+        interface until the functional, lifecycle, and installation gates pass.
       </p>
       <div class="link-row">
         <a class="btn secondary" href="{{ '/docs/ABI/' | relative_url }}">Replacement ABI status</a>
         <a class="btn secondary" href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">Implementation status</a>
-        <a class="btn secondary" href="https://github.com/FixCraft-Inc/yume/tree/f0cc9e7/docs" target="_blank" rel="noopener">0.2 contracts</a>
+        <a class="btn secondary" href="{{ '/docs/protocol/YUME_2_0_WIRE/' | relative_url }}">Transport-v2 wire</a>
       </div>
     </article>
   </div>
@@ -239,7 +248,7 @@ section_nav:
       <thead>
         <tr>
           <th>Layer</th>
-          <th>Runnable 0.2 transport</th>
+          <th>Transport v2</th>
           <th>YTP/1 replacement contract</th>
         </tr>
       </thead>
@@ -292,9 +301,10 @@ section_nav:
 <section id="run" data-reveal="drift">
   <h2 class="section-title">Build, provision, connect</h2>
   <p class="section-lead">
-    This workflow is the runnable transport-v2 path. <code>yume-setup init</code>
-    generates its server and client kit. Admission and inner-PSK files carry no
-    group or world permission bits and must be distributed out of band.
+    Follow the <a href="{{ '/docs/QUICKSTART/' | relative_url }}">quick start</a>
+    to provision credentials and start the loopback cover site before using
+    these examples. Admission and inner-PSK files must have no group or world
+    permission bits and must be distributed through a trusted channel.
   </p>
   <div class="workflow-grid">
     <div class="workflow-step">
@@ -333,7 +343,8 @@ cd yume
     --auth-keys /etc/yume/authorized_keys \
     --obfs-secret-file /etc/yume/secrets/admission.hex \
     --inner-psk-file /etc/yume/secrets/inner.hex \
-    --real-backend loopback://127.0.0.1:3000</code></pre>
+    --real-backend loopback://127.0.0.1:3000 \
+    --real-index /etc/yume/cover-index.html</code></pre>
     </div>
     <div class="command-block">
       <h3>Client</h3>
@@ -347,6 +358,12 @@ cd yume
     </div>
   </div>
   <div class="notice">
+    <p>
+      This daemon command requires both a loopback cover backend and a cover source.
+      Here, <code>--real-index</code> supplies the separate probe-response page.
+      The <a href="{{ '/docs/FILTERING_SELF_DPI/' | relative_url }}">cover reference</a>
+      describes static-site and captured-response alternatives.
+    </p>
     <p>
       The separate <code>yume-setup-ytp1</code> and
       <code>yume-doctor-ytp1</code> commands exercise experimental schema-1
@@ -396,12 +413,10 @@ cd yume
 <section id="docs" data-reveal="drift">
   <h2 class="section-title">Read by task</h2>
   <p class="section-lead">
-    Start with the runnable 0.2 reference or the replacement foundation for the
-    task you are actually doing. Website pages are generated from the
-    repository's canonical Markdown; archived contracts remain visibly
-    versioned rather than being erased.
+    Use the quick start and operations guide for transport v2. The YTP/1
+    development guide covers experimental providers and schema-1 tools.
   </p>
-  {% include doc-catalog.html groups="Start here|Operating|Internals and status" group_field="home_group" %}
+  {% include doc-catalog.html group_field="home_group" %}
 </section>
 
 <section id="support">

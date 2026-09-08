@@ -23,6 +23,7 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/protocol/protocol.hpp"
+#include "core/protocol/frame_limits.hpp"
 #include "core/stealth/cover_profile.hpp"
 #include "outbound/socket_protection.hpp"
 
@@ -645,7 +646,9 @@ inline bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
                    (static_cast<uint32_t>(header[2]) << 8) |
                    (static_cast<uint32_t>(header[3]));
     uint8_t type = header[4];
-    if (len > protocol::kMaxFramePayloadBytes) {
+    const uint16_t flags = static_cast<uint16_t>(header[6] << 8) |
+                           static_cast<uint16_t>(header[7]);
+    if (len > protocol::frame_payload_limit(type, flags)) {
         return false;
     }
     if (type < protocol::AUTH || type > protocol::SOPEN) {

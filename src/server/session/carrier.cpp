@@ -1034,13 +1034,20 @@ void Session::schedule_v2_h2_wire_flush_on_strand() {
         return;
     }
     v2_h2_flush_scheduled_ = true;
-    boost::asio::post(strand_, [self = shared_from_this()]() {
-        if (!self->v2_h2_flush_scheduled_) {
-            return;
-        }
-        self->v2_h2_flush_scheduled_ = false;
-        self->flush_v2_h2_wire_on_strand();
-    });
+    try {
+        boost::asio::post(strand_, [self = shared_from_this()]() {
+            if (!self->v2_h2_flush_scheduled_) {
+                return;
+            }
+            self->v2_h2_flush_scheduled_ = false;
+            self->flush_v2_h2_wire_on_strand();
+        });
+    } catch (...) {
+        // Nothing was posted. Leaving the marker set would suppress every
+        // later flush for this session, so the caller sees a clean failure.
+        v2_h2_flush_scheduled_ = false;
+        throw;
+    }
 }
 
 void Session::flush_v2_h2_wire_on_strand() {

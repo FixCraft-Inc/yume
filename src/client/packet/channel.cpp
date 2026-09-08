@@ -50,6 +50,7 @@ QueueResult queue_result(
     case Admission::timeout: return QueueResult::timeout;
     case Admission::stopped: return QueueResult::stopped;
     case Admission::invalid: return QueueResult::invalid;
+    case Admission::failed: return QueueResult::failed;
     }
     return QueueResult::invalid;
 }

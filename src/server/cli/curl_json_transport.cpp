@@ -696,7 +696,9 @@ HttpsEndpoint parse_https_endpoint(std::string_view url) {
                 "operator proof API IPv6 literals must not use a zone ID");
         }
         boost::system::error_code address_error;
-        const auto address = boost::asio::ip::make_address(host, address_error);
+        // Allocate before entering Boost's noexcept address parser.
+        const auto address = boost::asio::ip::make_address(
+            std::string(host), address_error);
         if (address_error || !address.is_v6()) {
             throw std::invalid_argument(
                 "operator proof API URL has an invalid IPv6 literal");
@@ -714,7 +716,8 @@ HttpsEndpoint parse_https_endpoint(std::string_view url) {
             port = authority.substr(colon + 1U);
         }
         boost::system::error_code address_error;
-        const auto address = boost::asio::ip::make_address(host, address_error);
+        const auto address = boost::asio::ip::make_address(
+            std::string(host), address_error);
         if (address_error && !valid_dns_name(host)) {
             throw std::invalid_argument(
                 "operator proof API URL has an invalid host");

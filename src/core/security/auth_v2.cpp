@@ -101,6 +101,10 @@ Bytes Optional(const Record& record, std::uint8_t id) {
         throw std::runtime_error("AUTH v2 field " + std::to_string(id) +
                                  " must be critical");
     }
+    if (it->value.empty()) {
+        throw std::runtime_error("AUTH v2 field " + std::to_string(id) +
+                                 " must not be empty");
+    }
     return it->value;
 }
 
@@ -123,8 +127,16 @@ void RequireSize(const Bytes& value, std::size_t size, std::string_view name) {
 }
 
 void RequireKemBlob(const Bytes& value, std::string_view name) {
-    if (value.size() < 1024 || value.size() > 4096) {
+    // AUTH and rekeys select ML-KEM-1024, whose public key and ciphertext
+    // both have this exact width. No other KEM is negotiated by this codec.
+    if (value.size() != 1568) {
         throw std::runtime_error("AUTH v2 invalid " + std::string(name) + " size");
+    }
+}
+
+void RequireServerInfo(const Bytes& value) {
+    if (value.size() > kMaxServerInfoBytes) {
+        throw std::runtime_error("AUTH v2 server info exceeds cap");
     }
 }
 
@@ -451,9 +463,7 @@ Bytes BuildAdminSignatureInput(const Bytes& challenge_record,
 }
 
 Bytes BuildAuthOk(const Bytes& server_info) {
-    if (server_info.size() > 32U * 1024U) {
-        throw std::runtime_error("AUTH v2 server info exceeds cap");
-    }
+    RequireServerInfo(server_info);
     return EncodeRecord(RecordKind::AuthOk, {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, server_info},
@@ -469,7 +479,9 @@ Bytes ParseAuthOk(const Bytes& encoded) {
         throw std::runtime_error("AUTH_OK exact transport version mismatch");
     }
     (void)RequiredProfile(record, 3);
-    return Required(record, 2);
+    const Bytes& server_info = Required(record, 2);
+    RequireServerInfo(server_info);
+    return server_info;
 }
 
 Bytes BuildRekeyInit(std::uint64_t next_epoch, const Bytes& mlkem_public_key,

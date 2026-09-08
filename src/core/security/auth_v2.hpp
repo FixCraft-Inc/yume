@@ -21,6 +21,7 @@ using Bytes = std::vector<std::uint8_t>;
 inline constexpr std::string_view kTransportVersion = yume::kTransportVersion;
 inline constexpr std::string_view kTransportProfile = yume::kTransportProfile;
 inline constexpr std::size_t kMaxRecordBytes = 64U * 1024U;
+inline constexpr std::size_t kMaxServerInfoBytes = 32U * 1024U;
 
 // Length of the TLS 1.3 exporter value bound into the AUTH transcript. The
 // codec owns the constant because it is the layer that enforces it; the
@@ -83,7 +84,8 @@ struct Response {
     std::string transport_profile;
     Bytes signature;
     // Second factor. Empty for a visitor session. Both must be present or both
-    // absent -- a response carrying one without the other is rejected, so a
+    // absent. Present fields must be nonempty. A response carrying one
+    // without the other is rejected, so a
     // half-supplied admin claim can never be read as a valid visitor response
     // that happens to have extra data attached.
     Bytes admin_identity;

@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/transport_profiles.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Transport profile architecture
 
 YUME separates an authenticated transport identity from whatever browser is

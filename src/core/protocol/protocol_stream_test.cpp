@@ -9,6 +9,11 @@
  */
 
 #include "core/protocol/protocol_stream.hpp"
+#include "core/security/auth_v2.hpp"
+
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 
 #include <cassert>
 #include <cstdio>
@@ -64,7 +69,8 @@ private:
     std::size_t requested_{0};
 };
 
-std::vector<uint8_t> header_declaring(uint32_t len, uint8_t type) {
+std::vector<uint8_t> header_declaring(uint32_t len, uint8_t type,
+                                    uint16_t flags = 0) {
     return {
         static_cast<uint8_t>((len >> 24) & 0xFF),
         static_cast<uint8_t>((len >> 16) & 0xFF),
@@ -72,9 +78,54 @@ std::vector<uint8_t> header_declaring(uint32_t len, uint8_t type) {
         static_cast<uint8_t>(len & 0xFF),
         type,
         0,
-        0,
-        0,
+        static_cast<uint8_t>(flags >> 8),
+        static_cast<uint8_t>(flags),
     };
+}
+
+void test_auth_bound_before_payload_read() {
+    for (const bool padded : {false, true}) {
+        const auto maximum = yume::auth_v2::kMaxRecordBytes + (padded ? 256U : 0U);
+        ScriptedStream stream(header_declaring(
+            static_cast<uint32_t>(maximum + 1U), yume::protocol::AUTH,
+            padded ? yume::protocol::kFlagPadded : 0));
+        bool rejected = false;
+        try { (void)yume::protocol::read_frame(stream); }
+        catch (const std::runtime_error&) { rejected = true; }
+        assert(rejected && stream.requested() == 8);
+    }
+}
+
+void test_decode_length_arithmetic() {
+    for (const auto length : {0xFFFFFFFFU, 0xFFFFFFF8U}) {
+        bool rejected = false;
+        try {
+            (void)yume::protocol::decode_frame(
+                header_declaring(length, yume::protocol::DATA));
+        } catch (const std::runtime_error&) { rejected = true; }
+        assert(rejected);
+    }
+}
+
+void test_auth_exact_boundary() {
+    const std::vector<uint8_t> payload(yume::auth_v2::kMaxRecordBytes, 0x41);
+    for (const uint16_t padding : {uint16_t{0}, uint16_t{256}}) {
+        const auto wire = yume::protocol::encode_frame(
+            yume::protocol::AUTH, 0, 0, payload, padding);
+        assert(wire.size() == 8U + payload.size() + (padding ? 256U : 0U));
+        ScriptedStream stream(wire);
+        auto frame = yume::protocol::read_frame(stream);
+        assert(yume::protocol::strip_padding(frame));
+        assert(frame.payload == payload);
+        assert(yume::protocol::decode_frame(wire).payload == payload);
+        assert(stream.requested() == wire.size());
+    }
+    bool rejected = false;
+    try {
+        (void)yume::protocol::encode_frame(yume::protocol::AUTH, 0, 0,
+            std::vector<uint8_t>(payload.size() + 1U, 0x41));
+    } catch (const std::runtime_error&) { rejected = true; }
+    assert(rejected);
 }
 
 // A peer that declares 4 GiB must be refused before anything is allocated or
@@ -140,6 +191,9 @@ void test_accepts_empty_payload() {
 }  // namespace
 
 int main() {
+    test_auth_bound_before_payload_read();
+    test_auth_exact_boundary();
+    test_decode_length_arithmetic();
     test_rejects_oversize_declared_payload();
     test_rejects_one_byte_over_the_cap();
     test_accepts_ordinary_frame();

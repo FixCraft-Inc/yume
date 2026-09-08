@@ -23,6 +23,7 @@
 
 #include "client/transport/client_stream.hpp"
 #include "core/protocol/protocol.hpp"
+#include "core/protocol/frame_limits.hpp"
 #include "core/stealth/h2_carrier.hpp"
 
 namespace {
@@ -118,9 +119,11 @@ void AuthReadRetiresOnlyDecodedCreditAndFlushesUpdate() {
     // Cross half of Chrome's 6-MiB stream receive window so retiring this
     // frame deterministically queues a stream WINDOW_UPDATE. The second frame
     // shares the final WebSocket message and therefore arrives prefetched.
+    // CONTROL supplies a valid large frame for this shared reader. AUTH is
+    // capped at 64 KiB and cannot reach the credit threshold in one frame.
     std::vector<std::uint8_t> first_payload(4U * 1024U * 1024U, 0x61);
     const auto first = yume::protocol::encode_frame(
-        yume::protocol::AUTH, 0, 0, first_payload);
+        yume::protocol::CONTROL, 0, 0, first_payload);
     const std::vector<std::uint8_t> second_payload{0x62, 0x63, 0x64};
     const auto second = yume::protocol::encode_frame(
         yume::protocol::ANON, 0, 0, second_payload);
@@ -130,10 +133,10 @@ void AuthReadRetiresOnlyDecodedCreditAndFlushesUpdate() {
     tunnel_bytes.insert(tunnel_bytes.end(), first.begin(), first.end());
     tunnel_bytes.insert(tunnel_bytes.end(), second.begin(), second.end());
     Expect(server.SendBinary(tunnel_bytes),
-           "failed to queue test authentication frames");
+           "failed to queue test credit frames");
     auto server_wire = server.TakeOutbound();
     Expect(!server_wire.empty() && server.queued_output_bytes() == 0,
-           "test authentication frames exceeded the peer receive window");
+           "test credit frames exceeded the peer receive window");
 
     boost::asio::io_context io;
     boost::asio::local::stream_protocol::socket local(io);
@@ -154,7 +157,7 @@ void AuthReadRetiresOnlyDecodedCreditAndFlushesUpdate() {
     yume::protocol::Frame decoded;
     try {
         decoded = yume::client::read_frame_over_h2_with_timeout(
-            stream, io, client, &prefetched, 5s, "test AUTH frame",
+            stream, io, client, &prefetched, 5s, "test credit frame",
             "cover.example", 443);
     } catch (...) {
         stream.cancel_and_close();
@@ -164,7 +167,7 @@ void AuthReadRetiresOnlyDecodedCreditAndFlushesUpdate() {
     writer.join();
     if (writer_error) std::rethrow_exception(writer_error);
 
-    Expect(decoded.header.type == yume::protocol::AUTH &&
+    Expect(decoded.header.type == yume::protocol::CONTROL &&
                decoded.payload == first_payload,
            "authentication reader decoded the wrong first frame");
     Expect(prefetched == second,
@@ -194,6 +197,40 @@ void AuthReadRetiresOnlyDecodedCreditAndFlushesUpdate() {
            "authentication reader decoded the wrong prefetched frame");
     Expect(prefetched.empty() && client.unconsumed_tunnel_bytes() == 0,
            "authentication reader leaked prefetched receive credit");
+}
+
+void test_auth_header_budget() {
+    for (const bool padded : {false, true}) {
+        H2Carrier client(H2CarrierRole::Client);
+        H2Carrier server(H2CarrierRole::Server);
+        OpenCarrier(client, server);
+        const uint16_t flags = padded ? yume::protocol::kFlagPadded : 0;
+        const auto length = yume::protocol::frame_payload_limit(
+            yume::protocol::AUTH, flags) + 1U;
+        const H2Bytes header{
+            static_cast<uint8_t>(length >> 24), static_cast<uint8_t>(length >> 16),
+            static_cast<uint8_t>(length >> 8), static_cast<uint8_t>(length),
+            yume::protocol::AUTH, 0, static_cast<uint8_t>(flags >> 8),
+            static_cast<uint8_t>(flags)};
+        Expect(server.SendBinary(header), "failed to queue hostile AUTH header");
+        Pump(server, client);
+        boost::asio::io_context io;
+        boost::asio::local::stream_protocol::socket local(io), peer(io);
+        boost::asio::local::connect_pair(local, peer);
+        yume::client::ClientTransportStream stream(std::move(local), {}, {});
+        std::vector<uint8_t> prefetched;
+        bool rejected = false;
+        try {
+            (void)yume::client::read_frame_over_h2_with_timeout(
+                stream, io, client, &prefetched, 50ms, "oversize AUTH",
+                "cover.example", 443);
+        } catch (const yume::client::FatalError& error) {
+            rejected = std::string(error.what()) ==
+                "unexpected oversize AUTH inside H2 carrier";
+        }
+        Expect(rejected, "H2 reader tried to fill oversize AUTH payload");
+        Expect(prefetched == header, "H2 reader consumed rejected frame bytes");
+    }
 }
 
 void AuthH2ReadCancellationDrainsIo() {
@@ -236,6 +273,7 @@ void AuthH2ReadCancellationDrainsIo() {
 }  // namespace
 
 int main() {
+    test_auth_header_budget();
     AuthReadRetiresOnlyDecodedCreditAndFlushesUpdate();
     AuthH2ReadCancellationDrainsIo();
     return 0;

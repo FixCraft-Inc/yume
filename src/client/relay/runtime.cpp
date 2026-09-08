@@ -29,6 +29,19 @@ inline constexpr std::size_t kMaxPendingApplicationBytes = 256U * 1024U;
 inline constexpr std::uint16_t kRelayRekeyWindow =
     ratchet::kDefaultRekeyWindow;
 
+// Short enough for the small-string buffer, so reporting a refusal caused by
+// allocation failure does not need another allocation to succeed.
+constexpr const char* kRelayWriteFailed = "relay write failed";
+
+void report_relay_write_failure(std::string* error) noexcept {
+    if (!error) return;
+    try {
+        *error = kRelayWriteFailed;
+    } catch (...) {
+        // The refused write is already the caller's answer.
+    }
+}
+
 std::string bytes_to_b64(const crypto::Bytes& bytes) {
     return yume::util::base64_encode(std::string(bytes.begin(), bytes.end()));
 }
@@ -1670,6 +1683,9 @@ bool RelayRuntime::send_sealed_record_locked(
             case TransportCore::DataWriteAdmission::invalid:
                 *error = "relay-v2 transport rejected an invalid record";
                 break;
+            case TransportCore::DataWriteAdmission::failed:
+                *error = "relay-v2 transport could not queue the record";
+                break;
             case TransportCore::DataWriteAdmission::accepted:
                 break;
         }
@@ -1693,20 +1709,25 @@ bool RelayRuntime::send_channel_payload_locked(
         return false;
     }
 
-    relay_v2::Bytes bytes(plaintext.begin(), plaintext.end());
-    struct BytesWiper {
-        relay_v2::Bytes& value;
-        ~BytesWiper() { security::secure_erase(value); }
-    } bytes_wiper{bytes};
-    protocol::Frame probe{
-        {static_cast<std::uint32_t>(bytes.size()), protocol::DATA, 0, 0},
-        std::move(bytes)};
-    struct ProbeWiper {
-        protocol::Frame& value;
-        ~ProbeWiper() { security::secure_erase(value.payload); }
-    } probe_wiper{probe};
-
+    // Everything from the plaintext copy onward is inside the guarded
+    // region. Returning false is this function's whole failure contract:
+    // nothing queued, no pending bytes reserved, and `completion` still
+    // owned by the caller, so an escaping exception would leave the caller
+    // unable to tell which of those happened.
     try {
+        relay_v2::Bytes bytes(plaintext.begin(), plaintext.end());
+        struct BytesWiper {
+            relay_v2::Bytes& value;
+            ~BytesWiper() { security::secure_erase(value); }
+        } bytes_wiper{bytes};
+        protocol::Frame probe{
+            {static_cast<std::uint32_t>(bytes.size()), protocol::DATA, 0, 0},
+            std::move(bytes)};
+        struct ProbeWiper {
+            protocol::Frame& value;
+            ~ProbeWiper() { security::secure_erase(value.payload); }
+        } probe_wiper{probe};
+
         const auto now = std::chrono::steady_clock::now();
         if (channel.ratchet->rekey_timed_out(now)) {
             if (error) *error = "relay-v2 rekey acknowledgement timed out";
@@ -1739,10 +1760,17 @@ bool RelayRuntime::send_channel_payload_locked(
                 }
                 return false;
             }
-            channel.pending_application_bytes += probe.payload.size();
+            // Order this so returning false always means the same thing:
+            // nothing queued and no pending bytes reserved. The rekey
+            // deadline belongs to the offer that is already outstanding, so
+            // arm it before emplacement, which can also throw. Deque
+            // emplacement is strongly exception safe and the byte reservation
+            // that follows it cannot fail.
+            const std::size_t pending_bytes = probe.payload.size();
+            schedule_rekey_deadline_locked(channel);
             channel.pending_applications.emplace_back(
                 std::move(probe.payload), std::move(completion));
-            schedule_rekey_deadline_locked(channel);
+            channel.pending_application_bytes += pending_bytes;
             return true;
         }
 
@@ -1751,7 +1779,17 @@ bool RelayRuntime::send_channel_payload_locked(
         return send_sealed_record_locked(
             channel, std::move(encoded), std::move(completion), error);
     } catch (const std::exception& ex) {
-        if (error) *error = ex.what();
+        // Reporting the reason may allocate too. The refusal itself is the
+        // guarantee the caller depends on, so it is never conditional on
+        // being able to describe it.
+        try {
+            if (error) *error = ex.what();
+        } catch (...) {
+            report_relay_write_failure(error);
+        }
+        return false;
+    } catch (...) {
+        report_relay_write_failure(error);
         return false;
     }
 }

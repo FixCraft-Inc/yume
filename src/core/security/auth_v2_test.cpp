@@ -1,3 +1,7 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include "core/security/auth_v2.hpp"
 
 #include <cassert>
@@ -154,6 +158,29 @@ int main() {
     // A response without the admin fields must not read as an admin claim.
     assert(!response.claims_admin());
 
+    const auto visitor_record = DecodeRecord(response.encoded,
+        RecordKind::Response, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+    for (const auto& extra_fields : {
+             std::vector<Field>{{8, true, {}}},
+             std::vector<Field>{{9, true, {}}},
+             std::vector<Field>{{8, true, {}}, {9, true, {}}},
+             std::vector<Field>{{8, true, identity}},
+             std::vector<Field>{{9, true, admin_signature}}}) {
+        auto fields = visitor_record.fields;
+        fields.insert(fields.end(), extra_fields.begin(), extra_fields.end());
+        assert(Throws([&] {
+            (void)ParseResponse(EncodeRecord(RecordKind::Response, fields));
+        }));
+    }
+    for (const std::size_t index : {7U, 8U}) {
+        auto record = DecodeRecord(admin_response.encoded,
+            RecordKind::Response, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+        record.fields[index].critical = false;
+        assert(Throws([&] {
+            (void)ParseResponse(EncodeRecord(RecordKind::Response, record.fields));
+        }));
+    }
+
     // The binding is what a relaying endpoint cannot reproduce: the same
     // records under a different live TLS connection sign a different input.
     const Bytes relayed_binding(kChannelBindingLen, 0x89);
@@ -201,10 +228,64 @@ int main() {
 
     const Bytes info{'{', '}'};
     assert(ParseAuthOk(BuildAuthOk(info)) == info);
+    const Bytes max_info(kMaxServerInfoBytes, 'a');
+    assert(ParseAuthOk(BuildAuthOk(max_info)) == max_info);
+    assert(Throws([&] {
+        (void)BuildAuthOk(Bytes(kMaxServerInfoBytes + 1U, 'a'));
+    }));
+    auto oversized_info = DecodeRecord(BuildAuthOk(max_info),
+        RecordKind::AuthOk, {1, 2, 3});
+    oversized_info.fields[1].value.push_back('a');
+    assert(Throws([&] {
+        (void)ParseAuthOk(EncodeRecord(RecordKind::AuthOk, oversized_info.fields));
+    }));
     const auto init = ParseRekeyInit(BuildRekeyInit(1, kem_public, x_public));
     assert(init.next_epoch == 1);
     const auto ack = ParseRekeyAck(BuildRekeyAck(1, ciphertext, x_public));
     assert(ack.next_epoch == 1);
+
+    // Bypass the writers to exercise each peer-facing parser as well as the
+    // local builder. These wrong widths used to pass the AUTH codec.
+    for (const std::size_t size : {1024U, 1567U, 1569U, 4096U}) {
+        const Bytes wrong_kem(size, 0x22);
+        assert(Throws([&] {
+            (void)BuildChallenge(challenge, wrong_kem, x_public,
+                psk_salt, transcript_salt, rekey_window, policy);
+        }));
+        assert(Throws([&] {
+            (void)BuildUnsignedResponse(x_public, wrong_kem, identity,
+                rekey_window, policy);
+        }));
+        assert(Throws([&] { (void)BuildRekeyInit(1, wrong_kem, x_public); }));
+        assert(Throws([&] { (void)BuildRekeyAck(1, wrong_kem, x_public); }));
+        auto bad_challenge = DecodeRecord(encoded,
+            RecordKind::Challenge, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+        bad_challenge.fields[2].value = wrong_kem;
+        assert(Throws([&] {
+            (void)ParseChallenge(EncodeRecord(RecordKind::Challenge,
+                bad_challenge.fields));
+        }));
+        auto bad_response = visitor_record;
+        bad_response.fields[1].value = wrong_kem;
+        assert(Throws([&] {
+            (void)ParseResponse(EncodeRecord(RecordKind::Response,
+                bad_response.fields));
+        }));
+        auto bad_init = DecodeRecord(BuildRekeyInit(1, kem_public, x_public),
+            RecordKind::RekeyInit, {1, 2, 3});
+        bad_init.fields[1].value = wrong_kem;
+        assert(Throws([&] {
+            (void)ParseRekeyInit(EncodeRecord(RecordKind::RekeyInit,
+                bad_init.fields));
+        }));
+        auto bad_ack = DecodeRecord(BuildRekeyAck(1, ciphertext, x_public),
+            RecordKind::RekeyAck, {1, 2, 3});
+        bad_ack.fields[1].value = wrong_kem;
+        assert(Throws([&] {
+            (void)ParseRekeyAck(EncodeRecord(RecordKind::RekeyAck,
+                bad_ack.fields));
+        }));
+    }
 
     Bytes trailing = encoded;
     trailing.push_back(0);

@@ -28,13 +28,20 @@ bool IdentityAdmissionController::admit(std::uint64_t session_id,
         return false;
     }
 
-    auto& count = identity_counts_[fingerprint];
-    if (count >= max_sessions) {
+    const auto [identity, inserted] = identity_counts_.try_emplace(fingerprint, 0);
+    if (identity->second >= max_sessions) {
         if (error) *error = "authenticated key session limit reached";
         return false;
     }
-    ++count;
-    session_identities_.emplace(session_id, fingerprint);
+    // A failed session-map allocation must not consume a slot that release()
+    // cannot find. Keep the per-identity count and session index transactional.
+    try {
+        session_identities_.emplace(session_id, fingerprint);
+    } catch (...) {
+        if (inserted) identity_counts_.erase(identity);
+        throw;
+    }
+    ++identity->second;
     if (error) error->clear();
     return true;
 }

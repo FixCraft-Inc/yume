@@ -29,6 +29,8 @@ enum class QueueResult {
     stopped,
     buffer_too_small,
     invalid,
+    // The transport had capacity but could not take ownership of the batch.
+    failed,
 };
 
 struct EngineStats {

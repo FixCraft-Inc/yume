@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/source_map.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME source map
 
 The default client and daemon use transport v2. YTP/1 is the experimental
@@ -30,13 +31,16 @@ Do not bump one to match another.
 | --- | --- | --- |
 | Frame type | `protocol::Frame` (`core/protocol/protocol.hpp`) | `ytp1` codecs (`ytp/protocol.hpp`) |
 | Session | `server::Session` (`server/session/`) | `engine::SessionEngine` (`engine/session_engine.cpp`) |
-| Build flag | `YUME_BUILD_TRANSPORT_V2` (ON) | `YUME_BUILD_EXPERIMENTAL_YTP1_*` (all OFF) |
+| Build options | `YUME_BUILD_TRANSPORT_V2=ON` | Engine and codecs build by default. Provider options `YUME_BUILD_EXPERIMENTAL_YTP1_*` are OFF. |
 | Status | runs, tested, carries traffic | provider candidates and focused tests; no live YTP/1 endpoint |
 
 If you search for "Frame" or "how is a stream opened" you will land in one of
 the two depending on which file you started from. Check the directory first.
 
 ## Directories
+
+Implementation paths below are relative to `src/`. The candidate header in
+`include/yume/` is relative to the repository root.
 
 ### Transport-v2 implementation
 
@@ -50,6 +54,7 @@ the two depending on which file you started from. Check the directory first.
 | `gui/` | Optional desktop app. Links `yume_facade` only |
 | `platform/` | Platform-neutral executable-location interface plus the one configure-selected Linux/POSIX, macOS, or Windows implementation |
 | `tools/` | Optional operational and qualification executables: the read-only federation map, self-test harness, and focused transport/cryptography benchmarks |
+| `test_support/` | Allocation-failure hooks for isolated test executables; no production allocator or runtime dependency |
 
 ### Cross-stack embedding boundary
 
@@ -76,8 +81,9 @@ secure_core -> core -> transport_core -> outbound_transport -> {server, client_l
                                                      config_v1 + embed -> abi
 ```
 
-Two mechanisms, both in [`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake)
-and run as the CTest `yume_03_layering_check`.
+[`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake) defines two checks
+that run during configuration. CTest `yume_03_layering_check` reruns the source
+include check, without reconstructing the target link graph.
 
 `yume_assert_exact_link_dependencies` pins a target's exact direct link list. It
 is applied to the engine and YTP graph, to `yume_embed` and `yume_facade`, and to
@@ -125,19 +131,26 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
   `client/cli/config/config.cpp` and `server/cli/config_load.cpp` serve the
   CLI. `facade/config/client_config_io.cpp` and
   `facade/config/server_config_io.cpp` serve the GUI and the C ABI. Within a
-  role they share only the closed key table
-  (`config/client_document_keys.hpp`, `config/server_document_keys.hpp`), so a
-  new key or bound has to be added to both. They still diverge on which
-  numeric ranges they enforce and where, and the facade server parser reads a
-  narrower set of fields than it validates. The shared closed-key validator
-  rejects explicit JSON `null` in every parser; an absent optional field can
-  still select its documented default. Other value rules remain duplicated.
+  role they share the closed key table
+  (`config/client_document_keys.hpp`, `config/server_document_keys.hpp`) and
+  ratchet-profile parsing (`config/ratchet_profile_json.hpp`). Other field/range
+  rules, path resolution and writer coverage remain separately implemented.
+  Parsing, validation and startup apply checks at different stages, so parser
+  acceptance alone does not establish that a configuration can run. The shared
+  closed-key validator rejects explicit JSON `null` in every parser. An absent
+  optional field can still select its documented default.
 - **Authorization parsing is shared; publication belongs to the caller.**
   `server/auth/authorized_identity_store.*` owns the identity grammar used by
   CLI/facade key management and daemon startup/reload. They use
   `core/runtime/bounded_file.*` for bounded regular-file reads. The daemon's
   `server/auth/auth.cpp` still owns policy assembly within the Manager's
   grouped snapshot transaction; parser reuse does not replace that lock.
+- **Control and directory JSON share field predicates.**
+  `core/protocol/control_json_policy.hpp` owns closed-field checks, bounded
+  text, scalar type checks, client platform/variant values, and nonthrowing
+  error assignment. Each parser owns its field table, required fields,
+  relationships, aggregate byte budget, and diagnostic order. Relay payloads
+  keep their separate text and base64 rules.
 - **Four error-handling conventions coexist.** Exceptions in core, client, and
   server. `runtime::OperationStatus`. `engine::StatusCode`. And facade's `bool`
   plus `std::string* err`. The C ABI wraps all of them at its boundary.
@@ -153,3 +166,12 @@ individually in `src/CMakeLists.txt`. Integration and system tests live in
 `tests/`. The end-to-end ABI data path is `yume_abi_stream_integration`, which
 provisions a real server and client and moves bytes over a named service
 stream.
+
+## Documentation tooling
+
+`docs/src/en_US/` owns documentation text and publication metadata;
+`scripts/yume_doc_spec.py` parses it once for Markdown, roff and web renderers.
+`scripts/yume_docs.py` collects and validates all outputs before replacing
+changed files. `docs/diagrams/*.json` owns figure topology and labels, while
+`@diagram` in a document owns placement. Website colors and fonts also drive
+standalone SVGs. See [the authoring guide](src/README.md).

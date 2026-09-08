@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/ytp_1.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME Transport Protocol 1 kernel
 
 Status: normative development contract for the implemented dependency-pure

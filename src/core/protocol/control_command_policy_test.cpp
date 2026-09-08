@@ -10,9 +10,16 @@
 
 #include "core/protocol/control_command_policy.hpp"
 
+#include <atomic>
+#include <cstdlib>
 #include <deque>
+#include <new>
 #include <stdexcept>
 #include <string>
+
+#include "test_support/allocation_failure.hpp"
+
+using yume::test::fail_allocations;
 
 namespace {
 
@@ -62,7 +69,7 @@ void CheckLifecyclePolicy() {
         {"message", "connecting"},
     };
     parsed = yume::control::try_lifecycle_command_from_json(minimal, &error);
-    Check(parsed.has_value(), "compatible minimal lifecycle was rejected");
+    Check(parsed.has_value(), "minimal lifecycle was rejected");
     Check(parsed->client_platform == "unknown",
           "minimal lifecycle platform default changed");
     Check(parsed->client_variant == "unknown",
@@ -113,6 +120,30 @@ void CheckLifecyclePolicy() {
     malformed["detail"] = "line one\nline two";
     Check(!yume::control::try_lifecycle_command_from_json(malformed),
           "lifecycle control character was accepted");
+
+    for (const auto& detail : {nlohmann::json(nullptr),
+                               nlohmann::json(std::string("a\0b", 3)),
+                               nlohmann::json(std::string(1, '\x7f'))}) {
+        malformed = valid;
+        malformed["detail"] = detail;
+        Check(!yume::control::try_lifecycle_command_from_json(malformed),
+              "invalid optional lifecycle text was accepted");
+    }
+    auto text_boundary = minimal;
+    text_boundary["message"] = std::string(
+        yume::control::kMaxLifecycleMessageBytes - 2U, 'm') + "\xc3\xa9";
+    Check(yume::control::try_lifecycle_command_from_json(text_boundary).has_value(),
+          "non-ASCII lifecycle text at the byte limit was rejected");
+    text_boundary["message"].get_ref<std::string&>().push_back('m');
+    Check(!yume::control::try_lifecycle_command_from_json(text_boundary),
+          "non-ASCII lifecycle text above the byte limit was accepted");
+
+    malformed = valid;
+    malformed["state"] = "ready";
+    malformed["exit_ip"] = "not-an-ip";
+    Check(!yume::control::try_lifecycle_command_from_json(malformed, &error) &&
+              error == "invalid lifecycle state",
+          "lifecycle first-error order changed");
 
     // Every field remains individually legal, but their retained total is
     // above the command budget.
@@ -222,6 +253,13 @@ void CheckRegistrationPolicy() {
     Check(!yume::control::try_control_registration_from_json(malformed),
           "unknown registration field was accepted");
 
+    for (const char* field : {"hostname", "wan_ip", "server_in_charge", "allow_exec"}) {
+        malformed = valid;
+        malformed[field] = nullptr;
+        Check(!yume::control::try_control_registration_from_json(malformed),
+              "null optional registration field was accepted");
+    }
+
     malformed = valid;
     malformed["hostname"] = std::string(
         yume::control::kMaxRegistrationHostnameBytes, 'h');
@@ -230,11 +268,37 @@ void CheckRegistrationPolicy() {
           "aggregate-oversized registration was accepted");
 }
 
+void check_allocation_failure() {
+    // Long IPv6 literals exercise address parsing beyond short-string storage.
+    // Refuse allocation through the entire public parse, including its catch.
+    const std::string address = "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff";
+    const nlohmann::json registration{
+        {"cmd", "register"}, {"wan_ip", address},
+    };
+    auto lifecycle = ValidLifecycleCommand();
+    lifecycle["exit_ip"] = address;
+
+    fail_allocations.store(true, std::memory_order_relaxed);
+    const auto parsed_registration =
+        yume::control::try_control_registration_from_json(registration);
+    fail_allocations.store(false, std::memory_order_relaxed);
+    Check(!parsed_registration,
+          "registration did not contain an allocation failure");
+
+    fail_allocations.store(true, std::memory_order_relaxed);
+    const auto parsed_lifecycle =
+        yume::control::try_lifecycle_command_from_json(lifecycle);
+    fail_allocations.store(false, std::memory_order_relaxed);
+    Check(!parsed_lifecycle,
+          "lifecycle did not contain an allocation failure");
+}
+
 }  // namespace
 
 int main() {
     CheckLifecyclePolicy();
     CheckRegistrationPolicy();
+    check_allocation_failure();
     Check(yume::control::is_valid_control_command_name("directory.list"),
           "valid command name was rejected");
     Check(!yume::control::is_valid_control_command_name("bad\ncommand"),

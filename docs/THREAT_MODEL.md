@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/threat_model.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME 0.3 threat model
 
 This threat model describes the intended YTP/1 product and explicitly separates
@@ -122,10 +123,17 @@ size, fields, service names, stream IDs/count, pending opens, per-stream and
 connection credit, queued bytes, control messages, packet size/batch, admission
 replay state, handshake work, and rekey work.
 
-Credit is returned through single-owner RAII objects so cancellation, discard,
-or handler failure cannot leak flow capacity. Cleanup is idempotent and
-nonthrowing; callback exceptions are contained. Exhaustion produces typed
-local/session failure without creating an unauthenticated public YUME response.
+Receive-credit tokens release their credit on destruction and contain release
+callback exceptions. Client queue admission reserves capacity after successful
+insertion. `try_send_data` reports refusal through its completion, while
+`wait_send_data` returns an admission status without invoking the completion.
+TransportCore shutdown drains queued writes without allocating. Session close
+falls back to closing the socket if the close deadline cannot be armed.
+Server TLS dispatch preserves ownership through batch assembly and retains
+undelivered completions until terminal close. Asynchronous delivery failure
+does not itself close the session, as described in
+[implementation status](IMPLEMENTATION_STATUS.md). These fixes do not prove
+complete cleanup under arbitrary allocation, callback or lifecycle failure.
 
 Bounds reduce supported-process blast radius. They do not guarantee
 availability against an attacker controlling the link or external OS/resource

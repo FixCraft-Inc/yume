@@ -1631,6 +1631,20 @@ target_link_libraries(yume_composite_signature_test PRIVATE yume_core)
 yume_apply_perf_opts(yume_composite_signature_test)
 add_test(NAME yume_composite_signature_test COMMAND yume_composite_signature_test)
 
+add_executable(yume_memory_lifetime_test core/security/memory_lifetime_test.cpp)
+target_link_libraries(yume_memory_lifetime_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_memory_lifetime_test PRIVATE)
+yume_apply_perf_opts(yume_memory_lifetime_test)
+set(yume_memory_cases erase sign bio-growth pem-export pem-partial)
+if(NOT WIN32)
+    list(APPEND yume_memory_cases pem-load)
+endif()
+foreach(memory_case IN LISTS yume_memory_cases)
+    string(REPLACE "-" "_" memory_suffix "${memory_case}")
+    add_test(NAME yume_memory_${memory_suffix}_test
+        COMMAND yume_memory_lifetime_test "${memory_case}")
+endforeach()
+
 add_executable(yume_dual_key_auth_test
     server/auth/dual_key_auth_test.cpp
     server/cli/key.cpp
@@ -1689,6 +1703,28 @@ yume_link_atomic_if_needed(yume_transport_core_test PRIVATE)
 yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
+
+# Isolated because it replaces global operator new: these cases hold every
+# allocation failing while the write scheduler marks, selects and rotates.
+add_executable(yume_write_ready_ring_test
+    core/runtime/write_ready_ring_test.cpp
+)
+target_link_libraries(yume_write_ready_ring_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_write_ready_ring_test PRIVATE)
+yume_apply_perf_opts(yume_write_ready_ring_test)
+add_test(NAME yume_write_ready_ring_test COMMAND yume_write_ready_ring_test)
+
+# Isolated because it replaces global operator new to inject allocation
+# failure into transport write admission.
+add_executable(yume_transport_async_failure_test
+    client/transport/transport_async_failure_test.cpp
+)
+target_link_libraries(yume_transport_async_failure_test
+    PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_transport_async_failure_test PRIVATE)
+yume_apply_perf_opts(yume_transport_async_failure_test)
+add_test(NAME yume_transport_async_failure_test
+    COMMAND yume_transport_async_failure_test)
 
 add_executable(yume_relay_channel_policy_test
     core/protocol/relay_policy_test.cpp)
@@ -1805,6 +1841,14 @@ if(TARGET yume_client_lib)
     yume_link_atomic_if_needed(yume_share_bundle_lifetime_test PRIVATE)
     yume_apply_perf_opts(yume_share_bundle_lifetime_test)
     add_test(NAME yume_share_bundle_lifetime_test COMMAND yume_share_bundle_lifetime_test)
+
+    add_executable(yume_share_serialization_lifetime_test
+        client/transfer/share_serialization_lifetime_test.cpp)
+    target_link_libraries(yume_share_serialization_lifetime_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_share_serialization_lifetime_test PRIVATE)
+    yume_apply_perf_opts(yume_share_serialization_lifetime_test)
+    add_test(NAME yume_share_serialization_lifetime_test
+        COMMAND yume_share_serialization_lifetime_test)
 
     add_executable(yume_packet_channel_contract_test
         client/packet/channel_contract_test.cpp)
@@ -2042,6 +2086,38 @@ if(TARGET yume_server)
     yume_apply_perf_opts(yume_server_control_survival_test)
     add_test(NAME yume_server_control_survival_test
         COMMAND yume_server_control_survival_test)
+
+    add_executable(yume_server_frame_budget_test
+        server/session/frame_budget_test.cpp)
+    target_link_libraries(yume_server_frame_budget_test PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_server_frame_budget_test PRIVATE)
+    yume_apply_perf_opts(yume_server_frame_budget_test)
+    add_test(NAME yume_server_frame_budget_test COMMAND yume_server_frame_budget_test)
+
+    # Isolated because it replaces global operator new to inject allocation
+    # failure into session write submission.
+    add_executable(yume_session_async_cleanup_test
+        server/session/session_async_cleanup_test.cpp)
+    target_link_libraries(yume_session_async_cleanup_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_session_async_cleanup_test PRIVATE)
+    yume_apply_perf_opts(yume_session_async_cleanup_test)
+    add_test(NAME yume_session_async_cleanup_test
+        COMMAND yume_session_async_cleanup_test)
+    set_tests_properties(yume_session_async_cleanup_test PROPERTIES TIMEOUT 60)
+
+    if(YUME_USE_BASEFWX)
+        add_executable(yume_server_auth_publication_test
+            server/session/auth_publication_test.cpp)
+        target_link_libraries(yume_server_auth_publication_test
+            PRIVATE yume_server Threads::Threads)
+        yume_link_atomic_if_needed(yume_server_auth_publication_test PRIVATE)
+        yume_apply_perf_opts(yume_server_auth_publication_test)
+        add_test(NAME yume_server_auth_publication_test
+            COMMAND yume_server_auth_publication_test)
+        set_tests_properties(yume_server_auth_publication_test PROPERTIES TIMEOUT 30)
+
+    endif()
 
     add_executable(yume_federation_link_lifecycle_test
         server/federation/link_lifecycle_test.cpp)
@@ -2455,6 +2531,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/test_yume_capture_finalize.py"
     )
+    add_test(NAME yume_diagrams_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_diagrams.py"
+    )
     add_test(NAME yume_tls_wire_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_tls_wire.py"
@@ -2504,6 +2584,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
     yume_apply_perf_opts(yume_obfs_test)
     add_test(NAME yume_obfs_test COMMAND yume_obfs_test)
+
+    add_executable(yume_admission_replay_test core/stealth/admission_replay_test.cpp)
+    target_link_libraries(yume_admission_replay_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_admission_replay_test PRIVATE)
+    yume_apply_perf_opts(yume_admission_replay_test)
+    add_test(NAME yume_admission_replay_test COMMAND yume_admission_replay_test)
 endif()
 
 endif()

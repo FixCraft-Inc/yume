@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/contributing.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Contributing to YUME
 
 YUME is experimental security and networking software. Read the
@@ -134,18 +135,41 @@ in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
 Search CLI help, man pages, release material, and manually maintained website
 pages for duplicate claims. Regenerate website documentation with
 `scripts/sync_website_docs.sh`, then run `scripts/check_website_catalog.py`.
-Generated `website/docs/**/*.md` files are ignored: CI and Pages regenerate
-them from canonical Markdown before validating and building the site. Local
-`--check` mode only compares an already-generated local mirror; it is useful
-after generation but is not a clean-checkout drift gate. Every fenced block in
-published Markdown must have a language tag. Do not leave a corrected contract
-only in a private review note.
+
+Documentation is authored under `docs/src/en_US/`. Edit the `.doc` source
+named in a generated file's banner. Keep one document per aspect; share a
+`.part` only when several documents use it. Titles, descriptions, card labels,
+catalog groups and routes live in the same source as the text.
+
+```sh
+python3 scripts/yume_docs.py sync --all-languages
+python3 scripts/yume_docs.py check --all-languages
+python3 scripts/check_website_catalog.py
+```
+
+The sync covers Markdown, manuals, website pages and catalog, and diagram
+SVGs. Diagram placement is `@diagram <name>` in the document, with topology
+and source labels in `docs/diagrams/<name>.json`. `en_US` is the only active
+locale; missing-content reports are preparation for translations, not proof
+that a translation is current. See [the source guide](docs/src/README.md).
+
+YUME's `@opt` and `@cli` entries also generate CLI help and completion
+headers; help grouping lives in `docs/src/en_US/cli/`. The native parser
+remains the behavior authority. Do not edit generated help headers.
+
+YUME's website Markdown and inlined SVG copies are ignored. CI verifies
+tracked artifacts before generating those copies. The format and diagram
+guides, agent instructions and website layout guidance are edited directly;
+the changelog is a `.doc` source. Review hand-authored site landing-page
+claims with each behavior change.
+
 Keep public docs focused on setup, behavior, design, and supported interfaces.
 Keep machine evidence, task queues, and agent handoffs in the ignored private
 overlay. Public [automation guidance](docs/agents/README.md) contains only
 repository facts that apply to a fresh clone.
 
-The `website/` tree publishes the static project site. Edit canonical Markdown under `docs/`, not generated
+The `website/` tree publishes the static project site. Edit the canonical
+`docs/src/` source, never the generated `docs/*.md` or
 `website/docs/*.md`, and keep website claims within the implementation,
 threat, stealth, packaging, and release documents. Preserve
 accurate no-release and no-JavaScript defaults; enable artifact links only

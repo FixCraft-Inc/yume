@@ -5,6 +5,7 @@
  */
 
 #include "server/session/session.hpp"
+#include "core/protocol/frame_limits.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 #include "core/security/secure_erase.hpp"
@@ -13,6 +14,22 @@
 namespace yume::server {
 
 using namespace detail;
+
+namespace {
+
+// Session teardown settles callbacks owned by peers, services, and embedders.
+// None of them may stop the remaining steps — the close deadline, manager
+// deregistration and socket release — from running, or the session stays
+// registered with its descriptors held and no timer left to finish it.
+template <typename Step>
+void contain_teardown(Step&& step) noexcept {
+    try {
+        step();
+    } catch (...) {
+    }
+}
+
+}  // namespace
 
 std::int64_t epoch_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -48,8 +65,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , frame_read_timer_(stream_.get_executor())
     , ratchet_timer_(stream_.get_executor())
     , transport_shutdown_timer_(stream_.get_executor())
+    , delayed_write_timer_(stream_.get_executor())
     , http_idle_timer_(stream_.get_executor()) {
-    write_ready_priority_.fill(-1);
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;
@@ -306,6 +323,15 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
     current_header_.stream_id = header_buf_[5];
     current_header_.flags = static_cast<uint16_t>(header_buf_[6] << 8) |
                             static_cast<uint16_t>(header_buf_[7]);
+
+    if (!authenticated_ && type != protocol::AUTH) {
+        close_with_reason("expected AUTH");
+        return;
+    }
+    if (len > protocol::frame_payload_limit(type, current_header_.flags)) {
+        close_with_reason("AUTH frame too large");
+        return;
+    }
 
     // resize, not assign(len, 0): the async_read below fully overwrites
     // [0, len), so zero-filling every frame is pure memset waste. In steady
@@ -999,7 +1025,7 @@ void Session::begin_close() {
     // their normal completion path during graceful shutdown.
     if (v2_h2_flush_scheduled_) {
         v2_h2_flush_scheduled_ = false;
-        flush_v2_h2_wire_on_strand();
+        contain_teardown([&] { flush_v2_h2_wire_on_strand(); });
     }
     close_state_ = CloseState::Closing;
     // An H2 exact read stores its higher-level completion in the Session, and
@@ -1011,57 +1037,75 @@ void Session::begin_close() {
     v2_h2_read_target_ = nullptr;
     v2_h2_read_size_ = 0U;
     v2_h2_read_copied_ = 0U;
-    stop_service_streams(
-        close_reason_.empty() ? "session closing" : close_reason_);
+    contain_teardown([&] {
+        stop_service_streams(
+            close_reason_.empty() ? "session closing" : close_reason_);
+    });
     // Cover requests run before YUME authentication and may be blocked on a
     // slow loopback backend. Closing the public connection must release both
     // their sockets and the process-wide admission budget immediately.
-    cancel_v2_h2_cover_fetches();
+    contain_teardown([&] { cancel_v2_h2_cover_fetches(); });
     // Application writes still retained by the H2 carrier cannot make
     // progress once the session stops accepting peer flow-control updates.
     // Complete only those unsent items as aborted; writes already handed to
     // the TLS queue retain their normal completion path.
-    std::deque<PendingWrite> abandoned_h2_writes;
-    abandoned_h2_writes.swap(v2_h2_pending_app_writes_);
-    std::size_t abandoned_h2_bytes = 0U;
-    for (const auto& write : abandoned_h2_writes) {
-        if (write.data) {
-            abandoned_h2_bytes += write.data->size();
+    // Drain in place. A container to hold the abandoned writes would have to
+    // allocate, and this is the step that has to work when allocation is
+    // exactly what failed. Each write leaves the queue, updates the retained
+    // counters, and is settled before the next one is taken, so an observer
+    // never sees capacity that no longer has a queued frame behind it. The
+    // session is already Closing, so a settlement that tries to write again
+    // is refused rather than re-queued.
+    while (!v2_h2_pending_app_writes_.empty()) {
+        PendingWrite write = std::move(v2_h2_pending_app_writes_.front());
+        v2_h2_pending_app_writes_.pop_front();
+        if (v2_h2_app_write_frames_ > 0U) {
+            --v2_h2_app_write_frames_;
         }
-    }
-    v2_h2_app_write_frames_ =
-        abandoned_h2_writes.size() <= v2_h2_app_write_frames_
-            ? v2_h2_app_write_frames_ - abandoned_h2_writes.size()
-            : 0U;
-    v2_h2_app_write_bytes_ =
-        abandoned_h2_bytes <= v2_h2_app_write_bytes_
-            ? v2_h2_app_write_bytes_ - abandoned_h2_bytes
-            : 0U;
-    for (auto& write : abandoned_h2_writes) {
-        if (write.handler) {
-            write.handler(boost::asio::error::operation_aborted, 0);
-        }
+        const std::size_t write_bytes = write.data ? write.data->size() : 0U;
+        v2_h2_app_write_bytes_ = write_bytes <= v2_h2_app_write_bytes_
+            ? v2_h2_app_write_bytes_ - write_bytes : 0U;
+        if (!write.handler) continue;
+        contain_teardown(
+            [&] { write.handler(boost::asio::error::operation_aborted, 0); });
     }
     close_started_at_ = std::chrono::steady_clock::now();
-    arm_close_deadline();
-    if (close_reason_.empty()) {
-        close_reason_ = "session closed";
+    // If the deadline cannot be armed, graceful shutdown has no remaining
+    // bound. Finish the local cleanup below, then close the socket directly.
+    bool close_deadline_armed = false;
+    try {
+        arm_close_deadline();
+        close_deadline_armed = true;
+    } catch (...) {
     }
-    const bool suppress_log =
-        is_expected_close_reason(close_reason_) ||
-        (!authenticated_ && is_background_probe_close_reason(close_reason_));
-    if (!suppress_log) {
-        const std::string closing_message =
-            "session " + std::to_string(session_id_) +
-            (authenticated_ ? " [auth]" : " [pre-auth]") +
-            " closing: " + close_reason_;
-        if (util::is_logging_enabled()) {
-            util::log_warn(closing_message);
-        } else if (is_server_fault_close_reason(close_reason_)) {
-            std::cerr << "[critical] server session issue: " << close_reason_ << std::endl;
+    contain_teardown([&] {
+        if (close_reason_.empty()) {
+            close_reason_ = "session closed";
         }
+    });
+    bool suppress_log = true;
+    contain_teardown([&] {
+        suppress_log =
+            is_expected_close_reason(close_reason_) ||
+            (!authenticated_ &&
+             is_background_probe_close_reason(close_reason_));
+    });
+    if (!suppress_log) {
+        contain_teardown([&] {
+            const std::string closing_message =
+                "session " + std::to_string(session_id_) +
+                (authenticated_ ? " [auth]" : " [pre-auth]") +
+                " closing: " + close_reason_;
+            if (util::is_logging_enabled()) {
+                util::log_warn(closing_message);
+            } else if (is_server_fault_close_reason(close_reason_)) {
+                std::cerr << "[critical] server session issue: "
+                          << close_reason_ << std::endl;
+            }
+        });
     }
 #if YUME_ENABLE_DEV_DIAGNOSTICS
+    contain_teardown([&] {
     if (ratchet_ && YUME_TIMING_ENABLED()) {
         if (outbound_application_blocked_) {
             if (const auto elapsed =
@@ -1094,22 +1138,31 @@ void Session::begin_close() {
             "session=" + std::to_string(session_id_) +
             " " + obfs::FormatH2CarrierStats(stats));
     }
+    });
 #endif
     boost::system::error_code ec;
     idle_timer_.cancel();
     frame_read_timer_.cancel(ec);
     ratchet_timer_.cancel();
     preface_timer_.cancel();
+    // Cancelling posts the delayed batch's handler with operation_aborted,
+    // which settles it. maybe_finish_close then runs from there.
+    delayed_write_timer_.cancel(ec);
     if (manager_) {
-        manager_->unregister_session(this);
+        contain_teardown([&] { manager_->unregister_session(this); });
         if (packet_stream_.has_value()) {
-            manager_->unregister_packet_client(this, packet_stream_->client_ipv4_be);
+            contain_teardown([&] {
+                manager_->unregister_packet_client(
+                    this, packet_stream_->client_ipv4_be);
+            });
         }
         for (const auto& entry : reverse_listener_ports_) {
-            manager_->unregister_reverse_listener(entry.second, this);
+            contain_teardown([&] {
+                manager_->unregister_reverse_listener(entry.second, this);
+            });
         }
-        manager_->unregister_controlled_client(this);
-        manager_->unregister_endpoint(this);
+        contain_teardown([&] { manager_->unregister_controlled_client(this); });
+        contain_teardown([&] { manager_->unregister_endpoint(this); });
     }
     reverse_listener_ports_.clear();
     reverse_port_streams_.clear();
@@ -1120,42 +1173,40 @@ void Session::begin_close() {
         packet_stream_.reset();
     }
 
-    std::vector<std::pair<std::shared_ptr<Session>, uint8_t>> control_peers;
-    struct FederatedClose {
-        std::string channel_id;
-        std::function<void(const std::string&)> callback;
-    };
-    std::vector<FederatedClose> federated_closes;
+    // Detach the control and federation tables under the lock without
+    // allocating, then settle their peers outside it. Building a separate
+    // snapshot first could throw and leave both tables published with the
+    // session already closing.
+    std::unordered_map<uint8_t, ControlLink> closing_control_outbound;
+    std::unordered_map<uint8_t, ControlLink> closing_control_inbound;
+    std::unordered_map<uint8_t, FederatedStream> closing_federated_streams;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
-        for (const auto& entry : control_outbound_) {
-            if (auto peer = entry.second.peer.lock()) {
-                control_peers.emplace_back(peer, entry.second.peer_stream_id);
-            }
-        }
-        for (const auto& entry : control_inbound_) {
-            if (auto peer = entry.second.peer.lock()) {
-                control_peers.emplace_back(peer, entry.second.peer_stream_id);
-            }
-        }
-        federated_closes.reserve(federated_streams_.size());
-        for (auto& entry : federated_streams_) {
-            federated_closes.push_back(FederatedClose{
-                entry.second.channel_id, std::move(entry.second.on_close)});
-        }
-        control_outbound_.clear();
-        control_inbound_.clear();
-        federated_streams_.clear();
+        closing_control_outbound.swap(control_outbound_);
+        closing_control_inbound.swap(control_inbound_);
+        closing_federated_streams.swap(federated_streams_);
     }
-    for (const auto& entry : control_peers) {
-        entry.first->send_control_close(entry.second, "control peer closed");
-    }
-    for (auto& entry : federated_closes) {
-        if (manager_ && !entry.channel_id.empty()) {
-            manager_->unregister_active_channel(entry.channel_id);
+    for (const auto* links : {&closing_control_outbound,
+                              &closing_control_inbound}) {
+        for (const auto& entry : *links) {
+            auto peer = entry.second.peer.lock();
+            if (!peer) continue;
+            const auto peer_stream_id = entry.second.peer_stream_id;
+            contain_teardown([&] {
+                peer->send_control_close(peer_stream_id,
+                                         "control peer closed");
+            });
         }
-        if (entry.callback) {
-            entry.callback("federated origin closed");
+    }
+    for (auto& entry : closing_federated_streams) {
+        if (manager_ && !entry.second.channel_id.empty()) {
+            contain_teardown([&] {
+                manager_->unregister_active_channel(entry.second.channel_id);
+            });
+        }
+        if (entry.second.on_close) {
+            contain_teardown(
+                [&] { entry.second.on_close("federated origin closed"); });
         }
     }
 
@@ -1172,11 +1223,12 @@ void Session::begin_close() {
     }
     streams_.clear();
     {
+        // Service-stream destruction runs embedder close callbacks.
         std::lock_guard<std::mutex> lock(streams_mutex_);
-        service_streams_.clear();
+        contain_teardown([&] { service_streams_.clear(); });
     }
     for (auto& entry : reverse_listeners_) {
-        entry.second->close(ec);
+        contain_teardown([&] { entry.second->close(ec); });
     }
     reverse_listeners_.clear();
 
@@ -1184,13 +1236,21 @@ void Session::begin_close() {
     auth_v2_ephemeral_.reset();
     ratchet_.reset();
     for (auto& write : ratchet_blocked_writes_) {
-        if (write.handler) {
-            write.handler(boost::asio::error::operation_aborted, 0);
-        }
+        if (!write.handler) continue;
+        contain_teardown(
+            [&] { write.handler(boost::asio::error::operation_aborted, 0); });
     }
     ratchet_blocked_writes_.clear();
 
-    maybe_finish_close();
+    if (!close_deadline_armed) {
+        finish_transport_close();
+        return;
+    }
+    try {
+        maybe_finish_close();
+    } catch (...) {
+        finish_transport_close();
+    }
 }
 
 void Session::arm_close_deadline() {
@@ -1230,6 +1290,9 @@ void Session::shutdown_transport() {
 
 void Session::finish_transport_close() {
     if (close_state_ == CloseState::Closed) return;
+    // Terminal close. Anything still queued can never be written, so this is
+    // the backstop owner for it whichever path arrived here.
+    fail_queued_writes_on_strand(boost::asio::error::operation_aborted);
     boost::system::error_code ec;
     transport_shutdown_timer_.cancel(ec);
     closed_ = true;

@@ -76,7 +76,7 @@ struct ShareBundle {
     int         server_port{443};            // required
 
     // private auth key — required for Backup type
-    std::string auth_private_key_pem;        // Ed25519 PRIVATE KEY PEM
+    std::string auth_private_key_pem;        // composite Ed25519 + ML-DSA-87 PEM
 
     // stealth knobs
     bool        obfuscation{true};
@@ -112,6 +112,8 @@ struct ShareBundle {
 // kPasswordMin characters so validation matches BaseFWX before its KDF runs.
 // Returns the full file contents including the 12-byte unencrypted
 // magic+version header.
+// YUME-owned partial JSON values and loaded secret strings are guarded before
+// later allocations. Erasure of JSON/library scratch copies is not guaranteed.
 std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
                                        const std::string& password,
                                        std::string* error);

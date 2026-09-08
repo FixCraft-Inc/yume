@@ -209,11 +209,11 @@ class MetadataTests(unittest.TestCase):
         ).group(1)
         for relative in ("docs/man/yume.1", "docs/man/yumed.8",
                          "docs/man/yume-gui.1"):
-            first_line = (ROOT / relative).read_text(
-                encoding="utf-8").splitlines()[0]
+            lines = (ROOT / relative).read_text(encoding="utf-8").splitlines()
+            first_line = next(line for line in lines if not line.startswith('.\\"'))
             self.assertTrue(
                 first_line.startswith(".TH "),
-                f"{relative} must open with a .TH header")
+                f"{relative} must open with a .TH header after its provenance comment")
             self.assertIn(
                 f'"YUME {product}"', first_line,
                 f"{relative} header must name product version {product}")
@@ -342,12 +342,15 @@ class MetadataTests(unittest.TestCase):
         self.assertIn('"CONTRIBUTING.md"', pages_workflow)
         self.assertIn('"scripts/sync_website_docs.sh"', pages_workflow)
 
-        self.assertIn('docs/protocol/*.md', sync_script)
-        self.assertIn('docs/release/*.md', sync_script)
-        self.assertIn('docs/agents/', sync_script)
-        self.assertIn('docs/man/', sync_script)
-        self.assertIn('CONTRIBUTING.md', sync_script)
-        self.assertIn('github.com/FixCraft-Inc/yume/blob/main', sync_script)
+        self.assertIn('scripts/yume_docs.py" website --all-languages', sync_script)
+        import yume_doc_spec
+        import yume_doc_web
+        documents = yume_doc_spec.load_all()
+        published = {doc.markdown: yume_doc_web.route(doc) for doc in documents if doc.web}
+        self.assertEqual(published["docs/protocol/YTP_1.md"], "/docs/protocol/YTP_1/")
+        self.assertEqual(published["docs/release/CHANGELOG.md"], "/docs/release/CHANGELOG/")
+        self.assertEqual(published["CONTRIBUTING.md"], "/docs/CONTRIBUTING/")
+        self.assertNotIn("docs/agents/README.md", published)
 
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("website/docs/**/*.md", gitignore)
@@ -357,9 +360,9 @@ class MetadataTests(unittest.TestCase):
             encoding="utf-8")
         parser_options = set(re.findall(
             r'"(--[a-z][a-z0-9-]*)', client_args))
-        help_source = (ROOT / "src/client/cli/display/help.cpp").read_text(
+        help_source = (ROOT / "src/client/cli/display/help_text.hpp").read_text(
             encoding="utf-8")
-        help_body = help_source.split("void print_help()", 1)[1]
+        help_body = help_source.split("void write_help_body", 1)[1]
         help_options = set(re.findall(
             r'(--[a-z][a-z0-9-]*)', help_body))
         self.assertFalse(
@@ -376,7 +379,7 @@ class MetadataTests(unittest.TestCase):
                 f"client man page is missing option token {option}",
             )
 
-        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
         server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
         self.assertIn("--admin-keys <path>", server_help)
@@ -390,7 +393,7 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("--tls_cert ", server_man)
         self.assertIn("--tls_key ", server_man)
         self.assertIn("--allow-exec", server_man)
-        self.assertIn('--completion " shell', server_man)
+        self.assertRegex(server_man, r'--completion.*shell')
 
     def test_disabled_exec_contract_is_consistent(self) -> None:
         client_args = (ROOT / "src/client/cli/config/args.cpp").read_text(
@@ -418,7 +421,7 @@ class MetadataTests(unittest.TestCase):
             cmake,
         )
 
-        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
         server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
         startup = (ROOT / "src/server/cli/startup_checks.cpp").read_text(
@@ -437,7 +440,7 @@ class MetadataTests(unittest.TestCase):
     def test_yumed_completion_alias_is_documented(self) -> None:
         server_args = (ROOT / "src/server/cli/args.cpp").read_text(
             encoding="utf-8")
-        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
         server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
         self.assertIn(
@@ -448,7 +451,7 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("--completion <shell>", server_help)
         self.assertIn(".B --completion", server_man)
         self.assertIn('.BI "--completion " shell', server_man)
-        self.assertIn("yumed completion bash", server_man)
+        self.assertRegex(server_man, r"\.B yumed\s+\.B completion\s+\.B bash")
 
     def test_operator_proof_token_is_file_only(self) -> None:
         server_keys = (
@@ -459,7 +462,7 @@ class MetadataTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         server_args = (ROOT / "src/server/cli/args.cpp").read_text(
             encoding="utf-8")
-        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
         server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
         facade_io = (
@@ -501,7 +504,7 @@ class MetadataTests(unittest.TestCase):
                 "kMaxCacheBytes = 64U * 1024U * 1024U"):
             self.assertIn(declaration, limits)
 
-        server_help = (ROOT / "src/server/cli/help.cpp").read_text(
+        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
         server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
         for claim in ("maximum 8 MiB", "4096 entries", "256 captures",
@@ -509,7 +512,7 @@ class MetadataTests(unittest.TestCase):
             self.assertIn(claim, server_help)
         for claim in ("limited to 8 MiB", "4096 directory entries",
                       "256 matching files", "64 MiB in aggregate"):
-            self.assertIn(claim, server_man)
+            self.assertIn(claim, " ".join(server_man.split()))
 
     def test_native_openssl_runtime_contract_is_fail_closed(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")

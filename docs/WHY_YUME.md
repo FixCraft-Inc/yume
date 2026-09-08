@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/why_yume.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Why YUME exists
 
 YUME is an embeddable stealth universal transport: one authenticated,

@@ -1,7 +1,8 @@
+<!-- Generated from docs/src/en_US/pages/control_api.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME JSON control API
 
 > **Transport-v2 surface:** this is the command-oriented facade contract used
-> by the runnable 0.2 product and optional GUI. The experimental role-neutral
+> by the default client, daemon, and optional GUI. The experimental role-neutral
 > YTP/1 ABI does not expose a JSON operation bus.
 
 This document defines the JSON operation envelope used by local runtime IPC and

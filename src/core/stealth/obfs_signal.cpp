@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <optional>
 #include <system_error>
 
@@ -293,19 +294,20 @@ bool AdmissionReplayCache::AcceptPath(std::string_view path,
     std::lock_guard<std::mutex> lock(mutex_);
     Evict(now_seconds);
     const auto found = expiry_by_nonce_.find(nonce);
-    if (found != expiry_by_nonce_.end() && found->second > now_seconds) {
+    if (found != expiry_by_nonce_.end() ||
+        expiry_by_nonce_.size() >= max_entries_ ||
+        now_seconds > std::numeric_limits<std::int64_t>::max() - ttl_seconds_) {
         return false;
     }
     const std::int64_t expiry = now_seconds + ttl_seconds_;
-    expiry_by_nonce_[nonce] = expiry;
+    // Publish both indexes together. Allocation failure must not retain a
+    // nonce with no expiry entry, or admit a nonce without replay protection.
     expiry_order_.emplace_back(nonce, expiry);
-    while (expiry_by_nonce_.size() > max_entries_ && !expiry_order_.empty()) {
-        const auto oldest = std::move(expiry_order_.front());
-        expiry_order_.pop_front();
-        const auto it = expiry_by_nonce_.find(oldest.first);
-        if (it != expiry_by_nonce_.end() && it->second == oldest.second) {
-            expiry_by_nonce_.erase(it);
-        }
+    try {
+        expiry_by_nonce_.emplace(nonce, expiry);
+    } catch (...) {
+        expiry_order_.pop_back();
+        throw;
     }
     return true;
 }

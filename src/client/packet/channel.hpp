@@ -135,6 +135,11 @@ private:
                     *error = "packet transport rejected packet payload";
                 }
                 return QueueResult::invalid;
+            case QueueResult::failed:
+                if (error) {
+                    *error = "packet transport could not queue the batch";
+                }
+                return QueueResult::failed;
             }
         }
     }

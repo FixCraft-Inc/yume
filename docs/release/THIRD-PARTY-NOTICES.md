@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/third_party_notices.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME Linux release third-party notices
 
 YUME is distributed under the GNU Affero General Public License version 3 or

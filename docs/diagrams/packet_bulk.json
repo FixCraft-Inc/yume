@@ -1,0 +1,66 @@
+{
+  "name": "packet_bulk",
+  "type": "route",
+  "title": "Packet-native bulk path",
+  "summary": "Captured IP packets travel as YBP1 batches inside one authenticated stream and leave through the operator TUN.",
+  "comment": [
+    "The packet service described by docs/PACKET_NATIVE_BULK.md."
+  ],
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "android_tun",
+      "kind": "tun",
+      "title": "ANDROID TUN",
+      "sub": "VpnService capture"
+    },
+    {
+      "id": "yume_client",
+      "kind": "client",
+      "title": "YUME CLIENT",
+      "sub": "YBP1 batch on packet stream"
+    },
+    {
+      "id": "yumed_server",
+      "kind": "server",
+      "title": "YUMED SERVER",
+      "sub": "packet_bulk_v1 decode"
+    },
+    {
+      "id": "server_tun",
+      "kind": "tun",
+      "title": "SERVER TUN/NAT",
+      "sub": "yume-pkt0 + CIDR pool"
+    },
+    {
+      "id": "internet",
+      "kind": "cloud",
+      "title": "INTERNET",
+      "sub": "target sees NAT IP"
+    }
+  ],
+  "edges": [
+    {
+      "from": "android_tun",
+      "to": "yume_client"
+    },
+    {
+      "from": "yume_client",
+      "to": "yumed_server",
+      "channel": "tunnel",
+      "label": "encrypted DATA"
+    },
+    {
+      "from": "yumed_server",
+      "to": "server_tun",
+      "label": "write to operator TUN"
+    },
+    {
+      "from": "server_tun",
+      "to": "internet",
+      "label": "routed egress"
+    }
+  ]
+}

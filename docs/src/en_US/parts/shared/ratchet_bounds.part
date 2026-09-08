@@ -1,0 +1,6 @@
+The accepted bounds are:
+
+- `epoch_bytes`: 262,144 through 1,099,511,627,776;
+- `epoch_frames`: 1 through 1,073,741,824;
+- `epoch_active_ms`: 1 through 86,400,000;
+- `rekey_window`: 1 through 64.

@@ -1,3 +1,4 @@
+<!-- Generated from docs/src/en_US/pages/explained.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME explained
 
 YUME is an independently implemented, embeddable stealth universal transport.
@@ -10,6 +11,43 @@ authenticated peer opening a named byte stream or packet channel.
 
 The current `yume` and `yumed` commands use transport v2. A direct connection
 follows this path:
+
+<!-- yume-diagram: direct_route -->
+<img src="diagrams/direct_route-vertical.svg" alt="Direct YUME route" width="400" height="568">
+
+<details>
+<summary>Text version</summary>
+
+```text
++-------------------------+
+|  HUMAN APP              |
+|  browser / curl         |
++------------+------------+
+              \
+               \
+                v
+   +------------+------------+
+   |  YUME CLIENT            |
+   |  TLS / H2 / YUME frames |
+   +------------+------------+
+                 \
+                  \
+                   v ==YUME==>
+      +------------+------------+
+      |  YUMED SERVER           |
+      |  direct egress          |
+      +------------+------------+
+                    \
+                     \
+                      v
+         +------------+------------+
+         |  TARGET SITE            |
+         |  sees server IP         |
+         +-------------------------+
+```
+
+</details>
+<!-- /yume-diagram -->
 
 1. An application reaches the client through SOCKS5, a forward, packet routing,
    or the experimental ABI's supported named-stream interface.

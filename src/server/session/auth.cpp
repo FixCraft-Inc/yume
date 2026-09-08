@@ -18,6 +18,7 @@
 #include "server/session/internal.hpp"
 
 #include <algorithm>
+#include <type_traits>
 
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
@@ -66,6 +67,8 @@ struct AuthDecision {
     std::string client_id_;
     std::string bandwidth_fair_key_;
     std::string federation_peer_id_;
+    std::string inner_mode_{"ratchet"};
+    std::string inner_kdf_{"hkdf"};
     AuthKeyPolicy policy_;
     AuthKeyType key_type_{AuthKeyType::Individual};
     std::unordered_set<std::string> allowed_codecs_;
@@ -145,8 +148,8 @@ bool Session::handle_auth(const protocol::Frame& frame) {
     admin_fingerprint_.clear();
     auth_key_type_ = AuthKeyType::Individual;
     AuthCandidate candidate;
-    AuthDecision decision;
     try {
+        AuthDecision decision;
         if (!auth_v2_ephemeral_ || !cfg_.inner_psk_material) {
             auth_error_ = "access denied: invalid authentication state";
             return false;
@@ -477,6 +480,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             }
         }
 
+        static_assert(std::is_nothrow_move_assignable_v<std::string>);
+        static_assert(std::is_nothrow_move_assignable_v<
+                      decltype(session_allowed_codecs_)>);
+        static_assert(std::is_nothrow_move_assignable_v<
+                      decltype(session_allowed_services_)>);
         auth_fingerprint_ = std::move(decision.fingerprint_);
         admin_fingerprint_ = std::move(decision.admin_fingerprint_);
         client_auth_pubkey_b64_ = std::move(decision.client_auth_pubkey_b64_);
@@ -500,24 +508,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         session_allow_bytes_policy_ = decision.allow_bytes_;
         ratchet_ = std::move(decision.ratchet_);
         auth_v2_ephemeral_.reset();
-        inner_mode_ = "ratchet";
-        inner_kdf_ = "hkdf";
+        inner_mode_ = std::move(decision.inner_mode_);
+        inner_kdf_ = std::move(decision.inner_kdf_);
         authorization_tier_ = decision.preauth_
             ? authorization::SessionTier::PreauthServiceOnly
             : authorization::SessionTier::Authorized;
-
-        if (!cfg_.anonym && !decision.preauth_) {
-            std::string metadata_error;
-            if (!update_auth_meta(operator_authenticated_
-                                      ? cfg_.operator_keys_meta
-                                      : cfg_.auth_keys_meta,
-                                  auth_fingerprint_, "", &metadata_error)) {
-                util::log_warn(
-                    "session " + std::to_string(session_id_) +
-                    ": could not persist auth last_seen: " + metadata_error);
-            }
-        }
-        return true;
     } catch (const std::exception& ex) {
         const std::string detail = ex.what();
         const bool post_key_auth = !candidate.fingerprint_.empty();
@@ -536,6 +531,27 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         }
         return false;
     }
+
+    // last_seen is optional bookkeeping after successful authentication.
+    // Neither persistence nor its diagnostic may turn a committed decision
+    // into a failed AUTH result with privileged state still published.
+    try {
+        if (!cfg_.anonym &&
+            authorization_tier_ == authorization::SessionTier::Authorized) {
+            std::string metadata_error;
+            if (!update_auth_meta(operator_authenticated_
+                                      ? cfg_.operator_keys_meta
+                                      : cfg_.auth_keys_meta,
+                                  auth_fingerprint_, "", &metadata_error)) {
+                util::log_warn(
+                    "session " + std::to_string(session_id_) +
+                    ": could not persist auth last_seen: " + metadata_error);
+            }
+        }
+    } catch (...) {
+        // Best effort even when memory is unavailable for a diagnostic.
+    }
+    return true;
 }
 
 }  // namespace yume::server

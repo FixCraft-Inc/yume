@@ -156,9 +156,18 @@ bool wait_for_bench_write_admission(
             continue;
         }
         if (error) {
-            *error = admission == Admission::stopped
-                ? "transport stopped while waiting for benchmark write capacity"
-                : "benchmark payload was rejected as invalid";
+            switch (admission) {
+            case Admission::stopped:
+                *error = "transport stopped while waiting for benchmark write "
+                         "capacity";
+                break;
+            case Admission::failed:
+                *error = "transport could not queue the benchmark payload";
+                break;
+            default:
+                *error = "benchmark payload was rejected as invalid";
+                break;
+            }
         }
         return false;
     }

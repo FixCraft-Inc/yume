@@ -100,7 +100,8 @@ CompositeKeyPair generate_composite_keypair();
 CompositeKeyPair load_composite_keypair(const std::string& path_priv);
 
 // Serializes both private halves in the order load_composite_keypair expects.
-// Caller is responsible for writing it with restrictive permissions.
+// Stages both halves before allocating the result, avoiding an unwiped vector
+// growth copy. Caller owns wiping the returned bytes and protected publication.
 Bytes encode_composite_private_pem(const CompositeKeyPair& keys);
 
 // Signature layout is fixed-width and order-fixed: Ed25519 (64) then ML-DSA-87

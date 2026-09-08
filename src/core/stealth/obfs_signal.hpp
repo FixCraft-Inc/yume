@@ -70,8 +70,9 @@ public:
                                   std::int64_t ttl_seconds = 2 * 3600);
 
     // Call only after the HMAC and authority checks succeed. Returns false for
-    // a live duplicate. The cache is shared across sessions and internally
-    // synchronized.
+    // a live duplicate or a full cache. Never evict a live nonce to admit a
+    // new one. The cache is process-local, shared across sessions and
+    // internally synchronized.
     bool AcceptPath(std::string_view path, std::int64_t now_seconds);
     std::size_t size() const;
 

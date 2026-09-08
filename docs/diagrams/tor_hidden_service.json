@@ -1,0 +1,88 @@
+{
+  "name": "tor_hidden_service",
+  "type": "route",
+  "title": "Client through Tor to a hidden-service yumed",
+  "summary": "The YUME carrier reaches a loopback-bound yumed through a Tor hidden service, so no DNS or direct connection leaves the client.",
+  "comment": [
+    "Companion to the ROUTING MODEL section, describing `yume --tor --server <onion>`."
+  ],
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "human_app",
+      "kind": "app",
+      "title": "HUMAN APP",
+      "sub": "browser / curl"
+    },
+    {
+      "id": "yume_client",
+      "kind": "client",
+      "title": "YUME CLIENT",
+      "sub": "--tor / --proxy socks5://..."
+    },
+    {
+      "id": "local_tor",
+      "kind": "tor",
+      "title": "LOCAL TOR",
+      "sub": "127.0.0.1:9050"
+    },
+    {
+      "id": "tor_circuit",
+      "kind": "tor",
+      "title": "TOR CIRCUIT",
+      "sub": "hidden-service rendezvous"
+    },
+    {
+      "id": "server_tor",
+      "kind": "tor",
+      "title": "SERVER TOR",
+      "sub": "hidden service publisher"
+    },
+    {
+      "id": "yumed_server",
+      "kind": "server",
+      "title": "YUMED SERVER",
+      "sub": "binds 127.0.0.1 only"
+    },
+    {
+      "id": "target_site",
+      "kind": "target",
+      "title": "TARGET SITE",
+      "sub": "sees yumed egress IP"
+    }
+  ],
+  "edges": [
+    {
+      "from": "human_app",
+      "to": "yume_client",
+      "label": "SOCKS, --run, or forward"
+    },
+    {
+      "from": "yume_client",
+      "to": "local_tor",
+      "label": "SOCKS5 to <onion>:443"
+    },
+    {
+      "from": "local_tor",
+      "to": "tor_circuit",
+      "label": "encrypted cells"
+    },
+    {
+      "from": "tor_circuit",
+      "to": "server_tor",
+      "label": "rendezvous on server"
+    },
+    {
+      "from": "server_tor",
+      "to": "yumed_server",
+      "label": "TLS 1.3 + YUME frames"
+    },
+    {
+      "from": "yumed_server",
+      "to": "target_site",
+      "label": "outbound socket"
+    }
+  ]
+}

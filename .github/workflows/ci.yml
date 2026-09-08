@@ -26,12 +26,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check the generated documents
+        run: python3 scripts/yume_docs.py check --all-languages
+
+      - name: Check documentation tooling parity with BaseFWX
+        run: python3 scripts/check_doc_tooling_parity.py
+
+      - name: Check the generated CLI help and completion
+        run: python3 scripts/yume_cli.py check
+
       - name: Sync docs into website
         run: bash scripts/sync_website_docs.sh
+
+      - name: Check the generated diagrams
+        run: python3 scripts/yume_diagrams.py check
+
+      - name: Check the ASCII figures
+        run: python3 scripts/check_ascii_diagrams.py
 
       - name: Validate website catalog
         run: |
           python3 scripts/check_website_catalog.py
+
+      - name: Documentation tooling tests
+        run: |
+          python3 scripts/test_yume_docs.py
+          python3 scripts/test_yume_doc_pipeline.py
+          python3 scripts/test_yume_diagrams.py
+          python3 scripts/test_yume_cli.py
 
       - name: Build website
         uses: actions/jekyll-build-pages@v1

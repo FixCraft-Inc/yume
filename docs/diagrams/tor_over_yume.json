@@ -1,0 +1,82 @@
+{
+  "name": "tor_over_yume",
+  "type": "route",
+  "title": "Tor over YUME",
+  "summary": "A local Tor circuit runs inside the YUME carrier, so yumed opens only a Tor entry and not the final target.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "tor_browser",
+      "kind": "app",
+      "title": "TOR BROWSER",
+      "sub": "or app configured for Tor"
+    },
+    {
+      "id": "local_tor",
+      "kind": "tor",
+      "title": "LOCAL TOR",
+      "sub": "builds circuit"
+    },
+    {
+      "id": "yume_client",
+      "kind": "client",
+      "title": "YUME CLIENT",
+      "sub": "relays Tor TCP"
+    },
+    {
+      "id": "yumed_server",
+      "kind": "server",
+      "title": "YUMED SERVER",
+      "sub": "opens Tor entry only"
+    },
+    {
+      "id": "tor_entry",
+      "kind": "tor",
+      "title": "TOR ENTRY",
+      "sub": "guard or obfs4 bridge",
+      "group": "TOR CIRCUIT"
+    },
+    {
+      "id": "tor_network",
+      "kind": "tor",
+      "title": "TOR NETWORK",
+      "sub": "middle relays + exit",
+      "group": "TOR CIRCUIT"
+    },
+    {
+      "id": "target_site",
+      "kind": "target",
+      "title": "TARGET SITE",
+      "sub": "sees Tor exit"
+    }
+  ],
+  "edges": [
+    {
+      "from": "tor_browser",
+      "to": "local_tor"
+    },
+    {
+      "from": "local_tor",
+      "to": "yume_client"
+    },
+    {
+      "from": "yume_client",
+      "to": "yumed_server",
+      "channel": "tunnel"
+    },
+    {
+      "from": "yumed_server",
+      "to": "tor_entry"
+    },
+    {
+      "from": "tor_entry",
+      "to": "tor_network"
+    },
+    {
+      "from": "tor_network",
+      "to": "target_site"
+    }
+  ]
+}

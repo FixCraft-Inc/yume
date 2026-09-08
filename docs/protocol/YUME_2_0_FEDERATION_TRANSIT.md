@@ -1,11 +1,9 @@
+<!-- Generated from docs/src/en_US/pages/yume_2_0_federation_transit.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME transport-v2 federation transit design
 
-> **Design-only transport-v2 record:** direct single-hop federation exists in
-> the runnable 0.2 product. Multi-hop transit described here is not implemented
-> and is not a YTP/1 capability claim.
-
-Status: **design only. Transit is not implemented.** Nothing in this document
-is a supported command, wire contract, compatibility promise, or privacy claim.
+This is a design proposal for transport-v2 multi-hop federation. Transit is
+not implemented. The proposal defines no supported command, wire contract,
+compatibility promise, privacy claim, or YTP/1 capability.
 Current federation is direct and single-hop:
 
 - `federation.directory` advertises a node's local endpoints only;

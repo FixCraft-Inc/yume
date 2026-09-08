@@ -1,3 +1,4 @@
+.\" Generated from docs/src/en_US/man/yume_gui.doc by scripts/yume_docs.py. Edit that file, not this one.
 .TH YUME-GUI 1 "2026-08-23" "YUME 0.3.0-dev1" "YUME Manual"
 .SH NAME
 yume-gui \- desktop UI for the YUME post-quantum stealth transport
@@ -8,15 +9,15 @@ yume-gui \- desktop UI for the YUME post-quantum stealth transport
 ]
 .SH DESCRIPTION
 .B yume-gui
-is an optional Dear ImGui desktop application. It embeds the same
-facade sessions used by automation and tests: a
+is an optional Dear ImGui desktop application.
+It embeds the same facade sessions used by automation and tests: a
 .BR yumed (8)
 server controller and a linked, in-process
 .BR yume (1)
 client runtime.
 .PP
-The GUI does not reimplement the transport stack. JSON profiles written
-here are compatible with the CLI binaries.
+The GUI does not reimplement the transport stack.
+JSON profiles written here are compatible with the CLI binaries.
 .SH WORKSPACES
 The sidebar switches between two workspaces:
 .TP
@@ -61,14 +62,16 @@ Project version and license notice.
 .SH OPTIONS
 .TP
 .B --headless
-Run a no-window facade diagnostic. It validates existing configuration
-files and attempts start/stop for valid profiles. The current command
-still exits successfully when profiles are absent or a valid session
-fails to start, so it does not by itself verify a working connection.
+Run a no-window facade diagnostic.
+It validates existing configuration files and attempts start/stop for
+valid profiles.
+The current command still exits successfully when profiles are absent or
+a valid session fails to start, so it does not by itself verify a
+working connection.
 .TP
 .B --start-minimized
-Open hidden. Use the tray menu (when available) to show the main
-window.
+Open hidden.
+Use the tray menu (when available) to show the main window.
 .TP
 .B --no-tray
 Disable the system tray icon at runtime even when the build includes
@@ -87,32 +90,33 @@ instead of the platform default.
 .B -h, --help
 Print a help summary and exit.
 .SH KEYBOARD AND WINDOW
-.PP
 Standard Dear ImGui navigation applies: click fields to edit, Tab to
-move focus, Enter to activate buttons. The main window can be resized;
-the sidebar layout adapts to narrow widths.
+move focus, Enter to activate buttons.
+The main window can be resized; the sidebar layout adapts to narrow
+widths.
 .PP
-There is no global accelerator table yet. Use the sidebar to switch
-pages.
+There is no global accelerator table yet.
+Use the sidebar to switch pages.
 .SH DEVELOPMENT STATUS
 The dev6 GUI compiles and links, but it is not yet a qualified frontend.
-Shared client/server lifecycle serialization, prompt pre-ready cancellation,
-and atomic configuration replacement are covered by core/facade tests.
+Shared client/server lifecycle serialization, prompt pre-ready
+cancellation, and atomic configuration replacement are covered by
+core/facade tests.
 Obsolete inner-crypto controls/status, the GUI page's detached resolver
-lifetime, partial chat/log delivery, honest headless failure behavior, and a
-real window-level connect/stop/reconnect test remain GUI-owned work.
+lifetime, partial chat/log delivery, honest headless failure behavior,
+and a real window-level connect/stop/reconnect test remain GUI-owned
+work.
 Use the CLI for supported automation and do not treat
 .B --headless
 as release evidence.
 .SH SYSTEM TRAY
 When tray support is compiled in and not disabled with
 .BR --no-tray ,
-a status icon may appear in the desktop environment's notification
-area.
+a status icon may appear in the desktop environment's notification area.
 .PP
 On Wayland (KDE Plasma, GNOME with certain compositors), tray behavior
-depends on the desktop portal and StatusNotifier implementation. If the
-icon is missing, run with
+depends on the desktop portal and StatusNotifier implementation.
+If the icon is missing, run with
 .B --no-tray
 and keep the main window visible, or use the CLI binaries directly.
 .SH BUILD
@@ -122,30 +126,32 @@ The GUI is optional:
 \&./ezbuild.sh --gui
 .fi
 .PP
-Requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake. Debian
-packaging skips the GUI when
+Requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake.
+Debian packaging skips the GUI when
 .B DEB_BUILD_PROFILES
 contains
 .BR nogui .
 .SH FILES
 .TP
 .I ~/.yume/client.json
-Default GUI client profile (Linux). macOS and Windows use the
-platform-specific config directory under the user home.
+Default GUI client profile (Linux).
+macOS and Windows use the platform-specific config directory under the
+user home.
 .TP
 .I ~/.yume/server.json
 Default GUI server configuration.
 .TP
 .I ~/.yume/secure-materials/
-Imported operator CAs, client auth keys, TLS CAs, and external proof keys.
-The metadata uses schema 1 and 32-character random hex IDs. File paths are
-derived from each record's ID and material type.
+Imported operator CAs, client auth keys, TLS CAs, and external proof
+keys.
+The metadata uses schema 1 and 32-character random hex IDs.
+File paths are derived from each record's ID and material type.
 .TP
 .I ~/.yume/keys/
 Default key generation directory.
 .SH SEE ALSO
 .BR yume (1),
 .BR yumed (8),
-.BR docs/ARCHITECTURE.md
+.B docs/ARCHITECTURE.md
 .SH AUTHOR
 FixCraft Inc.

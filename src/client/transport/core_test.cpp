@@ -6,6 +6,7 @@
 
 #include "client/transport/core.hpp"
 #include "core/protocol/packet_bulk.hpp"
+#include "core/protocol/frame_limits.hpp"
 
 #include <array>
 #include <cassert>
@@ -44,6 +45,25 @@ struct Recorder {
         };
     }
 };
+
+void test_auth_header_budget() {
+    for (const bool padded : {false, true}) {
+        Recorder recorder;
+        yume::client::TransportCore core(recorder.writer(), recorder.closer());
+        core.start();
+        const auto flags = padded ? yume::protocol::kFlagPadded : uint16_t{0};
+        const auto length = yume::protocol::frame_payload_limit(yume::protocol::AUTH, flags) + 1U;
+        const std::array<uint8_t, 8> header{
+            static_cast<uint8_t>(length >> 24), static_cast<uint8_t>(length >> 16),
+            static_cast<uint8_t>(length >> 8), static_cast<uint8_t>(length),
+            yume::protocol::AUTH, 0, static_cast<uint8_t>(flags >> 8),
+            static_cast<uint8_t>(flags)};
+        core.feed_tls_bytes(header.data(), 3);
+        assert(recorder.close_reason.empty());
+        core.feed_tls_bytes(header.data() + 3, header.size() - 3);
+        assert(recorder.close_reason == "frame too large");
+    }
+}
 
 struct DeferredLink {
     struct Write {
@@ -326,8 +346,9 @@ void test_shutdown_closes_registered_streams() {
                          });
 
     auto callbacks = core.shutdown();
-    assert(callbacks.size() == 1);
-    callbacks.front()("test shutdown");
+    assert(std::count_if(callbacks.begin(), callbacks.end(),
+                         [](const auto& callback) { return bool(callback); }) == 1);
+    callbacks[5]("test shutdown");
     assert(closed);
     assert(close_reason == "test shutdown");
 }
@@ -1216,6 +1237,7 @@ void test_ratchet_sends_bounded_data_while_rekey_ack_is_in_flight() {
 }  // namespace
 
 int main() {
+    test_auth_header_budget();
     test_open_round_trip();
     test_incremental_frame_decoder_handles_fragmented_concatenated_frames();
     test_inbound_credit_follows_complete_frames_and_partial_shutdown();

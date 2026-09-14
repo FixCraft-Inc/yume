@@ -317,18 +317,23 @@ private:
     std::unique_ptr<FederationManager> federation_;
     std::unique_ptr<WeightedEgressLimiter> egress_limiter_;
     std::unique_ptr<PacketTunEgress> packet_egress_;
-    // Readers retain immutable data through a reload; failed candidates never
-    // replace the active rules or their private file ownership.
-    std::atomic<std::shared_ptr<const IpFilter>> ip_filter_;
+    // Readers copy the immutable filter snapshot and keep it through a reload.
+    // Failed candidates never replace the active rules or their private file
+    // ownership. A mutex guards the pointer because libstdc++ before GCC 12,
+    // including the release toolchain, has no std::atomic<std::shared_ptr>.
+    std::shared_ptr<const IpFilter> ip_filter_snapshot() const;
+    void publish_ip_filter(std::shared_ptr<const IpFilter> filter);
+    mutable std::mutex ip_filter_mu_;
+    std::shared_ptr<const IpFilter> ip_filter_;
     host::HostRouteTable host_routes_;
     std::unique_ptr<ExtraListeners> extra_listeners_;
     host::ExposureResult exposure_result_;
 
-    // Per-probe upstream-response rotation. cache_ is swapped under the
-    // mutex; readers (Session::send_disguise_404) atomically load a
-    // shared_ptr snapshot and pick from it lock-free. timer_ fires on
-    // the io_context and reloads the directory every
-    // cfg_.upstream_response_ttl_s seconds.
+    // Per-probe upstream-response rotation. The directory reload swaps
+    // upstream_cache_ under the mutex. Readers (Session::send_disguise_404)
+    // copy the shared_ptr snapshot under that mutex and pick from it after
+    // unlocking. The timer fires on the io_context and reloads the directory
+    // every cfg_.upstream_response_ttl_s seconds.
     mutable std::mutex upstream_cache_mu_;
     std::shared_ptr<const std::vector<std::string>> upstream_cache_;
     std::unique_ptr<boost::asio::steady_timer> upstream_reload_timer_;

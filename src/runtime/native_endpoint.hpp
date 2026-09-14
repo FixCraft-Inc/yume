@@ -34,8 +34,10 @@ struct NativeEndpointOptions final {
     // FrontDoor separately bounds pre-promotion connections and pending work.
     std::chrono::milliseconds start_timeout{30'000};
     // An explicit dial address may differ from the configured authenticated
-    // DNS host. Empty selects that host and the system resolver. Numeric dial
-    // addresses avoid system resolution; they never replace TLS identity.
+    // DNS host. Empty selects the client's configured connect_address, or that
+    // host and the system resolver. A different configured connect_address is
+    // refused. Numeric dial addresses avoid system resolution and never replace
+    // TLS identity.
     std::string connection_address;
     providers::AsioTcpSocketProtector socket_protector;
     // Explicitly composed destination routing, required by configured direct
@@ -51,6 +53,19 @@ struct NativeEndpointOptions final {
     // callback runs only when they permit the OPEN and can only refuse more.
     // Exceptions fail closed. It is rejected when no direct adapter is configured.
     std::function<engine::Status(const engine::StreamOpenContext&)> route_authorization;
+    // The caller runs every configured SOCKS5 adapter over this endpoint's
+    // sessions. Without it a SOCKS5 declaration fails creation, and setting it
+    // without one is refused.
+    bool caller_runs_socks5_adapters{false};
+    // A successfully delivered session ended. Runs once on the endpoint
+    // context after pending engine callbacks settle and the session slot is
+    // released, so it may start a replacement. Startup failures use their
+    // completion only. Endpoint close also reports ended sessions; callback
+    // exceptions are contained. Keep the endpoint alive through close/drain
+    // to receive notifications. Capture owners weakly to avoid an owner cycle.
+    // Release old engine handles to return their carrier admission reservations;
+    // keeping a closed engine alive still consumes that front-door capacity.
+    std::function<void(std::shared_ptr<engine::SessionEngine>, engine::Status)> session_ended;
 };
 
 // Automatic server accepts. The total pending across listeners must fit
@@ -103,8 +118,9 @@ public:
     // has no startup deadline; promotion begins its bounded authenticated
     // bootstrap. Client startup has one end-to-end deadline.
     // Synchronous refusal invokes no callback. Accepted completion is exactly
-    // once; the endpoint retains successful sessions through close or until a
-    // later start recycles their terminal slot. Returned engines use its context.
+    // once; the endpoint retains successful sessions until their engine teardown
+    // notification releases the slot on its context. Returned engines use that
+    // context. A slot is unavailable until that notification is delivered.
     engine::Status async_start_session(Completion completion,
                                       std::size_t listener_index = 0U);
     // Server: keeps accept.pending_per_listener starts pending on every listener

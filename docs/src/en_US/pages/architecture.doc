@@ -27,8 +27,10 @@ The replacement already has protocol, engine and provider implementations.
 The H2 carrier directly reuses transport-v2 H2/WebSocket and profile sources.
 The transport-v2 embedding path provides real named streams. The replacement
 now composes native ingress, credentials and sessions through `NativeEndpoint`,
-and an experimental schema-1 ABI backend carries named streams over it. Its
-standalone adapters remain unfinished. These are useful
+and an experimental schema-1 ABI backend carries named streams over it.
+Development `yumed-ytp1` and `yume-ytp1` processes run direct routes and a
+SOCKS5 CONNECT adapter over the same endpoint, while named-service and packet
+adapters remain unfinished. These are useful
 components and development paths, not evidence that the replacement is complete.
 
 Complete and qualify the required connections and application capabilities
@@ -130,8 +132,8 @@ answered cover stream need not wait for the peer to close its request side;
 that stream transfers with the existing parser and cover ledger. Ordinary H2
 requests still receive cover after promotion, and listener destruction does
 not close a published carrier. This is a source-level ingress provider. The
-standalone runtimes still need application integration, while the experimental
-schema-1 ABI backend already composes it through `NativeEndpoint`.
+experimental schema-1 ABI backend and the development standalone runtimes
+compose it through `NativeEndpoint`.
 
 The caller supplies the single-runner `AsioExecutionContext`. The front door
 binds promoted carriers to that context's ordinary and reserved control
@@ -224,6 +226,14 @@ declarations and reverse-proxy cover fail explicitly here. The C ABI backend
 does not yet compose these destination adapters.
 
 The endpoint bounds active sessions and pending starts and retains their engines.
+When a session ends, the engine settles its pending callbacks and queues, then
+notifies the endpoint through a reserved control task. The endpoint releases the
+slot before calling `session_ended` on its context, so the callback can start a
+replacement. Startup failures use the start completion alone. Endpoint close
+also delivers session-ended callbacks; owners keep the endpoint alive through
+close and drain. This notification does not mean OS cancellation has drained.
+Retaining a closed engine also retains its carrier's admission reservation;
+release old engine handles so they do not consume front-door capacity.
 A server may hand accepting to the endpoint. It keeps a set number of starts
 pending on every listener within that bound, re-arms after each settlement and
 waits a retry delay after a refused or immediately failed start. Manual and
@@ -247,6 +257,12 @@ name. System resolver calls may still delay final shutdown.
 ratchets, record protection, stream IDs, multiplexing, capabilities,
 backpressure, and teardown. Stream zero is session control; clients own odd
 application stream IDs and servers own even IDs.
+
+`notify_when_closed` accepts one observer for the engine's lifetime. It runs
+outside engine locks after teardown, or inline if registered afterward, and
+contains callback exceptions. Callers dispatch onto their own executor when
+needed. The native client uses the endpoint notification to reconnect when its
+session ends; only failed attempts wait for exponential backoff.
 
 Only a successful complete YTP authentication creates `PeerEvidence`. That
 post-YTP evidence represents the authenticated application peer and is the
@@ -288,6 +304,9 @@ cancellation close both sides once.
 The dispatcher supplies the graph's validated route provider to `async_route`;
 the bridge retains that instance through asynchronous settlement. Creating a
 handler requires destination authorization but does not select a provider.
+If asynchronous acceptance returns `PermissionDenied`, the engine sends an
+unauthorized CLOSE. This preserves policy refusals that can be decided only
+after DNS resolution. Other acceptance failures send a handler-failure CLOSE.
 
 The opt-in `AsioDirectRouteProvider` is the first concrete egress
 implementation. Its factory requires an explicit resolved-address policy in
@@ -308,8 +327,8 @@ failure, and final closed-handle release schedules no new cleanup. The provider
 retains canceled DNS capacity until the underlying resolver handler retires;
 an application timeout does not make a blocked system lookup disappear. This
 build-tree-only provider can be explicitly composed into `NativeEndpoint`.
-Standalone adapters remain unfinished, and the schema-1 ABI backend composes no
-route provider.
+The development `yumed-ytp1` composes it with `NativeEgressPolicy`, and the
+schema-1 ABI backend composes no route provider.
 
 ## Provider composition
 
@@ -366,14 +385,15 @@ The implemented replacement foundation is organized by dependency:
 | `src/ytp/` | dependency-pure YTP/1 codecs, domains, and canonical vectors |
 | `src/config/v1/` | strict immutable schema-1 parsing; no secret loading |
 | `src/providers/` | opt-in session security, browser-shaped TLS, client/accepted TCP channels, native FrontDoor/static cover, H2 admission/carrier and direct routes |
-| `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization and native endpoint/session lifetimes |
+| `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy and the development standalone runtimes with their SOCKS5 adapter |
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
 | `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. Each dialect reaches its runtime through its own embed backend |
 | `src/facade/session/ytp1_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
 | `tools/` | provisioning and evidence tooling |
 @end
 
-Dedicated replacement adapter and CLI targets do not exist yet. The runnable
+The development replacement programs `yumed-ytp1` and `yume-ytp1` build from
+`src/runtime/` with the native providers and are not installed. The runnable
 transport-v2 executables and optional GUI remain in their existing source graph
 while those replacement layers are built. This does not freeze their interfaces
 or require a separate transport-v2 stabilization campaign. The

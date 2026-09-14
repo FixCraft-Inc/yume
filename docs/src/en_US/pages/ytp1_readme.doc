@@ -2,7 +2,7 @@
 name:     ytp1_readme
 kind:     page
 title:    YTP/1 foundation: setup, contracts, and gates
-summary:  Build experimental providers, create a schema-1 kit and embed native named streams. Standalone runtimes remain unfinished.
+summary:  Build experimental providers, create a schema-1 kit, embed native named streams and run the development yumed-ytp1 and yume-ytp1 processes.
 markdown: docs/development/ytp1/README.md
 web:      no
 catalog-title: YTP/1 foundation
@@ -14,8 +14,8 @@ YUME 0.3 is being rebuilt around an experimental C ABI and YTP/1. This page
 is the one development reference for that replacement: what the schema-1
 tools do today, the contracts the runtime must meet, and the gates that
 separate a passing foundation test from a usable tunnel. It is a design
-input, not an installed contract and not evidence that a standalone runtime
-exists.
+input, not an installed contract and not evidence that the product runtime is
+qualified.
 [IMPLEMENTATION_STATUS.md](../../IMPLEMENTATION_STATUS.md) is the
 authoritative boundary; the runnable transport-v2 product keeps its own
 [quick start](../../QUICKSTART.md), [operations](../../OPERATIONS.md),
@@ -47,9 +47,10 @@ TLS/H2.
 When the shared ABI is built with the same providers, an experimental schema-1
 backend drives that endpoint behind the C ABI and carries named byte streams.
 
-Not implemented: the replacement `yume` and
-`yumed` runtimes, the authenticated setup-to-SOCKS path, public ABI packet
-handles, TUN adapters, and production qualification of the complete endpoint.
+Not implemented: the final `yume` and `yumed` runtimes, SOCKS5 UDP, public ABI
+packet handles, TUN adapters, and production qualification of the complete
+endpoint. The development processes are described under running the
+development runtimes below.
 A schema-1 kit is not valid
 input for the runnable transport-v2 binaries, and nothing converts between
 the two dialects. A generated kit declares adapters, which the ABI backend
@@ -105,9 +106,9 @@ credential service authorization and before DNS or socket work. An optional
 `route_authorization` callback can only refuse more. The engine supplies the
 selected provider to handlers, and an Asio provider built with the same policy
 checks every selected numeric address before connecting. Explicit
-policy-bearing handlers remain available for other services. This source-level
-composition supplies no standalone daemon or SOCKS/TUN implementation. The ABI
-backend still refuses adapter declarations.
+policy-bearing handlers remain available for other services. The ABI backend
+still refuses adapter declarations, and packet/TUN adapters are not
+implemented.
 
 The caller retains a single-runner `AsioExecutionContext` through the promoted
 carrier lifetimes. The front door supplies H2 dispatch from its context,
@@ -178,10 +179,11 @@ These offline checks do not prove that a supplied chain negotiates with the
 actual browser profile. A locally issued certificate is development material;
 it does not establish a credible public HTTPS cover identity.
 
-Setup can encode an IP endpoint, but the candidate native TLS/H2 client
-currently requires a DNS server name. Configuring a connection address
-separately from the authenticated DNS name remains an integration gap; an
-IP-address kit is not a working native endpoint.
+Use a DNS name for the authenticated endpoint. To reach it at a fixed IP,
+set the client's `endpoint.connect_address` to that numeric address. TLS and
+admission still authenticate `endpoint.host`. Setup can encode an IP as `host`,
+but the native TLS/H2 client requires a DNS server name, so such a kit cannot
+start a native session.
 
 Run doctor as the identity that will run YUME. It rejects unknown schema
 keys, provider or profile mismatch, unsafe limits, missing cover content,
@@ -193,11 +195,82 @@ does not inspect file ownership, consume a separate compatibility manifest,
 or print private material. Fix the reported location; there is no CLI
 override for a doctor failure.
 
+## Run the development runtimes
+
+With every native provider option enabled, including
+`YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER`, the build produces
+`bin/yumed-ytp1` and `bin/yume-ytp1`. They are development programs, not the
+installed product:
+
+@code bash
+build/bin/yumed-ytp1 --config kit/server/yumed.json --validate
+build/bin/yumed-ytp1 --config kit/server/yumed.json
+build/bin/yume-ytp1 --config kit/client/yume.json
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+@end
+
+The daemon needs a `direct_tcp` or `direct_udp` adapter for every configured
+service, and neither program implements packet/TUN adapters. Before starting
+them, remove the generated `packet` service and adapter from both
+configurations and the `packet` capability from
+`server/credentials/authorized-keys.json`.
+
+A normal user can listen on port 443 once the daemon binary holds only the
+bind capability. Install a root-owned copy and grant it there:
+
+@code bash
+sudo install -o root -g root -m 0755 build/bin/yumed-ytp1 /usr/local/bin/yumed-ytp1
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/yumed-ytp1
+@end
+
+Replacing the file drops the capability, so repeat both commands after each
+build. Running the daemon as root or lowering the system's unprivileged port
+range is not needed. A port above 1023 needs neither step.
+
+The client runs its SOCKS5 listeners and keeps one session. When that session
+ends, its endpoint notifies the client to start a replacement. Failed attempts
+wait with backoff from 1 to 30 seconds. SOCKS5 offers only the
+no-authentication method and CONNECT, and
+refuses requests while no session is active. Stop either process with SIGINT or
+SIGTERM.
+
+Clients may send payload with CONNECT before reading its reply. The adapter
+reads only the handshake fields, leaving payload in the socket until the
+daemon accepts the destination and the shared route bridge starts forwarding.
+Closing the client's write side still allows the destination's response back.
+The greeting and CONNECT request must arrive within 10 seconds. A CONNECT then
+has 30 seconds to receive remote acceptance; expiry cancels it, returns SOCKS5
+0x06 (TTL expired) and closes that local connection. Other requests can keep
+using the authenticated session.
+
+SOCKS5 names resolve on the daemon. Every selected address must be permitted
+by the service's configured destinations before a socket opens. A refused
+address rejects the whole OPEN, including mixed allowed and denied answers,
+with SOCKS5 reply 0x02. Other requests can continue on the same session.
+
+`scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
+network namespace with Ethernet-sized frames and records what nDPI reports.
+`scripts/ensure-ndpi.sh` builds the pinned release, or newer sources such as
+`--ref dev` under a prefix named by their commit. `scripts/yume_ethernet_smoke.py`
+runs the client on this machine and the daemon on a directly connected host,
+after a link preflight that fails when the direct route is unavailable. It
+alternates untunnelled and tunnelled fetches of one payload. The daemon reaches
+the tunnel destination on its own host, and the untunnelled fetch crosses the
+link to `--baseline-port`, which a firewall on that host must allow. With
+`--capture-ssh` naming a root login on that host, the runner records the tunnel
+with tcpdump, which drops to the normal user once the interface is open, and
+`--remote-ndpi-reader` runs nDPI on the capture as that user. `--wire-frames`
+turns segmentation and receive offloads off for the run and restores them, so
+the capture holds frames as they crossed the wire. Neither result is a
+classifier verdict or a qualified benchmark.
+
 ## Configuration authority
 
 Schema 1 is role tagged and contains these sections only:
 
-- `endpoint`: one client target or bounded server listeners;
+- `endpoint`: one client target or bounded server listeners. A client may add
+  `connect_address`, a numeric address dialled instead of resolving `host`,
+  while TLS and admission still authenticate `host`;
 - `suite`: the exact mandatory provider composition;
 - `credentials`: references to files, never inline private material;
 - `cover`: the qualified profile and server cover root;
@@ -216,8 +289,8 @@ Schema 1 is role tagged and contains these sections only:
   packets.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
-and unsafe combinations. Runtime CLIs will accept config selection,
-validation, version, and diagnostic controls only; network and security
+and unsafe combinations. The development CLIs accept config selection,
+validation, version, and help only; network and security
 policy have no CLI override. Once the runtime gate closes, a service manager
 should invoke only `yumed --config /etc/yume/yumed.json` as a dedicated
 unprivileged identity, prefer a high port or grant only

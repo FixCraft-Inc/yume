@@ -29,6 +29,8 @@
 #include <boost/asio/write.hpp>
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
+#include "runtime/native_client_runtime.hpp"
+#include "runtime/native_socks5.hpp"
 #endif
 
 #ifdef YUME_TEST_WRAP_ACCEPT
@@ -314,6 +316,8 @@ void test_promoted_server_auth_deadline(const std::filesystem::path& kit) {
     options.max_sessions = 1U;
     options.max_pending_starts = 1U;
     options.start_timeout = 300ms;
+    unsigned ended = 0U;
+    options.session_ended = [&](auto, Status) { ++ended; };
     auto server = runner.sync([&] { return take(NativeEndpoint::create(
         runner.context, server_config, kit / "server", bindings(handler), options)); });
     auto accepting = start(runner, server);
@@ -335,10 +339,133 @@ void test_promoted_server_auth_deadline(const std::filesystem::path& kit) {
     auto closed = await(replacement);
     CHECK(!closed.ok() && closed.status().code() == StatusCode::Closed);
     runner.finish_and_join();
+    CHECK(ended == 0U); // Failed starts have no published session to end.
     carrier.reset();
     server.reset();
     CHECK(runner.context->poll() == 0U);
     CHECK(runner.exceptions.load() == 0U);
+}
+
+std::shared_ptr<SessionEngine> connect_eventually(Runner& runner,
+    const std::shared_ptr<NativeEndpoint>& client);
+
+void test_session_ended_notifications(const std::filesystem::path& kit) {
+    Runner runner;
+    auto server_handler = std::make_shared<Handler>();
+    auto client_handler = std::make_shared<Handler>();
+    using Session = std::shared_ptr<SessionEngine>;
+    std::array<std::shared_ptr<NativeEndpoint>, 2> endpoints;
+    std::array<Session, 2> sessions;
+    std::array<std::weak_ptr<SessionEngine>, 2> retired;
+    std::array<unsigned, 2> notices{};
+    std::array<bool, 2> on_context{};
+    std::array<StatusCode, 2> reasons{};
+    std::array<StatusCode, 2> start_status{};
+    std::array<std::promise<Result<Session>>, 2> replacement;
+    auto next_server = replacement[0].get_future();
+    auto next_client = replacement[1].get_future();
+    std::array<std::promise<void>, 2> closed;
+    auto server_closed = closed[0].get_future();
+    auto client_closed = closed[1].get_future();
+    unsigned reads = 0U;
+    bool read_settled_first = false;
+    struct Drain final {
+        Runner& runner;
+        std::array<std::shared_ptr<NativeEndpoint>, 2>& endpoints;
+        ~Drain() {
+            for (const auto& endpoint : endpoints) if (endpoint) endpoint->close();
+            runner.finish_and_join();
+        }
+    } drain{runner, endpoints};
+
+    runner.sync([&] {
+        for (std::size_t index = 0; index < endpoints.size(); ++index) {
+            NativeEndpointOptions options;
+            options.max_sessions = options.max_pending_starts = 1U;
+            options.connection_address = index == 1U ? "127.0.0.1" : "";
+            options.session_ended = [&, index](Session session, Status reason) {
+                on_context[index] = runner.context->running_in_this_thread();
+                reasons[index] = reason.code();
+                CHECK(session == sessions[index]);
+                ++notices[index];
+                if (notices[index] == 1U) {
+                    if (index == 1U) read_settled_first = reads == 1U;
+                    // A retained engine also retains its carrier's admission
+                    // reservation. Drop the old owner before replacement I/O.
+                    retired[index] = sessions[index];
+                    sessions[index].reset();
+                    // Capacity must be released before calling the observer.
+                    auto status = endpoints[index]->async_start_session([&, index](auto result) {
+                        replacement[index].set_value(std::move(result));
+                    });
+                    start_status[index] = status.code();
+                    if (!status.ok()) replacement[index].set_value(Result<Session>(std::move(status)));
+                    throw std::runtime_error("session-ended callback exception");
+                }
+                closed[index].set_value();
+            };
+            const auto role = index == 0U ? "server" : "client";
+            endpoints[index] = take(NativeEndpoint::create(runner.context,
+                load(kit / role / (index == 0U ? "yumed.json" : "yume.json")), kit / role,
+                bindings(index == 0U ? server_handler : client_handler), std::move(options)));
+        }
+    });
+    auto accepting = start(runner, endpoints[0]);
+    auto connecting = start(runner, endpoints[1]);
+    sessions[0] = take(await(accepting));
+    sessions[1] = take(await(connecting));
+    auto remote_promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+    auto remote_open = remote_promise->get_future();
+    runner.sync([&] { server_handler->accepted = remote_promise; });
+    auto local = open(runner, sessions[1], "echo");
+    auto remote = await(remote_open);
+    transfer(runner, local, remote, "before session closure");
+    runner.sync([&] {
+        local->async_read({}, [&](auto result) {
+            if (!result.ok() && result.status().code() == StatusCode::Cancelled) ++reads;
+        });
+        // Keep the event loop here while a different thread stops the engine.
+        // Delivery must wait for the context even though teardown has finished.
+        sessions[0]->stop(Status(StatusCode::Closed));
+        std::thread stopping([session = sessions[1]] { session->stop(); });
+        stopping.join();
+        CHECK(notices[1] == 0U && reads == 1U);
+        CHECK(endpoints[1]->async_start_session([](auto) {}).code() == StatusCode::ResourceExhausted);
+    });
+    auto first_attempt = await(next_client);
+    // The endpoint slot is free, but old carrier cancellation and front-door
+    // admission still settle asynchronously. Retry a refused admission through
+    // the same bounded helper used by the accept-loop tests.
+    auto client_replacement = first_attempt.ok() ? take(std::move(first_attempt))
+                                               : connect_eventually(runner, endpoints[1]);
+    auto server_replacement = take(await(next_server));
+    runner.sync([&] {
+        CHECK(notices[0] == 1U && notices[1] == 1U);
+        CHECK(start_status[0] == StatusCode::Ok && start_status[1] == StatusCode::Ok);
+        CHECK(on_context[0] && on_context[1] && read_settled_first);
+        CHECK(reasons[1] == StatusCode::Cancelled);
+        CHECK(retired[0].expired() && retired[1].expired());
+        sessions = {server_replacement, client_replacement};
+    });
+    remote_promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+    remote_open = remote_promise->get_future();
+    runner.sync([&] { server_handler->accepted = remote_promise; });
+    local = open(runner, sessions[1], "echo");
+    remote = await(remote_open);
+    transfer(runner, local, remote, "replacement after observer exception");
+    runner.sync([&] {
+        for (const auto& endpoint : endpoints) endpoint->close();
+    });
+    await(server_closed);
+    await(client_closed);
+    runner.finish_and_join();
+    CHECK(notices[0] == 2U && notices[1] == 2U);
+    CHECK(on_context[0] && on_context[1]);
+    CHECK(reasons[0] == StatusCode::Closed && reasons[1] == StatusCode::Closed);
+    CHECK(runner.exceptions.load() == 0U);
+    endpoints = {};
+    sessions = {};
+    CHECK(runner.context->poll() == 0U);
 }
 
 // A client or admission that races the server's next accept retry receives
@@ -837,6 +964,293 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
 }
 #endif
 
+// Keep acceptance under test control after the real session has authorized the
+// destination. This isolates the local SOCKS deadline from network timeouts.
+#ifdef YUME_NATIVE_TEST_ROUTES
+class DelayedRouteHandler final : public StreamHandler {
+public:
+    DelayedRouteHandler()
+        : descriptor_(take(ProviderDescriptor::create("native-test.delayed-route",
+            ProviderKind::StreamHandler, 1U,
+            mandatory_capabilities(ProviderKind::StreamHandler).with(Capability::DirectTcp)))) {}
+    const ProviderDescriptor& descriptor() const noexcept override { return descriptor_; }
+    ServiceKind service_kind() const noexcept override { return ServiceKind::ByteStream; }
+    Status authorize(const StreamOpenContext& context) override {
+        CHECK(context.peer_evidence().credential_evidence().size() == 32U);
+        const auto* destination = context.destination_if();
+        CHECK(destination && destination->protocol() == NetworkProtocol::Tcp);
+        return Status::success();
+    }
+    void on_open(StreamOpenContext, std::shared_ptr<StreamResponder>) override {
+        throw std::runtime_error("SOCKS CONNECT omitted its destination");
+    }
+    void async_route(AuthorizedRouteRequest, std::shared_ptr<RouteProvider>,
+                     std::shared_ptr<StreamResponder> stream,
+                     AcceptanceCompletion completion) override {
+        CHECK(accepted && !acceptance);
+        acceptance = std::move(completion);
+        accepted->set_value(std::move(stream));
+        accepted.reset();
+    }
+    std::shared_ptr<std::promise<std::shared_ptr<StreamResponder>>> accepted;
+    AcceptanceCompletion acceptance;
+private:
+    ProviderDescriptor descriptor_;
+};
+
+// Bounded reads on the test client while Runner drives the native context.
+std::size_t read_socket(boost::asio::ip::tcp::socket& socket, std::span<std::uint8_t> bytes) {
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    for (;;) {
+        boost::system::error_code error;
+        const auto size = socket.read_some(boost::asio::buffer(bytes.data(), bytes.size()), error);
+        if (error == boost::asio::error::eof) return 0U;
+        if (!error) return size;
+        CHECK(error == boost::asio::error::would_block || error == boost::asio::error::try_again);
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(1ms);
+    }
+}
+
+void check_socks_reply(boost::asio::ip::tcp::socket& socket, std::uint8_t code) {
+    const std::array<std::uint8_t, 12> expected{5, 0, 5, code, 0, 1, 0, 0, 0, 0, 0, 0};
+    std::array<std::uint8_t, 12> reply{};
+    for (std::size_t offset = 0; offset < reply.size();) {
+        const auto read = read_socket(socket, std::span(reply).subspan(offset));
+        CHECK(read != 0U);
+        offset += read;
+    }
+    if (reply != expected) {
+        throw std::runtime_error("SOCKS CONNECT reply: expected " + std::to_string(code) +
+                                 ", got " + std::to_string(reply[3]));
+    }
+}
+
+void check_socket_closed(boost::asio::ip::tcp::socket& socket) {
+    std::array<std::uint8_t, 1> byte{};
+    CHECK(read_socket(socket, byte) == 0U);
+}
+
+void test_client_reconnect(const std::filesystem::path& kit) {
+    Runner runner;
+    auto handler = std::make_shared<DelayedRouteHandler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 2U;
+    server_options.max_pending_starts = 1U;
+    server_options.route_provider = runner.sync([&] {
+        return take(yume::providers::AsioDirectRouteProvider::create(runner.context,
+            [](const auto&, const auto&) { return Status(StatusCode::PermissionDenied); }));
+    });
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
+            kit / "server", {{"echo", handler}, {"denied", handler}}, server_options));
+    });
+    unsigned authenticated = 0U;
+    unsigned reconnecting = 0U;
+    bool reports_on_context = true;
+    std::promise<void> initial_auth;
+    std::promise<void> replacement_auth;
+    auto initial_ready = initial_auth.get_future();
+    auto replacement_ready = replacement_auth.get_future();
+    auto client = runner.sync([&] {
+        NativeClientRuntimeOptions options;
+        options.reconnect_initial = 50ms;
+        options.reconnect_max = 100ms;
+        return take(NativeClientRuntime::create(runner.context,
+            load(kit / "client/runtime-client.json"), kit / "client", [&](std::string_view message) {
+                reports_on_context = reports_on_context && runner.context->running_in_this_thread();
+                if (message == "session ended, reconnecting") ++reconnecting;
+                if (message != "session authenticated") return;
+                ++authenticated;
+                if (authenticated == 1U) initial_auth.set_value();
+                if (authenticated == 2U) replacement_auth.set_value();
+            }, options));
+    });
+    auto accepting = start(runner, server);
+    runner.sync([&] { CHECK(client->start().ok()); });
+    auto first = take(await(accepting));
+    await(initial_ready);
+    const auto socks = runner.sync([&] { return client->socks5_endpoints().at(0); });
+    boost::asio::io_context local_io;
+    const auto connect_socks = [&] {
+        boost::asio::ip::tcp::socket socket(local_io);
+        socket.connect(socks);
+        const std::array<std::uint8_t, 13> request{5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 1, 187};
+        boost::asio::write(socket, boost::asio::buffer(request));
+        socket.non_blocking(true);
+        return socket;
+    };
+    auto request = [&](std::string_view payload) {
+        auto accepted = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto opened = accepted->get_future();
+        runner.sync([&] { handler->accepted = accepted; });
+        auto socket = connect_socks();
+        auto stream = await(opened);
+        runner.sync([&] { std::exchange(handler->acceptance, {})(Status::success()); });
+        check_socks_reply(socket, 0x00);
+        auto received = std::make_shared<std::promise<Result<ReceivedRecord>>>();
+        auto read = received->get_future();
+        runner.sync([&] {
+            stream->async_read({}, [received](auto result) { received->set_value(std::move(result)); });
+        });
+        boost::asio::write(socket, boost::asio::buffer(payload.data(), payload.size()));
+        const auto record = take(await(read));
+        CHECK(record.payload().size() == payload.size());
+        CHECK(std::equal(record.payload().bytes().begin(), record.payload().bytes().end(),
+                         reinterpret_cast<const std::byte*>(payload.data())));
+        runner.sync([&] { stream->close(Status(StatusCode::Closed)); });
+    };
+    request("before reconnect");
+    // Keep the next accept ready. No wall-clock threshold is needed to prove
+    // replacement authentication and that the existing SOCKS listener uses it.
+    auto next_accept = start(runner, server);
+    runner.sync([&] { first->stop(); });
+    auto second = take(await(next_accept));
+    await(replacement_ready);
+    CHECK(second != first);
+    request("after reconnect");
+    runner.sync([&] {
+        CHECK(authenticated == 2U && reconnecting == 1U && reports_on_context);
+        client->close();
+        server->close();
+    });
+    runner.finish_and_join();
+    CHECK(authenticated == 2U && reconnecting == 1U);
+    CHECK(runner.exceptions.load() == 0U);
+    client.reset();
+    server.reset();
+    CHECK(runner.context->poll() == 0U);
+}
+
+void test_socks5_deadlines(const std::filesystem::path& kit) {
+    Runner runner;
+    auto handler = std::make_shared<DelayedRouteHandler>();
+    auto client_handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = options.max_pending_starts = 1U;
+    options.route_provider = runner.sync([&] {
+        return take(yume::providers::AsioDirectRouteProvider::create(runner.context,
+            [](const auto&, const auto&) { return Status(StatusCode::PermissionDenied); }));
+    });
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
+            kit / "server", {{"echo", handler}, {"denied", handler}}, options));
+    });
+    options.route_provider.reset();
+    options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "client/yume.json"),
+            kit / "client", bindings(client_handler), options));
+    });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto server_session = take(await(accepting));
+    auto client_session = take(await(connecting));
+    NativeSocks5Limits limits;
+    limits.max_connections = 1U;
+    limits.handshake_timeout = 200ms;
+    limits.open_timeout = 500ms;
+    auto adapter = runner.sync([&] {
+        return take(NativeSocks5Adapter::create(runner.context,
+            {"echo", "127.0.0.1", 0U}, [client_session] { return client_session; }, limits));
+    });
+    boost::asio::io_context local_io;
+    auto begin_request = [&] {
+        auto promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto opened = promise->get_future();
+        runner.sync([&] { handler->accepted = promise; });
+        boost::asio::ip::tcp::socket socket(local_io);
+        socket.connect(adapter->local_endpoint());
+        const std::array<std::uint8_t, 13> request{5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 1, 187};
+        boost::asio::write(socket, boost::asio::buffer(request));
+        socket.non_blocking(true);
+        return std::pair{std::move(socket), await(opened)};
+    };
+    auto settle = [&](Status status) {
+        runner.sync([&, status = std::move(status)]() mutable {
+            auto completion = std::move(handler->acceptance);
+            CHECK(completion);
+            completion(std::move(status));
+        });
+    };
+    auto wait_closed = [&](const std::shared_ptr<StreamResponder>& stream) {
+        auto promise = std::make_shared<std::promise<Result<ReceivedRecord>>>();
+        auto read = promise->get_future();
+        runner.sync([stream, promise] {
+            stream->async_read({}, [promise](auto result) { promise->set_value(std::move(result)); });
+        });
+        CHECK(!await(read).ok());
+        CHECK(stream->terminated());
+    };
+
+    auto [expired, expired_stream] = begin_request();
+    check_socks_reply(expired, 0x06);
+    check_socket_closed(expired);
+    wait_closed(expired_stream);
+    settle(Status::success()); // Late acceptance cannot resurrect this OPEN.
+    CHECK(expired_stream->terminated());
+
+    // A released connection slot admits the next request on the same listener.
+    for (const auto& [status, reply] : {
+             std::pair{StatusCode::PermissionDenied, 0x02},
+             std::pair{StatusCode::Internal, 0x04}}) {
+        auto [refused, stream] = begin_request();
+        settle(Status(status));
+        check_socks_reply(refused, static_cast<std::uint8_t>(reply));
+        check_socket_closed(refused);
+        wait_closed(stream);
+    }
+
+    auto [healthy, healthy_stream] = begin_request();
+    settle(Status::success());
+    check_socks_reply(healthy, 0x00);
+    // Once accepted, the old OPEN deadline must not close the established bridge.
+    std::this_thread::sleep_for(600ms);
+    auto sent = std::make_shared<std::promise<Status>>();
+    auto sending = sent->get_future();
+    runner.sync([healthy_stream, sent] {
+        const std::array<std::byte, 4> bytes{std::byte{0}, std::byte{1}, std::byte{2}, std::byte{255}};
+        healthy_stream->async_write(take(Buffer::copy_from(bytes, bytes.size())), {},
+            [sent](Status status, std::size_t written) {
+                CHECK(!status.ok() || written == 4U);
+                sent->set_value(std::move(status));
+            });
+    });
+    CHECK(await(sending).ok());
+    std::array<std::uint8_t, 4> payload{};
+    for (std::size_t offset = 0; offset < payload.size();) {
+        const auto read = read_socket(healthy, std::span(payload).subspan(offset));
+        CHECK(read != 0U);
+        offset += read;
+    }
+    CHECK(payload == (std::array<std::uint8_t, 4>{0, 1, 2, 255}));
+    runner.sync([&] { healthy_stream->close(Status(StatusCode::Closed)); });
+    check_socket_closed(healthy);
+
+    auto [stopped, stopped_stream] = begin_request();
+    // Method selection was sent, but adapter shutdown must not invent a timeout reply.
+    std::array<std::uint8_t, 2> method{};
+    for (std::size_t offset = 0; offset < method.size();) {
+        const auto read = read_socket(stopped, std::span(method).subspan(offset));
+        CHECK(read != 0U);
+        offset += read;
+    }
+    CHECK(method == (std::array<std::uint8_t, 2>{5, 0}));
+    runner.sync([&] { adapter->close(); });
+    check_socket_closed(stopped);
+    wait_closed(stopped_stream);
+    settle(Status::success());
+    runner.sync([&] {
+        CHECK(client_session->state() == SessionState::Active);
+        CHECK(server_session->state() == SessionState::Active);
+    });
+    client->close();
+    server->close();
+    CHECK(runner.exceptions.load() == 0U);
+    runner.finish_and_join();
+}
+#endif
+
 void test_adapter_configuration_rejections(const std::filesystem::path& kit) {
     Runner runner;
     runner.sync([&] {
@@ -997,7 +1411,10 @@ int main(int argc, char** argv) {
         CHECK(argc == 2);
         test_adapter_configuration_rejections(argv[1]);
         run(argv[1]);
+        test_session_ended_notifications(argv[1]);
 #ifdef YUME_NATIVE_TEST_ROUTES
+        test_client_reconnect(argv[1]);
+        test_socks5_deadlines(argv[1]);
         test_destination_route<boost::asio::ip::tcp>(argv[1], false);
         test_destination_route<boost::asio::ip::tcp>(argv[1], true);
         test_destination_route<boost::asio::ip::udp>(argv[1], true);

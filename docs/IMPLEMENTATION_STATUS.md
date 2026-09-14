@@ -53,15 +53,15 @@ Implemented and covered by focused tests:
   operation queues, per-operation and provider cancellation, real TCP
   half-close, and explicit executor affinity. An accepted-channel owner shares
   the same channel implementation for connected server sockets. Listening
-  belongs to the separate native FrontDoor; neither path has a standalone YTP
-  endpoint runtime. Both use
-  the caller-owned single-runner `AsioExecutionContext` and reserved control
+  belongs to the separate native FrontDoor. NativeEndpoint composes these
+  providers for the development CLI and schema-1 ABI backend. Both use the
+  caller-owned single-runner `AsioExecutionContext` and reserved control
   dispatch. Initiation occurs on its context, while cancel/close can cross
   threads; the runtime must close owners and drain completions before stopping
   execution. Provider regressions exercise sustained allocation failure during
   control dispatch, active read/write cleanup, owner destruction and lost DNS
-  completion delivery. These component tests do not establish endpoint wiring.
-  The eventual runner must contain Asio delivery exceptions and resume cleanup.
+  completion delivery. The native runtime contains Asio delivery exceptions
+  and resumes cleanup; endpoint integration tests are described below.
   System DNS resolution can outlive the user-facing deadline; bounded final
   resolver shutdown remains an integration limitation;
 - an independent opt-in OpenSSL 3.5 TLS 1.3 secure-channel foundation which
@@ -169,6 +169,12 @@ numeric-address authorization before opening any socket, including every
 selected DNS candidate and IPv4-mapped IPv6. Policy errors and reentrant
 cancellation settle the OPEN without connecting.
 
+Session teardown notifies the endpoint through reserved control dispatch.
+The endpoint frees the session slot before its optional `session_ended`
+callback runs on the endpoint context. The native client uses this notification
+to start reconnecting without polling. Failed attempts retain bounded
+exponential backoff. Pending starts report failure through their own completion.
+
 Listener socket setup preserves OS permission refusal, address conflict,
 invalid-address and resource-exhaustion status through the runtime and embedding
 seams. Unknown socket failures remain generic I/O failures; an unexpected
@@ -179,7 +185,10 @@ of the original endpoint before exchanging authenticated traffic.
 Native integration tests provision actual setup credentials and exercise
 loopback TLS/H2, composite AUTH, named bytes in both directions, simultaneous
 directional rekeys, half-close, refused service opens with a surviving session,
-idle accept survival, stalled AUTH deadlines and final handle cleanup.
+idle accept survival, stalled AUTH deadlines and final handle cleanup. Lifecycle
+regressions cover closure from another thread, pending-read settlement before
+notification, reentrant slot reuse, callback exceptions, and client reconnect
+with SOCKS traffic through the replacement session.
 Deterministic pacing tests cover accept refusal, unschedulable retries,
 re-entrant completion, stopped listeners and close. Socket tests cover loop
 exclusivity, capacity recovery and a promoted carrier that never authenticates,
@@ -224,6 +233,41 @@ credit lifetime and cleanup after an escaped delivery exception.
 No standalone YTP/1 runtime uses
 this backend, and it has no production qualification.
 
+The development executables `yumed-ytp1` and `yume-ytp1` run schema-1
+configurations as processes when every native provider is built. `--config`
+selects the file, `--validate` checks configuration and credentials, and
+network and security policy have no CLI override. The daemon serves configured
+`direct_tcp`/`direct_udp` adapters and refuses a service without one, because
+only an embedding application can supply a named-service handler. The client
+keeps one authenticated session and starts a replacement when the endpoint
+reports closure. Failed attempts use bounded exponential backoff. It refuses
+server-initiated OPENs and runs the configured loopback SOCKS5
+listeners. A CONNECT becomes an authenticated OPEN, and after the peer accepts
+it the socket and stream share the direct-route bridge. Payload sent with
+CONNECT stays unread in the socket until that bridge takes ownership. Only the
+no-authentication method and CONNECT are offered, and a request without an
+active session is refused rather than queued. A client may set
+`connect_address` to dial a numeric address while TLS and admission still
+authenticate `host`. `yume_native_runtime_test` provisions a kit, runs both
+processes, moves a payload through SOCKS5, checks refusal by configured
+destinations and by an unreachable route, and requires clean SIGTERM exits.
+It also checks early binary payload with CONNECT or greeting+CONNECT, split
+request writes, exact byte delivery and responses after the client half-closes.
+An early payload cannot bypass destination policy or replace the session.
+The adapter cancels a CONNECT whose OPEN deadline expires and replies with
+SOCKS5 0x06 (TTL expired). Late acceptance cannot revive it. The native endpoint
+test holds acceptance open to check expiry, later requests on the same session,
+ordinary refusal, adapter shutdown and an accepted stream outliving its OPEN
+deadline.
+On Linux with GCC or Clang, `yume_native_runtime_dns_test` also checks allowed,
+denied and mixed DNS answer sets in both orders. Its test daemon wraps the OS
+resolver and observes socket creation while running the production runtime.
+Refused sets open no sockets, return SOCKS5 reply 0x02, and leave the session
+usable. Asynchronous permission refusal uses the existing unauthorized CLOSE
+code instead of reporting a handler failure.
+These programs are development runtimes: they are not installed and not
+qualified.
+
 ## Not yet implemented end to end
 
 The following required 0.3 paths are still open in this development tree and
@@ -231,16 +275,17 @@ must not be advertised as working:
 
 - complete-session qualification of the native FrontDoor, including external
   comparison of ordinary and rejected-admission cover behavior;
-- attaching the native endpoint composition to standalone runtimes, and
-  production qualification of the experimental schema-1 ABI backend;
+- production qualification of the experimental schema-1 ABI backend and of
+  the development standalone runtimes;
 - comprehensive real-carrier rekey, close-ordering and credit/backpressure
   qualification beyond the focused native-session regressions;
-- working standalone SOCKS5, named-service and packet adapters on the new
-  engine, using the configured destination policy;
+- SOCKS5 UDP ASSOCIATE, named-service and packet/TUN adapters in the
+  standalone runtimes;
 - a public-ABI packet data path in either configuration dialect;
 - authenticated clean-prefix C and C++ consumers using an installed CMake
   package and pkg-config, which the build does not generate yet;
-- the final narrow `yume` and `yumed` runtimes and setup-to-first-SOCKS smoke;
+- the final narrow `yume` and `yumed` runtimes, the coordinated switch from
+  transport v2, and a qualified setup-to-first-SOCKS path over a real network;
 - external active-probe, classifier, performance, soak, fuzz, sanitizer, and
   security-review gates.
 

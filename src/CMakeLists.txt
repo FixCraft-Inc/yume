@@ -660,6 +660,40 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
             yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
             yume_direct_route_handler yume_native_egress_policy Boost::system)
 
+        # Standalone development runtimes over NativeEndpoint. The yume and
+        # yumed names stay with transport v2 until the coordinated switch.
+        if(TARGET yume_asio_direct_route_provider)
+            add_library(yume_native_runtime STATIC
+                runtime/native_cli.cpp runtime/native_cli.hpp
+                runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
+                runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
+                runtime/native_socks5.cpp runtime/native_socks5.hpp
+                runtime/socks5_request.cpp runtime/socks5_request.hpp)
+            target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+            target_link_libraries(yume_native_runtime
+                PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context
+                PRIVATE yume_native_endpoint yume_native_egress_policy yume_native_credentials
+                    yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
+                    yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files
+                    Boost::system)
+            yume_apply_perf_opts(yume_native_runtime)
+            yume_assert_exact_link_dependencies(yume_native_runtime
+                yume_config_v1 yume_session_bootstrap yume_asio_execution_context
+                yume_native_endpoint yume_native_egress_policy yume_native_credentials
+                yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
+                yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files
+                Boost::system)
+            # yume_ytp1 already names the protocol kernel library.
+            add_executable(yume_ytp1_server_program runtime/yumed_ytp1_main.cpp)
+            add_executable(yume_ytp1_client_program runtime/yume_ytp1_main.cpp)
+            set_target_properties(yume_ytp1_server_program PROPERTIES OUTPUT_NAME yumed-ytp1)
+            set_target_properties(yume_ytp1_client_program PROPERTIES OUTPUT_NAME yume-ytp1)
+            foreach(_yume_native_program IN ITEMS yume_ytp1_server_program yume_ytp1_client_program)
+                target_link_libraries(${_yume_native_program} PRIVATE yume_native_runtime)
+                yume_apply_perf_opts(${_yume_native_program})
+            endforeach()
+        endif()
+
         # The YTP/1 embedding backend adapts the native endpoint to the
         # blocking seam behind the C ABI. The exact list keeps the
         # transport-v2 graph and BaseFWX out of it.
@@ -1065,7 +1099,7 @@ if(YUME_BUILD_TESTING)
             yume_native_credentials yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel)
         if(TARGET yume_asio_direct_route_provider)
             target_link_libraries(yume_native_endpoint_test PRIVATE
-                yume_asio_direct_route_provider yume_direct_route_handler)
+                yume_asio_direct_route_provider yume_direct_route_handler yume_native_runtime)
             target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1)
         endif()
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -1082,6 +1116,42 @@ if(YUME_BUILD_TESTING)
                 --openssl "${YUME_NATIVE_TEST_OPENSSL}")
         set_tests_properties(yume_native_endpoint_test PROPERTIES
             TIMEOUT 120 LABELS "foundation;0.3;native-runtime")
+    endif()
+    if(TARGET yume_native_runtime)
+        add_executable(yume_native_socks5_request_test runtime/socks5_request_test.cpp)
+        target_link_libraries(yume_native_socks5_request_test PRIVATE yume_native_runtime)
+        yume_apply_perf_opts(yume_native_socks5_request_test)
+        add_test(NAME yume_native_socks5_request_test COMMAND yume_native_socks5_request_test)
+        set_tests_properties(yume_native_socks5_request_test PROPERTIES
+            TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+        if(NOT WIN32)
+            # Real processes: setup kit, daemon, client SOCKS5 listener and a
+            # local HTTP destination behind configured egress destinations.
+            add_test(NAME yume_native_runtime_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/run_native_runtime_test.py"
+                    --yumed "$<TARGET_FILE:yume_ytp1_server_program>"
+                    --yume "$<TARGET_FILE:yume_ytp1_client_program>"
+                    --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+            set_tests_properties(yume_native_runtime_test PROPERTIES
+                TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                add_executable(yume_native_runtime_dns_server_test
+                    runtime/native_runtime_dns_server_test.cpp)
+                target_link_libraries(yume_native_runtime_dns_server_test PRIVATE yume_native_runtime)
+                target_link_options(yume_native_runtime_dns_server_test PRIVATE
+                    "-Wl,--wrap=getaddrinfo" "-Wl,--wrap=socket")
+                yume_apply_perf_opts(yume_native_runtime_dns_server_test)
+                add_test(NAME yume_native_runtime_dns_test
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${CMAKE_SOURCE_DIR}/tests/run_native_runtime_test.py"
+                        --yumed "$<TARGET_FILE:yume_native_runtime_dns_server_test>"
+                        --yume "$<TARGET_FILE:yume_ytp1_client_program>"
+                        --openssl "${YUME_NATIVE_TEST_OPENSSL}" --dns-fixture)
+                set_tests_properties(yume_native_runtime_dns_test PROPERTIES
+                    TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            endif()
+        endif()
     endif()
 
     if(TARGET yume_embed_ytp1)
@@ -2870,6 +2940,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_test(NAME yume_doctor_ytp1_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor_ytp1.py"
+    )
+    # The nDPI and direct-link scripts decide from these parsers whether a run
+    # counts, so a misread report must fail here instead of passing silently.
+    add_test(NAME yume_evaluation_reports_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_evaluation_reports.py"
     )
     set_tests_properties(
         yume_setup_transport_v2_test

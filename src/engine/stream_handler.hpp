@@ -99,7 +99,9 @@ public:
 
     // Completion accepts or refuses one incoming OPEN. Credit is withheld until
     // success. Implementations that establish an asynchronous dependency must
-    // complete only after that dependency is ready. Default adapters invoke the
+    // complete only after that dependency is ready. PermissionDenied sends an
+    // unauthorized CLOSE, including policy refusal after DNS resolution. Other
+    // failures send handler-failure CLOSE. Default adapters invoke the
     // existing synchronous handler methods below and then accept.
     virtual void async_open(StreamOpenContext context,
                             std::shared_ptr<StreamResponder> stream,

@@ -19,10 +19,17 @@ It will own the genuine HTTP/2 website or reverse-proxy front door,
 cheap replay-protected admission, TLS 1.3 promotion, authenticated named
 services, and explicit direct TCP/UDP routing.
 .PP
-The current 0.3.0-dev1 tree does not yet implement that production
-runtime.
-Setup and doctor can generate and validate a server kit, but no current
-command starts a qualified public YTP/1 listener.
+The current 0.3.0-dev1 tree does not install that production runtime.
+A development build with every native provider produces
+.BR yumed-ytp1 ,
+which accepts
+.BR --config ,
+.B --validate
+and
+.BR --version ,
+serves configured direct TCP/UDP adapters within their destinations and
+refuses services it cannot handle.
+It is not a qualified public YTP/1 listener.
 See
 .B docs/IMPLEMENTATION_STATUS.md
 before deployment.

@@ -101,6 +101,12 @@ public:
           stream_(std::move(stream)),
           acceptance_(std::move(completion)) {}
 
+    // An already established channel, without a provider or acceptance.
+    void attach(RouteConnection connection) noexcept {
+        issue_stream_read();
+        complete_open(Result<RouteConnection>(std::move(connection)));
+    }
+
     void start(const AuthorizedRouteRequest& request) noexcept {
         // Reading before egress establishment bounds pre-open buffering to one
         // YTP record and lets session teardown cancel a stalled route open.
@@ -877,6 +883,26 @@ Status validate_composition(
 }
 
 }  // namespace
+
+void bridge_established_route(std::shared_ptr<engine::StreamResponder> stream,
+                              engine::RouteConnection connection) noexcept {
+    if (!stream) {
+        close_connection(connection);
+        return;
+    }
+    try {
+        auto bridge = std::make_shared<RouteBridge>(
+            connection.kind(), nullptr, stream,
+            engine::StreamHandler::AcceptanceCompletion{});
+        bridge->attach(std::move(connection));
+    } catch (const std::bad_alloc&) {
+        close_connection(connection);
+        stream->close(allocation_failure("route bridge allocation failed"));
+    } catch (...) {
+        close_connection(connection);
+        stream->close(provider_failure("route bridge construction threw"));
+    }
+}
 
 DirectRouteHandler::DirectRouteHandler(
     engine::ProviderDescriptor descriptor,

@@ -154,6 +154,7 @@ class SessionEngine final
     : public std::enable_shared_from_this<SessionEngine> {
 public:
     using StartCompletion = std::function<void(Status)>;
+    using ClosedCompletion = std::function<void(Status)>;
     using OpenCompletion =
         std::function<void(Result<std::shared_ptr<StreamResponder>>)>;
 
@@ -180,6 +181,14 @@ public:
     // peer capabilities have been verified and the session becomes Active,
     // or with the terminal failure/cancellation status.
     void async_start(StartCompletion completion);
+
+    // One observer for the session's lifetime. Runs once after stop has settled
+    // pending start/stream callbacks and released their queues, outside engine
+    // locks. It may run inline if teardown already finished, otherwise on the
+    // thread that finishes teardown. Exceptions are contained. The owner must
+    // dispatch onto its executor when necessary. This does not wait for OS I/O
+    // cancellation handlers to drain. Empty/duplicate registration is refused.
+    Status notify_when_closed(ClosedCompletion completion);
 
     void async_open(std::string_view service_name,
                     ServiceKind service_kind,

@@ -216,6 +216,35 @@ class YumeDoctorTests(unittest.TestCase):
         result = self.run_doctor(server_path)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_client_connect_address_is_validated(self) -> None:
+        client_path = self.case / "client/yume.json"
+        original = json.loads(client_path.read_text())
+        for address, expected in (
+            ("10.77.77.1", None),
+            ("::1", None),
+            ("server.example.test", "/endpoint/connect_address: must be an IP literal"),
+            ("fe80::1%eth0", "/endpoint/connect_address: must be an IP literal"),
+        ):
+            document = copy.deepcopy(original)
+            document["endpoint"]["connect_address"] = address
+            client_path.write_text(json.dumps(document))
+            os.chmod(client_path, 0o600)
+            result = self.run_doctor(client_path)
+            if expected is None:
+                self.assertEqual(result.returncode, 0, result.stderr)
+            else:
+                self.assertEqual(result.returncode, 1, address)
+                self.assertIn(expected, result.stderr)
+
+        server_path = self.case / "server/yumed.json"
+        server = json.loads(server_path.read_text())
+        server["endpoint"]["connect_address"] = "10.77.77.1"
+        server_path.write_text(json.dumps(server))
+        os.chmod(server_path, 0o600)
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/endpoint/connect_address: unknown key", result.stderr)
+
     def test_direct_adapter_destinations_are_validated(self) -> None:
         config_path = self.case / "server/yumed.json"
         original = json.loads(config_path.read_text())

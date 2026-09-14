@@ -55,4 +55,11 @@ private:
     AuthorizationPolicy authorization_policy_;
 };
 
+// Forwards one authenticated stream through an already established route
+// channel of the same service kind, with the credit retention, half-close and
+// failure behavior of a routed OPEN. A local adapter uses it after the peer has
+// accepted its OPEN. A mismatch or allocation failure closes both sides.
+void bridge_established_route(std::shared_ptr<engine::StreamResponder> stream,
+                              engine::RouteConnection connection) noexcept;
+
 }  // namespace yume::providers

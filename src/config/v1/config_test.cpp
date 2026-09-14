@@ -421,6 +421,27 @@ void TestEndpointValidation() {
     ExpectError(document, "/endpoint", "object");
 }
 
+void TestClientConnectAddress() {
+    Json document = ClientDocument();
+    Check(!std::get<ClientEndpoint>(Parse(document).endpoint())
+               .connect_address()
+               .has_value(),
+          "connect_address appeared without configuration");
+    for (const char* address : {"10.77.77.1", "::1"}) {
+        document["endpoint"]["connect_address"] = address;
+        Check(std::get<ClientEndpoint>(Parse(document).endpoint())
+                      .connect_address() == std::optional<std::string>(address),
+              "connect_address was not retained");
+    }
+    document["endpoint"]["connect_address"] = "server.example.test";
+    ExpectError(document, "/endpoint/connect_address", "IP literal");
+    document["endpoint"]["connect_address"] = 10;
+    ExpectError(document, "/endpoint/connect_address", "string");
+    document = ServerDocument();
+    document["endpoint"]["connect_address"] = "10.77.77.1";
+    ExpectError(document, "/endpoint/connect_address", "unknown key");
+}
+
 void TestMandatorySuite() {
     constexpr std::array<std::pair<std::string_view, std::string_view>, 5>
         fields{{
@@ -933,6 +954,7 @@ int main(int argc, char** argv) {
         TestTopLevelClosureAndVersion();
         TestAliasesAreRejected();
         TestEndpointValidation();
+    TestClientConnectAddress();
         TestMandatorySuite();
         TestCredentialReferences();
         TestCoverValidation();

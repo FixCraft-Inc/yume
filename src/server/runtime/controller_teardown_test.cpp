@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "core/security/secret_file.hpp"
+#include "test_support/allocation_failure.hpp"
 
 namespace {
 
@@ -50,23 +51,27 @@ struct AllocationFailure {
 // allocation with joinable controller workers and an outstanding accept.
 thread_local AllocationFailure* active_failure = nullptr;
 
-class FailureScope {
-public:
-    explicit FailureScope(AllocationFailure& failure) noexcept {
-        active_failure = &failure;
-    }
-    ~FailureScope() { active_failure = nullptr; }
-    FailureScope(const FailureScope&) = delete;
-    FailureScope& operator=(const FailureScope&) = delete;
-};
-
-void inject_allocation_failure() {
+void inject_allocation_failure(std::size_t) {
     if (active_failure &&
         (active_failure->persistent || active_failure->failures == 0U)) {
         ++active_failure->failures;
         throw std::bad_alloc();
     }
 }
+
+class FailureScope {
+public:
+    explicit FailureScope(AllocationFailure& failure) noexcept {
+        active_failure = &failure;
+        yume::test::before_allocate = inject_allocation_failure;
+    }
+    ~FailureScope() {
+        yume::test::before_allocate = nullptr;
+        active_failure = nullptr;
+    }
+    FailureScope(const FailureScope&) = delete;
+    FailureScope& operator=(const FailureScope&) = delete;
+};
 
 class TemporaryDirectory {
 public:
@@ -272,26 +277,6 @@ void test_graceful_drain(yume::server::ServerConfig config) {
 }
 
 }  // namespace
-
-// Interposition is confined to this executable; fixtures are built before it
-// is armed, and every allocation-failure scope ends before test reporting.
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-void* operator new(std::size_t size) {
-    inject_allocation_failure();
-    if (void* data = std::malloc(size == 0 ? 1 : size)) return data;
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* data) noexcept { std::free(data); }
-void operator delete[](void* data) noexcept { ::operator delete(data); }
-void operator delete(void* data, std::size_t) noexcept { ::operator delete(data); }
-void operator delete[](void* data, std::size_t) noexcept { ::operator delete(data); }
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
 int main(int argc, char** argv) {
     check(argc == 2, "expected one teardown case name");

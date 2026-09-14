@@ -26,7 +26,8 @@ session ownership and shutdown drain.
 It also composes configured direct TCP/UDP adapters whose schema-1
 destinations are authorized before resolution and for every resolved address. An experimental schema-1 C ABI backend carries
 named byte streams over it, but does not compose destination adapters.
-Standalone CLI/daemon integration, SOCKS/TUN adapters, and the remaining
+Development `yumed-ytp1` and `yume-ytp1` processes compose it with direct
+routes and a SOCKS5 CONNECT adapter. Packet/TUN adapters and the remaining
 qualification gates are unfinished, as listed below.
 
 ## Conventions and compatibility
@@ -265,6 +266,9 @@ complete per-OPEN authorization and handler acceptance; a destination-bearing
 service MUST establish its authorized destination connection before accepting.
 The receiver's first STREAM_CREDIT is the authenticated acceptance barrier.
 A refusal uses terminal CLOSE and grants no stream credit.
+Authorization refusal, including a denied resolved destination address, uses
+the unauthorized close code. Failure to establish an otherwise authorized
+route uses the handler-failure close code.
 
 After receiving acceptance, the opener publishes its initial STREAM_CREDIT
 before reporting successful OPEN to its application. The receiver can then
@@ -714,9 +718,9 @@ tests do not establish a complete runnable tunnel or production qualification.
 
 Not implemented or not qualified as a production YTP/1 path:
 
-- standalone CLI/daemon composition of the native endpoint, and
-  qualification of its experimental ABI backend;
-- standalone CLI/daemon adapter composition, SOCKS/TUN adapters, plus a
+- qualification of the development standalone runtimes and the experimental
+  ABI backend;
+- SOCKS5 UDP ASSOCIATE, named-service and packet/TUN adapters, plus a
   schema-1 ABI packet data path;
 - deterministic cryptographic known-answer vectors and published rekey
   vectors; the provider test currently uses generated keys rather than a
@@ -735,8 +739,9 @@ transport-v2 product remains a separate default-build lane during the
 transition; its presence does not make transport v2, AUTH v2, federation,
 relay, GUI, or other product-specific surfaces part of YTP/1.
 
-Until standalone wiring, deterministic executable vectors, and the
-qualification gates land, the fixed composition is an implemented
-experimental candidate, not a production security claim. It is not an
+The development runtime is wired, while the remaining adapters, deterministic
+cryptographic known-answer vectors and production qualification gates are open.
+The fixed composition is an experimental candidate, not a production security
+claim. It is not an
 independent security proof, audit, post-quantum-security certification,
 anonymity claim, or production support statement.

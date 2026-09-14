@@ -80,6 +80,12 @@ def run(binary: Path, openssl: Path) -> None:
                     {"kind": "socks5", "service": "echo", "listen_address": "127.0.0.1", "listen_port": 1080}
                 ])
             path.with_name("unsupported-adapter.json").write_text(json.dumps(unsupported), encoding="utf-8")
+            if config["role"] == "client":
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as socks_reservation:
+                    socks_reservation.bind(("127.0.0.1", 0))
+                    unsupported["adapters"][0]["listen_port"] = socks_reservation.getsockname()[1]
+                unsupported["endpoint"] = dict(config["endpoint"], connect_address="127.0.0.1")
+                path.with_name("runtime-client.json").write_text(json.dumps(unsupported), encoding="utf-8")
             if config["role"] == "server":
                 config["limits"]["max_queued_bytes"] = 64 * 1024 * 1024
                 variant = path.with_name("invalid-queue.json")

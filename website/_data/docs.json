@@ -10,7 +10,7 @@
   },
   {
     "title": "YTP/1 foundation",
-    "summary": "Build experimental providers, create a schema-1 kit and embed native named streams. Standalone runtimes remain unfinished.",
+    "summary": "Build experimental providers, create a schema-1 kit, embed native named streams and run the development yumed-ytp1 and yume-ytp1 processes.",
     "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md",
     "source": "docs/development/ytp1/README.md",
     "landing_group": "Start here",

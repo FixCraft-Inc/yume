@@ -60,12 +60,6 @@ void complete_noexcept(NativeEndpoint::Completion completion,
     try { completion(std::move(result)); } catch (...) {}
 }
 
-bool terminal(const std::shared_ptr<SessionEngine>& session) noexcept {
-    if (!session) return true;
-    const auto state = session->state();
-    return state == SessionState::Closed || state == SessionState::Failed;
-}
-
 // Authentication chooses an identity; it never grants all advertised services.
 // Both the immutable credential policy and the application's policy must pass.
 class AuthorizedHandler final : public StreamHandler {
@@ -133,6 +127,25 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
 }  // namespace
 
 struct NativeEndpoint::State final : std::enable_shared_from_this<State>, AcceptScheduler::Driver {
+    // The engine can stop on another thread. Reserve its delivery task before
+    // publishing the session, so shutdown does not allocate an Asio handler.
+    struct SessionEnd final {
+        SessionEnd(std::shared_ptr<AsioExecutionContext> execution,
+                   std::weak_ptr<State> endpoint, std::size_t slot, std::uint64_t version)
+            : context(std::move(execution)), owner(std::move(endpoint)), index(slot), generation(version),
+              delivery([](void* value) noexcept {
+                  auto& notice = *static_cast<SessionEnd*>(value);
+                  if (const auto endpoint_owner = notice.owner.lock())
+                      endpoint_owner->ended(notice.index, notice.generation, std::move(notice.reason));
+              }) {}
+        std::shared_ptr<AsioExecutionContext> context;
+        std::weak_ptr<State> owner;
+        std::size_t index;
+        std::uint64_t generation;
+        Status reason;
+        ControlTask delivery;
+    };
+
     struct Slot final {
         explicit Slot(AsioExecutionContext::Executor executor) : timer(executor) {}
         Timer timer;
@@ -212,12 +225,42 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                 slot.timed_out ? StatusCode::Cancelled : StatusCode::Closed,
                 slot.timed_out ? "native session start deadline expired" : "native endpoint closed"));
         }
-        if (result.ok()) slot.session = result.value();
+        if (result.ok()) {
+            auto status = observe_session(index, result.value());
+            if (status.ok()) slot.session = result.value();
+            else {
+                result.value()->stop(copy_status(status));
+                result = Result<std::shared_ptr<SessionEngine>>(std::move(status));
+            }
+        }
         if (slot.automatic) {
             accepts->settled(slot.listener, slot.armed_at, result.ok());
             return;
         }
         complete_noexcept(std::move(completion), std::move(result));
+    }
+
+    Status observe_session(std::size_t index, const std::shared_ptr<SessionEngine>& session) noexcept {
+        try {
+            auto notice = std::make_shared<SessionEnd>(context, weak_from_this(), index, slots[index]->generation);
+            return session->notify_when_closed([notice](Status reason) noexcept {
+                notice->reason = std::move(reason);
+                notice->context->submit(notice->delivery, notice);
+            });
+        } catch (const std::bad_alloc&) {
+            return Status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            return Status(StatusCode::Internal);
+        }
+    }
+
+    void ended(std::size_t index, std::uint64_t generation, Status reason) noexcept {
+        auto& slot = *slots[index];
+        if (slot.generation != generation || !slot.session) return;
+        auto session = std::move(slot.session);
+        if (options.session_ended) {
+            try { options.session_ended(std::move(session), std::move(reason)); } catch (...) {}
+        }
     }
 
     Status arm_deadline(std::size_t index, std::uint64_t generation) noexcept {
@@ -260,7 +303,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             return Status(StatusCode::ResourceExhausted);
         std::size_t index = 0U;
         for (; index < slots.size(); ++index)
-            if (!slots[index]->starting && terminal(slots[index]->session)) break;
+            if (!slots[index]->starting && !slots[index]->session) break;
         if (index == slots.size()) return Status(StatusCode::ResourceExhausted);
         auto& slot = *slots[index];
         // Never wrap a generation while cancelled timer callbacks may exist.
@@ -408,12 +451,20 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
     std::shared_ptr<State> state;
     try {
         const auto egress = require(NativeEgressPolicy::create(config.adapters()));
+        if (options.caller_runs_socks5_adapters &&
+            std::none_of(config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
+                return std::holds_alternative<config::v1::Socks5Adapter>(adapter);
+            }))
+            throw Status(StatusCode::InvalidArgument, "no configured SOCKS5 adapter needs a caller");
         for (const auto& adapter : config.adapters()) {
             const auto* tcp = std::get_if<config::v1::DirectTcpAdapter>(&adapter);
             const auto* udp = std::get_if<config::v1::DirectUdpAdapter>(&adapter);
+            if (std::holds_alternative<config::v1::Socks5Adapter>(adapter) &&
+                options.caller_runs_socks5_adapters)
+                continue;
             if (!tcp && !udp)
                 throw Status(StatusCode::FailedPrecondition,
-                    "native SOCKS5 and packet/TUN adapters are not implemented");
+                    "native packet/TUN adapters are not implemented, and SOCKS5 adapters need a caller that runs them");
             if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
                     "direct adapters require an explicit route provider");
@@ -497,9 +548,16 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             require(builder.register_stream_handler(std::move(handler.name), std::move(handler.handler)));
         if (role == EndpointRole::Client) {
             const auto& endpoint = std::get<config::v1::ClientEndpoint>(config.endpoint());
+            const auto& configured_dial = endpoint.connect_address();
+            if (!state->options.connection_address.empty() && configured_dial &&
+                *configured_dial != state->options.connection_address)
+                throw Status(StatusCode::InvalidArgument,
+                    "dial address conflicts with the configured connect_address");
+            const std::string& dial = !state->options.connection_address.empty()
+                ? state->options.connection_address
+                : configured_dial ? *configured_dial : endpoint.host();
             state->tcp = require(AsioTcpByteChannelProvider::create(context,
-                state->options.connection_address.empty() ? endpoint.host() : state->options.connection_address,
-                endpoint.port(), {}, state->options.socket_protector));
+                dial, endpoint.port(), {}, state->options.socket_protector));
             require(builder.register_byte_channel_provider(state->tcp));
             require(builder.register_secure_channel_provider(credentials.tls_provider));
             Ytp1H2Dispatch dispatch{

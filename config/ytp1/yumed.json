@@ -64,11 +64,19 @@
   "adapters": [
     {
       "kind": "direct_tcp",
-      "service": "tcp"
+      "service": "tcp",
+      "destinations": {
+        "public": true,
+        "networks": []
+      }
     },
     {
       "kind": "direct_udp",
-      "service": "udp"
+      "service": "udp",
+      "destinations": {
+        "public": true,
+        "networks": []
+      }
     }
   ],
   "limits": {

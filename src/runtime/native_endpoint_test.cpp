@@ -20,6 +20,7 @@
 #include <type_traits>
 #include <utility>
 
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #ifdef YUME_NATIVE_TEST_ROUTES
@@ -28,6 +29,24 @@
 #include <boost/asio/write.hpp>
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
+#endif
+
+#ifdef YUME_TEST_WRAP_ACCEPT
+#include <cerrno>
+#include <sys/socket.h>
+namespace {
+// Only the runner thread that arms the next accept failure observes it. Every
+// other accept, including ordinary listener traffic, calls the OS.
+thread_local int injected_accept_error = 0;
+}
+extern "C" int __real_accept(int, sockaddr*, socklen_t*);
+extern "C" int __wrap_accept(int socket, sockaddr* address, socklen_t* length) {
+    if (const int failure = std::exchange(injected_accept_error, 0)) {
+        errno = failure;
+        return -1;
+    }
+    return __real_accept(socket, address, length);
+}
 #endif
 
 namespace {
@@ -174,6 +193,54 @@ void transfer(Runner& runner, const std::shared_ptr<StreamResponder>& sender,
         reinterpret_cast<const std::byte*>(text.data())));
 }
 
+// Completes genuine TLS and H2 admission without constructing a client
+// SessionEngine, so the server receives a promoted carrier but never AUTH.
+class AdmissionOnlyClient final {
+public:
+    AdmissionOnlyClient(Runner& runner, const yume::config::v1::Config& config,
+                        const std::filesystem::path& base)
+        : runner_(runner),
+          endpoint_(std::get<yume::config::v1::ClientEndpoint>(config.endpoint())),
+          credentials_(take(load_native_credentials(config, base, endpoint_.host()))),
+          tcp_(take(yume::providers::AsioTcpAcceptedChannelOwner::create(runner.context))),
+          h2_(take(yume::providers::Ytp1H2CarrierProvider::create(runner.context->affinity(),
+              {[context = runner.context](std::function<void()> task) {
+                   boost::asio::post(context->executor(), std::move(task));
+               },
+               [context = runner.context](yume::providers::ControlTask& task,
+                                          std::shared_ptr<void> owner) noexcept {
+                   context->submit(task, std::move(owner));
+               }},
+              {endpoint_.host(), endpoint_.port(), {}}, credentials_.admission_key.bytes()))) {}
+
+    std::future<Result<std::unique_ptr<Carrier>>> promote() {
+        auto promise = std::make_shared<std::promise<Result<std::unique_ptr<Carrier>>>>();
+        auto promoted = promise->get_future();
+        runner_.sync([&] {
+            yume::providers::AsioTcpSocket socket(runner_.context->executor());
+            socket.connect({boost::asio::ip::address_v4::loopback(), endpoint_.port()});
+            auto channel = take(tcp_->adopt(std::move(socket)));
+            credentials_.tls_provider->async_wrap(std::move(channel), EndpointRole::Client, {},
+                [h2 = h2_, promise](Result<std::unique_ptr<SecureChannel>> secure) {
+                    if (!secure.ok()) {
+                        promise->set_value(Result<std::unique_ptr<Carrier>>(secure.status()));
+                        return;
+                    }
+                    h2->async_create(std::move(secure).take_value(), EndpointRole::Client, {},
+                        [promise](auto result) { promise->set_value(std::move(result)); });
+                });
+        });
+        return promoted;
+    }
+
+private:
+    Runner& runner_;
+    yume::config::v1::ClientEndpoint endpoint_;
+    LoadedNativeCredentials credentials_;
+    std::shared_ptr<yume::providers::AsioTcpAcceptedChannelOwner> tcp_;
+    std::shared_ptr<yume::providers::Ytp1H2CarrierProvider> h2_;
+};
+
 void test_start_deadline_and_final_drain(const std::filesystem::path& kit) {
     Runner runner;
     const auto config = load(kit / "server/yumed.json");
@@ -239,11 +306,9 @@ void test_start_deadline_and_final_drain(const std::filesystem::path& kit) {
 }
 
 void test_promoted_server_auth_deadline(const std::filesystem::path& kit) {
-    using namespace yume::providers;
     Runner runner;
     const auto server_config = load(kit / "server/yumed.json");
     const auto client_config = load(kit / "client/yume.json");
-    const auto& client_endpoint = std::get<yume::config::v1::ClientEndpoint>(client_config.endpoint());
     auto handler = std::make_shared<Handler>();
     NativeEndpointOptions options;
     options.max_sessions = 1U;
@@ -257,32 +322,8 @@ void test_promoted_server_auth_deadline(const std::filesystem::path& kit) {
     // Complete genuine TLS and H2 admission, but deliberately never construct
     // a client SessionEngine or send AUTH. Promotion must start the server's
     // deadline even after an idle accept outlived that same budget.
-    auto credentials = take(load_native_credentials(client_config, kit / "client", client_endpoint.host()));
-    auto tcp = take(AsioTcpAcceptedChannelOwner::create(runner.context));
-    auto h2 = take(Ytp1H2CarrierProvider::create(runner.context->affinity(),
-        {[context = runner.context](std::function<void()> task) {
-             boost::asio::post(context->executor(), std::move(task));
-         },
-         [context = runner.context](ControlTask& task, std::shared_ptr<void> owner) noexcept {
-             context->submit(task, std::move(owner));
-         }},
-        {client_endpoint.host(), client_endpoint.port(), {}}, credentials.admission_key.bytes()));
-    auto promise = std::make_shared<std::promise<Result<std::unique_ptr<Carrier>>>>();
-    auto promoted = promise->get_future();
-    runner.sync([&] {
-        AsioTcpSocket socket(runner.context->executor());
-        socket.connect({boost::asio::ip::address_v4::loopback(), client_endpoint.port()});
-        auto channel = take(tcp->adopt(std::move(socket)));
-        credentials.tls_provider->async_wrap(std::move(channel), EndpointRole::Client, {},
-            [h2, promise](Result<std::unique_ptr<SecureChannel>> secure) {
-                if (!secure.ok()) {
-                    promise->set_value(Result<std::unique_ptr<Carrier>>(secure.status()));
-                    return;
-                }
-                h2->async_create(std::move(secure).take_value(), EndpointRole::Client, {},
-                    [promise](auto result) { promise->set_value(std::move(result)); });
-            });
-    });
+    AdmissionOnlyClient admission(runner, client_config, kit / "client");
+    auto promoted = admission.promote();
     auto carrier = take(await(promoted));
     auto expired = await(accepting);
     CHECK(!expired.ok() && expired.status().code() == StatusCode::Cancelled);
@@ -299,6 +340,225 @@ void test_promoted_server_auth_deadline(const std::filesystem::path& kit) {
     CHECK(runner.context->poll() == 0U);
     CHECK(runner.exceptions.load() == 0U);
 }
+
+// A client or admission that races the server's next accept retry receives
+// cover and tries again. Only eventual acceptance is asserted, not timing.
+std::shared_ptr<SessionEngine> connect_eventually(Runner& runner,
+    const std::shared_ptr<NativeEndpoint>& client) {
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    for (;;) {
+        auto attempt = start(runner, client);
+        auto result = await(attempt);
+        if (result.ok()) return std::move(result).take_value();
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(10ms);
+    }
+}
+
+std::unique_ptr<Carrier> promote_eventually(AdmissionOnlyClient& admission) {
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    for (;;) {
+        auto attempt = admission.promote();
+        auto result = await(attempt);
+        if (result.ok()) return std::move(result).take_value();
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(10ms);
+    }
+}
+
+void test_accept_loop(const std::filesystem::path& kit) {
+    Runner runner;
+    const auto server_config = load(kit / "server/yumed.json");
+    const auto client_config = load(kit / "client/yume.json");
+    auto server_handler = std::make_shared<Handler>();
+    auto client_handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = 1U;
+    options.max_pending_starts = 1U;
+    options.start_timeout = 5s;
+    auto server = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        server_config, kit / "server", bindings(server_handler), options)); });
+    options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        client_config, kit / "client", bindings(client_handler), options)); });
+    auto other = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        client_config, kit / "client", bindings(client_handler), options)); });
+    unsigned failures = 0U; // Written on the runner, read after its drain.
+    const NativeEndpoint::AcceptFailure count_failure = [&failures](Status) { ++failures; };
+    NativeAcceptOptions accept;
+    accept.retry_delay = 20ms;
+    runner.sync([&] {
+        CHECK(client->start_accepting(accept, count_failure).code() == StatusCode::InvalidArgument);
+        CHECK(server->start_accepting(accept, {}).code() == StatusCode::InvalidArgument);
+        auto oversized = accept;
+        oversized.pending_per_listener = 2U;
+        CHECK(server->start_accepting(oversized, count_failure).code() == StatusCode::InvalidArgument);
+        auto immediate = accept;
+        immediate.retry_delay = 0ms;
+        CHECK(server->start_accepting(immediate, count_failure).code() == StatusCode::InvalidArgument);
+        auto slow = accept;
+        slow.retry_delay = 11s;
+        CHECK(server->start_accepting(slow, count_failure).code() == StatusCode::InvalidArgument);
+    });
+
+    // A pending manual accept excludes the loop. Its session then holds the
+    // only slot, so the loop starts with its accept refused and retried.
+    auto manual = start(runner, server);
+    runner.sync([&] {
+        CHECK(server->start_accepting(accept, count_failure).code() == StatusCode::FailedPrecondition);
+    });
+    auto connecting = start(runner, client);
+    auto first = take(await(connecting));
+    auto first_server = take(await(manual));
+    runner.sync([&] {
+        CHECK(server->start_accepting(accept, count_failure).ok());
+        CHECK(server->start_accepting(accept, count_failure).code() == StatusCode::FailedPrecondition);
+        CHECK(server->async_start_session([](auto) {}).code() == StatusCode::FailedPrecondition);
+    });
+    auto refused = start(runner, other);
+    CHECK(!await(refused).ok());
+
+    // Ending that session frees the slot for a later retry. An engine keeps its
+    // promoted carrier and admission reservation until destroyed, so release
+    // the test's handles on the runner before ending each session.
+    runner.sync([&] {
+        first_server.reset();
+        first->stop(Status(StatusCode::Closed));
+    });
+    auto second = connect_eventually(runner, other);
+    auto remote_promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+    auto remote_future = remote_promise->get_future();
+    runner.sync([&] { server_handler->accepted = remote_promise; });
+    auto local = open(runner, second, "echo");
+    auto remote = await(remote_future);
+    transfer(runner, local, remote, "accepted by the endpoint loop");
+
+    // A promoted carrier that never authenticates fails its start. The loop
+    // re-arms, and a genuine client is accepted afterwards.
+    runner.sync([&] {
+        local.reset();
+        remote.reset();
+        second->stop(Status(StatusCode::Closed));
+    });
+    AdmissionOnlyClient admission(runner, client_config, kit / "client");
+    auto silent = promote_eventually(admission);
+    silent->close();
+    auto third = connect_eventually(runner, client);
+    CHECK(third->state() == SessionState::Active);
+
+    // The full endpoint closes with its slot retry outstanding.
+    client->close();
+    other->close();
+    server->close();
+    runner.finish_and_join();
+    CHECK(failures == 0U);
+    local.reset();
+    remote.reset();
+    silent.reset();
+    client.reset();
+    other.reset();
+    server.reset();
+    CHECK(runner.context->poll() == 0U);
+    first.reset();
+    first_server.reset();
+    second.reset();
+    third.reset();
+    CHECK(runner.context->poll() == 0U);
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+#ifdef __linux__
+// Every listener keeps its own pending accept. Linux routes all of 127/8 to
+// loopback, so the second listener needs no host configuration.
+void test_accept_loop_listeners(const std::filesystem::path& kit) {
+    Runner runner;
+    const auto server_config = load(kit / "server/two-listeners.json");
+    const auto client_config = load(kit / "client/yume.json");
+    auto handler = std::make_shared<Handler>();
+    unsigned failures = 0U; // Written on the runner, read after its drain.
+    const NativeEndpoint::AcceptFailure count_failure = [&failures](Status) { ++failures; };
+    NativeEndpointOptions options;
+    options.max_sessions = 2U;
+    options.max_pending_starts = 1U;
+    options.start_timeout = 5s;
+    // One pending start cannot serve two listeners without starving one.
+    auto undersized = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        server_config, kit / "server", bindings(handler), options)); });
+    runner.sync([&] {
+        CHECK(undersized->start_accepting({}, count_failure).code() == StatusCode::InvalidArgument);
+    });
+    undersized->close();
+    runner.sync([] {}); // Drain the listener close before rebinding below.
+    options.max_pending_starts = 2U;
+    auto server = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        server_config, kit / "server", bindings(handler), options)); });
+    runner.sync([&] { CHECK(server->start_accepting({}, count_failure).ok()); });
+    std::vector<std::shared_ptr<NativeEndpoint>> clients;
+    std::vector<std::shared_ptr<SessionEngine>> sessions;
+    for (const auto* address : {"127.0.0.1", "127.0.0.2"}) {
+        NativeEndpointOptions client_options;
+        client_options.max_sessions = 1U;
+        client_options.max_pending_starts = 1U;
+        client_options.start_timeout = 5s;
+        client_options.connection_address = address;
+        clients.push_back(runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+            client_config, kit / "client", bindings(handler), client_options)); }));
+        auto connecting = start(runner, clients.back());
+        sessions.push_back(take(await(connecting)));
+        CHECK(sessions.back()->state() == SessionState::Active);
+    }
+    for (const auto& client : clients) client->close();
+    server->close();
+    runner.finish_and_join();
+    CHECK(failures == 0U);
+    clients.clear();
+    server.reset();
+    undersized.reset();
+    CHECK(runner.context->poll() == 0U);
+    sessions.clear();
+    CHECK(runner.context->poll() == 0U);
+    CHECK(runner.exceptions.load() == 0U);
+}
+#endif
+
+#ifdef YUME_TEST_WRAP_ACCEPT
+// A failed OS accept closes the FrontDoor listener. The loop must report that
+// once and close the endpoint instead of retrying a listener that is gone.
+void test_accept_loop_listener_failure(const std::filesystem::path& kit) {
+    Runner runner;
+    const auto server_config = load(kit / "server/yumed.json");
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = 1U;
+    options.max_pending_starts = 1U;
+    auto server = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        server_config, kit / "server", bindings(handler), options)); });
+    auto reported = std::make_shared<std::promise<Status>>();
+    auto failure = reported->get_future();
+    const auto port = runner.sync([&] {
+        CHECK(server->start_accepting({}, [reported](Status status) {
+            reported->set_value(std::move(status));
+        }).ok());
+        injected_accept_error = EMFILE;
+        return server->listener_endpoint(0U).port();
+    });
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket probe(io);
+    probe.connect({boost::asio::ip::address_v4::loopback(), port});
+    const auto status = await(failure);
+    CHECK(status.code() == StatusCode::Closed);
+    runner.sync([&] {
+        CHECK(injected_accept_error == 0);
+        CHECK(server->async_start_session([](auto) {}).code() == StatusCode::Closed);
+    });
+    boost::system::error_code ignored;
+    probe.close(ignored);
+    runner.finish_and_join();
+    server.reset();
+    CHECK(runner.context->poll() == 0U);
+    CHECK(runner.exceptions.load() == 0U);
+}
+#endif
 
 #ifdef YUME_NATIVE_TEST_ROUTES
 class ObservedRoutes final : public RouteProvider {
@@ -408,10 +668,20 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
     server_options.route_provider = routes;
     if (declared) {
         runner.sync([&] {
-            auto missing_policy = NativeEndpoint::create(runner.context, server_config,
-                kit / "server", server_bindings, server_options);
-            CHECK(!missing_policy.ok() &&
-                missing_policy.status().code() == StatusCode::FailedPrecondition);
+            // Configured destinations are the request authority. The application
+            // callback is an optional further restriction.
+            auto config_options = server_options;
+            config_options.route_provider = take(AsioDirectRouteProvider::create(runner.context,
+                [](const AuthorizedRouteRequest&, const RouteDestination&) {
+                    return Status(StatusCode::PermissionDenied);
+                }));
+            auto config_only = NativeEndpoint::create(runner.context, server_config,
+                kit / "server", server_bindings, std::move(config_options));
+            CHECK(config_only.ok());
+            config_only.value()->close();
+        });
+        runner.sync([] {}); // Drain that listener close before later binds.
+        runner.sync([&] {
             server_options.route_authorization = policy;
             auto missing_provider_options = server_options;
             missing_provider_options.route_provider.reset();
@@ -466,6 +736,12 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
         "localhost", port))).ok());
     CHECK(!open_route("denied", take(RouteDestination::ipv4(protocol,
         {127U, 0U, 0U, 1U}, port))).ok());
+    if (declared) {
+        // 127.0.0.2 is outside the configured 127.0.0.1/32. Configuration
+        // refuses it before the application policy, resolution or a socket.
+        CHECK(!open_route("echo", take(RouteDestination::ipv4(protocol,
+            {127U, 0U, 0U, 2U}, port))).ok());
+    }
     runner.sync([&] {
         CHECK(request_checks == 1U); // Credential refusal preceded destination policy.
         CHECK(resolved_checks == 0U && protected_sockets == 0U);
@@ -728,6 +1004,13 @@ int main(int argc, char** argv) {
 #endif
         test_start_deadline_and_final_drain(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);
+        test_accept_loop(argv[1]);
+#ifdef __linux__
+        test_accept_loop_listeners(argv[1]);
+#endif
+#ifdef YUME_TEST_WRAP_ACCEPT
+        test_accept_loop_listener_failure(argv[1]);
+#endif
         std::cout << "native AUTH, named services, refusal, rekey and shutdown passed\n";
         return 0;
     } catch (const std::exception& error) {

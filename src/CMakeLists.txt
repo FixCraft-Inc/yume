@@ -634,20 +634,31 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
         yume_ytp1_tls13_secure_channel OpenSSL::Crypto)
 
     if(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+        # Destination authority from schema-1 direct adapters. The endpoint and
+        # standalone route providers share this one evaluator.
+        add_library(yume_native_egress_policy STATIC
+            runtime/native_egress_policy.cpp runtime/native_egress_policy.hpp
+            common/egress_address.hpp common/ip_network.hpp)
+        target_include_directories(yume_native_egress_policy PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_native_egress_policy PUBLIC yume_config_v1 yume_engine)
+        yume_apply_perf_opts(yume_native_egress_policy)
+        yume_assert_exact_link_dependencies(yume_native_egress_policy yume_config_v1 yume_engine)
+
         add_library(yume_native_endpoint STATIC
-            runtime/native_endpoint.cpp runtime/native_endpoint.hpp)
+            runtime/native_endpoint.cpp runtime/native_endpoint.hpp
+            runtime/accept_scheduler.hpp)
         target_include_directories(yume_native_endpoint PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(yume_native_endpoint
             PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
             PRIVATE yume_native_credentials yume_ytp1_front_door yume_ytp1_openssl_security
                 yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
-                yume_direct_route_handler Boost::system)
+                yume_direct_route_handler yume_native_egress_policy Boost::system)
         yume_apply_perf_opts(yume_native_endpoint)
         yume_assert_exact_link_dependencies(yume_native_endpoint
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
             yume_native_credentials yume_ytp1_front_door yume_ytp1_openssl_security
             yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
-            yume_direct_route_handler Boost::system)
+            yume_direct_route_handler yume_native_egress_policy Boost::system)
 
         # The YTP/1 embedding backend adapts the native endpoint to the
         # blocking seam behind the C ABI. The exact list keeps the
@@ -707,7 +718,7 @@ if(YUME_BUILD_SHARED_ABI)
         # Every archive absorbed into libyume must be PIC, hidden and non-LTO,
         # including the whole native chain behind the schema-1 backend.
         foreach(_yume_absorbed IN ITEMS
-                yume_embed_ytp1 yume_native_endpoint yume_native_credentials
+                yume_embed_ytp1 yume_native_endpoint yume_native_egress_policy yume_native_credentials
                 yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
                 yume_asio_execution_context yume_asio_tcp_byte_channel_provider
                 yume_ytp1_front_door yume_ytp1_cover_site yume_ytp1_h2_carrier
@@ -836,6 +847,23 @@ if(YUME_BUILD_TESTING)
                 TIMEOUT 60 LABELS "foundation;0.3;front-door;integration")
         endif()
     endif()
+    # Canonical destination networks and address classes are header-only.
+    add_executable(yume_common_ip_network_test common/ip_network_test.cpp)
+    target_include_directories(yume_common_ip_network_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    yume_apply_perf_opts(yume_common_ip_network_test)
+    yume_assert_exact_link_dependencies(yume_common_ip_network_test)
+    add_test(NAME yume_common_ip_network_test COMMAND yume_common_ip_network_test
+        "${CMAKE_CURRENT_SOURCE_DIR}/common/testdata/ip_network_vectors.txt")
+    set_tests_properties(yume_common_ip_network_test PROPERTIES
+        TIMEOUT 10 LABELS "foundation;0.3")
+    # Server accept pacing is dependency-pure, so every test lane runs it.
+    add_executable(yume_native_accept_scheduler_test runtime/accept_scheduler_test.cpp)
+    target_link_libraries(yume_native_accept_scheduler_test PRIVATE yume_engine)
+    yume_apply_perf_opts(yume_native_accept_scheduler_test)
+    yume_assert_exact_link_dependencies(yume_native_accept_scheduler_test yume_engine)
+    add_test(NAME yume_native_accept_scheduler_test COMMAND yume_native_accept_scheduler_test)
+    set_tests_properties(yume_native_accept_scheduler_test PROPERTIES
+        TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
     add_executable(yume_engine_in_memory_contract_test
         engine/in_memory_contract_test.cpp)
     target_link_libraries(yume_engine_in_memory_contract_test
@@ -1018,6 +1046,15 @@ if(YUME_BUILD_TESTING)
         set_tests_properties(yume_native_credentials_test PROPERTIES
             TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
     endif()
+    if(TARGET yume_native_egress_policy)
+        add_executable(yume_native_egress_policy_test runtime/native_egress_policy_test.cpp)
+        target_link_libraries(yume_native_egress_policy_test PRIVATE yume_native_egress_policy)
+        yume_apply_perf_opts(yume_native_egress_policy_test)
+        yume_assert_exact_link_dependencies(yume_native_egress_policy_test yume_native_egress_policy)
+        add_test(NAME yume_native_egress_policy_test COMMAND yume_native_egress_policy_test)
+        set_tests_properties(yume_native_egress_policy_test PROPERTIES
+            TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+    endif()
     if(TARGET yume_native_endpoint AND NOT WIN32)
         find_package(Python3 REQUIRED COMPONENTS Interpreter)
         find_program(YUME_NATIVE_TEST_OPENSSL openssl
@@ -1030,6 +1067,12 @@ if(YUME_BUILD_TESTING)
             target_link_libraries(yume_native_endpoint_test PRIVATE
                 yume_asio_direct_route_provider yume_direct_route_handler)
             target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1)
+        endif()
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            # Inject one OS accept error in this test process without changing
+            # host limits or the production listener interface.
+            target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_TEST_WRAP_ACCEPT=1)
+            target_link_options(yume_native_endpoint_test PRIVATE "-Wl,--wrap=accept")
         endif()
         yume_apply_perf_opts(yume_native_endpoint_test)
         add_test(NAME yume_native_endpoint_test

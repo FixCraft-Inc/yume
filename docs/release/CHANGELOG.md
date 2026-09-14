@@ -15,6 +15,28 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Configured egress destinations.** Server `direct_tcp` and `direct_udp`
+  adapters require `destinations`: `public` for globally reachable unicast
+  addresses and `networks` for canonical CIDR prefixes. `NativeEgressPolicy`
+  enforces them before DNS or socket creation, and for every resolved address
+  when the route provider uses it. Unspecified, multicast and reserved addresses
+  are never permitted, IPv4-mapped IPv6 is evaluated as IPv4, and public space
+  excludes private, shared, loopback, link-local, documentation, benchmarking,
+  6to4, Teredo and NAT64 prefixes. The native endpoint no longer requires an
+  application route callback, which can now only refuse more. Setup kits declare
+  public destinations explicitly, and the native parser and `yume-doctor-ytp1`
+  share network test vectors. Direct adapters without `destinations` no longer
+  parse.
+- **Endpoint-owned native accepts.** `NativeEndpoint` can keep a sized number of
+  server starts pending on every listener, re-arming after each settlement and
+  retrying refused or immediately failed starts after a delay. The schema-1 ABI
+  backend uses it instead of its own loop. A listener that stops accepting, or
+  a retry that cannot be scheduled while its listener has nothing pending, now
+  closes the endpoint and is reported once. Previously the backend could leave
+  such a listener idle without a report, or keep retrying a closed listener
+  every 100 ms. Later ABI accepts report `YUME_STATUS_INVALID_STATE` until restart. Deterministic pacing
+  tests and socket tests cover refusal, capacity recovery, re-entrant completion,
+  two listeners and an injected OS accept failure.
 - Native YTP endpoint composition accepts schema-1 direct TCP/UDP declarations
   with explicit destination policies. Route dispatch supplies the engine's
   selected provider, removing independent selection by the built-in handler.
@@ -186,6 +208,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   ABI's non-LTO policy only when the native backend is composed, preserving
   Release test links against LTO-built engine libraries in other configurations.
   Documentation pipeline fixtures use cleanup compatible with Python 3.10.
+  Test-only allocation-failure hooks stay out of line. Optimized GCC 11 builds
+  had inlined them and reported their malloc/free pair as a mismatched
+  new/delete call.
 - **Replacement work and embedding boundaries.** Contributor and automation
   guidance require source-backed decisions, review of the proposed solution,
   capability-based retirement, and consumer-independent interfaces. Build help

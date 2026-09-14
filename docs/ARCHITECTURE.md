@@ -197,18 +197,30 @@ An optional `NativeEndpointOptions::route_provider` enables explicitly bound
 DirectTcp/DirectUdp handlers. It must use the endpoint context; the engine
 passes this selected instance to each routed OPEN and the endpoint owns its
 cancellation. Handlers no longer select or retain a second provider. Exact
-provider ID, API and capabilities remain checked. The caller supplies
-destination policy, including resolved-address policy for DNS egress. No
-default destination authority is granted. Schema-1 `direct_tcp` and `direct_udp`
-declarations create handlers for their service names and kinds when both the
-provider and `route_authorization` callback are supplied. That callback follows
-credential authorization and precedes DNS or socket creation. Explicit service
-bindings cannot also own a declared direct adapter; an unused route callback is
-refused. Other services still require explicit bindings. SOCKS5, packet/TUN
+provider ID, API and capabilities remain checked. An explicitly bound handler
+carries its caller's destination policy, and its provider needs a
+resolved-address policy for DNS egress. Schema-1 `direct_tcp` and `direct_udp`
+declarations create handlers for their service names and kinds when the provider
+is supplied. Each declaration requires `destinations`: public unicast addresses,
+explicit networks, or both. `runtime::NativeEgressPolicy` checks them after
+credential authorization and before DNS or socket creation, and a provider
+built with the same policy checks every address a name resolves to.
+Unspecified, multicast and reserved addresses are never permitted, and
+IPv4-mapped IPv6 is evaluated as IPv4. An optional `route_authorization`
+callback runs only after the configured destinations permit an OPEN and can
+only refuse more. No destination authority exists without configuration or an
+explicit handler. Explicit service bindings cannot also own a declared direct
+adapter, and an unused route callback is refused. Other services still require explicit bindings. SOCKS5, packet/TUN
 declarations and reverse-proxy cover fail explicitly here. The C ABI backend
 does not yet compose these destination adapters.
 
 The endpoint bounds active sessions and pending starts and retains their engines.
+A server may hand accepting to the endpoint. It keeps a set number of starts
+pending on every listener within that bound, re-arms after each settlement and
+waits a retry delay after a refused or immediately failed start. Manual and
+automatic server starts are exclusive. If a listener stops accepting, or a retry
+cannot be scheduled while its listener has nothing pending, the endpoint closes
+and reports that failure once. The schema-1 ABI backend uses this loop.
 Client startup has one absolute dial/TLS/carrier/AUTH deadline. A server starts
 its session-creation/AUTH deadline after validated carrier promotion; idle accept
 waiting does not consume that budget. FrontDoor independently bounds connections

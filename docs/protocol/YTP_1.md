@@ -21,9 +21,10 @@ TLS 1.3 secure channel, duplex H2 carrier behavior, client TCP ByteChannel, and
 direct TCP/connected-UDP routing. A native FrontDoor composes accepted TCP,
 TLS, genuine static cover and admission into the H2 carrier. The internal
 NativeEndpoint composes both bootstrap roles, protected schema-1 credentials,
-per-identity named-handler authorization, session ownership and shutdown drain.
-It also composes configured direct TCP/UDP adapters with explicit request and
-resolved-address authorization. An experimental schema-1 C ABI backend carries
+per-identity named-handler authorization, bounded automatic server accepts,
+session ownership and shutdown drain.
+It also composes configured direct TCP/UDP adapters whose schema-1
+destinations are authorized before resolution and for every resolved address. An experimental schema-1 C ABI backend carries
 named byte streams over it, but does not compose destination adapters.
 Standalone CLI/daemon integration, SOCKS/TUN adapters, and the remaining
 qualification gates are unfinished, as listed below.
@@ -698,9 +699,10 @@ The caller owns execution and completion drain; this ingress performs no DNS.
 The internal `yume_native_endpoint` target composes native ingress, security,
 session bootstrap and per-identity handlers. An optional route provider enables
 explicitly authorized destination handlers. Schema-1 `direct_tcp` and
-`direct_udp` declarations create those handlers when both the provider and an
-explicit request policy are supplied; resolved-address policy remains mandatory
-before socket creation. The engine supplies its selected provider to each routed
+`direct_udp` declarations create those handlers when the provider is supplied.
+Their required `destinations` are enforced before DNS or socket creation, an
+optional application callback can only refuse more, and resolved-address policy
+remains mandatory before socket creation. The engine supplies its selected provider to each routed
 OPEN, and only successful endpoint creation adopts provider cancellation.
 Other services require explicit bindings; SOCKS5 and packet/TUN declarations
 remain unsupported. The schema-1 ABI backend still refuses all adapter
@@ -714,8 +716,8 @@ Not implemented or not qualified as a production YTP/1 path:
 
 - standalone CLI/daemon composition of the native endpoint, and
   qualification of its experimental ABI backend;
-- standalone egress rules and CLI/daemon adapter composition, SOCKS/TUN
-  adapters, plus a schema-1 ABI packet data path;
+- standalone CLI/daemon adapter composition, SOCKS/TUN adapters, plus a
+  schema-1 ABI packet data path;
 - deterministic cryptographic known-answer vectors and published rekey
   vectors; the provider test currently uses generated keys rather than a
   reproducible interoperability corpus;

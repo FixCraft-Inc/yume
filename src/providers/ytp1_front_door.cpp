@@ -682,6 +682,7 @@ Ytp1FrontDoor::Ytp1FrontDoor(std::shared_ptr<State> state) noexcept : state_(std
 Ytp1FrontDoor::~Ytp1FrontDoor() noexcept { close(); }
 ExecutorAffinity Ytp1FrontDoor::executor_affinity() const noexcept { return state_->context->affinity(); }
 Tcp::endpoint Ytp1FrontDoor::local_endpoint() const noexcept { return state_->endpoint; }
+bool Ytp1FrontDoor::closed() const noexcept { return state_->closing.load(); }
 void Ytp1FrontDoor::async_accept(CancellationToken token, AcceptCompletion completion) {
     const auto state = state_;
     state->add_waiter(std::move(token), std::move(completion));

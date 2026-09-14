@@ -437,8 +437,16 @@ def _server_config(port: int) -> dict[str, object]:
         "cover": {"profile": PROFILE, "root": {"file": "cover-site"}},
         "services": [dict(service) for service in SERVICES],
         "adapters": [
-            {"kind": "direct_tcp", "service": "tcp"},
-            {"kind": "direct_udp", "service": "udp"},
+            {
+                "kind": "direct_tcp",
+                "service": "tcp",
+                "destinations": _public_destinations(),
+            },
+            {
+                "kind": "direct_udp",
+                "service": "udp",
+                "destinations": _public_destinations(),
+            },
             {
                 "kind": "packet",
                 "service": "packet",
@@ -564,14 +572,28 @@ for (const button of document.querySelectorAll('[data-print-note]')) {
     )
 
 
+def _public_destinations() -> dict[str, object]:
+    # Globally reachable unicast only. Private, loopback and other
+    # special-purpose networks need an explicit operator entry.
+    return {"public": True, "networks": []}
+
+
 def _write_service_manifests(server: Path, client: Path) -> None:
     server_services = server / "services"
     client_adapters = client / "adapters"
     _mkdir_private(server_services)
     _mkdir_private(client_adapters)
     adapters = {
-        "tcp": {"kind": "direct_tcp", "service": "tcp"},
-        "udp": {"kind": "direct_udp", "service": "udp"},
+        "tcp": {
+            "kind": "direct_tcp",
+            "service": "tcp",
+            "destinations": _public_destinations(),
+        },
+        "udp": {
+            "kind": "direct_udp",
+            "service": "udp",
+            "destinations": _public_destinations(),
+        },
         "packet": {
             "kind": "packet",
             "service": "packet",

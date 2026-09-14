@@ -109,6 +109,16 @@ class YumeSetupTests(unittest.TestCase):
         self.assertEqual(client["schema"], 1)
         self.assertEqual(server["role"], "server")
         self.assertEqual(client["role"], "client")
+        direct = [
+            adapter
+            for adapter in server["adapters"]
+            if adapter["kind"] in {"direct_tcp", "direct_udp"}
+        ]
+        self.assertEqual(len(direct), 2)
+        for adapter in direct:
+            self.assertEqual(
+                adapter["destinations"], {"public": True, "networks": []}
+            )
         self.assertEqual(
             set(server["credentials"]),
             {

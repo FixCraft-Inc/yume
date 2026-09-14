@@ -31,7 +31,8 @@ accepts TLS 1.2/1.3 and HTTP/1.1/H2; YTP promotion requires TLS 1.3 and H2.
 The source-level `runtime::NativeEndpoint` now composes schema-1 credentials,
 the native provider graph, per-identity named-service authorization and bounded
 bootstrap/session lifetimes on a caller-owned execution context. Configured
-direct TCP/UDP adapters require explicit request and resolved-address policy.
+direct TCP/UDP adapters enforce their schema-1 destinations before resolution,
+and a route provider built with the same policy checks every resolved address.
 The native integration test uses generated setup credentials and real loopback
 TLS/H2.
 When the shared ABI is built with the same providers, an experimental schema-1
@@ -89,13 +90,15 @@ queue bounds before opening listeners. Enabling
 `YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER` also tests authenticated TCP
 and connected-UDP destinations through the native endpoint, including packet
 boundaries and refusal before socket creation. The caller supplies
-`NativeEndpointOptions::route_provider` and either explicit policy-bearing
-handlers or `route_authorization` for configured `direct_tcp`/`direct_udp`
-declarations. The engine supplies that selected provider to handlers. Credential
-service authorization precedes request policy, and the Asio provider checks
-every selected numeric address before connecting. This source-level composition
-supplies no standalone egress rules or SOCKS/TUN implementation; the ABI backend
-still refuses adapter declarations.
+`NativeEndpointOptions::route_provider`. Configured `direct_tcp`/`direct_udp`
+declarations enforce their `destinations` through `NativeEgressPolicy` after
+credential service authorization and before DNS or socket work. An optional
+`route_authorization` callback can only refuse more. The engine supplies the
+selected provider to handlers, and an Asio provider built with the same policy
+checks every selected numeric address before connecting. Explicit
+policy-bearing handlers remain available for other services. This source-level
+composition supplies no standalone daemon or SOCKS/TUN implementation. The ABI
+backend still refuses adapter declarations.
 
 The caller retains a single-runner `AsioExecutionContext` through the promoted
 carrier lifetimes. The front door supplies H2 dispatch from its context,
@@ -192,6 +195,14 @@ Schema 1 is role tagged and contains these sections only:
 - `services` and `adapters`: explicit named-service exposure, unique by
   `(name, kind)`. Several adapters of one kind are valid when their concrete
   resources differ; exact resource collisions are rejected;
+- `destinations` on each server `direct_tcp` or `direct_udp` adapter:
+  `public` permits globally reachable unicast addresses, and `networks` lists
+  up to 64 canonical prefixes such as `10.0.0.0/8` or `fd00::/8`. At least one
+  destination must be permitted. Public space excludes private, shared,
+  loopback, link-local, documentation, benchmarking, 6to4, Teredo and NAT64
+  prefixes. Unspecified, multicast and reserved addresses are always refused,
+  IPv4-mapped IPv6 is evaluated as IPv4, and ports and hostnames are not policy
+  inputs. A network that no destination could match is rejected;
 - `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
   packets.
 

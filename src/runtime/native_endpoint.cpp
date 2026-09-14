@@ -9,12 +9,15 @@
 #include <algorithm>
 #include <atomic>
 #include <limits>
+#include <optional>
 #include <utility>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 
+#include "runtime/accept_scheduler.hpp"
 #include "runtime/native_credentials.hpp"
+#include "runtime/native_egress_policy.hpp"
 #include "providers/ytp1_front_door.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
@@ -29,6 +32,8 @@ using namespace providers;
 using Timer = boost::asio::basic_waitable_timer<
     std::chrono::steady_clock, boost::asio::wait_traits<std::chrono::steady_clock>,
     AsioExecutionContext::Executor>;
+
+constexpr std::chrono::seconds kMaxAcceptRetryDelay{10};
 
 template <typename T>
 T require(Result<T> result) {
@@ -127,7 +132,7 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
 }
 }  // namespace
 
-struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
+struct NativeEndpoint::State final : std::enable_shared_from_this<State>, AcceptScheduler::Driver {
     struct Slot final {
         explicit Slot(AsioExecutionContext::Executor executor) : timer(executor) {}
         Timer timer;
@@ -139,6 +144,10 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
         bool timed_out{false};
         bool deadline_armed{false};
         Timer::time_point deadline{};
+        // Automatic accepts settle through the scheduler, not a completion.
+        AcceptScheduler::Clock::time_point armed_at{};
+        std::size_t listener{0U};
+        bool automatic{false};
     };
 
     State(std::shared_ptr<AsioExecutionContext> execution,
@@ -165,6 +174,10 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
 
     void close_on_context() noexcept {
         for (const auto& listener : listeners) listener->close();
+        for (const auto& timer : retry_timers) {
+            boost::system::error_code ignored;
+            timer->cancel(ignored);
+        }
         for (const auto& slot : slots) {
             boost::system::error_code ignored;
             slot->timer.cancel(ignored);
@@ -200,6 +213,10 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
                 slot.timed_out ? "native session start deadline expired" : "native endpoint closed"));
         }
         if (result.ok()) slot.session = result.value();
+        if (slot.automatic) {
+            accepts->settled(slot.listener, slot.armed_at, result.ok());
+            return;
+        }
         complete_noexcept(std::move(completion), std::move(result));
     }
 
@@ -229,6 +246,15 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
         if (!completion || (role == EndpointRole::Client ? listener_index != 0U
                                   : listener_index >= listeners.size()))
             return Status(StatusCode::InvalidArgument);
+        if (closing.load(std::memory_order_acquire)) return Status(StatusCode::Closed);
+        if (accepts && accepts->started()) return Status(StatusCode::FailedPrecondition);
+        return begin_start(std::move(completion), listener_index, false, {});
+    }
+
+    // Manual starts deliver their completion. Automatic starts report to the
+    // accept scheduler and carry no completion.
+    Status begin_start(Completion completion, std::size_t listener_index, bool automatic,
+                       AcceptScheduler::Clock::time_point armed_at) {
         if (closing.load(std::memory_order_acquire)) return Status(StatusCode::Closed);
         if (pending_starts >= options.max_pending_starts)
             return Status(StatusCode::ResourceExhausted);
@@ -271,6 +297,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
             }
             slot.bootstrap = std::move(bootstrap).take_value();
             slot.completion = std::move(completion);
+            slot.armed_at = armed_at;
+            slot.listener = listener_index;
+            slot.automatic = automatic;
             slot.starting = true;
             slot.timed_out = false;
             ++pending_starts;
@@ -291,6 +320,61 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
         return Status::success();
     }
 
+    Status start_accepting(NativeAcceptOptions accept, NativeEndpoint::AcceptFailure on_failure) {
+        context->require_context();
+        if (!accepts || !on_failure || accept.pending_per_listener == 0U ||
+            accept.pending_per_listener > options.max_pending_starts / listeners.size() ||
+            accept.retry_delay <= std::chrono::milliseconds::zero() ||
+            accept.retry_delay > kMaxAcceptRetryDelay)
+            return Status(StatusCode::InvalidArgument);
+        if (closing.load(std::memory_order_acquire)) return Status(StatusCode::Closed);
+        if (accepts->started() || pending_starts != 0U)
+            return Status(StatusCode::FailedPrecondition);
+        accept_failure = std::move(on_failure);
+        auto started = accepts->start(accept.pending_per_listener, accept.retry_delay);
+        if (!started.ok()) accept_failure = nullptr;
+        return started;
+    }
+
+    // AcceptScheduler::Driver. Every call runs on the endpoint context.
+    Status start_accept(std::size_t lane, AcceptScheduler::Clock::time_point armed_at) noexcept override {
+        try {
+            return begin_start({}, lane, true, armed_at);
+        } catch (...) {
+            return diagnostic(StatusCode::Internal, "automatic native accept could not start");
+        }
+    }
+    bool schedule_retry(std::size_t lane, std::chrono::milliseconds delay) noexcept override {
+        try {
+            auto& timer = *retry_timers[lane];
+            const auto self = shared_from_this();
+            timer.expires_after(delay);
+            // Close cancels this wait. Its handler still runs during drain and
+            // then starts nothing, releasing the state it retains.
+            timer.async_wait([self, lane](boost::system::error_code) noexcept {
+                self->accepts->retry_due(lane);
+            });
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    bool listener_stopped(std::size_t lane) const noexcept override {
+        return listeners[lane]->closed();
+    }
+    bool owner_closing() const noexcept override {
+        return closing.load(std::memory_order_acquire);
+    }
+    AcceptScheduler::Clock::time_point now() const noexcept override {
+        return AcceptScheduler::Clock::now();
+    }
+    void failed(Status status) noexcept override {
+        request_close();
+        auto report = std::move(accept_failure);
+        if (!report) return;
+        try { report(std::move(status)); } catch (...) {}
+    }
+
     std::shared_ptr<AsioExecutionContext> context;
     EndpointRole role;
     NativeEndpointOptions options;
@@ -299,6 +383,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State> {
     std::shared_ptr<AsioTcpByteChannelProvider> tcp;
     std::vector<std::shared_ptr<Ytp1FrontDoor>> listeners;
     std::vector<std::unique_ptr<Slot>> slots;
+    std::vector<std::unique_ptr<Timer>> retry_timers; // One per server listener.
+    std::optional<AcceptScheduler> accepts; // Servers with listeners only.
+    NativeEndpoint::AcceptFailure accept_failure;
     std::size_t pending_starts{0U};
     std::atomic<bool> closing{false};
     bool owns_route_provider{false}; // Acquired only after endpoint publication can succeed.
@@ -320,15 +407,16 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         return Result<std::shared_ptr<NativeEndpoint>>(Status(StatusCode::InvalidArgument));
     std::shared_ptr<State> state;
     try {
+        const auto egress = require(NativeEgressPolicy::create(config.adapters()));
         for (const auto& adapter : config.adapters()) {
             const auto* tcp = std::get_if<config::v1::DirectTcpAdapter>(&adapter);
             const auto* udp = std::get_if<config::v1::DirectUdpAdapter>(&adapter);
             if (!tcp && !udp)
                 throw Status(StatusCode::FailedPrecondition,
                     "native SOCKS5 and packet/TUN adapters are not implemented");
-            if (!options.route_provider || !options.route_authorization)
+            if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
-                    "direct adapters require an explicit route provider and authorization policy");
+                    "direct adapters require an explicit route provider");
             const auto& name = tcp ? tcp->service() : udp->service();
             const auto kind = tcp ? ServiceKind::ByteStream : ServiceKind::PacketChannel;
             if (std::any_of(services.begin(), services.end(), [&](const auto& binding) {
@@ -343,8 +431,17 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             auto descriptor = require(ProviderDescriptor::create(
                 tcp ? "yume.direct-tcp" : "yume.direct-udp",
                 ProviderKind::StreamHandler, 1U, capabilities));
+            // Configured destinations decide first. The application callback
+            // can only refuse more.
+            DirectRouteHandler::AuthorizationPolicy authorization =
+                [egress, application = options.route_authorization](
+                    const StreamOpenContext& context) -> Status {
+                    auto status = egress->authorize_request(context);
+                    if (!status.ok() || !application) return status;
+                    return application(context);
+                };
             services.push_back({name, require(DirectRouteHandler::create(
-                std::move(descriptor), kind, options.route_authorization))});
+                std::move(descriptor), kind, std::move(authorization)))});
         }
         if (services.size() != config.services().size() ||
             (config.adapters().empty() && options.route_authorization))
@@ -441,6 +538,14 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 state->listeners.push_back(require(Ytp1FrontDoor::create(context, std::move(ingress),
                     credentials.tls_provider, cover, replay, credentials.admission_key.bytes())));
             }
+            // Automatic accept state is allocated with the listeners, before
+            // the endpoint is published.
+            if (!state->listeners.empty()) {
+                state->retry_timers.reserve(state->listeners.size());
+                for (std::size_t index = 0U; index < state->listeners.size(); ++index)
+                    state->retry_timers.push_back(std::make_unique<Timer>(context->executor()));
+                state->accepts.emplace(*state, state->listeners.size());
+            }
         }
         auto endpoint = std::shared_ptr<NativeEndpoint>(new NativeEndpoint(state));
         state->owns_route_provider = static_cast<bool>(state->options.route_provider);
@@ -461,6 +566,9 @@ NativeEndpoint::NativeEndpoint(std::shared_ptr<State> state) noexcept : state_(s
 NativeEndpoint::~NativeEndpoint() noexcept { close(); }
 Status NativeEndpoint::async_start_session(Completion completion, std::size_t listener_index) {
     return state_->start(std::move(completion), listener_index);
+}
+Status NativeEndpoint::start_accepting(NativeAcceptOptions accept, AcceptFailure on_failure) {
+    return state_->start_accepting(accept, std::move(on_failure));
 }
 std::size_t NativeEndpoint::listener_count() const noexcept { return state_->listeners.size(); }
 boost::asio::ip::tcp::endpoint NativeEndpoint::listener_endpoint(std::size_t index) const {

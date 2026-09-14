@@ -23,6 +23,8 @@ def run(binary: Path, openssl: Path) -> None:
     # Setup selects openssl by PATH. Keep generation on the selected library's
     # installation; unsupported PQ algorithms must fail, never skip this gate.
     root = Path(__file__).resolve().parents[1]
+    # Route fixtures reach one loopback destination only.
+    loopback = {"public": False, "networks": ["127.0.0.1/32"]}
     with tempfile.TemporaryDirectory(prefix="yume-native-endpoint-") as temporary:
         kit = Path(temporary) / "kit"
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
@@ -50,13 +52,18 @@ def run(binary: Path, openssl: Path) -> None:
             path.write_text(json.dumps(config), encoding="utf-8")
             if config["role"] == "server":
                 direct = dict(config, adapters=[
-                    {"kind": "direct_tcp", "service": name} for name in ("echo", "denied")
+                    {"kind": "direct_tcp", "service": name, "destinations": loopback}
+                    for name in ("echo", "denied")
                 ])
                 path.with_name("direct-tcp.json").write_text(json.dumps(direct), encoding="utf-8")
+                listeners = dict(config, endpoint=dict(
+                    config["endpoint"], listen_addresses=["127.0.0.1", "127.0.0.2"]))
+                path.with_name("two-listeners.json").write_text(json.dumps(listeners), encoding="utf-8")
             packets = dict(config, services=[
                 dict(service, kind="packet") for service in config["services"]
             ], adapters=([
-                {"kind": "direct_udp", "service": name} for name in ("echo", "denied")
+                {"kind": "direct_udp", "service": name, "destinations": loopback}
+                for name in ("echo", "denied")
             ] if config["role"] == "server" else []))
             if config["role"] == "server":
                 packets["credentials"] = dict(config["credentials"], authorized_keys={

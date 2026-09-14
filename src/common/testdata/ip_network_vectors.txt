@@ -1,0 +1,62 @@
+# Canonical schema-1 destination networks. The native parser test and the
+# Python doctor test both read this file. Each line is one of:
+#   valid TEXT    canonical and usable in a destination policy
+#   never TEXT    canonical, but no destination could ever match it
+#   invalid TEXT  not canonical network text
+valid 0.0.0.0/0
+valid 0.0.0.0/7
+valid 10.0.0.0/8
+valid 100.64.0.0/10
+valid 127.0.0.1/32
+valid 192.168.1.0/24
+valid 203.0.113.7/32
+valid ::/0
+valid ::/127
+valid ::1/128
+valid ::fffe:0:0/95
+valid 1::/16
+valid fc00::/7
+valid fe80::/10
+valid 2001:db8::/32
+valid 2001:db8:0:1::/64
+valid 2001:db8::1:0:0:1/128
+valid 2001:db8:0:1:1:1:1:1/128
+valid 2001:db8:1:2:3:4:5:0/128
+valid 2001:db8:ffff:ffff:ffff:ffff:ffff:fffe/127
+never 0.0.0.0/8
+never 0.1.2.3/32
+never 224.0.0.0/3
+never 224.0.0.0/4
+never 240.0.0.0/4
+never 255.255.255.255/32
+never ::/128
+never ff00::/8
+never ff02::1/128
+never ::ffff:0:0/96
+never ::ffff:a00:0/120
+invalid 10.0.0.1/8
+invalid 010.0.0.0/8
+invalid 10.0.0/8
+invalid 10.0.0.0.0/8
+invalid 10.0.0.0
+invalid 10.0.0.0/33
+invalid 10.0.0.0/08
+invalid 10.0.0.0/-1
+invalid 10.0.0.0/8/8
+invalid 256.0.0.0/8
+invalid 1.2.3.4/255.0.0.0
+invalid 2001:DB8::/32
+invalid 2001:0db8::/32
+invalid 2001:db8:0:0:0:0:0:0/32
+invalid 2001:db8::0:1/128
+invalid 2001:db8:1:2:3:4:5::/128
+invalid 0::/0
+invalid ::/129
+invalid ::ffff:10.0.0.1/128
+invalid fe80::1%eth0/128
+invalid 1:2:3:4:5:6:7:8:9/128
+invalid 1::2::3/128
+invalid :1::/16
+invalid 1:/16
+invalid 12345::/16
+invalid 2001:db8:0:1:1:1:1:1/64

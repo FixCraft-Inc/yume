@@ -408,12 +408,20 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
     std::shared_ptr<State> state;
     try {
         const auto egress = require(NativeEgressPolicy::create(config.adapters()));
+        if (options.caller_runs_socks5_adapters &&
+            std::none_of(config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
+                return std::holds_alternative<config::v1::Socks5Adapter>(adapter);
+            }))
+            throw Status(StatusCode::InvalidArgument, "no configured SOCKS5 adapter needs a caller");
         for (const auto& adapter : config.adapters()) {
             const auto* tcp = std::get_if<config::v1::DirectTcpAdapter>(&adapter);
             const auto* udp = std::get_if<config::v1::DirectUdpAdapter>(&adapter);
+            if (std::holds_alternative<config::v1::Socks5Adapter>(adapter) &&
+                options.caller_runs_socks5_adapters)
+                continue;
             if (!tcp && !udp)
                 throw Status(StatusCode::FailedPrecondition,
-                    "native SOCKS5 and packet/TUN adapters are not implemented");
+                    "native packet/TUN adapters are not implemented, and SOCKS5 adapters need a caller that runs them");
             if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
                     "direct adapters require an explicit route provider");
@@ -497,9 +505,16 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             require(builder.register_stream_handler(std::move(handler.name), std::move(handler.handler)));
         if (role == EndpointRole::Client) {
             const auto& endpoint = std::get<config::v1::ClientEndpoint>(config.endpoint());
+            const auto& configured_dial = endpoint.connect_address();
+            if (!state->options.connection_address.empty() && configured_dial &&
+                *configured_dial != state->options.connection_address)
+                throw Status(StatusCode::InvalidArgument,
+                    "dial address conflicts with the configured connect_address");
+            const std::string& dial = !state->options.connection_address.empty()
+                ? state->options.connection_address
+                : configured_dial ? *configured_dial : endpoint.host();
             state->tcp = require(AsioTcpByteChannelProvider::create(context,
-                state->options.connection_address.empty() ? endpoint.host() : state->options.connection_address,
-                endpoint.port(), {}, state->options.socket_protector));
+                dial, endpoint.port(), {}, state->options.socket_protector));
             require(builder.register_byte_channel_provider(state->tcp));
             require(builder.register_secure_channel_provider(credentials.tls_provider));
             Ytp1H2Dispatch dispatch{

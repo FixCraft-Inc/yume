@@ -34,8 +34,10 @@ struct NativeEndpointOptions final {
     // FrontDoor separately bounds pre-promotion connections and pending work.
     std::chrono::milliseconds start_timeout{30'000};
     // An explicit dial address may differ from the configured authenticated
-    // DNS host. Empty selects that host and the system resolver. Numeric dial
-    // addresses avoid system resolution; they never replace TLS identity.
+    // DNS host. Empty selects the client's configured connect_address, or that
+    // host and the system resolver. A different configured connect_address is
+    // refused. Numeric dial addresses avoid system resolution and never replace
+    // TLS identity.
     std::string connection_address;
     providers::AsioTcpSocketProtector socket_protector;
     // Explicitly composed destination routing, required by configured direct
@@ -51,6 +53,10 @@ struct NativeEndpointOptions final {
     // callback runs only when they permit the OPEN and can only refuse more.
     // Exceptions fail closed. It is rejected when no direct adapter is configured.
     std::function<engine::Status(const engine::StreamOpenContext&)> route_authorization;
+    // The caller runs every configured SOCKS5 adapter over this endpoint's
+    // sessions. Without it a SOCKS5 declaration fails creation, and setting it
+    // without one is refused.
+    bool caller_runs_socks5_adapters{false};
 };
 
 // Automatic server accepts. The total pending across listeners must fit

@@ -233,6 +233,25 @@ credit lifetime and cleanup after an escaped delivery exception.
 No standalone YTP/1 runtime uses
 this backend, and it has no production qualification.
 
+The development executables `yumed-ytp1` and `yume-ytp1` run schema-1
+configurations as processes when every native provider is built. `--config`
+selects the file, `--validate` checks configuration and credentials, and
+network and security policy have no CLI override. The daemon serves configured
+`direct_tcp`/`direct_udp` adapters and refuses a service without one, because
+only an embedding application can supply a named-service handler. The client
+keeps one authenticated session, replaces it with bounded exponential backoff,
+refuses server-initiated OPENs and runs the configured loopback SOCKS5
+listeners. A CONNECT becomes an authenticated OPEN, and after the peer accepts
+it the socket and stream share the direct-route bridge. Only the
+no-authentication method and CONNECT are offered, and a request without an
+active session is refused rather than queued. A client may set
+`connect_address` to dial a numeric address while TLS and admission still
+authenticate `host`. `yume_native_runtime_test` provisions a kit, runs both
+processes, moves a payload through SOCKS5, checks refusal by configured
+destinations and by an unreachable route, and requires clean SIGTERM exits.
+These programs are development runtimes: they are not installed and not
+qualified.
+
 ## Not yet implemented end to end
 
 The following required 0.3 paths are still open in this development tree and
@@ -240,16 +259,17 @@ must not be advertised as working:
 
 - complete-session qualification of the native FrontDoor, including external
   comparison of ordinary and rejected-admission cover behavior;
-- attaching the native endpoint composition to standalone runtimes, and
-  production qualification of the experimental schema-1 ABI backend;
+- production qualification of the experimental schema-1 ABI backend and of
+  the development standalone runtimes;
 - comprehensive real-carrier rekey, close-ordering and credit/backpressure
   qualification beyond the focused native-session regressions;
-- working standalone SOCKS5, named-service and packet adapters on the new
-  engine, using the configured destination policy;
+- SOCKS5 UDP ASSOCIATE, named-service and packet/TUN adapters in the
+  standalone runtimes;
 - a public-ABI packet data path in either configuration dialect;
 - authenticated clean-prefix C and C++ consumers using an installed CMake
   package and pkg-config, which the build does not generate yet;
-- the final narrow `yume` and `yumed` runtimes and setup-to-first-SOCKS smoke;
+- the final narrow `yume` and `yumed` runtimes, the coordinated switch from
+  transport v2, and a qualified setup-to-first-SOCKS path over a real network;
 - external active-probe, classifier, performance, soak, fuzz, sanitizer, and
   security-review gates.
 

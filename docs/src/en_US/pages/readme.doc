@@ -46,7 +46,9 @@ connects directly trusted servers and is limited to one hop.
 
 YTP/1 (YUME Transport Protocol 1) is the replacement protocol under development.
 Its engine, codecs, schema-1 configuration, providers and a native endpoint
-composition exist. They do not yet form standalone `yume` and `yumed` runtimes.
+composition exist. Development `yumed-ytp1` and `yume-ytp1` processes carry
+SOCKS5 CONNECT traffic over them, but they are not the default `yume` and
+`yumed` runtimes.
 Transport v2 remains the default
 until the replacement passes the [required capability gates](docs/IMPLEMENTATION_STATUS.md).
 

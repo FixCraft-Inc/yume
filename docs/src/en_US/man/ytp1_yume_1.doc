@@ -23,16 +23,14 @@ streams and packet channels. The client CLI is intended to expose the included
 SOCKS5, named-service, and packet adapters as consumers of the same future
 installed C ABI intended for external applications after freeze.
 
-The current 0.3.0-dev1 tree does not yet implement the production client
-runtime or authenticated YTP/1 data path. The schema-1 setup and doctor tools,
-strict parser, YTP/1 kernel, provider candidates, and build-tree ABI are
-development foundations. The ABI can exercise the separate transport-v2
-backend, but
-**yume_endpoint_start**(3)
-on a schema-1 endpoint fails closed with
-**YUME_STATUS_UNSUPPORTED**
-until the native security, TLS/HTTP/2, route, and adapter providers are
-composed.
+The current 0.3.0-dev1 tree does not install this client. A development build
+with every native provider produces
+**yume-ytp1**,
+which accepts **--config**, **--validate** and **--version**, keeps one
+authenticated session and runs the configured SOCKS5 CONNECT listeners.
+SOCKS5 UDP, named-service and packet adapters and production qualification are
+unfinished. A schema-1 endpoint in the build-tree C ABI carries named byte
+streams through the same native endpoint.
 
 ## OPTIONS
 

@@ -18,8 +18,10 @@ The replacement already has protocol, engine and provider implementations.
 The H2 carrier directly reuses transport-v2 H2/WebSocket and profile sources.
 The transport-v2 embedding path provides real named streams. The replacement
 now composes native ingress, credentials and sessions through `NativeEndpoint`,
-and an experimental schema-1 ABI backend carries named streams over it. Its
-standalone adapters remain unfinished. These are useful
+and an experimental schema-1 ABI backend carries named streams over it.
+Development `yumed-ytp1` and `yume-ytp1` processes run direct routes and a
+SOCKS5 CONNECT adapter over the same endpoint, while named-service and packet
+adapters remain unfinished. These are useful
 components and development paths, not evidence that the replacement is complete.
 
 Complete and qualify the required connections and application capabilities
@@ -121,8 +123,8 @@ answered cover stream need not wait for the peer to close its request side;
 that stream transfers with the existing parser and cover ledger. Ordinary H2
 requests still receive cover after promotion, and listener destruction does
 not close a published carrier. This is a source-level ingress provider. The
-standalone runtimes still need application integration, while the experimental
-schema-1 ABI backend already composes it through `NativeEndpoint`.
+experimental schema-1 ABI backend and the development standalone runtimes
+compose it through `NativeEndpoint`.
 
 The caller supplies the single-runner `AsioExecutionContext`. The front door
 binds promoted carriers to that context's ordinary and reserved control
@@ -299,8 +301,8 @@ failure, and final closed-handle release schedules no new cleanup. The provider
 retains canceled DNS capacity until the underlying resolver handler retires;
 an application timeout does not make a blocked system lookup disappear. This
 build-tree-only provider can be explicitly composed into `NativeEndpoint`.
-Standalone adapters remain unfinished, and the schema-1 ABI backend composes no
-route provider.
+The development `yumed-ytp1` composes it with `NativeEgressPolicy`, and the
+schema-1 ABI backend composes no route provider.
 
 ## Provider composition
 
@@ -354,13 +356,14 @@ The implemented replacement foundation is organized by dependency:
 | `src/ytp/` | dependency-pure YTP/1 codecs, domains, and canonical vectors |
 | `src/config/v1/` | strict immutable schema-1 parsing; no secret loading |
 | `src/providers/` | opt-in session security, browser-shaped TLS, client/accepted TCP channels, native FrontDoor/static cover, H2 admission/carrier and direct routes |
-| `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization and native endpoint/session lifetimes |
+| `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy and the development standalone runtimes with their SOCKS5 adapter |
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
 | `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. Each dialect reaches its runtime through its own embed backend |
 | `src/facade/session/ytp1_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
 | `tools/` | provisioning and evidence tooling |
 
-Dedicated replacement adapter and CLI targets do not exist yet. The runnable
+The development replacement programs `yumed-ytp1` and `yume-ytp1` build from
+`src/runtime/` with the native providers and are not installed. The runnable
 transport-v2 executables and optional GUI remain in their existing source graph
 while those replacement layers are built. This does not freeze their interfaces
 or require a separate transport-v2 stabilization campaign. The

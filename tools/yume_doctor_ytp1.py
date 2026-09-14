@@ -274,11 +274,24 @@ def _file_reference(value: Any, pointer: str) -> str:
 def _validate_endpoint(value: Any, role: str) -> None:
     pointer = "/endpoint"
     if role == "client":
-        endpoint = _closed_object(value, pointer, {"host", "port"})
+        endpoint = _closed_object(
+            value, pointer, {"host", "port", "connect_address"}, {"host", "port"}
+        )
         host = _string(endpoint["host"], "/endpoint/host", 253)
         if not _valid_host(host):
             _fail("/endpoint/host", "must be an IP literal or DNS host name")
         _integer(endpoint["port"], "/endpoint/port", 1, 65535)
+        if "connect_address" in endpoint:
+            address = _string(
+                endpoint["connect_address"], "/endpoint/connect_address", 64
+            )
+            try:
+                ipaddress.ip_address(address)
+                numeric = "%" not in address
+            except ValueError:
+                numeric = False
+            if not numeric:
+                _fail("/endpoint/connect_address", "must be an IP literal")
         return
     endpoint = _closed_object(value, pointer, {"listen_addresses", "port"})
     addresses = endpoint["listen_addresses"]

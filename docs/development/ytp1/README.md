@@ -5,8 +5,8 @@ YUME 0.3 is being rebuilt around an experimental C ABI and YTP/1. This page
 is the one development reference for that replacement: what the schema-1
 tools do today, the contracts the runtime must meet, and the gates that
 separate a passing foundation test from a usable tunnel. It is a design
-input, not an installed contract and not evidence that a standalone runtime
-exists.
+input, not an installed contract and not evidence that the product runtime is
+qualified.
 [IMPLEMENTATION_STATUS.md](../../IMPLEMENTATION_STATUS.md) is the
 authoritative boundary; the runnable transport-v2 product keeps its own
 [quick start](../../QUICKSTART.md), [operations](../../OPERATIONS.md),
@@ -38,9 +38,10 @@ TLS/H2.
 When the shared ABI is built with the same providers, an experimental schema-1
 backend drives that endpoint behind the C ABI and carries named byte streams.
 
-Not implemented: the replacement `yume` and
-`yumed` runtimes, the authenticated setup-to-SOCKS path, public ABI packet
-handles, TUN adapters, and production qualification of the complete endpoint.
+Not implemented: the final `yume` and `yumed` runtimes, SOCKS5 UDP, public ABI
+packet handles, TUN adapters, and production qualification of the complete
+endpoint. The development processes are described under running the
+development runtimes below.
 A schema-1 kit is not valid
 input for the runnable transport-v2 binaries, and nothing converts between
 the two dialects. A generated kit declares adapters, which the ABI backend
@@ -96,9 +97,9 @@ credential service authorization and before DNS or socket work. An optional
 `route_authorization` callback can only refuse more. The engine supplies the
 selected provider to handlers, and an Asio provider built with the same policy
 checks every selected numeric address before connecting. Explicit
-policy-bearing handlers remain available for other services. This source-level
-composition supplies no standalone daemon or SOCKS/TUN implementation. The ABI
-backend still refuses adapter declarations.
+policy-bearing handlers remain available for other services. The ABI backend
+still refuses adapter declarations, and packet/TUN adapters are not
+implemented.
 
 The caller retains a single-runner `AsioExecutionContext` through the promoted
 carrier lifetimes. The front door supplies H2 dispatch from its context,
@@ -184,11 +185,44 @@ does not inspect file ownership, consume a separate compatibility manifest,
 or print private material. Fix the reported location; there is no CLI
 override for a doctor failure.
 
+## Run the development runtimes
+
+With every native provider option enabled, including
+`YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER`, the build produces
+`bin/yumed-ytp1` and `bin/yume-ytp1`. They are development programs, not the
+installed product:
+
+```bash
+build/bin/yumed-ytp1 --config kit/server/yumed.json --validate
+build/bin/yumed-ytp1 --config kit/server/yumed.json
+build/bin/yume-ytp1 --config kit/client/yume.json
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
+```
+
+The daemon needs a `direct_tcp` or `direct_udp` adapter for every configured
+service, and neither program implements packet/TUN adapters. Before starting
+them, remove the generated `packet` service and adapter from both
+configurations and the `packet` capability from
+`server/credentials/authorized-keys.json`. Listening on port 443 needs the
+matching bind capability, or choose a high port. The client runs its SOCKS5 listeners and keeps one session, reconnecting
+with backoff. SOCKS5 offers only the no-authentication method and CONNECT, and
+refuses requests while no session is active. Stop either process with SIGINT or
+SIGTERM.
+
+`scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
+network namespace and records what nDPI reports, using the pinned release that
+`scripts/ensure-ndpi.sh` builds. `scripts/yume_ethernet_smoke.py` runs the
+client on this machine and the daemon on a directly connected host, after a
+link preflight that fails when the direct route is unavailable. Neither result
+is a classifier verdict or a qualified benchmark.
+
 ## Configuration authority
 
 Schema 1 is role tagged and contains these sections only:
 
-- `endpoint`: one client target or bounded server listeners;
+- `endpoint`: one client target or bounded server listeners. A client may add
+  `connect_address`, a numeric address dialled instead of resolving `host`,
+  while TLS and admission still authenticate `host`;
 - `suite`: the exact mandatory provider composition;
 - `credentials`: references to files, never inline private material;
 - `cover`: the qualified profile and server cover root;

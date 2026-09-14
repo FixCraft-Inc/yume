@@ -20,6 +20,21 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Development standalone runtimes.** With every native provider enabled the
+  build produces `yumed-ytp1` and `yume-ytp1`. The daemon serves configured
+  direct TCP/UDP adapters within their destinations. The client keeps one
+  authenticated session with bounded reconnect and runs loopback SOCKS5
+  CONNECT listeners, joined to streams by the existing direct-route bridge.
+  `yume_native_runtime_test` carries a payload through SOCKS5, checks refusals
+  and requires clean SIGTERM exits. SOCKS5 UDP, named-service and packet/TUN
+  adapters remain unfinished, and the programs are not installed.
+- **Client dial address.** Schema-1 clients may set `endpoint.connect_address`
+  to dial a numeric address while TLS and admission still authenticate `host`.
+- **Evaluation tooling.** `scripts/ensure-ndpi.sh` builds pinned nDPI 6.0,
+  `scripts/yume_ndpi_smoke.py` records nDPI output for one rootless loopback
+  session, and `scripts/yume_ethernet_smoke.py` runs a direct-link session after
+  a preflight that fails when the link is unavailable. Their results are
+  observations, not classifier verdicts or benchmarks.
 - **Configured egress destinations.** Server `direct_tcp` and `direct_udp`
   adapters require `destinations`: `public` for globally reachable unicast
   addresses and `networks` for canonical CIDR prefixes. `NativeEgressPolicy`

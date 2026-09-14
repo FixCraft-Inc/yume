@@ -384,15 +384,26 @@ Role ParseRole(const Json& value) {
 
 Endpoint ParseEndpoint(const Json& endpoint, Role role) {
     if (role == Role::Client) {
-        CheckClosedObject(endpoint, "/endpoint", {"host", "port"},
+        CheckClosedObject(endpoint, "/endpoint",
+                          {"host", "port", "connect_address"},
                           {"host", "port"});
         const auto& host =
             ReadString(endpoint.at("host"), "/endpoint/host", kMaxHostBytes);
         if (!IsClientHost(host)) {
             Fail("/endpoint/host", "must be an IP literal or DNS host name");
         }
-        return ClientEndpoint(
-            host, ParsePort(endpoint.at("port"), "/endpoint/port"));
+        const std::uint16_t port =
+            ParsePort(endpoint.at("port"), "/endpoint/port");
+        std::optional<std::string> connect_address;
+        if (endpoint.contains("connect_address")) {
+            const auto& address = ReadString(endpoint.at("connect_address"),
+                                             "/endpoint/connect_address", 64);
+            if (!IsIpLiteral(address)) {
+                Fail("/endpoint/connect_address", "must be an IP literal");
+            }
+            connect_address = address;
+        }
+        return ClientEndpoint(host, port, std::move(connect_address));
     }
 
     CheckClosedObject(endpoint, "/endpoint", {"listen_addresses", "port"},

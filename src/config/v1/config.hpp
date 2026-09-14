@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -77,15 +78,25 @@ private:
 
 class ClientEndpoint final {
 public:
-    ClientEndpoint(std::string host, std::uint16_t port)
-        : host_(std::move(host)), port_(port) {}
+    ClientEndpoint(std::string host,
+                   std::uint16_t port,
+                   std::optional<std::string> connect_address)
+        : host_(std::move(host)),
+          port_(port),
+          connect_address_(std::move(connect_address)) {}
 
     const std::string& host() const noexcept { return host_; }
     std::uint16_t port() const noexcept { return port_; }
+    // A numeric address dialled instead of resolving host. TLS and admission
+    // still authenticate host.
+    const std::optional<std::string>& connect_address() const noexcept {
+        return connect_address_;
+    }
 
 private:
     std::string host_;
     std::uint16_t port_;
+    std::optional<std::string> connect_address_;
 };
 
 class ServerEndpoint final {

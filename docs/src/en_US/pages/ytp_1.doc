@@ -760,8 +760,9 @@ transport-v2 product remains a separate default-build lane during the
 transition; its presence does not make transport v2, AUTH v2, federation,
 relay, GUI, or other product-specific surfaces part of YTP/1.
 
-Until standalone wiring, deterministic executable vectors, and the
-qualification gates land, the fixed composition is an implemented
-experimental candidate, not a production security claim. It is not an
+The development runtime is wired, while the remaining adapters, deterministic
+cryptographic known-answer vectors and production qualification gates are open.
+The fixed composition is an experimental candidate, not a production security
+claim. It is not an
 independent security proof, audit, post-quantum-security certification,
 anonymity claim, or production support statement.

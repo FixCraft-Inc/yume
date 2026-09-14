@@ -53,15 +53,15 @@ Implemented and covered by focused tests:
   operation queues, per-operation and provider cancellation, real TCP
   half-close, and explicit executor affinity. An accepted-channel owner shares
   the same channel implementation for connected server sockets. Listening
-  belongs to the separate native FrontDoor; neither path has a standalone YTP
-  endpoint runtime. Both use
-  the caller-owned single-runner `AsioExecutionContext` and reserved control
+  belongs to the separate native FrontDoor. NativeEndpoint composes these
+  providers for the development CLI and schema-1 ABI backend. Both use the
+  caller-owned single-runner `AsioExecutionContext` and reserved control
   dispatch. Initiation occurs on its context, while cancel/close can cross
   threads; the runtime must close owners and drain completions before stopping
   execution. Provider regressions exercise sustained allocation failure during
   control dispatch, active read/write cleanup, owner destruction and lost DNS
-  completion delivery. These component tests do not establish endpoint wiring.
-  The eventual runner must contain Asio delivery exceptions and resume cleanup.
+  completion delivery. The native runtime contains Asio delivery exceptions
+  and resumes cleanup; endpoint integration tests are described below.
   System DNS resolution can outlive the user-facing deadline; bounded final
   resolver shutdown remains an integration limitation;
 - an independent opt-in OpenSSL 3.5 TLS 1.3 secure-channel foundation which
@@ -239,8 +239,9 @@ selects the file, `--validate` checks configuration and credentials, and
 network and security policy have no CLI override. The daemon serves configured
 `direct_tcp`/`direct_udp` adapters and refuses a service without one, because
 only an embedding application can supply a named-service handler. The client
-keeps one authenticated session, replaces it with bounded exponential backoff,
-refuses server-initiated OPENs and runs the configured loopback SOCKS5
+keeps one authenticated session and starts a replacement when the endpoint
+reports closure. Failed attempts use bounded exponential backoff. It refuses
+server-initiated OPENs and runs the configured loopback SOCKS5
 listeners. A CONNECT becomes an authenticated OPEN, and after the peer accepts
 it the socket and stream share the direct-route bridge. Payload sent with
 CONNECT stays unread in the socket until that bridge takes ownership. Only the

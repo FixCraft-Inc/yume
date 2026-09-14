@@ -67,9 +67,11 @@ std::optional<RouteDestination> destination_from_name(std::string_view text,
 }  // namespace
 
 Parse parse_greeting(std::span<const std::uint8_t> input, Greeting& out) noexcept {
+    out.required_bytes = 2U;
     if (input.size() < 2U) return Parse::NeedMore;
     if (input[0] != kVersion || input[1] == 0U) return Parse::Invalid;
     const std::size_t total = 2U + input[1];
+    out.required_bytes = total;
     if (input.size() < total) return Parse::NeedMore;
     const auto methods = input.subspan(2U, input[1]);
     out.consumed = total;
@@ -79,6 +81,7 @@ Parse parse_greeting(std::span<const std::uint8_t> input, Greeting& out) noexcep
 }
 
 Parse parse_request(std::span<const std::uint8_t> input, Request& out) noexcept {
+    out.required_bytes = 4U;
     if (input.size() < 4U) return Parse::NeedMore;
     if (input[0] != kVersion || input[2] != 0U) return Parse::Invalid;
     std::size_t offset = 4U;
@@ -91,6 +94,7 @@ Parse parse_request(std::span<const std::uint8_t> input, Request& out) noexcept 
         length = 16U;
         break;
     case kAddressName:
+        out.required_bytes = 5U;
         if (input.size() < 5U) return Parse::NeedMore;
         offset = 5U;
         length = input[4];
@@ -100,6 +104,7 @@ Parse parse_request(std::span<const std::uint8_t> input, Request& out) noexcept 
         return complete(out, offset, Reply::AddressNotSupported);
     }
     const std::size_t total = offset + length + 2U;
+    out.required_bytes = total;
     if (input.size() < total) return Parse::NeedMore;
     if (input[1] != kCommandConnect) {
         return complete(out, total, Reply::CommandNotSupported);
@@ -154,7 +159,8 @@ Reply reply_for(const Status& status) noexcept {
     case StatusCode::FailedPrecondition:
     case StatusCode::NotFound:
         return Reply::NotAllowed;
-    // The server could not set up the route, or the local deadline expired.
+    // The route failed or the OPEN was cancelled. The adapter reports its
+    // own deadline separately, since cancellation alone does not imply expiry.
     case StatusCode::Internal:
     case StatusCode::Cancelled:
         return Reply::HostUnreachable;

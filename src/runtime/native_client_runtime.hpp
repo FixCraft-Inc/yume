@@ -31,8 +31,9 @@ struct NativeClientRuntimeOptions final {
 };
 
 // Runs one schema-1 client configuration: one authenticated session, replaced
-// after it ends with exponential backoff, and the configured SOCKS5 listeners
-// over it. Server-initiated OPENs are refused. Packet/TUN adapters are not
+// when the endpoint reports closure, and the configured SOCKS5 listeners over
+// it. Failed attempts use exponential backoff. Server-initiated OPENs are
+// refused. Packet/TUN adapters are not
 // implemented and fail creation.
 //
 // All calls run on the supplied single-runner context. The caller closes the

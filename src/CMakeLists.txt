@@ -1099,7 +1099,7 @@ if(YUME_BUILD_TESTING)
             yume_native_credentials yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel)
         if(TARGET yume_asio_direct_route_provider)
             target_link_libraries(yume_native_endpoint_test PRIVATE
-                yume_asio_direct_route_provider yume_direct_route_handler)
+                yume_asio_direct_route_provider yume_direct_route_handler yume_native_runtime)
             target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1)
         endif()
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -1135,6 +1135,22 @@ if(YUME_BUILD_TESTING)
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}")
             set_tests_properties(yume_native_runtime_test PROPERTIES
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                add_executable(yume_native_runtime_dns_server_test
+                    runtime/native_runtime_dns_server_test.cpp)
+                target_link_libraries(yume_native_runtime_dns_server_test PRIVATE yume_native_runtime)
+                target_link_options(yume_native_runtime_dns_server_test PRIVATE
+                    "-Wl,--wrap=getaddrinfo" "-Wl,--wrap=socket")
+                yume_apply_perf_opts(yume_native_runtime_dns_server_test)
+                add_test(NAME yume_native_runtime_dns_test
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${CMAKE_SOURCE_DIR}/tests/run_native_runtime_test.py"
+                        --yumed "$<TARGET_FILE:yume_native_runtime_dns_server_test>"
+                        --yume "$<TARGET_FILE:yume_ytp1_client_program>"
+                        --openssl "${YUME_NATIVE_TEST_OPENSSL}" --dns-fixture)
+                set_tests_properties(yume_native_runtime_dns_test PROPERTIES
+                    TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            endif()
         endif()
     endif()
 

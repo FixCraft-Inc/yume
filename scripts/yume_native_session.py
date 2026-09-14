@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import http.server
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -66,13 +67,24 @@ def wait_for_port(host: str, port: int, process: subprocess.Popen, deadline: flo
 
 def socks_connect(socks_port: int, host: str, port: int,
                   timeout: float = 20.0) -> tuple[int, socket.socket]:
-    """CONNECT to an IPv4 literal through the local SOCKS5 listener."""
+    """CONNECT through SOCKS5, leaving name resolution to the remote daemon."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        name = host.encode("ascii")
+        if not 1 <= len(name) <= 255:
+            raise SessionFailure("SOCKS5 destination name must contain 1 through 255 bytes")
+        destination = b"\x03" + bytes([len(name)]) + name
+    else:
+        if address.version == 6 and address.scope_id is not None:
+            raise SessionFailure("SOCKS5 destinations cannot carry an IPv6 scope")
+        destination = (b"\x01" if address.version == 4 else b"\x04") + address.packed
     connection = socket.create_connection(("127.0.0.1", socks_port), timeout=timeout)
     try:
         connection.sendall(b"\x05\x01\x00")
         if recv_exact(connection, 2) != b"\x05\x00":
             raise SessionFailure("SOCKS5 method selection failed")
-        connection.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(host) + port.to_bytes(2, "big"))
+        connection.sendall(b"\x05\x01\x00" + destination + port.to_bytes(2, "big"))
         reply = recv_exact(connection, 10)
         if reply[0] != 0x05:
             raise SessionFailure("SOCKS5 reply has the wrong version")

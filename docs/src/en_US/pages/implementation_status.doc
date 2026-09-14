@@ -178,6 +178,12 @@ numeric-address authorization before opening any socket, including every
 selected DNS candidate and IPv4-mapped IPv6. Policy errors and reentrant
 cancellation settle the OPEN without connecting.
 
+Session teardown notifies the endpoint through reserved control dispatch.
+The endpoint frees the session slot before its optional `session_ended`
+callback runs on the endpoint context. The native client uses this notification
+to start reconnecting without polling. Failed attempts retain bounded
+exponential backoff. Pending starts report failure through their own completion.
+
 Listener socket setup preserves OS permission refusal, address conflict,
 invalid-address and resource-exhaustion status through the runtime and embedding
 seams. Unknown socket failures remain generic I/O failures; an unexpected
@@ -188,7 +194,10 @@ of the original endpoint before exchanging authenticated traffic.
 Native integration tests provision actual setup credentials and exercise
 loopback TLS/H2, composite AUTH, named bytes in both directions, simultaneous
 directional rekeys, half-close, refused service opens with a surviving session,
-idle accept survival, stalled AUTH deadlines and final handle cleanup.
+idle accept survival, stalled AUTH deadlines and final handle cleanup. Lifecycle
+regressions cover closure from another thread, pending-read settlement before
+notification, reentrant slot reuse, callback exceptions, and client reconnect
+with SOCKS traffic through the replacement session.
 Deterministic pacing tests cover accept refusal, unschedulable retries,
 re-entrant completion, stopped listeners and close. Socket tests cover loop
 exclusivity, capacity recovery and a promoted carrier that never authenticates,
@@ -242,13 +251,28 @@ only an embedding application can supply a named-service handler. The client
 keeps one authenticated session, replaces it with bounded exponential backoff,
 refuses server-initiated OPENs and runs the configured loopback SOCKS5
 listeners. A CONNECT becomes an authenticated OPEN, and after the peer accepts
-it the socket and stream share the direct-route bridge. Only the
+it the socket and stream share the direct-route bridge. Payload sent with
+CONNECT stays unread in the socket until that bridge takes ownership. Only the
 no-authentication method and CONNECT are offered, and a request without an
 active session is refused rather than queued. A client may set
 `connect_address` to dial a numeric address while TLS and admission still
 authenticate `host`. `yume_native_runtime_test` provisions a kit, runs both
 processes, moves a payload through SOCKS5, checks refusal by configured
 destinations and by an unreachable route, and requires clean SIGTERM exits.
+It also checks early binary payload with CONNECT or greeting+CONNECT, split
+request writes, exact byte delivery and responses after the client half-closes.
+An early payload cannot bypass destination policy or replace the session.
+The adapter cancels a CONNECT whose OPEN deadline expires and replies with
+SOCKS5 0x06 (TTL expired). Late acceptance cannot revive it. The native endpoint
+test holds acceptance open to check expiry, later requests on the same session,
+ordinary refusal, adapter shutdown and an accepted stream outliving its OPEN
+deadline.
+On Linux with GCC or Clang, `yume_native_runtime_dns_test` also checks allowed,
+denied and mixed DNS answer sets in both orders. Its test daemon wraps the OS
+resolver and observes socket creation while running the production runtime.
+Refused sets open no sockets, return SOCKS5 reply 0x02, and leave the session
+usable. Asynchronous permission refusal uses the existing unauthorized CLOSE
+code instead of reporting a handler failure.
 These programs are development runtimes: they are not installed and not
 qualified.
 

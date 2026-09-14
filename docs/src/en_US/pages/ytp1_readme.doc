@@ -179,10 +179,11 @@ These offline checks do not prove that a supplied chain negotiates with the
 actual browser profile. A locally issued certificate is development material;
 it does not establish a credible public HTTPS cover identity.
 
-Setup can encode an IP endpoint, but the candidate native TLS/H2 client
-currently requires a DNS server name. Configuring a connection address
-separately from the authenticated DNS name remains an integration gap; an
-IP-address kit is not a working native endpoint.
+Use a DNS name for the authenticated endpoint. To reach it at a fixed IP,
+set the client's `endpoint.connect_address` to that numeric address. TLS and
+admission still authenticate `endpoint.host`. Setup can encode an IP as `host`,
+but the native TLS/H2 client requires a DNS server name, so such a kit cannot
+start a native session.
 
 Run doctor as the identity that will run YUME. It rejects unknown schema
 keys, provider or profile mismatch, unsafe limits, missing cover content,
@@ -226,10 +227,26 @@ Replacing the file drops the capability, so repeat both commands after each
 build. Running the daemon as root or lowering the system's unprivileged port
 range is not needed. A port above 1023 needs neither step.
 
-The client runs its SOCKS5 listeners and keeps one session, reconnecting with
-backoff. SOCKS5 offers only the no-authentication method and CONNECT, and
+The client runs its SOCKS5 listeners and keeps one session. When that session
+ends, its endpoint notifies the client to start a replacement. Failed attempts
+wait with backoff from 1 to 30 seconds. SOCKS5 offers only the
+no-authentication method and CONNECT, and
 refuses requests while no session is active. Stop either process with SIGINT or
 SIGTERM.
+
+Clients may send payload with CONNECT before reading its reply. The adapter
+reads only the handshake fields, leaving payload in the socket until the
+daemon accepts the destination and the shared route bridge starts forwarding.
+Closing the client's write side still allows the destination's response back.
+The greeting and CONNECT request must arrive within 10 seconds. A CONNECT then
+has 30 seconds to receive remote acceptance; expiry cancels it, returns SOCKS5
+0x06 (TTL expired) and closes that local connection. Other requests can keep
+using the authenticated session.
+
+SOCKS5 names resolve on the daemon. Every selected address must be permitted
+by the service's configured destinations before a socket opens. A refused
+address rejects the whole OPEN, including mixed allowed and denied answers,
+with SOCKS5 reply 0x02. Other requests can continue on the same session.
 
 `scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
 network namespace with Ethernet-sized frames and records what nDPI reports.
@@ -272,8 +289,8 @@ Schema 1 is role tagged and contains these sections only:
   packets.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
-and unsafe combinations. Runtime CLIs will accept config selection,
-validation, version, and diagnostic controls only; network and security
+and unsafe combinations. The development CLIs accept config selection,
+validation, version, and help only; network and security
 policy have no CLI override. Once the runtime gate closes, a service manager
 should invoke only `yumed --config /etc/yume/yumed.json` as a dedicated
 unprivileged identity, prefer a high port or grant only

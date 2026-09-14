@@ -57,6 +57,15 @@ struct NativeEndpointOptions final {
     // sessions. Without it a SOCKS5 declaration fails creation, and setting it
     // without one is refused.
     bool caller_runs_socks5_adapters{false};
+    // A successfully delivered session ended. Runs once on the endpoint
+    // context after pending engine callbacks settle and the session slot is
+    // released, so it may start a replacement. Startup failures use their
+    // completion only. Endpoint close also reports ended sessions; callback
+    // exceptions are contained. Keep the endpoint alive through close/drain
+    // to receive notifications. Capture owners weakly to avoid an owner cycle.
+    // Release old engine handles to return their carrier admission reservations;
+    // keeping a closed engine alive still consumes that front-door capacity.
+    std::function<void(std::shared_ptr<engine::SessionEngine>, engine::Status)> session_ended;
 };
 
 // Automatic server accepts. The total pending across listeners must fit
@@ -109,8 +118,9 @@ public:
     // has no startup deadline; promotion begins its bounded authenticated
     // bootstrap. Client startup has one end-to-end deadline.
     // Synchronous refusal invokes no callback. Accepted completion is exactly
-    // once; the endpoint retains successful sessions through close or until a
-    // later start recycles their terminal slot. Returned engines use its context.
+    // once; the endpoint retains successful sessions until their engine teardown
+    // notification releases the slot on its context. Returned engines use that
+    // context. A slot is unavailable until that notification is delivered.
     engine::Status async_start_session(Completion completion,
                                       std::size_t listener_index = 0U);
     // Server: keeps accept.pending_per_listener starts pending on every listener

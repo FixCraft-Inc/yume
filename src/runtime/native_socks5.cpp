@@ -104,7 +104,7 @@ public:
 
     void start() noexcept {
         arm_deadline(limits_.handshake_timeout);
-        read();
+        advance();
     }
 
     void close() noexcept { finish(); }
@@ -113,17 +113,20 @@ private:
     enum class Phase : std::uint8_t { Greeting, Request, Opening, Replying };
     enum class AfterWrite : std::uint8_t { ReadRequest, Close, Bridge };
 
-    void read() noexcept {
+    void read(std::size_t required_bytes) noexcept {
         if (done_ || reading_) return;
         const std::size_t limit = phase_ == Phase::Greeting
             ? socks5::kMaxGreetingBytes : socks5::kMaxRequestBytes;
-        if (input_.size() >= limit) {
+        if (required_bytes <= input_.size() || required_bytes > limit) {
             finish();
             return;
         }
         reading_ = true;
         try {
-            channel_->async_read(std::min(limit - input_.size(), channel_->max_read_size()),
+            // Leave early application bytes in the socket for RouteBridge.
+            // Reading only the next handshake field also keeps buffering bounded
+            // while the remote endpoint decides whether to accept the route.
+            channel_->async_read(std::min(required_bytes - input_.size(), channel_->max_read_size()),
                 io_cancellation_.token(),
                 [self = shared_from_this()](Result<Buffer> result) noexcept {
                     self->on_read(std::move(result));
@@ -153,18 +156,19 @@ private:
     }
 
     void advance() noexcept {
+        if (done_) return;
         if (phase_ == Phase::Greeting) {
             socks5::Greeting greeting;
             const auto parsed = socks5::parse_greeting(input_, greeting);
             if (parsed == socks5::Parse::NeedMore) {
-                read();
+                read(greeting.required_bytes);
                 return;
             }
             if (parsed == socks5::Parse::Invalid) {
                 finish();
                 return;
             }
-            input_.erase(input_.begin(), input_.begin() + static_cast<std::ptrdiff_t>(greeting.consumed));
+            input_.clear();
             if (!greeting.no_authentication) {
                 write(socks5::method_reply(false), AfterWrite::Close);
                 return;
@@ -177,16 +181,11 @@ private:
         socks5::Request request;
         const auto parsed = socks5::parse_request(input_, request);
         if (parsed == socks5::Parse::NeedMore) {
-            read();
+            read(request.required_bytes);
             return;
         }
         if (parsed == socks5::Parse::Invalid) {
             finish();
-            return;
-        }
-        // A client must wait for the reply before sending stream data.
-        if (request.consumed != input_.size()) {
-            write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
             return;
         }
         input_.clear();
@@ -220,17 +219,19 @@ private:
                     self->on_open(std::move(result));
                 });
         } catch (...) {
+            disarm_deadline();
+            phase_ = Phase::Replying;
             write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
         }
     }
 
     void on_open(Result<std::shared_ptr<StreamResponder>> result) noexcept {
-        Error ignored;
-        timer_.cancel(ignored);
-        if (done_) {
+        if (done_ || phase_ != Phase::Opening) {
             if (result.ok() && result.value()) result.value()->close(Status(StatusCode::Cancelled));
             return;
         }
+        disarm_deadline();
+        phase_ = Phase::Replying;
         if (!result.ok() || !result.value()) {
             write(socks5::reply(result.ok() ? socks5::Reply::GeneralFailure
                                             : socks5::reply_for(result.status())),
@@ -238,7 +239,6 @@ private:
             return;
         }
         stream_ = std::move(result).take_value();
-        phase_ = Phase::Replying;
         write(socks5::reply(socks5::Reply::Succeeded), AfterWrite::Bridge);
     }
 
@@ -277,8 +277,7 @@ private:
     void bridge() noexcept {
         const auto self = shared_from_this();
         done_ = true;
-        Error ignored;
-        timer_.cancel(ignored);
+        disarm_deadline();
         auto stream = std::move(stream_);
         auto channel = std::move(channel_);
         if (const auto owner = owner_.lock()) owner->remove(this);
@@ -305,19 +304,28 @@ private:
     void on_deadline() noexcept {
         if (done_) return;
         if (phase_ == Phase::Opening) {
-            // Completion still arrives, as Cancelled, and sends the reply.
+            // Choose the reply before cancellation, which may invoke on_open
+            // inline. Any later acceptance must close its stream, not bridge it.
+            phase_ = Phase::Replying;
             open_cancellation_.cancel();
+            write(socks5::reply(socks5::Reply::TtlExpired), AfterWrite::Close);
         } else {
             finish();
         }
+    }
+
+    void disarm_deadline() noexcept {
+        // cancel() cannot retract a timer handler already queued for delivery.
+        ++deadline_generation_;
+        Error ignored;
+        timer_.cancel(ignored);
     }
 
     void finish() noexcept {
         if (done_) return;
         done_ = true;
         const auto self = shared_from_this();
-        Error ignored;
-        timer_.cancel(ignored);
+        disarm_deadline();
         io_cancellation_.cancel();
         open_cancellation_.cancel();
         if (stream_) {

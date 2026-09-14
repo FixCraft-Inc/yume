@@ -60,12 +60,6 @@ void complete_noexcept(NativeEndpoint::Completion completion,
     try { completion(std::move(result)); } catch (...) {}
 }
 
-bool terminal(const std::shared_ptr<SessionEngine>& session) noexcept {
-    if (!session) return true;
-    const auto state = session->state();
-    return state == SessionState::Closed || state == SessionState::Failed;
-}
-
 // Authentication chooses an identity; it never grants all advertised services.
 // Both the immutable credential policy and the application's policy must pass.
 class AuthorizedHandler final : public StreamHandler {
@@ -133,6 +127,25 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
 }  // namespace
 
 struct NativeEndpoint::State final : std::enable_shared_from_this<State>, AcceptScheduler::Driver {
+    // The engine can stop on another thread. Reserve its delivery task before
+    // publishing the session, so shutdown does not allocate an Asio handler.
+    struct SessionEnd final {
+        SessionEnd(std::shared_ptr<AsioExecutionContext> execution,
+                   std::weak_ptr<State> endpoint, std::size_t slot, std::uint64_t version)
+            : context(std::move(execution)), owner(std::move(endpoint)), index(slot), generation(version),
+              delivery([](void* value) noexcept {
+                  auto& notice = *static_cast<SessionEnd*>(value);
+                  if (const auto endpoint_owner = notice.owner.lock())
+                      endpoint_owner->ended(notice.index, notice.generation, std::move(notice.reason));
+              }) {}
+        std::shared_ptr<AsioExecutionContext> context;
+        std::weak_ptr<State> owner;
+        std::size_t index;
+        std::uint64_t generation;
+        Status reason;
+        ControlTask delivery;
+    };
+
     struct Slot final {
         explicit Slot(AsioExecutionContext::Executor executor) : timer(executor) {}
         Timer timer;
@@ -212,12 +225,42 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                 slot.timed_out ? StatusCode::Cancelled : StatusCode::Closed,
                 slot.timed_out ? "native session start deadline expired" : "native endpoint closed"));
         }
-        if (result.ok()) slot.session = result.value();
+        if (result.ok()) {
+            auto status = observe_session(index, result.value());
+            if (status.ok()) slot.session = result.value();
+            else {
+                result.value()->stop(copy_status(status));
+                result = Result<std::shared_ptr<SessionEngine>>(std::move(status));
+            }
+        }
         if (slot.automatic) {
             accepts->settled(slot.listener, slot.armed_at, result.ok());
             return;
         }
         complete_noexcept(std::move(completion), std::move(result));
+    }
+
+    Status observe_session(std::size_t index, const std::shared_ptr<SessionEngine>& session) noexcept {
+        try {
+            auto notice = std::make_shared<SessionEnd>(context, weak_from_this(), index, slots[index]->generation);
+            return session->notify_when_closed([notice](Status reason) noexcept {
+                notice->reason = std::move(reason);
+                notice->context->submit(notice->delivery, notice);
+            });
+        } catch (const std::bad_alloc&) {
+            return Status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            return Status(StatusCode::Internal);
+        }
+    }
+
+    void ended(std::size_t index, std::uint64_t generation, Status reason) noexcept {
+        auto& slot = *slots[index];
+        if (slot.generation != generation || !slot.session) return;
+        auto session = std::move(slot.session);
+        if (options.session_ended) {
+            try { options.session_ended(std::move(session), std::move(reason)); } catch (...) {}
+        }
     }
 
     Status arm_deadline(std::size_t index, std::uint64_t generation) noexcept {
@@ -260,7 +303,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             return Status(StatusCode::ResourceExhausted);
         std::size_t index = 0U;
         for (; index < slots.size(); ++index)
-            if (!slots[index]->starting && terminal(slots[index]->session)) break;
+            if (!slots[index]->starting && !slots[index]->session) break;
         if (index == slots.size()) return Status(StatusCode::ResourceExhausted);
         auto& slot = *slots[index];
         // Never wrap a generation while cancelled timer callbacks may exist.

@@ -1177,6 +1177,66 @@ void test_pending_read_settled_after_allocation_failure() {
     CHECK(completions == 1);
 }
 
+void test_session_closed_notification() {
+    for (const bool register_during_stop : {false, true}) {
+        TestSession session;
+        session.start_to_active();
+        session.open_peer_stream();
+        int reads = 0;
+        int notices = 0;
+        bool settled_before_notice = false;
+        const std::weak_ptr<SessionEngine> lifetime = session.engine;
+        auto observe = [&] {
+            CHECK(session.engine->notify_when_closed([&](Status reason) {
+                ++notices;
+                settled_before_notice = reads == 1 && session.trace->cancelled;
+                CHECK(reason.code() == StatusCode::Cancelled);
+                CHECK(session.engine->state() == SessionState::Closed);
+                session.engine->stop();
+                session.engine.reset();
+                CHECK(!lifetime.expired());
+                throw std::runtime_error("observer exception must be contained");
+            }).ok());
+        };
+        CHECK(session.engine->notify_when_closed({}).code() == StatusCode::InvalidArgument);
+        if (!register_during_stop) observe();
+        session.handler->responder->async_read({}, [&](auto result) {
+            CHECK(!result.ok());
+            if (register_during_stop) observe();
+            CHECK(notices == 0); // Terminal state alone is not completed teardown.
+            CHECK(session.engine->notify_when_closed([](Status) {}).code() == StatusCode::AlreadyExists);
+            ++reads;
+        });
+        session.engine->stop();
+        CHECK(notices == 1 && settled_before_notice);
+        CHECK(lifetime.expired());
+    }
+    TestSession late;
+    late.engine->stop(Status(StatusCode::Closed));
+    int notices = 0;
+    CHECK(late.engine->notify_when_closed([&](Status reason) {
+        CHECK(reason.code() == StatusCode::Closed);
+        ++notices;
+    }).ok());
+    CHECK(notices == 1);
+    CHECK(late.engine->notify_when_closed([](Status) {}).code() == StatusCode::AlreadyExists);
+    late.engine->stop();
+    CHECK(notices == 1);
+
+    TestSession failed;
+    int failure_notices = 0;
+    CHECK(failed.engine->notify_when_closed([&](Status reason) {
+        CHECK(!reason.ok() && failed.engine->state() == SessionState::Failed);
+        ++failure_notices;
+    }).ok());
+    failed.start_to_active();
+    const std::array<std::byte, 1> malformed{std::byte{255}};
+    failed.carrier->deliver(copy_bytes(malformed));
+    CHECK(failure_notices == 1);
+    failed.engine->stop();
+    CHECK(failure_notices == 1);
+}
+
 void test_stop_and_destruction_under_allocation_failure() {
     for (const bool sustained : {false, true}) {
         for (const bool last_owner : {false, true}) {
@@ -1188,6 +1248,13 @@ void test_stop_and_destruction_under_allocation_failure() {
             StatusCode read_code = StatusCode::Ok;
             StatusCode write_code = StatusCode::Ok;
             std::size_t write_bytes = 99U;
+            int closed = 0;
+            bool settled_before_notice = false;
+            CHECK(session.engine->notify_when_closed([&](Status status) {
+                ++closed;
+                settled_before_notice = reads == 1 && writes == 2 &&
+                    status.code() == (last_owner ? StatusCode::Closed : StatusCode::Cancelled);
+            }).ok());
             session.handler->responder->async_read({}, [&](auto result) {
                 ++reads;
                 read_code = result.status().code();
@@ -1224,6 +1291,7 @@ void test_stop_and_destruction_under_allocation_failure() {
             const auto expected = last_owner ? StatusCode::Closed
                                              : StatusCode::Cancelled;
             CHECK(reads == 1);
+            CHECK(closed == 1 && settled_before_notice);
             CHECK(writes == 2);
             CHECK(read_code == expected);
             CHECK(write_code == expected);
@@ -1651,6 +1719,7 @@ void test_open_acceptance_refusal_and_pending_cancellation() {
 
 void test_receiver_waits_for_handler_acceptance() {
     for (const auto outcome : {StatusCode::Ok, StatusCode::FailedPrecondition,
+                               StatusCode::PermissionDenied, StatusCode::Internal,
                                StatusCode::Cancelled}) {
         TestSession session;
         session.start_to_active();
@@ -1668,13 +1737,18 @@ void test_receiver_waits_for_handler_acceptance() {
         auto completion = std::move(session.handler->pending_acceptance);
         // A provider completing after peer cancellation cannot publish credit
         // or revive the removed application owner.
-        completion(Status(outcome == StatusCode::FailedPrecondition
-                              ? outcome : StatusCode::Ok));
+        completion(Status(outcome == StatusCode::Cancelled ? StatusCode::Ok : outcome));
         CHECK(session.engine->state() == SessionState::Active);
         CHECK(session.carrier->sent.size() == before + 1U);
         CHECK(protected_record_type(session.carrier->sent.back()) ==
               (outcome == StatusCode::Ok ? ytp1::RecordType::StreamCredit
                                         : ytp1::RecordType::Close));
+        if (outcome != StatusCode::Ok) {
+            const auto record = protected_record(session.carrier->sent.back());
+            CHECK(record.payload.size() == 1U);
+            CHECK(record.payload[0] == (outcome == StatusCode::PermissionDenied ? 1U
+                                     : outcome == StatusCode::Cancelled ? 5U : 3U));
+        }
     }
 }
 
@@ -1883,6 +1957,7 @@ void run_test() {
     test_termination_overrides_an_earlier_fin();
     test_partial_credit_does_not_reorder_queued_writes();
     test_stop_retains_engine_through_owner_releasing_callbacks();
+    test_session_closed_notification();
     test_pending_read_settled_after_allocation_failure();
     test_stop_and_destruction_under_allocation_failure();
     test_start_completion_survives_long_failure_status();

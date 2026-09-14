@@ -25,6 +25,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   direct TCP/UDP adapters within their destinations. The client keeps one
   authenticated session with bounded reconnect and runs loopback SOCKS5
   CONNECT listeners, joined to streams by the existing direct-route bridge.
+  Payload sent before the CONNECT reply stays in the socket until the remote
+  endpoint accepts the route; the bridge preserves it and the client's half-close.
+  An OPEN deadline returns SOCKS5 0x06 (TTL expired); other cancellation keeps
+  its existing status, and late acceptance cannot revive an expired request.
   `yume_native_runtime_test` carries a payload through SOCKS5, checks refusals
   and requires clean SIGTERM exits. SOCKS5 UDP, named-service and packet/TUN
   adapters remain unfinished, and the programs are not installed.
@@ -227,13 +231,24 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Session closure and reconnect.** The native client reconnects from an
+  endpoint notification instead of checking session state every second.
+  Teardown settles pending engine callbacks before the endpoint frees the
+  session slot and reports closure on its context. Failed starts retain
+  exponential backoff.
+- **DNS route refusal.** Asynchronous OPEN permission failures now send the
+  existing unauthorized CLOSE code, so SOCKS5 returns 0x02 instead of host
+  unreachable. A Linux process test runs the production daemon with controlled
+  resolver answers, checks mixed allowed and denied answers in both orders,
+  verifies that refused routes open no sockets, and carries traffic afterward.
 - **Build and tooling portability.** The direct-route archive applies the shared
   ABI's non-LTO policy only when the native backend is composed, preserving
   Release test links against LTO-built engine libraries in other configurations.
   Documentation pipeline fixtures use cleanup compatible with Python 3.10.
   Test-only allocation-failure hooks stay out of line. Optimized GCC 11 builds
   had inlined them and reported their malloc/free pair as a mismatched
-  new/delete call.
+  new/delete call. The server teardown regression now uses those shared hooks
+  too, retaining its caller-thread failure scope and all teardown checks.
 - **Replacement work and embedding boundaries.** Contributor and automation
   guidance require source-backed decisions, review of the proposed solution,
   capability-based retirement, and consumer-independent interfaces. Build help

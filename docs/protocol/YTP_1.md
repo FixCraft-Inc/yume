@@ -266,6 +266,9 @@ complete per-OPEN authorization and handler acceptance; a destination-bearing
 service MUST establish its authorized destination connection before accepting.
 The receiver's first STREAM_CREDIT is the authenticated acceptance barrier.
 A refusal uses terminal CLOSE and grants no stream credit.
+Authorization refusal, including a denied resolved destination address, uses
+the unauthorized close code. Failure to establish an otherwise authorized
+route uses the handler-failure close code.
 
 After receiving acceptance, the opener publishes its initial STREAM_CREDIT
 before reporting successful OPEN to its application. The receiver can then

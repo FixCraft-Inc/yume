@@ -33,6 +33,7 @@ enum class Reply : std::uint8_t {
     GeneralFailure = 0x01,
     NotAllowed = 0x02,
     HostUnreachable = 0x04,
+    TtlExpired = 0x06,
     CommandNotSupported = 0x07,
     AddressNotSupported = 0x08,
 };
@@ -45,6 +46,8 @@ enum class Parse : std::uint8_t {
 };
 
 struct Greeting final {
+    // On NeedMore, the minimum input size needed for the next parsing step.
+    std::size_t required_bytes{0U};
     std::size_t consumed{0U};
     bool no_authentication{false};
 };
@@ -52,6 +55,8 @@ struct Greeting final {
 Parse parse_greeting(std::span<const std::uint8_t> input, Greeting& out) noexcept;
 
 struct Request final {
+    // On NeedMore, the minimum input size needed for the next parsing step.
+    std::size_t required_bytes{0U};
     std::size_t consumed{0U};
     // Succeeded carries a TCP destination. Any other reply is sent before
     // closing.

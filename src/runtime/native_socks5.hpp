@@ -25,6 +25,7 @@ struct NativeSocks5Limits final {
     // The greeting and the request must both arrive within this time.
     std::chrono::milliseconds handshake_timeout{10'000};
     // Bounds one authenticated OPEN, including the server's route setup.
+    // Expiry cancels that OPEN and replies with SOCKS5 TTL expired (0x06).
     std::chrono::milliseconds open_timeout{30'000};
 };
 

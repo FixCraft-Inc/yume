@@ -421,6 +421,7 @@ public:
     Result<PeerEvidence> authenticated_peer() const;
 
     void async_start(StartCompletion completion);
+    Status notify_when_closed(ClosedCompletion completion);
     void async_open(std::string_view service_name,
                     ServiceKind service_kind,
                     std::optional<RouteDestination> destination,
@@ -652,6 +653,9 @@ private:
     SessionState state_{SessionState::Created};
     Status terminal_status_{};
     StartCompletion start_completion_;
+    ClosedCompletion closed_completion_;
+    bool closed_observer_registered_{false};
+    bool teardown_complete_{false};
     std::optional<AuthenticationMessageKind> expected_auth_kind_;
     std::optional<PeerEvidence> authenticated_peer_;
     std::vector<std::byte> authenticated_peer_capabilities_;
@@ -929,6 +933,28 @@ Result<PeerEvidence> SessionEngine::Impl::authenticated_peer() const try {
 void SessionEngine::async_start(StartCompletion completion) {
     const auto keepalive = weak_from_this().lock();
     impl_->async_start(std::move(completion));
+}
+
+Status SessionEngine::notify_when_closed(ClosedCompletion completion) {
+    const auto keepalive = weak_from_this().lock();
+    return impl_->notify_when_closed(std::move(completion));
+}
+
+Status SessionEngine::Impl::notify_when_closed(ClosedCompletion completion) {
+    if (!completion) return Status(StatusCode::InvalidArgument);
+    Status reason;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_observer_registered_) return Status(StatusCode::AlreadyExists);
+        closed_observer_registered_ = true;
+        if (!teardown_complete_) {
+            closed_completion_ = std::move(completion);
+            return Status::success();
+        }
+        reason = copy_failure(terminal_status_);
+    }
+    invoke_noexcept(completion, std::move(reason));
+    return Status::success();
 }
 
 void SessionEngine::async_open(std::string_view service_name,
@@ -2379,8 +2405,11 @@ void SessionEngine::Impl::complete_peer_open(StreamId stream_id,
             // published. Its terminal handshake already owns stream cleanup.
             if (status.code() == StatusCode::Closed) return;
         } else {
-            status = abort_stream(stream_id, StreamCloseCode::HandlerFailure,
-                                  std::move(status));
+            // Destination policy can refuse after asynchronous DNS resolution.
+            // Preserve that authorization decision for the opener.
+            const auto code = status.code() == StatusCode::PermissionDenied
+                ? StreamCloseCode::Unauthorized : StreamCloseCode::HandlerFailure;
+            status = abort_stream(stream_id, code, std::move(status));
         }
         if (!status.ok()) fail(std::move(status));
     } catch (const std::bad_alloc&) {
@@ -3812,6 +3841,15 @@ void SessionEngine::Impl::stop(Status reason, bool failed) noexcept {
     if (retired_active.has_value()) {
         invoke_noexcept(retired_active->completion, copy_failure(reason), 0U);
     }
+    retired_active.reset();
+    retired_streams.clear();
+    ClosedCompletion closed;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        teardown_complete_ = true;
+        closed = std::move(closed_completion_);
+    }
+    invoke_noexcept(closed, std::move(reason));
 }
 
 }  // namespace yume::engine

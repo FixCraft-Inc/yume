@@ -28,8 +28,6 @@ using Clock = std::chrono::steady_clock;
 using Timer = boost::asio::basic_waitable_timer<
     Clock, boost::asio::wait_traits<Clock>, providers::AsioExecutionContext::Executor>;
 
-constexpr std::chrono::seconds kSessionWatchInterval{1};
-
 // The client offers its configured services for authenticated capability
 // exchange but accepts no server-initiated OPEN.
 class RefusingHandler final : public engine::StreamHandler {
@@ -100,7 +98,7 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
         }
         if (!status.ok()) {
             try { say(describe("session start refused", status)); } catch (...) {}
-            schedule(backoff, false);
+            schedule_reconnect();
         }
     }
 
@@ -111,35 +109,32 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
         }
         if (!result.ok()) {
             try { say(describe("session failed", result.status())); } catch (...) {}
-            schedule(backoff, false);
+            schedule_reconnect();
             return;
         }
         session = std::move(result).take_value();
         backoff = options.reconnect_initial;
         say("session authenticated");
-        schedule(kSessionWatchInterval, true);
     }
 
-    // Watching polls the session state. Reconnecting doubles the delay up to
-    // the configured maximum.
-    void schedule(std::chrono::milliseconds delay, bool watching) noexcept {
+    void on_session_ended(const std::shared_ptr<engine::SessionEngine>& ended) noexcept {
+        if (closing || session != ended) return;
+        session.reset();
+        say("session ended, reconnecting");
+        connect();
+    }
+
+    // Failed attempts back off; an established session ending starts the first
+    // replacement attempt directly from its endpoint notification.
+    void schedule_reconnect() noexcept {
         if (closing) return;
-        if (!watching) backoff = std::min(backoff * 2, options.reconnect_max);
+        const auto delay = backoff;
+        backoff = std::min(backoff * 2, options.reconnect_max);
         try {
             timer.expires_after(delay);
-            timer.async_wait([weak = weak_from_this(), watching](const boost::system::error_code& error) {
+            timer.async_wait([weak = weak_from_this()](const boost::system::error_code& error) {
                 const auto self = weak.lock();
                 if (!self || error || self->closing) return;
-                if (!watching) {
-                    self->connect();
-                    return;
-                }
-                if (self->active_session()) {
-                    self->schedule(kSessionWatchInterval, true);
-                    return;
-                }
-                self->session.reset();
-                self->say("session ended, reconnecting");
                 self->connect();
             });
         } catch (...) {
@@ -208,6 +203,10 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
         endpoint_options.max_pending_starts = 1U;
         endpoint_options.start_timeout = options.start_timeout;
         endpoint_options.caller_runs_socks5_adapters = !state->socks5.empty();
+        endpoint_options.session_ended = [weak = std::weak_ptr<State>(state)](
+            std::shared_ptr<engine::SessionEngine> session, Status) noexcept {
+            if (const auto self = weak.lock()) self->on_session_ended(session);
+        };
         auto endpoint = NativeEndpoint::create(context, config, config_base_directory,
                                                std::move(bindings), std::move(endpoint_options));
         if (!endpoint.ok()) return Created(endpoint.status());

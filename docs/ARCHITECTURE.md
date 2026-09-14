@@ -217,6 +217,14 @@ declarations and reverse-proxy cover fail explicitly here. The C ABI backend
 does not yet compose these destination adapters.
 
 The endpoint bounds active sessions and pending starts and retains their engines.
+When a session ends, the engine settles its pending callbacks and queues, then
+notifies the endpoint through a reserved control task. The endpoint releases the
+slot before calling `session_ended` on its context, so the callback can start a
+replacement. Startup failures use the start completion alone. Endpoint close
+also delivers session-ended callbacks; owners keep the endpoint alive through
+close and drain. This notification does not mean OS cancellation has drained.
+Retaining a closed engine also retains its carrier's admission reservation;
+release old engine handles so they do not consume front-door capacity.
 A server may hand accepting to the endpoint. It keeps a set number of starts
 pending on every listener within that bound, re-arms after each settlement and
 waits a retry delay after a refused or immediately failed start. Manual and
@@ -240,6 +248,12 @@ name. System resolver calls may still delay final shutdown.
 ratchets, record protection, stream IDs, multiplexing, capabilities,
 backpressure, and teardown. Stream zero is session control; clients own odd
 application stream IDs and servers own even IDs.
+
+`notify_when_closed` accepts one observer for the engine's lifetime. It runs
+outside engine locks after teardown, or inline if registered afterward, and
+contains callback exceptions. Callers dispatch onto their own executor when
+needed. The native client uses the endpoint notification to reconnect when its
+session ends; only failed attempts wait for exponential backoff.
 
 Only a successful complete YTP authentication creates `PeerEvidence`. That
 post-YTP evidence represents the authenticated application peer and is the
@@ -281,6 +295,9 @@ cancellation close both sides once.
 The dispatcher supplies the graph's validated route provider to `async_route`;
 the bridge retains that instance through asynchronous settlement. Creating a
 handler requires destination authorization but does not select a provider.
+If asynchronous acceptance returns `PermissionDenied`, the engine sends an
+unauthorized CLOSE. This preserves policy refusals that can be decided only
+after DNS resolution. Other acceptance failures send a handler-failure CLOSE.
 
 The opt-in `AsioDirectRouteProvider` is the first concrete egress
 implementation. Its factory requires an explicit resolved-address policy in

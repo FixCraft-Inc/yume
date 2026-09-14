@@ -187,6 +187,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Build and tooling portability.** The direct-route archive applies the shared
+  ABI's non-LTO policy only when the native backend is composed, preserving
+  Release test links against LTO-built engine libraries in other configurations.
+  Documentation pipeline fixtures use cleanup compatible with Python 3.10.
 - **Replacement work and embedding boundaries.** Contributor and automation
   guidance require source-backed decisions, review of the proposed solution,
   capability-based retirement, and consumer-independent interfaces. Build help

@@ -375,8 +375,14 @@ add_library(yume::direct_route_handler ALIAS yume_direct_route_handler)
 target_include_directories(yume_direct_route_handler
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(yume_direct_route_handler PUBLIC yume_engine)
-# Native configured adapters bring this archive into the shared ABI closure.
-yume_prepare_static_for_shared_abi(yume_direct_route_handler)
+# Only the native endpoint brings this archive into the shared ABI closure.
+# Without that backend, propagating -fno-lto breaks consumers that also link
+# the LTO-built session/engine archives (including the direct-route test).
+if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
+   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER AND
+   YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+    yume_prepare_static_for_shared_abi(yume_direct_route_handler)
+endif()
 yume_apply_perf_opts(yume_direct_route_handler)
 
 if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER OR

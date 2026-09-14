@@ -55,6 +55,8 @@ public:
     IpFilter& operator=(const IpFilter&) = delete;
 
     void configure(FilterMode client_mode, FilterMode egress_mode);
+    // Replaces loaded data on success; failure preserves the previous data.
+    // The owner must exclude concurrent readers during replacement.
     bool load(const std::vector<FilterListSpec>& specs,
               const std::string& geolite_archive,
               std::uint32_t memory_mib,
@@ -108,6 +110,10 @@ private:
                          const PlaneRules& rules,
                          FilterMode mode) const;
 
+    bool load_candidate(const std::vector<FilterListSpec>& specs,
+                        const std::string& geolite_archive,
+                        std::uint32_t memory_mib, std::string* error);
+    void swap_loaded_state(IpFilter& other) noexcept;
     bool load_list_path(const FilterListSpec& spec, std::uint32_t memory_mib, std::string* error);
     bool load_custom_json(const std::filesystem::path& path,
                           const FilterListSpec& spec,

@@ -92,10 +92,12 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::tls_ca_cert, c.tls_ca_cert);
     read_opt(j, cfg_key::tls_server_name, c.tls_server_name);
     // Android SharedYumeSessionConfig writes tls_pin_sha256. Native writers
-    // use tls_pin, which takes precedence if both are present.
-    read_opt(j, j.contains(cfg_key::tls_pin) ? cfg_key::tls_pin
-                                          : cfg_key::tls_pin_sha256,
-             c.tls_pin_sha256);
+    // use tls_pin, which takes precedence if both are present. An overridden
+    // field must still have the declared type, just as in the CLI reader.
+    read_opt(j, cfg_key::tls_pin, c.tls_pin_sha256);
+    std::string android_pin;
+    read_opt(j, cfg_key::tls_pin_sha256, android_pin);
+    if (!j.contains(cfg_key::tls_pin)) c.tls_pin_sha256 = std::move(android_pin);
     read_opt(j, cfg_key::transport_profile, c.transport_profile);
     read_opt(j, cfg_key::tls_backend, c.tls_backend);
     read_opt(j, cfg_key::tls_helper_path, c.tls_helper_path);
@@ -132,8 +134,8 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
             app_codec::builtin::kMoneroRpcDefaultPort,
             &endpoint_error);
         if (!endpoint.has_value()) {
-            throw std::runtime_error(
-                "app_codec_listen: " + endpoint_error);
+            throw yume::config::member_error(
+                cfg_key::app_codec_listen, "app_codec_listen: " + endpoint_error);
         }
         c.app_codec_listen_host = std::move(endpoint->host);
         c.app_codec_listen_port = endpoint->port;
@@ -240,7 +242,6 @@ bool serialize_client_json(
         if (err) *err = "client config serialization destination is null";
         return false;
     }
-    serialized->clear();
     json j = {
         {cfg_key::server, c.server},
         {cfg_key::port, c.port},
@@ -365,6 +366,11 @@ ValidationReport validate(client::ClientConfig const& c) {
         r.errors.emplace_back(
             "obfs_jitter_ms: must be 0.." +
             std::to_string(policy::kMaxObfsJitterMs));
+    }
+    if (c.obfs_pad_multiple != 0 || c.obfs_jitter_ms != 0) {
+        r.errors.emplace_back(
+            "obfs_pad_multiple/obfs_jitter_ms: the Chrome profile capture "
+            "contains neither; both must be 0");
     }
     if (c.io_threads < 0 || c.io_threads > policy::kMaxIoThreads) {
         r.errors.emplace_back(

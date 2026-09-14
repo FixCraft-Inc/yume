@@ -1,0 +1,130 @@
+{
+  "name": "carrier_open",
+  "type": "flow",
+  "title": "How a transport-v2 connection opens",
+  "summary": "The client first behaves like a browser: a browser-shaped TLS handshake, the cover page and its assets, then a WebSocket request carrying an admission token. Only a valid, unused token reaches AUTH. Everything else stays on the cover path.",
+  "comment": [
+    "Transport v2 only. docs/STEALTH.md and docs/protocol/YUME_2_0_WIRE.md own the exact behavior.",
+    "The rejected-request residual (bounded 404 versus the reference 405) must stay stated while it exists."
+  ],
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "hello",
+      "kind": "process",
+      "title": "TLS 1.3 HANDSHAKE",
+      "sub": "browser-shaped hello",
+      "role": "disguise",
+      "note": "The client opens TLS 1.3 to yumed with a ClientHello reproduced from one captured browser profile, through an opt-in capability in YUME's pinned OpenSSL build.",
+      "source": [
+        "docs/TRANSPORT_PROFILES.md",
+        "src/core/stealth/tls_client_profile.cpp",
+        "patches/"
+      ]
+    },
+    {
+      "id": "cover_fetch",
+      "kind": "process",
+      "title": "PAGE AND ASSETS",
+      "sub": "ordinary HTTP/2 requests",
+      "role": "disguise",
+      "note": "Before any tunnel request, the client loads the captured cover page and its assets on the same HTTP/2 connection, like a first visit to the site.",
+      "source": [
+        "docs/STEALTH.md",
+        "src/core/stealth/h2_carrier.cpp"
+      ]
+    },
+    {
+      "id": "request",
+      "kind": "process",
+      "title": "TUNNEL REQUEST",
+      "sub": "extended CONNECT + token",
+      "role": "disguise",
+      "note": "An RFC 8441 extended CONNECT opens a WebSocket stream. Its path carries an admission token: an HMAC over the transport version, the profile, the site name, the hour and a fresh nonce.",
+      "source": [
+        "docs/protocol/YUME_2_0_WIRE.md",
+        "src/admission/h2_admission.cpp"
+      ]
+    },
+    {
+      "id": "admission",
+      "kind": "gate",
+      "title": "ADMISSION CHECK",
+      "sub": "HMAC, hour, replay cache",
+      "note": "yumed recomputes the token for the current or previous hour, checks that the TLS site name and the HTTP/2 authority agree, and records the nonce in a process-wide replay cache of at most 4,096 entries.",
+      "source": [
+        "src/admission/h2_admission.cpp",
+        "docs/STEALTH.md"
+      ]
+    },
+    {
+      "id": "auth",
+      "kind": "server",
+      "title": "AUTH V2",
+      "sub": "identity and root key",
+      "note": "This is the first YUME message. The server's challenge carries fresh public keys, the client proves its Ed25519 + ML-DSA-87 identity, and both sides derive a root key bound to this TLS connection.",
+      "source": [
+        "src/core/security/auth_v2.cpp",
+        "src/server/session/auth.cpp"
+      ]
+    },
+    {
+      "id": "streams",
+      "kind": "tun",
+      "title": "SEALED STREAMS",
+      "sub": "WebSocket messages",
+      "note": "AUTH_OK arrives already sealed. From then on every message has a one-use AES-256-GCM key and travels as a WebSocket binary message inside HTTP/2 DATA frames.",
+      "source": [
+        "src/core/security/session_ratchet.cpp",
+        "src/core/stealth/h2_carrier.cpp"
+      ]
+    },
+    {
+      "id": "cover",
+      "kind": "site",
+      "title": "COVER PATH",
+      "sub": "no AUTH sent",
+      "role": "refused",
+      "side": true,
+      "note": "Missing, wrong, expired, replayed or mismatched tokens never receive AUTH. The rejected tunnel request gets a bounded 404, which differs from the reference cover server, while page requests still reach the cover site.",
+      "source": [
+        "docs/STEALTH.md",
+        "src/server/runtime/cover_response.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "hello",
+      "to": "cover_fetch",
+      "label": "HTTP/2"
+    },
+    {
+      "from": "cover_fetch",
+      "to": "request",
+      "label": "same connection"
+    },
+    {
+      "from": "request",
+      "to": "admission",
+      "label": "path /token/nonce"
+    },
+    {
+      "from": "admission",
+      "to": "auth",
+      "label": "valid, unused"
+    },
+    {
+      "from": "auth",
+      "to": "streams",
+      "label": "AUTH_OK sealed"
+    },
+    {
+      "from": "admission",
+      "to": "cover",
+      "label": "invalid"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import yume_diagram_ascii
 import yume_diagram_svg
 import yume_diagram_spec
+import yume_diagram_theme
 import yume_diagrams
 from yume_diagram_spec import SpecError
 
@@ -71,7 +72,7 @@ def _arrow_tips(markup: str) -> list[tuple[float, float]]:
     return [
         (float(x), float(y))
         for x, y in re.findall(
-            r'class="dgm-arrow"[^>]*?L(-?[\d.]+) (-?[\d.]+)Z', markup
+            r'class="dgm-arrow[^"]*"[^>]*?L(-?[\d.]+) (-?[\d.]+)Z', markup
         )
     ]
 
@@ -505,11 +506,12 @@ class SvgRendering(unittest.TestCase):
         # something about the layout rather than about the route.
         rates = []
         for spec in yume_diagram_spec.load_all():
-            if not spec.web:
+            # A layers figure has no packet. Its rings light in wrapping order.
+            if not spec.web or spec.type == "layers":
                 continue
             for layout in ("vertical", "horizontal"):
                 markup = yume_diagram_svg.render(spec, layout)
-                seconds = float(re.search(r"--dgm-dur:([\d.]+)s", markup).group(1))
+                seconds =float(re.search(r"--dgm-dur:([\d.]+)s", markup).group(1))
                 points = _path_points(markup)
                 length = sum(
                     math.dist(a, b) for a, b in zip(points, points[1:])
@@ -668,6 +670,261 @@ class MarkdownBlock(unittest.TestCase):
         self.assertNotIn("<img", "\n".join(lines))
 
 
+FLOW = {
+    "name": "example",
+    "type": "flow",
+    "title": "Example flow",
+    "summary": "A chain whose middle node turns some requests aside.",
+    "targets": {"web": True},
+    "nodes": [
+        {"id": "client", "kind": "client", "title": "YUME CLIENT", "sub": "carrier source"},
+        {
+            "id": "door",
+            "kind": "gate",
+            "title": "FRONT DOOR",
+            "sub": "admission",
+            "note": "Checks a token.",
+            "source": ["scripts/"],
+        },
+        {"id": "target", "kind": "target", "title": "TARGET", "sub": "egress"},
+        {"id": "cover", "kind": "site", "title": "COVER SITE", "sub": "pages", "side": True},
+    ],
+    "edges": [
+        {"from": "client", "to": "door", "channel": "tunnel"},
+        {"from": "door", "to": "target", "label": "valid"},
+        {"from": "door", "to": "cover", "label": "no token"},
+    ],
+}
+
+LAYERS = {
+    "name": "example",
+    "type": "layers",
+    "title": "Example layers",
+    "summary": "Three wrappings, innermost first.",
+    "targets": {"web": True},
+    "nodes": [
+        {"id": "data", "role": "data", "title": "BYTES", "sub": "payload"},
+        {"id": "seal", "role": "keys", "title": "SEALED", "sub": "AEAD"},
+        {"id": "wire", "role": "neutral", "title": "TCP", "sub": "outermost"},
+    ],
+    "edges": [],
+}
+
+
+MERGE = {
+    "name": "example",
+    "type": "flow",
+    "title": "Example merge",
+    "summary": "Two inputs feed one derivation.",
+    "targets": {"web": True},
+    "nodes": [
+        {"id": "left", "kind": "key", "title": "LEFT SECRET", "sub": "first input", "side": True},
+        {"id": "right", "kind": "key", "title": "RIGHT SECRET", "sub": "second input", "side": True},
+        {"id": "root", "kind": "process", "title": "ROOT KEY", "sub": "derivation"},
+        {"id": "use", "kind": "key", "title": "MESSAGE KEY", "sub": "used once"},
+    ],
+    "edges": [
+        {"from": "root", "to": "use", "label": "chain"},
+        {"from": "left", "to": "root"},
+        {"from": "right", "to": "root"},
+    ],
+}
+
+
+class FlowInputs(unittest.TestCase):
+    def load(self, document: dict) -> yume_diagram_spec.Spec:
+        with tempfile.TemporaryDirectory() as directory:
+            return yume_diagram_spec.parse(write_spec(Path(directory), document))
+
+    def variant(self, change) -> dict:
+        document = json.loads(json.dumps(MERGE))
+        change(document)
+        return document
+
+    def test_inputs_feed_the_first_chain_node(self) -> None:
+        spec = self.load(MERGE)
+        self.assertEqual([node.id for _edge, node in spec.inputs()], ["left", "right"])
+        self.assertEqual([node.id for node in spec.chain()], ["root", "use"])
+        self.assertEqual(spec.nodes[0].tone, "keys")
+
+    def test_an_input_into_a_later_node_is_rejected(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(self.variant(lambda document: document["edges"][1].update(to="use")))
+
+    def test_an_input_takes_no_label(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(self.variant(lambda document: document["edges"][1].update(label="mix")))
+
+    def test_the_ascii_inputs_drop_onto_the_first_port(self) -> None:
+        lines = yume_diagram_ascii.render(self.load(MERGE)).split("\n")
+        joins = [line.rstrip().rfind("+") for line in lines if "SECRET" in line]
+        self.assertEqual(len(set(joins)), 1)
+        bus = joins[0]
+        arrow = next(index for index, line in enumerate(lines) if len(line) > bus and line[bus] == "v")
+        self.assertEqual(lines[arrow + 1][bus], "+")
+        self.assertIn("ROOT KEY", lines[arrow + 2])
+
+    def test_inputs_join_one_bus_that_ends_on_the_first_card(self) -> None:
+        spec = self.load(MERGE)
+        for layout in ("vertical", "horizontal"):
+            markup = yume_diagram_svg.render(spec, layout)
+            body = _body(markup)
+            self.assertEqual(body.count('class="dgm-junction"'), 2, layout)
+            self.assertNotIn("dgm-here-", body.split('data-node="right"', 1)[1].split("</g>", 1)[0])
+            cards = _cards(markup)
+            first = cards[2]
+            tips = _arrow_tips(markup)
+            if layout == "horizontal":
+                self.assertTrue(any(abs(x - (first[0] - yume_diagram_svg.CARD_CLEARANCE)) < 0.01 for x, _y in tips))
+            else:
+                self.assertTrue(any(abs(y - (first[1] - yume_diagram_svg.CARD_CLEARANCE)) < 0.01 for _x, y in tips))
+
+
+class FlowsAndLayers(unittest.TestCase):
+    def load(self, document: dict) -> yume_diagram_spec.Spec:
+        with tempfile.TemporaryDirectory() as directory:
+            return yume_diagram_spec.parse(write_spec(Path(directory), document))
+
+    def variant(self, base: dict, change) -> dict:
+        document = json.loads(json.dumps(base))
+        change(document)
+        return document
+
+    def test_a_flow_separates_its_chain_from_its_branch(self) -> None:
+        spec = self.load(FLOW)
+        self.assertEqual([node.id for node in spec.chain()], ["client", "door", "target"])
+        self.assertEqual(
+            [(parent, node.id) for parent, _edge, node in spec.branches()], [(1, "cover")]
+        )
+
+    def test_a_side_node_needs_exactly_one_branch(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(self.variant(FLOW, lambda document: document["edges"].pop()))
+
+    def test_a_node_sends_at_most_one_branch(self) -> None:
+        def second(document: dict) -> None:
+            document["nodes"].append({"id": "probe", "kind": "site", "title": "PROBE", "side": True})
+            document["edges"].append({"from": "door", "to": "probe"})
+
+        with self.assertRaises(SpecError):
+            self.load(self.variant(FLOW, second))
+
+    def test_a_route_cannot_hold_a_side_node(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(self.variant(MINIMAL, lambda document: document["nodes"][1].update(side=True)))
+
+    def test_layers_take_roles_and_no_edges(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(self.variant(LAYERS, lambda document: document["nodes"][0].pop("role")))
+        with self.assertRaises(SpecError):
+            self.load(
+                self.variant(
+                    LAYERS, lambda document: document["edges"].append({"from": "data", "to": "seal"})
+                )
+            )
+
+    def test_an_unknown_role_is_rejected(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(self.variant(FLOW, lambda document: document["nodes"][0].update(role="pink")))
+
+    def test_a_kind_implies_a_role(self) -> None:
+        tones = {node.id: node.tone for node in self.load(FLOW).nodes}
+        self.assertEqual(
+            tones, {"client": "client", "door": "server", "target": "outside", "cover": "disguise"}
+        )
+
+    def test_a_source_that_escapes_the_repository_is_rejected(self) -> None:
+        with self.assertRaises(SpecError):
+            self.load(
+                self.variant(FLOW, lambda document: document["nodes"][1].update(source=["../outside"]))
+            )
+
+    def test_a_missing_source_is_reported(self) -> None:
+        spec = self.load(
+            self.variant(
+                FLOW,
+                lambda document: document["nodes"][1].update(source=["scripts/", "no/such/file.cpp"]),
+            )
+        )
+        problems = yume_diagram_spec.missing_sources(spec, REPO_ROOT)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no/such/file.cpp", problems[0])
+
+    def test_the_ascii_branch_leaves_its_parent_on_the_title_row(self) -> None:
+        lines = yume_diagram_ascii.render(self.load(FLOW)).split("\n")
+        row = next(line for line in lines if "FRONT DOOR" in line)
+        self.assertRegex(row, r"\+-+>\|  COVER SITE")
+        self.assertIn("no token", lines[lines.index(row) + 1])
+
+    def test_ascii_layers_nest_outermost_first_at_one_width(self) -> None:
+        lines = yume_diagram_ascii.render(self.load(LAYERS)).rstrip("\n").split("\n")
+        self.assertEqual(len({len(line) for line in lines}), 1)
+        titles = [line.strip("| ").split()[0] for line in lines if "|" in line and line.strip("|+- ")]
+        self.assertEqual([title for title in titles if title[0].isalpha()], ["TCP", "SEALED", "BYTES"])
+        self.assertLessEqual(len(lines[0]), yume_diagram_ascii.BUDGET)
+
+    def test_a_side_card_is_never_lit_by_the_packet(self) -> None:
+        for layout in ("vertical", "horizontal"):
+            markup = yume_diagram_svg.render(self.load(FLOW), layout)
+            self.assertEqual({index for index, _lit, _dark in _windows(markup)}, {0, 1, 2}, layout)
+            self.assertNotIn("dgm-here-", markup.split('data-node="cover"', 1)[1], layout)
+
+    def test_a_branch_is_dashed_in_the_role_it_turns_towards(self) -> None:
+        body = _body(yume_diagram_svg.render(self.load(FLOW), "horizontal"))
+        self.assertIn('<g class="dgm-branch dgm-role-disguise">', body)
+        self.assertIn("dgm-link-branch", body)
+
+    def test_the_stacked_flow_runs_its_path_down_the_glyph_rail(self) -> None:
+        markup = yume_diagram_svg.render(self.load(FLOW), "vertical")
+        cards = _cards(markup)
+        rail = cards[0][0] + yume_diagram_svg.RAIL_X
+        self.assertEqual(len([tip for tip in _arrow_tips(markup) if tip[0] == rail]), 2)
+        self.assertEqual(max(x for x, _y in cards) - cards[0][0], yume_diagram_svg.SIDE_INDENT)
+
+    def test_layers_light_innermost_first(self) -> None:
+        for layout in ("vertical", "horizontal"):
+            markup = yume_diagram_svg.render(self.load(LAYERS), layout)
+            self.assertEqual(_body(markup).count('<rect class="dgm-ring '), 3)
+            windows = sorted(_windows(markup))
+            self.assertEqual([index for index, _lit, _dark in windows], [0, 1, 2])
+            self.assertTrue(all(a[1] < b[1] for a, b in zip(windows, windows[1:])))
+            self.assertNotIn("dgm-packet", _body(markup))
+
+    def test_every_role_has_its_own_website_tokens(self) -> None:
+        tokens = {local: token for local, token, _light, _dark in yume_diagram_svg.PALETTE}
+        for role in yume_diagram_spec.ROLES:
+            if role == "neutral":
+                continue
+            for suffix in ("", "-strong", "-soft"):
+                self.assertEqual(tokens[f"{role}{suffix}"], f"--color-role-{role}{suffix}")
+
+    def test_a_site_without_role_tokens_draws_roles_in_its_accent(self) -> None:
+        css = (
+            ":root { --paper: oklch(98% 0.01 305); --surface: oklch(99% 0.01 305);"
+            " --text: oklch(20% 0.01 305); --text-3: oklch(50% 0.01 305);"
+            " --rule: oklch(85% 0.01 305); --accent: oklch(60% 0.15 306);"
+            " --accent-hover: oklch(70% 0.12 306); --accent-wash: oklch(95% 0.03 306);"
+            ' --font-display: "A"; --font-mono: "B"; }'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tokens.css"
+            path.write_text(css, encoding="utf-8")
+            palette, _display, _mono = yume_diagram_theme.load(path, yume_diagram_spec.ROLES)
+        tokens = {local: token for local, token, _light, _dark in palette}
+        self.assertEqual(tokens["server"], "--accent")
+        self.assertEqual(tokens["neutral-strong"], "--text-3")
+
+    def test_the_key_lists_each_noted_part_with_its_role(self) -> None:
+        key = yume_diagrams.key_html(self.load(FLOW))
+        self.assertEqual(key.count('class="diagram-key-item"'), 1)
+        self.assertIn('data-node="door" data-role="server"', key)
+        self.assertIn("<code>scripts/</code>", key)
+
+    def test_markdown_links_each_source_from_the_document(self) -> None:
+        block = yume_diagrams.render_block(self.load(FLOW), REPO_ROOT / "docs" / "EXAMPLE.md")
+        self.assertIn("- **FRONT DOOR**: Checks a token. ([`scripts/`](../scripts))", block)
+
+
 class ShippedSpecifications(unittest.TestCase):
     def test_every_specification_loads_and_renders(self) -> None:
         specs = yume_diagram_spec.load_all()
@@ -690,6 +947,17 @@ class ShippedSpecifications(unittest.TestCase):
             for source in (REPO_ROOT / "scripts").glob("yume_diagram*.py"):
                 shutil.copy2(source, root / "scripts" / source.name)
             shutil.copy2(REPO_ROOT / "scripts/yume_doc_spec.py", root / "scripts/yume_doc_spec.py")
+            # `check` also proves that every node source still exists, so the
+            # fixture sees the same top-level trees those sources point into.
+            tops = {
+                source.split("/")[0]
+                for spec in yume_diagram_spec.load_all()
+                for node in spec.nodes
+                for source in node.sources
+            }
+            for top in sorted(tops):
+                if not (root / top).exists():
+                    (root / top).symlink_to(REPO_ROOT / top)
             website = root / "website" / "assets"
             website.mkdir(parents=True)
             shutil.copy2(

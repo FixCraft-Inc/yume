@@ -116,7 +116,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -204,7 +204,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -300,7 +300,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -377,7 +377,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -466,7 +466,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           # GUI-only: GLFW's X11 backend, GL, and the font stack. GLFW/ImGui/
           # ImPlot themselves come from FetchContent.

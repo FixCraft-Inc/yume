@@ -93,19 +93,35 @@ Most-specific match wins. If two rules have the same specificity, deny wins.
 This lets exact allow rules override broad country or VPN-provider denies
 while keeping ambiguous equal matches fail-closed.
 
-At startup, each archive is copied into a newly created owner-only temporary
-directory so validation and extraction consume one private snapshot. Archive
-members must have relative, traversal-free names without backslashes or control
-escapes and be regular files or directories; links and special files are
-refused. Extracted data is loaded into memory and removed on shutdown, while a
-partial failed extraction is removed immediately. No archive extraction or
-disk parsing is done in the hot path.
+Archive extraction is supported on Linux. YUME reads a bounded regular-file
+snapshot into memory, decodes XZ with liblzma, and validates tar/PAX members
+with libarchive before creating files. It runs no shell or external archive
+tool. Other platforms refuse archives; use unpacked lists or databases there.
 
-Archive extraction is supported only on Linux and depends on a shell and GNU
-tar. Other platforms refuse archives; use unpacked lists or databases there.
-Compressed size, member count, expanded bytes, disk use, and
-decompression time have no complete extraction budget. Use only trusted
-operator archives on the tested Linux/GNU-tar path.
+Each archive is limited to 32 MiB compressed, 128 MiB decoded, 64 MiB per
+regular file, 128 MiB of file payload, 4,096 members, and 4,096 filesystem
+nodes including implicit parent directories. Names are at most 1,024 bytes
+and 16 components deep. Only regular files and directories with relative,
+traversal-free names are accepted. Links, sparse extents, special files,
+backslashes, control characters, conflicting names, corrupt input, and hidden
+nonzero data after the tar end marker are refused. Decoder memory is capped
+at 64 MiB. A 30-second elapsed-work budget is checked between bounded reads,
+decode steps, header reads, and writes; it cannot interrupt a blocked kernel
+filesystem operation.
+
+Files are created exclusively beneath a new owner-only staging directory,
+using directory descriptors and no-follow opens. Archive ownership and modes
+are ignored: directories use mode 0700 and files 0600, subject to the process
+umask. Failed candidates are removed; successful files remain owned by their
+filter snapshot. The payload and node limits bound extraction output, not
+filesystem metadata overhead or total process memory. Multiple archives and
+filter-rule parsing have separate costs. The approximate `--filter-memory-mib`
+rule budget remains a later loading check.
+
+Initial loading and reload build a complete filter candidate. A failed load
+preserves the previous rules and files. A successful reload replaces them;
+concurrent lookups retain an immutable snapshot until they finish. Extraction
+and file parsing occur during loading, outside the lookup path.
 
 `vpn_db.tar.xz` is private/operator-supplied and remains untracked.
 `GeoLiteCountry.tar.xz` may contain a compact `geoip_country_ipv4.db` or a

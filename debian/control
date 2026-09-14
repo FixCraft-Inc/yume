@@ -14,6 +14,8 @@ Build-Depends:
  nlohmann-json3-dev,
  libspdlog-dev,
  libzstd-dev,
+ liblzma-dev,
+ libarchive-dev (>= 3.6.0),
  zlib1g-dev,
  libbasefwx-dev (>= 3.8.0~dev1-1),
 # GUI build (skipped when DEB_BUILD_PROFILES contains "nogui"):

@@ -200,15 +200,22 @@ class ProcessResourceSampler:
             if pid in candidates:
                 continue
             candidates.add(pid)
-            children = _read_text(Path(f"/proc/{pid}/task/{pid}/children"))
-            if children:
-                for value in children.split():
-                    try:
-                        child = int(value)
-                    except ValueError:
-                        continue
-                    if child not in candidates:
-                        pending.append(child)
+            # Linux records children under the thread that created them.
+            # A helper spawned by an I/O worker is absent from the leader's list.
+            try:
+                tasks = list(Path(f"/proc/{pid}/task").iterdir())
+            except OSError:
+                continue
+            for task in tasks:
+                children = _read_text(task / "children")
+                if children:
+                    for value in children.split():
+                        try:
+                            child = int(value)
+                        except ValueError:
+                            continue
+                        if child not in candidates:
+                            pending.append(child)
 
         live_processes: set[int] = set()
         for pid in candidates:

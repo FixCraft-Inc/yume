@@ -6,6 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cerrno>
+#include <cstdlib>
+#include <new>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -22,6 +26,107 @@
 #include <vector>
 
 #include "providers/ytp1_h2_carrier.hpp"
+#include "providers/ytp1_h2_admission.hpp"
+
+namespace test_allocation_failure {
+
+// One-shot injection targets a selected actor turn. Sustained injection covers
+// every thread and both allocation routes used by Boost.Asio.
+thread_local std::ptrdiff_t remaining = -1;
+std::atomic<bool> sustained{false};
+
+class Scope final {
+public:
+    explicit Scope(std::ptrdiff_t count) noexcept { remaining = count; }
+    ~Scope() { remaining = -1; }
+};
+
+class SustainedScope final {
+public:
+    explicit SustainedScope(bool enabled = true) noexcept {
+        sustained.store(enabled, std::memory_order_release);
+    }
+    ~SustainedScope() { sustained.store(false, std::memory_order_release); }
+};
+
+bool consume() noexcept {
+    if (sustained.load(std::memory_order_acquire)) return true;
+    if (remaining < 0) {
+        return false;
+    }
+    if (remaining == 0) {
+        remaining = -1;
+        return true;
+    }
+    --remaining;
+    return false;
+}
+
+}  // namespace test_allocation_failure
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
+void* operator new(std::size_t size) {
+    if (test_allocation_failure::consume()) {
+        throw std::bad_alloc();
+    }
+    if (void* allocation = std::malloc(size == 0U ? 1U : size)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete[](void* allocation) noexcept { ::operator delete(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept {
+    ::operator delete(allocation);
+}
+void operator delete[](void* allocation, std::size_t) noexcept {
+    ::operator delete[](allocation);
+}
+
+// Asio's aligned allocation path can bypass operator new. Interpose it as
+// well, so a passing cleanup test cannot accidentally depend on that escape.
+extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
+    if (test_allocation_failure::consume()) {
+        errno = ENOMEM;
+        return nullptr;
+    }
+    void* allocation = nullptr;
+    const int error = ::posix_memalign(&allocation, alignment, size == 0U ? 1U : size);
+    if (error != 0) errno = error;
+    return allocation;
+}
+
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    if (void* allocation = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) {
+    return ::operator new(size, alignment);
+}
+void operator delete(void* allocation, std::align_val_t) noexcept {
+    std::free(allocation);
+}
+void operator delete[](void* allocation, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+void operator delete(void* allocation, std::size_t, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+void operator delete[](void* allocation, std::size_t, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace yume::providers {
 namespace {
@@ -41,6 +146,9 @@ using engine::SecureChannel;
 using engine::SecureChannelPeerEvidence;
 using engine::Status;
 using engine::StatusCode;
+
+constexpr std::array<std::byte, kYtp1H2AdmissionKeyBytes> kTestAdmissionKey{
+    std::byte{0x9a}, std::byte{0x42}, std::byte{0xe1}};
 
 class TestFailure final : public std::runtime_error {
 public:
@@ -80,11 +188,11 @@ std::string buffer_text(const Buffer& buffer) {
         reinterpret_cast<const char*>(buffer.bytes().data()), buffer.size());
 }
 
-ProviderDescriptor make_secure_descriptor() {
+ProviderDescriptor make_secure_descriptor(bool tls13 = true) {
+    auto capabilities = engine::mandatory_capabilities(ProviderKind::SecureChannel);
+    if (tls13) capabilities = capabilities.with(engine::Capability::Tls13);
     return require(ProviderDescriptor::create(
-        "test.tls13", ProviderKind::SecureChannel, 1U,
-        engine::mandatory_capabilities(ProviderKind::SecureChannel)
-            .with(engine::Capability::Tls13)));
+        "test.tls13", ProviderKind::SecureChannel, 1U, capabilities));
 }
 
 class TestExecutor final {
@@ -99,9 +207,19 @@ public:
         tasks_.push_back(std::move(task));
     }
 
+    Ytp1H2Dispatch dispatch() {
+        return {
+            [this](std::function<void()> task) { post(std::move(task)); },
+            [this](ControlTask& task, std::shared_ptr<void> owner) noexcept {
+                controls_.push(task, std::move(owner));
+            }};
+    }
+
     void run() {
         std::size_t turns = 0U;
-        while (!tasks_.empty()) {
+        while (!tasks_.empty() || !controls_.empty()) {
+            running_ = true;
+            if (controls_.run_one()) { running_ = false; continue; }
             if (++turns > 1'000'000U) {
                 throw TestFailure("executor did not quiesce");
             }
@@ -114,10 +232,12 @@ public:
     }
 
     bool running() const noexcept { return running_; }
+    bool empty() const noexcept { return tasks_.empty() && controls_.empty(); }
     void reject_new_tasks() noexcept { reject_ = true; }
     void accept_new_tasks() noexcept { reject_ = false; }
 
 private:
+    ControlTaskQueue controls_;
     std::deque<std::function<void()>> tasks_;
     bool running_{false};
     bool reject_{false};
@@ -130,7 +250,13 @@ struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
         CancellationRegistration cancellation;
     };
 
+    struct HeldWrite {
+        SecureChannel::WriteCompletion completion;
+        std::size_t bytes;
+    };
     struct Endpoint {
+        std::optional<HeldWrite> held_write;
+        bool hold_writes{false};
         std::deque<std::vector<std::byte>> inbound;
         std::optional<PendingRead> pending;
         bool closed{false};
@@ -175,16 +301,26 @@ struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
     std::array<Endpoint, 2> endpoints;
     std::size_t fragment_bytes{7U};
     std::array<bool, 2> partial_next_write{false, false};
+    std::array<unsigned int, 2> destroyed{};
     std::size_t callback_count{0U};
+    std::size_t write_calls{0U};
+    std::size_t exporter_calls{0U};
+    bool exporter_fails{false};
+    bool exporter_wrong_length{false};
+    bool tls13{true};
+    bool server_authenticated{true};
+    std::string server_identity{"cover.example"};
+    std::function<void()> after_export;
 };
 
 class FakeSecureChannel final : public SecureChannel {
 public:
     FakeSecureChannel(std::shared_ptr<TestPipe> pipe, std::size_t side)
         : pipe_(std::move(pipe)), side_(side),
-          descriptor_(make_secure_descriptor()),
-          peer_(make_peer(side)) {}
-    ~FakeSecureChannel() noexcept override { close(); }
+          descriptor_(make_secure_descriptor(pipe_->tls13)),
+          peer_(make_peer(side, pipe_->server_identity,
+                          pipe_->server_authenticated)) {}
+    ~FakeSecureChannel() noexcept override { close(); ++pipe_->destroyed[side_]; }
 
     const ProviderDescriptor& descriptor() const noexcept override {
         return descriptor_;
@@ -250,6 +386,12 @@ public:
                      CancellationToken cancellation,
                      WriteCompletion completion) override {
         CHECK(pipe_->executor.running());
+        ++pipe_->write_calls;
+        if (pipe_->endpoints[side_].hold_writes) {
+            pipe_->endpoints[side_].held_write.emplace(TestPipe::HeldWrite{
+                std::move(completion), buffer.size()});
+            return;
+        }
         const auto shared = pipe_;
         const std::size_t side = side_;
         pipe_->executor.post(
@@ -296,15 +438,15 @@ public:
     }
 
     void cancel() noexcept override {
+        auto held_write = std::move(pipe_->endpoints[side_].held_write);
+        pipe_->endpoints[side_].held_write.reset();
         auto& pending = pipe_->endpoints[side_].pending;
         if (pending.has_value()) {
             auto callback = std::move(pending->completion);
             pending.reset();
-            pipe_->executor.post([callback = std::move(callback)]() mutable {
-                callback(Result<Buffer>(Status(
-                    StatusCode::Cancelled, "test secure channel cancelled")));
-            });
+            callback(Result<Buffer>(Status(StatusCode::Cancelled)));
         }
+        if (held_write) held_write->completion(Status(StatusCode::Cancelled), 0U);
     }
 
     void close() noexcept override {
@@ -321,19 +463,32 @@ public:
     }
 
     Result<Buffer> export_keying_material(
-        std::string_view,
-        std::span<const std::byte>,
+        std::string_view label,
+        std::span<const std::byte> context,
         std::size_t output_size) override {
+        CHECK(pipe_->executor.running());
+        CHECK(label == kYtp1H2AdmissionExporterLabel);
+        CHECK(context.empty());
+        CHECK(output_size == kYtp1H2AdmissionExporterBytes);
+        ++pipe_->exporter_calls;
+        if (pipe_->after_export) pipe_->after_export();
+        if (pipe_->exporter_fails) {
+            return Result<Buffer>(Status(StatusCode::FailedPrecondition,
+                                         "injected exporter failure"));
+        }
+        if (pipe_->exporter_wrong_length) --output_size;
         return Buffer::allocate(output_size, output_size);
     }
 
 private:
-    static SecureChannelPeerEvidence make_peer(std::size_t side) {
-        if (side == 1U) {
+    static SecureChannelPeerEvidence make_peer(std::size_t side,
+                                               std::string_view server_name,
+                                               bool authenticated) {
+        if (side == 1U || !authenticated) {
             return SecureChannelPeerEvidence::anonymous_client();
         }
         return require(SecureChannelPeerEvidence::authenticated(
-            EndpointRole::Server, "test-server", "tls13",
+            EndpointRole::Server, std::string(server_name), "tls13",
             std::vector<std::byte>{std::byte{1}}));
     }
 
@@ -363,6 +518,8 @@ public:
     std::unique_ptr<Carrier> take_carrier() {
         return std::move(carrier_);
     }
+
+    const std::string& admission_path() const noexcept { return admission_path_; }
 
 private:
     void collect_output() {
@@ -416,6 +573,13 @@ private:
                 for (auto& request : self->h2_->TakeRequests()) {
                     if (request.method == "CONNECT" &&
                         request.protocol == "websocket") {
+                        const std::array<std::byte, kYtp1H2AdmissionExporterBytes>
+                            exporter{};
+                        CHECK(verify_ytp1_h2_admission_path(
+                            kTestAdmissionKey, request.authority, "cover.example",
+                            exporter, request.path, 443U));
+                        CHECK(self->admission_path_.empty());
+                        self->admission_path_ = request.path;
                         CHECK(self->h2_->AcceptCarrier(request.stream_id));
                         if (!self->injected_binary_.empty()) {
                             CHECK(self->h2_->SendBinary(
@@ -439,9 +603,7 @@ private:
         }
         auto promoted = make_ytp1_h2_admitted_server_carrier(
             std::move(channel_), std::move(h2_), ExecutorAffinity(77U),
-            [this](std::function<void()> task) {
-                executor_.post(std::move(task));
-            });
+            executor_.dispatch());
         CHECK(promoted.ok());
         carrier_ = std::move(promoted).take_value();
         promoted_ = true;
@@ -462,6 +624,7 @@ private:
     std::unique_ptr<Carrier> carrier_;
     std::deque<Buffer> writes_;
     std::vector<std::uint8_t> injected_binary_;
+    std::string admission_path_;
     bool reading_{false};
     bool writing_{false};
     bool accepted_{false};
@@ -487,12 +650,10 @@ struct OpenedPair final {
             if (client) client->close();
             if (server) server->close();
             executor->run();
-            // Carrier destruction requests one final idempotent close. Drain
-            // those self-capturing tasks too, or a test post handler that owns
-            // its executor forms state -> executor -> task -> state at exit.
+            // Already settled handles must release their state without a
+            // second drain, even when the dispatch retains its executor.
             client.reset();
             server.reset();
-            executor->run();
         } catch (...) {
             // Test teardown must not throw while another assertion unwinds.
         }
@@ -508,9 +669,11 @@ struct OpenedPair final {
 };
 
 OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
-                     bool expect_success = true) {
+                     bool expect_success = true,
+                     std::shared_ptr<TestExecutor> executor = {},
+                     std::shared_ptr<Ytp1H2CarrierProvider> provider = {}) {
     OpenedPair pair;
-    pair.executor = std::make_shared<TestExecutor>();
+    pair.executor = executor ? std::move(executor) : std::make_shared<TestExecutor>();
     pair.pipe = std::make_shared<TestPipe>(*pair.executor);
     std::unique_ptr<SecureChannel> client_channel =
         std::make_unique<FakeSecureChannel>(pair.pipe, 0U);
@@ -521,12 +684,14 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
         std::move(injected_binary));
     pair.server_opening->start();
 
-    auto provider = require(Ytp1H2CarrierProvider::create(
-        ExecutorAffinity(77U),
-        [executor = pair.executor](std::function<void()> task) {
-            executor->post(std::move(task));
-        },
-        Ytp1H2ClientConfig{"cover.example", "/carrier-test", {}}));
+    if (!provider) {
+        auto mutable_key = kTestAdmissionKey;
+        provider = require(Ytp1H2CarrierProvider::create(
+            ExecutorAffinity(77U),
+            pair.executor->dispatch(),
+            Ytp1H2ClientConfig{"COVER.EXAMPLE", 443U, {}}, mutable_key));
+        mutable_key.fill(std::byte{0});
+    }
     bool completed = false;
     provider->async_create(
         std::move(client_channel), EndpointRole::Client, {},
@@ -540,6 +705,9 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
             }
             completed = true;
         });
+    // Queued creation owns the key independently of caller storage and the
+    // provider facade. The server verifies against the original fixed key.
+    provider.reset();
     pair.executor->run();
     CHECK(completed);
     pair.server = pair.server_opening->take_carrier();
@@ -557,28 +725,134 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
 
 void test_limits_cover_envelope_and_receive_window() {
     auto executor = std::make_shared<TestExecutor>();
-    const auto post = [executor](std::function<void()> task) {
-        executor->post(std::move(task));
-    };
+    const auto post = executor->dispatch();
 
     Ytp1H2ClientConfig retained_too_small{
-        "cover.example", "/carrier-test", {}};
+        "cover.example", 443U, {}};
     retained_too_small.limits.max_retained_receive_bytes =
         retained_too_small.limits.max_record_bytes;
     auto retained = Ytp1H2CarrierProvider::create(
-        ExecutorAffinity(77U), post, std::move(retained_too_small));
+        ExecutorAffinity(77U), post, std::move(retained_too_small), kTestAdmissionKey);
     CHECK(!retained.ok());
     CHECK(retained.status().code() == StatusCode::InvalidArgument);
 
     Ytp1H2ClientConfig record_too_large{
-        "cover.example", "/carrier-test", {}};
+        "cover.example", 443U, {}};
     record_too_large.limits.max_record_bytes =
         obfs::kAdmittedH2ReceiveWindowBytes -
         kYtp1H2CarrierEnvelopeBytes + 1U;
     auto oversized = Ytp1H2CarrierProvider::create(
-        ExecutorAffinity(77U), post, std::move(record_too_large));
+        ExecutorAffinity(77U), post, std::move(record_too_large), kTestAdmissionKey);
     CHECK(!oversized.ok());
     CHECK(oversized.status().code() == StatusCode::InvalidArgument);
+}
+
+void test_admission_configuration_rejects_invalid_inputs() {
+    TestExecutor executor;
+    const auto post = executor.dispatch();
+    const Ytp1H2ClientConfig valid{"cover.example", 443U, {}};
+    const std::array<std::byte, kYtp1H2AdmissionKeyBytes + 1U> oversized_key{};
+    for (std::size_t size : {0U, 1U, 31U, 33U}) {
+        auto result = Ytp1H2CarrierProvider::create(
+            ExecutorAffinity(77U), post, valid,
+            std::span(oversized_key).first(size));
+        CHECK(!result.ok());
+        CHECK(result.status().code() == StatusCode::InvalidArgument);
+    }
+    for (const auto& config : {
+             Ytp1H2ClientConfig{"cover.example", 0U, {}},
+             Ytp1H2ClientConfig{"cover.example/path", 443U, {}},
+             Ytp1H2ClientConfig{"cover.example.", 443U, {}}}) {
+        auto result = Ytp1H2CarrierProvider::create(
+            ExecutorAffinity(77U), post, config, kTestAdmissionKey);
+        CHECK(!result.ok());
+        CHECK(result.status().code() == StatusCode::InvalidArgument);
+    }
+}
+
+void test_admission_failures_close_before_http_output() {
+    enum class Failure {
+        WrongName, AnonymousPeer, MissingTls13, ExporterFailure,
+        ExporterLength, CancelBeforeDispatch, CancelDuringExporter
+    };
+    for (const auto failure : {
+             Failure::WrongName, Failure::AnonymousPeer, Failure::MissingTls13,
+             Failure::ExporterFailure, Failure::ExporterLength,
+             Failure::CancelBeforeDispatch, Failure::CancelDuringExporter}) {
+        TestExecutor executor;
+        auto pipe = std::make_shared<TestPipe>(executor);
+        CancellationSource cancellation;
+        StatusCode expected = StatusCode::ProviderMismatch;
+        std::size_t expected_exporter_calls = 0U;
+        switch (failure) {
+            case Failure::WrongName: pipe->server_identity = "other.example"; break;
+            case Failure::AnonymousPeer: pipe->server_authenticated = false; break;
+            case Failure::MissingTls13: pipe->tls13 = false; break;
+            case Failure::ExporterFailure:
+                pipe->exporter_fails = true;
+                expected = StatusCode::FailedPrecondition;
+                expected_exporter_calls = 1U;
+                break;
+            case Failure::ExporterLength:
+                pipe->exporter_wrong_length = true;
+                expected_exporter_calls = 1U;
+                break;
+            case Failure::CancelBeforeDispatch:
+                cancellation.cancel();
+                expected = StatusCode::Cancelled;
+                break;
+            case Failure::CancelDuringExporter:
+                pipe->after_export = [&cancellation] { cancellation.cancel(); };
+                expected = StatusCode::Cancelled;
+                expected_exporter_calls = 1U;
+                break;
+        }
+        auto provider = require(Ytp1H2CarrierProvider::create(
+            ExecutorAffinity(77U),
+            executor.dispatch(),
+            Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+        unsigned int completions = 0U;
+        std::optional<StatusCode> actual;
+        provider->async_create(
+            std::make_unique<FakeSecureChannel>(pipe, 0U), EndpointRole::Client,
+            cancellation.token(),
+            [&](Result<std::unique_ptr<Carrier>> result) {
+                ++completions;
+                if (!result.ok()) actual = result.status().code();
+            });
+        executor.run();
+        CHECK(completions == 1U);
+        CHECK(actual == expected);
+        CHECK(pipe->endpoints[0].closed);
+        CHECK(pipe->exporter_calls == expected_exporter_calls);
+        CHECK(pipe->write_calls == 0U);
+        CHECK(pipe->endpoints[1].inbound.empty());
+    }
+}
+
+void test_admission_uses_fresh_nonce_and_exporter_binding() {
+    auto executor = std::make_shared<TestExecutor>();
+    auto provider = require(Ytp1H2CarrierProvider::create(
+        ExecutorAffinity(77U),
+        executor->dispatch(),
+        Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+    OpenedPair first = open_pair({}, true, executor, provider);
+    OpenedPair second = open_pair({}, true, executor, provider);
+    const auto& first_path = first.server_opening->admission_path();
+    const auto& second_path = second.server_opening->admission_path();
+    CHECK(first.pipe->exporter_calls == 1U);
+    CHECK(second.pipe->exporter_calls == 1U);
+    CHECK(!first_path.empty() && !second_path.empty());
+    CHECK(first_path != second_path);
+    const auto first_proof = admission::parse_path(first_path);
+    const auto second_proof = admission::parse_path(second_path);
+    CHECK(first_proof.has_value() && second_proof.has_value());
+    CHECK(first_proof->nonce != second_proof->nonce);
+    std::array<std::byte, kYtp1H2AdmissionExporterBytes> another_connection{};
+    another_connection[0] = std::byte{1};
+    CHECK(!verify_ytp1_h2_admission_path(
+        kTestAdmissionKey, "cover.example", "cover.example",
+        another_connection, first_path, 443U));
 }
 
 void test_opening_fragmentation_and_bidirectional_records() {
@@ -689,11 +963,10 @@ void test_executor_rejection_settles_provider_creation_once() {
     auto pipe = std::make_shared<TestPipe>(executor);
     auto provider = require(Ytp1H2CarrierProvider::create(
         ExecutorAffinity(77U),
-        [](std::function<void()>) {
-            throw TestFailure("executor rejected provider creation");
-        },
-        Ytp1H2ClientConfig{"cover.example", "/carrier-test", {}}));
+        executor.dispatch(),
+        Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
 
+    executor.reject_new_tasks();
     unsigned int completions = 0U;
     provider->async_create(
         std::make_unique<FakeSecureChannel>(pipe, 0U), EndpointRole::Client, {},
@@ -718,6 +991,13 @@ void test_partial_secure_write_fails_send() {
         });
     pair.executor->run();
     CHECK(failed);
+    // A transport failure settles the control lifecycle too; a later explicit
+    // close or final public-handle destruction must not resurrect work.
+    pair.client->close();
+    pair.client->cancel();
+    pair.client.reset();
+    CHECK(pair.executor->empty());
+    CHECK(pair.pipe->destroyed[0] == 1U);
 }
 
 void test_malformed_carrier_envelope_fails_closed() {
@@ -756,11 +1036,284 @@ void test_oversized_carrier_length_fails_before_payload() {
     CHECK(failed);
 }
 
+void test_client_creation_allocation_failures_settle_once() {
+    for (std::ptrdiff_t count = 0; count < 80; ++count) {
+        TestExecutor executor;
+        auto pipe = std::make_shared<TestPipe>(executor);
+        pipe->endpoints[0].hold_writes = true;
+        auto provider = require(Ytp1H2CarrierProvider::create(
+            ExecutorAffinity(77U), executor.dispatch(),
+            Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+        std::unique_ptr<SecureChannel> channel = std::make_unique<FakeSecureChannel>(pipe, 0U);
+        CancellationSource cancellation;
+        unsigned int calls = 0U;
+        StatusCode code = StatusCode::Ok;
+        engine::CarrierProvider::Completion completion = [&](Result<std::unique_ptr<Carrier>> result) {
+            ++calls;
+            if (!result.ok()) code = result.status().code();
+        };
+        {
+            test_allocation_failure::Scope one_shot(count);
+            provider->async_create(std::move(channel), EndpointRole::Client,
+                                   cancellation.token(), std::move(completion));
+            executor.run();
+        }
+        provider.reset();
+        if (calls == 0U) {
+            test_allocation_failure::SustainedScope all;
+            cancellation.cancel();
+            executor.run();
+        }
+        CHECK(calls == 1U);
+        CHECK(code == StatusCode::Cancelled || code == StatusCode::ResourceExhausted ||
+              code == StatusCode::FailedPrecondition);
+        CHECK(pipe->destroyed[0] == 1U);
+    }
+}
+
+void test_receive_allocation_failures_settle_once() {
+    // Walk allocation sites in initiation and registration; sustained denial
+    // additionally proves their error paths do not allocate to deliver status.
+    for (std::ptrdiff_t count = 0; count < 8; ++count) {
+        for (const bool sustained : {false, true}) {
+            auto pair = open_pair();
+            CancellationSource cancellation;
+            unsigned int calls = 0U;
+            StatusCode code = StatusCode::Ok;
+            Carrier::ReceiveCompletion completion = [&](Result<ReceivedRecord> result) {
+                ++calls;
+                if (!result.ok()) code = result.status().code();
+            };
+            {
+                test_allocation_failure::Scope one_shot(count);
+                test_allocation_failure::SustainedScope all(sustained);
+                pair.client->async_receive(cancellation.token(), std::move(completion));
+                pair.executor->run();
+            }
+            if (calls == 0U) {
+                cancellation.cancel();
+                pair.executor->run();
+                CHECK(code == StatusCode::Cancelled);
+            } else CHECK(code == StatusCode::ResourceExhausted);
+            pair.client.reset();
+            pair.executor->run();
+            CHECK(calls == 1U && pair.pipe->destroyed[0] == 1U);
+        }
+    }
+}
+
+void test_send_allocation_failures_settle_once() {
+    for (std::ptrdiff_t count = 0; count < 24; ++count) {
+        auto pair = open_pair();
+        pair.pipe->endpoints[0].hold_writes = true;
+        auto record = make_buffer("allocation sweep");
+        CancellationSource cancellation;
+        unsigned int calls = 0U;
+        StatusCode code = StatusCode::Ok;
+        Carrier::SendCompletion completion = [&](Status status, std::size_t) {
+            ++calls;
+            code = status.code();
+        };
+        {
+            test_allocation_failure::Scope one_shot(count);
+            pair.client->async_send(std::move(record), cancellation.token(), std::move(completion));
+            pair.executor->run();
+        }
+        if (calls == 0U) {
+            test_allocation_failure::SustainedScope all;
+            cancellation.cancel();
+            pair.executor->run();
+        }
+        CHECK(calls == 1U);
+        CHECK(code == StatusCode::Cancelled || code == StatusCode::ResourceExhausted ||
+              code == StatusCode::FailedPrecondition); // nghttp2 can reject a failed callback.
+        pair.client.reset();
+        pair.executor->run();
+        CHECK(calls == 1U && pair.pipe->destroyed[0] == 1U);
+    }
+}
+
+void test_close_cancel_and_last_owner_under_allocation_failure() {
+    for (const bool sustained : {false, true}) {
+        for (const bool cancel : {false, true}) {
+            auto pair = open_pair();
+            pair.pipe->endpoints[0].hold_writes = true;
+            unsigned int receives = 0U, sends = 0U;
+            bool correct = true;
+            const auto expected = cancel ? StatusCode::Cancelled : StatusCode::Closed;
+            pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+                ++receives;
+                correct &= pair.executor->running() && !result.ok() && result.status().code() == expected;
+            });
+            pair.client->async_send(make_buffer("held send"), {}, [&](Status status, std::size_t bytes) {
+                ++sends;
+                correct &= pair.executor->running() && status.code() == expected && bytes == 0U;
+            });
+            pair.executor->run();
+            CHECK(receives == 0U && sends == 0U);
+            CHECK(pair.pipe->endpoints[0].pending && pair.pipe->endpoints[0].held_write);
+            {
+                test_allocation_failure::Scope one_shot(sustained ? -1 : 0);
+                test_allocation_failure::SustainedScope all(sustained);
+                if (cancel) pair.client->cancel();
+                // Releasing the last public handle must retain the state until
+                // its control task cancels both underlying operations and drains.
+                pair.client.reset();
+                pair.executor->run();
+            }
+            CHECK(correct && receives == 1U && sends == 1U);
+            CHECK(pair.pipe->endpoints[0].closed);
+            CHECK(pair.pipe->destroyed[0] == 1U);
+            CHECK(!pair.pipe->endpoints[0].pending && !pair.pipe->endpoints[0].held_write);
+        }
+    }
+}
+
+void test_receive_token_and_credit_return_under_allocation_failure() {
+    auto pair = open_pair();
+    CancellationSource cancellation;
+    unsigned int cancelled = 0U;
+    bool correct = true;
+    pair.client->async_receive(cancellation.token(), [&](Result<ReceivedRecord> result) {
+        ++cancelled;
+        correct &= pair.executor->running() && !result.ok() && result.status().code() == StatusCode::Cancelled;
+    });
+    pair.executor->run();
+    {
+        test_allocation_failure::SustainedScope all;
+        cancellation.cancel();
+        pair.executor->run();
+    }
+    CHECK(correct && cancelled == 1U);
+    std::optional<ReceivedRecord> received;
+    pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+        if (result.ok()) received.emplace(std::move(result).take_value());
+    });
+    pair.server->async_send(make_buffer("retained credit"), {}, [](Status, std::size_t) {});
+    pair.executor->run();
+    CHECK(received.has_value());
+    {
+        // Return credit after close and last-handle release, before control
+        // delivery. Its weak owner must not leak or run H2 off the executor.
+        test_allocation_failure::SustainedScope all;
+        pair.client.reset();
+        received.reset();
+        pair.executor->run();
+    }
+    CHECK(pair.pipe->destroyed[0] == 1U);
+}
+
+void test_closed_handles_and_credit_release_after_final_drain() {
+    auto pair = open_pair();
+    std::optional<ReceivedRecord> retained;
+    pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+        if (result.ok()) retained.emplace(std::move(result).take_value());
+    });
+    pair.server->async_send(make_buffer("credit survives shutdown"), {},
+                           [](Status, std::size_t) {});
+    pair.executor->run();
+    CHECK(retained.has_value());
+    pair.client->close();
+    pair.server->close();
+    pair.executor->run();
+    CHECK(pair.executor->empty());
+    CHECK(pair.pipe->destroyed[0] == 0U && pair.pipe->destroyed[1] == 0U);
+    {
+        test_allocation_failure::SustainedScope all;
+        pair.client->close();
+        pair.client->cancel();
+        pair.server->cancel();
+        pair.server->close();
+        retained.reset();
+        pair.client.reset();
+        pair.server.reset();
+    }
+    CHECK(pair.executor->empty());
+    CHECK(pair.pipe->destroyed[0] == 1U && pair.pipe->destroyed[1] == 1U);
+}
+
+void test_active_credit_return_allocation_failure_settles_receive() {
+    auto pair = open_pair();
+    pair.pipe->fragment_bytes = 64U * 1024U;
+    std::vector<ReceivedRecord> retained;
+    for (unsigned int i = 0; i < 3U; ++i) {
+        bool sent = false;
+        pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+            retained.push_back(require(std::move(result)));
+        });
+        auto buffer = require(Buffer::allocate(2U * 1024U * 1024U, 2U * 1024U * 1024U));
+        pair.server->async_send(std::move(buffer), {}, [&](Status status, std::size_t bytes) {
+            sent = status.ok() && bytes == 2U * 1024U * 1024U;
+        });
+        pair.executor->run();
+        CHECK(sent && retained.size() == i + 1U);
+    }
+    unsigned int calls = 0U;
+    StatusCode code = StatusCode::Ok;
+    pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+        ++calls;
+        if (!result.ok()) code = result.status().code();
+    });
+    pair.executor->run();
+    {
+        // Returning over half the receive window creates WINDOW_UPDATE output.
+        // If that allocation fails, the queued receive must fail and release
+        // the carrier, rather than silently losing its credit-return task.
+        test_allocation_failure::SustainedScope all;
+        retained.clear();
+        pair.executor->run();
+        pair.client.reset();
+        pair.executor->run();
+    }
+    CHECK(calls == 1U);
+    CHECK(code == StatusCode::ResourceExhausted || code == StatusCode::FailedPrecondition);
+    CHECK(pair.pipe->destroyed[0] == 1U);
+}
+
+void test_read_failure_settles_both_callbacks_under_allocation_failure() {
+    auto pair = open_pair();
+    pair.pipe->endpoints[0].hold_writes = true;
+    unsigned int receives = 0U, sends = 0U;
+    bool correct = true;
+    pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+        ++receives;
+        correct &= pair.executor->running() && !result.ok() && result.status().code() == StatusCode::ResourceExhausted;
+        throw 42; // One throwing consumer must not prevent its sibling settling.
+    });
+    pair.client->async_send(make_buffer("held send"), {}, [&](Status status, std::size_t bytes) {
+        ++sends;
+        correct &= pair.executor->running() && status.code() == StatusCode::ResourceExhausted && bytes == 0U;
+    });
+    pair.executor->run();
+    auto completion = std::move(pair.pipe->endpoints[0].pending->completion);
+    pair.pipe->endpoints[0].pending.reset();
+    auto failure = std::make_shared<Result<Buffer>>(Status(
+        StatusCode::ResourceExhausted, "retained upstream diagnostic larger than small string storage"));
+    pair.executor->post([&] {
+        test_allocation_failure::SustainedScope all;
+        completion(std::move(*failure));
+    });
+    pair.executor->run();
+    CHECK(correct && receives == 1U && sends == 1U);
+    CHECK(pair.pipe->endpoints[0].closed);
+}
+
 }  // namespace
 }  // namespace yume::providers
 
 int main() {
     try {
+        yume::providers::test_client_creation_allocation_failures_settle_once();
+        yume::providers::test_receive_allocation_failures_settle_once();
+        yume::providers::test_send_allocation_failures_settle_once();
+        yume::providers::test_close_cancel_and_last_owner_under_allocation_failure();
+        yume::providers::test_receive_token_and_credit_return_under_allocation_failure();
+        yume::providers::test_closed_handles_and_credit_release_after_final_drain();
+        yume::providers::test_active_credit_return_allocation_failure_settles_receive();
+        yume::providers::test_read_failure_settles_both_callbacks_under_allocation_failure();
+        yume::providers::test_admission_configuration_rejects_invalid_inputs();
+        yume::providers::test_admission_failures_close_before_http_output();
+        yume::providers::test_admission_uses_fresh_nonce_and_exporter_binding();
         yume::providers::test_opening_fragmentation_and_bidirectional_records();
         yume::providers::test_receive_cancellation_and_queue_bound();
         yume::providers::test_executor_rejection_settles_each_operation_once();

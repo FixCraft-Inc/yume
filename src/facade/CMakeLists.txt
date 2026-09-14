@@ -6,7 +6,9 @@
 #
 # yume_embed is what an *embedder* needs: configuration marshalling, the
 # in-process client runtime, and the diagnostic log ring. The C ABI links
-# this and nothing else from here.
+# this and nothing else from here. Its schema-1 backend, yume_embed_ytp1, is
+# defined beside the native runtime in src/CMakeLists.txt because it must not
+# depend on this transport-v2 graph.
 #
 # yume_facade adds what a *desktop application* needs on top: observable
 # session objects, a traffic-rate meter for the dashboard graph, GUI profile

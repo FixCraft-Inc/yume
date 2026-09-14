@@ -259,7 +259,8 @@ HMAC-SHA256(obfs_secret,
 SNI and `:authority` must match after the configured listener-port rules. The
 server accepts the current or previous UTC hour and records the authenticated
 nonce in a process-wide cache before emitting AUTH. The cache retains at most
-4096 nonces for two hours. When full, it refuses new admissions until entries
+4096 nonces for two hours measured by a monotonic clock, independently of the
+authenticated wall-clock bucket. When full, it refuses new admissions until entries
 expire and never evicts a live nonce to make room. Allocation failure does
 not publish partial cache state.
 

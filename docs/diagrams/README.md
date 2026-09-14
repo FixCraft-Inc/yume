@@ -141,15 +141,78 @@ field and package diagrams.
 | Key | Meaning |
 | --- | --- |
 | `name` | matches the file name, lowercase with underscores |
-| `type` | `route` is the only type so far, an ordered chain of nodes |
+| `type` | `route` (an ordered chain), `flow` (a chain whose nodes may branch to side nodes), or `layers` (one wrapping, innermost first) |
 | `title` | the accessible name of the figure |
 | `summary` | one sentence, used as the SVG description and the web caption |
 | `comment` | optional notes for maintainers, never rendered |
 | `width` | optional SVG card tier, `34` or `72`, otherwise picked from the longest label |
 | `indent` | optional leading spaces for a nested Markdown block |
 | `targets` | `web` controls SVG generation; `.doc` sources own placement |
-| `nodes` | `id`, `kind`, `title`, optional `sub`, optional `group` |
+| `nodes` | `id`, `kind`, `title`, optional `sub`, `group`, `role`, `note`, `source`, and `side` |
 | `edges` | `from`, `to`, optional `label`, optional `channel` |
+
+A node's optional fields carry what a first-time reader and a reviewing agent
+need:
+
+| Node key | Meaning |
+| --- | --- |
+| `role` | What the node's colour means: `client`, `server`, `data`, `disguise`, `keys`, `outside`, `refused`, or `neutral`. Defaults from `kind`. |
+| `note` | One plain sentence on what the part does, at most 280 characters. Markdown and documentation pages show the notes in a collapsed "What each part does" list under the figure. The homepage and companion pages show them open. |
+| `source` | Up to four repository-relative files or directories that back the note. `check` fails when one disappears. |
+| `side` | `true` for a flow node that is not on the main path: a branch target, or an input. |
+
+A note is a claim like any other. When you change one, open its sources and
+confirm the sentence still holds. When a check reports a missing source, find
+where the behavior moved before you edit the path.
+
+### Flows
+
+A `flow` lists its chain edges first, in node order, then one branch edge per
+side node. Each chain node sends at most one branch. Across the page a side
+card hangs below its parent, and the enclosure holding the parent grows to hold
+it. In the stack the path runs down a rail through the glyph column and the
+side card sits indented under its parent. The ASCII form draws the side box on
+its parent's title row with the branch label beneath the arrow. A side card is
+never lit by the packet, because the packet does not travel there.
+
+A side node can instead be an input: an edge from it into the first chain node.
+Several inputs converge on one bus, such as the secrets that feed a root key or
+the entry points that drive one transport. Inputs take no label and no channel,
+so their words belong in their own title and `sub`. Across the page they stand
+in a column left of the first card, in the stack they sit indented above it
+beside the rail, and in ASCII they are stacked boxes joined to a bus that drops
+onto the first box.
+
+### Layers
+
+A `layers` diagram has no edges, and every node names a `role` instead of a
+`kind`. The SVG nests one ring per layer and lights the rings in wrapping
+order, innermost first. Across the page each description sits in a column
+beside its ring. The ASCII form nests boxes outermost first with each
+description set flush right.
+
+### Roles and colour
+
+Role colours are website tokens (`--color-role-*` in `website/assets/tokens.css`)
+with matched lightness in both themes. A site without role tokens, such as
+BaseFWX today, draws every role in its own accent. Ownership still sets the
+outline: a YUME card is outlined in its role colour, and anything else keeps a
+neutral outline. Ordinary hops are neutral, the protected hop keeps the brand
+accent, and a branch takes the role of the node it reaches. The explainer video
+uses the same hues, and `npm run check` in the explainers workspace reports
+drift.
+
+### Reading and editing a figure
+
+```bash
+scripts/yume_diagrams.py render yume_connection          # ASCII
+scripts/yume_diagrams.py render yume_connection --key    # the key of notes
+python3 scripts/yume_docs.py sync --all-languages         # every layer
+```
+
+Never hand-edit an SVG, a marked block, a key include, or ASCII art. Change
+the JSON and run the sync. The generator draws the ASCII, so its geometry
+stays consistent.
 
 Node `kind` picks the glyph, and it decides one other thing: `client`,
 `server`, `relay`, and `tun` are YUME software, so those cards carry the accent

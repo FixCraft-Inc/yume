@@ -52,8 +52,24 @@ Result<StreamOpenContext> StreamOpenContext::create(
         std::move(peer_evidence), std::move(destination)));
 }
 
+void StreamHandler::async_open(
+    StreamOpenContext context, std::shared_ptr<StreamResponder> stream,
+    AcceptanceCompletion completion) {
+    on_open(std::move(context), std::move(stream));
+    completion(Status::success());
+}
+
+void StreamHandler::async_route(
+    AuthorizedRouteRequest request, std::shared_ptr<RouteProvider> route_provider,
+    std::shared_ptr<StreamResponder> stream,
+    AcceptanceCompletion completion) {
+    on_route(std::move(request), std::move(route_provider), std::move(stream));
+    completion(Status::success());
+}
+
 void StreamHandler::on_route(
     AuthorizedRouteRequest,
+    std::shared_ptr<RouteProvider>,
     std::shared_ptr<StreamResponder> stream) {
     if (stream) {
         stream->close(Status(

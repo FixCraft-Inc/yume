@@ -16,6 +16,8 @@ the following projects under their respective licenses:
 - Brotli: MIT License.
 - nghttp2: MIT License.
 - zlib: zlib License.
+- libarchive: BSD licenses and other component terms listed in upstream
+  COPYING.
 - XZ Utils/liblzma: public domain and LGPL components as documented upstream.
 - Zstandard: BSD 3-Clause License and GPLv2 dual license.
 - Argon2 reference implementation: CC0 1.0 or Apache License 2.0.

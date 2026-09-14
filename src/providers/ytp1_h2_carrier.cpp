@@ -5,6 +5,9 @@
  */
 
 #include "providers/ytp1_h2_carrier.hpp"
+#include "providers/ytp1_h2_admission.hpp"
+
+#include <openssl/crypto.h>
 
 #include <algorithm>
 #include <array>
@@ -14,9 +17,11 @@
 #include <deque>
 #include <limits>
 #include <new>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -42,8 +47,21 @@ using engine::StatusCode;
 
 constexpr std::array<std::uint8_t, 4> kCarrierMagic{'Y', 'C', 'R', 0};
 constexpr std::uint8_t kCarrierEnvelopeVersion = 1U;
-constexpr std::size_t kMaxAuthorityBytes = 253U;
-constexpr std::size_t kMaxCarrierPathBytes = 2048U;
+
+// Diagnostics are best effort; the typed error and completion must survive OOM.
+Status safe_status(StatusCode code, std::string_view message = {}) noexcept {
+    try { return Status(code, message); }
+    catch (...) { return Status(code); }
+}
+
+template <typename T>
+decltype(auto) completion_argument(T&& value) noexcept {
+    if constexpr (std::is_same_v<std::remove_cvref_t<T>, Status>) {
+        return safe_status(value.code(), value.message());
+    } else {
+        return std::forward<T>(value);
+    }
+}
 
 template <typename Callback, typename... Args>
 void invoke_noexcept(Callback& callback, Args&&... args) noexcept {
@@ -51,19 +69,12 @@ void invoke_noexcept(Callback& callback, Args&&... args) noexcept {
         return;
     }
     try {
-        callback(std::forward<Args>(args)...);
+        auto owned = std::move(callback);
+        owned(completion_argument(std::forward<Args>(args))...);
     } catch (...) {
         // Provider callbacks are containment boundaries. State is settled
         // before invocation, so application exceptions cannot corrupt it.
     }
-}
-
-bool valid_visible_text(std::string_view value,
-                        std::size_t max_size) noexcept {
-    return !value.empty() && value.size() <= max_size &&
-        std::all_of(value.begin(), value.end(), [](unsigned char byte) {
-            return byte >= 0x21U && byte <= 0x7eU;
-        });
 }
 
 Status validate_limits(const Ytp1H2CarrierLimits& limits) {
@@ -87,13 +98,13 @@ Status validate_limits(const Ytp1H2CarrierLimits& limits) {
         limits.max_pending_secure_write_bytes > 32U * 1024U * 1024U ||
         limits.secure_read_bytes == 0U ||
         limits.secure_read_bytes > engine::kAbsoluteMaxBufferBytes) {
-        return Status(
+        return safe_status(
             StatusCode::InvalidArgument,
             "H2 carrier limits are zero, inconsistent, or exceed hard bounds");
     }
     if (limits.max_record_bytes >
         std::numeric_limits<std::uint32_t>::max()) {
-        return Status(StatusCode::InvalidArgument,
+        return safe_status(StatusCode::InvalidArgument,
                       "H2 carrier record limit exceeds its wire field");
     }
     return Status::success();
@@ -152,16 +163,17 @@ public:
     Ytp1H2CarrierState(
         ProviderDescriptor descriptor,
         ExecutorAffinity affinity,
-        Ytp1H2PostHandler post,
+        Ytp1H2Dispatch post,
         Ytp1H2CarrierLimits limits,
         std::unique_ptr<SecureChannel> channel,
-        std::unique_ptr<obfs::H2Carrier> h2) noexcept
+        std::unique_ptr<obfs::H2Carrier> h2,
+        std::shared_ptr<Ytp1H2CoverHandler> cover = {})
         : descriptor_(std::move(descriptor)),
           affinity_(affinity),
-          post_(std::move(post)),
+          dispatch_(std::move(post)),
           limits_(limits),
           channel_(std::move(channel)),
-          h2_(std::move(h2)) {}
+          h2_(std::move(h2)), cover_(std::move(cover)) {}
 
     const ProviderDescriptor& descriptor() const noexcept {
         return descriptor_;
@@ -173,12 +185,15 @@ public:
     SecureChannel& channel() noexcept { return *channel_; }
     const SecureChannel& channel() const noexcept { return *channel_; }
 
-    bool post(std::function<void()> task) noexcept {
+    template <typename Task>
+    StatusCode post(Task&& task) noexcept {
         try {
-            post_(std::move(task));
-            return true;
+            dispatch_.post(std::forward<Task>(task));
+            return StatusCode::Ok;
+        } catch (const std::bad_alloc&) {
+            return StatusCode::ResourceExhausted;
         } catch (...) {
-            return false;
+            return StatusCode::Internal;
         }
     }
 
@@ -189,7 +204,7 @@ public:
         if (terminal_) {
             complete_create(
                 completion,
-                Status(StatusCode::Closed, "H2 carrier is already closed"));
+                safe_status(StatusCode::Closed, "H2 carrier is already closed"));
             return;
         }
         opening_ = true;
@@ -197,40 +212,33 @@ public:
         carrier_path_ = std::move(carrier_path);
         create_completion_ = std::move(completion);
 
-        const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
-        auto registration = cancellation.register_callback([weak] {
-            if (auto self = weak.lock()) {
-                self->post([weak] {
-                    if (auto current = weak.lock()) {
-                        current->fail(Status(
-                            StatusCode::Cancelled,
-                            "H2 carrier creation was cancelled"));
-                    }
-                });
-            }
-        });
-        if (!registration.ok()) {
-            fail(registration.status());
-            return;
-        }
-        create_cancellation_ = std::move(registration).take_value();
-        if (cancellation.is_cancelled()) {
-            fail(Status(StatusCode::Cancelled,
-                        "H2 carrier creation was cancelled"));
-            return;
-        }
-
         try {
+            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            create_token_ = cancellation;
+            auto registration = cancellation.register_callback([weak] {
+                if (auto self = weak.lock()) self->notify_control();
+            });
+            if (!registration.ok()) {
+                fail(registration.status());
+                return;
+            }
+            create_cancellation_ = std::move(registration).take_value();
+            if (cancellation.is_cancelled()) {
+                fail(safe_status(StatusCode::Cancelled,
+                            "H2 carrier creation was cancelled"));
+                return;
+            }
+
             if (!h2_->StartClient(authority_)) {
                 fail(h2_failure("start HTTP/2 client"));
                 return;
             }
             pump();
         } catch (const std::bad_alloc&) {
-            fail(Status(StatusCode::ResourceExhausted,
+            fail(safe_status(StatusCode::ResourceExhausted,
                         "H2 carrier creation allocation failed"));
         } catch (...) {
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "H2 carrier creation threw"));
         }
     }
@@ -243,10 +251,10 @@ public:
             drain_tunnel_bytes();
             pump();
         } catch (const std::bad_alloc&) {
-            fail(Status(StatusCode::ResourceExhausted,
+            fail(safe_status(StatusCode::ResourceExhausted,
                         "admitted H2 carrier allocation failed"));
         } catch (...) {
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "admitted H2 carrier startup threw"));
         }
     }
@@ -260,19 +268,20 @@ public:
                 std::make_shared<Carrier::ReceiveCompletion>(
                     std::move(completion));
         } catch (const std::bad_alloc&) {
-            Result<ReceivedRecord> result(Status(
+            Result<ReceivedRecord> result(safe_status(
                 StatusCode::ResourceExhausted,
                 "H2 receive-dispatch allocation failed"));
             invoke_noexcept(completion, std::move(result));
             return;
         }
-        if (!post([self, cancellation = std::move(cancellation),
+        const auto dispatched = post([self, cancellation = std::move(cancellation),
                    completion_holder]() mutable {
                 self->begin_receive(std::move(cancellation),
                                     std::move(*completion_holder));
-            })) {
-            Result<ReceivedRecord> result(Status(
-                StatusCode::Internal, "H2 carrier executor rejected receive"));
+            });
+        if (dispatched != StatusCode::Ok) {
+            Result<ReceivedRecord> result(safe_status(
+                dispatched, "H2 carrier executor rejected receive"));
             invoke_noexcept(*completion_holder, std::move(result));
         }
     }
@@ -291,46 +300,81 @@ public:
         } catch (const std::bad_alloc&) {
             invoke_noexcept(
                 completion_holder ? *completion_holder : completion,
-                Status(StatusCode::ResourceExhausted,
+                safe_status(StatusCode::ResourceExhausted,
                        "H2 carrier send-dispatch allocation failed"),
                 0U);
             return;
         }
-        if (!post([self, owned_record,
+        const auto dispatched = post([self, owned_record,
                    cancellation = std::move(cancellation),
                    completion_holder]() mutable {
                 self->begin_send(
                     std::move(**owned_record), std::move(cancellation),
                     std::move(*completion_holder));
                 owned_record->reset();
-            })) {
+            });
+        if (dispatched != StatusCode::Ok) {
             invoke_noexcept(
                 *completion_holder,
-                Status(StatusCode::Internal,
+                safe_status(dispatched,
                        "H2 carrier executor rejected send"),
                 0U);
         }
     }
 
-    void request_cancel() noexcept {
-        const auto self = shared_from_this();
-        // State is executor-confined, so there is no safe inline fallback.
-        // The public post-handler contract requires accepted carrier lifetime
-        // work to be serialized and never rejected or silently discarded.
-        (void)post([self] {
-            self->fail(Status(StatusCode::Cancelled,
-                              "H2 carrier was cancelled"));
-        });
+    void notify_control() noexcept {
+        // submit never invokes inline. Keep publication inside the lock so a
+        // completed failure cannot be followed by retaining control work.
+        std::lock_guard lock(control_mutex_);
+        if (!control_closed_ && requested_terminal_ == StatusCode::Ok)
+            dispatch_.submit(control_, shared_from_this());
     }
 
-    void request_close() noexcept {
-        const auto self = shared_from_this();
-        // See request_cancel(): an off-affinity close would race carrier state,
-        // and rejecting lifetime work already violates the provider contract.
-        (void)post([self] {
-            self->fail(Status(StatusCode::Closed,
-                              "H2 carrier was closed"));
-        });
+    void request_terminal(StatusCode code) noexcept {
+        std::lock_guard lock(control_mutex_);
+        if (control_closed_ || requested_terminal_ != StatusCode::Ok) return;
+        requested_terminal_ = code;
+        dispatch_.submit(control_, shared_from_this());
+    }
+    void request_cancel() noexcept { request_terminal(StatusCode::Cancelled); }
+    void request_close() noexcept { request_terminal(StatusCode::Closed); }
+
+    static void on_control(void* pointer) noexcept {
+        auto& self = *static_cast<Ytp1H2CarrierState*>(pointer);
+        try { self.settle_control(); }
+        catch (const std::bad_alloc&) { self.fail(safe_status(StatusCode::ResourceExhausted)); }
+        catch (...) { self.fail(safe_status(StatusCode::Internal)); }
+    }
+
+    void settle_control() {
+        StatusCode requested;
+        std::size_t credit;
+        {
+            std::lock_guard lock(control_mutex_);
+            requested = requested_terminal_;
+            credit = std::exchange(returned_credit_, 0U);
+        }
+        if (terminal_) return;
+        if (requested != StatusCode::Ok) { fail(safe_status(requested)); return; }
+        if (opening_ && create_token_.is_cancelled()) {
+            fail(safe_status(StatusCode::Cancelled)); return;
+        }
+        if (pending_send_ && pending_send_->token.is_cancelled()) {
+            cancel_send(pending_send_->id); return;
+        }
+        if (pending_receive_ && pending_receive_->token.is_cancelled())
+            cancel_receive(pending_receive_->id);
+        if (credit) return_credit(credit);
+    }
+
+    void request_credit(std::size_t bytes) noexcept {
+        {
+            std::lock_guard lock(control_mutex_);
+            if (control_closed_ || requested_terminal_ != StatusCode::Ok) return;
+            // Credits are move-owned and bounded by max_retained_receive_bytes.
+            returned_credit_ += bytes;
+        }
+        notify_control();
     }
 
 private:
@@ -343,6 +387,7 @@ private:
         std::uint64_t id{0U};
         Carrier::ReceiveCompletion completion;
         CancellationRegistration cancellation;
+        CancellationToken token;
     };
 
     struct PendingSend {
@@ -350,20 +395,25 @@ private:
         std::size_t record_bytes{0U};
         Carrier::SendCompletion completion;
         CancellationRegistration cancellation;
+        CancellationToken token;
     };
 
-    Status h2_failure(std::string_view operation) const {
-        std::string message(operation);
-        if (!h2_->error().empty()) {
-            message += ": ";
-            message += h2_->error();
+    Status h2_failure(std::string_view operation) const noexcept {
+        try {
+            std::string message(operation);
+            if (!h2_->error().empty()) {
+                message += ": ";
+                message += h2_->error();
+            }
+            return safe_status(StatusCode::FailedPrecondition, message);
+        } catch (...) {
+            return safe_status(StatusCode::FailedPrecondition);
         }
-        return Status(StatusCode::FailedPrecondition, message);
     }
 
     static void complete_create(engine::CarrierProvider::Completion& completion,
-                                Status status) noexcept {
-        Result<std::unique_ptr<Carrier>> result(std::move(status));
+                                const Status& status) noexcept {
+        Result<std::unique_ptr<Carrier>> result(safe_status(status.code(), status.message()));
         invoke_noexcept(completion, std::move(result));
     }
 
@@ -389,78 +439,83 @@ private:
         if (connect_submitted_ && h2_->carrier_active()) {
             finish_client_opening();
         } else if (h2_->carrier_closed()) {
-            fail(Status(StatusCode::FailedPrecondition,
+            fail(safe_status(StatusCode::FailedPrecondition,
                         "HTTP/2 peer rejected the carrier stream"));
         }
     }
 
     void begin_receive(CancellationToken cancellation,
                        Carrier::ReceiveCompletion completion) {
-        if (!completion) {
-            return;
-        }
-        if (terminal_) {
-            Result<ReceivedRecord> result(terminal_status_);
-            invoke_noexcept(completion, std::move(result));
-            return;
-        }
-        if (pending_receive_.has_value()) {
-            Result<ReceivedRecord> result(Status(
-                StatusCode::AlreadyExists,
-                "H2 carrier already has a pending receive"));
-            invoke_noexcept(completion, std::move(result));
-            return;
-        }
-        if (cancellation.is_cancelled()) {
-            Result<ReceivedRecord> result(Status(
-                StatusCode::Cancelled, "H2 carrier receive was cancelled"));
-            invoke_noexcept(completion, std::move(result));
-            return;
-        }
-        if (!records_.empty()) {
-            deliver_record(std::move(completion));
-            pump();
-            return;
-        }
-        if (peer_closed_) {
-            Result<ReceivedRecord> result(Status(
-                StatusCode::Closed, "HTTP/2 carrier peer closed"));
-            invoke_noexcept(completion, std::move(result));
-            return;
-        }
-        if (next_operation_id_ == std::numeric_limits<std::uint64_t>::max()) {
-            fail(Status(StatusCode::ResourceExhausted,
-                        "H2 carrier operation IDs are exhausted"));
-            Result<ReceivedRecord> result(terminal_status_);
-            invoke_noexcept(completion, std::move(result));
-            return;
-        }
-        const std::uint64_t id = next_operation_id_++;
-        pending_receive_.emplace(
-            PendingReceive{id, std::move(completion), {}});
-        const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
-        auto registration = cancellation.register_callback([weak, id] {
-            if (auto self = weak.lock()) {
-                self->post([weak, id] {
-                    if (auto current = weak.lock()) {
-                        current->cancel_receive(id);
-                    }
-                });
+        try {
+            if (!completion) {
+                return;
             }
-        });
-        if (!registration.ok()) {
-            Carrier::ReceiveCompletion failed =
-                std::move(pending_receive_->completion);
-            pending_receive_.reset();
-            Result<ReceivedRecord> result(registration.status());
-            invoke_noexcept(failed, std::move(result));
-            return;
+            if (terminal_) {
+                Result<ReceivedRecord> result(safe_status(terminal_status_.code(), terminal_status_.message()));
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
+            if (pending_receive_.has_value()) {
+                Result<ReceivedRecord> result(safe_status(
+                    StatusCode::AlreadyExists,
+                    "H2 carrier already has a pending receive"));
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
+            if (cancellation.is_cancelled()) {
+                Result<ReceivedRecord> result(safe_status(
+                    StatusCode::Cancelled, "H2 carrier receive was cancelled"));
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
+            if (!records_.empty()) {
+                deliver_record(std::move(completion));
+                pump();
+                return;
+            }
+            if (peer_closed_) {
+                Result<ReceivedRecord> result(safe_status(
+                    StatusCode::Closed, "HTTP/2 carrier peer closed"));
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
+            if (next_operation_id_ == std::numeric_limits<std::uint64_t>::max()) {
+                fail(safe_status(StatusCode::ResourceExhausted,
+                            "H2 carrier operation IDs are exhausted"));
+                Result<ReceivedRecord> result(safe_status(terminal_status_.code(), terminal_status_.message()));
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
+            const std::uint64_t id = next_operation_id_++;
+            pending_receive_.emplace(
+                PendingReceive{id, std::move(completion), {}, cancellation});
+            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            auto registration = cancellation.register_callback([weak] {
+                if (auto self = weak.lock()) self->notify_control();
+            });
+            if (!registration.ok()) {
+                Carrier::ReceiveCompletion failed =
+                    std::move(pending_receive_->completion);
+                pending_receive_.reset();
+                Result<ReceivedRecord> result(safe_status(
+                    registration.status().code(), registration.status().message()));
+                invoke_noexcept(failed, std::move(result));
+                return;
+            }
+            if (pending_receive_.has_value() && pending_receive_->id == id) {
+                pending_receive_->cancellation =
+                    std::move(registration).take_value();
+            }
+            pump();
+        } catch (const std::bad_alloc&) {
+            fail(safe_status(StatusCode::ResourceExhausted));
+            Result<ReceivedRecord> result(safe_status(StatusCode::ResourceExhausted));
+            invoke_noexcept(completion, std::move(result));
+        } catch (...) {
+            fail(safe_status(StatusCode::Internal));
+            Result<ReceivedRecord> result(safe_status(StatusCode::Internal));
+            invoke_noexcept(completion, std::move(result));
         }
-        if (pending_receive_.has_value() && pending_receive_->id == id) {
-            pending_receive_->cancellation =
-                std::move(registration).take_value();
-        }
-        pump();
     }
 
     void cancel_receive(std::uint64_t id) noexcept {
@@ -470,7 +525,7 @@ private:
         Carrier::ReceiveCompletion completion =
             std::move(pending_receive_->completion);
         pending_receive_.reset();
-        Result<ReceivedRecord> result(Status(
+        Result<ReceivedRecord> result(safe_status(
             StatusCode::Cancelled, "H2 carrier receive was cancelled"));
         invoke_noexcept(completion, std::move(result));
     }
@@ -478,78 +533,72 @@ private:
     void begin_send(Buffer record,
                     CancellationToken cancellation,
                     Carrier::SendCompletion completion) {
-        if (!completion) {
-            return;
-        }
-        if (terminal_) {
-            invoke_noexcept(completion, terminal_status_, 0U);
-            return;
-        }
-        if (peer_closed_ || !h2_->carrier_active()) {
-            invoke_noexcept(
-                completion,
-                Status(StatusCode::Closed, "HTTP/2 carrier is not active"),
-                0U);
-            return;
-        }
-        if (pending_send_.has_value()) {
-            invoke_noexcept(
-                completion,
-                Status(StatusCode::AlreadyExists,
-                       "H2 carrier already has a pending send"),
-                0U);
-            return;
-        }
-        if (record.empty() || record.size() > limits_.max_record_bytes) {
-            invoke_noexcept(
-                completion,
-                Status(StatusCode::ResourceExhausted,
-                       "H2 carrier record is empty or exceeds its bound"),
-                0U);
-            return;
-        }
-        if (cancellation.is_cancelled()) {
-            invoke_noexcept(
-                completion,
-                Status(StatusCode::Cancelled,
-                       "H2 carrier send was cancelled"),
-                0U);
-            return;
-        }
-        if (next_operation_id_ == std::numeric_limits<std::uint64_t>::max()) {
-            fail(Status(StatusCode::ResourceExhausted,
-                        "H2 carrier operation IDs are exhausted"));
-            invoke_noexcept(completion, terminal_status_, 0U);
-            return;
-        }
-
-        const std::uint64_t id = next_operation_id_++;
-        const std::size_t record_bytes = record.size();
-        pending_send_.emplace(
-            PendingSend{id, record_bytes, std::move(completion), {}});
-        const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
-        auto registration = cancellation.register_callback([weak, id] {
-            if (auto self = weak.lock()) {
-                self->post([weak, id] {
-                    if (auto current = weak.lock()) {
-                        current->cancel_send(id);
-                    }
-                });
-            }
-        });
-        if (!registration.ok()) {
-            Carrier::SendCompletion failed =
-                std::move(pending_send_->completion);
-            pending_send_.reset();
-            invoke_noexcept(failed, registration.status(), 0U);
-            return;
-        }
-        if (pending_send_.has_value() && pending_send_->id == id) {
-            pending_send_->cancellation =
-                std::move(registration).take_value();
-        }
-
         try {
+            if (!completion) {
+                return;
+            }
+            if (terminal_) {
+                invoke_noexcept(completion, terminal_status_, 0U);
+                return;
+            }
+            if (peer_closed_ || !h2_->carrier_active()) {
+                invoke_noexcept(
+                    completion,
+                    safe_status(StatusCode::Closed, "HTTP/2 carrier is not active"),
+                    0U);
+                return;
+            }
+            if (pending_send_.has_value()) {
+                invoke_noexcept(
+                    completion,
+                    safe_status(StatusCode::AlreadyExists,
+                           "H2 carrier already has a pending send"),
+                    0U);
+                return;
+            }
+            if (record.empty() || record.size() > limits_.max_record_bytes) {
+                invoke_noexcept(
+                    completion,
+                    safe_status(StatusCode::ResourceExhausted,
+                           "H2 carrier record is empty or exceeds its bound"),
+                    0U);
+                return;
+            }
+            if (cancellation.is_cancelled()) {
+                invoke_noexcept(
+                    completion,
+                    safe_status(StatusCode::Cancelled,
+                           "H2 carrier send was cancelled"),
+                    0U);
+                return;
+            }
+            if (next_operation_id_ == std::numeric_limits<std::uint64_t>::max()) {
+                fail(safe_status(StatusCode::ResourceExhausted,
+                            "H2 carrier operation IDs are exhausted"));
+                invoke_noexcept(completion, terminal_status_, 0U);
+                return;
+            }
+
+            const std::uint64_t id = next_operation_id_++;
+            const std::size_t record_bytes = record.size();
+            pending_send_.emplace(
+                PendingSend{id, record_bytes, std::move(completion), {}, cancellation});
+            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            auto registration = cancellation.register_callback([weak] {
+                if (auto self = weak.lock()) self->notify_control();
+            });
+            if (!registration.ok()) {
+                Carrier::SendCompletion failed =
+                    std::move(pending_send_->completion);
+                pending_send_.reset();
+                invoke_noexcept(failed, registration.status(), 0U);
+                return;
+            }
+            if (pending_send_.has_value() && pending_send_->id == id) {
+                pending_send_->cancellation =
+                    std::move(registration).take_value();
+            }
+
             std::vector<std::uint8_t> framed(
                 kYtp1H2CarrierEnvelopeBytes + record_bytes);
             std::copy(kCarrierMagic.begin(), kCarrierMagic.end(),
@@ -568,10 +617,11 @@ private:
             }
             pump();
         } catch (const std::bad_alloc&) {
-            fail(Status(StatusCode::ResourceExhausted,
-                        "H2 carrier send allocation failed"));
+            fail(safe_status(StatusCode::ResourceExhausted));
+            invoke_noexcept(completion, safe_status(StatusCode::ResourceExhausted), 0U);
         } catch (...) {
-            fail(Status(StatusCode::Internal, "H2 carrier send threw"));
+            fail(safe_status(StatusCode::Internal));
+            invoke_noexcept(completion, safe_status(StatusCode::Internal), 0U);
         }
     }
 
@@ -582,33 +632,37 @@ private:
         // A record may already be partly serialized or written. Continuing
         // would let the next record inherit an ambiguous byte stream, so send
         // cancellation is terminal for this carrier.
-        fail(Status(StatusCode::Cancelled,
+        fail(safe_status(StatusCode::Cancelled,
                     "H2 carrier send was cancelled"));
     }
 
     void deliver_record(Carrier::ReceiveCompletion completion) {
-        if (records_.empty()) {
-            return;
+        try {
+            if (records_.empty()) {
+                return;
+            }
+            QueuedRecord record = std::move(records_.front());
+            records_.pop_front();
+            queued_record_bytes_ -= record.payload.size();
+            const std::size_t credit_bytes = record.credit_bytes;
+            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            CarrierCredit credit(
+                credit_bytes,
+                [weak](std::size_t bytes) {
+                    if (auto self = weak.lock()) self->request_credit(bytes);
+                });
+            Result<ReceivedRecord> result(ReceivedRecord(
+                std::move(record.payload), std::move(credit)));
+            invoke_noexcept(completion, std::move(result));
+        } catch (const std::bad_alloc&) {
+            fail(safe_status(StatusCode::ResourceExhausted));
+            Result<ReceivedRecord> result(safe_status(StatusCode::ResourceExhausted));
+            invoke_noexcept(completion, std::move(result));
+        } catch (...) {
+            fail(safe_status(StatusCode::Internal));
+            Result<ReceivedRecord> result(safe_status(StatusCode::Internal));
+            invoke_noexcept(completion, std::move(result));
         }
-        QueuedRecord record = std::move(records_.front());
-        records_.pop_front();
-        queued_record_bytes_ -= record.payload.size();
-        const std::size_t credit_bytes = record.credit_bytes;
-        const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
-        CarrierCredit credit(
-            credit_bytes,
-            [weak](std::size_t bytes) {
-                if (auto self = weak.lock()) {
-                    self->post([weak, bytes] {
-                        if (auto current = weak.lock()) {
-                            current->return_credit(bytes);
-                        }
-                    });
-                }
-            });
-        Result<ReceivedRecord> result(ReceivedRecord(
-            std::move(record.payload), std::move(credit)));
-        invoke_noexcept(completion, std::move(result));
     }
 
     void maybe_deliver_pending_receive() {
@@ -626,7 +680,7 @@ private:
             return;
         }
         if (bytes == 0U || bytes > owned_credit_bytes_) {
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "H2 carrier credit ledger underflow"));
             return;
         }
@@ -665,14 +719,14 @@ private:
                         header.begin()) ||
             header[4] != kCarrierEnvelopeVersion || header[5] != 0U ||
             header[6] != 0U || header[7] != 0U) {
-            fail(Status(StatusCode::InvalidArgument,
+            fail(safe_status(StatusCode::InvalidArgument,
                         "malformed H2-duplex carrier record envelope"));
             return false;
         }
         const std::uint32_t payload_length = read_be32(header.data() + 8);
         if (payload_length == 0U ||
             payload_length > limits_.max_record_bytes) {
-            fail(Status(StatusCode::ResourceExhausted,
+            fail(safe_status(StatusCode::ResourceExhausted,
                         "H2-duplex carrier record length exceeds its bound"));
             return false;
         }
@@ -682,7 +736,7 @@ private:
             return false;
         }
         if (owned_credit_bytes_ < kYtp1H2CarrierEnvelopeBytes) {
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "H2 carrier envelope credit ledger underflow"));
             return false;
         }
@@ -715,7 +769,7 @@ private:
             if (queued_record_bytes_ > limits_.max_retained_receive_bytes ||
                 payload_bytes > limits_.max_retained_receive_bytes -
                                     queued_record_bytes_) {
-                fail(Status(StatusCode::ResourceExhausted,
+                fail(safe_status(StatusCode::ResourceExhausted,
                             "H2 carrier receive queue exceeded its byte bound"));
                 return;
             }
@@ -743,14 +797,14 @@ private:
         if (owned_credit_bytes_ > limits_.max_retained_receive_bytes ||
             decoded.size() > limits_.max_retained_receive_bytes -
                                  owned_credit_bytes_) {
-            fail(Status(StatusCode::ResourceExhausted,
+            fail(safe_status(StatusCode::ResourceExhausted,
                         "H2 carrier retained receive credit exceeded its bound"));
             return;
         }
         compact_input();
         const std::size_t retained = input_.size() - input_offset_;
         if (decoded.size() > limits_.max_retained_receive_bytes - retained) {
-            fail(Status(StatusCode::ResourceExhausted,
+            fail(safe_status(StatusCode::ResourceExhausted,
                         "H2 carrier input accumulation exceeded its bound"));
             return;
         }
@@ -773,7 +827,7 @@ private:
         const std::size_t max_bytes =
             std::min(limits_.secure_read_bytes, channel_limit);
         if (max_bytes == 0U) {
-            fail(Status(StatusCode::ProviderMismatch,
+            fail(safe_status(StatusCode::ProviderMismatch,
                         "secure channel declares a zero read bound"));
             return;
         }
@@ -786,17 +840,20 @@ private:
                     try {
                         self->on_read(std::move(result));
                     } catch (const std::bad_alloc&) {
-                        self->fail(Status(
+                        self->fail(safe_status(
                             StatusCode::ResourceExhausted,
                             "H2 carrier read allocation failed"));
                     } catch (...) {
-                        self->fail(Status(StatusCode::Internal,
+                        self->fail(safe_status(StatusCode::Internal,
                                           "H2 carrier read callback threw"));
                     }
                 });
+        } catch (const std::bad_alloc&) {
+            read_in_flight_ = false;
+            fail(safe_status(StatusCode::ResourceExhausted));
         } catch (...) {
             read_in_flight_ = false;
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "secure channel threw while starting a read"));
         }
     }
@@ -815,7 +872,7 @@ private:
         }
         Buffer plaintext = std::move(result).take_value();
         if (plaintext.empty()) {
-            fail(Status(StatusCode::Closed,
+            fail(safe_status(StatusCode::Closed,
                         "secure channel returned an empty read"));
             return;
         }
@@ -825,6 +882,23 @@ private:
         if (h2_->failed()) {
             fail(h2_failure("parse HTTP/2 plaintext"));
             return;
+        }
+        if (h2_->role() == obfs::H2CarrierRole::Server) {
+            for (const auto& event : h2_->TakeStreamCloses()) {
+                if (cover_) cover_->stream_closed(event.stream_id);
+            }
+            for (const auto& request : h2_->TakeRequests()) {
+                if (!cover_ || !cover_->respond(*h2_, request)) {
+                    fail(safe_status(StatusCode::ResourceExhausted));
+                    return;
+                }
+                for (const auto& event : h2_->TakeStreamCloses()) {
+                    cover_->stream_closed(event.stream_id);
+                }
+            }
+            for (const auto& event : h2_->TakeStreamCloses()) {
+                if (cover_) cover_->stream_closed(event.stream_id);
+            }
         }
         drain_tunnel_bytes();
         if (terminal_) {
@@ -858,13 +932,13 @@ private:
                 limits_.max_pending_secure_write_bytes ||
             wire.size() > limits_.max_pending_secure_write_bytes -
                               pending_secure_write_bytes_) {
-            fail(Status(StatusCode::ResourceExhausted,
+            fail(safe_status(StatusCode::ResourceExhausted,
                         "H2 secure-write queue exceeded its byte bound"));
             return;
         }
         const std::size_t channel_limit = channel_->max_write_size();
         if (channel_limit == 0U) {
-            fail(Status(StatusCode::ProviderMismatch,
+            fail(safe_status(StatusCode::ProviderMismatch,
                         "secure channel declares a zero write bound"));
             return;
         }
@@ -906,14 +980,19 @@ private:
                 [self](Status status, std::size_t transferred) noexcept {
                     try {
                         self->on_write(std::move(status), transferred);
+                    } catch (const std::bad_alloc&) {
+                        self->fail(safe_status(StatusCode::ResourceExhausted));
                     } catch (...) {
-                        self->fail(Status(StatusCode::Internal,
+                        self->fail(safe_status(StatusCode::Internal,
                                           "H2 carrier write callback threw"));
                     }
                 });
+        } catch (const std::bad_alloc&) {
+            write_in_flight_ = false;
+            fail(safe_status(StatusCode::ResourceExhausted));
         } catch (...) {
             write_in_flight_ = false;
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "secure channel threw while starting a write"));
         }
     }
@@ -934,7 +1013,7 @@ private:
         }
         if (transferred != expected ||
             expected > pending_secure_write_bytes_) {
-            fail(Status(StatusCode::Internal,
+            fail(safe_status(StatusCode::Internal,
                         "secure channel reported a partial H2 write"));
             return;
         }
@@ -979,7 +1058,7 @@ private:
         }
         compact_input();
         if (expected_payload_bytes_.has_value() || !retained_input().empty()) {
-            fail(Status(StatusCode::InvalidArgument,
+            fail(safe_status(StatusCode::InvalidArgument,
                         "HTTP/2 carrier closed with a truncated record"));
             return;
         }
@@ -990,7 +1069,7 @@ private:
             pending_send_.reset();
             invoke_noexcept(
                 completion,
-                Status(StatusCode::Closed, "HTTP/2 carrier peer closed"),
+                safe_status(StatusCode::Closed, "HTTP/2 carrier peer closed"),
                 0U);
         }
         maybe_deliver_pending_receive();
@@ -998,23 +1077,27 @@ private:
             Carrier::ReceiveCompletion completion =
                 std::move(pending_receive_->completion);
             pending_receive_.reset();
-            Result<ReceivedRecord> result(Status(
+            Result<ReceivedRecord> result(safe_status(
                 StatusCode::Closed, "HTTP/2 carrier peer closed"));
             invoke_noexcept(completion, std::move(result));
         }
         channel_->close();
     }
 
-    void fail(Status status) noexcept {
+    void fail(const Status& status) noexcept {
         if (terminal_) {
             return;
         }
         terminal_ = true;
+        {
+            std::lock_guard lock(control_mutex_);
+            control_closed_ = true;
+            returned_credit_ = 0U;
+        }
         terminal_status_ = status.ok()
-            ? Status(StatusCode::Internal,
+            ? safe_status(StatusCode::Internal,
                      "H2 carrier failed without an error status")
-            : std::move(status);
-        transport_cancellation_.cancel();
+            : safe_status(status.code(), status.message());
         create_cancellation_.unregister();
 
         engine::CarrierProvider::Completion create =
@@ -1030,6 +1113,14 @@ private:
             pending_send_.reset();
         }
 
+        records_.clear();
+        secure_writes_.clear();
+        input_.clear();
+        owned_credit_bytes_ = 0U;
+        queued_record_bytes_ = 0U;
+        pending_secure_write_bytes_ = 0U;
+        transport_cancellation_.cancel();
+
         try {
             channel_->cancel();
             channel_->close();
@@ -1040,7 +1131,7 @@ private:
             complete_create(create, terminal_status_);
         }
         if (receive) {
-            Result<ReceivedRecord> result(terminal_status_);
+            Result<ReceivedRecord> result(safe_status(terminal_status_.code(), terminal_status_.message()));
             invoke_noexcept(receive, std::move(result));
         }
         if (send) {
@@ -1050,10 +1141,11 @@ private:
 
     ProviderDescriptor descriptor_;
     ExecutorAffinity affinity_;
-    Ytp1H2PostHandler post_;
+    Ytp1H2Dispatch dispatch_;
     Ytp1H2CarrierLimits limits_;
     std::unique_ptr<SecureChannel> channel_;
     std::unique_ptr<obfs::H2Carrier> h2_;
+    std::shared_ptr<Ytp1H2CoverHandler> cover_;
     engine::CancellationSource transport_cancellation_;
 
     engine::CarrierProvider::Completion create_completion_;
@@ -1067,7 +1159,13 @@ private:
     std::optional<std::size_t> expected_payload_bytes_;
     std::string authority_;
     std::string carrier_path_;
-    Status terminal_status_{StatusCode::Closed, "H2 carrier is closed"};
+    Status terminal_status_{StatusCode::Closed};
+    ControlTask control_{&Ytp1H2CarrierState::on_control};
+    std::mutex control_mutex_;
+    StatusCode requested_terminal_{StatusCode::Ok};
+    std::size_t returned_credit_{0U};
+    bool control_closed_{false};
+    CancellationToken create_token_;
 
     std::size_t input_offset_{0U};
     std::size_t queued_record_bytes_{0U};
@@ -1150,12 +1248,12 @@ void Ytp1H2CarrierState::finish_client_opening() {
         Result<std::unique_ptr<Carrier>> result(std::move(carrier));
         invoke_noexcept(completion, std::move(result));
     } catch (const std::bad_alloc&) {
-        const Status failure(StatusCode::ResourceExhausted,
+        const Status failure = safe_status(StatusCode::ResourceExhausted,
                              "H2 carrier object allocation failed");
         complete_create(completion, failure);
         fail(failure);
     } catch (...) {
-        const Status failure(StatusCode::Internal,
+        const Status failure = safe_status(StatusCode::Internal,
                              "H2 carrier object construction threw");
         complete_create(completion, failure);
         fail(failure);
@@ -1164,51 +1262,71 @@ void Ytp1H2CarrierState::finish_client_opening() {
 
 }  // namespace
 
+struct Ytp1H2CarrierProvider::AdmissionKey final {
+    explicit AdmissionKey(std::span<const std::byte> key) noexcept {
+        std::copy(key.begin(), key.end(), bytes.begin());
+    }
+    AdmissionKey(const AdmissionKey&) = delete;
+    AdmissionKey& operator=(const AdmissionKey&) = delete;
+    ~AdmissionKey() noexcept { OPENSSL_cleanse(bytes.data(), bytes.size()); }
+
+    std::array<std::byte, kYtp1H2AdmissionKeyBytes> bytes{};
+};
+
 Ytp1H2CarrierProvider::Ytp1H2CarrierProvider(
     ProviderDescriptor descriptor,
     ExecutorAffinity executor_affinity,
-    Ytp1H2PostHandler post,
-    Ytp1H2ClientConfig config) noexcept
+    Ytp1H2Dispatch post,
+    Ytp1H2ClientConfig config,
+    std::shared_ptr<const AdmissionKey> admission_key) noexcept
     : descriptor_(std::move(descriptor)),
       executor_affinity_(executor_affinity),
-      post_(std::move(post)),
-      config_(std::move(config)) {}
+      dispatch_(std::move(post)),
+      config_(std::move(config)),
+      admission_key_(std::move(admission_key)) {}
 
 Result<std::shared_ptr<Ytp1H2CarrierProvider>>
 Ytp1H2CarrierProvider::create(
     ExecutorAffinity executor_affinity,
-    Ytp1H2PostHandler post,
-    Ytp1H2ClientConfig config) {
+    Ytp1H2Dispatch post,
+    Ytp1H2ClientConfig config,
+    std::span<const std::byte> admission_key) {
     if (!executor_affinity.valid() || !post) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(Status(
+        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
             StatusCode::InvalidArgument,
             "H2 carrier provider requires an executor and valid affinity"));
     }
-    if (!valid_visible_text(config.authority, kMaxAuthorityBytes) ||
-        config.authority.find('/') != std::string::npos ||
-        !valid_visible_text(config.carrier_path, kMaxCarrierPathBytes) ||
-        config.carrier_path.front() != '/') {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(Status(
+    if (admission_key.size() != kYtp1H2AdmissionKeyBytes ||
+        config.server_port == 0U) {
+        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
             StatusCode::InvalidArgument,
-            "H2 carrier authority or path is invalid"));
+            "H2 carrier requires an exact 32-byte admission key and nonzero port"));
     }
     const Status limits_status = validate_limits(config.limits);
     if (!limits_status.ok()) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(limits_status);
-    }
-    auto descriptor = make_descriptor();
-    if (!descriptor.ok()) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(
-            descriptor.status());
+        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(limits_status.code(), limits_status.message()));
     }
     try {
+        auto descriptor = make_descriptor();
+        if (!descriptor.ok()) {
+            return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(
+                descriptor.status());
+        }
+        auto normalized = canonicalize_ytp1_h2_server_name(config.server_name);
+        if (!normalized.has_value()) {
+            return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
+                StatusCode::InvalidArgument,
+                "H2 carrier intended TLS server name is invalid"));
+        }
+        config.server_name = std::move(*normalized);
+        auto owned_key = std::make_shared<AdmissionKey>(admission_key);
         return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(
             std::shared_ptr<Ytp1H2CarrierProvider>(
                 new Ytp1H2CarrierProvider(
                     std::move(descriptor).take_value(), executor_affinity,
-                    std::move(post), std::move(config))));
+                    std::move(post), std::move(config), std::move(owned_key))));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(Status(
+        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
             StatusCode::ResourceExhausted,
             "H2 carrier provider allocation failed"));
     }
@@ -1233,9 +1351,10 @@ void Ytp1H2CarrierProvider::async_create(
             std::make_shared<Completion>(std::move(completion));
         const ProviderDescriptor descriptor = descriptor_;
         const ExecutorAffinity executor_affinity = executor_affinity_;
-        const Ytp1H2PostHandler post = post_;
+        const Ytp1H2Dispatch post = dispatch_;
         const Ytp1H2ClientConfig config = config_;
-        post_([descriptor, executor_affinity, post, config, owned_channel,
+        const auto admission_key = admission_key_;
+        dispatch_.post([descriptor, executor_affinity, post, config, admission_key, owned_channel,
                local_role,
                cancellation = std::move(cancellation),
                completion_holder]() mutable {
@@ -1249,7 +1368,7 @@ void Ytp1H2CarrierProvider::async_create(
                 if (*owned_channel) {
                     (*owned_channel)->close();
                 }
-                Result<std::unique_ptr<Carrier>> result(Status(
+                Result<std::unique_ptr<Carrier>> result(safe_status(
                     StatusCode::InvalidArgument,
                     "H2 carrier provider creates client carriers only"));
                 invoke_noexcept(*completion_holder, std::move(result));
@@ -1258,27 +1377,92 @@ void Ytp1H2CarrierProvider::async_create(
             if ((*owned_channel)->executor_affinity() !=
                 executor_affinity) {
                 (*owned_channel)->close();
-                Result<std::unique_ptr<Carrier>> result(Status(
+                Result<std::unique_ptr<Carrier>> result(safe_status(
                     StatusCode::ProviderMismatch,
                     "H2 carrier and secure channel affinities differ"));
                 invoke_noexcept(*completion_holder, std::move(result));
                 return;
             }
             try {
+                const auto reject = [&](Status failure) {
+                    (*owned_channel)->close();
+                    Result<std::unique_ptr<Carrier>> result(std::move(failure));
+                    invoke_noexcept(*completion_holder, std::move(result));
+                };
+                if (cancellation.is_cancelled()) {
+                    reject(safe_status(StatusCode::Cancelled,
+                                  "H2 carrier creation was cancelled"));
+                    return;
+                }
+                const auto& peer = (*owned_channel)->peer_evidence();
+                if (!(*owned_channel)->descriptor().capabilities().contains(
+                        engine::Capability::Tls13) ||
+                    !peer.authenticated() || peer.peer_role() != EndpointRole::Server ||
+                    canonicalize_ytp1_h2_server_name(peer.identity()) !=
+                        std::optional<std::string>(config.server_name)) {
+                    reject(safe_status(StatusCode::ProviderMismatch,
+                                  "H2 carrier TLS evidence does not match the intended server"));
+                    return;
+                }
+                auto exported = (*owned_channel)->export_keying_material(
+                    kYtp1H2AdmissionExporterLabel, {}, kYtp1H2AdmissionExporterBytes);
+                if (!exported.ok()) {
+                    reject(exported.status());
+                    return;
+                }
+                Buffer exporter = std::move(exported).take_value();
+                struct ExporterWiper final {
+                    Buffer& buffer;
+                    ~ExporterWiper() noexcept {
+                        OPENSSL_cleanse(buffer.mutable_bytes().data(), buffer.size());
+                    }
+                } exporter_wiper{exporter};
+                if (exporter.size() != kYtp1H2AdmissionExporterBytes) {
+                    reject(safe_status(StatusCode::ProviderMismatch,
+                                  "H2 admission exporter returned an invalid length"));
+                    return;
+                }
+                if (cancellation.is_cancelled()) {
+                    reject(safe_status(StatusCode::Cancelled,
+                                  "H2 carrier creation was cancelled"));
+                    return;
+                }
+                const auto nonce = admission::random_nonce();
+                if (!nonce.has_value()) {
+                    reject(safe_status(StatusCode::FailedPrecondition,
+                                  "H2 admission nonce generation failed"));
+                    return;
+                }
+                auto path = build_ytp1_h2_admission_path(
+                    admission_key->bytes, config.server_name, exporter.bytes(), *nonce);
+                if (!path.has_value()) {
+                    reject(safe_status(StatusCode::FailedPrecondition,
+                                  "H2 admission proof generation failed"));
+                    return;
+                }
+                if (cancellation.is_cancelled()) {
+                    reject(safe_status(StatusCode::Cancelled,
+                                  "H2 carrier creation was cancelled"));
+                    return;
+                }
+                std::string authority = config.server_name;
+                if (config.server_port != 443U) {
+                    authority += ":" + std::to_string(config.server_port);
+                }
                 auto h2 = std::make_unique<obfs::H2Carrier>(
                     obfs::H2CarrierRole::Client);
                 auto state = std::make_shared<Ytp1H2CarrierState>(
                     descriptor, executor_affinity, post, config.limits,
                     std::move(*owned_channel), std::move(h2));
                 state->start_client(
-                    config.authority, config.carrier_path,
+                    std::move(authority), std::move(*path),
                     std::move(cancellation),
                     std::move(*completion_holder));
             } catch (const std::bad_alloc&) {
                 if (*owned_channel) {
                     (*owned_channel)->close();
                 }
-                Result<std::unique_ptr<Carrier>> result(Status(
+                Result<std::unique_ptr<Carrier>> result(safe_status(
                     StatusCode::ResourceExhausted,
                     "H2 carrier creation allocation failed"));
                 invoke_noexcept(*completion_holder, std::move(result));
@@ -1286,7 +1470,7 @@ void Ytp1H2CarrierProvider::async_create(
                 if (*owned_channel) {
                     (*owned_channel)->close();
                 }
-                Result<std::unique_ptr<Carrier>> result(Status(
+                Result<std::unique_ptr<Carrier>> result(safe_status(
                     StatusCode::Internal, "H2 carrier creation threw"));
                 invoke_noexcept(*completion_holder, std::move(result));
             }
@@ -1297,7 +1481,7 @@ void Ytp1H2CarrierProvider::async_create(
         } else if (channel) {
             channel->close();
         }
-        Result<std::unique_ptr<Carrier>> result(Status(
+        Result<std::unique_ptr<Carrier>> result(safe_status(
             StatusCode::ResourceExhausted,
             "H2 carrier creation dispatch allocation failed"));
         if (completion_holder) {
@@ -1311,7 +1495,7 @@ void Ytp1H2CarrierProvider::async_create(
         } else if (channel) {
             channel->close();
         }
-        Result<std::unique_ptr<Carrier>> result(Status(
+        Result<std::unique_ptr<Carrier>> result(safe_status(
             StatusCode::Internal, "H2 carrier executor rejected creation"));
         if (completion_holder) {
             invoke_noexcept(*completion_holder, std::move(result));
@@ -1335,52 +1519,54 @@ Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
     std::unique_ptr<SecureChannel> channel,
     std::unique_ptr<obfs::H2Carrier> admitted_h2,
     ExecutorAffinity executor_affinity,
-    Ytp1H2PostHandler post,
-    Ytp1H2CarrierLimits limits) {
-    const Status limits_status = validate_limits(limits);
-    if (!limits_status.ok()) {
-        return Result<std::unique_ptr<Carrier>>(limits_status);
-    }
-    if (!channel || !admitted_h2 || !executor_affinity.valid() || !post) {
-        return Result<std::unique_ptr<Carrier>>(Status(
-            StatusCode::InvalidArgument,
-            "admitted H2 carrier requires live typed state and an executor"));
-    }
-    if (channel->executor_affinity() != executor_affinity ||
-        admitted_h2->role() != obfs::H2CarrierRole::Server ||
-        !admitted_h2->carrier_active() || admitted_h2->carrier_closed() ||
-        admitted_h2->failed()) {
-        channel->close();
-        return Result<std::unique_ptr<Carrier>>(Status(
-            StatusCode::ProviderMismatch,
-            "server H2 state is not a live admitted carrier"));
-    }
-    // YTP application records may exceed HTTP/2's 65,535-byte initial
-    // per-stream window. Promotion expands the already-admitted carrier to the
-    // transport-v2 provider's fixed 8-MiB receive window; otherwise a record
-    // larger than the initial window could never reach ReceivedRecord and its
-    // move-owned credit could never be released.
-    if (!admitted_h2->EnableAdmittedReceiveWindow()) {
-        channel->close();
-        return Result<std::unique_ptr<Carrier>>(Status(
-            StatusCode::FailedPrecondition,
-            "failed to enable bounded admitted H2 receive credit"));
-    }
-    auto descriptor = make_descriptor();
-    if (!descriptor.ok()) {
-        channel->close();
-        return Result<std::unique_ptr<Carrier>>(descriptor.status());
-    }
+    Ytp1H2Dispatch post,
+    Ytp1H2CarrierLimits limits,
+    std::shared_ptr<Ytp1H2CoverHandler> cover) {
     try {
+        const Status limits_status = validate_limits(limits);
+        if (!limits_status.ok()) {
+            return Result<std::unique_ptr<Carrier>>(safe_status(limits_status.code(), limits_status.message()));
+        }
+        if (!channel || !admitted_h2 || !executor_affinity.valid() || !post) {
+            return Result<std::unique_ptr<Carrier>>(safe_status(
+                StatusCode::InvalidArgument,
+                "admitted H2 carrier requires live typed state and an executor"));
+        }
+        if (channel->executor_affinity() != executor_affinity ||
+            admitted_h2->role() != obfs::H2CarrierRole::Server ||
+            !admitted_h2->carrier_active() || admitted_h2->carrier_closed() ||
+            admitted_h2->failed()) {
+            channel->close();
+            return Result<std::unique_ptr<Carrier>>(safe_status(
+                StatusCode::ProviderMismatch,
+                "server H2 state is not a live admitted carrier"));
+        }
+        // YTP application records may exceed HTTP/2's 65,535-byte initial
+        // per-stream window. Promotion expands the already-admitted carrier to the
+        // transport-v2 provider's fixed 8-MiB receive window; otherwise a record
+        // larger than the initial window could never reach ReceivedRecord and its
+        // move-owned credit could never be released.
+        if (!admitted_h2->EnableAdmittedReceiveWindow()) {
+            channel->close();
+            return Result<std::unique_ptr<Carrier>>(safe_status(
+                StatusCode::FailedPrecondition,
+                "failed to enable bounded admitted H2 receive credit"));
+        }
+        auto descriptor = make_descriptor();
+        if (!descriptor.ok()) {
+            channel->close();
+            return Result<std::unique_ptr<Carrier>>(descriptor.status());
+        }
         auto state = std::make_shared<Ytp1H2CarrierState>(
             std::move(descriptor).take_value(), executor_affinity, post,
-            limits, std::move(channel), std::move(admitted_h2));
+            limits, std::move(channel), std::move(admitted_h2), std::move(cover));
         std::unique_ptr<Carrier> carrier =
             std::make_unique<Ytp1H2Carrier>(state);
-        if (!state->post([state] { state->start_admitted_server(); })) {
+        const auto dispatched = state->post([state] { state->start_admitted_server(); });
+        if (dispatched != StatusCode::Ok) {
             state->request_close();
-            return Result<std::unique_ptr<Carrier>>(Status(
-                StatusCode::Internal,
+            return Result<std::unique_ptr<Carrier>>(safe_status(
+                dispatched,
                 "H2 carrier executor rejected admitted startup"));
         }
         return Result<std::unique_ptr<Carrier>>(std::move(carrier));
@@ -1388,10 +1574,14 @@ Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
         if (channel) {
             channel->close();
         }
-        return Result<std::unique_ptr<Carrier>>(Status(
+        return Result<std::unique_ptr<Carrier>>(safe_status(
             StatusCode::ResourceExhausted,
             "admitted H2 carrier allocation failed"));
     }
+}
+
+Status validate_ytp1_h2_carrier_limits(const Ytp1H2CarrierLimits& limits) {
+    return validate_limits(limits);
 }
 
 }  // namespace yume::providers

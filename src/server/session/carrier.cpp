@@ -531,7 +531,7 @@ void Session::send_disguise_404(const std::string& path) {
             profile = yume::http_profile::server("nginx");
         }
         resp = std::make_shared<std::string>(
-            yume::http_profile::render_404(*profile, /*connection_close=*/true));
+            yume::http_profile::render_404(*profile));
         reason = "served disguise 404";
     }
     auto self = shared_from_this();
@@ -938,7 +938,7 @@ void Session::process_v2_h2_requests() {
                 now_s, listener_port);
             security::secure_erase(admission_secret);
             const bool replay_ok = hmac_ok && admission_replay_cache_ &&
-                admission_replay_cache_->AcceptPath(request.path, now_s);
+                admission_replay_cache_->AcceptPath(request.path);
             if (!replay_ok) {
                 v2_h2_carrier_->RejectCarrier(
                     request.stream_id, 404,
@@ -1360,7 +1360,7 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
             admission_secret, authority, tls_sni, path, now_s, listener_port);
         security::secure_erase(admission_secret);
         const bool token_ok = hmac_ok && admission_replay_cache_ &&
-                              admission_replay_cache_->AcceptPath(path, now_s);
+                              admission_replay_cache_->AcceptPath(path);
         carrier_probe_active_ = false;
         preface_timer_.cancel();
 
@@ -1559,7 +1559,7 @@ void Session::serve_fake_h2_real_index() {
 
     if (!have_response && profile.has_value()) {
         auto parsed = obfs::parse_http1_response_for_h2(
-            yume::http_profile::render_404(*profile, /*connection_close=*/true));
+            yume::http_profile::render_404(*profile));
         if (parsed.has_value()) {
             response = std::move(*parsed);
             have_response = true;

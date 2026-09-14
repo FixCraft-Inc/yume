@@ -5,6 +5,8 @@
  */
 
 #include "providers/ytp1_tls13_secure_channel.hpp"
+#include "core/stealth/cover_profile.hpp"
+#include "core/stealth/tls_client_profile.hpp"
 
 #include <algorithm>
 #include <array>
@@ -57,6 +59,9 @@ constexpr std::size_t kMaxServerNameBytes = 253U;
 constexpr std::size_t kAbsoluteMaxCredentialPemBytes = 1024U * 1024U;
 constexpr std::size_t kMaxHandshakeCiphertextBytes = 4U * 1024U * 1024U;
 constexpr std::array<unsigned char, 3> kH2Alpn{2U, 'h', '2'};
+constexpr std::array<unsigned char, 12> kCoverAlpn{
+    2U, 'h', '2', 8U, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+int kCoverConnectionMarker;
 
 Status safe_status(StatusCode code, std::string_view message) noexcept {
     try {
@@ -64,6 +69,10 @@ Status safe_status(StatusCode code, std::string_view message) noexcept {
     } catch (...) {
         return Status(code);
     }
+}
+
+Status safe_status(const Status& status) noexcept {
+    return safe_status(status.code(), status.message());
 }
 
 Status cancelled_status() noexcept {
@@ -183,11 +192,15 @@ bool install_server_identity(SSL_CTX* context,
            SSL_CTX_check_private_key(context) == 1;
 }
 
-int select_h2(SSL*, const unsigned char** out, unsigned char* out_length,
+int select_h2(SSL* ssl, const unsigned char** out, unsigned char* out_length,
               const unsigned char* offered, unsigned int offered_length,
               void*) noexcept {
+    const bool cover = SSL_get_app_data(ssl) == &kCoverConnectionMarker;
+    const std::span<const unsigned char> protocols = cover
+        ? std::span<const unsigned char>(kCoverAlpn)
+        : std::span<const unsigned char>(kH2Alpn);
     if (SSL_select_next_proto(const_cast<unsigned char**>(out), out_length,
-                              kH2Alpn.data(), kH2Alpn.size(), offered,
+                              protocols.data(), protocols.size(), offered,
                               offered_length) != OPENSSL_NPN_NEGOTIATED) {
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
@@ -274,6 +287,30 @@ namespace {
 
 class TlsChannelState;
 
+class ServerTlsConnection final : public Ytp1TlsServerConnection {
+public:
+    explicit ServerTlsConnection(std::shared_ptr<TlsChannelState> state) noexcept
+        : state_(std::move(state)) {}
+    ~ServerTlsConnection() override;
+    ExecutorAffinity executor_affinity() const noexcept override;
+    std::size_t max_read_size() const noexcept override;
+    std::size_t max_write_size() const noexcept override;
+    void async_read(std::size_t, CancellationToken, ReadCompletion) override;
+    void async_write(Buffer, CancellationToken, WriteCompletion) override;
+    Status shutdown_write() noexcept override;
+    void cancel() noexcept override;
+    void close() noexcept override;
+    std::uint16_t tls_version() const noexcept override;
+    std::string_view negotiated_protocol() const noexcept override;
+    std::string_view server_name() const noexcept override;
+    Result<Buffer> export_keying_material(
+        std::string_view, std::span<const std::byte>, std::size_t) override;
+    Result<std::unique_ptr<SecureChannel>> promote() override;
+
+private:
+    std::shared_ptr<TlsChannelState> state_;
+};
+
 class TlsChannel final : public SecureChannel {
 public:
     explicit TlsChannel(std::shared_ptr<TlsChannelState> state) noexcept
@@ -322,28 +359,43 @@ public:
     TlsChannelState(std::shared_ptr<Ytp1Tls13SecureChannelProvider::Impl> owner,
                     std::unique_ptr<engine::ByteChannel> transport,
                     SslPtr ssl, BIO* read_bio, BIO* write_bio,
-                    engine::SecureChannelProvider::Completion completion) noexcept
+                    bool cover_mode)
         : owner_(std::move(owner)), transport_(std::move(transport)),
           ssl_(std::move(ssl)), read_bio_(read_bio), write_bio_(write_bio),
-          affinity_(transport_->executor_affinity()),
-          handshake_completion_(std::move(completion)) {}
+          affinity_(transport_->executor_affinity()), cover_mode_(cover_mode) {}
 
     ~TlsChannelState() noexcept { close(); }
 
-    void start(CancellationToken cancellation) {
-        auto registration = cancellation.register_callback(
-            [weak = weak_from_this()]() noexcept {
-                if (const auto state = weak.lock()) {
-                    state->fail(cancelled_status());
-                }
-            });
-        if (!registration.ok()) {
-            fail(registration.status());
+    void start(CancellationToken cancellation,
+               engine::SecureChannelProvider::Completion completion,
+               Ytp1Tls13SecureChannelProvider::ServerCoverCompletion cover_completion) {
+        // Construction can allocate cancellation state. Transfer callbacks
+        // only after it succeeds, then contain registration failures here.
+        handshake_completion_ = std::move(completion);
+        cover_completion_ = std::move(cover_completion);
+        try {
+            auto registration = cancellation.register_callback(
+                [weak = weak_from_this()]() noexcept {
+                    if (const auto state = weak.lock()) {
+                        state->fail(cancelled_status());
+                    }
+                });
+            if (!registration.ok()) {
+                fail(registration.status());
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                handshake_cancellation_ = std::move(registration).take_value();
+            }
+        } catch (const std::bad_alloc&) {
+            fail(safe_status(StatusCode::ResourceExhausted,
+                             "TLS handshake cancellation registration failed"));
             return;
-        }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            handshake_cancellation_ = std::move(registration).take_value();
+        } catch (...) {
+            fail(safe_status(StatusCode::Internal,
+                             "TLS handshake cancellation registration threw"));
+            return;
         }
         drive();
     }
@@ -357,6 +409,36 @@ public:
     }
     const ProviderDescriptor& descriptor() const noexcept {
         return owner_->descriptor;
+    }
+    std::uint16_t tls_version() const noexcept { return tls_version_; }
+    std::string_view negotiated_protocol() const noexcept { return protocol_; }
+    std::string_view server_name() const noexcept { return received_server_name_; }
+
+    Result<std::unique_ptr<SecureChannel>> promote() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!cover_mode_ || promoted_ || phase_ != Phase::Active ||
+            tls_version_ != TLS1_3_VERSION || protocol_ != "h2") {
+            return Result<std::unique_ptr<SecureChannel>>(safe_status(
+                StatusCode::FailedPrecondition,
+                "cover connection is not an unpromoted TLS 1.3/H2 channel"));
+        }
+        if (read_ || write_ || transport_read_pending_ ||
+            transport_write_pending_ || immediate_head_ ||
+            shutdown_requested_ || remote_closed_) {
+            return Result<std::unique_ptr<SecureChannel>>(safe_status(
+                StatusCode::FailedPrecondition,
+                "cover operations must settle before TLS promotion"));
+        }
+        try {
+            std::unique_ptr<SecureChannel> channel =
+                std::make_unique<TlsChannel>(shared_from_this());
+            promoted_ = true;
+            return Result<std::unique_ptr<SecureChannel>>(std::move(channel));
+        } catch (...) {
+            return Result<std::unique_ptr<SecureChannel>>(safe_status(
+                StatusCode::ResourceExhausted,
+                "TLS promotion allocation failed"));
+        }
     }
 
     void async_read(std::size_t maximum, CancellationToken token,
@@ -388,22 +470,32 @@ public:
             return;
         }
         if (id != 0U) {
-            auto registration = token.register_callback(
-                [weak = weak_from_this(), id]() noexcept {
-                    if (const auto state = weak.lock()) {
-                        state->cancel_read(id);
-                    }
-                });
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (read_ && read_->id == id) {
-                    if (registration.ok()) {
-                        read_->cancellation =
-                            std::move(registration).take_value();
-                    } else {
-                        read_->terminal = registration.status();
+            try {
+                auto registration = token.register_callback(
+                    [weak = weak_from_this(), id]() noexcept {
+                        if (const auto state = weak.lock()) {
+                            state->cancel_read(id);
+                        }
+                    });
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (read_ && read_->id == id) {
+                        if (registration.ok()) {
+                            read_->cancellation =
+                                std::move(registration).take_value();
+                        } else {
+                            read_->terminal = safe_status(registration.status());
+                        }
                     }
                 }
+            } catch (const std::bad_alloc&) {
+                fail(safe_status(StatusCode::ResourceExhausted,
+                                 "TLS read cancellation registration failed"));
+                return;
+            } catch (...) {
+                fail(safe_status(StatusCode::Internal,
+                                 "TLS read cancellation registration threw"));
+                return;
             }
         }
         drive();
@@ -438,22 +530,32 @@ public:
             return;
         }
         if (id != 0U) {
-            auto registration = token.register_callback(
-                [weak = weak_from_this(), id]() noexcept {
-                    if (const auto state = weak.lock()) {
-                        state->cancel_write(id);
-                    }
-                });
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (write_ && write_->id == id) {
-                    if (registration.ok()) {
-                        write_->cancellation =
-                            std::move(registration).take_value();
-                    } else {
-                        write_->terminal = registration.status();
+            try {
+                auto registration = token.register_callback(
+                    [weak = weak_from_this(), id]() noexcept {
+                        if (const auto state = weak.lock()) {
+                            state->cancel_write(id);
+                        }
+                    });
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (write_ && write_->id == id) {
+                        if (registration.ok()) {
+                            write_->cancellation =
+                                std::move(registration).take_value();
+                        } else {
+                            write_->terminal = safe_status(registration.status());
+                        }
                     }
                 }
+            } catch (const std::bad_alloc&) {
+                fail(safe_status(StatusCode::ResourceExhausted,
+                                 "TLS write cancellation registration failed"));
+                return;
+            } catch (...) {
+                fail(safe_status(StatusCode::Internal,
+                                 "TLS write cancellation registration threw"));
+                return;
             }
         }
         drive();
@@ -495,8 +597,8 @@ public:
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (phase_ == Phase::Closed) return;
+                if (phase_ != Phase::Failed) terminal_ = closed_status();
                 phase_ = Phase::Closed;
-                terminal_ = closed_status();
                 need_transport_close_ = true;
             }
             drive();
@@ -547,6 +649,7 @@ private:
         Status status;
         std::size_t count{0U};
         engine::SecureChannelProvider::Completion handshake;
+        Ytp1Tls13SecureChannelProvider::ServerCoverCompletion cover;
         SecureChannel::ReadCompletion read;
         SecureChannel::WriteCompletion write;
     };
@@ -559,6 +662,7 @@ private:
     };
 
     void queue_action(Action action) noexcept {
+        const auto keep_alive = weak_from_this().lock();
         std::unique_ptr<ImmediateAction> node;
         try {
             node = std::make_unique<ImmediateAction>(std::move(action));
@@ -614,18 +718,23 @@ private:
         }
         drive();
     }
-    void fail(Status status) noexcept {
+    void fail(const Status& status) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (phase_ == Phase::Failed || phase_ == Phase::Closed) return;
             phase_ = Phase::Failed;
-            terminal_ = std::move(status);
+            terminal_ = safe_status(status);
             need_transport_close_ = true;
         }
         drive();
     }
 
     void drive() noexcept {
+        // An immediate completion may destroy the final public channel with
+        // no transport callback holding this state. Retain it through the
+        // complete dispatch loop. weak_from_this also permits destructor
+        // cleanup, where no new shared owner can be acquired.
+        const auto keep_alive = weak_from_this().lock();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (driving_) return;
@@ -658,15 +767,12 @@ private:
                 continue;
             }
             execute(std::move(action));
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (io_pending_) {
-                driving_ = false;
-                return;
-            }
         }
     }
 
     Action next_action_locked() {
+        // None means no runnable work. A terminal transition must instead
+        // produce its cleanup/completion action without waiting for more I/O.
         Action action;
         if (need_transport_close_) {
             need_transport_close_ = false;
@@ -681,31 +787,39 @@ private:
             return std::move(queued->action);
         }
         if ((phase_ == Phase::Failed || phase_ == Phase::Closed) &&
-            handshake_completion_) {
+            (handshake_completion_ || cover_completion_)) {
             action.kind = ActionKind::HandshakeFailure;
+            action.status = safe_status(terminal_);
             action.handshake = std::move(handshake_completion_);
-            action.status = terminal_;
+            action.cover = std::move(cover_completion_);
             return action;
+        }
+        if (phase_ == Phase::Failed || phase_ == Phase::Closed) {
+            if (read_ && !read_->terminal) read_->terminal = safe_status(terminal_);
+            if (write_ && !write_->terminal) write_->terminal = safe_status(terminal_);
         }
         if (read_ && read_->terminal) {
             action.kind = ActionKind::ReadFailure;
             action.read = std::move(read_->completion);
-            action.status = *read_->terminal;
+            action.status = std::move(*read_->terminal);
             read_.reset();
             return action;
         }
         if (write_ && write_->terminal) {
             action.kind = ActionKind::WriteComplete;
             action.write = std::move(write_->completion);
-            action.status = *write_->terminal;
+            action.status = std::move(*write_->terminal);
             write_.reset();
             return action;
         }
         if (phase_ == Phase::Failed || phase_ == Phase::Closed) {
-            if (read_) read_->terminal = terminal_;
-            if (write_) write_->terminal = terminal_;
             return action;
         }
+        // Ciphertext handed to the underlying writer still belongs to its
+        // application write. Do not complete that write or drain another BIO
+        // chunk until delivery settles. Reads and writes have separate owners:
+        // an outstanding socket read must not suppress outbound TLS traffic.
+        if (transport_write_pending_) return action;
         if (shutdown_sent_ && !transport_write_shutdown_ &&
             BIO_ctrl_pending(write_bio_) == 0U) {
             transport_write_shutdown_ = true;
@@ -719,8 +833,8 @@ private:
                                                transport_->max_write_size())),
                 owner_->limits.max_encrypted_chunk_bytes);
             if (!allocated.ok()) {
-                phase_ = Phase::Failed; terminal_ = allocated.status();
-                need_transport_close_ = true; return action;
+                phase_ = Phase::Failed; terminal_ = safe_status(allocated.status());
+                need_transport_close_ = true; return next_action_locked();
             }
             Buffer buffer = std::move(allocated).take_value();
             std::size_t consumed = 0U;
@@ -730,33 +844,51 @@ private:
                 phase_ = Phase::Failed;
                 terminal_ = safe_status(StatusCode::Internal,
                                         "TLS ciphertext drain failed");
-                need_transport_close_ = true; return action;
+                need_transport_close_ = true; return next_action_locked();
             }
             action.kind = ActionKind::TransportWrite;
             action.count = consumed;
             action.buffer.emplace(std::move(buffer));
-            io_pending_ = true;
+            transport_write_pending_ = true;
             io_expected_ = consumed;
             return action;
         }
         if (phase_ == Phase::Handshake) {
             const int result = SSL_do_handshake(ssl_.get());
             if (result == 1) {
-                if (SSL_version(ssl_.get()) != TLS1_3_VERSION) {
+                tls_version_ = static_cast<std::uint16_t>(SSL_version(ssl_.get()));
+                if (!cover_mode_ && tls_version_ != TLS1_3_VERSION) {
                     phase_ = Phase::Failed;
                     terminal_ = safe_status(StatusCode::ProviderMismatch,
                                             "TLS peer negotiated a non-TLS-1.3 version");
-                    need_transport_close_ = true; return action;
+                    need_transport_close_ = true; return next_action_locked();
                 }
                 const unsigned char* selected = nullptr;
                 unsigned int selected_length = 0U;
                 SSL_get0_alpn_selected(ssl_.get(), &selected, &selected_length);
-                if (selected_length != 2U || !selected || selected[0] != 'h' ||
-                    selected[1] != '2') {
+                if ((!cover_mode_ && (selected_length != 2U || !selected ||
+                                      selected[0] != 'h' || selected[1] != '2')) ||
+                    selected_length > 255U) {
                     phase_ = Phase::Failed;
                     terminal_ = safe_status(StatusCode::ProviderMismatch,
                                             "TLS peer did not negotiate exact ALPN h2");
-                    need_transport_close_ = true; return action;
+                    need_transport_close_ = true; return next_action_locked();
+                }
+                if (selected_length != 0U) {
+                    protocol_.assign(reinterpret_cast<const char*>(selected),
+                                     selected_length);
+                }
+                if (const char* name = SSL_get_servername(
+                        ssl_.get(), TLSEXT_NAMETYPE_host_name)) {
+                    const std::string_view received(name);
+                    if (received.size() > kMaxServerNameBytes) {
+                        phase_ = Phase::Failed;
+                        terminal_ = safe_status(StatusCode::ResourceExhausted,
+                                                "TLS server name exceeds its bound");
+                        need_transport_close_ = true;
+                        return next_action_locked();
+                    }
+                    received_server_name_.assign(received);
                 }
                 Result<SecureChannelPeerEvidence> made =
                     owner_->configured_role == EndpointRole::Client
@@ -767,14 +899,15 @@ private:
                                : Result<SecureChannelPeerEvidence>(
                                      SecureChannelPeerEvidence::anonymous_client()));
                 if (!made.ok()) {
-                    phase_ = Phase::Failed; terminal_ = made.status();
-                    need_transport_close_ = true; return action;
+                    phase_ = Phase::Failed; terminal_ = safe_status(made.status());
+                    need_transport_close_ = true; return next_action_locked();
                 }
                 evidence_.emplace(std::move(made).take_value());
                 phase_ = Phase::Active;
                 handshake_cancellation_.unregister();
                 action.kind = ActionKind::HandshakeSuccess;
                 action.handshake = std::move(handshake_completion_);
+                action.cover = std::move(cover_completion_);
                 return action;
             }
             return tls_want_action_locked(result, "TLS handshake failed");
@@ -809,7 +942,7 @@ private:
         if (read_) {
             auto allocated = Buffer::allocate(read_->maximum, read_->maximum);
             if (!allocated.ok()) {
-                read_->terminal = allocated.status(); return action;
+                read_->terminal = safe_status(allocated.status()); return next_action_locked();
             }
             Buffer buffer = std::move(allocated).take_value();
             std::size_t received = 0U;
@@ -838,17 +971,18 @@ private:
         const int error = SSL_get_error(ssl_.get(), result);
         if (BIO_ctrl_pending(write_bio_) > 0) return next_action_locked();
         if (error == SSL_ERROR_WANT_READ) {
+            if (transport_read_pending_) return action;
             const std::size_t maximum = std::min(owner_->limits.max_encrypted_chunk_bytes,
                                                  transport_->max_read_size());
             if (maximum == 0U) {
                 phase_ = Phase::Failed;
                 terminal_ = safe_status(StatusCode::FailedPrecondition,
                                         "underlying channel has no read capacity");
-                need_transport_close_ = true; return action;
+                need_transport_close_ = true; return next_action_locked();
             }
             action.kind = ActionKind::TransportRead;
             action.count = maximum;
-            io_pending_ = true;
+            transport_read_pending_ = true;
             return action;
         }
         if (error == SSL_ERROR_WANT_WRITE) return action;
@@ -856,7 +990,7 @@ private:
         terminal_ = safe_status(StatusCode::FailedPrecondition, message);
         need_transport_close_ = true;
         ERR_clear_error();
-        return action;
+        return next_action_locked();
     }
 
     void execute(Action action) noexcept {
@@ -887,6 +1021,22 @@ private:
             try { transport_->close(); } catch (...) {}
             break;
         case ActionKind::HandshakeSuccess: {
+            if (action.cover) {
+                try {
+                    std::unique_ptr<Ytp1TlsServerConnection> connection =
+                        std::make_unique<ServerTlsConnection>(shared_from_this());
+                    Result<std::unique_ptr<Ytp1TlsServerConnection>> result(
+                        std::move(connection));
+                    invoke_noexcept(action.cover, std::move(result));
+                } catch (...) {
+                    Result<std::unique_ptr<Ytp1TlsServerConnection>> failure(
+                        safe_status(StatusCode::ResourceExhausted,
+                                    "TLS cover connection allocation failed"));
+                    invoke_noexcept(action.cover, std::move(failure));
+                    close();
+                }
+                break;
+            }
             std::unique_ptr<SecureChannel> channel;
             try { channel = std::make_unique<TlsChannel>(shared_from_this()); }
             catch (...) {
@@ -901,6 +1051,12 @@ private:
             break;
         }
         case ActionKind::HandshakeFailure: {
+            if (action.cover) {
+                Result<std::unique_ptr<Ytp1TlsServerConnection>> result(
+                    std::move(action.status));
+                invoke_noexcept(action.cover, std::move(result));
+                break;
+            }
             Result<std::unique_ptr<SecureChannel>> result(
                 std::move(action.status));
             invoke_noexcept(action.handshake, std::move(result));
@@ -935,35 +1091,38 @@ private:
     void on_transport_read(Result<Buffer> result) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            io_pending_ = false;
-            if (!result.ok()) {
-                if (phase_ != Phase::Closed) {
-                    phase_ = Phase::Failed; terminal_ = result.status();
-                    need_transport_close_ = true;
-                }
-            } else {
-                Buffer buffer = std::move(result).take_value();
-                if (phase_ == Phase::Handshake &&
-                    (buffer.size() > kMaxHandshakeCiphertextBytes ||
-                     handshake_ciphertext_bytes_ >
-                         kMaxHandshakeCiphertextBytes - buffer.size())) {
-                    phase_ = Phase::Failed;
-                    terminal_ = safe_status(StatusCode::ResourceExhausted,
-                                            "TLS handshake input budget exhausted");
+            transport_read_pending_ = false;
+            // Transport teardown can complete an outstanding operation inline.
+            // Retain the original failure and do not feed late bytes into TLS.
+            if (phase_ != Phase::Failed && phase_ != Phase::Closed) {
+                if (!result.ok()) {
+                    phase_ = Phase::Failed; terminal_ = safe_status(result.status());
                     need_transport_close_ = true;
                 } else {
-                    std::size_t written = 0U;
-                    if (buffer.empty() ||
-                        BIO_write_ex(read_bio_, buffer.bytes().data(),
-                                     buffer.size(), &written) != 1 ||
-                        written != buffer.size()) {
+                    Buffer buffer = std::move(result).take_value();
+                    if (phase_ == Phase::Handshake &&
+                        (buffer.size() > kMaxHandshakeCiphertextBytes ||
+                         handshake_ciphertext_bytes_ >
+                             kMaxHandshakeCiphertextBytes - buffer.size())) {
                         phase_ = Phase::Failed;
                         terminal_ = safe_status(
-                            StatusCode::Internal,
-                            "TLS ciphertext input failed");
+                            StatusCode::ResourceExhausted,
+                            "TLS handshake input budget exhausted");
                         need_transport_close_ = true;
-                    } else if (phase_ == Phase::Handshake) {
-                        handshake_ciphertext_bytes_ += buffer.size();
+                    } else {
+                        std::size_t written = 0U;
+                        if (buffer.empty() ||
+                            BIO_write_ex(read_bio_, buffer.bytes().data(),
+                                         buffer.size(), &written) != 1 ||
+                            written != buffer.size()) {
+                            phase_ = Phase::Failed;
+                            terminal_ = safe_status(
+                                StatusCode::Internal,
+                                "TLS ciphertext input failed");
+                            need_transport_close_ = true;
+                        } else if (phase_ == Phase::Handshake) {
+                            handshake_ciphertext_bytes_ += buffer.size();
+                        }
                     }
                 }
             }
@@ -973,13 +1132,14 @@ private:
     void on_transport_write(Status status, std::size_t count) noexcept {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            io_pending_ = false;
-            if (!status.ok() || count != io_expected_) {
+            transport_write_pending_ = false;
+            if (phase_ != Phase::Failed && phase_ != Phase::Closed &&
+                (!status.ok() || count != io_expected_)) {
                 phase_ = Phase::Failed;
                 terminal_ = status.ok()
                     ? safe_status(StatusCode::Internal,
                                   "underlying channel partially wrote TLS ciphertext")
-                    : status;
+                    : std::move(status);
                 need_transport_close_ = true;
             }
         }
@@ -996,6 +1156,7 @@ private:
     Phase phase_{Phase::Handshake};
     std::optional<SecureChannelPeerEvidence> evidence_;
     engine::SecureChannelProvider::Completion handshake_completion_;
+    Ytp1Tls13SecureChannelProvider::ServerCoverCompletion cover_completion_;
     CancellationRegistration handshake_cancellation_;
     engine::CancellationSource internal_cancellation_;
     std::optional<PendingRead> read_;
@@ -1006,7 +1167,13 @@ private:
     std::uint64_t next_id_{1U};
     std::size_t io_expected_{0U};
     std::size_t handshake_ciphertext_bytes_{0U};
-    bool io_pending_{false};
+    std::uint16_t tls_version_{0U};
+    std::string protocol_;
+    std::string received_server_name_;
+    bool cover_mode_{false};
+    bool promoted_{false};
+    bool transport_read_pending_{false};
+    bool transport_write_pending_{false};
     bool driving_{false};
     bool need_transport_close_{false};
     bool shutdown_requested_{false};
@@ -1035,6 +1202,62 @@ Result<Buffer> TlsChannel::export_keying_material(
     return state_->exporter(label, context, size);
 }
 
+ServerTlsConnection::~ServerTlsConnection() { close(); }
+ExecutorAffinity ServerTlsConnection::executor_affinity() const noexcept {
+    return state_ ? state_->affinity() : ExecutorAffinity{};
+}
+std::size_t ServerTlsConnection::max_read_size() const noexcept {
+    return state_ ? state_->max_plaintext() : 0U;
+}
+std::size_t ServerTlsConnection::max_write_size() const noexcept {
+    return max_read_size();
+}
+void ServerTlsConnection::async_read(std::size_t maximum,
+                                     CancellationToken cancellation,
+                                     ReadCompletion completion) {
+    if (state_) {
+        state_->async_read(maximum, std::move(cancellation), std::move(completion));
+    } else {
+        Result<Buffer> result(closed_status());
+        invoke_noexcept(completion, std::move(result));
+    }
+}
+void ServerTlsConnection::async_write(Buffer buffer,
+                                      CancellationToken cancellation,
+                                      WriteCompletion completion) {
+    if (state_) {
+        state_->async_write(std::move(buffer), std::move(cancellation),
+                            std::move(completion));
+    } else {
+        invoke_noexcept(completion, closed_status(), 0U);
+    }
+}
+Status ServerTlsConnection::shutdown_write() noexcept {
+    return state_ ? state_->shutdown_write() : closed_status();
+}
+void ServerTlsConnection::cancel() noexcept { if (state_) state_->cancel(); }
+void ServerTlsConnection::close() noexcept { if (state_) state_->close(); }
+std::uint16_t ServerTlsConnection::tls_version() const noexcept {
+    return state_ ? state_->tls_version() : 0U;
+}
+std::string_view ServerTlsConnection::negotiated_protocol() const noexcept {
+    return state_ ? state_->negotiated_protocol() : std::string_view{};
+}
+std::string_view ServerTlsConnection::server_name() const noexcept {
+    return state_ ? state_->server_name() : std::string_view{};
+}
+Result<Buffer> ServerTlsConnection::export_keying_material(
+    std::string_view label, std::span<const std::byte> context, std::size_t size) {
+    return state_ ? state_->exporter(label, context, size)
+                  : Result<Buffer>(closed_status());
+}
+Result<std::unique_ptr<SecureChannel>> ServerTlsConnection::promote() {
+    if (!state_) return Result<std::unique_ptr<SecureChannel>>(closed_status());
+    auto result = state_->promote();
+    if (result.ok()) state_.reset();
+    return result;
+}
+
 }  // namespace
 
 Ytp1Tls13SecureChannelProvider::Ytp1Tls13SecureChannelProvider(
@@ -1042,6 +1265,10 @@ Ytp1Tls13SecureChannelProvider::Ytp1Tls13SecureChannelProvider(
     : descriptor_(std::move(descriptor)), impl_(std::move(impl)) {}
 
 Ytp1Tls13SecureChannelProvider::~Ytp1Tls13SecureChannelProvider() = default;
+
+engine::EndpointRole Ytp1Tls13SecureChannelProvider::local_role() const noexcept {
+    return impl_->configured_role;
+}
 
 Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>
 Ytp1Tls13SecureChannelProvider::create_client(
@@ -1060,8 +1287,7 @@ Ytp1Tls13SecureChannelProvider::create_client(
             safe_status(StatusCode::InvalidArgument, "invalid TLS client configuration"));
     }
     SslCtxPtr context(SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
-    if (!context || SSL_CTX_set_min_proto_version(context.get(), TLS1_3_VERSION) != 1 ||
-        SSL_CTX_set_max_proto_version(context.get(), TLS1_3_VERSION) != 1 ||
+    if (!context ||
         !add_trust_anchors(context.get(), config.trust_anchors_pem) ||
         (has_certificate &&
          !install_server_identity(context.get(), config.certificate_chain_pem,
@@ -1070,6 +1296,31 @@ Ytp1Tls13SecureChannelProvider::create_client(
             safe_status(StatusCode::FailedPrecondition, "TLS client context initialization failed"));
     }
     SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER, nullptr);
+    try {
+        const auto& profile = cover_profile::active();
+        if (profile.tls_required_version != TLS1_3_VERSION) {
+            return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+                safe_status(StatusCode::ProviderMismatch,
+                            "TLS cover profile does not require TLS 1.3"));
+        }
+        // The browser-shaped offer includes TLS 1.2 and HTTP/1.1. Publication
+        // still requires negotiated TLS 1.3 and h2 in TlsChannelState.
+        const auto warnings = tls_stealth::configure_client_profile(
+            context.get(), profile.tls_profile, true);
+        if (!warnings.empty()) {
+            return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+                safe_status(StatusCode::FailedPrecondition,
+                            "TLS browser profile could not be applied exactly"));
+        }
+    } catch (const std::bad_alloc&) {
+        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+            safe_status(StatusCode::ResourceExhausted,
+                        "TLS browser profile allocation failed"));
+    } catch (...) {
+        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+            safe_status(StatusCode::FailedPrecondition,
+                        "TLS browser profile requires supported patched OpenSSL"));
+    }
     auto descriptor = make_descriptor();
     if (!descriptor.ok()) return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(descriptor.status());
     try {
@@ -1135,21 +1386,44 @@ Ytp1Tls13SecureChannelProvider::descriptor() const noexcept { return descriptor_
 void Ytp1Tls13SecureChannelProvider::async_wrap(
     std::unique_ptr<engine::ByteChannel> channel, EndpointRole local_role,
     CancellationToken cancellation, Completion completion) {
-    if (!completion) return;
+    async_wrap_impl(std::move(channel), local_role, std::move(cancellation),
+                    std::move(completion), {});
+}
+
+void Ytp1Tls13SecureChannelProvider::async_wrap_server_cover(
+    std::unique_ptr<engine::ByteChannel> channel,
+    CancellationToken cancellation, ServerCoverCompletion completion) {
+    async_wrap_impl(std::move(channel), EndpointRole::Server,
+                    std::move(cancellation), {}, std::move(completion));
+}
+
+void Ytp1Tls13SecureChannelProvider::async_wrap_impl(
+    std::unique_ptr<engine::ByteChannel> channel, EndpointRole local_role,
+    CancellationToken cancellation, Completion completion,
+    ServerCoverCompletion cover_completion) {
+    if (!completion && !cover_completion) return;
+    const bool cover = static_cast<bool>(cover_completion);
+    const auto fail = [&](Status status) noexcept {
+        if (cover) {
+            Result<std::unique_ptr<Ytp1TlsServerConnection>> result(std::move(status));
+            invoke_noexcept(cover_completion, std::move(result));
+        } else {
+            Result<std::unique_ptr<SecureChannel>> result(std::move(status));
+            invoke_noexcept(completion, std::move(result));
+        }
+    };
     if (cancellation.is_cancelled()) {
         if (channel) channel->close();
-        Result<std::unique_ptr<SecureChannel>> result(cancelled_status());
-        invoke_noexcept(completion, std::move(result));
+        fail(cancelled_status());
         return;
     }
     if (!channel || local_role != impl_->configured_role ||
         !channel->executor_affinity().valid() || channel->max_read_size() == 0U ||
         channel->max_write_size() == 0U) {
-        Result<std::unique_ptr<SecureChannel>> result(safe_status(
+        fail(safe_status(
             local_role != impl_->configured_role ? StatusCode::ProviderMismatch
                                                  : StatusCode::InvalidArgument,
             "TLS provider role or byte channel is invalid"));
-        invoke_noexcept(completion, std::move(result));
         if (channel) channel->close();
         return;
     }
@@ -1160,9 +1434,8 @@ void Ytp1Tls13SecureChannelProvider::async_wrap(
         if (read_bio) BIO_free(read_bio);
         if (write_bio) BIO_free(write_bio);
         channel->close();
-        Result<std::unique_ptr<SecureChannel>> result(safe_status(
+        fail(safe_status(
             StatusCode::ResourceExhausted, "TLS session allocation failed"));
-        invoke_noexcept(completion, std::move(result));
         return;
     }
     BIO_set_mem_eof_return(read_bio, -1);
@@ -1171,29 +1444,37 @@ void Ytp1Tls13SecureChannelProvider::async_wrap(
     if (local_role == EndpointRole::Client) {
         SSL_set_connect_state(ssl.get());
         if (SSL_set_tlsext_host_name(ssl.get(), impl_->server_name.c_str()) != 1 ||
-            SSL_set1_host(ssl.get(), impl_->server_name.c_str()) != 1 ||
-            SSL_set_alpn_protos(ssl.get(), kH2Alpn.data(), kH2Alpn.size()) != 0) {
+            SSL_set1_host(ssl.get(), impl_->server_name.c_str()) != 1) {
             channel->close();
-            Result<std::unique_ptr<SecureChannel>> result(safe_status(
+            fail(safe_status(
                 StatusCode::FailedPrecondition, "TLS client verification setup failed"));
-            invoke_noexcept(completion, std::move(result));
             return;
         }
     } else {
         SSL_set_accept_state(ssl.get());
+        if (cover) {
+            if (SSL_set_min_proto_version(ssl.get(), TLS1_2_VERSION) != 1 ||
+                SSL_set_app_data(ssl.get(), &kCoverConnectionMarker) != 1) {
+                channel->close();
+                fail(safe_status(StatusCode::FailedPrecondition,
+                                 "TLS cover negotiation setup failed"));
+                return;
+            }
+        }
     }
     try {
         auto state = std::make_shared<TlsChannelState>(
             impl_, std::move(channel), std::move(ssl), read_bio, write_bio,
-            std::move(completion));
-        state->start(std::move(cancellation));
+            cover);
+        state->start(std::move(cancellation), std::move(completion),
+                     std::move(cover_completion));
     } catch (...) {
-        // The TlsChannelState constructor arguments own the channel and SSL
-        // session while allocation is attempted; failed shared construction
-        // destroys those arguments and closes the transport.
-        Result<std::unique_ptr<SecureChannel>> result(safe_status(
+        // Callbacks stay here until the complete state exists. Failed
+        // construction releases its moved channel/SSL through their owners;
+        // failure before that move still leaves channel with this scope.
+        if (channel) channel->close();
+        fail(safe_status(
             StatusCode::ResourceExhausted, "TLS state allocation failed"));
-        invoke_noexcept(completion, std::move(result));
     }
 }
 

@@ -5,6 +5,7 @@
  */
 
 #include "server/filter/ip_filter.hpp"
+#include "server/filter/filter_archive.hpp"
 
 #include <algorithm>
 #include <array>
@@ -288,125 +289,6 @@ void apply_prefix_v6(std::array<std::uint8_t, 16>& start,
     }
 }
 
-std::string shell_quote(const std::filesystem::path& path) {
-    std::string s = path.string();
-    std::string out = "'";
-    for (char c : s) {
-        if (c == '\'') {
-            out += "'\\''";
-        } else {
-            out.push_back(c);
-        }
-    }
-    out += "'";
-    return out;
-}
-
-std::string tar_command_prefix(bool listing) {
-    // GNU tar accepts process-spawning checkpoint actions through TAR_OPTIONS.
-    // Never let a privileged daemon inherit those options. The C locale keeps
-    // the verbose mode field stable for the type check below.
-    std::string prefix = "TAR_OPTIONS='' LC_ALL=C tar ";
-#if defined(__linux__)
-    // The Linux release uses GNU tar. Escape control characters so one archive
-    // member produces one output line; safe_archive_member then refuses the
-    // backslash escape rather than interpreting it as a path.
-    if (listing) prefix += "--quoting-style=escape ";
-#else
-    (void)listing;
-#endif
-    return prefix;
-}
-
-bool safe_archive_member(const std::string& name) {
-    if (name.empty() || name.find('\\') != std::string::npos ||
-        name.find('\0') != std::string::npos) {
-        return false;
-    }
-    std::filesystem::path p(name);
-    if (p.is_absolute() || p.has_root_name() || p.has_root_directory()) {
-        return false;
-    }
-    for (const auto& part : p) {
-        if (part == "..") return false;
-    }
-    return true;
-}
-
-std::size_t validate_archive_member_names(
-    const std::filesystem::path& list_path) {
-    std::ifstream members(list_path);
-    if (!members) {
-        throw std::runtime_error("cannot read tar member list");
-    }
-
-    std::size_t count = 0;
-    std::string member;
-    while (std::getline(members, member)) {
-        if (!safe_archive_member(member)) {
-            throw std::runtime_error("unsafe archive member: " + member);
-        }
-        ++count;
-    }
-    if (members.bad()) {
-        throw std::runtime_error("cannot finish reading tar member list");
-    }
-    return count;
-}
-
-std::size_t validate_archive_member_types(
-    const std::filesystem::path& list_path) {
-    std::ifstream members(list_path);
-    if (!members) {
-        throw std::runtime_error("cannot read verbose tar member list");
-    }
-
-    std::size_t count = 0;
-    std::string member;
-    while (std::getline(members, member)) {
-        // In tar's verbose listing the first mode character is the archive
-        // member type. Filter data needs only real directories and regular
-        // files; rejecting links and special files keeps extraction from
-        // turning an operator archive into a filesystem traversal primitive.
-        if (member.empty() || (member.front() != '-' && member.front() != 'd')) {
-            const char type = member.empty() ? '?' : member.front();
-            throw std::runtime_error(
-                "unsupported archive member type '" + std::string(1, type) +
-                "'");
-        }
-        ++count;
-    }
-    if (members.bad()) {
-        throw std::runtime_error(
-            "cannot finish reading verbose tar member list");
-    }
-    return count;
-}
-
-void validate_extracted_archive(const std::filesystem::path& directory) {
-    namespace fs = std::filesystem;
-    std::error_code iteration_error;
-    for (auto it = fs::recursive_directory_iterator(directory, iteration_error);
-         !iteration_error && it != fs::recursive_directory_iterator();
-         it.increment(iteration_error)) {
-        std::error_code status_error;
-        const auto status = it->symlink_status(status_error);
-        if (status_error) {
-            throw std::runtime_error(
-                "cannot inspect extracted archive member: " +
-                status_error.message());
-        }
-        if (!fs::is_regular_file(status) && !fs::is_directory(status)) {
-            throw std::runtime_error(
-                "archive extracted an unsupported member type");
-        }
-    }
-    if (iteration_error) {
-        throw std::runtime_error(
-            "cannot inspect extracted archive: " + iteration_error.message());
-    }
-}
-
 std::vector<std::filesystem::path> default_country_dirs() {
     return {
         std::filesystem::path("src/gui/assets/geoip"),
@@ -515,6 +397,36 @@ bool IpFilter::load(const std::vector<FilterListSpec>& specs,
                     const std::string& geolite_archive,
                     std::uint32_t memory_mib,
                     std::string* error) {
+    IpFilter candidate;
+    candidate.configure(client_mode_, egress_mode_);
+    if (!candidate.load_candidate(specs, geolite_archive, memory_mib, error)) {
+        return false;
+    }
+    swap_loaded_state(candidate);
+    return true;
+}
+
+void IpFilter::swap_loaded_state(IpFilter& other) noexcept {
+    using std::swap;
+    swap(client_, other.client_);
+    swap(egress_, other.egress_);
+    swap(countries_, other.countries_);
+    swap(mmdb_data_, other.mmdb_data_);
+    swap(mmdb_node_count_, other.mmdb_node_count_);
+    swap(mmdb_record_size_, other.mmdb_record_size_);
+    swap(mmdb_node_byte_size_, other.mmdb_node_byte_size_);
+    swap(mmdb_search_tree_size_, other.mmdb_search_tree_size_);
+    swap(mmdb_data_section_base_, other.mmdb_data_section_base_);
+    swap(mmdb_ip_version_, other.mmdb_ip_version_);
+    swap(runtime_dir_, other.runtime_dir_);
+    swap(lists_loaded_, other.lists_loaded_);
+    swap(geolite_loaded_, other.geolite_loaded_);
+}
+
+bool IpFilter::load_candidate(const std::vector<FilterListSpec>& specs,
+                              const std::string& geolite_archive,
+                              std::uint32_t memory_mib,
+                              std::string* error) {
     if (!load_geolite(geolite_archive, error)) {
         return false;
     }
@@ -821,7 +733,7 @@ std::filesystem::path IpFilter::extract_archive(const std::filesystem::path& arc
     namespace fs = std::filesystem;
 #if !defined(__linux__)
     (void)label;
-    if (error) *error = "filter archive extraction requires Linux with GNU tar; use an unpacked list or database";
+    if (error) *error = "filter archive extraction requires Linux; use an unpacked list or database";
     return {};
 #endif
     try {
@@ -843,57 +755,8 @@ std::filesystem::path IpFilter::extract_archive(const std::filesystem::path& arc
         }
         ScopedPathCleanup target_cleanup(target);
 
-        // A private snapshot makes the member checks and extraction consume
-        // the same bytes even if the operator-supplied path is replaced while
-        // the daemon starts. Only this process can reach the snapshot.
-        const fs::path snapshot_path =
-            runtime_dir / ("." + extraction_name + ".tar.xz");
-        std::error_code copy_error;
-        const bool copied = fs::copy_file(
-            archive, snapshot_path, fs::copy_options::none, copy_error);
-        if (copy_error || !copied) {
-            throw std::runtime_error(
-                "cannot snapshot archive" +
-                (copy_error ? ": " + copy_error.message() : std::string{}));
-        }
-        ScopedPathCleanup snapshot_cleanup(snapshot_path);
-
-        const fs::path name_list_path =
-            runtime_dir / ("." + extraction_name + ".members");
-        ScopedPathCleanup name_list_cleanup(name_list_path);
-        const std::string name_list_cmd =
-            tar_command_prefix(true) + "-tJf " + shell_quote(snapshot_path) +
-            " > " + shell_quote(name_list_path);
-        if (std::system(name_list_cmd.c_str()) != 0) {
-            throw std::runtime_error("tar list failed");
-        }
-
-        const fs::path type_list_path =
-            runtime_dir / ("." + extraction_name + ".member-types");
-        ScopedPathCleanup type_list_cleanup(type_list_path);
-        const std::string type_list_cmd =
-            tar_command_prefix(true) + "--numeric-owner -tJvf " +
-            shell_quote(snapshot_path) + " > " + shell_quote(type_list_path);
-        if (std::system(type_list_cmd.c_str()) != 0) {
-            throw std::runtime_error("verbose tar list failed");
-        }
-
-        const std::size_t name_count =
-            validate_archive_member_names(name_list_path);
-        const std::size_t type_count =
-            validate_archive_member_types(type_list_path);
-        if (name_count != type_count) {
-            throw std::runtime_error("tar member listings disagree");
-        }
-
-        const std::string extract_cmd =
-            tar_command_prefix(false) +
-            "--no-same-owner --no-same-permissions --no-overwrite-dir "
-            "-xJf " + shell_quote(snapshot_path) + " -C " + shell_quote(target);
-        if (std::system(extract_cmd.c_str()) != 0) {
-            throw std::runtime_error("tar extract failed");
-        }
-        validate_extracted_archive(target);
+        auto candidate = FilterArchive::read(archive);
+        candidate.extract(target);
 
         if (new_runtime_dir.has_value()) {
             runtime_dir_ = runtime_dir;

@@ -6,6 +6,7 @@
 
 #include "providers/ytp1_security_provider.hpp"
 
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/provider.h>
 #include <openssl/x509.h>
@@ -884,6 +885,22 @@ void test_factory_bounds_and_cancellation(const Fixture& fixture) {
           "established cancellation retained inbound key state");
 }
 
+void test_crypto_backend_identity() {
+    const std::string loaded =
+        std::string("openssl-") + OpenSSL_version(OPENSSL_FULL_VERSION_STRING);
+    const std::string_view reported =
+        yume::providers::ytp1_openssl_crypto_backend();
+    check(reported.size() < 32U,
+          "crypto backend identity does not fit a manifest field");
+    check(reported.starts_with("openssl-3."),
+          "crypto backend identity does not name an OpenSSL 3 release");
+    check(std::string_view(loaded).starts_with(reported),
+          "crypto backend identity does not name the loaded OpenSSL");
+    check(reported.data() ==
+              yume::providers::ytp1_openssl_crypto_backend().data(),
+          "crypto backend identity is not one stable value");
+}
+
 }  // namespace
 
 int main() {
@@ -897,6 +914,7 @@ int main() {
         test_authentication_failures(fixture);
         test_component_mutation_and_stripping(fixture);
         test_factory_bounds_and_cancellation(fixture);
+        test_crypto_backend_identity();
         std::cout << "YTP/1 OpenSSL security-provider tests passed\n";
         return 0;
     } catch (const std::exception& error) {

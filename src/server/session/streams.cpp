@@ -30,10 +30,8 @@ constexpr const char* kCarrierWriteFailed = "carrier failed";
 constexpr const char* kFlushScheduleFailed = "flush failed";
 constexpr const char* kWriteDispatchFailed = "write failed";
 
-// Refusing a write and closing the session are two obligations, and the
-// refusal runs first so the caller learns the outcome in order. A completion
-// belongs to a stream owner outside this session, so it must not be able to
-// take the close with it.
+// Contain refusal callbacks so a stream owner's exception cannot interrupt
+// the session's remaining cleanup. Each call site owns its close ordering.
 void settle_refusal(
     const std::function<void(const boost::system::error_code&, std::size_t)>&
         handler,
@@ -283,6 +281,7 @@ void Session::do_udp_write(uint8_t stream_id) {
         std::move(inbound_credit));
     auto self = shared_from_this();
     auto fire_write = [self, udp, buffer, credit, stream_id]() {
+        if (self->close_state_ != CloseState::Open || !udp->socket.is_open()) return;
         udp->socket.async_send(
             boost::asio::buffer(*buffer),
             boost::asio::bind_executor(
@@ -307,11 +306,11 @@ void Session::do_udp_write(uint8_t stream_id) {
         fire_write();
         return;
     }
-    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
-    timer->expires_after(delay_ms);
-    timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {
-        if (!ec) fire_write();
-    });
+    udp->write_delay_timer.expires_after(delay_ms);
+    udp->write_delay_timer.async_wait(boost::asio::bind_executor(
+        strand_, [fire_write = std::move(fire_write)](const boost::system::error_code& ec) {
+            if (!ec) fire_write();
+        }));
 }
 
 void Session::enqueue_remote_write(uint8_t stream_id,
@@ -413,6 +412,7 @@ void Session::do_remote_write(uint8_t stream_id) {
         std::move(inbound_credit));
     auto self = shared_from_this();
     auto fire_write = [self, remote, buffer, credit, stream_id]() {
+        if (self->close_state_ != CloseState::Open || !remote->socket.is_open()) return;
         boost::asio::async_write(remote->socket, boost::asio::buffer(*buffer),
                                  boost::asio::bind_executor(self->strand_,
                                                             [self, remote, buffer, credit, stream_id](const boost::system::error_code& ec, std::size_t) {
@@ -434,11 +434,11 @@ void Session::do_remote_write(uint8_t stream_id) {
         fire_write();
         return;
     }
-    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
-    timer->expires_after(delay_ms);
-    timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {
-        if (!ec) fire_write();
-    });
+    remote->write_delay_timer.expires_after(delay_ms);
+    remote->write_delay_timer.async_wait(boost::asio::bind_executor(
+        strand_, [fire_write = std::move(fire_write)](const boost::system::error_code& ec) {
+            if (!ec) fire_write();
+        }));
 }
 
 void Session::shutdown_remote_send_if_ready(uint8_t stream_id) {
@@ -1198,13 +1198,9 @@ void Session::dispatch_write_batch_on_strand(
         }
     };
 
-    // Per-batch send-side jitter. Defers the actual async_write by a
-    // uniform random 0..obfs_jitter_ms delay. Because do_write() is
-    // strand-serialised and the next do_write() only fires from
-    // on_complete, the delay propagates: each batch is offset
-    // independently. This is what defeats the "every keepalive arrives
-    // T ms after the last" ML feature. Opt-in via --obfs-jitter-ms; 0 =
-    // no delay, no timer overhead.
+    // Add independent uniform 0..obfs_jitter_ms send-side jitter to the
+    // egress delay. Keeping write_in_flight_ set preserves batch order while
+    // the timer waits. A zero jitter setting adds no delay of its own.
     std::chrono::milliseconds delay_ms = reserve_egress_delay(batch_data ? batch_data->size() : 0);
     if (cfg_.obfs_jitter_ms > 0) {
         thread_local std::mt19937 jitter_rng{std::random_device{}()};

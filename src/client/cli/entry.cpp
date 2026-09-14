@@ -1324,7 +1324,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             bool server_inner_required = false;
             bool server_inner_dual = false;
             bool server_inner_active = false;
-            std::string server_inner_mode;
             bool server_cap_pq = false;
             std::string server_version;
             std::string server_error;
@@ -1361,7 +1360,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 server_inner_required = server_info.server_inner_required;
                 server_inner_dual = server_info.server_inner_dual;
                 server_inner_active = server_info.server_inner_active;
-                server_inner_mode = std::move(server_info.server_inner_mode);
                 server_cap_pq = server_info.server_cap_pq;
             } catch (const nlohmann::json::parse_error&) {
                 throw FatalError("this endpoint is not a yume server (invalid server response); please check the origin and try again");
@@ -1415,13 +1413,11 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             util::log_info("authenticated to server");
             ServerCapabilityInput capability_input;
             capability_input.server_version = server_version;
-            capability_input.server_inner_mode = server_inner_mode;
             capability_input.inner_crypto_requested = true;
             capability_input.inner_disabled_for_session = inner_disabled_for_session;
             capability_input.have_inner_caps = have_inner_caps;
             capability_input.server_inner_supported = server_inner_supported;
             capability_input.server_inner_required = server_inner_required;
-            capability_input.server_inner_dual = server_inner_dual;
             capability_input.server_cap_pq = server_cap_pq;
 
             ServerCapabilityResult capability = evaluate_server_capabilities(capability_input);

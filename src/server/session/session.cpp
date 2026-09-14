@@ -906,6 +906,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
                                      " reason=" + reason);
             }
             boost::system::error_code ec;
+            udp->write_delay_timer.cancel(ec);
             udp->write_queue.clear();
             udp->inbound_budget.clear();
             udp->resolver.cancel();
@@ -922,6 +923,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         util::log_info("session " + std::to_string(session_id_) + ": stream " + std::to_string(stream_id) + " closed: " + reason);
         auto remote = it->second;
         boost::system::error_code ec;
+        remote->write_delay_timer.cancel(ec);
         if (remote->open_timer) {
             remote->open_timer->cancel(ec);
             remote->open_timer.reset();
@@ -986,12 +988,13 @@ void Session::force_close_reverse_port(int port) {
 }
 
 void Session::schedule_idle_check() {
+    if (close_state_ != CloseState::Open) return;
     idle_timer_.expires_after(std::chrono::milliseconds(kIdleCheckIntervalMs));
     auto self = shared_from_this();
     idle_timer_.async_wait(boost::asio::bind_executor(
         strand_,
         [self](const boost::system::error_code& ec) {
-            if (ec) {
+            if (ec || self->close_state_ != CloseState::Open) {
                 return;
             }
             if (self->is_stale()) {
@@ -1141,7 +1144,9 @@ void Session::begin_close() {
     });
 #endif
     boost::system::error_code ec;
+    tls_handshake_timer_.cancel();
     idle_timer_.cancel();
+    http_idle_timer_.cancel();
     frame_read_timer_.cancel(ec);
     ratchet_timer_.cancel();
     preface_timer_.cancel();
@@ -1211,17 +1216,42 @@ void Session::begin_close() {
     }
 
     for (auto& entry : streams_) {
+        entry.second->write_delay_timer.cancel(ec);
+        if (entry.second->open_timer) {
+            entry.second->open_timer->cancel();
+        }
+        contain_teardown([&] { entry.second->resolver.cancel(); });
         entry.second->write_queue.clear();
         entry.second->inbound_budget.clear();
         entry.second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
         entry.second->socket.close(ec);
     }
     for (auto& entry : udp_streams_) {
+        entry.second->write_delay_timer.cancel(ec);
+        contain_teardown([&] { entry.second->resolver.cancel(); });
         entry.second->write_queue.clear();
         entry.second->inbound_budget.clear();
         entry.second->socket.close(ec);
     }
     streams_.clear();
+    udp_streams_.clear();
+    pending_reverse_.clear();
+    std::unordered_map<uint8_t, std::shared_ptr<CodecStream>> closing_codecs;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        closing_codecs.swap(codec_streams_);
+        codec_response_bytes_ = 0;
+    }
+    // A codec deadline and blocked backend read both retain the session.
+    // Detach their state before cancelling; release credit outside the mutex
+    // because it can call back into the carrier.
+    for (auto& [_, codec] : closing_codecs) {
+        codec->response_reserved_bytes = 0;
+        codec->inbound_credit.release_now();
+        codec->timer.cancel();
+        codec->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+        codec->socket.close(ec);
+    }
     {
         // Service-stream destruction runs embedder close callbacks.
         std::lock_guard<std::mutex> lock(streams_mutex_);

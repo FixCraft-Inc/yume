@@ -386,6 +386,9 @@ only built-in codec is **monero-rpc-v1**, which is also accepted as
 
 Override the codec listener. The address must be a loopback IP literal and the
 port must be 1-65535. The default is **127.0.0.1:18089**.
+The JSON **app_codec_listen** field must also parse successfully when this
+option overrides it. A malformed endpoint refuses the load without publishing
+partial configuration.
 @opt **--quick-bench**
 @cli spell: --quick-bench
 @cli help: Run the local device benchmark smoke profile;
@@ -628,10 +631,15 @@ Read client configuration from a JSON file.
 @opt **--save-server**
 @cli spell: --save-server
 @cli help: Save the effective merged config to --config
+@cli help: Include cleared values and automatic/disabled settings
 @cli column: 26
 
 Write the effective merged client configuration back to the **--config** file
 before connecting, creating or updating that file.
+Automatic thread/control-port selection, one tunnel, disabled SOCKS/shaping,
+and cleared paths or trust references replace their previous saved values.
+The native writer emits **tls_pin** and the combined **app_codec_listen**
+endpoint. Serialization failure preserves the existing file.
 @opt **--threads** *n*
 @cli spell: --threads <n>
 @cli help: IO threads (0 = auto)

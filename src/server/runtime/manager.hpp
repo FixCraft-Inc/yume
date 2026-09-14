@@ -317,7 +317,9 @@ private:
     std::unique_ptr<FederationManager> federation_;
     std::unique_ptr<WeightedEgressLimiter> egress_limiter_;
     std::unique_ptr<PacketTunEgress> packet_egress_;
-    std::unique_ptr<IpFilter> ip_filter_;
+    // Readers retain immutable data through a reload; failed candidates never
+    // replace the active rules or their private file ownership.
+    std::atomic<std::shared_ptr<const IpFilter>> ip_filter_;
     host::HostRouteTable host_routes_;
     std::unique_ptr<ExtraListeners> extra_listeners_;
     host::ExposureResult exposure_result_;

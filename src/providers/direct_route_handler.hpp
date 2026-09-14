@@ -14,8 +14,8 @@
 namespace yume::providers {
 
 // Policy-bearing adapter from an authenticated YTP service stream to one
-// explicit RouteProvider. SessionEngine remains the only authority capable of
-// creating the request passed to on_route().
+// RouteProvider selected by EngineGraph. SessionEngine supplies that provider
+// and remains the only authority capable of creating the authorized request.
 class DirectRouteHandler final : public engine::StreamHandler {
 public:
     using AuthorizationPolicy =
@@ -24,7 +24,6 @@ public:
     static engine::Result<std::shared_ptr<DirectRouteHandler>> create(
         engine::ProviderDescriptor descriptor,
         engine::ServiceKind service_kind,
-        std::shared_ptr<engine::RouteProvider> route_provider,
         AuthorizationPolicy authorization_policy);
 
     DirectRouteHandler(const DirectRouteHandler&) = delete;
@@ -38,18 +37,21 @@ public:
     void on_open(engine::StreamOpenContext context,
                  std::shared_ptr<engine::StreamResponder> stream) override;
     void on_route(engine::AuthorizedRouteRequest request,
+                  std::shared_ptr<engine::RouteProvider> route_provider,
                   std::shared_ptr<engine::StreamResponder> stream) override;
+    void async_route(engine::AuthorizedRouteRequest request,
+                     std::shared_ptr<engine::RouteProvider> route_provider,
+                     std::shared_ptr<engine::StreamResponder> stream,
+                     AcceptanceCompletion completion) override;
 
 private:
     DirectRouteHandler(
         engine::ProviderDescriptor descriptor,
         engine::ServiceKind service_kind,
-        std::shared_ptr<engine::RouteProvider> route_provider,
         AuthorizationPolicy authorization_policy) noexcept;
 
     engine::ProviderDescriptor descriptor_;
     engine::ServiceKind service_kind_;
-    std::shared_ptr<engine::RouteProvider> route_provider_;
     AuthorizationPolicy authorization_policy_;
 };
 

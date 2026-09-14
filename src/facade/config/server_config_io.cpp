@@ -61,8 +61,8 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::max_sessions, s.max_sessions);
     read_opt(j, cfg_key::accept_rate_limit, s.accept_rate_limit);
     read_opt(j, cfg_key::obfuscation, s.obfuscation);
-    // validate() judges both shaping fields, so a parser that silently
-    // dropped them made a GUI-loaded server quietly unshaped.
+    // Preserve configured shaping through load/save so validation can refuse
+    // it. Serialization must not turn a rejected profile into an unshaped one.
     read_opt(j, cfg_key::obfs_pad_multiple, s.obfs_pad_multiple);
     read_opt(j, cfg_key::obfs_jitter_ms, s.obfs_jitter_ms);
     read_opt(j, cfg_key::obfs_secret_file, s.obfs_secret_file);
@@ -120,6 +120,9 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::real_index_path, s.real_index_path);
     read_opt(j, cfg_key::real_root, s.real_root);
     read_opt(j, cfg_key::real_backend, s.real_backend);
+    // The same implication as the daemon's JSON/CLI input. It keeps the
+    // cover-source gate active even when real_http is explicitly false.
+    s.real_http = s.real_http || !s.real_root.empty() || !s.real_backend.empty();
     read_opt(j, cfg_key::real_secret_file, s.real_secret_file);
     read_opt(j, cfg_key::anonym, s.anonym);
     read_opt(j, cfg_key::anonym_proof_mode, s.anonym_proof_mode);
@@ -223,10 +226,12 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     resolve_config_path(s.tls_cert, base);
     resolve_config_path(s.tls_key, base);
     resolve_config_path(s.auth_keys, base);
+    resolve_config_path(s.auth_keys_meta, base);
     resolve_config_path(s.admin_keys, base);
     resolve_config_path(s.pq_private_key, base);
     resolve_config_path(s.real_index_path, base);
     resolve_config_path(s.real_root, base);
+    resolve_config_path(s.upstream_response_dir, base);
     resolve_config_path(s.obfs_secret_file, base);
     resolve_config_path(s.inner_psk_file, base);
     resolve_config_path(s.real_secret_file, base);
@@ -346,6 +351,8 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::max_sessions, s.max_sessions},
         {cfg_key::accept_rate_limit, s.accept_rate_limit},
         {cfg_key::obfuscation, s.obfuscation},
+        {cfg_key::obfs_pad_multiple, s.obfs_pad_multiple},
+        {cfg_key::obfs_jitter_ms, s.obfs_jitter_ms},
         {cfg_key::obfs_secret_file, s.obfs_secret_file},
         {cfg_key::inner_psk_file, s.inner_psk_file},
         {cfg_key::inner_crypto, s.inner_crypto},
@@ -446,8 +453,15 @@ bool save_server(server::ServerConfig const& s,
         j[cfg_key::listeners] = listeners;
     }
 
+    std::string serialized;
+    try {
+        serialized = j.dump(2);
+    } catch (const std::exception& ex) {
+        if (err) *err = std::string("cannot serialize server config: ") + ex.what();
+        return false;
+    }
     return yume::runtime::AtomicWriteFile(
-        path, j.dump(2), err,
+        path, serialized, err,
         yume::runtime::ParentDirectoryPolicy::Create);
 }
 

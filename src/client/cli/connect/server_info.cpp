@@ -57,7 +57,6 @@ ServerInfoPayload parse_server_info_payload(const protocol::Frame& frame) {
     info.server_inner_required = json.value("inner_required", false);
     info.server_inner_dual = json.value("inner_dual", false);
     info.server_inner_active = json.value("inner_active", false);
-    info.server_inner_mode = json.value("inner_mode", "");
     info.server_cap_pq = json.value("cap_pq", false);
 
     if (info.announced_proof_sources.empty()) {

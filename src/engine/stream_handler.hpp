@@ -55,6 +55,12 @@ private:
 // read/write Buffer is one packet; for ByteStream services buffers are ordered
 // byte chunks. Receive credit remains owned by ReceivedRecord until the
 // application has consumed or discarded the chunk.
+//
+// A read fails with StatusCode::EndOfStream once the peer's authenticated FIN
+// arrived and every earlier inbound record was delivered. Later reads repeat
+// it until the stream or its session terminates. Any other failure is a termination
+// (local close, peer refusal or abort, session end) and may have discarded
+// undelivered records.
 class StreamResponder {
 public:
     using ReadCompletion = std::function<void(Result<ReceivedRecord>)>;
@@ -64,6 +70,10 @@ public:
     virtual ExecutorAffinity executor_affinity() const noexcept = 0;
     virtual ServiceKind service_kind() const noexcept = 0;
     virtual std::size_t max_write_size() const noexcept = 0;
+    // Thread-safe terminal observation for adapters retaining delivered records
+    // or EOF. A normal half-close is not termination; an abort, local close or
+    // lost session is, even after the last read completed with EndOfStream.
+    virtual bool terminated() const noexcept = 0;
     virtual void async_read(CancellationToken cancellation,
                             ReadCompletion completion) = 0;
     virtual void async_write(Buffer payload,
@@ -78,6 +88,7 @@ public:
 
 class StreamHandler {
 public:
+    using AcceptanceCompletion = std::function<void(Status)>;
     virtual ~StreamHandler() = default;
     virtual const ProviderDescriptor& descriptor() const noexcept = 0;
     virtual ServiceKind service_kind() const noexcept = 0;
@@ -85,6 +96,18 @@ public:
     // The dispatcher calls authorize independently for every OPEN, even when
     // the capability was advertised. It fails closed if this method throws.
     virtual Status authorize(const StreamOpenContext& context) = 0;
+
+    // Completion accepts or refuses one incoming OPEN. Credit is withheld until
+    // success. Implementations that establish an asynchronous dependency must
+    // complete only after that dependency is ready. Default adapters invoke the
+    // existing synchronous handler methods below and then accept.
+    virtual void async_open(StreamOpenContext context,
+                            std::shared_ptr<StreamResponder> stream,
+                            AcceptanceCompletion completion);
+    virtual void async_route(AuthorizedRouteRequest request,
+                             std::shared_ptr<RouteProvider> route_provider,
+                             std::shared_ptr<StreamResponder> stream,
+                             AcceptanceCompletion completion);
 
     // Invoked without engine locks. The engine contains handler exceptions and
     // closes the corresponding stream rather than corrupting session state.
@@ -94,8 +117,12 @@ public:
     // Invoked only after authorize() succeeds for a destination-bearing OPEN
     // and only when the provider advertises the matching DirectTcp or
     // DirectUdp capability. The request is constructed by SessionEngine, so a
-    // RouteProvider never receives raw, pre-policy destination metadata.
+    // RouteProvider never receives raw, pre-policy destination metadata. The
+    // dispatcher supplies the provider selected and validated by EngineGraph;
+    // handlers must use that instance rather than retaining a separate route
+    // provider. Runtime shutdown owns cancellation of the selected provider.
     virtual void on_route(AuthorizedRouteRequest request,
+                          std::shared_ptr<RouteProvider> route_provider,
                           std::shared_ptr<StreamResponder> stream);
 };
 

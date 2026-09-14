@@ -25,8 +25,15 @@ namespace yume::engine {
 
 class SessionSecurityProviderFactory;
 
-// Immutable, fully resolved provider graph. Providers may own instance state,
-// but their selection and service mapping cannot change after construction.
+// Immutable provider selection and service mapping. Client graphs require
+// byte-channel, secure-channel and carrier factories. Server graphs may omit
+// those factories because externally owned ingress supplies a ready carrier;
+// its instance provenance must still match the complete suite requirements.
+// The front-door factory is optional for both roles. Any registered optional
+// factory must match its suite requirement exactly like a required factory.
+// Session security and declared service handlers remain required. A routing
+// factory is required only when a selected handler advertises DirectTcp or
+// DirectUdp; it must support the handler's corresponding route capabilities.
 class EngineGraph final {
 public:
     EndpointRole local_role() const noexcept { return local_role_; }
@@ -87,7 +94,8 @@ private:
 
 // Registration is instance-local and exact-ID only. A successful build freezes
 // the builder; later registration and rebuild attempts fail instead of
-// replacing providers or selecting a fallback.
+// replacing providers or selecting a fallback. Missing server transport or
+// front-door factories never select placeholders or weaken suite provenance.
 class EngineBuilder final {
 public:
     EngineBuilder(EndpointRole local_role, TransportSuiteDescriptor suite);

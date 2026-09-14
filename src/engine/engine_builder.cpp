@@ -41,7 +41,11 @@ Status validate_registration(
 template <typename Map>
 Result<typename Map::mapped_type> select_exact_provider(
     const ProviderRequirement& requirement,
-    const Map& providers) {
+    const Map& providers,
+    bool required = true) {
+    if (!required && providers.empty()) {
+        return Result<typename Map::mapped_type>(typename Map::mapped_type{});
+    }
     const auto it = providers.find(requirement.provider_id());
     if (it == providers.end()) {
         return Result<typename Map::mapped_type>(Status(
@@ -317,6 +321,11 @@ Result<std::shared_ptr<const EngineGraph>> EngineBuilder::build() {
     if (impl_->frozen) {
         return Result<std::shared_ptr<const EngineGraph>>(frozen_status());
     }
+    if (impl_->local_role != EndpointRole::Client &&
+        impl_->local_role != EndpointRole::Server) {
+        return Result<std::shared_ptr<const EngineGraph>>(Status(
+            StatusCode::InvalidArgument, "engine role is invalid"));
+    }
 
     const ProviderRequirement* byte_requirement =
         impl_->suite.provider_requirement(ProviderKind::ByteChannel);
@@ -338,26 +347,31 @@ Result<std::shared_ptr<const EngineGraph>> EngineBuilder::build() {
             "suite composition is incomplete"));
     }
 
+    // Servers consume a promoted carrier from externally owned ingress. The
+    // suite still declares every layer's provenance, which bootstrap/session
+    // construction checks against the accepted instances. Supplied optional
+    // factories undergo the same exact selection as required client factories.
+    const bool creates_transport = impl_->local_role == EndpointRole::Client;
     auto byte_provider = select_exact_provider(
-        *byte_requirement, impl_->byte_channel_providers);
+        *byte_requirement, impl_->byte_channel_providers, creates_transport);
     if (!byte_provider.ok()) {
         return Result<std::shared_ptr<const EngineGraph>>(
             byte_provider.status());
     }
     auto secure_provider = select_exact_provider(
-        *secure_requirement, impl_->secure_channel_providers);
+        *secure_requirement, impl_->secure_channel_providers, creates_transport);
     if (!secure_provider.ok()) {
         return Result<std::shared_ptr<const EngineGraph>>(
             secure_provider.status());
     }
     auto carrier_provider = select_exact_provider(
-        *carrier_requirement, impl_->carrier_providers);
+        *carrier_requirement, impl_->carrier_providers, creates_transport);
     if (!carrier_provider.ok()) {
         return Result<std::shared_ptr<const EngineGraph>>(
             carrier_provider.status());
     }
     auto front_door_provider = select_exact_provider(
-        *front_door_requirement, impl_->front_door_providers);
+        *front_door_requirement, impl_->front_door_providers, false);
     if (!front_door_provider.ok()) {
         return Result<std::shared_ptr<const EngineGraph>>(
             front_door_provider.status());
@@ -370,7 +384,7 @@ Result<std::shared_ptr<const EngineGraph>> EngineBuilder::build() {
             session_security_provider_factory.status());
     }
     auto route_provider = select_exact_provider(
-        *route_requirement, impl_->route_providers);
+        *route_requirement, impl_->route_providers, false);
     if (!route_provider.ok()) {
         return Result<std::shared_ptr<const EngineGraph>>(
             route_provider.status());
@@ -413,6 +427,25 @@ Result<std::shared_ptr<const EngineGraph>> EngineBuilder::build() {
                 return Result<std::shared_ptr<const EngineGraph>>(Status(
                     StatusCode::FailedPrecondition,
                     "stream handler is missing a required capability"));
+            }
+            const bool routes_tcp =
+                descriptor.capabilities().contains(Capability::DirectTcp);
+            const bool routes_udp =
+                descriptor.capabilities().contains(Capability::DirectUdp);
+            if (routes_tcp || routes_udp) {
+                const auto& route = route_provider.value();
+                if (!route) {
+                    return Result<std::shared_ptr<const EngineGraph>>(Status(
+                        StatusCode::NotFound,
+                        "direct service handler requires a route provider"));
+                }
+                const auto capabilities = route->descriptor().capabilities();
+                if ((routes_tcp && !capabilities.contains(Capability::DirectTcp)) ||
+                    (routes_udp && !capabilities.contains(Capability::DirectUdp))) {
+                    return Result<std::shared_ptr<const EngineGraph>>(Status(
+                        StatusCode::FailedPrecondition,
+                        "route provider lacks a direct service capability"));
+                }
             }
             selected_handlers.emplace(
                 std::make_pair(requirement.service_name(),

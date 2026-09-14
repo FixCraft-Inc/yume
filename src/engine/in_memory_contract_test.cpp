@@ -638,13 +638,25 @@ ProviderSet make_provider_set() {
 
 void register_composition(EngineBuilder& builder,
                           const ProviderSet& providers) {
-    CHECK(builder.register_byte_channel_provider(providers.bytes).ok());
-    CHECK(builder.register_secure_channel_provider(providers.secure).ok());
-    CHECK(builder.register_front_door_provider(providers.front_door).ok());
-    CHECK(builder.register_carrier_provider(providers.carrier).ok());
-    CHECK(builder.register_session_security_provider_factory(
-              providers.session_security).ok());
-    CHECK(builder.register_route_provider(providers.route).ok());
+    if (providers.bytes) {
+        CHECK(builder.register_byte_channel_provider(providers.bytes).ok());
+    }
+    if (providers.secure) {
+        CHECK(builder.register_secure_channel_provider(providers.secure).ok());
+    }
+    if (providers.front_door) {
+        CHECK(builder.register_front_door_provider(providers.front_door).ok());
+    }
+    if (providers.carrier) {
+        CHECK(builder.register_carrier_provider(providers.carrier).ok());
+    }
+    if (providers.session_security) {
+        CHECK(builder.register_session_security_provider_factory(
+                  providers.session_security).ok());
+    }
+    if (providers.route) {
+        CHECK(builder.register_route_provider(providers.route).ok());
+    }
 }
 
 void test_buffer_bounds() {
@@ -1109,6 +1121,198 @@ void test_engine_builder() {
     CHECK(!isolated.frozen());
 }
 
+void test_engine_builder_role_composition() {
+    const auto suite = make_suite();
+    for (const EndpointRole role : {EndpointRole::Client, EndpointRole::Server}) {
+        EngineBuilder builder(role, suite);
+        auto providers = make_provider_set();
+        providers.front_door.reset();
+        providers.route.reset();
+        if (role == EndpointRole::Server) {
+            providers.bytes.reset();
+            providers.secure.reset();
+            providers.carrier.reset();
+        }
+        register_composition(builder, providers);
+        CHECK(builder.register_stream_handler("echo", providers.handler).ok());
+        const auto graph = require_value(builder.build());
+        CHECK(builder.frozen());
+        CHECK(graph->local_role() == role);
+        CHECK(!graph->front_door_provider());
+        CHECK(graph->byte_channel_provider() == providers.bytes);
+        CHECK(graph->secure_channel_provider() == providers.secure);
+        CHECK(graph->carrier_provider() == providers.carrier);
+        CHECK(graph->session_security_provider_factory() ==
+              providers.session_security);
+        CHECK(graph->route_provider() == providers.route);
+        CHECK(graph->stream_handler("echo", ServiceKind::ByteStream) ==
+              providers.handler);
+        CHECK(graph->suite().providers().size() == suite.providers().size());
+        for (const auto& expected : suite.providers()) {
+            const auto* retained =
+                graph->suite().provider_requirement(expected.kind());
+            CHECK(retained != nullptr);
+            CHECK(retained->provider_id() == expected.provider_id());
+            CHECK(retained->api_version() == expected.api_version());
+            CHECK(retained->required_capabilities() ==
+                  expected.required_capabilities());
+        }
+        EngineBuilder no_security(role, suite);
+        providers.session_security.reset();
+        register_composition(no_security, providers);
+        CHECK(no_security.register_stream_handler(
+                  "echo", providers.handler).ok());
+        check_code(no_security.build().status(), StatusCode::NotFound);
+        CHECK(!no_security.frozen());
+    }
+
+    // Removing an ingress factory does not excuse a missing client transport
+    // or session security provider.
+    for (const ProviderKind missing : {
+             ProviderKind::ByteChannel, ProviderKind::SecureChannel,
+             ProviderKind::Carrier, ProviderKind::SessionSecurity}) {
+        EngineBuilder builder(EndpointRole::Client, suite);
+        auto providers = make_provider_set();
+        switch (missing) {
+        case ProviderKind::ByteChannel: providers.bytes.reset(); break;
+        case ProviderKind::SecureChannel: providers.secure.reset(); break;
+        case ProviderKind::Carrier: providers.carrier.reset(); break;
+        case ProviderKind::SessionSecurity:
+            providers.session_security.reset();
+            break;
+        default: CHECK(false);
+        }
+        register_composition(builder, providers);
+        CHECK(builder.register_stream_handler("echo", providers.handler).ok());
+        check_code(builder.build().status(), StatusCode::NotFound);
+        CHECK(!builder.frozen());
+    }
+
+    EngineBuilder invalid_role(static_cast<EndpointRole>(0xffU), suite);
+    auto providers = make_provider_set();
+    register_composition(invalid_role, providers);
+    CHECK(invalid_role.register_stream_handler("echo", providers.handler).ok());
+    check_code(invalid_role.build().status(), StatusCode::InvalidArgument);
+    CHECK(!invalid_role.frozen());
+}
+
+void test_engine_builder_optional_provider_provenance() {
+    enum class Mismatch { Id, Version, Capabilities };
+    const auto suite = make_suite();
+    for (const ProviderKind kind : {
+             ProviderKind::ByteChannel, ProviderKind::SecureChannel,
+             ProviderKind::Carrier, ProviderKind::FrontDoor,
+             ProviderKind::RouteProvider}) {
+        const auto* requirement = suite.provider_requirement(kind);
+        CHECK(requirement != nullptr);
+        for (const Mismatch mismatch : {
+                 Mismatch::Id, Mismatch::Version, Mismatch::Capabilities}) {
+            EngineBuilder builder(EndpointRole::Server, suite);
+            auto providers = make_provider_set();
+            providers.bytes.reset();
+            providers.secure.reset();
+            providers.carrier.reset();
+            providers.front_door.reset();
+            providers.route.reset();
+            auto descriptor = make_descriptor(
+                mismatch == Mismatch::Id ? "other.provider"
+                                         : requirement->provider_id(),
+                kind, mismatch == Mismatch::Version
+                    ? 2U : requirement->api_version(),
+                mismatch == Mismatch::Capabilities
+                    ? CapabilitySet{} : requirement->required_capabilities());
+            switch (kind) {
+            case ProviderKind::ByteChannel:
+                providers.bytes = std::make_shared<FakeByteChannelProvider>(
+                    std::move(descriptor));
+                break;
+            case ProviderKind::SecureChannel:
+                providers.secure = std::make_shared<FakeSecureChannelProvider>(
+                    std::move(descriptor));
+                break;
+            case ProviderKind::Carrier:
+                providers.carrier = std::make_shared<FakeCarrierProvider>(
+                    std::move(descriptor));
+                break;
+            case ProviderKind::FrontDoor:
+                providers.front_door = std::make_shared<FakeFrontDoorProvider>(
+                    std::move(descriptor));
+                break;
+            case ProviderKind::RouteProvider:
+                providers.route = std::make_shared<FakeRouteProvider>(
+                    std::move(descriptor));
+                break;
+            default: CHECK(false);
+            }
+            register_composition(builder, providers);
+            CHECK(builder.register_stream_handler(
+                      "echo", providers.handler).ok());
+            check_code(builder.build().status(),
+                       mismatch == Mismatch::Capabilities
+                           ? StatusCode::FailedPrecondition
+                           : StatusCode::ProviderMismatch);
+            CHECK(!builder.frozen());
+        }
+    }
+}
+
+void test_engine_builder_route_requirements() {
+    for (const EndpointRole role : {EndpointRole::Client, EndpointRole::Server}) {
+        EngineBuilder missing_route(role, make_suite());
+        auto providers = make_provider_set();
+        providers.route.reset();
+        providers.handler = std::make_shared<FakeStreamHandler>(
+            make_descriptor(
+                "test.echo", ProviderKind::StreamHandler, 1U,
+                mandatory_capabilities(ProviderKind::StreamHandler)
+                    .with(Capability::DirectTcp)),
+            ServiceKind::ByteStream);
+        register_composition(missing_route, providers);
+        CHECK(missing_route.register_stream_handler(
+                  "echo", providers.handler).ok());
+        check_code(missing_route.build().status(), StatusCode::NotFound);
+        CHECK(!missing_route.frozen());
+
+        // A failed build remains repairable before the graph is frozen.
+        providers.route = make_provider_set().route;
+        CHECK(missing_route.register_route_provider(providers.route).ok());
+        CHECK(missing_route.build().ok());
+    }
+
+    // Handler route needs can exceed the suite's required route capability.
+    // An exact-ID route satisfying only DirectTcp cannot serve DirectUdp.
+    for (const bool supports_udp : {false, true}) {
+        EngineBuilder builder(EndpointRole::Server, make_suite(true));
+        auto providers = make_provider_set();
+        if (supports_udp) {
+            providers.route = std::make_shared<FakeRouteProvider>(
+                make_descriptor(
+                    "test.direct", ProviderKind::RouteProvider, 1U,
+                    mandatory_capabilities(ProviderKind::RouteProvider)
+                        .with(Capability::DirectTcp)
+                        .with(Capability::DirectUdp)));
+        }
+        auto packet_handler = std::make_shared<FakeStreamHandler>(
+            make_descriptor(
+                "test.echo.packet", ProviderKind::StreamHandler, 1U,
+                mandatory_capabilities(ProviderKind::StreamHandler)
+                    .with(Capability::PacketChannels)
+                    .with(Capability::DirectUdp)),
+            ServiceKind::PacketChannel);
+        register_composition(builder, providers);
+        CHECK(builder.register_stream_handler("echo", providers.handler).ok());
+        CHECK(builder.register_stream_handler("echo", packet_handler).ok());
+        auto result = builder.build();
+        if (supports_udp) {
+            CHECK(result.ok());
+            CHECK(result.value()->route_provider() == providers.route);
+        } else {
+            check_code(result.status(), StatusCode::FailedPrecondition);
+            CHECK(!builder.frozen());
+        }
+    }
+}
+
 }  // namespace
 }  // namespace yume::engine
 
@@ -1128,6 +1332,12 @@ int main() {
         test_validated_boundaries();
         rethrow_callback_test_failure();
         test_engine_builder();
+        rethrow_callback_test_failure();
+        test_engine_builder_role_composition();
+        rethrow_callback_test_failure();
+        test_engine_builder_optional_provider_provenance();
+        rethrow_callback_test_failure();
+        test_engine_builder_route_requirements();
         rethrow_callback_test_failure();
     } catch (const std::exception& error) {
         std::cerr << "engine contract test failed: " << error.what() << '\n';

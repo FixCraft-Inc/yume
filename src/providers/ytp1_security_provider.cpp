@@ -19,6 +19,7 @@
 #include <array>
 #include <climits>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -2667,6 +2668,20 @@ Ytp1OpenSslSecurityProviderFactory::create(EndpointRole local_role) {
             StatusCode::ResourceExhausted,
             "session security-provider allocation failed"));
     }
+}
+
+std::string_view ytp1_openssl_crypto_backend() noexcept {
+    // OpenSSL_version returns static text owned by the loaded library. The
+    // formatted identity is built once under the thread-safe static guard.
+    static const std::array<char, 32> identity = [] {
+        std::array<char, 32> formatted{};
+        const char* const version =
+            OpenSSL_version(OPENSSL_FULL_VERSION_STRING);
+        std::snprintf(formatted.data(), formatted.size(), "openssl-%s",
+                      version != nullptr ? version : "unknown");
+        return formatted;
+    }();
+    return std::string_view(identity.data());
 }
 
 }  // namespace yume::providers

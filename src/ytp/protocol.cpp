@@ -9,45 +9,14 @@
 #include <algorithm>
 #include <limits>
 
+#include "ytp/detail/byte_order.hpp"
+
 namespace yume::ytp1 {
 namespace {
 
 constexpr std::size_t kOpenPrefixSize = 8;
 constexpr std::size_t kCapabilityPrefixSize = 4;
 constexpr std::size_t kCapabilityEntryPrefixSize = 8;
-
-[[nodiscard]] constexpr std::uint16_t ReadU16(
-    std::span<const std::uint8_t> input,
-    std::size_t offset) noexcept {
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(input[offset]) << 8U) |
-        static_cast<std::uint16_t>(input[offset + 1]));
-}
-
-[[nodiscard]] constexpr std::uint32_t ReadU32(
-    std::span<const std::uint8_t> input,
-    std::size_t offset) noexcept {
-    return (static_cast<std::uint32_t>(input[offset]) << 24U) |
-           (static_cast<std::uint32_t>(input[offset + 1]) << 16U) |
-           (static_cast<std::uint32_t>(input[offset + 2]) << 8U) |
-           static_cast<std::uint32_t>(input[offset + 3]);
-}
-
-constexpr void WriteU16(std::span<std::uint8_t> output,
-                        std::size_t offset,
-                        std::uint16_t value) noexcept {
-    output[offset] = static_cast<std::uint8_t>(value >> 8U);
-    output[offset + 1] = static_cast<std::uint8_t>(value);
-}
-
-constexpr void WriteU32(std::span<std::uint8_t> output,
-                        std::size_t offset,
-                        std::uint32_t value) noexcept {
-    output[offset] = static_cast<std::uint8_t>(value >> 24U);
-    output[offset + 1] = static_cast<std::uint8_t>(value >> 16U);
-    output[offset + 2] = static_cast<std::uint8_t>(value >> 8U);
-    output[offset + 3] = static_cast<std::uint8_t>(value);
-}
 
 [[nodiscard]] constexpr bool IsKnownRecordType(RecordType type) noexcept {
     switch (type) {
@@ -225,9 +194,9 @@ Status EncodeFrameHeader(const FrameHeader& header,
 
     output[0] = kWireVersion;
     output[1] = static_cast<std::uint8_t>(header.type);
-    WriteU16(output, 2, header.flags);
-    WriteU32(output, 4, header.stream_id.value());
-    WriteU32(output, 8, header.payload_length);
+    detail::write_u16_be(output, 2, header.flags);
+    detail::write_u32_be(output, 4, header.stream_id.value());
+    detail::write_u32_be(output, 8, header.payload_length);
     return Status::Success();
 }
 
@@ -248,16 +217,16 @@ Result<FrameHeader> DecodeFrameHeader(std::span<const std::uint8_t> input,
     if (!IsKnownRecordType(type)) {
         return Result<FrameHeader>::Failure(ErrorCode::UnsupportedRecordType, 1);
     }
-    const auto stream_id = StreamId::FromWire(ReadU32(input, 4));
+    const auto stream_id = StreamId::FromWire(detail::read_u32_be(input, 4));
     if (!stream_id) {
         return Result<FrameHeader>::Failure(stream_id.status.code, 4);
     }
 
     FrameHeader header{
         .type = type,
-        .flags = ReadU16(input, 2),
+        .flags = detail::read_u16_be(input, 2),
         .stream_id = *stream_id.value,
-        .payload_length = ReadU32(input, 8),
+        .payload_length = detail::read_u32_be(input, 8),
     };
     const Status status = ValidateFrameHeader(header, max_payload);
     if (!status) {
@@ -392,15 +361,15 @@ Result<std::vector<std::uint8_t>> EncodeOpen(const OpenRequest& request) {
     output[1] = static_cast<std::uint8_t>(request.service_kind);
     output[2] = static_cast<std::uint8_t>(request.destination.transport);
     output[3] = static_cast<std::uint8_t>(request.destination.address_kind);
-    WriteU16(output, 4,
-             static_cast<std::uint16_t>(request.service_name.size()));
-    WriteU16(output, 6, static_cast<std::uint16_t>(destination_length));
+    detail::write_u16_be(
+        output, 4, static_cast<std::uint16_t>(request.service_name.size()));
+    detail::write_u16_be(output, 6, static_cast<std::uint16_t>(destination_length));
     std::copy(request.service_name.begin(), request.service_name.end(),
               output.begin() + static_cast<std::ptrdiff_t>(kOpenPrefixSize));
 
     std::size_t offset = kOpenPrefixSize + request.service_name.size();
     if (request.destination.address_kind != AddressKind::None) {
-        WriteU16(output, offset, request.destination.port);
+        detail::write_u16_be(output, offset, request.destination.port);
         offset += 2;
     }
     switch (request.destination.address_kind) {
@@ -443,8 +412,8 @@ Result<OpenRequest> DecodeOpen(std::span<const std::uint8_t> payload) {
         return Result<OpenRequest>::Failure(ErrorCode::InvalidEnum, 1);
     }
 
-    const std::size_t service_length = ReadU16(payload, 4);
-    const std::size_t destination_length = ReadU16(payload, 6);
+    const std::size_t service_length = detail::read_u16_be(payload, 4);
+    const std::size_t destination_length = detail::read_u16_be(payload, 6);
     const std::size_t expected = kOpenPrefixSize + service_length +
                                  destination_length;
     if (expected > payload.size()) {
@@ -480,7 +449,7 @@ Result<OpenRequest> DecodeOpen(std::span<const std::uint8_t> payload) {
         if (destination_length < 2) {
             return Result<OpenRequest>::Failure(ErrorCode::Truncated, offset);
         }
-        request.destination.port = ReadU16(payload, offset);
+        request.destination.port = detail::read_u16_be(payload, offset);
         offset += 2;
     }
 
@@ -540,7 +509,7 @@ Status ValidateCapabilityManifestEncoding(
         return {ErrorCode::InvalidFlags, 1};
     }
 
-    const std::size_t count = ReadU16(payload, 2);
+    const std::size_t count = detail::read_u16_be(payload, 2);
     if (count > kMaxCapabilities) {
         return {ErrorCode::TooManyFields, 2};
     }
@@ -560,8 +529,8 @@ Status ValidateCapabilityManifestEncoding(
         if (payload[offset + 1] != 0) {
             return {ErrorCode::InvalidFlags, offset + 1};
         }
-        const std::size_t name_length = ReadU16(payload, offset + 2);
-        const std::uint32_t max_streams = ReadU32(payload, offset + 4);
+        const std::size_t name_length = detail::read_u16_be(payload, offset + 2);
+        const std::uint32_t max_streams = detail::read_u32_be(payload, offset + 4);
         offset += kCapabilityEntryPrefixSize;
         if (name_length == 0 || name_length > kMaxServiceNameBytes) {
             return {ErrorCode::InvalidServiceName, offset - 6};
@@ -657,14 +626,15 @@ Result<std::vector<std::uint8_t>> EncodeCapabilityManifest(
     std::vector<std::uint8_t> output(total);
     output[0] = kWireVersion;
     output[1] = 0;
-    WriteU16(output, 2, static_cast<std::uint16_t>(entries.size()));
+    detail::write_u16_be(output, 2, static_cast<std::uint16_t>(entries.size()));
     std::size_t offset = kCapabilityPrefixSize;
     for (const Capability& entry : entries) {
         output[offset] = static_cast<std::uint8_t>(entry.service_kind);
         output[offset + 1] = 0;
-        WriteU16(output, offset + 2,
-                 static_cast<std::uint16_t>(entry.service_name.size()));
-        WriteU32(output, offset + 4, entry.max_concurrent_streams);
+        detail::write_u16_be(
+            output, offset + 2,
+            static_cast<std::uint16_t>(entry.service_name.size()));
+        detail::write_u32_be(output, offset + 4, entry.max_concurrent_streams);
         offset += kCapabilityEntryPrefixSize;
         std::copy(entry.service_name.begin(), entry.service_name.end(),
                   output.begin() + static_cast<std::ptrdiff_t>(offset));
@@ -682,14 +652,14 @@ Result<CapabilityManifest> DecodeCapabilityManifest(
     }
 
     CapabilityManifest manifest;
-    const std::size_t count = ReadU16(payload, 2);
+    const std::size_t count = detail::read_u16_be(payload, 2);
     manifest.entries.reserve(count);
     std::size_t offset = kCapabilityPrefixSize;
     for (std::size_t i = 0; i < count; ++i) {
         Capability entry;
         entry.service_kind = static_cast<ServiceKind>(payload[offset]);
-        const std::size_t name_length = ReadU16(payload, offset + 2);
-        entry.max_concurrent_streams = ReadU32(payload, offset + 4);
+        const std::size_t name_length = detail::read_u16_be(payload, offset + 2);
+        entry.max_concurrent_streams = detail::read_u32_be(payload, offset + 4);
         offset += kCapabilityEntryPrefixSize;
         entry.service_name.assign(
             reinterpret_cast<const char*>(payload.data() + offset), name_length);
@@ -706,7 +676,7 @@ Result<std::array<std::uint8_t, 4>> EncodeCreditUpdate(
             ErrorCode::CreditOutOfRange);
     }
     std::array<std::uint8_t, 4> output{};
-    WriteU32(output, 0, increment);
+    detail::write_u32_be(output, 0, increment);
     return Result<std::array<std::uint8_t, 4>>::Success(output);
 }
 
@@ -719,7 +689,7 @@ Result<std::uint32_t> DecodeCreditUpdate(
     if (payload.size() > 4) {
         return Result<std::uint32_t>::Failure(ErrorCode::TrailingData, 4);
     }
-    const std::uint32_t increment = ReadU32(payload, 0);
+    const std::uint32_t increment = detail::read_u32_be(payload, 0);
     if (increment == 0 || increment > kMaxCreditIncrement) {
         return Result<std::uint32_t>::Failure(ErrorCode::CreditOutOfRange);
     }

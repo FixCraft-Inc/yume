@@ -6,9 +6,11 @@ summary:  Repository facts and checks that apply to a fresh clone, for automatio
 markdown: docs/agents/README.md
 web:      no
 ---
-Use [CONTRIBUTING.md](../../CONTRIBUTING.md) for build, test, naming, and review
-rules. Check live Git status and source before changing files, preserve unrelated
-work, and finish with `git diff --check`.
+Use [CONTRIBUTING.md](../../CONTRIBUTING.md#decision-and-review-discipline) for
+decision and review rules, including challenging incorrect premises and your
+own proposed solutions. Its project-direction, interface and documentation
+sections apply to automation too. Check live Git status and source before
+changing files, preserve unrelated work, and finish with `git diff --check`.
 
 ## Repository contracts
 
@@ -33,12 +35,12 @@ sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
 | --- | --- |
 | Transport, AUTH, ratchet | [Transport-v2 wire](../protocol/YUME_2_0_WIRE.md), [security modes](../SECURITY_MODES.md), focused protocol/security tests |
 | C ABI and endpoint backend | [ABI](../ABI.md), header, symbol map, candidate Debian symbols, C/C++ and stream integration tests |
-| Config parsers | Both parsers for the role, shared key table, parser tests, CLI help and manuals |
+| Config parsers | Both roles' readers, writers, validation and startup consumers, paired rejection/rollback tests, CLI help and manuals |
 | Server policy and cover | [Permissions](../PERMISSIONS.md), [operations](../OPERATIONS.md), [cover behavior](../FILTERING_SELF_DPI.md), daemon manual |
 | YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](../development/ytp1/README.md), provider tests |
 | Product version or packaging | Version header, package metadata, README, [status](../IMPLEMENTATION_STATUS.md), [packaging](../PACKAGING.md), metadata tests |
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |
-| Documentation | `docs/src` source, document and diagram sync checks, website sync and catalog checks, affected links and manuals |
+| Documentation | `docs/src` source, unified sync/drift and website catalog checks, affected links, manuals and CLI help/completion |
 @end
 
 Keep current behavior in the linked contracts and support limits in
@@ -56,13 +58,16 @@ python3 scripts/yume_docs.py check --all-languages
 python3 scripts/check_website_catalog.py
 @end
 
-The sync covers Markdown, manuals, website pages and catalog, and diagram
-SVGs. Diagram placement is `@diagram <name>` in the document, with topology
+The sync covers Markdown, manuals, website pages and catalog, enabled diagram
+SVGs, and YUME CLI help and Bash completion headers. Diagram placement is
+`@diagram <name>` in the document, with topology
 and source labels in `docs/diagrams/<name>.json`. `en_US` is the only active
 locale; missing-content reports are preparation for translations, not proof
 that a translation is current. See [the source guide](../src/README.md).
 
-Local agent instructions, task queues, machine paths, captures, and run logs
-belong in ignored private storage. A fresh clone must contain everything a
-contributor needs to build and understand YUME. Private notes can locate
-evidence, but source and executable tests decide whether a claim is true.
+Keep local workflow rules and technical rationale in lasting private guides.
+Task state, queues, run summaries, and handoffs belong only in private
+`TEMP_*.md` notes with deletion conditions. Raw logs and captures stay in ignored
+artifact storage. A fresh clone must contain everything a contributor needs to
+build and understand YUME. Source and executable tests decide whether a claim
+is true.

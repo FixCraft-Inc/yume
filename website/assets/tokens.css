@@ -37,6 +37,40 @@
   --color-warn: oklch(58% 0.09 55);
   --color-warn-soft: oklch(94% 0.045 65);
 
+  /*
+   * Diagram roles. A role is what a colour means inside a figure, and the same
+   * role colours companion pages and the explainer video: the client in the
+   * brand plum, the server in iris, the reader's own data in blue, the
+   * disguise in amber, keys in yellow, the outside world in mint, and refused
+   * or still-visible things in coral. Every role has a mid tone, a strong ink
+   * and a soft tint at matched lightness, so no hue outshouts another. Roles
+   * never replace the accent in site chrome. Neutrals stay on hue 337.
+   */
+  --color-role-client: var(--color-accent);
+  --color-role-client-strong: var(--color-accent-strong);
+  --color-role-client-soft: var(--color-accent-soft);
+  --color-role-server: oklch(76% 0.1 295);
+  --color-role-server-strong: oklch(49% 0.13 295);
+  --color-role-server-soft: oklch(93.5% 0.035 295);
+  --color-role-data: oklch(76% 0.095 245);
+  --color-role-data-strong: oklch(49% 0.11 245);
+  --color-role-data-soft: oklch(94% 0.03 245);
+  --color-role-disguise: oklch(80% 0.11 62);
+  --color-role-disguise-strong: oklch(52% 0.11 55);
+  --color-role-disguise-soft: oklch(94.5% 0.04 65);
+  --color-role-keys: oklch(86% 0.13 92);
+  --color-role-keys-strong: oklch(50% 0.1 85);
+  --color-role-keys-soft: oklch(96% 0.05 95);
+  --color-role-outside: oklch(78% 0.085 165);
+  --color-role-outside-strong: oklch(47% 0.08 165);
+  --color-role-outside-soft: oklch(94.5% 0.03 165);
+  --color-role-refused: oklch(75% 0.11 25);
+  --color-role-refused-strong: oklch(51% 0.14 25);
+  --color-role-refused-soft: oklch(94% 0.035 25);
+  --color-role-neutral: var(--color-rule);
+  --color-role-neutral-strong: var(--color-muted);
+  --color-role-neutral-soft: var(--color-rule-soft);
+
   --shadow-whisper: 0 0.75rem 2rem oklch(46% 0.06 337 / 0.06);
   --shadow-cloud: 0 2rem 6rem oklch(55% 0.09 337 / 0.12);
   --shadow-logo: 0 1rem 2rem oklch(55% 0.1 337 / 0.14);
@@ -66,6 +100,24 @@
   --dark-code-inline: oklch(24% 0.018 337);
   --dark-warn: oklch(77% 0.09 60);
   --dark-warn-soft: oklch(24% 0.05 55);
+  --dark-role-server: oklch(70% 0.1 295);
+  --dark-role-server-strong: oklch(85% 0.08 295);
+  --dark-role-server-soft: oklch(28% 0.05 295);
+  --dark-role-data: oklch(70% 0.09 245);
+  --dark-role-data-strong: oklch(85% 0.07 245);
+  --dark-role-data-soft: oklch(27% 0.045 245);
+  --dark-role-disguise: oklch(74% 0.11 62);
+  --dark-role-disguise-strong: oklch(86% 0.085 65);
+  --dark-role-disguise-soft: oklch(28% 0.05 55);
+  --dark-role-keys: oklch(82% 0.12 92);
+  --dark-role-keys-strong: oklch(90% 0.1 95);
+  --dark-role-keys-soft: oklch(29% 0.05 90);
+  --dark-role-outside: oklch(72% 0.08 165);
+  --dark-role-outside-strong: oklch(86% 0.065 165);
+  --dark-role-outside-soft: oklch(27% 0.04 165);
+  --dark-role-refused: oklch(70% 0.11 25);
+  --dark-role-refused-strong: oklch(85% 0.08 25);
+  --dark-role-refused-soft: oklch(28% 0.055 25);
 
   --dark-shadow-whisper: 0 0.75rem 2rem oklch(5% 0.008 337 / 0.45);
   --dark-shadow-cloud: 0 2rem 5rem oklch(5% 0.008 337 / 0.35);
@@ -146,6 +198,24 @@
   --color-code-inline: var(--dark-code-inline);
   --color-warn: var(--dark-warn);
   --color-warn-soft: var(--dark-warn-soft);
+  --color-role-server: var(--dark-role-server);
+  --color-role-server-strong: var(--dark-role-server-strong);
+  --color-role-server-soft: var(--dark-role-server-soft);
+  --color-role-data: var(--dark-role-data);
+  --color-role-data-strong: var(--dark-role-data-strong);
+  --color-role-data-soft: var(--dark-role-data-soft);
+  --color-role-disguise: var(--dark-role-disguise);
+  --color-role-disguise-strong: var(--dark-role-disguise-strong);
+  --color-role-disguise-soft: var(--dark-role-disguise-soft);
+  --color-role-keys: var(--dark-role-keys);
+  --color-role-keys-strong: var(--dark-role-keys-strong);
+  --color-role-keys-soft: var(--dark-role-keys-soft);
+  --color-role-outside: var(--dark-role-outside);
+  --color-role-outside-strong: var(--dark-role-outside-strong);
+  --color-role-outside-soft: var(--dark-role-outside-soft);
+  --color-role-refused: var(--dark-role-refused);
+  --color-role-refused-strong: var(--dark-role-refused-strong);
+  --color-role-refused-soft: var(--dark-role-refused-soft);
 
   --shadow-whisper: var(--dark-shadow-whisper);
   --shadow-cloud: var(--dark-shadow-cloud);

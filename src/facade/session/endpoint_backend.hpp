@@ -12,19 +12,24 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
+
+namespace yume::config::v1 {
+class Config;
+}  // namespace yume::config::v1
 
 // The embedding seam. A consumer of YUME, whether the C ABI or another
 // binding, drives a transport through these interfaces and never through the
-// client, server, or core headers directly.
+// client, server, core, provider or runtime headers directly.
 //
-// This lives in yume_embed rather than in the ABI because reaching a tunnel,
-// a runtime controller, and a service stream is the embedding layer's job.
-// Putting it here keeps the ABI shell free of any runtime and gives a future
-// non-C binding the same entry point.
+// Reaching a tunnel, a runtime controller or a native session is the
+// embedding layer's job. Keeping it here leaves the ABI shell free of any
+// runtime and gives a future non-C binding the same entry point.
 //
-// Exactly one backend exists today: the runnable transport-v2 product. The
-// YTP/1 replacement will add a second one behind the same interface, and the
-// swap must not change one public symbol.
+// Two backends implement it. The transport-v2 backend lives in yume_embed.
+// The YTP/1 backend lives in yume_embed_ytp1 and composes the native
+// endpoint without the transport-v2 graph or BaseFWX. The seam and the public
+// ABI candidate are unfrozen and change together with their callers and tests.
 namespace yume::embed {
 
 // A parsed, role-tagged transport configuration. The concrete type stays in
@@ -49,7 +54,25 @@ enum class BackendIo {
     PermissionDenied,
     ResourceExhausted,
     AlreadyRunning,
+    // The configuration requests something this backend does not compose.
+    Unsupported,
+    // A provider or suite does not match the frozen composition.
+    Incompatible,
+    // A requested listening address belongs to another live socket.
+    AddressInUse,
     Failed,
+};
+
+enum class BackendServiceKind {
+    ByteStream,
+    Packet,
+};
+
+// One application registration, already checked against the service-name
+// grammar by the caller.
+struct BackendService {
+    std::string name;
+    BackendServiceKind kind{BackendServiceKind::ByteStream};
 };
 
 struct BackendPeerIdentity {
@@ -166,5 +189,26 @@ std::unique_ptr<EndpointBackend> make_transport_v2_backend(
     const BackendConfig& config,
     SocketProtector socket_protector,
     std::string& error);
+
+// Creates an unstarted YTP/1 backend for a parsed schema-1 configuration.
+// Only a server registers services, and each registration must name a
+// service the configuration declares. Relative credential references resolve
+// against `base_dir`. A build without the native provider graph returns
+// nullptr with `outcome` set to Unsupported.
+std::unique_ptr<EndpointBackend> make_ytp1_backend(
+    const config::v1::Config& config,
+    std::string_view base_dir,
+    std::vector<BackendService> registered_services,
+    SocketProtector socket_protector,
+    BackendIo& outcome,
+    std::string& error);
+
+// Identity of the key-holding YTP/1 session-security implementation composed
+// by this build, or "unwired" when no YTP/1 backend is linked.
+std::string_view ytp1_session_security_provider() noexcept;
+
+// Identity of the cryptographic library that implementation runs on, such as
+// "openssl-3.5.7", or "unwired" when no YTP/1 backend is linked.
+std::string_view ytp1_crypto_backend() noexcept;
 
 }  // namespace yume::embed

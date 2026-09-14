@@ -73,8 +73,8 @@ int main() {
         !check(yume_abi_version() == YUME_ABI_VERSION &&
                    build.abi_version == YUME_ABI_VERSION &&
                    build.struct_size == sizeof(build) &&
-                   std::strcmp(build.crypto_backend, "unwired") == 0,
-               "build metadata does not describe the unwired YTP/1 provider graph")) {
+                   build.crypto_backend[0] != '\0',
+               "build metadata is incomplete")) {
         return 2;
     }
 
@@ -97,10 +97,23 @@ int main() {
                    compatibility.front_door_provider[0] != '\0' &&
                    compatibility.carrier_provider[0] != '\0' &&
                    std::strcmp(compatibility.session_component,
-                               "ytp1-hybrid") == 0 &&
-                   std::strcmp(compatibility.session_security_provider,
-                               "unwired") == 0,
+                               "ytp1-hybrid") == 0,
                "compatibility manifest is incomplete or inconsistent")) {
+        return 3;
+    }
+    // The manifest names the composition this library links. An unwired
+    // build reports both fields as unwired. A linked schema-1 backend names
+    // its concrete provider and cryptographic backend.
+    const bool native_backend =
+        std::strcmp(compatibility.session_security_provider, "unwired") != 0;
+    const bool unwired_crypto =
+        std::strcmp(build.crypto_backend, "unwired") == 0;
+    if (!check(native_backend
+                   ? std::strcmp(compatibility.session_security_provider,
+                                 "openssl35.ytp1-security") == 0 &&
+                         !unwired_crypto
+                   : unwired_crypto,
+               "manifest does not describe one consistent YTP/1 composition")) {
         return 3;
     }
 
@@ -139,11 +152,17 @@ int main() {
     }
     Endpoint endpoint(endpoint_raw, &yume_endpoint_destroy);
 
-    if (!check(yume_endpoint_start(endpoint.get(), 0U) ==
-                   YUME_STATUS_UNSUPPORTED,
-               "unwired endpoint start did not fail closed as unsupported") ||
+    // The fixture names credential files that do not exist. An unwired build
+    // refuses before reading them, and a linked backend refuses when it
+    // cannot read them. Neither may start.
+    const yume_status started = yume_endpoint_start(endpoint.get(), 0U);
+    const bool refused = native_backend
+        ? started != YUME_STATUS_OK && started != YUME_STATUS_UNSUPPORTED &&
+              started != YUME_STATUS_INTERNAL_ERROR
+        : started == YUME_STATUS_UNSUPPORTED;
+    if (!check(refused, "endpoint start did not fail closed") ||
         !check(yume_endpoint_state(endpoint.get()) == YUME_ENDPOINT_FAILED,
-               "unsupported endpoint start did not enter FAILED")) {
+               "failed endpoint start did not enter FAILED")) {
         return 8;
     }
 
@@ -153,11 +172,12 @@ int main() {
     if (!check(yume_handle_get_diagnostic(endpoint.get(), &diagnostic,
                                           sizeof(diagnostic)) ==
                    YUME_STATUS_OK &&
-                   diagnostic.status == YUME_STATUS_UNSUPPORTED &&
+                   diagnostic.status == started &&
                    diagnostic.message[0] != '\0' &&
-                   std::strstr(diagnostic.message,
-                               "provider is not linked") != nullptr,
-               "endpoint diagnostic did not preserve typed provider failure")) {
+                   (native_backend ||
+                    std::strstr(diagnostic.message,
+                                "provider is not linked") != nullptr),
+               "endpoint diagnostic did not preserve the typed start failure")) {
         return 9;
     }
 

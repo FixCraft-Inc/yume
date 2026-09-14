@@ -1,0 +1,96 @@
+{
+  "name": "yume_connection",
+  "type": "flow",
+  "title": "How one transport-v2 connection travels",
+  "summary": "An app's traffic enters the YUME client, crosses a browser-shaped TLS and HTTP/2 connection to yumed's front door, and leaves the server toward its destination. A request without valid admission only reaches the cover website.",
+  "comment": [
+    "Transport v2 only. The YTP/1 replacement has its own path in EXPLAINED and is not drawn here.",
+    "Notes are the newcomer text shown beside the figure on the website and in Markdown. Verify every note against its sources."
+  ],
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "app",
+      "kind": "app",
+      "title": "YOUR APP",
+      "sub": "browser, curl, a game",
+      "group": "YOUR DEVICE",
+      "note": "A program on your device. It reaches the client through SOCKS5, a port forward or packet routing, so it needs no YUME code of its own.",
+      "source": ["src/client/proxy/", "src/client/packet/"]
+    },
+    {
+      "id": "client",
+      "kind": "client",
+      "title": "YUME CLIENT",
+      "sub": "SOCKS5, forward, packets",
+      "group": "YOUR DEVICE",
+      "note": "Opens a long-lived, browser-shaped connection to your server and carries app connections inside it as numbered streams.",
+      "source": ["src/client/transport/", "src/client/proxy/socks.cpp"]
+    },
+    {
+      "id": "front_door",
+      "kind": "gate",
+      "title": "FRONT DOOR",
+      "sub": "admission check",
+      "group": "YOUR SERVER",
+      "note": "yumed answers like an ordinary website. A tunnel request has to carry a keyed, replay-protected admission token before any YUME authentication begins.",
+      "source": ["src/admission/h2_admission.cpp", "docs/protocol/YUME_2_0_WIRE.md"]
+    },
+    {
+      "id": "session",
+      "kind": "server",
+      "title": "SESSION",
+      "sub": "AUTH v2, sealed frames",
+      "group": "YOUR SERVER",
+      "note": "Checks the client's Ed25519 + ML-DSA-87 identity, bound to this TLS connection, seals every message with a one-use AES-256-GCM key, and applies destination policy.",
+      "source": ["src/server/session/auth.cpp", "src/core/security/session_ratchet.cpp", "src/server/session/authorization.cpp"]
+    },
+    {
+      "id": "destination",
+      "kind": "target",
+      "title": "DESTINATION",
+      "sub": "sees the server's IP",
+      "note": "The site or service you asked for. It sees your server's address. yumed also knows the destination, so HTTPS inside the app is what keeps the content private from the server.",
+      "source": ["src/server/session/net.cpp"]
+    },
+    {
+      "id": "cover",
+      "kind": "site",
+      "title": "COVER WEBSITE",
+      "sub": "ordinary pages",
+      "side": true,
+      "note": "A configured website backend on the same port. Ordinary visitors and scanners get its pages. A tunnel request without valid admission never reaches authentication.",
+      "source": ["src/server/runtime/cover_response.cpp", "src/server/host/http_backend_client.cpp"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "app",
+      "to": "client",
+      "label": "local"
+    },
+    {
+      "from": "client",
+      "to": "front_door",
+      "label": "TLS 1.3 + HTTP/2",
+      "channel": "tunnel"
+    },
+    {
+      "from": "front_door",
+      "to": "session",
+      "label": "valid token"
+    },
+    {
+      "from": "session",
+      "to": "destination",
+      "label": "policy-checked egress"
+    },
+    {
+      "from": "front_door",
+      "to": "cover",
+      "label": "no valid token"
+    }
+  ]
+}

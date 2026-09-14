@@ -202,6 +202,37 @@ void TestStreamIdsAndFrameHeader() {
     FrameHeader stream_credit{RecordType::StreamCredit, 0, *server.value, 4};
     CHECK(ValidateFrameHeader(connection_credit));
     CHECK(ValidateFrameHeader(stream_credit));
+
+    // Distinct bytes exercise all four octets independently of a round trip.
+    FrameHeader wide{RecordType::Data, 0,
+                     *StreamId::FromWire(0x0123'4567U).value, 0x89ab'cdefU};
+    CHECK(EncodeFrameHeader(wide, encoded, 0xffff'ffffU));
+    CHECK_HEX(encoded, "010500000123456789abcdef");
+    const auto wide_decoded = DecodeFrameHeader(encoded, 0xffff'ffffU);
+    CHECK(wide_decoded);
+    CHECK_EQ(wide_decoded.value->stream_id, wide.stream_id);
+    CHECK_EQ(wide_decoded.value->payload_length, wide.payload_length);
+    for (std::size_t size = 0; size < encoded.size(); ++size) {
+        const auto truncated = DecodeFrameHeader(
+            std::span<const std::uint8_t>(encoded).first(size));
+        CHECK_EQ(truncated.status.code, ErrorCode::Truncated);
+        CHECK_EQ(truncated.status.offset, size);
+    }
+    // Wire stream-id rejection precedes header flag/payload validation.
+    malformed = encoded;
+    malformed[2] = 1;
+    malformed[4] = 0x80;
+    CHECK_EQ(DecodeFrameHeader(malformed).status.code,
+             ErrorCode::InvalidStreamId);
+    CHECK_EQ(DecodeFrameHeader(malformed).status.offset, 4U);
+    malformed[4] = 0x01;
+    CHECK_EQ(DecodeFrameHeader(malformed).status.code, ErrorCode::InvalidFlags);
+    CHECK_EQ(DecodeFrameHeader(malformed).status.offset, 2U);
+
+    encoded.fill(0xa5);
+    const auto untouched = encoded;
+    CHECK_EQ(EncodeFrameHeader(wide, encoded).code, ErrorCode::PayloadTooLarge);
+    CHECK_EQ(encoded, untouched);
 }
 
 Destination TcpDns(std::string name, std::uint16_t port) {
@@ -231,6 +262,19 @@ void TestOpenCodec() {
     const auto tcp_decoded = DecodeOpen(*tcp_encoded.value);
     CHECK(tcp_decoded);
     CHECK_EQ(*tcp_decoded.value, tcp);
+
+    tcp.destination.port = 0xabcd;
+    const auto high_port = EncodeOpen(tcp);
+    CHECK(high_port);
+    CHECK_HEX(*high_port.value,
+              "01010103000a000e6469726563742e746370abcd0b6578616d706c652e636f6d");
+    CHECK_EQ(DecodeOpen(*high_port.value).value->destination.port, 0xabcdU);
+    for (std::size_t size = 0; size < high_port.value->size(); ++size) {
+        const auto truncated = DecodeOpen(
+            std::span<const std::uint8_t>(*high_port.value).first(size));
+        CHECK_EQ(truncated.status.code, ErrorCode::Truncated);
+        CHECK_EQ(truncated.status.offset, size);
+    }
 
     Destination udp_destination;
     udp_destination.transport = TransportProtocol::Udp;
@@ -372,6 +416,17 @@ void TestCapabilitiesAndCredit() {
              ErrorCode::Truncated);
     CHECK_EQ(DecodeCreditUpdate(std::array<std::uint8_t, 5>{}).status.code,
              ErrorCode::TrailingData);
+
+    const auto wide_credit = EncodeCreditUpdate(0x1234'5678U);
+    CHECK(wide_credit);
+    CHECK_HEX(*wide_credit.value, "12345678");
+    CHECK_EQ(*DecodeCreditUpdate(*wide_credit.value).value, 0x1234'5678U);
+    for (std::size_t size = 0; size < encoded.value->size(); ++size) {
+        CHECK_EQ(ValidateCapabilityManifestEncoding(
+                     std::span<const std::uint8_t>(*encoded.value).first(size))
+                     .code,
+                 ErrorCode::Truncated);
+    }
 }
 
 AuthRecord ExampleAuthRecord(const std::vector<std::uint8_t>& capabilities) {
@@ -412,6 +467,23 @@ void TestAuthCodec() {
         "343a484b44462d5348413235363a4145532d3235362d47434d0002000100000018"
         "010101010101010101200c10202020200620062000400100000300010000000101");
 
+    // Unknown noncritical fields are part of the AUTH codec contract. Their
+    // ids and lengths must retain high bytes without signed conversion.
+    mandatory_only.fields.push_back(
+        {0x80ff, false, std::vector<std::uint8_t>(0x0102, 0x5a)});
+    const auto wide_field = EncodeAuthRecord(mandatory_only);
+    CHECK(wide_field);
+    CHECK_HEX(std::span<const std::uint8_t>(*wide_field.value)
+                  .subspan(mandatory_encoded.value->size(), 8),
+              "80ff000000000102");
+    CHECK_EQ(*DecodeAuthRecord(*wide_field.value).value, mandatory_only);
+    for (std::size_t size = 0; size < wide_field.value->size(); ++size) {
+        const auto truncated = DecodeAuthRecord(
+            std::span<const std::uint8_t>(*wide_field.value).first(size));
+        CHECK_EQ(truncated.status.code, ErrorCode::Truncated);
+        CHECK_EQ(truncated.status.offset, size);
+    }
+
     const auto offsets = AuthFieldOffsets(*encoded.value);
     CHECK_EQ(offsets.size(), 6U);
     auto malformed = *encoded.value;
@@ -423,6 +495,9 @@ void TestAuthCodec() {
     malformed = *encoded.value;
     WriteU16(malformed, 2, static_cast<std::uint16_t>(kMaxAuthFields + 1));
     CHECK_EQ(DecodeAuthRecord(malformed).status.code, ErrorCode::TooManyFields);
+    WriteU32(malformed, 4, 0xffff'ffffU);
+    CHECK_EQ(DecodeAuthRecord(malformed).status.code, ErrorCode::TooManyFields);
+    CHECK_EQ(DecodeAuthRecord(malformed).status.offset, 2U);
 
     malformed = *encoded.value;
     // Last field (nonce) duplicates the preceding capability field.
@@ -430,6 +505,10 @@ void TestAuthCodec() {
              static_cast<std::uint16_t>(AuthFieldId::CapabilityManifest));
     CHECK_EQ(DecodeAuthRecord(malformed).status.code,
              ErrorCode::DuplicateField);
+    WriteU16(malformed, offsets[5] + 2, 0xffff);
+    WriteU32(malformed, offsets[5] + 4, 0xffff'ffffU);
+    CHECK_EQ(DecodeAuthRecord(malformed).status.code, ErrorCode::DuplicateField);
+    CHECK_EQ(DecodeAuthRecord(malformed).status.offset, offsets[5]);
     malformed = *encoded.value;
     WriteU16(malformed, offsets[5], 2);
     CHECK_EQ(DecodeAuthRecord(malformed).status.code,
@@ -571,11 +650,13 @@ void TestKeyScheduleInput() {
 
     const auto size = KeyScheduleInputEncodedSize(input);
     CHECK(size);
-    std::vector<std::uint8_t> short_output(*size.value - 1);
+    std::vector<std::uint8_t> short_output(*size.value - 1, 0xa5);
+    const auto untouched_short_output = short_output;
     std::size_t written = 99;
     CHECK_EQ(EncodeKeyScheduleInput(input, short_output, written).code,
              ErrorCode::OutputTooSmall);
     CHECK_EQ(written, 0U);
+    CHECK_EQ(short_output, untouched_short_output);
 
     std::vector<std::uint8_t> aliased_output(*size.value, 0);
     std::copy(fixture.client_identity.begin(), fixture.client_identity.end(),
@@ -583,9 +664,11 @@ void TestKeyScheduleInput() {
     KeyScheduleInput aliased = input;
     aliased.client_identity = std::span<const std::uint8_t>(aliased_output)
                                   .subspan(128, fixture.client_identity.size());
+    const auto untouched_aliased_output = aliased_output;
     CHECK_EQ(EncodeKeyScheduleInput(aliased, aliased_output, written).code,
              ErrorCode::OverlappingBuffer);
     CHECK_EQ(written, 0U);
+    CHECK_EQ(aliased_output, untouched_aliased_output);
 
     KeyScheduleInput changed = input;
     changed.initiator_role = EndpointRole::Server;

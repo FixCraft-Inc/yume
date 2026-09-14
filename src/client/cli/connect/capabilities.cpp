@@ -26,10 +26,6 @@ ServerCapabilityResult evaluate_server_capabilities(const ServerCapabilityInput&
                 result.error = "server does not support inner crypto";
                 return result;
             }
-            if (!input.server_inner_dual &&
-                !input.server_inner_mode.empty() &&
-                input.server_inner_mode != "off") {
-            }
         } else if (input.server_inner_required) {
             result.error = "server does not support connecting without inner!";
             return result;

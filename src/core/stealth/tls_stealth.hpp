@@ -61,13 +61,6 @@ public:
     void log_connection_metrics(const ConnectionMetrics& metrics);
 
 private:
-    void configure_cipher_suites(const std::vector<uint16_t>& suites);
-    void configure_cert_compression(std::span<const std::uint16_t> algorithms);
-    void configure_supported_groups(const std::vector<uint16_t>& groups,
-                                    const std::vector<uint16_t>& key_share_groups);
-    void configure_signature_algorithms(const std::vector<uint16_t>& algorithms);
-    void configure_alpn(const std::vector<std::string>& protocols);
-
     StealthConfig config_;
     boost::asio::ssl::context ssl_context_;
     tls_fingerprint::BrowserProfile current_profile_;
@@ -163,13 +156,5 @@ private:
     mutable std::mutex mutex_;
     Statistics stats_;
 };
-
-std::string cipher_list_to_openssl_string(const std::vector<uint16_t>& cipher_suites);
-std::string groups_to_openssl_string(const std::vector<uint16_t>& groups);
-std::string groups_to_openssl_string(
-    const std::vector<uint16_t>& groups,
-    const std::vector<uint16_t>& key_share_groups);
-std::string cipher_suite_name(uint16_t code);
-std::string supported_group_name(uint16_t code);
 
 }  // namespace yume::tls_stealth

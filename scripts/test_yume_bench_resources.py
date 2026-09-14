@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import os
+import selectors
+import signal
 import subprocess
 import sys
 import threading
@@ -107,6 +109,52 @@ os.waitpid(child, 0)
         self.assertIsNotNone(result.resources)
         assert result.resources is not None
         self.assertGreater(result.resources["cpu"]["total_seconds"], 0)
+
+    def test_sampler_discovers_child_created_by_worker_thread(self) -> None:
+        fixture = """
+import subprocess
+import sys
+import threading
+
+stop = threading.Event()
+def worker():
+    with subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE,
+    ) as child:
+        print(child.pid, flush=True)
+        stop.wait(10)
+        child.communicate(input=b"x", timeout=5)
+thread = threading.Thread(target=worker)
+thread.start()
+sys.stdin.buffer.read(1)
+stop.set()
+thread.join(6)
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", fixture],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            assert process.stdout is not None
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                self.assertTrue(selector.select(timeout=5), "fixture readiness timeout")
+                child_pid = int(process.stdout.readline())
+            self.assertEqual(os.getpgid(child_pid), process.pid)
+            sampler = ProcessResourceSampler(process.pid, interval_ms=100)
+            sampler.capture()
+            self.assertEqual(sampler.summary()["concurrency"]["peak_processes"], 2)
+        finally:
+            try:
+                process.communicate(input=b"x", timeout=8)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 0)
 
     def test_streamed_command_timeout_stops_process_group(self) -> None:
         started = time.monotonic()

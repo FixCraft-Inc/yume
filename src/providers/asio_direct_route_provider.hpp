@@ -13,9 +13,8 @@
 #include <memory>
 #include <string_view>
 
-#include <boost/asio/any_io_executor.hpp>
-
 #include "engine/route_provider.hpp"
+#include "providers/asio_execution_context.hpp"
 
 namespace yume::providers {
 
@@ -43,18 +42,34 @@ struct NativeSocket final {
 };
 
 // Called after opening a socket and before connect. The callback must not
-// retain the borrowed native handle and must tolerate concurrent calls when
-// the supplied executor runs on multiple threads. This is an instance-local
+// retain the borrowed native handle. It runs on the supplied context. This is
+// an instance-local
 // seam for VPN loop avoidance or platform policy. It deliberately has no C ABI
 // dependency; an eventual endpoint adapter may translate its public callback
 // into this source-level provider contract.
 using SocketProtector = std::function<engine::Status(NativeSocket)>;
 
+// Required destination policy, in addition to the dispatcher's authorization
+// of the original service/name. Called on the context for every selected
+// numeric destination before any socket is opened. The original authenticated
+// request is borrowed for identity/service/name policy. IPv4-mapped IPv6 is
+// presented as IPv4; scoped IPv6 is refused because RouteDestination has no
+// scope field. A refusal fails the whole OPEN, including a mixed DNS answer;
+// exceptions fail closed. Callbacks must not retain either borrowed argument.
+using ResolvedRoutePolicy = std::function<engine::Status(
+    const engine::AuthorizedRouteRequest&, const engine::RouteDestination&)>;
+
+// Async initiation requires this caller-owned single-runner context; invalid
+// affinity throws before acceptance. Refusals may complete inline on it.
+// TCP shutdown_write() returns FailedPrecondition for wrong affinity.
+// cancel()/channel close remain cross-thread and use reserved control dispatch.
+// Close all channels, finish the context, and drain before releasing its owner.
+// System resolution may outlive its application deadline during final drain.
 class AsioDirectRouteProvider final : public engine::RouteProvider {
 public:
     static engine::Result<std::shared_ptr<AsioDirectRouteProvider>> create(
-        boost::asio::any_io_executor executor,
-        engine::ExecutorAffinity executor_affinity,
+        std::shared_ptr<AsioExecutionContext> context,
+        ResolvedRoutePolicy resolved_policy,
         AsioDirectRouteLimits limits = {},
         SocketProtector socket_protector = {});
 

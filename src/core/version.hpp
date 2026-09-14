@@ -64,10 +64,11 @@ inline constexpr std::string_view kBasefwxVersion = basefwx::constants::kEngineV
 inline constexpr std::string_view kBasefwxVersion = "disabled";
 #endif
 
-// The live YTP/1 endpoint and compatibility manifest do not yet link a
-// key-holding provider. The isolated opt-in provider target does not make that
-// runtime component active; a wired target must define the complete reviewed
-// backend identity rather than implying configured algorithms are usable.
+// A target that links no key-holding YTP/1 provider reports "unwired". The C
+// ABI asks its linked schema-1 backend for the concrete library identity
+// instead, so a provider that merely exists in the build tree never lends its
+// name. A wired target must report the complete backend identity rather than
+// implying that configured algorithms are usable.
 #if defined(YUME_CRYPTO_BACKEND)
 inline constexpr std::string_view kCryptoBackend = YUME_CRYPTO_BACKEND;
 #else

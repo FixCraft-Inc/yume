@@ -36,7 +36,6 @@ struct ServerInfoPayload {
     bool server_inner_required = false;
     bool server_inner_dual = false;
     bool server_inner_active = false;
-    std::string server_inner_mode;
     bool server_cap_pq = false;
 };
 

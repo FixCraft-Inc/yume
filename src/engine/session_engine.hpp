@@ -68,6 +68,9 @@ struct SessionLimits final {
     std::size_t max_security_overhead{256U};
 };
 
+// Validates the single runtime limit contract before opening transport resources.
+Status validate_session_limits(const SessionLimits& limits);
+
 // Every view is borrowed only for initialize(). The provider must copy any
 // state it needs. The exporter is obtained from this session's SecureChannel;
 // the authenticated capability bytes are the canonical YTP/1 manifest that
@@ -167,6 +170,12 @@ public:
     SessionState state() const noexcept;
     Status terminal_status() const;
 
+    // Copy of the post-YTP peer evidence while the session is Active, so a
+    // local opener can report who authenticated the stream without deriving
+    // identity from configuration or outer TLS. Fails with
+    // FailedPrecondition before activation and after termination.
+    Result<PeerEvidence> authenticated_peer() const;
+
     // Exactly one start completion is accepted. It runs when authenticated
     // peer capabilities have been verified and the session becomes Active,
     // or with the terminal failure/cancellation status.
@@ -180,15 +189,22 @@ public:
                     std::optional<RouteDestination> destination,
                     OpenCompletion completion);
 
+    // OPEN completes only after authenticated peer acceptance. Cancellation
+    // before acceptance sends an abort and settles the pending callback once.
+    void async_open(std::string_view service_name,
+                    ServiceKind service_kind,
+                    std::optional<RouteDestination> destination,
+                    CancellationToken cancellation,
+                    OpenCompletion completion);
+
     // Starts a rekey for the local outbound direction. At most the configured
     // number of directional rekey operations may be in flight.
     Status initiate_rekey();
 
     // Idempotent terminal teardown. Unknown/provider callbacks are never
     // invoked while the engine lock is held and callback exceptions are
-    // contained.
-    void stop(Status reason = Status(StatusCode::Cancelled,
-                                     "session stopped")) noexcept;
+    // contained. Teardown does not depend on diagnostic allocations.
+    void stop(Status reason = Status(StatusCode::Cancelled)) noexcept;
 
 private:
     friend class EngineStreamResponder;

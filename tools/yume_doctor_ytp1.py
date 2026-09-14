@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 
 PROFILE = "chrome151-node24-v1"
+PROFILE_ASSETS = ("/assets/site.css", "/assets/site.js")
 SUITE = {
     "id": "ytp1-tls13-h2",
     "secure_channel": "tls13-native",
@@ -36,6 +37,8 @@ MAX_ADAPTERS = 16
 MAX_LISTEN_ADDRESSES = 16
 MAX_CONFIG_STREAMS = 65_535
 MAX_SERVICE_NAME_BYTES = 128
+MAX_AUTHORIZED_IDENTITIES = 1024
+MAX_ADMIN_IDENTITIES = 4096
 SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
 SERVICE_NAME = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
@@ -643,6 +646,32 @@ def _public_algorithm(openssl: str, public_der: bytes, pointer: str) -> str:
     _fail(pointer, "uses an unsupported key algorithm")
 
 
+def _check_tls_public_key(openssl: str, public_der: bytes, pointer: str) -> None:
+    """Check leaf key families offered by the browser TLS signature profile.
+
+    This is an offline key check; negotiated signature and chain compatibility
+    still require a handshake with the actual TLS provider.
+    """
+    details = _openssl(
+        openssl,
+        ["pkey", "-pubin", "-inform", "DER", "-pubcheck", "-text", "-noout"],
+        pointer,
+        input_bytes=public_der,
+    )
+    lines = {line.strip() for line in details.splitlines()}
+    if lines.intersection({
+        b"ASN1 OID: prime256v1", b"ASN1 OID: secp384r1", b"ASN1 OID: secp521r1"
+    }):
+        return
+    if b"Modulus:" in lines and any(
+        (match := re.fullmatch(rb"Public-Key: \((\d+) bit\)", line))
+        and int(match[1]) >= 2048
+        for line in lines
+    ):
+        return
+    _fail(pointer, "TLS leaf key must use P-256, P-384, P-521 or RSA of at least 2048 bits")
+
+
 def _composite_public_ders(
     openssl: str, payload: bytearray, pointer: str, private: bool
 ) -> list[bytes]:
@@ -786,9 +815,13 @@ def _check_admin_keys(
     keys = store["keys"]
     if type(keys) is not list:
         _fail(f"{pointer}/keys", "must be an array")
-    if len(keys) > 4096:
-        _fail(f"{pointer}/keys", "must contain at most 4096 admin keys")
+    if len(keys) > MAX_ADMIN_IDENTITIES:
+        _fail(
+            f"{pointer}/keys",
+            f"must contain at most {MAX_ADMIN_IDENTITIES} admin keys",
+        )
     names: set[str] = set()
+    fingerprints: set[str] = set()
     for index, item in enumerate(keys):
         key_pointer = f"{pointer}/keys/{index}"
         # No policy metadata lives here on purpose: this store proves a second
@@ -820,6 +853,12 @@ def _check_admin_keys(
                 f"{key_pointer}/identity/sha256",
                 "admin identity must not also appear in authorized_keys",
             )
+        if fingerprint in fingerprints:
+            _fail(
+                f"{key_pointer}/identity/sha256",
+                "identity is reused by another admin key",
+            )
+        fingerprints.add(fingerprint)
         identity_pointer = f"{key_pointer}/identity/file"
         try:
             identity_payload = _checked_bytes(
@@ -855,8 +894,11 @@ def _check_authorized_keys(
     keys = store["keys"]
     if type(keys) is not list:
         _fail(f"{pointer}/keys", "must be an array")
-    if not 1 <= len(keys) <= 4096:
-        _fail(f"{pointer}/keys", "must contain 1..4096 authorized keys")
+    if not 1 <= len(keys) <= MAX_AUTHORIZED_IDENTITIES:
+        _fail(
+            f"{pointer}/keys",
+            f"must contain 1..{MAX_AUTHORIZED_IDENTITIES} authorized keys",
+        )
     names: set[str] = set()
     psk_digests: set[bytes] = set()
     fingerprints: set[str] = set()
@@ -1020,15 +1062,13 @@ def _check_certificate_and_key(
         )
     finally:
         certificate_public_buffer[:] = b"\0" * len(certificate_public_buffer)
-    if _public_algorithm(openssl, certificate_der, cert_pointer) != "ED25519":
-        _fail(cert_pointer, "TLS certificate must use Ed25519")
+    _check_tls_public_key(openssl, certificate_der, cert_pointer)
     key_blocks = _pem_blocks(key, key_pointer, 1)
     try:
         key_der = _public_der_from_private(openssl, key_blocks[0], key_pointer)
     finally:
         key_blocks[0][:] = b"\0" * len(key_blocks[0])
-    if _public_algorithm(openssl, key_der, key_pointer) != "ED25519":
-        _fail(key_pointer, "TLS key must use Ed25519")
+    _check_tls_public_key(openssl, key_der, key_pointer)
     if not hmac.compare_digest(certificate_der, key_der):
         _fail(key_pointer, "TLS certificate and private key do not match")
 
@@ -1057,7 +1097,8 @@ def _check_certificate_and_key(
                 os.close(descriptor)
         _openssl(
             openssl,
-            ["verify", "-CAfile", str(trust_path), str(certificate_path)],
+            ["verify", "-auth_level", "2", "-purpose", "sslserver",
+             "-CAfile", str(trust_path), str(certificate_path)],
             cert_pointer,
         )
 
@@ -1078,8 +1119,10 @@ def _check_trust(openssl: str, payload: bytearray, pointer: str) -> None:
     public_buffer = bytearray(public)
     try:
         der = _normalize_public_der(openssl, public_buffer, pointer)
-        if _public_algorithm(openssl, der, pointer) != "ED25519":
-            _fail(pointer, "trust certificate must use Ed25519")
+        # A trust anchor is not a TLS leaf or a composite YTP identity. Let
+        # X.509 chain validation enforce its signature and security policy.
+        _openssl(openssl, ["pkey", "-pubin", "-inform", "DER", "-pubcheck", "-noout"],
+                 pointer, input_bytes=der)
     finally:
         public_buffer[:] = b"\0" * len(public_buffer)
 
@@ -1095,14 +1138,22 @@ def _check_cover(base: Path, reference: str, diagnostics: list[DoctorError]) -> 
             _fail(pointer, "cover root must be a directory")
         if not os.access(root, os.R_OK | os.X_OK):
             _fail(pointer, "cover root is not readable")
-        index = _checked_bytes(
-            root / "index.html", f"{pointer}/index.html", private=False
-        )
+    except OSError:
+        diagnostics.append(DoctorError(pointer, "cover root is inaccessible"))
+        return
+    except DoctorError as error:
+        diagnostics.append(error)
+        return
+
+    for filename in ("index.html", "404.html"):
+        page_pointer = f"{pointer}/{filename}"
+        page: bytearray | None = None
         try:
+            page = _checked_bytes(root / filename, page_pointer, private=False)
             try:
-                html = index.decode("utf-8").lower()
+                html = page.decode("utf-8").lower()
             except UnicodeDecodeError:
-                _fail(f"{pointer}/index.html", "must be UTF-8 HTML")
+                _fail(page_pointer, "must be UTF-8 HTML")
             if (
                 len(html) < 256
                 or "<!doctype html>" not in html
@@ -1110,18 +1161,40 @@ def _check_cover(base: Path, reference: str, diagnostics: list[DoctorError]) -> 
                 or "<body" not in html
             ):
                 _fail(
-                    f"{pointer}/index.html",
+                    page_pointer,
                     "must be a complete static HTML cover page",
                 )
             if "yume" in html:
                 _fail(
-                    f"{pointer}/index.html",
+                    page_pointer,
                     "must not expose a YUME-specific public marker",
                 )
+        except DoctorError as error:
+            diagnostics.append(error)
         finally:
-            index[:] = b"\0" * len(index)
-    except DoctorError as error:
-        diagnostics.append(error)
+            if page is not None:
+                page[:] = b"\0" * len(page)
+
+    for asset in PROFILE_ASSETS:
+        payload: bytearray | None = None
+        try:
+            relative = Path(asset.removeprefix("/"))
+            parent = root
+            for component in relative.parent.parts:
+                parent /= component
+                status = parent.lstat()
+                if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+                    _fail(f"{pointer}{asset}", "asset parents must be ordinary directories")
+            payload = _checked_bytes(
+                root / relative, f"{pointer}{asset}", private=False
+            )
+        except OSError:
+            diagnostics.append(DoctorError(f"{pointer}{asset}", "asset parent is inaccessible"))
+        except DoctorError as error:
+            diagnostics.append(error)
+        finally:
+            if payload is not None:
+                payload[:] = b"\0" * len(payload)
 
 
 def _read_services(document: dict[str, Any]) -> dict[tuple[str, str], int]:

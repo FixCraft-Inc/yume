@@ -79,8 +79,15 @@ function(yume_check_03_source_layering source_dir)
     set(_client_forbidden    server facade gui abi)
     set(_server_forbidden    client facade gui abi)
     set(_facade_forbidden    gui abi)
+    # Admission mechanics are shared by the two protocols; neither runtime,
+    # protocol encoder, nor the transport-v2 crypto layer may become their owner.
+    set(_admission_forbidden core engine ytp providers config client server facade gui abi basefwx)
+    # Native runtime composition owns policy/configuration above providers and
+    # remains independent of the transport-v2 application graph and BaseFWX.
+    set(_runtime_forbidden client server facade gui abi basefwx)
+    set(_providers_forbidden runtime config client server facade gui abi basefwx)
 
-    foreach(_layer IN ITEMS core outbound client server facade)
+    foreach(_layer IN ITEMS core outbound client server facade admission runtime providers)
         file(GLOB_RECURSE _layer_sources
             "${source_dir}/src/${_layer}/*.cpp"
             "${source_dir}/src/${_layer}/*.hpp"

@@ -1298,7 +1298,7 @@ ensure_host_deps() {
     zstd \
     python3 \
     perl \
-    liblzma-dev \
+    liblzma-dev libarchive-dev \
     libzstd-dev \
     libspdlog-dev
   if target_enabled windows-x86_64; then
@@ -1638,7 +1638,7 @@ ensure_i386_deps() {
     apt_update_once 1
   fi
   # Avoid libc6-dev-i386 here: it can pull gcc-multilib and remove cross compilers.
-  apt_install zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386 liblzma-dev:i386 libzstd-dev:i386
+  apt_install zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386 liblzma-dev:i386 libarchive-dev:i386 libzstd-dev:i386
   # Re-ensure i686 cross compilers are present after i386 dependency changes.
   if [[ ! -x "/usr/bin/i686-linux-gnu-gcc" || ! -x "/usr/bin/i686-linux-gnu-g++" ]]; then
     apt_install gcc-i686-linux-gnu g++-i686-linux-gnu
@@ -1665,9 +1665,9 @@ ensure_armhf_deps() {
     stdcpp_pkg=""
   fi
   if [[ -n "${stdcpp_pkg}" ]]; then
-    apt_install libc6-dev:armhf "${stdcpp_pkg}" zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf liblzma-dev:armhf libzstd-dev:armhf
+    apt_install libc6-dev:armhf "${stdcpp_pkg}" zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf liblzma-dev:armhf libarchive-dev:armhf libzstd-dev:armhf
   else
-    apt_install libc6-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf liblzma-dev:armhf libzstd-dev:armhf
+    apt_install libc6-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf liblzma-dev:armhf libarchive-dev:armhf libzstd-dev:armhf
   fi
   if [[ ! -x "/usr/bin/arm-linux-gnueabihf-gcc" || ! -x "/usr/bin/arm-linux-gnueabihf-g++" ]]; then
     apt_install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
@@ -1694,9 +1694,9 @@ ensure_arm64_deps() {
     stdcpp_pkg=""
   fi
   if [[ -n "${stdcpp_pkg}" ]]; then
-    apt_install libc6-dev:arm64 "${stdcpp_pkg}" zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 liblzma-dev:arm64 libzstd-dev:arm64
+    apt_install libc6-dev:arm64 "${stdcpp_pkg}" zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 liblzma-dev:arm64 libarchive-dev:arm64 libzstd-dev:arm64
   else
-    apt_install libc6-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 liblzma-dev:arm64 libzstd-dev:arm64
+    apt_install libc6-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 liblzma-dev:arm64 libarchive-dev:arm64 libzstd-dev:arm64
   fi
   if [[ ! -x "/usr/bin/aarch64-linux-gnu-gcc" || ! -x "/usr/bin/aarch64-linux-gnu-g++" ]]; then
     apt_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu

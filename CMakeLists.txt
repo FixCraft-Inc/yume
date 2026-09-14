@@ -24,7 +24,7 @@ if(POLICY CMP0091)
 endif()
 
 option(YUME_BUILD_TRANSPORT_V2
-    "Build the current transport-v2 yume/yumed product while YTP/1 reaches parity"
+    "Build the runnable transport-v2 yume/yumed development runtime"
     ON)
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
@@ -167,17 +167,26 @@ option(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER
     "Build the unqualified OpenSSL 3.5 YTP/1 session-security provider"
     OFF)
 option(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER
-    "Build the unqualified OpenSSL 3.5 YTP/1 TLS 1.3 secure-channel provider"
+    "Build the unqualified browser-shaped YTP/1 native TLS 1.3 provider"
     OFF)
 option(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER
     "Build the unqualified Boost.Asio YTP/1 direct TCP/UDP route provider"
     OFF)
 option(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER
-    "Build the unqualified client TCP ByteChannel provider for YTP/1"
+    "Build the unqualified client and accepted TCP ByteChannel support for YTP/1"
     OFF)
 option(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER
     "Build the unqualified libnghttp2 YTP/1 duplex carrier provider"
     OFF)
+option(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR
+    "Build the experimental native TLS/HTTP cover and YTP/1 admission listener"
+    OFF)
+if(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR AND
+   NOT (YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER AND
+        YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER AND
+        YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER))
+    message(FATAL_ERROR "YTP/1 FrontDoor requires its TLS13, H2_CARRIER and ASIO_TCP_BYTE_CHANNEL providers")
+endif()
 option(YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS
     "Install the schema-1 YTP/1 setup and doctor previews (not usable with transport-v2)"
     OFF)
@@ -545,18 +554,24 @@ else()
     message(STATUS "YUME native CPU tuning: OFF (portable CPU baseline)")
 endif()
 
-if((YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER OR
-    YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER) AND
-   NOT (YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) AND
-   NOT TARGET OpenSSL::Crypto)
-    # These providers use upstream OpenSSL 3.5 APIs. They are intentionally
-    # independent of the patched TLS emitter required by the runnable
-    # transport-v2 product and remain explicit build-tree opt-ins.
+# Both native TLS implementations consume the same browser-profile emitter.
+# Session-security-only builds still need just upstream OpenSSL primitives.
+if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
+   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+    if(YUME_STATIC_OPENSSL)
+        # The pinned CONFIG target carries Brotli/Zstd through static linkage.
+        find_package(OpenSSL 3.5 REQUIRED CONFIG)
+    else()
+        find_package(OpenSSL 3.5 REQUIRED)
+    endif()
+elseif(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
+       NOT TARGET OpenSSL::Crypto)
     find_package(OpenSSL 3.5 REQUIRED)
 endif()
 
 if((YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER OR
-    YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER) AND
+    YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER OR
+    YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER) AND
    NOT TARGET Boost::system)
     find_package(Boost CONFIG QUIET COMPONENTS system)
     if(NOT Boost_FOUND)
@@ -575,18 +590,8 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
     endif()
 endif()
 
-if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
-    # Composite AUTH depends on primitives first provided by OpenSSL 3.5
-    # (ML-DSA and X25519MLKEM768), while the default native TLS emitter also
-    # requires YUME's additive ClientHello patch.
-    if(YUME_STATIC_OPENSSL)
-        # The pinned source install exports compression and system libraries
-        # on its static targets; CMake's generic FindOpenSSL module does not
-        # reliably carry Brotli/Zstd through a static link.
-        find_package(OpenSSL 3.5 REQUIRED CONFIG)
-    else()
-        find_package(OpenSSL 3.5 REQUIRED)
-    endif()
+if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
+   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
     include(CheckCXXSourceCompiles)
     set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
     set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL)
@@ -608,8 +613,11 @@ if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
             "YUME's default openssl-chrome151 backend requires the pinned "
             "default-off OpenSSL patch. Run ezbuild.sh, or source "
             "scripts/ensure-openssl.sh and call yume_openssl_ensure before "
-            "configuring CMake. Stock libssl is not accepted for a normal build.")
+            "configuring CMake. Stock libssl is not accepted for native TLS.")
     endif()
+endif()
+
+if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
     find_package(PkgConfig REQUIRED)
     if(YUME_STATIC)
         # FindPkgConfig's generated imported target resolves -lnghttp2 to the

@@ -89,14 +89,6 @@ enum {
 };
 
 enum {
-    YUME_LOG_TRACE = 1,
-    YUME_LOG_DEBUG = 2,
-    YUME_LOG_INFO = 3,
-    YUME_LOG_WARNING = 4,
-    YUME_LOG_ERROR = 5
-};
-
-enum {
     YUME_EVENT_ENDPOINT_STATE = 1
 };
 
@@ -183,15 +175,6 @@ typedef struct yume_peer_identity {
 
 #define YUME_PEER_IDENTITY_MIN_SIZE offsetof(yume_peer_identity, peer_label)
 
-typedef struct yume_log_record {
-    size_t struct_size;
-    uint32_t abi_version;
-    uint32_t level;
-    uint64_t timestamp_ns;
-    yume_string_view component;
-    yume_string_view message;
-} yume_log_record;
-
 typedef struct yume_event {
     size_t struct_size;
     uint32_t abi_version;
@@ -209,8 +192,6 @@ typedef struct yume_event {
  * yume_handle_get_diagnostic(). Lifecycle and I/O calls return
  * YUME_STATUS_INVALID_STATE; void destroy calls are ignored.
  */
-typedef void (*yume_log_callback)(const yume_log_record* record,
-                                  void* user_data);
 typedef void (*yume_event_callback)(const yume_event* event,
                                     void* user_data);
 
@@ -218,7 +199,6 @@ typedef struct yume_runtime_options {
     size_t struct_size;
     uint32_t abi_version;
     uint32_t max_pending_callbacks;
-    yume_log_callback log_callback;
     yume_event_callback event_callback;
     void* callback_user_data;
     /* Directory that relative credential paths inside a configuration
@@ -353,13 +333,21 @@ YUME_API yume_status yume_endpoint_set_socket_protector(
 YUME_API yume_status yume_endpoint_register_service(
     yume_endpoint* endpoint,
     const yume_service_descriptor* service) YUME_NOEXCEPT;
-/* Lifecycle timeouts are operation-specific while this ABI is experimental:
- * client start accepts a finite millisecond deadline (zero selects its 30 s
- * default); transport-v2 server start, endpoint stop, and stream/packet close
- * currently accept only zero because they have no caller-bounded deadline.
- * A successful transport-v2 stop discards its runtime service registrations;
- * register them again after restarting. Schema-1 registrations describe its
- * immutable pre-start configuration and remain attached to the endpoint. */
+/* Lifecycle timeouts are operation-specific while this ABI is experimental.
+ * Client start accepts a finite millisecond deadline, and zero selects its
+ * 30 s default. Server start, endpoint stop, and stream/packet close accept
+ * only zero because they have no caller-bounded deadline.
+ * Only server endpoints register services. A successful transport-v2 stop
+ * discards its runtime registrations, so register them again after restart.
+ * Schema-1 registrations are made while stopped, must match the immutable
+ * configuration, and remain attached across stop and restart.
+ * Start is accepted only from CREATED or STOPPED. After a start failure leaves
+ * FAILED, call stop(endpoint, 0) to reach STOPPED before retrying. Clearing the
+ * external cause alone does not permit a restart from FAILED.
+ * Schema-1 listener setup returns PERMISSION_DENIED for OS permission refusal,
+ * INVALID_STATE for an occupied address, INVALID_ARGUMENT for an unavailable
+ * local address, RESOURCE_EXHAUSTED for socket resource exhaustion, and
+ * IO_ERROR for an otherwise unclassified socket failure. */
 YUME_API yume_status yume_endpoint_start(yume_endpoint* endpoint,
                                          uint32_t timeout_ms) YUME_NOEXCEPT;
 YUME_API yume_status yume_endpoint_stop(yume_endpoint* endpoint,
@@ -396,10 +384,13 @@ YUME_API void yume_endpoint_destroy(yume_endpoint* endpoint) YUME_NOEXCEPT;
  * write or write-side shutdown on another thread. Reads may be partial.
  * YUME_STATUS_EOF means the peer shut down its write side after all buffered
  * bytes were returned. Writes copy the complete input before returning OK and
- * are admitted all-or-none to bounded queues.
+ * are admitted all-or-none to bounded queues. A single write larger than
+ * 256 KiB fails with YUME_STATUS_INVALID_ARGUMENT.
  * For open, accept, read, write, and write-side shutdown, zero polls without
  * waiting and a positive value is a finite relative deadline in milliseconds.
  * A zero-timeout client OPEN returns WOULD_BLOCK without sending OPEN.
+ * Once schema-1 write shutdown is queued, WOULD_BLOCK/TIMEOUT may leave it
+ * pending. Retry shutdown to observe completion; later writes are refused.
  */
 YUME_API yume_status yume_stream_get_peer_identity(
     const yume_stream* stream,
@@ -446,8 +437,9 @@ YUME_API void yume_packet_destroy(yume_packet* packet) YUME_NOEXCEPT;
 
 /*
  * Copies a handle-scoped diagnostic. A successful operation clears the
- * handle's prior diagnostic. The function is the only ABI call allowed from
- * log/event callbacks. Pass runtime, config, endpoint, stream, or packet.
+ * handle's prior diagnostic. Event callbacks may call this function and the
+ * side-effect-free version/status queries. Pass runtime, config, endpoint,
+ * stream, or packet.
  */
 YUME_API yume_status yume_handle_get_diagnostic(const void* handle,
                                                 yume_diagnostic* out,

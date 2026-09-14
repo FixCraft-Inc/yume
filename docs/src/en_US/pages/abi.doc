@@ -354,6 +354,14 @@ an authentication deadline. Validated carrier promotion begins a separate
 30-second session-creation/AUTH budget. FrontDoor independently limits
 pre-promotion connections and work; idle waiting grants no peer authority.
 
+A schema-1 server keeps up to four starts pending per listener, at most 32 in
+total, and retries a refused or immediately failed start after 100 ms. If a
+listener stops accepting, or such a retry cannot be scheduled while that
+listener has nothing pending, the backend closes the endpoint's sessions.
+Accepts then report `YUME_STATUS_INVALID_STATE` until the application stops and
+restarts the endpoint. The state stays `RUNNING`, as for a schema-1 client whose
+session ended.
+
 A start failure carries the runtime's typed outcome rather than one generic
 code, so an embedder does not have to read the diagnostic prose to tell the
 cases apart. Transport v2's privileged-port precheck reports

@@ -53,6 +53,9 @@ def run(binary: Path, openssl: Path) -> None:
                     {"kind": "direct_tcp", "service": name} for name in ("echo", "denied")
                 ])
                 path.with_name("direct-tcp.json").write_text(json.dumps(direct), encoding="utf-8")
+                listeners = dict(config, endpoint=dict(
+                    config["endpoint"], listen_addresses=["127.0.0.1", "127.0.0.2"]))
+                path.with_name("two-listeners.json").write_text(json.dumps(listeners), encoding="utf-8")
             packets = dict(config, services=[
                 dict(service, kind="packet") for service in config["services"]
             ], adapters=([

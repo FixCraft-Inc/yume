@@ -21,7 +21,8 @@ TLS 1.3 secure channel, duplex H2 carrier behavior, client TCP ByteChannel, and
 direct TCP/connected-UDP routing. A native FrontDoor composes accepted TCP,
 TLS, genuine static cover and admission into the H2 carrier. The internal
 NativeEndpoint composes both bootstrap roles, protected schema-1 credentials,
-per-identity named-handler authorization, session ownership and shutdown drain.
+per-identity named-handler authorization, bounded automatic server accepts,
+session ownership and shutdown drain.
 It also composes configured direct TCP/UDP adapters with explicit request and
 resolved-address authorization. An experimental schema-1 C ABI backend carries
 named byte streams over it, but does not compose destination adapters.

@@ -27,9 +27,6 @@
 #include <variant>
 #include <vector>
 
-#include <boost/asio/basic_waitable_timer.hpp>
-#include <boost/system/error_code.hpp>
-
 #include "config/v1/config.hpp"
 #include "engine/cancellation.hpp"
 #include "engine/session_engine.hpp"
@@ -59,9 +56,6 @@ namespace v1 = config::v1;
 using engine::Status;
 using engine::StatusCode;
 using Clock = std::chrono::steady_clock;
-using Timer = boost::asio::basic_waitable_timer<
-    Clock, boost::asio::wait_traits<Clock>,
-    providers::AsioExecutionContext::Executor>;
 
 // Matches the transport-v2 service stream, so one ABI write bound serves both
 // configuration dialects. A write is split into records no larger than the
@@ -73,9 +67,8 @@ constexpr std::chrono::milliseconds kClientStartGrace{5'000};
 // Blocked calls re-check endpoint shutdown at this interval. Engine
 // completions delivered during the final drain normally wake them sooner.
 constexpr std::chrono::milliseconds kStopRecheck{100};
-// A server start that fails this quickly is re-armed after a pause so a
-// persistent refusal cannot spin the runner.
-constexpr std::chrono::milliseconds kRearmBackoff{100};
+// Server accept sizing. NativeEndpoint paces refused and immediately failed
+// starts with its default retry delay.
 constexpr std::size_t kServerSessions = 128U;
 constexpr std::size_t kMaxPendingStarts = 32U;
 constexpr std::size_t kPendingStartsPerListener = 4U;
@@ -315,7 +308,12 @@ public:
     const std::shared_ptr<runtime::NativeEndpoint>& endpoint() const noexcept {
         return endpoint_;
     }
-    void arm_listeners() noexcept;
+    // Hands server accepts to the native endpoint. A later accept failure
+    // stops this run.
+    Status start_accepting() noexcept;
+    const Status& accept_failure() const noexcept { return accept_failure_; }
+    // Application threads.
+    std::string_view stop_reason() const noexcept;
     void offer(std::size_t index, engine::StreamOpenContext open,
                std::shared_ptr<engine::StreamResponder> responder,
                engine::StreamHandler::AcceptanceCompletion acceptance);
@@ -332,42 +330,25 @@ private:
         Drained,
     };
 
-    struct ListenerArm final {
-        explicit ListenerArm(providers::AsioExecutionContext::Executor executor)
-            : retry(executor) {}
-
-        Timer retry;
-        Clock::time_point last_arm{};
-        std::size_t armed{0U};
-        bool retry_scheduled{false};
-        bool arming{false};
-        bool arm_again{false};
-    };
-
     static void on_close(void* value) noexcept {
         static_cast<NativeRun*>(value)->close_on_runner();
     }
 
     void close_on_runner() noexcept;
     void wake_waiters() noexcept;
-    void arm(std::size_t index) noexcept;
-    void on_listener_session(
-        std::size_t index,
-        engine::Result<std::shared_ptr<engine::SessionEngine>> result) noexcept;
-    void schedule_retry(std::size_t index) noexcept;
-    void on_retry(std::size_t index,
-                  const boost::system::error_code& error) noexcept;
+    void on_accept_failure(Status status) noexcept;
 
     std::atomic<Phase> phase_{Phase::Running};
     std::mutex phase_mutex_;
     std::condition_variable drained_cv_;
     providers::ControlTask close_task_;
     std::atomic<std::size_t> runner_exceptions_{0U};
+    std::atomic<bool> accept_failed_{false};
 
     // Runner only.
     std::shared_ptr<runtime::NativeEndpoint> endpoint_;
-    std::vector<std::unique_ptr<ListenerArm>> listeners_;
-    std::size_t per_listener_target_{1U};
+    runtime::NativeAcceptOptions accept_;
+    Status accept_failure_;
 
     // Server OPENs waiting for an application accept, one queue per
     // registered byte-stream service. The service list never changes.
@@ -1173,8 +1154,14 @@ void StartOperation::start_on_runner() noexcept {
             return;
         }
         if (run_->server) {
-            run_->arm_listeners();
-            settle(Status::success());
+            Status accepting = run_->start_accepting();
+            // A listener that failed while arming has already closed the endpoint.
+            if (accepting.ok() && !run_->running()) {
+                accepting = run_->accept_failure().ok()
+                    ? Status(StatusCode::Closed)
+                    : copy_status(run_->accept_failure());
+            }
+            settle(std::move(accepting));
             return;
         }
         Status accepted = run_->endpoint()->async_start_session(
@@ -1306,10 +1293,6 @@ void NativeRun::wake_waiters() noexcept {
 
 void NativeRun::close_on_runner() noexcept {
     if (endpoint_) endpoint_->close();
-    for (const auto& listener : listeners_) {
-        boost::system::error_code ignored;
-        listener->retry.cancel(ignored);
-    }
     // Refuse OPENs still waiting for the application while their sessions are
     // alive, so each peer sees a definite refusal before the sessions close.
     for (;;) {
@@ -1372,12 +1355,13 @@ Status NativeRun::create_endpoint(
             return Status(StatusCode::InvalidArgument,
                           "server endpoint has no listen address");
         }
-        per_listener_target_ = std::max<std::size_t>(
+        // Every listener keeps at least one pending start. A total the
+        // endpoint cannot hold fails creation instead of starving a listener.
+        accept_.pending_per_listener = std::max<std::size_t>(
             1U, std::min(kPendingStartsPerListener,
                          kMaxPendingStarts / listener_count));
         options.max_sessions = kServerSessions;
-        options.max_pending_starts =
-            std::min(kMaxPendingStarts, per_listener_target_ * listener_count);
+        options.max_pending_starts = accept_.pending_per_listener * listener_count;
     } else {
         options.max_sessions = 1U;
         options.max_pending_starts = 1U;
@@ -1389,98 +1373,34 @@ Status NativeRun::create_endpoint(
         context, config, base, std::move(bindings), std::move(options));
     if (!created.ok()) return copy_status(created.status());
     endpoint_ = std::move(created).take_value();
-    if (server) {
-        listeners_.reserve(endpoint_->listener_count());
-        for (std::size_t index = 0U; index < endpoint_->listener_count(); ++index) {
-            listeners_.push_back(std::make_unique<ListenerArm>(context->executor()));
-        }
-    }
     return Status::success();
 }
 
-void NativeRun::arm_listeners() noexcept {
-    for (std::size_t index = 0U; index < listeners_.size(); ++index) arm(index);
-}
-
-// Keeps up to per_listener_target_ server starts pending on one listener. A
-// start waits for admission; the authentication deadline begins at promotion.
-// A failed or completed start releases its slot for the next accept.
-void NativeRun::arm(std::size_t index) noexcept {
-    ListenerArm& listener = *listeners_[index];
-    if (listener.arming) {
-        listener.arm_again = true;
-        return;
-    }
-    listener.arming = true;
-    do {
-        listener.arm_again = false;
-        while (running() && !listener.retry_scheduled &&
-               listener.armed < per_listener_target_) {
-            ++listener.armed;
-            listener.last_arm = Clock::now();
-            Status status;
-            try {
-                const std::weak_ptr<NativeRun> weak = weak_from_this();
-                status = endpoint_->async_start_session(
-                    [weak, index](engine::Result<std::shared_ptr<engine::SessionEngine>> result) {
-                        if (const auto self = weak.lock()) {
-                            self->on_listener_session(index, std::move(result));
-                        }
-                    },
-                    index);
-            } catch (...) {
-                status = Status(StatusCode::ResourceExhausted);
-            }
-            if (status.ok()) continue;
-            --listener.armed;
-            if (status.code() != StatusCode::Closed) schedule_retry(index);
-            break;
-        }
-    } while (listener.arm_again);
-    listener.arming = false;
-}
-
-void NativeRun::on_listener_session(
-    std::size_t index,
-    engine::Result<std::shared_ptr<engine::SessionEngine>> result) noexcept {
-    ListenerArm& listener = *listeners_[index];
-    if (listener.armed != 0U) --listener.armed;
-    if (!running()) return;
-    // A successful session stays owned by the native endpoint until close or
-    // until its terminal slot is reused.
-    const bool quick_failure =
-        !result.ok() && Clock::now() - listener.last_arm < kRearmBackoff;
-    if (quick_failure) {
-        schedule_retry(index);
-    } else {
-        arm(index);
-    }
-}
-
-void NativeRun::schedule_retry(std::size_t index) noexcept {
-    ListenerArm& listener = *listeners_[index];
-    if (listener.retry_scheduled || !running()) return;
-    listener.retry_scheduled = true;
+Status NativeRun::start_accepting() noexcept {
     try {
-        listener.retry.expires_after(kRearmBackoff);
         const std::weak_ptr<NativeRun> weak = weak_from_this();
-        listener.retry.async_wait(
-            [weak, index](const boost::system::error_code& error) {
-                if (const auto self = weak.lock()) self->on_retry(index, error);
-            });
+        return endpoint_->start_accepting(accept_, [weak](Status status) {
+            if (const auto self = weak.lock()) self->on_accept_failure(std::move(status));
+        });
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted);
     } catch (...) {
-        // Under allocation failure the listener re-arms at its next session
-        // completion instead.
-        listener.retry_scheduled = false;
+        return Status(StatusCode::Internal);
     }
 }
 
-void NativeRun::on_retry(std::size_t index,
-                         const boost::system::error_code& error) noexcept {
-    ListenerArm& listener = *listeners_[index];
-    listener.retry_scheduled = false;
-    if (error || !running()) return;
-    arm(index);
+// The native endpoint has already begun closing its sessions. Accept calls
+// report the stop until the application stops and restarts the endpoint.
+void NativeRun::on_accept_failure(Status status) noexcept {
+    accept_failure_ = std::move(status);
+    accept_failed_.store(true, std::memory_order_release);
+    begin_stop();
+}
+
+std::string_view NativeRun::stop_reason() const noexcept {
+    return accept_failed_.load(std::memory_order_acquire)
+        ? "server endpoint stopped because it could no longer accept sessions"
+        : "server endpoint is stopping";
 }
 
 std::optional<std::size_t> NativeRun::waiting_index(
@@ -1572,7 +1492,7 @@ BackendIo NativeRun::accept(std::size_t index, std::uint32_t timeout_ms,
             }
         }
         if (!running()) {
-            describe(error, "server endpoint is stopping");
+            describe(error, stop_reason());
             return BackendIo::NotRunning;
         }
         operation->waiting = std::move(queue.front());
@@ -1581,7 +1501,7 @@ BackendIo NativeRun::accept(std::size_t index, std::uint32_t timeout_ms,
     }
     if (!submit(operation->task, operation)) {
         // Stopping won. Ending the session settles this OPEN.
-        describe(error, "server endpoint is stopping");
+        describe(error, stop_reason());
         return BackendIo::NotRunning;
     }
     // Application acceptance takes ownership here. The runner publishes
@@ -1885,7 +1805,8 @@ BackendIo Ytp1Backend::accept_stream(const std::string& service,
     }
     const auto run = current();
     if (!run || !run->running()) {
-        describe(error, "server endpoint is not running");
+        describe(error, run ? run->stop_reason()
+                            : std::string_view("server endpoint is not running"));
         return BackendIo::NotRunning;
     }
     const auto index = run->waiting_index(service);

@@ -218,6 +218,12 @@ declarations and reverse-proxy cover fail explicitly here. The C ABI backend
 does not yet compose these destination adapters.
 
 The endpoint bounds active sessions and pending starts and retains their engines.
+A server may hand accepting to the endpoint. It keeps a set number of starts
+pending on every listener within that bound, re-arms after each settlement and
+waits a retry delay after a refused or immediately failed start. Manual and
+automatic server starts are exclusive. If a listener stops accepting, or a retry
+cannot be scheduled while its listener has nothing pending, the endpoint closes
+and reports that failure once. The schema-1 ABI backend uses this loop.
 Client startup has one absolute dial/TLS/carrier/AUTH deadline. A server starts
 its session-creation/AUTH deadline after validated carrier promotion; idle accept
 waiting does not consume that budget. FrontDoor independently bounds connections

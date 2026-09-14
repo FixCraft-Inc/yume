@@ -49,7 +49,18 @@ inline bool disarm_allocation_failure() {
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 #endif
 
-void* operator new(std::size_t size) {
+// Optimized GCC 11 builds inlined these replacements into callers and then
+// reported the malloc/free pair as mismatched outside this pragma. Keeping
+// them out of line leaves each caller with an ordinary new/delete pair.
+#if defined(__GNUC__) && !defined(__clang__)
+#define YUME_TEST_ALLOCATION_FUNCTION [[gnu::noipa]]
+#elif defined(__clang__)
+#define YUME_TEST_ALLOCATION_FUNCTION [[gnu::noinline]]
+#else
+#define YUME_TEST_ALLOCATION_FUNCTION
+#endif
+
+YUME_TEST_ALLOCATION_FUNCTION void* operator new(std::size_t size) {
     if (yume::test::fail_allocations.load(std::memory_order_relaxed)) {
         throw std::bad_alloc();
     }
@@ -60,26 +71,27 @@ void* operator new(std::size_t size) {
     return storage;
 }
 
-void* operator new[](std::size_t size) { return ::operator new(size); }
+YUME_TEST_ALLOCATION_FUNCTION void* operator new[](std::size_t size) { return ::operator new(size); }
 // Keep nothrow allocations in the same malloc/free family as ordinary new.
 // Sanitizer runtimes may otherwise supply these overloads independently.
-void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+YUME_TEST_ALLOCATION_FUNCTION void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
     try { return ::operator new(size); } catch (...) { return nullptr; }
 }
-void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+YUME_TEST_ALLOCATION_FUNCTION void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
     try { return ::operator new[](size); } catch (...) { return nullptr; }
 }
-void operator delete(void* storage) noexcept {
+YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage) noexcept {
     if (yume::test::before_deallocate) yume::test::before_deallocate(storage);
     std::free(storage);
 }
-void operator delete[](void* storage) noexcept { ::operator delete(storage); }
-void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage) noexcept { ::operator delete(storage); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
 // Matching cleanup if a constructor throws after a nothrow allocation.
-void operator delete(void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
+#undef YUME_TEST_ALLOCATION_FUNCTION

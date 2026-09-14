@@ -635,7 +635,8 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
 
     if(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
         add_library(yume_native_endpoint STATIC
-            runtime/native_endpoint.cpp runtime/native_endpoint.hpp)
+            runtime/native_endpoint.cpp runtime/native_endpoint.hpp
+            runtime/accept_scheduler.hpp)
         target_include_directories(yume_native_endpoint PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(yume_native_endpoint
             PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
@@ -836,6 +837,14 @@ if(YUME_BUILD_TESTING)
                 TIMEOUT 60 LABELS "foundation;0.3;front-door;integration")
         endif()
     endif()
+    # Server accept pacing is dependency-pure, so every test lane runs it.
+    add_executable(yume_native_accept_scheduler_test runtime/accept_scheduler_test.cpp)
+    target_link_libraries(yume_native_accept_scheduler_test PRIVATE yume_engine)
+    yume_apply_perf_opts(yume_native_accept_scheduler_test)
+    yume_assert_exact_link_dependencies(yume_native_accept_scheduler_test yume_engine)
+    add_test(NAME yume_native_accept_scheduler_test COMMAND yume_native_accept_scheduler_test)
+    set_tests_properties(yume_native_accept_scheduler_test PROPERTIES
+        TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
     add_executable(yume_engine_in_memory_contract_test
         engine/in_memory_contract_test.cpp)
     target_link_libraries(yume_engine_in_memory_contract_test
@@ -1030,6 +1039,12 @@ if(YUME_BUILD_TESTING)
             target_link_libraries(yume_native_endpoint_test PRIVATE
                 yume_asio_direct_route_provider yume_direct_route_handler)
             target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1)
+        endif()
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            # Inject one OS accept error in this test process without changing
+            # host limits or the production listener interface.
+            target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_TEST_WRAP_ACCEPT=1)
+            target_link_options(yume_native_endpoint_test PRIVATE "-Wl,--wrap=accept")
         endif()
         yume_apply_perf_opts(yume_native_endpoint_test)
         add_test(NAME yume_native_endpoint_test

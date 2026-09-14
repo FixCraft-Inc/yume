@@ -17,7 +17,9 @@ the opt-in C ABI, but no standalone `yume` or `yumed` runtime uses it yet.
 
 ## Understand the transport
 
-- [YUME explained](EXPLAINED.md): a connection from application to destination.
+- [YUME explained](EXPLAINED.md): how the client, server, keys and scheduling fit together.
+- [How a byte travels](BYTE_PATH.md): each transport-v2 layer and how to review a change to it.
+- [Glossary](GLOSSARY.md): plain definitions of the terms these pages use.
 - [Why YUME](WHY_YUME.md): the transport's goals and dependencies.
 - [Implementation status](IMPLEMENTATION_STATUS.md): supported paths and open release gates.
 - [Transport-v2 wire](protocol/YUME_2_0_WIRE.md), [security modes](SECURITY_MODES.md),

@@ -1,6 +1,6 @@
-<svg class="dgm dgm-horizontal" data-dgm="direct_route-horizontal" width="1048" height="144" viewBox="0 0 1048 144" role="img" aria-labelledby="dgm-direct_route-horizontal-title dgm-direct_route-horizontal-desc" style="--dgm-dur:6s" xmlns="http://www.w3.org/2000/svg">
-<title id="dgm-direct_route-horizontal-title">Direct YUME route</title>
-<desc id="dgm-direct_route-horizontal-desc">An application reaches the target through the YUME client and yumed, which opens the outbound socket.</desc>
+<svg class="dgm dgm-horizontal" data-dgm="carrier_layers-horizontal" width="577" height="340" viewBox="0 0 577 340" role="img" aria-labelledby="dgm-carrier_layers-horizontal-title dgm-carrier_layers-horizontal-desc" style="--dgm-dur:7.7s" xmlns="http://www.w3.org/2000/svg">
+<title id="dgm-carrier_layers-horizontal-title">What a transport-v2 tunnel byte is wrapped in</title>
+<desc id="dgm-carrier_layers-horizontal-desc">From the inside out, the app&#x27;s bytes are sealed, framed for their stream, and carried as a WebSocket message on an HTTP/2 stream inside TLS 1.3 over TCP. The network sees only the outer layers, and timing, sizes and volume stay observable.</desc>
 <style>
 .dgm {
   --dgm-plate: var(--color-paper, #fff9fd);
@@ -388,35 +388,61 @@
     animation: dgm-travel var(--dgm-dur, 6s) linear infinite;
   }
 
-  @keyframes dgm-direct_route-horizontal-here-0 {
-    0%, 10% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
-    13%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  @keyframes dgm-carrier_layers-horizontal-here-0 {
+    0%, 3.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    6%, 16% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    18.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
   }
 
-  [data-dgm="direct_route-horizontal"] .dgm-here-0 { animation-name: dgm-direct_route-horizontal-here-0; }
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-0 { animation-name: dgm-carrier_layers-horizontal-here-0; }
 
-  @keyframes dgm-direct_route-horizontal-here-1 {
-    0%, 17% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
-    20%, 40% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
-    43%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  @keyframes dgm-carrier_layers-horizontal-here-1 {
+    0%, 13.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    16%, 26% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    28.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
   }
 
-  [data-dgm="direct_route-horizontal"] .dgm-here-1 { animation-name: dgm-direct_route-horizontal-here-1; }
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-1 { animation-name: dgm-carrier_layers-horizontal-here-1; }
 
-  @keyframes dgm-direct_route-horizontal-here-2 {
-    0%, 57% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
-    60%, 80% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
-    83%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  @keyframes dgm-carrier_layers-horizontal-here-2 {
+    0%, 23.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    26%, 36% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    38.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
   }
 
-  [data-dgm="direct_route-horizontal"] .dgm-here-2 { animation-name: dgm-direct_route-horizontal-here-2; }
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-2 { animation-name: dgm-carrier_layers-horizontal-here-2; }
 
-  @keyframes dgm-direct_route-horizontal-here-3 {
-    0%, 87% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
-    90%, 100% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+  @keyframes dgm-carrier_layers-horizontal-here-3 {
+    0%, 33.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    36%, 46% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    48.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
   }
 
-  [data-dgm="direct_route-horizontal"] .dgm-here-3 { animation-name: dgm-direct_route-horizontal-here-3; }
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-3 { animation-name: dgm-carrier_layers-horizontal-here-3; }
+
+  @keyframes dgm-carrier_layers-horizontal-here-4 {
+    0%, 43.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    46%, 56% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    58.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-4 { animation-name: dgm-carrier_layers-horizontal-here-4; }
+
+  @keyframes dgm-carrier_layers-horizontal-here-5 {
+    0%, 53.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    56%, 66% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    68.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-5 { animation-name: dgm-carrier_layers-horizontal-here-5; }
+
+  @keyframes dgm-carrier_layers-horizontal-here-6 {
+    0%, 63.66% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    66%, 76% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    78.34%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="carrier_layers-horizontal"] .dgm-here-6 { animation-name: dgm-carrier_layers-horizontal-here-6; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -434,34 +460,50 @@
   }
 }
 </style>
-<defs><filter id="dgm-direct_route-horizontal-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
-<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="1047" height="143" rx="18"/>
-<g class="dgm-groups"></g>
-<g class="dgm-links">
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M193 72L256 72"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M256 78L256 66L267 72Z"/>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M455 72L582 72"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M455 62L582 62"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M455 82L582 82"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M455 72L582 72"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M592 78L592 66L603 72Z"/>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M781 72L844 72"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M844 78L844 66L855 72Z"/>
+<defs><filter id="dgm-carrier_layers-horizontal-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
+<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="576" height="339" rx="18"/>
+<g class="dgm-layers">
+<g class="dgm-layer dgm-role-neutral" data-node="tcp">
+<rect class="dgm-ring dgm-here-6" stroke-width="1.5" fill="#f4e7f0" stroke="#e3d2dd" x="20" y="20" width="342" height="300" rx="36"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="34" y="40">TCP</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 36L390 36"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="40">the HTTPS port</text>
 </g>
-<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M 104 72 L 193 72 L 267 72 L 356 72 L 445 72 L 603 72 L 692 72 L 781 72 L 855 72 L 944 72')"/><circle class="dgm-packet dgm-packet-core" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M 104 72 L 193 72 L 267 72 L 356 72 L 445 72 L 603 72 L 692 72 L 781 72 L 855 72 L 944 72')"/></g>
-<g class="dgm-nodes">
-<g class="dgm-node dgm-node-app dgm-role-data" data-node="human_app"><rect class="dgm-lift dgm-here-0" fill="#e3d2dd" opacity="0.85" x="17" y="20" width="174" height="110" rx="19" filter="url(#dgm-direct_route-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e3d2dd" stroke-width="1.5" x="20" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-0" fill="#dbeefe" x="88" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-0" fill="none" stroke="#1b659a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="92" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M2.5 9.5h19"/><circle cx="5.6" cy="7" r="0.9" class="dgm-glyph-fill dgm-here-0" fill="#1b659a" stroke="none"/><circle cx="8.4" cy="7" r="0.9" class="dgm-glyph-fill dgm-here-0" fill="#1b659a" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="104" y="86">HUMAN APP</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="104" y="102">browser / curl</text>
+<g class="dgm-layer dgm-role-disguise" data-node="tls">
+<rect class="dgm-ring dgm-here-5" stroke-width="1.5" fill="#ffe8d2" stroke="#f1ad71" x="36" y="50" width="310" height="258" rx="32"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="50" y="70">TLS 1.3</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 66L390 66"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="70">captured browser profile</text>
 </g>
-<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="yume_client"><rect class="dgm-lift dgm-here-1" fill="#e3d2dd" opacity="0.85" x="269" y="20" width="174" height="110" rx="19" filter="url(#dgm-direct_route-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="2" x="272" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-1" fill="#fad4ef" x="340" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-1" fill="none" stroke="#9c4088" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="344" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="356" y="86">YUME CLIENT</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="356" y="102">TLS / H2 / YUME</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="356" y="115">frames</text>
+<g class="dgm-layer dgm-role-disguise" data-node="http2">
+<rect class="dgm-ring dgm-here-4" stroke-width="1.5" fill="#ffe8d2" stroke="#f1ad71" x="52" y="80" width="278" height="216" rx="28"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="66" y="100">HTTP/2 STREAM</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 96L390 96"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="100">DATA frames</text>
 </g>
-<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="yumed_server"><rect class="dgm-lift dgm-here-2" fill="#e3d2dd" opacity="0.85" x="605" y="20" width="174" height="110" rx="19" filter="url(#dgm-direct_route-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="2" x="608" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-2" fill="#ebe5ff" x="676" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-2" fill="none" stroke="#674ea1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="680" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill dgm-here-2" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill dgm-here-2" fill="#674ea1" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="692" y="86">YUMED SERVER</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="692" y="102">direct egress</text>
+<g class="dgm-layer dgm-role-disguise" data-node="websocket">
+<rect class="dgm-ring dgm-here-3" stroke-width="1.5" fill="#ffe8d2" stroke="#f1ad71" x="68" y="110" width="246" height="174" rx="24"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="82" y="130">WEBSOCKET</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 126L390 126"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="130">binary message</text>
 </g>
-<g class="dgm-node dgm-node-target dgm-role-outside" data-node="target_site"><rect class="dgm-lift dgm-here-3" fill="#e3d2dd" opacity="0.85" x="857" y="20" width="174" height="110" rx="19" filter="url(#dgm-direct_route-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e3d2dd" stroke-width="1.5" x="860" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-3" fill="#dbf4e8" x="928" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-3" fill="none" stroke="#25694f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="932" y="38" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c4 4.5 4 12.5 0 17c-4-4.5-4-12.5 0-17z"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="944" y="86">TARGET SITE</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="944" y="102">sees server IP</text>
+<g class="dgm-layer dgm-role-client" data-node="frame">
+<rect class="dgm-ring dgm-here-2" stroke-width="1.5" fill="#fad4ef" stroke="#e899d3" x="84" y="140" width="214" height="132" rx="20"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#9c4088" x="98" y="160">YUME FRAME</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 156L390 156"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="160">length, type, stream</text>
+</g>
+<g class="dgm-layer dgm-role-keys" data-node="sealed">
+<rect class="dgm-ring dgm-here-1" stroke-width="1.5" fill="#fcf2cd" stroke="#f0ce65" x="100" y="170" width="182" height="90" rx="16"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#7d5e07" x="114" y="190">SEALED</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 186L390 186"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="190">AES-256-GCM, one-use key</text>
+</g>
+<g class="dgm-layer dgm-role-data" data-node="payload">
+<rect class="dgm-ring dgm-here-0" stroke-width="1.5" fill="#dbeefe" stroke="#7cb8ea" x="116" y="200" width="150" height="48" rx="12"/>
+<text class="dgm-ring-title dgm-centred" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#1b659a" text-anchor="middle" x="191" y="229">YOUR BYTES</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M370 225L390 225"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="398" y="229">what the app sent</text>
 </g>
 </g>
 </svg>

@@ -1,0 +1,40 @@
+<!-- Generated from docs/src/en_US/pages/glossary.doc by scripts/yume_docs.py. Edit that file, not this one. -->
+# YUME glossary
+
+The [source map](SOURCE_MAP.md) defines the project's own version and component
+vocabulary, and [YUME explained](EXPLAINED.md) shows how the pieces fit
+together.
+
+## Transport and security
+
+| Term | Meaning |
+| --- | --- |
+| Admission | The keyed, replay-protected check a tunnel request passes before YUME authentication starts. Failures stay on the cover path. |
+| AEAD | Authenticated encryption with associated data: encryption that also detects tampering. YUME uses AES-256-GCM. |
+| AUTH v2 | Transport v2's authentication and key establishment: composite identity, hybrid key exchange, then a directional ratchet. |
+| ClientHello | The first TLS message. Its exact structure reveals which software sent it. |
+| Cover site | The ordinary website a visitor without admission sees. YUME has no built-in cover page, so the operator configures one. |
+| Epoch | A span of message keys from one root. Rekeying starts the next epoch with fresh key material. |
+| Exporter | A value both ends derive from one TLS connection, used to bind YUME's keys to that connection. |
+| Extended CONNECT | The HTTP/2 way to open a WebSocket, defined in RFC 8441. |
+| GREASE | Reserved TLS values that clients include so servers keep tolerating unknown extensions. Matching them is part of looking like the captured browser. |
+| HKDF | A key-derivation function that turns shared secrets into keys. YUME uses HKDF-SHA256. |
+| HMAC | A keyed checksum. The admission token is one. |
+| ML-KEM, ML-DSA | NIST's post-quantum key encapsulation and signature schemes. YUME uses ML-KEM-1024 and ML-DSA-87. |
+| Nonce | A number used once. The admission token and every sealed message use one. |
+| PSK | Pre-shared key: a secret both sides hold before they connect. |
+| Ratchet | Keys that only move forward. Each one is derived, used, and erased. |
+| SNI | The site name a client sends at the start of TLS. Observers can read it. |
+| Transport v2 | The protocol the current client and daemon use. |
+| YTP/1 | YUME Transport Protocol 1, the unfinished replacement for transport v2. |
+
+## Programs and runtime
+
+| Term | Meaning |
+| --- | --- |
+| `yume`, `yumed` | The client and the server daemon. |
+| Asio | The C++ library that runs YUME's event loop. Code starts an operation and is called back when it completes. |
+| SOCKS5 | A small local proxy protocol that many applications already support. |
+| Strand | An Asio lane that runs one session's handlers in order, even with several threads. |
+| Stream | One application connection inside a tunnel, identified by its stream number. |
+| TUN | A virtual network interface through which a device's packets can be routed. |

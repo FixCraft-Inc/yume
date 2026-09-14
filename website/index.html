@@ -84,35 +84,28 @@ section_nav:
     </div>
   </div>
 
-  <figure class="diagram diagram-wide">
-    {% include diagrams/direct_route-horizontal.svg %}
+  <!-- Both figures are generated from docs/diagrams/*.json. Edit the JSON,
+       never the included SVG or key, then run the sync in docs/src/README.md. -->
+  <figure class="diagram diagram-responsive" data-diagram="yume_connection">
+    {% include diagrams/yume_connection-horizontal.svg %}
+    {% include diagrams/yume_connection-vertical.svg %}
     <figcaption>
-      The default route is a single hop. <code>yumed</code> terminates the YUME
-      session and opens the outbound socket, so the target sees the server
-      address and the server sees the destination.
+      One transport-v2 connection. <code>yumed</code> terminates the YUME
+      session and opens the outbound socket, so the destination sees the server
+      address and the server sees the destination. A request without valid
+      admission only ever reaches the cover website.
     </figcaption>
+    {% include diagrams/yume_connection-key.html %}
   </figure>
 
-  <figure class="disguise passage-map" data-reveal="passage" aria-label="Transport-v2 carrier and protected tunnel">
-    <div class="disguise-row">
-      <figcaption class="disguise-label">Outer carrier</figcaption>
-      <div class="disguise-track">
-        <span class="layer">TCP 443</span>
-        <span class="layer">TLS 1.3 &middot; captured browser profile</span>
-        <span class="layer">HTTP/2</span>
-        <span class="layer">WebSocket</span>
-      </div>
-    </div>
-    <div class="disguise-row disguise-inner">
-      <div class="disguise-label">Protected tunnel</div>
-      <div class="disguise-track">
-        <span class="layer">ML-KEM-1024 + X25519 + PSK</span>
-        <span class="layer">Composite AUTH</span>
-        <span class="layer">AES-256-GCM per message</span>
-        <span class="layer">Directional epochs</span>
-      </div>
-    </div>
-    <div class="disguise-note">Transport v2 uses this carrier. TLS encrypts the HTTP/2 and WebSocket records. Connection timing, sizes, and volume remain observable.</div>
+  <figure class="diagram diagram-responsive" data-diagram="carrier_layers">
+    {% include diagrams/carrier_layers-horizontal.svg %}
+    {% include diagrams/carrier_layers-vertical.svg %}
+    <figcaption>
+      What each tunnel byte travels inside. TLS encrypts the HTTP/2 and
+      WebSocket records. Connection timing, sizes, and volume remain observable.
+    </figcaption>
+    {% include diagrams/carrier_layers-key.html %}
   </figure>
 </section>
 

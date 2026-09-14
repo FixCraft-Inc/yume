@@ -2,7 +2,7 @@
 name:     explained
 kind:     page
 title:    YUME explained
-summary:  Follow application traffic through transport v2, then compare the planned YTP/1 connection path.
+summary:  How YUME works, from the whole picture to keys, threads and limits, followed by the planned YTP/1 path.
 markdown: docs/EXPLAINED.md
 web:      yes
 catalog-title: YUME explained
@@ -10,28 +10,42 @@ catalog-group: Start here
 catalog-home: Start here
 catalog-order: 20
 ---
-YUME is an independently implemented, embeddable stealth universal transport.
-Its own wire protocols carry application traffic over authenticated carriers.
-The runnable transport-v2 tunnel and the experimental YTP/1 replacement are
-separate implementations. The replacement's core abstraction is an
-authenticated peer opening a named byte stream or packet channel.
+YUME is an independently implemented, embeddable stealth transport. Its own
+wire protocols carry application traffic over authenticated carriers shaped
+like ordinary web traffic. This page covers the runnable transport-v2 stack,
+then the unfinished YTP/1 replacement. [How a byte travels](BYTE_PATH.md) goes
+through the layers one at a time, and the [glossary](GLOSSARY.md) defines the
+terms.
 
-## The runnable transport-v2 path
+## The whole picture
 
-The current `yume` and `yumed` commands use transport v2. A direct connection
-follows this path:
+YUME is two programs. `yume` runs on your device and collects traffic from your
+applications. `yumed` runs on a server you control. Between them the traffic
+travels inside one long-lived connection shaped like a browser visiting a
+website. The server removes that disguise, applies its policy, makes the real
+connection, and returns the answer the same way.
 
-@diagram direct_route
+@diagram yume_connection
 
-1. An application reaches the client through SOCKS5, a forward, packet routing,
-   or the experimental ABI's supported named-stream interface.
-2. The client establishes TLS 1.3 to `yumed`, with certificate/hostname checks
-   and configured trust policy. `yumed` terminates public TLS and HTTP/2. The
-   reference cover site runs in a separate loopback Node process; it receives
-   ordinary web requests, not tunnel records or credentials.
-3. The client primes the page and assets over HTTP/2, then requests an RFC 8441
-   WebSocket carrier. The server checks keyed, replay-protected admission
-   before sending an AUTH challenge. HTTP/2 remains active for the whole
+A visitor without the admission secret sees the cover website and never reaches
+YUME authentication. Observers and the server still learn some things, listed
+under what stays visible.
+
+## How a connection opens
+
+A connection starts the way a browser's first visit to the cover site would.
+The client asks for a tunnel only after that.
+
+@diagram carrier_open
+
+1. The client establishes TLS 1.3 to `yumed`, with certificate and hostname
+   checks and the configured trust policy. Its ClientHello follows one
+   captured browser profile. `yumed` terminates public TLS and HTTP/2.
+2. The client loads the cover page and its assets over HTTP/2. The reference
+   cover site runs in a separate loopback process and receives ordinary web
+   requests, never tunnel records or credentials.
+3. The client requests an RFC 8441 WebSocket carrier whose path carries a
+   keyed, replay-protected admission token. HTTP/2 stays active for the whole
    connection.
 4. AUTH v2 verifies the composite Ed25519 and ML-DSA-87 client identity and
    binds it to the live TLS exporter. ML-KEM-1024, X25519, and the random file
@@ -43,29 +57,214 @@ follows this path:
    AES-256-GCM message keys. Stream credit, bounded queues, and backpressure
    control how much work each connection can retain.
 6. `yumed` applies destination and authorization policy before opening egress.
-   The destination sees the server's egress address. The server knows the
-   authenticated client and destination; independent application TLS can still
-   protect the application content end to end.
 
 The client authenticates the server through TLS trust, optional leaf pinning,
 and optional operator proof. The server's client-identity stores do not supply
-a server identity to the client. The admission secret and inner PSK are
-separate deployment gates.
+a server identity to the client. The admission secret and the inner PSK are
+separate files and separate gates.
 
-Missing or invalid admission never reaches AUTH. The exact cover response
-depends on the request path: the current rejected extended CONNECT receives a
-bounded synthetic 404, which differs from the reference Node response. YUME
-emits no synthetic idle traffic, and encrypted timing, size, and volume remain
+Missing or invalid admission never reaches AUTH. A rejected extended CONNECT
+currently receives a bounded synthetic 404, which differs from the reference
+Node server's response. Ordinary page requests reach the cover site. YUME emits
+no synthetic idle traffic, and encrypted timing, size, and volume remain
 observable.
 
 The [transport-v2 wire contract](protocol/YUME_2_0_WIRE.md) owns the exact
-framing, admission, key schedule, and remaining profile differences. The
-[source map](SOURCE_MAP.md) identifies the running components. The sections
-below describe the intended YTP/1 replacement; its providers do not yet form a
-live endpoint. The current ABI carries transport-v2 named streams, while its
-packet operations remain unsupported.
+framing, admission, key schedule, and remaining profile differences.
+[Stealth transport](STEALTH.md) owns what may be claimed about the disguise.
 
-## The replacement dependency path
+## One byte's trip
+
+1. An application hands the byte to the client through SOCKS5, a port
+   forward, packet routing through a TUN device, or the experimental ABI's
+   named-stream interface. The destination it asks for travels inside the
+   tunnel.
+2. The client seals it. After authentication every message is encrypted and
+   authenticated with its own AES-256-GCM key, which is erased after use.
+3. The client puts an 8-byte YUME frame header in front of the sealed payload,
+   with its length, type, stream number, and flags. The stream number lets many
+   connections share one tunnel. The seal does not encrypt the header, but it
+   authenticates the type, stream number, and flags, so a relabelled or moved
+   message fails verification.
+4. The framed message becomes a WebSocket binary message on an HTTP/2 stream
+   inside TLS 1.3.
+5. `yumed` removes the carrier layers, verifies the seal, reads the stream
+   number, and hands the bytes to that stream. Admission and AUTH already
+   happened when the connection opened.
+6. Policy decides whether the stream may reach its destination. The destination
+   sees the server's egress address.
+7. The reply takes the same path back.
+
+## The wrapping
+
+@diagram carrier_layers
+
+The seal and the frame header protect and separate the traffic. WebSocket,
+HTTP/2, and the shape of the TLS handshake make it look like a web application.
+[How a byte travels](BYTE_PATH.md) explains each layer and what a change to it
+affects.
+
+## Handshake and keys
+
+After admission the two sides run AUTH v2. The server sends a challenge with
+fresh public keys, the client answers with its own key material and proof of
+identity, and both derive the same root key from four inputs:
+
+@diagram session_keys
+
+An identity is a pair of signature keys used together, Ed25519 and ML-DSA-87,
+and both signatures must verify. A normal user holds one identity. An
+administrator needs a second, distinct identity from a separate admin list.
+
+Each direction moves through epochs. Before an epoch's byte, frame, or time
+budget runs out, the sides exchange fresh ML-KEM and X25519 material for the
+next one. The [security modes](SECURITY_MODES.md) set those budgets:
+
+@table
+| Mode | Epoch budget, whichever comes first | Trade-off |
+| --- | --- | --- |
+| `extreme` (default) | 256 KiB, 512 frames, or 500 ms | The smallest epochs and the most rekey work |
+| `normal` | 8 GiB, 262,144 frames, or 60 s | Less rekey overhead on fast links |
+| `soft` | 256 GiB, 8,388,608 frames, or 30 min | Throughput first, with a much wider compromise window |
+| `ultimate` | Supplied by the operator | An expert-managed bounded policy |
+@end
+
+Preparing more future epochs ahead helps high-latency links and keeps more
+future key material in memory.
+
+## Inside the client
+
+@diagram client_inside
+
+@table
+| Piece | What it does | Where |
+| --- | --- | --- |
+| Command line | Parses commands and flags, loads the config, and starts a connected session | `src/client/cli/` |
+| Transport core | Frame dispatch, write scheduling, and flow credit | `src/outbound/` |
+| Tunnel pool | Authenticated tunnels to `yumed`, each SOCKS session bound to one | `src/client/transport/` |
+| Local entry points | SOCKS5 proxy, port forwards, and TUN packet routing | `src/client/proxy/`, `src/client/packet/` |
+| Control API | A local socket that queries and steers a running client with JSON | `src/client/runtime/`, [control API](CONTROL_API.md) |
+| Embedding | The C ABI and the backend seam it leases | `src/abi/`, `src/facade/session/`, [C ABI](ABI.md) |
+@end
+
+## Inside the server
+
+`yumed` has one Manager and many sessions. The Manager loads the configuration
+and the key lists, accepts connections, and gives each one a session, which
+moves through these stages:
+
+1. Carrier: TLS and HTTP/2, answering like a web server.
+2. Admission: the token check. Failures stay on the cover path.
+3. AUTH: handshake, identity check, and root key.
+4. Open: streams to destinations, relay peers, or reverse forwards, each
+   checked against policy.
+5. Close: teardown releases the session's resources and secrets.
+
+The authorized-keys file and its metadata sidecar list who may connect, and
+operator and admin keys have their own files. The Manager loads them as one
+consistent snapshot, so a reload never sees half of an edit.
+
+Dangerous features need every applicable gate to agree. LAN and private-IP
+bridging needs a build switch, a server flag, and a per-key `allow_local_ip`
+entry, and the server flag never grants it to an identity that did not opt in.
+The [permission model](PERMISSIONS.md) lists every gate.
+
+## How work is scheduled
+
+Code starts a network read or write and returns at once, and a handler runs
+when the data is ready. Each session's handlers run in order on its own strand,
+and a few worker threads share all sessions.
+
+@diagram session_threads
+
+A handler can still run after its session has closed.
+[How a byte travels](BYTE_PATH.md) explains why that causes crashes and how the
+code prevents it.
+
+## Built on the same session
+
+These features reuse the same sessions and keys. Their permission gates are in
+the [permission model](PERMISSIONS.md).
+
+@table
+| Feature | What it does | Where |
+| --- | --- | --- |
+| Relay v2 | Chat, files, and byte streams between two YUME users through a server, with their own end-to-end handshake | `src/client/relay/`, `src/server/runtime/manager_relay.cpp` |
+| Federation | Direct links between servers, one hop only. Multi-hop transit is design-only | `src/server/federation/` |
+| Packet mode | Whole IP packets through a TUN device instead of per-application proxying | `src/client/packet/`, [packet-native bulk mode](PACKET_NATIVE_BULK.md) |
+| Reverse forwards | A port on your machine made reachable through the server | `src/server/session/reverse_listener.cpp` |
+| Share files | Password-protected `.yss` store files | `src/client/transfer/share_file.cpp` |
+| Operator proof | The operator proves control of the operator key. It says nothing about logging | `src/server/cli/anonym.cpp` |
+| Filters | Destination filtering and robots rules on the server | `src/server/filter/`, [filtering](FILTERING_SELF_DPI.md) |
+| Host controller | Extra listeners and HTTP routes on the server host | [host controller](HOST_CONTROLLER.md) |
+| Application codecs | Protocol-aware helpers such as a Monero RPC codec | [application codecs](APP_CODECS.md) |
+| Remote commands | Disabled. The wire and policy inputs are reserved, and execution fails closed | [implementation status](IMPLEMENTATION_STATUS.md) |
+| Benchmarks and self-test | Built-in checks that grade a setup and measure throughput | [benchmarks](SELFTEST.md), [diagnostics](DIAGNOSTICS.md) |
+@end
+
+## What stays visible
+
+@table
+| Who | Still sees |
+| --- | --- |
+| A network observer | The server's IP address, the ClientHello including the site name, and encrypted timing, sizes, duration, and volume |
+| The server operator | Authenticated client identities, requested destinations, and any bytes the application did not protect itself |
+| The hosting provider | The server's outbound destinations |
+| The destination | The server's egress address and the application's own traffic |
+@end
+
+YUME cannot help when the server's address is blocked, and the project makes no
+undetectability claim. `yumed` is a single-hop proxy that terminates the tunnel.
+The [threat model](THREAT_MODEL.md) and [stealth transport](STEALTH.md) own
+these limits.
+
+## Where to start reading
+
+Read the tests beside the code before its comments. Tests show verified
+behavior.
+
+@table
+| Question | Start at |
+| --- | --- |
+| How does the client start? | `src/main_client.cpp`, then `src/client/cli/entry.cpp` |
+| How does the server start? | `src/main_server.cpp`, then `src/server/runtime/manager.cpp` |
+| What is on the wire? | [Transport-v2 wire contract](protocol/YUME_2_0_WIRE.md) |
+| How are keys made? | `src/core/security/auth_v2.cpp`, `src/core/security/session_ratchet.cpp` |
+| How does it look like a browser? | `src/core/stealth/`, [transport profiles](TRANSPORT_PROFILES.md) |
+| What may be claimed about stealth? | [Stealth transport](STEALTH.md) |
+| What works today? | [Implementation status](IMPLEMENTATION_STATUS.md) |
+| Which folder owns what? | [Source map](SOURCE_MAP.md) |
+| Which layer may depend on which? | `cmake/YumeLayering.cmake` |
+@end
+
+## Two stacks
+
+Transport v2 runs today. YTP/1, YUME Transport Protocol 1, is a replacement
+being built beside it. Product, transport, AUTH, ABI, and schema versions are
+independent.
+
+@table
+| | Transport v2 | YTP/1 |
+| --- | --- | --- |
+| Status | Runs, is tested, and carries traffic | Unfinished replacement |
+| Stream numbers | One byte per frame | 31-bit, odd and even by role |
+| Contract | [Wire contract](protocol/YUME_2_0_WIRE.md) | [YTP/1 kernel](protocol/YTP_1.md) |
+| Code | `src/core/`, `src/client/`, `src/server/` | `src/ytp/`, `src/engine/`, `src/providers/` |
+@end
+
+The replacement's engine and protocol kernel may not use sockets, TLS, HTTP/2,
+JSON, or the filesystem. CMake checks that at configure time, so that core can
+be tested in isolation.
+
+## The YTP/1 replacement
+
+YTP/1's core abstraction is an authenticated peer opening a named byte stream
+or packet channel. `NativeEndpoint` now composes its providers, protected
+credentials and service policy into a native client/server connection. An
+experimental ABI backend already carries named byte streams over it, but the
+standalone adapters remain unfinished and packet operations are unsupported.
+
+### Dependency path
 
 @code text
 ByteChannel
@@ -92,12 +291,14 @@ ByteChannel
   sockets, TLS, HTTP/2, JSON, filesystem, CLI, or GUI.
 - `StreamHandler` independently authorizes each authenticated named OPEN.
 - `RouteProvider` performs explicit egress only after dispatcher policy passes.
+  The Asio provider also requires policy for every selected numeric address
+  before opening sockets, including DNS answers and mapped IPv6 addresses.
 
 `EngineBuilder` selects exact, instance-local providers and freezes the graph.
 There is no global mutable registry, reflection configuration, runtime
 `dlopen()`, provider fallback, or YTP/1 suite negotiation.
 
-## The replacement connection path
+### Connection path
 
 The intended direct tunnel route is:
 
@@ -109,48 +310,48 @@ application -> SOCKS/ABI adapter -> YUME endpoint -> TLS 1.3 + HTTP/2
 
 A local adapter asks the endpoint to open the named `tcp`, `udp`, or another
 application service. Service identity is the pair `(name, kind)`, allowing one
-name to expose distinct stream and packet semantics. YTP/1 assigns a 31-bit odd/even stream ID, preserves
-application payload opacity, and applies connection and stream credit. Direct
-TCP/UDP destinations use strict built-in binary encodings rather than JSON.
+name to expose distinct stream and packet semantics. YTP/1 assigns a 31-bit
+odd/even stream ID, preserves application payload opacity, and applies
+connection and stream credit. Direct TCP/UDP destinations use strict built-in
+binary encodings rather than JSON.
 
 The server terminates the YUME session and therefore learns the authenticated
 client identity, service, and direct destination. HTTPS or another independent
-application protocol can still protect content end to end. YUME does not
-provide anonymity from its terminating server.
+application protocol can still protect content end to end.
 
-## Public front door
+### Public front door
 
-The public listener is a genuine application-protocol endpoint. Normal browser
-traffic and invalid or missing admission remain in the real cover website or
-reverse proxy. Only a bounded, replay-protected admission path can promote a
-connection to YTP/1; unauthenticated failures must not receive a YUME-shaped
-response.
+The native public listener serves a configured static website. Normal browser
+traffic and invalid or missing admission remain in that cover site; reverse
+proxy cover is still unimplemented. Only a bounded, replay-protected admission
+path can promote a connection to YTP/1. Unauthenticated failures must not
+receive a YUME-shaped response.
 
 Browser-shaped geometry is an independently versioned evidence profile. A new
 capture does not revise authenticated YTP semantics. Claims must name the exact
-qualified profile and environment; YUME does not claim universal
+qualified profile and environment. YUME does not claim universal
 indistinguishability or DPI resistance.
 
-## Session security contract
+### Session security contract
 
 YTP/1 fixes one mandatory composition and binds it into a canonical schedule:
 
-- Ed25519 **and** ML-DSA-87 authentication;
-- X25519 and ML-KEM-1024 establishment;
-- a unique access PSK for each authorized key;
-- the live TLS exporter;
+- Ed25519 **and** ML-DSA-87 authentication
+- X25519 and ML-KEM-1024 establishment
+- a unique access PSK for each authorized key
+- the live TLS exporter
 - suite, roles, transcript, both identities, both capability manifests, and
-  exact security parameters;
+  exact security parameters
 - independent directional rekeying and one-use AES-256-GCM keys for protected
   records. The sole bare post-AUTH record is the candidate-new-root
   authenticated rekey acknowledgement defined by YTP/1.
 
-All required components must succeed. A mismatch is terminal; there is no
+All required components must succeed. A mismatch is terminal, and there is no
 downgrade or retry with a weaker provider. Ratcheting is described as
 post-compromise-oriented until recovery assumptions have formal and
 experimental support.
 
-## Capabilities and policy
+### Capabilities and policy
 
 AUTH binds a bounded canonical service-capability manifest. Every OPEN is still
 checked independently against identity, service kind, destination policy, and
@@ -161,22 +362,26 @@ Routes are fenced by construction: only the session dispatcher can create an
 stream floods, malformed input, packet batches, control messages, and rekey work
 all meet explicit bounds before allocation.
 
-## Embedding
+### Embedding
 
 The [C ABI candidate](ABI.md) exposes runtime, immutable configuration,
 endpoint, stream, and packet handles through `<yume/yume.h>`. It provides
-blocking calls with timeouts over the asynchronous engine. The current
-build-tree library supports transport-v2 named streams.
+blocking calls with timeouts over the asynchronous engine. The build-tree
+library carries named streams through transport v2, or through
+`NativeEndpoint` when every native YTP/1 provider is built. Packet operations
+remain unsupported.
 
 Trusted in-process providers use the experimental C++20 SDK. Out-of-process
 plugins remain a separate design decision.
 
-## Product boundary
+### Product boundary
 
 The first complete YTP/1 path targets direct routing, SOCKS5, named-service,
-and packet adapters; those adapters are not wired yet. GUI, direct single-hop
-federation, directory, relay applications, reverse administration, and
-product-specific codecs remain separate transport-v2 surfaces. Transit is
+and packet adapters. Native endpoints accept configured direct TCP and UDP
+routes under application-supplied policy, but the standalone SOCKS5,
+named-service and packet adapters are not wired yet. GUI, direct
+single-hop federation, directory, relay applications, reverse administration,
+and product-specific codecs remain separate transport-v2 surfaces. Transit is
 design-only, and command execution is reserved and disabled. None is a
 prerequisite for the first replacement tunnel. Dynamic plugins and
 cryptographic suite negotiation are outside YTP/1.

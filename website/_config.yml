@@ -8,7 +8,7 @@ description: >-
 # Bumped whenever assets/site.css or assets/site.js changes, so returning
 # visitors are not served a cached stylesheet against new markup. One place,
 # read by _includes/head.html.
-asset_version: 13
+asset_version: 14
 
 repo_url: https://github.com/FixCraft-Inc/yume
 

@@ -19,12 +19,20 @@
   },
   {
     "title": "YUME explained",
-    "summary": "Follow application traffic through transport v2, then compare the planned YTP/1 connection path.",
+    "summary": "How YUME works, from the whole picture to keys, threads and limits, followed by the planned YTP/1 path.",
     "url": "/docs/EXPLAINED/",
     "source": "docs/EXPLAINED.md",
     "landing_group": "Start here",
     "order": 20,
     "home_group": "Start here"
+  },
+  {
+    "title": "How a byte travels",
+    "summary": "One transport-v2 byte, layer by layer: what each layer is for, how it works, what breaks it, and how to review a change.",
+    "url": "/docs/BYTE_PATH/",
+    "source": "docs/BYTE_PATH.md",
+    "landing_group": "Start here",
+    "order": 22
   },
   {
     "title": "Why YUME",
@@ -34,6 +42,14 @@
     "landing_group": "Start here",
     "order": 25,
     "home_group": "Start here"
+  },
+  {
+    "title": "YUME glossary",
+    "summary": "Plain definitions of the terms YUME's documentation uses.",
+    "url": "/docs/GLOSSARY/",
+    "source": "docs/GLOSSARY.md",
+    "landing_group": "Start here",
+    "order": 28
   },
   {
     "title": "Stealth transport",

@@ -407,6 +407,31 @@ const initDiagramMotion = () => {
   });
 };
 
+// A figure's cards and its key name the same parts. Pointing at either one
+// lights the pair and quietens the rest. The key is complete text without
+// this script, so nothing is lost when it does not run.
+const initDiagramKeys = () => {
+  document.querySelectorAll(".diagram").forEach((figure) => {
+    if (!figure.querySelector(".diagram-key")) {
+      return;
+    }
+    const light = (id) => {
+      figure.querySelectorAll(".is-active").forEach((part) => part.classList.remove("is-active"));
+      figure.classList.toggle("has-active", Boolean(id));
+      if (id) {
+        figure.querySelectorAll(`[data-node="${CSS.escape(id)}"]`).forEach((part) => {
+          part.classList.add("is-active");
+        });
+      }
+    };
+    figure.addEventListener("pointerover", (event) => {
+      const part = event.target.closest("[data-node]");
+      light(part && figure.contains(part) ? part.dataset.node : null);
+    });
+    figure.addEventListener("pointerleave", () => light(null));
+  });
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   initThemeToggle();
   initDisabledLinks();
@@ -414,6 +439,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initScrollMorph();
   initScrollReveals();
   initDiagramMotion();
+  initDiagramKeys();
   initDocToc();
   const run = async () => {
     if (document.getElementById("release-version") || document.querySelector("[data-download]")) {

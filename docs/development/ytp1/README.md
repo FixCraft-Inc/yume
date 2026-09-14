@@ -203,9 +203,22 @@ The daemon needs a `direct_tcp` or `direct_udp` adapter for every configured
 service, and neither program implements packet/TUN adapters. Before starting
 them, remove the generated `packet` service and adapter from both
 configurations and the `packet` capability from
-`server/credentials/authorized-keys.json`. Listening on port 443 needs the
-matching bind capability, or choose a high port. The client runs its SOCKS5 listeners and keeps one session, reconnecting
-with backoff. SOCKS5 offers only the no-authentication method and CONNECT, and
+`server/credentials/authorized-keys.json`.
+
+A normal user can listen on port 443 once the daemon binary holds only the
+bind capability. Install a root-owned copy and grant it there:
+
+```bash
+sudo install -o root -g root -m 0755 build/bin/yumed-ytp1 /usr/local/bin/yumed-ytp1
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/yumed-ytp1
+```
+
+Replacing the file drops the capability, so repeat both commands after each
+build. Running the daemon as root or lowering the system's unprivileged port
+range is not needed. A port above 1023 needs neither step.
+
+The client runs its SOCKS5 listeners and keeps one session, reconnecting with
+backoff. SOCKS5 offers only the no-authentication method and CONNECT, and
 refuses requests while no session is active. Stop either process with SIGINT or
 SIGTERM.
 

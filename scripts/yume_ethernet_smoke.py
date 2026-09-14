@@ -491,7 +491,8 @@ def main() -> int:
     parser.add_argument("--openssl", type=Path, help="openssl for kit generation")
     parser.add_argument("--output", type=Path, required=True, help="new directory for the report")
     parser.add_argument("--server-name", default="link.example.test")
-    parser.add_argument("--port", type=int, default=8443)
+    parser.add_argument("--port", type=int, default=8443,
+                        help="daemon port. Below 1024 needs a yumed-ytp1 allowed to bind it")
     parser.add_argument("--target-port", type=int, default=18080,
                         help="tunnel destination port, reached on the remote host itself")
     parser.add_argument("--baseline-port", type=int,
@@ -510,9 +511,10 @@ def main() -> int:
     if not 1 <= arguments.repeats <= 20 or not 1 << 20 <= arguments.payload_bytes <= 4 << 30:
         parser.error("repeats must be 1..20 and payload bytes 1 MiB..4 GiB")
     arguments.baseline_port = arguments.baseline_port or arguments.target_port
-    ports = (arguments.port, arguments.target_port, arguments.baseline_port)
-    if not all(1024 <= port <= 65535 for port in ports) or arguments.port in ports[1:]:
-        parser.error("ports must be 1024..65535 and differ from the daemon port")
+    payload_ports = (arguments.target_port, arguments.baseline_port)
+    if not 1 <= arguments.port <= 65535 or arguments.port in payload_ports or \
+            not all(1024 <= port <= 65535 for port in payload_ports):
+        parser.error("the daemon port must be 1..65535, payload ports 1024..65535, and they must differ")
     if (arguments.wire_frames or arguments.remote_ndpi_reader) and not arguments.capture_ssh:
         parser.error("--wire-frames and --remote-ndpi-reader need --capture-ssh")
     if arguments.capture_ssh and arguments.payload_bytes * arguments.repeats > MAX_CAPTURED_PAYLOAD:

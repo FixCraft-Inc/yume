@@ -9,9 +9,13 @@ host through SSH. Before anything starts, a preflight records the route,
 interface state, negotiated speed and MTU, and requires SSH to answer on the
 remote address. An unavailable link fails with exit status 3.
 
-The report compares an untunnelled HTTP transfer with the same transfer
-through the tunnel. One run is a smoke measurement, not a benchmark: it has no
-repetitions, CPU pinning or capture.
+Each repetition fetches the same payload untunnelled and then through the
+tunnel, so both paths see the same link conditions. The daemon reaches the
+tunnel destination on the remote host itself. The untunnelled fetch crosses the
+link to --baseline-port, which any firewall on the remote host must allow. The report keeps every
+sample, the medians, both link states and both binary hashes. It is a smoke
+measurement, not a benchmark: it has no CPU pinning, capture or matched
+comparison target.
 """
 
 from __future__ import annotations
@@ -21,8 +25,11 @@ import datetime
 import json
 import os
 from pathlib import Path
+import platform
+import re
 import shlex
 import socket
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -36,8 +43,8 @@ import yume_native_session as session  # noqa: E402
 
 EXIT_LINK_UNAVAILABLE = 3
 REMOTE_PAYLOAD_SERVER = r'''
-import http.server, sys
-size = int(sys.argv[3])
+import http.server, sys, threading
+host, size, ports = sys.argv[1], int(sys.argv[2]), [int(port) for port in sys.argv[3:]]
 pattern = bytes(range(256)) * 4096
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -52,7 +59,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             remaining -= len(piece)
     def log_message(self, *args):
         pass
-http.server.ThreadingHTTPServer((sys.argv[1], int(sys.argv[2])), Handler).serve_forever()
+servers = [http.server.ThreadingHTTPServer((host, port), Handler) for port in ports]
+print("ready", flush=True)
+for server in servers[1:]:
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+servers[0].serve_forever()
 '''
 
 
@@ -106,6 +117,37 @@ def ssh(host: str, command: str, *, stdin: bytes | None = None, timeout: float =
     return result.stdout.decode(errors="replace")
 
 
+def remote_link(ssh_host: str, remote: str) -> dict[str, object]:
+    """The remote interface that owns the link address, and its negotiated state."""
+    entries = json.loads(ssh(ssh_host, f"ip -json addr show to {shlex.quote(remote)}/32") or "[]")
+    interface = entries[0].get("ifname", "") if entries else ""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,15}", interface):
+        raise session.SessionFailure(f"the remote host does not own {remote}")
+    values = ssh(ssh_host, " ".join(f"cat /sys/class/net/{interface}/{name};"
+                                    for name in ("operstate", "speed", "mtu"))).split()
+    return {"interface": interface, **dict(zip(("operstate", "speed_mbit", "mtu"), values))}
+
+
+def wait_for_remote_log(ssh_host: str, path: str, marker: str, deadline: float) -> None:
+    """Readiness from a remote process's own report, so no probe connection reaches it."""
+    while time.monotonic() < deadline:
+        count = ssh(ssh_host, f"grep -c {shlex.quote(marker)} {shlex.quote(path)} 2>/dev/null || true").strip()
+        if count not in ("", "0"):
+            return
+        time.sleep(0.5)
+    raise session.SessionFailure(f"{Path(path).name} did not report '{marker}'")
+
+
+def require_baseline_port(host: str, port: int) -> None:
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            return
+    except OSError as error:
+        raise session.SessionFailure(
+            f"the untunnelled baseline cannot reach {host} port {port} ({error}). "
+            "A firewall on the remote host may drop it, so pass a --baseline-port it allows") from None
+
+
 def untunnelled_get(host: str, port: int) -> tuple[int, str, float]:
     with socket.create_connection((host, port), timeout=20) as connection:
         started = time.monotonic()
@@ -118,67 +160,93 @@ def rate(length: int, seconds: float) -> float:
     return round(length * 8 / 1_000_000 / seconds, 2) if seconds > 0 else 0.0
 
 
+def measure(arguments: argparse.Namespace, remote: str, socks_port: int,
+            report: dict[str, object]) -> None:
+    expected = session.payload_digest(arguments.payload_bytes)
+    fetches = {
+        "untunnelled": lambda: untunnelled_get(remote, arguments.baseline_port),
+        "tunnelled": lambda: session.get_through_socks(socks_port, remote, arguments.target_port,
+                                                       time.monotonic() + 60),
+    }
+    samples: list[dict[str, object]] = []
+    report["samples"] = samples
+    for _ in range(arguments.repeats):
+        sample = {}
+        for name, fetch in fetches.items():
+            length, digest, seconds = fetch()
+            if length != arguments.payload_bytes or digest != expected:
+                raise session.SessionFailure(f"{name} payload differs from the served payload")
+            sample[name] = {"seconds": round(seconds, 3), "mbit_s": rate(length, seconds)}
+        samples.append(sample)
+    report["median_mbit_s"] = {name: statistics.median(sample[name]["mbit_s"] for sample in samples)
+                               for name in fetches}
+
+
 def run(arguments: argparse.Namespace, report: dict[str, object]) -> None:
     remote, ssh_host = arguments.remote_host, arguments.ssh_host or arguments.remote_host
     environment = session.openssl_environment(arguments.openssl)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     remote_dir = f"yume-ethernet-runs/{stamp}"
+    quoted = shlex.quote(remote_dir)
+    report["local_host"] = {"name": platform.node(), "cpus": os.cpu_count()}
+    report["remote_link"] = remote_link(ssh_host, remote)
+    report["binaries"] = {
+        "yume-ytp1": session.file_digest(arguments.yume),
+        "yumed-ytp1": ssh(ssh_host, f"sha256sum {shlex.quote(arguments.remote_yumed)}").split()[0],
+    }
+    report["payload_bytes"] = arguments.payload_bytes
+    report["ports"] = {"yumed": arguments.port, "tunnel_destination": arguments.target_port,
+                       "baseline": arguments.baseline_port}
     with tempfile.TemporaryDirectory(prefix="yume-ethernet-") as temporary:
         kit = Path(temporary) / "kit"
         session.provision_kit(kit, arguments.server_name, arguments.port, environment)
         socks_port = session.free_port()
-        target_port = arguments.target_port
         session.configure_kit(kit, listen_address=remote, networks=[f"{remote}/32"],
                               connect_address=remote, socks_port=socks_port)
         archive = Path(temporary) / "server.tar"
         with tarfile.open(archive, "w") as bundle:
             bundle.add(kit / "server", arcname="server")
-        quoted = shlex.quote(remote_dir)
         ssh(ssh_host, f"umask 077 && mkdir -p {quoted} && tar -x -C {quoted}", stdin=archive.read_bytes())
-
         remote_payload = shlex.quote(f"{remote_dir}/payload_server.py")
         ssh(ssh_host, f"umask 077 && cat > {remote_payload}", stdin=REMOTE_PAYLOAD_SERVER.encode())
-        target_pid = ssh(ssh_host, f"nohup python3 {remote_payload} {shlex.quote(remote)} {target_port} "
-                                   f"{arguments.payload_bytes} > {quoted}/payload.log 2>&1 & echo $!").strip()
-        yumed_pid = ssh(ssh_host, f"nohup {shlex.quote(arguments.remote_yumed)} --config {quoted}/server/yumed.json "
-                                  f"> {quoted}/yumed.log 2>&1 & echo $!").strip()
-        report["remote"] = {"directory": f"~/{remote_dir}", "yumed_pid": yumed_pid, "payload_pid": target_pid}
 
+        remote_pids: list[str] = []
         client = None
-        log_path = Path(arguments.output) / "yume.log"
+        log_path = arguments.output / "yume.log"
         try:
+            ports = " ".join(str(port) for port in dict.fromkeys((arguments.target_port, arguments.baseline_port)))
+            remote_pids.append(ssh(ssh_host, f"nohup python3 {remote_payload} {shlex.quote(remote)} "
+                                             f"{arguments.payload_bytes} {ports} "
+                                             f"< /dev/null > {quoted}/payload.log 2>&1 & echo $!").strip())
+            remote_pids.append(ssh(ssh_host, f"nohup {shlex.quote(arguments.remote_yumed)} "
+                                             f"--config {quoted}/server/yumed.json "
+                                             f"< /dev/null > {quoted}/yumed.log 2>&1 & echo $!").strip())
+            report["remote"] = {"directory": f"~/{remote_dir}", "pids": remote_pids}
             deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                try:
-                    with socket.create_connection((remote, arguments.port), timeout=1):
-                        break
-                except OSError:
-                    time.sleep(0.2)
-            expected = session.payload_digest(arguments.payload_bytes)
-            length, digest, seconds = untunnelled_get(remote, target_port)
-            if length != arguments.payload_bytes or digest != expected:
-                raise session.SessionFailure("untunnelled payload differs")
-            report["untunnelled"] = {"bytes": length, "seconds": round(seconds, 3), "mbit_s": rate(length, seconds)}
-
+            wait_for_remote_log(ssh_host, f"{remote_dir}/yumed.log", "listening on", deadline)
+            wait_for_remote_log(ssh_host, f"{remote_dir}/payload.log", "ready", deadline)
+            require_baseline_port(remote, arguments.baseline_port)
             with log_path.open("wb") as log:
                 client = subprocess.Popen([str(arguments.yume), "--config", str(kit / "client/yume.json")],
                                           env=environment, stdout=log, stderr=subprocess.STDOUT)
                 session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
-                length, digest, seconds = session.get_through_socks(
-                    socks_port, remote, target_port, time.monotonic() + 60)
-                if length != arguments.payload_bytes or digest != expected:
-                    raise session.SessionFailure("tunnelled payload differs")
-                report["tunnelled"] = {"bytes": length, "seconds": round(seconds, 3), "mbit_s": rate(length, seconds)}
+                measure(arguments, remote, socks_port, report)
                 session.stop_process(client, "yume-ytp1")
                 client = None
         finally:
             if client is not None and client.poll() is None:
                 client.kill()
                 client.wait(timeout=5)
-            ssh(ssh_host, f"kill {shlex.quote(yumed_pid)} {shlex.quote(target_pid)} 2>/dev/null; sleep 1; "
-                          f"tail -20 {quoted}/yumed.log", timeout=30)
-            report["remote_log_tail"] = ssh(ssh_host, f"tail -20 {quoted}/yumed.log", timeout=30)
-            session.reject_secret_output("yumed-ytp1", str(report["remote_log_tail"]))
+            pids = " ".join(pid for pid in remote_pids if pid.isdigit())
+            stop = f"kill {pids} 2>/dev/null; sleep 1; " if pids else ""
+            # The kit's throwaway credentials are removed with the server directory. Logs stay.
+            try:
+                report["remote_log_tail"] = ssh(
+                    ssh_host, f"{stop}rm -rf {quoted}/server; tail -20 {quoted}/yumed.log 2>/dev/null || true",
+                    timeout=30)
+            except (session.SessionFailure, subprocess.SubprocessError) as error:
+                report["cleanup_error"] = str(error)
+    session.reject_secret_output("yume-ytp1", log_path.read_text(encoding="utf-8", errors="replace"))
 
 
 def main() -> int:
@@ -192,14 +260,25 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True, help="new directory for the report")
     parser.add_argument("--server-name", default="link.example.test")
     parser.add_argument("--port", type=int, default=8443)
-    parser.add_argument("--target-port", type=int, default=18080)
+    parser.add_argument("--target-port", type=int, default=18080,
+                        help="tunnel destination port, reached on the remote host itself")
+    parser.add_argument("--baseline-port", type=int,
+                        help="untunnelled payload port reached across the link, default the target port")
     parser.add_argument("--payload-bytes", type=int, default=256 * 1024 * 1024)
+    parser.add_argument("--repeats", type=int, default=3, help="untunnelled and tunnelled pairs, 1..20")
     parser.add_argument("--preflight-only", action="store_true")
     arguments = parser.parse_args()
     if not arguments.preflight_only and not (arguments.remote_yumed and arguments.yume and arguments.openssl):
         parser.error("--remote-yumed, --yume and --openssl are required unless --preflight-only")
+    if not 1 <= arguments.repeats <= 20 or not 1 << 20 <= arguments.payload_bytes <= 4 << 30:
+        parser.error("repeats must be 1..20 and payload bytes 1 MiB..4 GiB")
+    arguments.baseline_port = arguments.baseline_port or arguments.target_port
+    ports = (arguments.port, arguments.target_port, arguments.baseline_port)
+    if not all(1024 <= port <= 65535 for port in ports) or arguments.port in ports[1:]:
+        parser.error("ports must be 1024..65535 and differ from the daemon port")
+    arguments.output = arguments.output.resolve()
     arguments.output.mkdir(parents=True, exist_ok=False)
-    report: dict[str, object] = {"schema": "yume.ethernet-smoke/1",
+    report: dict[str, object] = {"schema": "yume.ethernet-smoke/2",
                                  "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     code = 0
     try:
@@ -212,12 +291,16 @@ def main() -> int:
     except (session.SessionFailure, OSError, subprocess.SubprocessError, ValueError) as error:
         report["error"] = str(error)
         code = 1
+    if "PRIVATE KEY" in str(report.get("remote_log_tail", "")):
+        report["remote_log_tail"] = "withheld: the remote log contained key material"
+        code = code or 1
     report["does_not_prove"] = [
-        "Throughput or latency beyond this single transfer and link state.",
+        "Throughput or latency beyond these transfers, this link and these hosts.",
         "Stealth, classifier or DPI behavior.",
     ]
     (arguments.output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({key: report.get(key) for key in ("link", "untunnelled", "tunnelled", "error")}, indent=2))
+    print(json.dumps({key: report.get(key) for key in
+                      ("link", "remote_link", "median_mbit_s", "samples", "error")}, indent=2))
     return code
 
 

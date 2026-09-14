@@ -128,6 +128,14 @@ def get_through_socks(socks_port: int, host: str, port: int, deadline: float) ->
     raise SessionFailure(f"no successful SOCKS5 CONNECT, last reply {last}")
 
 
+def file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def payload_digest(size: int) -> str:
     digest = hashlib.sha256()
     whole, remainder = divmod(size, len(PATTERN))

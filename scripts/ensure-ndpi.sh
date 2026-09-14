@@ -6,7 +6,9 @@
 # Builds the pinned nDPI release used for DPI smoke observations of YUME
 # sessions. nDPI is evaluation tooling that YUME never links or ships, so the
 # pin lives here and not in config/dependencies.json. A clone of the release
-# tag must resolve to the pinned commit before anything is built.
+# tag must resolve to the pinned commit before anything is built. --ref builds
+# newer sources, such as the dev branch, for comparison. That build is named
+# by its resolved commit and never replaces the pinned reader.
 set -euo pipefail
 umask 077
 
@@ -16,22 +18,26 @@ readonly NDPI_REPOSITORY="https://github.com/ntop/nDPI.git"
 
 usage() {
     cat >&2 <<'USAGE'
-Usage: scripts/ensure-ndpi.sh [--prefix DIR] [--libpcap-prefix DIR] [--jobs N]
+Usage: scripts/ensure-ndpi.sh [--ref REF] [--prefix DIR] [--libpcap-prefix DIR] [--jobs N]
 
-Prints the pinned ndpiReader path. An existing prefix is reused only when its
-manifest names the pinned commit and the recorded binary hash still matches.
+Prints the ndpiReader path. An existing prefix is reused only when its
+manifest names the expected commit and the recorded binary hash still matches.
+--ref names a branch, tag or full commit to build instead of the pinned
+release, for example dev. It resolves once, and the prefix records that commit.
 --libpcap-prefix names a directory with include/pcap/pcap.h and
 lib/libpcap.so, for hosts without system libpcap headers.
 USAGE
 }
 
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/yume"
-prefix="$cache/ndpi-${NDPI_TAG}-${NDPI_COMMIT:0:12}"
+prefix=""
+ref=""
 libpcap_prefix=""
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --ref) ref="${2:?--ref needs a branch, tag or commit}"; shift 2 ;;
         --prefix) prefix="${2:?--prefix needs a directory}"; shift 2 ;;
         --libpcap-prefix) libpcap_prefix="${2:?--libpcap-prefix needs a directory}"; shift 2 ;;
         --jobs) jobs="${2:?--jobs needs a count}"; shift 2 ;;
@@ -44,16 +50,37 @@ if ! [[ "$jobs" =~ ^[1-9][0-9]{0,2}$ ]]; then
     exit 2
 fi
 
+if [ -z "$ref" ]; then
+    commit="$NDPI_COMMIT"
+    label="$NDPI_TAG"
+elif [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+    commit="$ref"
+    label="commit"
+else
+    if ! [[ "$ref" =~ ^[A-Za-z0-9._/-]{1,100}$ ]]; then
+        echo "ensure-ndpi: --ref has unexpected characters" >&2
+        exit 2
+    fi
+    # A peeled tag entry names the commit behind an annotated tag.
+    commit="$(git ls-remote "$NDPI_REPOSITORY" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" |
+        awk -v peeled="refs/tags/$ref^{}" '$2 == peeled { p = $1 } NR == 1 { f = $1 } END { print (p ? p : f) }')"
+    if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "ensure-ndpi: $ref did not resolve to a commit" >&2
+        exit 1
+    fi
+    label="${ref//\//-}"
+fi
+prefix="${prefix:-$cache/ndpi-${label}-${commit:0:12}}"
 manifest="$prefix/ndpi-manifest.txt"
 reader="$prefix/bin/ndpiReader"
 if [ -e "$prefix" ]; then
     if [ -f "$manifest" ] && [ -x "$reader" ] &&
-       grep -qx "commit=$NDPI_COMMIT" "$manifest" &&
+       grep -qx "commit=$commit" "$manifest" &&
        [ "$(sha256sum "$reader" | cut -d' ' -f1)" = "$(sed -n 's/^ndpiReader_sha256=//p' "$manifest")" ]; then
         printf '%s\n' "$reader"
         exit 0
     fi
-    echo "ensure-ndpi: $prefix is not the pinned build; remove it explicitly to rebuild" >&2
+    echo "ensure-ndpi: $prefix is not the build of $commit, remove it explicitly to rebuild" >&2
     exit 1
 fi
 
@@ -75,11 +102,17 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/yume-ndpi-build.XXXXXX")"
 staging="$(mktemp -d "$prefix.partial.XXXXXX")"
 trap 'rm -rf "$work" "$staging"' EXIT
 
-git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$NDPI_TAG" \
-    "$NDPI_REPOSITORY" "$work/src"
+if [ -z "$ref" ]; then
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$NDPI_TAG" \
+        "$NDPI_REPOSITORY" "$work/src"
+else
+    git init --quiet "$work/src"
+    git -C "$work/src" fetch --quiet --depth 1 "$NDPI_REPOSITORY" "$commit"
+    git -C "$work/src" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+fi
 actual="$(git -C "$work/src" rev-parse HEAD)"
-if [ "$actual" != "$NDPI_COMMIT" ]; then
-    echo "ensure-ndpi: tag $NDPI_TAG resolved to $actual, expected $NDPI_COMMIT" >&2
+if [ "$actual" != "$commit" ]; then
+    echo "ensure-ndpi: ${ref:-tag $NDPI_TAG} resolved to $actual, expected $commit" >&2
     exit 1
 fi
 
@@ -103,8 +136,14 @@ mkdir -p "$staging/bin"
 install -m 0755 "$work/src/example/ndpiReader" "$staging/bin/ndpiReader"
 install -m 0644 "$work/src/COPYING" "$staging/COPYING"
 {
-    echo "tag=$NDPI_TAG"
-    echo "commit=$NDPI_COMMIT"
+    if [ -z "$ref" ]; then
+        echo "tag=$NDPI_TAG"
+        echo "pinned=yes"
+    else
+        echo "ref=$ref"
+        echo "pinned=no"
+    fi
+    echo "commit=$commit"
     echo "repository=$NDPI_REPOSITORY"
     echo "libpcap_prefix=${libpcap_prefix:-system}"
     echo "ndpiReader_sha256=$(sha256sum "$staging/bin/ndpiReader" | cut -d' ' -f1)"

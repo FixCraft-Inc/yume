@@ -219,11 +219,15 @@ refuses requests while no session is active. Stop either process with SIGINT or
 SIGTERM.
 
 `scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
-network namespace and records what nDPI reports, using the pinned release that
-`scripts/ensure-ndpi.sh` builds. `scripts/yume_ethernet_smoke.py` runs the
-client on this machine and the daemon on a directly connected host, after a
-link preflight that fails when the direct route is unavailable. Neither result
-is a classifier verdict or a qualified benchmark.
+network namespace with Ethernet-sized frames and records what nDPI reports.
+`scripts/ensure-ndpi.sh` builds the pinned release, or newer sources such as
+`--ref dev` under a prefix named by their commit. `scripts/yume_ethernet_smoke.py`
+runs the client on this machine and the daemon on a directly connected host,
+after a link preflight that fails when the direct route is unavailable. It
+alternates untunnelled and tunnelled fetches of one payload. The daemon reaches
+the tunnel destination on its own host, and the untunnelled fetch crosses the
+link to `--baseline-port`, which a firewall on that host must allow. Neither
+result is a classifier verdict or a qualified benchmark.
 
 ## Configuration authority
 

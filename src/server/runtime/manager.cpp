@@ -144,7 +144,7 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
         if (!filter->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
             throw std::runtime_error("filter load failed: " + load_error);
         }
-        ip_filter_.store(std::move(filter), std::memory_order_release);
+        publish_ip_filter(std::move(filter));
     }
     if (cfg_.host_mode != host::HostMode::Off) {
         host_routes_.set_routes(cfg_.host_routes);
@@ -305,7 +305,7 @@ void Manager::start() {
                        std::to_string(cfg_.egress_mbps) +
                        " Mbps, grouped by authenticated identity, weight range=0.1..100 (default 1.0)");
     }
-    if (auto filter = ip_filter_.load(std::memory_order_acquire); filter && filter->active()) {
+    if (auto filter = ip_filter_snapshot(); filter && filter->active()) {
         util::log_info("IP filtering active: " + filter->summary());
     }
     if (cfg_.host_mode != host::HostMode::Off) {
@@ -578,8 +578,22 @@ bool Manager::write_packets_to_egress(std::uint32_t client_ipv4_be,
     return false;
 }
 
+std::shared_ptr<const IpFilter> Manager::ip_filter_snapshot() const {
+    std::lock_guard<std::mutex> lock(ip_filter_mu_);
+    return ip_filter_;
+}
+
+void Manager::publish_ip_filter(std::shared_ptr<const IpFilter> filter) {
+    {
+        std::lock_guard<std::mutex> lock(ip_filter_mu_);
+        ip_filter_.swap(filter);
+    }
+    // filter now holds the replaced snapshot. Its rules and private files are
+    // released here, after unlocking, unless a reader still retains them.
+}
+
 bool Manager::egress_allowed(const boost::asio::ip::address& address, std::string* reason) const {
-    const auto filter = ip_filter_.load(std::memory_order_acquire);
+    const auto filter = ip_filter_snapshot();
     if (!filter) {
         return true;
     }
@@ -1011,7 +1025,7 @@ void Manager::do_accept() {
         accept_strand_,
         [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
-            if (const auto filter = ip_filter_.load(std::memory_order_acquire)) {
+            if (const auto filter = ip_filter_snapshot()) {
                 boost::system::error_code ep_ec;
                 auto remote = socket.remote_endpoint(ep_ec);
                 if (!ep_ec) {
@@ -1068,7 +1082,7 @@ void Manager::refuse_client_socket(boost::asio::ip::tcp::socket& socket) {
 }
 
 bool Manager::admit_plain_client(boost::asio::ip::tcp::socket& socket) {
-    if (const auto filter = ip_filter_.load(std::memory_order_acquire)) {
+    if (const auto filter = ip_filter_snapshot()) {
         boost::system::error_code ep_ec;
         auto remote = socket.remote_endpoint(ep_ec);
         if (!ep_ec) {
@@ -1215,7 +1229,7 @@ bool Manager::reload_auth(std::string* error) {
 }
 
 bool Manager::reload_client_filter(std::string* error) {
-    if (!ip_filter_.load(std::memory_order_acquire)) {
+    if (!ip_filter_snapshot()) {
         if (error) {
             *error = "client filter not configured";
         }
@@ -1251,7 +1265,7 @@ bool Manager::reload_client_filter(std::string* error) {
         }
         return false;
     }
-    ip_filter_.store(std::move(candidate), std::memory_order_release);
+    publish_ip_filter(std::move(candidate));
     return true;
 }
 

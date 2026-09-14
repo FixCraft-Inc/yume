@@ -266,6 +266,7 @@ public:
                              "expected a routed open"));
     }
     void on_route(AuthorizedRouteRequest route,
+                  std::shared_ptr<RouteProvider>,
                   std::shared_ptr<StreamResponder> stream) override {
         request.emplace(std::move(route));
         responder = std::move(stream);
@@ -574,6 +575,7 @@ AuthorizedRouteRequest authorized_request(ServiceKind kind) {
 
 class ManualStream final : public StreamResponder {
 public:
+    bool terminated() const noexcept override { return closed_; }
     explicit ManualStream(ServiceKind kind, std::size_t max_write = 32U)
         : kind_(kind), max_write_(max_write) {}
     ExecutorAffinity executor_affinity() const noexcept override {
@@ -639,7 +641,7 @@ public:
                                            std::move(release)))));
     }
     void end(Status status = Status(
-                 StatusCode::Closed, "manual stream EOF")) {
+                 StatusCode::EndOfStream, "manual stream EOF")) {
         CHECK(read_);
         auto completion = std::move(read_);
         read_ = {};
@@ -865,18 +867,31 @@ public:
         return descriptor_;
     }
     void async_open(const AuthorizedRouteRequest& request,
-                    CancellationToken, Completion completion) override {
+                    CancellationToken cancellation, Completion completion) override {
         CHECK(request.peer_evidence().identity() == "device-1");
         ++open_calls;
         if (throw_on_open) {
             throw std::runtime_error("manual provider throw");
         }
+        if (defer_open) {
+            open_cancellation = std::move(cancellation);
+            pending = std::move(completion);
+        } else {
+            completion(factory_());
+        }
+    }
+    void complete_open() {
+        CHECK(pending);
+        auto completion = std::move(pending);
         completion(factory_());
     }
     void cancel() noexcept override { ++cancel_calls; }
     int open_calls{0};
     int cancel_calls{0};
     bool throw_on_open{false};
+    bool defer_open{false};
+    CancellationToken open_cancellation;
+    Completion pending;
 private:
     ProviderDescriptor descriptor_;
     Factory factory_;
@@ -899,13 +914,26 @@ ProviderDescriptor handler_descriptor(ServiceKind kind) {
 }
 
 std::shared_ptr<DirectRouteHandler> direct_handler(
-    ServiceKind kind, std::shared_ptr<RouteProvider> provider) {
+    ServiceKind kind) {
     return require(DirectRouteHandler::create(
-        handler_descriptor(kind), kind, std::move(provider),
+        handler_descriptor(kind), kind,
         [](const StreamOpenContext&) { return Status::success(); }));
 }
 
 void test_open_failure_kind_mismatch_and_exception() {
+    {
+        auto stream = std::make_shared<ManualStream>(ServiceKind::ByteStream);
+        unsigned completions = 0U;
+        direct_handler(ServiceKind::ByteStream)->async_route(
+            authorized_request(ServiceKind::ByteStream), {}, stream,
+            [&](Status status) {
+                ++completions;
+                CHECK(status.code() == StatusCode::ProviderMismatch);
+            });
+        CHECK(completions == 1U);
+        CHECK(stream->close_calls == 1);
+        CHECK(stream->close_code == StatusCode::ProviderMismatch);
+    }
     {
         auto provider = std::make_shared<ManualRouteProvider>([] {
             return Result<RouteConnection>(Status(
@@ -913,8 +941,8 @@ void test_open_failure_kind_mismatch_and_exception() {
         });
         auto stream = std::make_shared<ManualStream>(
             ServiceKind::ByteStream);
-        direct_handler(ServiceKind::ByteStream, provider)->on_route(
-            authorized_request(ServiceKind::ByteStream), stream);
+        direct_handler(ServiceKind::ByteStream)->on_route(
+            authorized_request(ServiceKind::ByteStream), provider, stream);
         CHECK(provider->open_calls == 1);
         CHECK(stream->close_calls == 1);
         CHECK(stream->close_code == StatusCode::NotFound);
@@ -928,8 +956,8 @@ void test_open_failure_kind_mismatch_and_exception() {
         });
         auto stream = std::make_shared<ManualStream>(
             ServiceKind::ByteStream);
-        direct_handler(ServiceKind::ByteStream, provider)->on_route(
-            authorized_request(ServiceKind::ByteStream), stream);
+        direct_handler(ServiceKind::ByteStream)->on_route(
+            authorized_request(ServiceKind::ByteStream), provider, stream);
         CHECK(stream->close_calls == 1);
         CHECK(stream->close_code == StatusCode::ProviderMismatch);
         CHECK(trace->cancel_calls == 1);
@@ -943,8 +971,8 @@ void test_open_failure_kind_mismatch_and_exception() {
         provider->throw_on_open = true;
         auto stream = std::make_shared<ManualStream>(
             ServiceKind::ByteStream);
-        direct_handler(ServiceKind::ByteStream, provider)->on_route(
-            authorized_request(ServiceKind::ByteStream), stream);
+        direct_handler(ServiceKind::ByteStream)->on_route(
+            authorized_request(ServiceKind::ByteStream), provider, stream);
         CHECK(provider->open_calls == 1);
         CHECK(stream->close_calls == 1);
         CHECK(stream->close_code == StatusCode::Internal);
@@ -962,8 +990,8 @@ void test_byte_bridge_credit_duplex_and_half_close() {
     });
     auto stream = std::make_shared<ManualStream>(
         ServiceKind::ByteStream, 32U);
-    auto handler = direct_handler(ServiceKind::ByteStream, provider);
-    handler->on_route(authorized_request(ServiceKind::ByteStream), stream);
+    auto handler = direct_handler(ServiceKind::ByteStream);
+    handler->on_route(authorized_request(ServiceKind::ByteStream), provider, stream);
     CHECK(channel);
     CHECK(stream->read_issues == 1);
     CHECK(channel->read_issues == 1);
@@ -1013,9 +1041,9 @@ void test_partial_completion_and_cancellation_close_once() {
         });
         auto stream = std::make_shared<ManualStream>(
             ServiceKind::ByteStream);
-        auto handler = direct_handler(ServiceKind::ByteStream, provider);
+        auto handler = direct_handler(ServiceKind::ByteStream);
         handler->on_route(
-            authorized_request(ServiceKind::ByteStream), stream);
+            authorized_request(ServiceKind::ByteStream), provider, stream);
         int releases = 0;
         stream->deliver("data", [&](std::size_t bytes) {
             CHECK(bytes == 4U);
@@ -1039,9 +1067,9 @@ void test_partial_completion_and_cancellation_close_once() {
         });
         auto stream = std::make_shared<ManualStream>(
             ServiceKind::ByteStream);
-        auto handler = direct_handler(ServiceKind::ByteStream, provider);
+        auto handler = direct_handler(ServiceKind::ByteStream);
         handler->on_route(
-            authorized_request(ServiceKind::ByteStream), stream);
+            authorized_request(ServiceKind::ByteStream), provider, stream);
         stream->end(Status(StatusCode::Cancelled,
                            "application cancelled"));
         CHECK(stream->close_calls == 1);
@@ -1064,8 +1092,8 @@ void test_route_to_stream_partial_completion() {
     });
     auto stream = std::make_shared<ManualStream>(
         ServiceKind::ByteStream);
-    auto handler = direct_handler(ServiceKind::ByteStream, provider);
-    handler->on_route(authorized_request(ServiceKind::ByteStream), stream);
+    auto handler = direct_handler(ServiceKind::ByteStream);
+    handler->on_route(authorized_request(ServiceKind::ByteStream), provider, stream);
     channel->deliver("reply");
     stream->complete_write(Status::success(), 4U);
     CHECK(stream->close_calls == 1);
@@ -1085,8 +1113,8 @@ void test_packet_boundaries_and_credit() {
     });
     auto stream = std::make_shared<ManualStream>(
         ServiceKind::PacketChannel);
-    auto handler = direct_handler(ServiceKind::PacketChannel, provider);
-    handler->on_route(authorized_request(ServiceKind::PacketChannel), stream);
+    auto handler = direct_handler(ServiceKind::PacketChannel);
+    handler->on_route(authorized_request(ServiceKind::PacketChannel), provider, stream);
     CHECK(channel);
     CHECK(channel->receive_issues == 1);
 
@@ -1115,6 +1143,52 @@ void test_packet_boundaries_and_credit() {
     CHECK(trace->shutdown_calls == 0);
 }
 
+void test_acceptance_waits_for_egress_and_cancels_late_ownership() {
+    for (const int mode : {0, 1, 2}) {
+        auto trace = std::make_shared<ChannelTrace>();
+        auto provider = std::make_shared<ManualRouteProvider>([trace, mode] {
+            if (mode == 1) {
+                return Result<RouteConnection>(Status(StatusCode::NotFound));
+            }
+            std::unique_ptr<ByteChannel> channel =
+                std::make_unique<ManualByteChannel>(trace);
+            return RouteConnection::byte_stream(std::move(channel));
+        });
+        provider->defer_open = true;
+        auto stream = std::make_shared<ManualStream>(ServiceKind::ByteStream);
+        auto handler = direct_handler(ServiceKind::ByteStream);
+        int completions = 0;
+        StatusCode code = StatusCode::Internal;
+        handler->async_route(authorized_request(ServiceKind::ByteStream), provider, stream,
+            [&](Status status) {
+                ++completions;
+                code = status.code();
+            });
+        CHECK(completions == 0);
+        CHECK(provider->open_calls == 1);
+        if (mode == 2) {
+            stream->close(Status(StatusCode::Cancelled));
+            CHECK(completions == 1);
+            CHECK(code == StatusCode::Cancelled);
+            CHECK(provider->open_cancellation.is_cancelled());
+        }
+        provider->complete_open();
+        CHECK(completions == 1);
+        if (mode == 0) {
+            CHECK(code == StatusCode::Ok);
+            CHECK(stream->close_calls == 0);
+            stream->close(Status(StatusCode::Cancelled));
+        } else if (mode == 1) {
+            CHECK(code == StatusCode::NotFound);
+            CHECK(stream->close_calls == 1);
+        } else {
+            CHECK(code == StatusCode::Cancelled);
+            CHECK(trace->cancel_calls == 1);
+            CHECK(trace->close_calls == 1);
+        }
+    }
+}
+
 void test_authorization_is_fail_closed() {
     auto trace = std::make_shared<ChannelTrace>();
     auto provider = std::make_shared<ManualRouteProvider>([trace] {
@@ -1133,7 +1207,7 @@ void test_authorization_is_fail_closed() {
         std::move(destination)));
     auto handler = require(DirectRouteHandler::create(
         handler_descriptor(ServiceKind::ByteStream),
-        ServiceKind::ByteStream, provider,
+        ServiceKind::ByteStream,
         [](const StreamOpenContext&) -> Status {
             throw std::runtime_error("policy failure");
         }));
@@ -1152,6 +1226,7 @@ int main() {
         test_route_to_stream_partial_completion();
         test_packet_boundaries_and_credit();
         test_authorization_is_fail_closed();
+        test_acceptance_waits_for_egress_and_cancels_late_ownership();
         std::cout << "direct route handler tests passed\n";
         return 0;
     } catch (const std::exception& error) {

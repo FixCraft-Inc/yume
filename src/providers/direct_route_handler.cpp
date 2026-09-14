@@ -77,14 +77,29 @@ Capability route_capability(ServiceKind kind) noexcept {
         : Capability::DirectUdp;
 }
 
+void invoke_acceptance(
+    engine::StreamHandler::AcceptanceCompletion& completion,
+    Status status) noexcept {
+    auto accepted = std::move(completion);
+    if (accepted) {
+        try {
+            accepted(std::move(status));
+        } catch (...) {
+            // Completion ownership is settled even when consumer code throws.
+        }
+    }
+}
+
 class RouteBridge final : public std::enable_shared_from_this<RouteBridge> {
 public:
     RouteBridge(ServiceKind kind,
                 std::shared_ptr<RouteProvider> provider,
-                std::shared_ptr<StreamResponder> stream) noexcept
+                std::shared_ptr<StreamResponder> stream,
+                engine::StreamHandler::AcceptanceCompletion&& completion)
         : kind_(kind),
           provider_(std::move(provider)),
-          stream_(std::move(stream)) {}
+          stream_(std::move(stream)),
+          acceptance_(std::move(completion)) {}
 
     void start(const AuthorizedRouteRequest& request) noexcept {
         // Reading before egress establishment bounds pre-open buffering to one
@@ -214,6 +229,7 @@ private:
             return;
         }
 
+        complete_acceptance(Status::success());
         issue_route_read();
         if (has_pending_record) {
             issue_route_write();
@@ -264,8 +280,10 @@ private:
                     return;
                 }
                 if (!result.ok()) {
+                    // Only the authenticated peer FIN becomes a destination
+                    // half-close. A lost session or abort fails both sides.
                     if (kind_ == ServiceKind::ByteStream &&
-                        result.status().code() == StatusCode::Closed) {
+                        result.status().code() == StatusCode::EndOfStream) {
                         stream_input_eof_ = true;
                         route_open = route_open_;
                         eof = true;
@@ -738,6 +756,17 @@ private:
         }
     }
 
+    void complete_acceptance(Status status) noexcept {
+        engine::StreamHandler::AcceptanceCompletion completion;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            completion = std::move(acceptance_);
+        }
+        if (completion) {
+            try { completion(std::move(status)); } catch (...) {}
+        }
+    }
+
     void fail(Status reason) noexcept {
         std::shared_ptr<StreamResponder> stream;
         ByteChannel* byte_channel = nullptr;
@@ -787,6 +816,10 @@ private:
             packet_channel->cancel();
             packet_channel->close();
         }
+        // Engine acceptance is settled before stream teardown re-enters the
+        // bridge through its pending read callback.
+        Status acceptance_reason(close_reason.code());
+        complete_acceptance(std::move(acceptance_reason));
         stream->close(std::move(close_reason));
     }
 
@@ -816,15 +849,15 @@ private:
     bool route_close_issued_{false};
     bool terminal_{false};
     bool failure_needs_cleanup_{false};
+    // Move callback ownership only after every allocating member initialized.
+    engine::StreamHandler::AcceptanceCompletion acceptance_;
 };
 
 Status validate_composition(
     const engine::ProviderDescriptor& descriptor,
     ServiceKind service_kind,
-    const std::shared_ptr<RouteProvider>& route_provider,
     const DirectRouteHandler::AuthorizationPolicy& authorization_policy) {
-    if (!valid_kind(service_kind) || !route_provider ||
-        !authorization_policy) {
+    if (!valid_kind(service_kind) || !authorization_policy) {
         return Status(StatusCode::InvalidArgument,
                       "direct route handler composition is incomplete");
     }
@@ -840,14 +873,6 @@ Status validate_composition(
         return Status(StatusCode::ProviderMismatch,
                       "stream-handler descriptor lacks direct-route capabilities");
     }
-    const engine::ProviderDescriptor& route = route_provider->descriptor();
-    if (route.kind() != engine::ProviderKind::RouteProvider ||
-        !route.capabilities().contains_all(
-            engine::mandatory_capabilities(
-                engine::ProviderKind::RouteProvider).with(direct))) {
-        return Status(StatusCode::ProviderMismatch,
-                      "route provider lacks the required direct-route capability");
-    }
     return Status::success();
 }
 
@@ -856,21 +881,18 @@ Status validate_composition(
 DirectRouteHandler::DirectRouteHandler(
     engine::ProviderDescriptor descriptor,
     engine::ServiceKind service_kind,
-    std::shared_ptr<engine::RouteProvider> route_provider,
     AuthorizationPolicy authorization_policy) noexcept
     : descriptor_(std::move(descriptor)),
       service_kind_(service_kind),
-      route_provider_(std::move(route_provider)),
       authorization_policy_(std::move(authorization_policy)) {}
 
 engine::Result<std::shared_ptr<DirectRouteHandler>>
 DirectRouteHandler::create(
     engine::ProviderDescriptor descriptor,
     engine::ServiceKind service_kind,
-    std::shared_ptr<engine::RouteProvider> route_provider,
     AuthorizationPolicy authorization_policy) {
     const Status validation = validate_composition(
-        descriptor, service_kind, route_provider, authorization_policy);
+        descriptor, service_kind, authorization_policy);
     if (!validation.ok()) {
         return engine::Result<std::shared_ptr<DirectRouteHandler>>(validation);
     }
@@ -878,7 +900,6 @@ DirectRouteHandler::create(
         return engine::Result<std::shared_ptr<DirectRouteHandler>>(
             std::shared_ptr<DirectRouteHandler>(new DirectRouteHandler(
                 std::move(descriptor), service_kind,
-                std::move(route_provider),
                 std::move(authorization_policy))));
     } catch (const std::bad_alloc&) {
         return engine::Result<std::shared_ptr<DirectRouteHandler>>(
@@ -932,32 +953,42 @@ void DirectRouteHandler::on_open(
 
 void DirectRouteHandler::on_route(
     engine::AuthorizedRouteRequest request,
+    std::shared_ptr<engine::RouteProvider> route_provider,
     std::shared_ptr<engine::StreamResponder> stream) {
-    if (!stream) {
-        return;
-    }
-    const NetworkProtocol expected =
-        service_kind_ == ServiceKind::ByteStream
-        ? NetworkProtocol::Tcp
-        : NetworkProtocol::Udp;
-    if (stream->service_kind() != service_kind_ ||
-        request.destination().protocol() != expected) {
-        stream->close(Status(
-            StatusCode::ProviderMismatch,
-            "authorized route does not match the handler kind"));
-        return;
-    }
+    async_route(std::move(request), std::move(route_provider), std::move(stream), [](Status) {});
+}
 
+void DirectRouteHandler::async_route(
+    engine::AuthorizedRouteRequest request,
+    std::shared_ptr<engine::RouteProvider> route_provider,
+    std::shared_ptr<engine::StreamResponder> stream,
+    AcceptanceCompletion completion) {
+    if (!stream || !completion) return;
+    const NetworkProtocol expected = service_kind_ == ServiceKind::ByteStream
+        ? NetworkProtocol::Tcp : NetworkProtocol::Udp;
+    if (!route_provider ||
+        route_provider->descriptor().kind() != engine::ProviderKind::RouteProvider ||
+        !route_provider->descriptor().capabilities().contains_all(
+            engine::mandatory_capabilities(engine::ProviderKind::RouteProvider)
+                .with(route_capability(service_kind_))) ||
+        stream->service_kind() != service_kind_ ||
+        request.destination().protocol() != expected) {
+        invoke_acceptance(completion, Status(StatusCode::ProviderMismatch));
+        stream->close(Status(StatusCode::ProviderMismatch));
+        return;
+    }
     try {
         auto bridge = std::make_shared<RouteBridge>(
-            service_kind_, route_provider_, stream);
+            service_kind_, std::move(route_provider), stream, std::move(completion));
         bridge->start(request);
     } catch (const std::bad_alloc&) {
-        stream->close(allocation_failure(
-            "route bridge allocation failed"));
+        invoke_acceptance(completion,
+                          allocation_failure("route bridge allocation failed"));
+        stream->close(allocation_failure("route bridge allocation failed"));
     } catch (...) {
-        stream->close(provider_failure(
-            "route bridge construction threw"));
+        invoke_acceptance(completion,
+                          provider_failure("route bridge construction threw"));
+        stream->close(provider_failure("route bridge construction threw"));
     }
 }
 

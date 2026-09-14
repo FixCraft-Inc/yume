@@ -30,6 +30,14 @@ enum class StatusCode : std::uint8_t {
     AlreadyExists,
     ProviderMismatch,
     Internal,
+    // A stream read reached the authenticated peer's write-side FIN after
+    // every record accepted before it was delivered. Session termination,
+    // local close and peer refusal/abort never use this code, so a lost
+    // connection cannot be mistaken for a complete byte stream.
+    EndOfStream,
+    // Local provider outcomes, never serialized as protocol status values.
+    PermissionDenied,
+    AddressInUse,
 };
 
 class Status final {

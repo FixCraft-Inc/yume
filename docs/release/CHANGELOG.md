@@ -15,6 +15,133 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- Native YTP endpoint composition accepts schema-1 direct TCP/UDP declarations
+  with explicit destination policies. Route dispatch supplies the engine's
+  selected provider, removing independent selection by the built-in handler.
+  Refusal, failed-listener rollback, packet boundaries and retained receive
+  credit have focused native regressions. Standalone CLI/daemon and public-ABI
+  destination adapters remain unfinished.
+- **Shared carrier build ownership.** Native YTP and the remaining transport-v2
+  callers link one H2/WebSocket/wire-profile/observer library and one bounded-file
+  library. Existing codec and file implementations are retained. The H2 library
+  propagates its diagnostics declarations to callers; Release and MinSizeRel
+  still compile diagnostics out. Existing WebSocket and bounded-file regressions
+  now also run in the native-only build, with assertions enabled in Release.
+- **Schema-1 embedding backend.** With the shared ABI and every native YTP/1
+  provider enabled, `yume_embed_ytp1` runs `NativeEndpoint` behind the blocking
+  C ABI on its own execution thread. Schema-1 clients open and servers accept
+  authenticated named byte streams with the composite peer identity. A server
+  holds each authorized OPEN until the application accepts it. Undeclared,
+  unregistered and unauthorized services are refused, clients cannot register
+  services, and declared adapters or reverse-proxy cover fail start. The
+  backend links no transport-v2 target or BaseFWX. Such a library's
+  compatibility manifest and build info name `openssl35.ytp1-security` and the
+  loaded OpenSSL release, such as `openssl-3.5.7`, instead of `unwired`.
+  `yume_abi_ytp1_stream_integration` provisions a kit and drives both roles.
+  Packets, routed OPEN and standalone runtimes remain unfinished, and the
+  backend has no production qualification.
+- **Typed end of stream.** Engine stream reads report the peer's authenticated
+  FIN as `EndOfStream`, separate from session end, abort and local close. The
+  direct-route adapter half-closes a destination only on that status, and the
+  ABI never reports a lost session as EOF, including after an earlier FIN.
+  A thread-safe responder query keeps adapter-retained records and EOF subject
+  to later termination.
+- **YTP embedding deadlines and drain.** Accept transfers local ownership
+  without waiting for runner dispatch. Write shutdown bounds that dispatch
+  and can be retried while its single FIN remains pending. Escaped runner
+  exceptions stop the endpoint and drain accepted work; drain completion is
+  published only after execution returns. Paused-executor regressions cover
+  those cases, all-or-none writes and partial-read credit ownership.
+- **Restartable native listener.** The FrontDoor enables address reuse on POSIX,
+  so a stopped server can rebind while earlier connections sit in TIME_WAIT.
+- **Typed native listener failures.** Socket setup distinguishes denied
+  permission, occupied or unavailable addresses, resource exhaustion and
+  unclassified failures through the engine and C ABI. Failed startup releases
+  its socket; the ABI requires stop to settle FAILED before retrying, without
+  disturbing another live listener. Unexpected
+  exceptions no longer masquerade as memory exhaustion.
+- **Server authentication deadline.** Native server startup begins its bounded
+  session-creation/AUTH phase at validated carrier promotion, so an idle accept
+  cannot consume a late-arriving client's budget. FrontDoor ingress bounds and
+  client end-to-end startup deadlines remain enforced. Readiness refusal or
+  allocation failure closes the promoted carrier before session security starts.
+- **Resolved destination authorization.** The native route provider requires
+  policy for every selected numeric address before socket creation, including
+  DNS answers and IPv4-mapped IPv6. Refusal, policy exceptions and reentrant
+  cancellation fail the OPEN without connecting. Applications retain ownership
+  of destination rules; standalone adapter composition remains unfinished.
+- **Allocation-failure test pairing.** Nothrow scalar/array allocations use the
+  same test allocator as throwing forms and matching deallocation. TLS tests
+  exercise observers, countdown and sustained failure across those forms;
+  production TLS allocation and sanitizer diagnostics are unchanged.
+- **Release fixture validation.** Native TLS test credentials are generated
+  and checked even when release builds define `NDEBUG`.
+- **Native YTP session composition.** Protected schema-1 credential loading and
+  per-identity service policy now feed a shared native endpoint, with bounded
+  admission/AUTH starts, owned session lifetimes and explicit executor drain.
+  It directly composes the existing TCP/TLS/H2, FrontDoor and OpenSSL providers
+  without BaseFWX. Standalone CLI/daemon adapters and the YTP public ABI remain
+  unfinished. Explicit destination handlers can share the native endpoint
+  and its route provider; TCP/UDP egress uses the same execution owner and
+  reserved cancellation as ingress.
+- **Stream acceptance and settlement.** OPEN success waits for peer service
+  acceptance; routed handlers wait for destination establishment. Ordered close
+  acknowledgement bounds retained stream state across crossed data, credit and
+  cancellation. This intentionally corrects unfinished YTP/1 wire semantics;
+  transport-v2, crypto domains and independent version axes are unchanged.
+- **Native startup and teardown.** Setup supplies complete cover pages and
+  profile assets; static loading snapshots bounded routes and startup rejects
+  missing priming files. IPv6 listeners use IPv6-only sockets. Bootstrap and
+  engine teardown retain completions under selected allocation failures, and
+  repeated terminal provider/endpoint cleanup is inert after final drain.
+
+- **TLS/H2 failure settlement.** H2 close, cancellation and credit return use
+  reserved control tasks shared with the native TCP executor. TLS/H2 retain
+  completion ownership through construction, registration and diagnostic
+  allocation failures. The native front door supplies both dispatch paths
+  from its existing context; provider tests exercise one-shot and sustained
+  allocation denial. This changes internal C++ provider seams, not the wire
+  or C ABI.
+- **Native YTP/1 FrontDoor candidate.** An opt-in listener adopts TCP through
+  the shared channel owner and serves an operator-supplied immutable static
+  site. Ordinary TLS 1.2/1.3 and HTTP/1.1/H2 cover remain separate from strict
+  TLS 1.3/H2 promotion. Actual SNI/exporter binding, shared replay reservations
+  and a connection-lifetime guard gate admission; rejected and saturated
+  admission uses the configured cover. Promotion transfers the existing TLS
+  and H2 state after output/timer drain and preserves cover handling and owner
+  lifetime. Standalone YTP session and public-library backend wiring remain
+  unfinished; this adds no production or stealth-advantage claim.
+- **TLS duplex and callback ownership.** Independent underlying read/write
+  state prevents duplicate reads during concurrent TLS output. The TLS
+  dispatcher retains its state when an immediate callback releases the final
+  channel handle.
+- **H2 callback allocation failures.** nghttp2 callbacks contain allocation
+  failures and retain a nonallocating failure marker, including when diagnostic
+  storage is unavailable. Header, DATA, close and client-priming regressions
+  exercise one-shot and sustained allocation failure in the shared codec.
+
+- **Explicit native TCP execution ownership.** The experimental provider and
+  accepted-channel owner share one caller-owned execution context. Reserved
+  control dispatch replaces allocating strand cleanup, initiation stays on
+  the declared context, and shutdown drains callbacks before the runner ends.
+  Partial writes are initiated explicitly so a later allocation failure is
+  handled by the provider. This changes the source-level provider factories;
+  it does not introduce a native YTP endpoint or alter the public C ABI.
+
+- **YTP ingress components.** The TLS client shares browser-profile
+  configuration with transport v2 and still requires negotiated TLS 1.3/H2.
+  Client H2 admission binds a fresh proof to the live TLS connection with its
+  own domain. Accepted TCP sockets reuse the bounded client-channel
+  implementation. The separate native FrontDoor composes ingress and cover;
+  the YTP session runtime and ABI endpoint remain unfinished. These components
+  establish no stealth advantage.
+- **YTP setup TLS certificates.** Development kits generate P-256 certificates
+  with SHA-256 signatures to match the browser TLS profile. Doctor separates
+  TLS leaf and trust checks from the unchanged composite YTP identity rules.
+- **YTP TLS failure settlement.** Closing the underlying channel during
+  cancellation preserves the original failure. Terminal state transitions
+  deliver pending completions without requiring another I/O event; late
+  transport callbacks cannot replace the terminal status or feed more TLS data.
 - **Shared documentation sources.** Topic `.doc` files under `docs/src/en_US/`
   own text, web titles and catalog metadata. One sync renders Markdown,
   manuals, web pages, diagram assets, CLI help and completion. Locale paths
@@ -55,10 +182,42 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Replacement work and embedding boundaries.** Contributor and automation
+  guidance require source-backed decisions, review of the proposed solution,
+  capability-based retirement, and consumer-independent interfaces. Build help
+  no longer makes historical transport-v2 parity a replacement prerequisite.
+  The source map identifies admission's v2 token coupling and separate replay
+  check so reuse does not silently import another protocol's contract.
+- **Neutral example configuration.** The client example uses the reserved
+  `server.example.invalid` placeholder. Server certificate/key examples use
+  `/etc/yume/server.crt` and `/etc/yume/server.key`.
+- **Removed the inactive ABI log callback.** The experimental runtime options
+  no longer accept a logging callback that was stored but never called. Its
+  record type and level constants are removed with it. Rebuild candidate
+  consumers against the current header; event callbacks remain supported.
+  Exported functions, protocol domains and independent versions are unchanged.
+- **Codec permission documentation.** Per-key authorization uses
+  `allow_codecs`; the old `allow_monero_rpc` field is rejected by the closed
+  metadata parser. Server configuration and CLI codec controls remain separate.
+
+- **Transport-v2 configuration parity.** Server saves preserve shaping inputs,
+  metadata/capture paths resolve beside the configuration, and nonempty cover
+  roots/backends activate HTTP cover validation in both readers. Client saves
+  replace cleared/default values and stale split codec endpoints. Overridden
+  server security booleans, client codec endpoints and the Android pin alias
+  remain type-checked. Nonzero client shaping fails facade validation, and
+  serialization failures preserve the destination. Parsing remains separate
+  from runtime acceptance; schema 1 and the Android alias retirement stay separate.
+
 - TransportCore shutdown transfers stream callbacks and drains queued writes
   without allocating. Session close releases the socket if its close deadline
-  cannot be armed. Focused regressions cover allocation failure during shutdown
-  and cancellation of a live socket read; broader async ownership remains open.
+  cannot be armed, cancels TLS and HTTP idle deadlines, and releases codec
+  sockets, receive credit and response reservations. Closed sessions refuse
+  late idle rescheduling. TCP and UDP streams own their pacing timers so close
+  releases delayed writes without waiting for the pacing deadline. Regressions
+  cover live reads/waits, codec deadline setup, terminal close and subsequent
+  executor destruction under allocation failure. Broader async ownership
+  remains open.
 - AUTH frame declarations are checked at the header against the 64 KiB record
   budget, allowing at most 256 extra padding bytes. The server rejects other
   frame types before unauthenticated payload reads. Frame encoding and decoding
@@ -90,13 +249,18 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   claims about deleted generic C request calls, cached sizing retries, and
   queued-handler cancellation. Local socket timeouts do not provide an overall
   operation deadline or rollback.
+- **Filter archives and reloads preserve publication boundaries.** Native
+  liblzma/libarchive processing replaces shell tar execution, with compressed,
+  decoded, payload, member, filesystem-node, decoder-memory and elapsed-work
+  limits. Failed loads retain previous rules and files; successful reloads
+  replace an immutable snapshot instead of appending into active rule vectors.
 - **File and cover boundaries fail closed.** POSIX bounded/private readers
   reject embedded NUL paths and open nonblocking before rejecting FIFOs.
   Static-root reads pin each directory
   descriptor, refuse symlink components, and take file bytes and modification
   seconds from the same handle. HTTP byte-range integers reject overflow.
   Unsupported platforms refuse confined static reads and archive extraction;
-  Linux archive tool trust and extraction resource budgets remain open.
+  Linux filter archives use bounded native decoding and confined publication.
 - **Captured HTTP responses preserve their bodies.** Header-only LF
   normalization replaces whole-response rewriting. A bounded HTTP parser
   refuses invalid or incomplete framing, and H2 conversion decodes chunked

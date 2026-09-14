@@ -139,10 +139,9 @@ bool validate_client_config_json_types(const nlohmann::json& document,
             is_int, "an integer representable as int")) {
         return false;
     }
-    // Bounded, not merely representable. Jitter delays every outbound frame,
-    // so a large value is a self-inflicted hang, and a thread count typo
-    // would exhaust the process thread limit at start. The facade parser
-    // enforces the same two ceilings in its validate().
+    // These input ceilings are stricter than storage representability.
+    // Facade validation applies the same ceilings after parsing. The current
+    // transport profile separately refuses every nonzero shaping value.
     const auto in_bound = [](const nlohmann::json& value,
                              std::uint64_t limit) {
         if (value.is_number_unsigned()) {
@@ -514,18 +513,18 @@ bool load_client_config_file(const ParsedArgs& args,
         if (json.contains("app_codec") && !args.app_codec_override) {
             cfg->app_codec = json["app_codec"].get<std::string>();
         }
-        if (json.contains("app_codec_listen") && !args.app_codec_listen_override) {
+        if (json.contains("app_codec_listen")) {
             std::string parse_error;
             auto ep = app_codec::parse_endpoint_spec(json["app_codec_listen"].get<std::string>(),
                                                      app_codec::builtin::kMoneroRpcDefaultHost,
                                                      app_codec::builtin::kMoneroRpcDefaultPort,
                                                      &parse_error);
-            if (ep.has_value()) {
+            if (!ep.has_value()) {
+                throw std::runtime_error("app_codec_listen: " + parse_error);
+            }
+            if (!args.app_codec_listen_override) {
                 cfg->app_codec_listen_host = ep->host;
                 cfg->app_codec_listen_port = ep->port;
-            } else {
-                util::log_error("app_codec_listen: " + parse_error);
-                cfg->app_codec_listen_port = 0;
             }
         }
         if (json.contains("app_codec_listen_host") && !args.app_codec_listen_override) {
@@ -965,52 +964,47 @@ bool save_client_config_file(const ParsedArgs& args,
             return false;
         }
     }
-    // Save the canonical spelling of Android's accepted TLS pin key.
+    // Save effective values, including cleared paths and automatic/disabled
+    // settings. Leaving an old field behind would undo the caller's change.
+    // Android's accepted pin key is normalized to the native spelling.
     json.erase("tls_pin_sha256");
     json["server"] = cfg.server;
-    if (cfg.port > 0) json["port"] = cfg.port;
-    if (!cfg.identity.empty()) json["identity"] = cfg.identity;
-    if (!cfg.admin_identity.empty()) json["admin_identity"] = cfg.admin_identity;
-    if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
-    if (!cfg.socks_bind_host.empty()) json["socks_bind"] = cfg.socks_bind_host;
-    if (!cfg.packet_tun_name.empty()) json["packet_tun_name"] = cfg.packet_tun_name;
-    if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
-    if (cfg.tunnel_count > 1) json["tunnels"] = cfg.tunnel_count;
+    json["port"] = cfg.port;
+    json["identity"] = cfg.identity;
+    json["admin_identity"] = cfg.admin_identity;
+    json["socks_port"] = cfg.socks_port;
+    json["socks_bind"] = cfg.socks_bind_host;
+    json["packet_tun_name"] = cfg.packet_tun_name;
+    json["threads"] = cfg.io_threads;
+    json["tunnels"] = cfg.tunnel_count;
     json["obfuscation"] = cfg.obfuscation;
-    if (!cfg.obfs_secret_file.empty()) json["obfs_secret_file"] = cfg.obfs_secret_file;
-    if (!cfg.inner_psk_file.empty()) json["inner_psk_file"] = cfg.inner_psk_file;
-    if (cfg.obfs_pad_multiple > 0) json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
-    if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
+    json["obfs_secret_file"] = cfg.obfs_secret_file;
+    json["inner_psk_file"] = cfg.inner_psk_file;
+    // Explicit zero overrides must replace a previous nonzero setting.
+    json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
+    json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
     json["inner_crypto"] = cfg.inner_crypto;
     json["rekey_window"] = cfg.rekey_window;
     yume::config::WriteSecurityProfile(json, cfg.security_profile);
     json["udp"] = cfg.allow_udp;
     json["allow_local_ip"] = cfg.allow_local_ip;
     json["server_in_charge"] = cfg.server_in_charge;
-    if (cfg.server_in_charge_port > 0) json["server_in_charge_port"] = cfg.server_in_charge_port;
+    json["server_in_charge_port"] = cfg.server_in_charge_port;
     json["allow_exec"] = cfg.allow_exec;
-    if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
+    json["pq_public_key"] = cfg.pq_public_key;
     json["allow_embedded_master"] = cfg.allow_embedded_master;
-    if (!cfg.anonym_pubkey.empty()) json["anonym_pubkey"] = cfg.anonym_pubkey;
-    if (!cfg.anonym_pubkey_material_id.empty()) {
-        json["anonym_pubkey_material_id"] = cfg.anonym_pubkey_material_id;
-    }
-    if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
-    if (!cfg.anonym_ca_material_id.empty()) {
-        json["anonym_ca_material_id"] = cfg.anonym_ca_material_id;
-    }
-    if (!cfg.auth_key_material_id.empty()) {
-        json["auth_key_material_id"] = cfg.auth_key_material_id;
-    }
-    if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
-    if (!cfg.tls_ca_material_id.empty()) {
-        json["tls_ca_material_id"] = cfg.tls_ca_material_id;
-    }
-    if (!cfg.tls_server_name.empty()) json["tls_server_name"] = cfg.tls_server_name;
-    if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
+    json["anonym_pubkey"] = cfg.anonym_pubkey;
+    json["anonym_pubkey_material_id"] = cfg.anonym_pubkey_material_id;
+    json["anonym_ca_cert"] = cfg.anonym_ca_cert;
+    json["anonym_ca_material_id"] = cfg.anonym_ca_material_id;
+    json["auth_key_material_id"] = cfg.auth_key_material_id;
+    json["tls_ca_cert"] = cfg.tls_ca_cert;
+    json["tls_ca_material_id"] = cfg.tls_ca_material_id;
+    json["tls_server_name"] = cfg.tls_server_name;
+    json["tls_pin"] = cfg.tls_pin_sha256;
     json["transport_profile"] = cfg.transport_profile;
     json["tls_backend"] = cfg.tls_backend;
-    if (!cfg.tls_helper_path.empty()) json["tls_helper_path"] = cfg.tls_helper_path;
+    json["tls_helper_path"] = cfg.tls_helper_path;
     if (!cfg.outbound_proxy_url.empty()) {
         json["outbound_proxy"] = cfg.outbound_proxy_url;
     } else {
@@ -1026,9 +1020,7 @@ bool save_client_config_file(const ParsedArgs& args,
     json["preferred_id"] = cfg.preferred_id;
     json["relay_mode"] = cfg.relay_mode;
     json["relay_trust_mode"] = cfg.relay_trust_mode;
-    if (!cfg.relay_trust_dir.empty()) {
-        json["relay_trust_dir"] = cfg.relay_trust_dir;
-    }
+    json["relay_trust_dir"] = cfg.relay_trust_dir;
     json["relay_peer_pins"] = cfg.relay_peer_pins;
     json["allow_inbound_admin"] = cfg.allow_inbound_admin;
     json["allow_outbound_admin"] = cfg.allow_outbound_admin;
@@ -1036,12 +1028,14 @@ bool save_client_config_file(const ParsedArgs& args,
     json["allow_file"] = cfg.allow_file;
     json["allow_bytes"] = cfg.allow_bytes;
     json["history_enabled"] = cfg.history_enabled;
-    if (!cfg.history_dir.empty()) json["history_dir"] = cfg.history_dir;
-    if (!cfg.relay_receive_dir.empty()) {
-        json["relay_receive_dir"] = cfg.relay_receive_dir;
-    }
-    if (!cfg.relay_key_file.empty()) json["relay_key_file"] = cfg.relay_key_file;
+    json["history_dir"] = cfg.history_dir;
+    json["relay_receive_dir"] = cfg.relay_receive_dir;
+    json["relay_key_file"] = cfg.relay_key_file;
     json["auto_attach_local"] = cfg.auto_attach_local;
+    // The writer emits the combined endpoint. Old split fields would take
+    // precedence when either reader reloads it.
+    json.erase("app_codec_listen_host");
+    json.erase("app_codec_listen_port");
     if (!cfg.app_codec.empty()) {
         json["app_codec"] = cfg.app_codec;
         json["app_codec_listen"] = format_endpoint_spec(
@@ -1053,11 +1047,7 @@ bool save_client_config_file(const ParsedArgs& args,
     json["tls_stealth_enabled"] = cfg.tls_stealth_enabled;
     json["tls_stealth_profile"] = cfg.tls_stealth_profile;
     json["tls_fingerprint_log"] = cfg.tls_fingerprint_log;
-    if (!cfg.tls_fingerprint_log_path.empty()) {
-        json["tls_fingerprint_log_path"] = cfg.tls_fingerprint_log_path;
-    } else {
-        json.erase("tls_fingerprint_log_path");
-    }
+    json["tls_fingerprint_log_path"] = cfg.tls_fingerprint_log_path;
     json["tls_fingerprint_verify"] = cfg.tls_fingerprint_verify;
     json["tls_fingerprint_test_endpoint"] =
         cfg.tls_fingerprint_test_endpoint;

@@ -244,7 +244,7 @@ entry point:
 | `runtime.stop` | `{}` | `true` only after a stop callback accepts the request |
 | `runtime.disconnect` | `{"endpoint_id": nonempty string}` | `true` |
 | `runtime.sessions.kill` | exactly one nonempty string member: `session_id`, `endpoint_id`, or `ip` | `true` |
-| `runtime.rules.reload` | `{}` | `true` |
+| `runtime.rules.reload` | `{}` | `true`; publishes a complete immutable filter snapshot on success and preserves existing rules on failure |
 
 Selectors are typed: a `session_id` value is compared only with the canonical
 decimal session id, an `endpoint_id` only with the exact endpoint id, and

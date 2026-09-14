@@ -94,7 +94,9 @@ yume_runtime* make_runtime(std::size_t options_size,
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 2) fail("usage: yume_c_contract_test CONFIG");
+    if (argc != 3) {
+        fail("usage: yume_c_contract_test CLIENT_CONFIG SERVER_CONFIG");
+    }
 
     require(yume_abi_version() == YUME_ABI_VERSION,
             "runtime ABI version disagrees with the public header");
@@ -122,9 +124,19 @@ int main(int argc, char** argv) {
     require(std::string_view(compatibility.session_component) ==
                 "ytp1-hybrid",
             "compatibility manifest omitted the logical session component");
+#if defined(YUME_ABI_YTP1) && YUME_ABI_YTP1
+    require(std::string_view(compatibility.session_security_provider) ==
+                "openssl35.ytp1-security",
+            "linked YTP/1 backend did not report its security provider");
+    require(std::string_view(build.crypto_backend).starts_with("openssl-3."),
+            "linked YTP/1 backend did not report its OpenSSL release");
+#else
     require(std::string_view(compatibility.session_security_provider) ==
                 "unwired",
             "unwired YTP/1 backend claimed a concrete security provider");
+    require(std::string_view(build.crypto_backend) == "unwired",
+            "unwired YTP/1 backend claimed a cryptographic backend");
+#endif
 
     yume_build_info prefix{};
     auto* prefix_bytes = reinterpret_cast<unsigned char*>(&prefix);
@@ -319,19 +331,37 @@ int main(int argc, char** argv) {
 
     constexpr char kStreamService[] = "tcp";
     service.name = {kStreamService, sizeof(kStreamService) - 1U};
+    // A client has no accept path. Registering a service there would change
+    // nothing, so it is refused instead of succeeding as a no-op.
     require(yume_endpoint_register_service(endpoint, &service) ==
+                YUME_STATUS_INVALID_ARGUMENT,
+            "client service registration was accepted");
+
+    const std::string server_text = read_file(argv[2]);
+    yume_config* server_config = nullptr;
+    require(yume_config_parse_json(first, server_text.data(),
+                                   server_text.size(), &server_config) ==
+                YUME_STATUS_OK &&
+                yume_config_role(server_config) == YUME_ROLE_SERVER,
+            "server config parse failed");
+    yume_endpoint* server_endpoint = nullptr;
+    require(yume_endpoint_create(first, server_config, &server_endpoint) ==
+                YUME_STATUS_OK,
+            "server endpoint creation failed");
+    yume_config_destroy(server_config);
+    require(yume_endpoint_register_service(server_endpoint, &service) ==
                 YUME_STATUS_OK,
             "valid service registration was rejected");
-    require(yume_endpoint_register_service(endpoint, &service) ==
+    require(yume_endpoint_register_service(server_endpoint, &service) ==
                 YUME_STATUS_INVALID_ARGUMENT,
             "duplicate service registration was accepted");
     service.kind = YUME_SERVICE_PACKET;
-    require(yume_endpoint_register_service(endpoint, &service) ==
+    require(yume_endpoint_register_service(server_endpoint, &service) ==
                 YUME_STATUS_PERMISSION_DENIED,
             "service kind absent from immutable config was accepted");
     service.kind = YUME_SERVICE_BYTE_STREAM;
 
-    std::string dual_kind_text = config_text;
+    std::string dual_kind_text = server_text;
     const std::size_t services_key = dual_kind_text.find("\"services\"");
     const std::size_t services_array = dual_kind_text.find('[', services_key);
     require(services_key != std::string::npos &&
@@ -363,8 +393,18 @@ int main(int argc, char** argv) {
     yume_endpoint_destroy(dual_kind_endpoint);
     yume_config_destroy(dual_kind_config);
 
+    // Server start has no caller-bounded deadline in either dialect. The
+    // refusal happens before the endpoint leaves CREATED.
+    require(yume_endpoint_start(server_endpoint, 1U) ==
+                YUME_STATUS_UNSUPPORTED &&
+                yume_endpoint_state(server_endpoint) == YUME_ENDPOINT_CREATED,
+            "bounded server start was not refused before starting");
+    require(yume_endpoint_start(server_endpoint, 0U) ==
+                YUME_STATUS_UNSUPPORTED,
+            "example server configuration started without its adapters");
+
     require(yume_endpoint_start(endpoint, 0) == YUME_STATUS_UNSUPPORTED,
-            "unwired endpoint provider did not fail with unsupported");
+            "schema-1 endpoint start did not fail with unsupported");
     require(yume_endpoint_state(endpoint) == YUME_ENDPOINT_FAILED,
             "unsupported endpoint start did not settle in failed state");
     yume_diagnostic diagnostic{};
@@ -375,9 +415,17 @@ int main(int argc, char** argv) {
             "endpoint start diagnostic query failed");
     require(diagnostic.status == YUME_STATUS_UNSUPPORTED,
             "endpoint start diagnostic had the wrong typed status");
+#if defined(YUME_ABI_YTP1) && YUME_ABI_YTP1
+    // The example declares a SOCKS adapter. The embedding backend composes
+    // named services only, and refuses instead of dropping the adapter.
+    require(std::string(diagnostic.message).find("adapters") !=
+                std::string::npos,
+            "schema-1 start diagnostic omitted the uncomposed adapters");
+#else
     require(std::string(diagnostic.message).find("provider is not linked") !=
                 std::string::npos,
             "endpoint start diagnostic omitted the unwired provider boundary");
+#endif
 
     yume_open_options open{};
     open.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE + 1U;
@@ -419,8 +467,10 @@ int main(int argc, char** argv) {
             "non-canonical uppercase DNS destination was accepted");
 
     yume_runtime_destroy(first);
-    require(yume_endpoint_state(endpoint) == YUME_ENDPOINT_STOPPED,
-            "runtime destruction did not stop its live endpoint");
+    require(yume_endpoint_state(endpoint) == YUME_ENDPOINT_STOPPED &&
+                yume_endpoint_state(server_endpoint) == YUME_ENDPOINT_STOPPED,
+            "runtime destruction did not stop its live endpoints");
+    yume_endpoint_destroy(server_endpoint);
     require(omitted_event_count == 0,
             "runtime read callback fields beyond its declared prefix");
 
@@ -483,6 +533,11 @@ int main(int argc, char** argv) {
                                        sizeof(diagnostic)) == YUME_STATUS_OK &&
                 diagnostic.status == YUME_STATUS_UNSUPPORTED,
             "callback re-entry overwrote the initiating operation diagnostic");
+    require(yume_endpoint_start(reentry.endpoint, 0) ==
+                YUME_STATUS_INVALID_STATE &&
+                yume_endpoint_state(reentry.endpoint) == YUME_ENDPOINT_FAILED &&
+                reentry.event_count == 2,
+            "restart from FAILED bypassed stop or emitted lifecycle events");
     require(yume_endpoint_stop(reentry.endpoint, 0) == YUME_STATUS_OK &&
                 reentry.event_count == 4,
             "endpoint was unusable after callback exception containment");

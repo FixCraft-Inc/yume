@@ -6,7 +6,9 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -242,7 +244,8 @@ class YumeDoctorTests(unittest.TestCase):
     def test_tls_certificate_key_mismatch_is_rejected(self) -> None:
         tls_key = self.case / "server/credentials/server-tls.key.pem"
         generated = subprocess.run(
-            ["openssl", "genpkey", "-algorithm", "Ed25519"],
+            ["openssl", "genpkey", "-algorithm", "EC",
+             "-pkeyopt", "ec_paramgen_curve:prime256v1"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
@@ -252,6 +255,35 @@ class YumeDoctorTests(unittest.TestCase):
         result = self.run_doctor(self.case / "server/yumed.json")
         self.assertEqual(result.returncode, 1)
         self.assertIn("TLS certificate and private key do not match", result.stderr)
+
+    def test_tls_key_check_is_separate_from_composite_identity(self) -> None:
+        doctor = runpy.run_path(str(DOCTOR))
+        cases = (
+            (["EC", "-pkeyopt", "ec_paramgen_curve:prime256v1"], True),
+            (["EC", "-pkeyopt", "ec_paramgen_curve:secp384r1"], True),
+            (["EC", "-pkeyopt", "ec_paramgen_curve:secp521r1"], True),
+            (["RSA", "-pkeyopt", "rsa_keygen_bits:2048"], True),
+            (["RSA", "-pkeyopt", "rsa_keygen_bits:1024"], False),
+            (["Ed25519"], False),
+            (["EC", "-pkeyopt", "ec_paramgen_curve:secp256k1"], False),
+        )
+        for arguments, supported in cases:
+            with self.subTest(algorithm=arguments):
+                private = subprocess.run(
+                    ["openssl", "genpkey", "-algorithm", *arguments],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=True, timeout=10,
+                ).stdout
+                public = subprocess.run(
+                    ["openssl", "pkey", "-pubout", "-outform", "DER"],
+                    input=private, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=True, timeout=10,
+                ).stdout
+                if supported:
+                    doctor["_check_tls_public_key"]("openssl", public, "/tls")
+                else:
+                    with self.assertRaises(doctor["DoctorError"]):
+                        doctor["_check_tls_public_key"]("openssl", public, "/tls")
 
     def test_mlkem_public_private_mismatch_is_rejected(self) -> None:
         public_path = self.case / "server/credentials/server-mlkem.pub.pem"
@@ -326,6 +358,58 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("/credentials/admin_keys/keys/0/capabilities", result.stderr)
 
+    def test_duplicate_admin_identity_is_rejected_independently_of_names(self) -> None:
+        doctor = runpy.run_path(str(DOCTOR))
+        store_path = self.case / "server/credentials/authorized-keys.json"
+        traffic = json.loads(store_path.read_text())["keys"][0]
+        document = {
+            "schema": 1,
+            "keys": [
+                {"name": name, "identity": copy.deepcopy(traffic["identity"])}
+                for name in ("first-admin", "second-admin")
+            ],
+        }
+        diagnostics = []
+        with self.assertRaises(doctor["DoctorError"]) as rejected:
+            doctor["_check_admin_keys"](
+                "openssl", bytearray(json.dumps(document).encode()),
+                store_path.parent / "admin-keys.json", set(), diagnostics,
+            )
+        self.assertEqual(diagnostics, [])
+        self.assertEqual(
+            rejected.exception.pointer,
+            "/credentials/admin_keys/keys/1/identity/sha256",
+        )
+        self.assertIn("identity is reused by another admin key", str(rejected.exception))
+
+    def test_authorized_identity_limit_matches_native_factory(self) -> None:
+        doctor = runpy.run_path(str(DOCTOR))
+        source = (ROOT / "src/providers/ytp1_security_provider.hpp").read_text()
+        match = re.search(r"kMaxYtp1AuthorizedIdentities\s*=\s*(\d+)U", source)
+        self.assertIsNotNone(match)
+        maximum = int(match[1])
+        self.assertEqual(doctor["MAX_AUTHORIZED_IDENTITIES"], maximum)
+        store = {"schema": 1, "keys": [{}] * (maximum + 1)}
+        with self.assertRaises(doctor["DoctorError"]) as rejected:
+            doctor["_check_authorized_keys"](
+                "unused", bytearray(json.dumps(store).encode()),
+                self.case / "server/credentials/authorized-keys.json", {}, None, [],
+            )
+        self.assertEqual(rejected.exception.pointer, "/credentials/authorized_keys/keys")
+        self.assertIn(f"1..{maximum} authorized keys", str(rejected.exception))
+
+        # The separate admin store keeps its own bound. Parsing a store above
+        # the traffic limit must reach the first entry, before any key work.
+        self.assertGreater(doctor["MAX_ADMIN_IDENTITIES"], maximum)
+        with self.assertRaises(doctor["DoctorError"]) as admin_entry:
+            doctor["_check_admin_keys"](
+                "unused", bytearray(json.dumps(store).encode()),
+                self.case / "server/credentials/admin-keys.json", set(), [],
+            )
+        self.assertTrue(admin_entry.exception.pointer.startswith(
+            "/credentials/admin_keys/keys/0/"
+        ))
+
     def test_duplicate_access_psk_is_rejected(self) -> None:
         store_path = self.case / "server/credentials/authorized-keys.json"
         store = json.loads(store_path.read_text())
@@ -381,6 +465,57 @@ class YumeDoctorTests(unittest.TestCase):
             "/credentials/admission_key: must differ from the per-identity access PSK",
             result.stderr,
         )
+
+    def test_cover_assets_match_the_selected_profile_and_are_required(self) -> None:
+        doctor = runpy.run_path(str(DOCTOR))
+        registry = json.loads((ROOT / "config/transport_profiles.json").read_text())
+        selected = next(
+            profile for profile in registry["profiles"]
+            if profile["id"] == registry["active_profile"]
+        )
+        self.assertEqual(doctor["PROFILE"], selected["id"])
+        profile = json.loads((
+            ROOT / selected["fixture"] / selected["artifacts"]["http2_profile"]
+        ).read_text())
+        paths = tuple(asset["path"] for asset in profile["asset_sequence"])
+        self.assertEqual(doctor["PROFILE_ASSETS"], paths)
+        cover_root = self.case / "server/cover-site"
+        for path in paths:
+            asset = cover_root / path.removeprefix("/")
+            contents = asset.read_bytes()
+            try:
+                asset.unlink()
+                missing = self.run_doctor(self.case / "server/yumed.json")
+                self.assertEqual(missing.returncode, 1)
+                self.assertIn(f"/cover/root{path}", missing.stderr)
+                asset.symlink_to(cover_root / "index.html")
+                symlink = self.run_doctor(self.case / "server/yumed.json")
+                self.assertEqual(symlink.returncode, 1)
+                self.assertIn("symlink files are forbidden", symlink.stderr)
+            finally:
+                asset.unlink(missing_ok=True)
+                asset.write_bytes(contents)
+                os.chmod(asset, 0o600)
+
+        assets = cover_root / Path(paths[0]).relative_to("/").parts[0]
+        moved = cover_root / "moved-assets"
+        assets.rename(moved)
+        assets.symlink_to(moved, target_is_directory=True)
+        result = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("asset parents must be ordinary directories", result.stderr)
+
+    def test_cover_requires_operator_not_found_page(self) -> None:
+        page = self.case / "server/cover-site/404.html"
+        page.unlink()
+        missing = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("/cover/root/404.html", missing.stderr)
+        page.write_text("<!doctype html><html><body>Missing</body></html>")
+        os.chmod(page, 0o600)
+        incomplete = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(incomplete.returncode, 1)
+        self.assertIn("complete static HTML cover page", incomplete.stderr)
 
     def test_cover_index_and_profile_compatibility_are_checked(self) -> None:
         index = self.case / "server/cover-site/index.html"

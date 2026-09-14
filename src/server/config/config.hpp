@@ -161,19 +161,10 @@ struct ServerConfig {
     // seconds so operators can drop in new captures without restarting
     // yumed. 0 = load once at startup.
     std::uint32_t upstream_response_ttl_s{0};
-    // --obfs-pad-multiple <N>. When > 0, every outbound frame's payload
-    // is padded with trailing zeros + a 1-byte length to round its
-    // on-wire size up to a multiple of N. Reduces the stability of features
-    // used by payload-size classifiers; it is not a complete defense. 0 = off. Receivers
-    // always strip padding transparently — but both ends must run a
-    // version that knows about kFlagPadded, so enabling this on a new
-    // sender talking to a pre-padding peer is a hard break. Clamped to
-    // [0, 256] (256 is the largest N a single length byte can carry).
+    // Preserve configured shaping for diagnostics and load/save. The current
+    // Chrome profile requires both fields to be zero at validation/startup.
+    // Parsing a representable value does not authorize its runtime use.
     std::uint16_t obfs_pad_multiple{0};
-    // --obfs-jitter-ms <ms>. When > 0, each batched frame write is
-    // deferred by a uniform random delay in [0, ms]. Breaks the
-    // "constant ping/keepalive cadence" ML feature at the cost of
-    // added send latency. 0 = no jitter.
     std::uint32_t obfs_jitter_ms{0};
     // --tls-handshake-timeout-ms <ms>. Per-connection cap on the TLS
     // handshake. A peer that opens TCP and starts TLS but never sends

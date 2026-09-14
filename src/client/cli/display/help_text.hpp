@@ -34,6 +34,7 @@ inline void write_help_body(std::ostream& out) {
         << "                             HTTP profile; other profiles are rejected.\n"
         << "  --config <path>          Config file\n"
         << "  --save-server           Save the effective merged config to --config\n"
+        << "                             Include cleared values and automatic/disabled settings\n"
         << "  -i, --auth <path>        Identity key (composite Ed25519+ML-DSA-87)\n"
         << "      --secondary-auth <path>\n"
         << "                           Repeat once for every data-only SOCKS tunnel\n"

@@ -259,10 +259,20 @@ python3 scripts/yume_bench_localhost.py --full --duration-sec 120 --dev
 The report records CPU user/system/core-seconds, core-hours, average cores,
 single-core and whole-machine percentages, average/peak RSS in MiB, peak
 threads/processes, CPU model/topology/frequency, affinity, and host RAM. These
-absolute fields make results comparable across machines without relying on an
-ambiguous percentage alone. Use `--resource-json PATH` to select the artifact,
+fields describe the host and sampled workload; cross-machine comparisons still
+require matched workloads, security profiles, backends, and network geometry.
+Use `--resource-json PATH` to select the artifact,
 `--resource-sample-ms 500` to lower sampling frequency, or
 `--no-resource-sampling` for a measurement with no external sampler.
+
+The sampler discovers descendants through every thread's Linux child list and
+counts only processes in the original process group. CPU totals and RSS peaks
+are sampled observations: children that start and exit between samples, final
+CPU work before reaping, and processes that leave the group can be missed.
+The local wrapper covers provisioning, startup, latency, bulk transfer, and
+teardown together. Its lifetime CPU total is not bulk-only CPU/byte. Validate
+process coverage and measurement intervals before making a performance claim;
+keep sampling settings identical across comparison runs.
 
 ### Two-host LAN or WAN
 

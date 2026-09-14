@@ -99,10 +99,11 @@ std::optional<std::time_t> parse_http_date(std::string_view value);
 
 // Render a complete 404 response as a single string ready for
 // boost::asio::write — substitutes the placeholders in headers_404
-// and appends body_404. `connection_close` does nothing; the
-// per-profile header_template already specifies its own connection
-// behavior (some profiles use keep-alive, some close).
-std::string render_404(const ServerProfile& profile, bool connection_close = true);
+// and appends body_404. Connection behavior is not a parameter: each
+// profile's headers_404 carries its own Connection header, so that the
+// cover response matches the profile it imitates (some keep alive, some
+// close) instead of a caller's guess.
+std::string render_404(const ServerProfile& profile);
 
 // The client User-Agent is pinned to the cover profile and is not settable.
 // require_pinned_client_ua() throws if a caller tries to select any other UA,

@@ -86,6 +86,33 @@ is equivalent.
 .TP
 .BI "--config " path
 Read server configuration from a JSON file.
+This includes relative
+.B auth_keys_meta
+and
+.B upstream_response_dir
+paths.
+Explicit null and wrong scalar types fail, including wrong-typed
+.B pq_auto_generate
+or
+.B allow_embedded_master
+values hidden by CLI overrides.
+A failed load preserves the prior configuration and path context.
+Nonempty
+.B real_root
+or
+.B real_backend
+enables
+.BR real_http ,
+including when
+.B real_http:false
+is also present.
+Empty fields do not enable it.
+Both shaping fields,
+.B obfs_pad_multiple
+and
+.BR obfs_jitter_ms ,
+survive load/save but must be zero for the current transport profile to
+start.
 .TP
 .BI "--proxy " url
 Route the daemon's own outbound connections through an upstream proxy.
@@ -245,19 +272,12 @@ Country lookup archive, GeoLite2-Country
 or compact YUME
 .B geoip_country_ipv4.db
 .B .
-Archives are copied into a new owner-only temporary directory and
-extracted at startup; validation and extraction consume the same private
-snapshot.
-Only regular files and directories with relative, traversal-free names
-are accepted.
-Backslashes, control-character escapes, links, and special files are
-refused.
 Hot-path lookup is in-memory.
-Archive extraction requires Linux and GNU tar.
-Other platforms refuse archives; use an unpacked list or database.
-Extraction still relies on the shell and tool search path and has no
-complete compressed-size, member-count, expanded-size, disk, or
-decompression-time budget; use trusted operator archives only.
+See FILTER ARCHIVES for format, resource limits, and publication
+behavior.
+Failed reloads retain the previous rules and files.
+Successful reloads publish an immutable snapshot and replace the old
+data after existing readers finish.
 .TP
 .BI "--filter-memory-mib " n
 Approximate memory cap for loaded filter data.
@@ -683,6 +703,40 @@ give every pair that must communicate a direct peer entry.
 See
 .B docs/\:protocol/\:YUME_2_0_FEDERATION_TRANSIT.md
 for the design that would change this and the gates it must pass first.
+.SH FILTER ARCHIVES
+Archive extraction is supported on Linux.
+YUME reads a bounded regular-file snapshot into memory, decodes XZ with
+liblzma, and validates tar/PAX members with libarchive before creating
+files.
+It runs no shell or external archive tool.
+Other platforms refuse archives; use unpacked lists or databases there.
+.PP
+Each archive is limited to 32 MiB compressed, 128 MiB decoded, 64 MiB
+per regular file, 128 MiB of file payload, 4,096 members, and 4,096
+filesystem nodes including implicit parent directories.
+Names are at most 1,024 bytes and 16 components deep.
+Only regular files and directories with relative, traversal-free names
+are accepted.
+Links, sparse extents, special files, backslashes, control characters,
+conflicting names, corrupt input, and hidden nonzero data after the tar
+end marker are refused.
+Decoder memory is capped at 64 MiB.
+A 30-second elapsed-work budget is checked between bounded reads, decode
+steps, header reads, and writes; it cannot interrupt a blocked kernel
+filesystem operation.
+.PP
+Files are created exclusively beneath a new owner-only staging
+directory, using directory descriptors and no-follow opens.
+Archive ownership and modes are ignored: directories use mode 0700 and
+files 0600, subject to the process umask.
+Failed candidates are removed; successful files remain owned by their
+filter snapshot.
+The payload and node limits bound extraction output, not filesystem
+metadata overhead or total process memory.
+Multiple archives and filter-rule parsing have separate costs.
+The approximate
+.B --filter-memory-mib
+rule budget remains a later loading check.
 .SH CLUSTER INSPECTION
 An attached
 .B yumed

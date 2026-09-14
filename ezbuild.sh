@@ -1231,7 +1231,7 @@ install_deps_linux() {
             zlib1g-dev \
             libzstd-dev \
             libargon2-dev \
-            liblzma-dev || return 1
+            liblzma-dev libarchive-dev || return 1
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."
             # Install one package at a time so a missing one (e.g.
@@ -1326,6 +1326,7 @@ install_deps_linux() {
             argon2 \
             libnghttp2 \
             liboqs \
+            libarchive \
             xz
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."
@@ -1363,6 +1364,7 @@ install_deps_linux() {
             argon2-devel \
             libnghttp2-devel \
             liboqs-devel \
+            libarchive-devel \
             xz-devel
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."
@@ -1402,6 +1404,7 @@ install_deps_linux() {
             libargon2-devel \
             libnghttp2-devel \
             liboqs-devel \
+            libarchive-devel \
             xz-devel
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."

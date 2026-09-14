@@ -11,12 +11,13 @@ catalog-home: Internals and status
 catalog-order: 150
 ---
 Status: normative development contract for the implemented dependency-pure
-YTP/1 kernel, in-memory session engine, and opt-in native provider candidates.
+YTP/1 kernel, session engine, native providers, and internal native endpoint.
 YUME is `0.3.0-dev1` development software; this document is not a
 production-readiness, cryptographic-proof, or interoperability claim.
 
 The authority for this contract is `src/ytp/`,
-`src/engine/session_engine.*`, and the `src/providers/ytp1_*` and Asio provider
+`src/engine/session_engine.*`, `src/runtime/native_endpoint.*`, and the
+`src/providers/ytp1_*` and Asio provider
 sources, together with their focused tests and the checked-in kernel vectors.
 Source and executable tests outrank this document if they disagree.
 
@@ -26,9 +27,15 @@ fixed suite metadata, domains, and key-schedule input encoding. The session
 engine implements the authenticated record lifecycle and multiplexing over a
 carrier. Opt-in candidates implement the fixed hybrid handshake, a memory-BIO
 TLS 1.3 secure channel, duplex H2 carrier behavior, client TCP ByteChannel, and
-direct TCP/connected-UDP routing. They are not composed with a genuine front
-door, admission path, YTP/1 ABI backend, or runnable YTP/1 tunnel. The exact
-unfinished boundary is listed below.
+direct TCP/connected-UDP routing. A native FrontDoor composes accepted TCP,
+TLS, genuine static cover and admission into the H2 carrier. The internal
+NativeEndpoint composes both bootstrap roles, protected schema-1 credentials,
+per-identity named-handler authorization, session ownership and shutdown drain.
+It also composes configured direct TCP/UDP adapters with explicit request and
+resolved-address authorization. An experimental schema-1 C ABI backend carries
+named byte streams over it, but does not compose destination adapters.
+Standalone CLI/daemon integration, SOCKS/TUN adapters, and the remaining
+qualification gates are unfinished, as listed below.
 
 ## Conventions and compatibility
 
@@ -44,6 +51,58 @@ YTP/1 is wire version `1`. It has no compatibility path, downgrade, alias, or
 suite negotiation for YUME transport v2, AUTH v2, relay v2, or their domains.
 Product version, configuration schema 1, C ABI v1, provider versions, and
 YTP/1 are independent version axes.
+
+## H2 admission v1
+
+Admission proves possession of the separate 32-byte admission key before the
+server starts YTP AUTH. It does not authenticate a transport identity or grant
+a service. `providers/ytp1_h2_admission.*` owns this construction;
+`admission/h2_admission.*` owns the shared path parser, HMAC primitive and
+bounded replay cache. The client carrier builds the proof from its active
+TLS channel. `providers/ytp1_front_door.*` verifies admission on the actual
+accepted TLS connection before transferring it to the H2 carrier.
+
+The proof path is `/` followed by 64 lowercase hexadecimal token characters,
+`/`, and 64 lowercase hexadecimal nonce characters. No query, trailing data,
+uppercase hex or alternative encoding is accepted. The nonce is 32 fresh
+cryptographically random bytes for each client carrier creation.
+
+The HMAC-SHA256 key is exactly 32 bytes. Its canonical input is:
+
+@code text
+u16 domain_length
+u8  domain[domain_length] = "yume/ytp/1/h2-web/admission/v1"
+u16 server_name_length
+u8  canonical_server_name[server_name_length]
+u16 exporter_length = 32
+u8  exporter[32]
+u8  nonce[32]
+@end
+
+The server name is lowercase ASCII DNS text, at most 253 bytes, with nonempty
+labels of at most 63 bytes, no trailing root dot, and no leading or trailing
+hyphen in a label. The client uses the same name its TLS provider authenticated;
+the server checks HTTP authority against received TLS SNI and its listener port.
+Both obtain 32 exporter bytes locally from the completed TLS connection using
+`EXPORTER-yume/ytp/1/h2-web-admission/v1` and an empty context. The exporter is
+never a peer-supplied field. Token comparison is constant time.
+
+Wall-clock buckets and browser evidence-profile IDs are absent. The exporter
+binds the proof to one TLS connection, avoiding a clock-synchronization
+requirement. Browser geometry remains independent of this admission encoding.
+Transport-v2 token fields and domains remain unchanged; neither protocol
+accepts the other's proof.
+
+A native front door MUST verify the proof and reserve its nonce atomically
+in one process-shared bounded replay cache before promotion. Cache expiry uses
+monotonic time; duplicates, saturation, clock regression, overflow and failed
+allocation refuse admission without evicting a live nonce. At most one
+successful carrier promotion is allowed for a TLS connection throughout its
+lifetime. A TTL cache alone cannot enforce that rule after an entry expires.
+Missing, invalid, replayed or resource-exhausted admission follows the genuine
+configured cover path and never starts AUTH. The opt-in native FrontDoor
+implements these ingress rules with a configured immutable static website;
+they do not establish a complete YTP session runtime.
 
 ## Streams and frames
 
@@ -207,6 +266,25 @@ of 1 through 63 octets. A label MUST NOT begin or end with a hyphen. Empty
 labels, a leading or trailing dot, uppercase, non-ASCII input, and a trailing
 root dot are rejected. The kernel performs no IDNA conversion.
 
+### OPEN acceptance
+
+Both per-stream receive windows begin at zero. Sending OPEN does not accept
+it and the opener MUST NOT send a stream-credit update, DATA, or PACKET until
+it receives the receiver's first STREAM_CREDIT. The receiver MUST first
+complete per-OPEN authorization and handler acceptance; a destination-bearing
+service MUST establish its authorized destination connection before accepting.
+The receiver's first STREAM_CREDIT is the authenticated acceptance barrier.
+A refusal uses terminal CLOSE and grants no stream credit.
+
+After receiving acceptance, the opener publishes its initial STREAM_CREDIT
+before reporting successful OPEN to its application. The receiver can then
+write within that reverse-direction grant. Pending OPENs count against the
+session's pending-open and stream bounds until accepted or refused. Local
+cancellation before acceptance sends a terminal CLOSE and completes that
+pending OPEN once; crossed acceptance cannot revive it. If OPEN is still
+unpublished behind the outbound rekey barrier, cancellation drops that OPEN
+without sending CLOSE for a stream the peer has never observed.
+
 ## CLOSE payload
 
 A CLOSE payload is exactly one octet:
@@ -225,14 +303,35 @@ The codes are:
 | 2 | unsupported | Terminal OPEN rejection or stream abort. |
 | 3 | handler failure | Terminal service failure and stream abort. |
 | 4 | application abort | Terminal abort requested by the application. |
+| 5 | settled | Ordered confirmation that the sender will publish no further records for this stream. |
 @end
 
 Code 0 closes only the sender's write side. Already accepted inbound records
-remain readable, and the stream retires only after both write sides are closed
-and inbound data is drained. Codes 1 through 4 close the stream in both
-directions and fail pending I/O. A repeated FIN, a CLOSE for a retired stream,
-an unknown code, or application data sent after the corresponding close is a
-protocol failure.
+remain readable. After both directional FINs and draining queued inbound data,
+each side sends code 5 and retains the stream's closing state until receiving
+the peer's code 5. Returning application-held credit after closure restores
+connection credit only.
+
+Codes 1 through 4 terminate both directions and fail pending OPEN and I/O.
+The receiver sends code 5 after settling application ownership. The initiator
+retains the closing entry until that acknowledgement arrives. If terminal
+CLOSEs cross, each side sends code 5 and waits for the other's code 5.
+A side sends at most one settlement acknowledgement for each stream.
+
+A terminal CLOSE or code 5 MUST follow every already-published record for that
+stream in the ordered record direction; no later DATA, PACKET or STREAM_CREDIT
+may be published in that direction. While waiting for the peer barrier, a
+locally closed stream validates crossed records against its service kind and
+remaining granted credit. Crossed DATA/PACKET is discarded and returns only
+connection credit; crossed stream credit remains bounded and cannot reopen
+the stream. Closing entries count against the session stream bound, so a peer
+that withholds settlement cannot cause unbounded tombstone retention.
+
+An unknown stream ID, a repeated FIN, an unexpected or repeated settlement,
+an unknown close code, data after the peer's FIN, or DATA, PACKET or
+STREAM_CREDIT after the peer's terminal barrier is a protocol failure. A
+required crossed settlement acknowledgement remains valid after terminal CLOSE. Refusal does not invalidate
+other streams or prevent a subsequent authorized OPEN on the same session.
 
 ## Capability manifest
 
@@ -591,40 +690,71 @@ Implemented as separate opt-in provider candidates with focused tests:
 
 - `yume_ytp1_tls13_secure_channel` wraps an engine ByteChannel with OpenSSL
   memory BIOs, enforces TLS 1.3 and ALPN `h2`, verifies client-side trust and
-  hostname, bounds peer evidence, and exports channel binding;
-- `yume_ytp1_h2_carrier` implements client priming and extended CONNECT,
-  bounded private record framing, flow-credit ownership, and a typed server
+  hostname, bounds peer evidence, and exports channel binding. Its client
+  applies the shared browser TLS profile and refuses negotiated TLS 1.2 or
+  HTTP/1.1 before publishing a channel. Its separate server-cover entry keeps
+  ordinary TLS 1.2/HTTP/1.1 traffic in a ByteChannel and promotes only a settled
+  TLS 1.3/H2 connection to the strict SecureChannel type;
+- `yume_ytp1_h2_carrier` implements client priming and exporter-bound admission
+  in extended CONNECT, bounded private record framing, flow-credit ownership,
+  and a typed server
   promotion seam for an already-admitted live H2 connection;
 - `yume_asio_tcp_byte_channel_provider` supplies bounded client DNS/connect,
-  socket protection, ordered operations, cancellation, and TCP half-close; and
+  socket protection, ordered operations, cancellation, and TCP half-close.
+  `AsioTcpAcceptedChannelOwner` adopts connected server sockets through the
+  same bounded channel implementation; it does not own a listener; and
 - `yume_asio_direct_route_provider` supplies bounded TCP and connected-UDP
-  egress behind the dependency-pure route-handler contract.
+  egress behind the dependency-pure route-handler contract, with mandatory
+  numeric-destination policy before socket creation and using the same
+  single-runner execution context and reserved controls as native ingress.
+
+Implemented in the opt-in `yume_ytp1_front_door` target: a native listener using
+the accepted-channel owner, a configured static site loaded through confined
+`FileRoot` reads, received-SNI/exporter verification, shared replay reservations,
+bounded admission capacity and one promotion per TLS lifetime. Promotion
+preserves TLS/H2 state, provider provenance and executor affinity after cover
+output and timer drain. Ordinary H2 cover handling remains with the carrier.
+The caller owns execution and completion drain; this ingress performs no DNS.
+
+The internal `yume_native_endpoint` target composes native ingress, security,
+session bootstrap and per-identity handlers. An optional route provider enables
+explicitly authorized destination handlers. Schema-1 `direct_tcp` and
+`direct_udp` declarations create those handlers when both the provider and an
+explicit request policy are supplied; resolved-address policy remains mandatory
+before socket creation. The engine supplies its selected provider to each routed
+OPEN, and only successful endpoint creation adopts provider cancellation.
+Other services require explicit bindings; SOCKS5 and packet/TUN declarations
+remain unsupported. The schema-1 ABI backend still refuses all adapter
+declarations. Focused integration exercises configured authenticated TCP/UDP
+routes, packet boundaries, policy refusal and retained credit after drain, plus
+real TCP/TLS/H2, AUTH, OPEN refusal followed by acceptance, data, rekey,
+half-close and final ownership drain. This is an internal runtime seam; its
+tests do not establish a complete runnable tunnel or production qualification.
 
 Not implemented or not qualified as a production YTP/1 path:
 
-- a genuine HTTP/2 web front door, replay-protected admission and promotion,
-  or live composition of the TLS, H2, security, session, and route providers;
-- runtime wiring for the direct-route candidates and SOCKS/named-service/
-  packet adapters on YTP/1, plus a functional schema-1 ABI endpoint, stream,
-  and packet data path;
+- standalone CLI/daemon composition of the native endpoint, and
+  qualification of its experimental ABI backend;
+- standalone egress rules and CLI/daemon adapter composition, SOCKS/TUN
+  adapters, plus a schema-1 ABI packet data path;
 - deterministic cryptographic known-answer vectors and published rekey
   vectors; the provider test currently uses generated keys rather than a
   reproducible interoperability corpus;
-- full connection/stream lifecycle integration against real carriers and
-  production resource-exhaustion qualification; and
+- production resource-exhaustion and complete adapter lifecycle qualification;
+  and
 - production runtime, interoperability, fuzz, soak, sanitizer, active-probe,
   performance, or independent security-review qualification.
 
-The provider candidates remain build-tree-only and are not created by a live
-YTP/1 endpoint. Schema-1 ABI endpoint start fails with a typed unsupported
-status and never silently dispatches into transport v2. An explicitly selected
+The native endpoint and its providers remain build-tree-only. Schema-1 ABI
+endpoint start uses them only in builds that include them, fails with a typed
+unsupported status otherwise, and never silently dispatches into transport v2. An explicitly selected
 transport-v2 configuration can use the same ABI symbols and carry named byte
 streams, but it is a separate backend and does not qualify YTP/1. The runnable
 transport-v2 product remains a separate default-build lane during the
 transition; its presence does not make transport v2, AUTH v2, federation,
 relay, GUI, or other product-specific surfaces part of YTP/1.
 
-Until live provider/runtime wiring, deterministic executable vectors, and the
+Until standalone wiring, deterministic executable vectors, and the
 qualification gates land, the fixed composition is an implemented
 experimental candidate, not a production security claim. It is not an
 independent security proof, audit, post-quantum-security certification,

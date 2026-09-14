@@ -138,12 +138,13 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
             }
             specs.push_back(std::move(*spec));
         }
-        ip_filter_ = std::make_unique<IpFilter>();
-        ip_filter_->configure(*client_mode, *egress_mode);
+        auto filter = std::make_shared<IpFilter>();
+        filter->configure(*client_mode, *egress_mode);
         std::string load_error;
-        if (!ip_filter_->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
+        if (!filter->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
             throw std::runtime_error("filter load failed: " + load_error);
         }
+        ip_filter_.store(std::move(filter), std::memory_order_release);
     }
     if (cfg_.host_mode != host::HostMode::Off) {
         host_routes_.set_routes(cfg_.host_routes);
@@ -304,8 +305,8 @@ void Manager::start() {
                        std::to_string(cfg_.egress_mbps) +
                        " Mbps, grouped by authenticated identity, weight range=0.1..100 (default 1.0)");
     }
-    if (ip_filter_ && ip_filter_->active()) {
-        util::log_info("IP filtering active: " + ip_filter_->summary());
+    if (auto filter = ip_filter_.load(std::memory_order_acquire); filter && filter->active()) {
+        util::log_info("IP filtering active: " + filter->summary());
     }
     if (cfg_.host_mode != host::HostMode::Off) {
         util::log_info(std::string("host controller mode=") + host::to_string(cfg_.host_mode) +
@@ -578,10 +579,11 @@ bool Manager::write_packets_to_egress(std::uint32_t client_ipv4_be,
 }
 
 bool Manager::egress_allowed(const boost::asio::ip::address& address, std::string* reason) const {
-    if (!ip_filter_) {
+    const auto filter = ip_filter_.load(std::memory_order_acquire);
+    if (!filter) {
         return true;
     }
-    const auto decision = ip_filter_->check_egress(address);
+    const auto decision = filter->check_egress(address);
     if (!decision.allowed && reason) {
         *reason = decision.source.empty() ? "egress filter" : decision.source;
     }
@@ -1009,11 +1011,11 @@ void Manager::do_accept() {
         accept_strand_,
         [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
-            if (ip_filter_) {
+            if (const auto filter = ip_filter_.load(std::memory_order_acquire)) {
                 boost::system::error_code ep_ec;
                 auto remote = socket.remote_endpoint(ep_ec);
                 if (!ep_ec) {
-                    const auto decision = ip_filter_->check_client(remote.address());
+                    const auto decision = filter->check_client(remote.address());
                     if (!decision.allowed) {
                         const auto refused_total =
                             accept_refused_filter_.fetch_add(
@@ -1066,11 +1068,11 @@ void Manager::refuse_client_socket(boost::asio::ip::tcp::socket& socket) {
 }
 
 bool Manager::admit_plain_client(boost::asio::ip::tcp::socket& socket) {
-    if (ip_filter_) {
+    if (const auto filter = ip_filter_.load(std::memory_order_acquire)) {
         boost::system::error_code ep_ec;
         auto remote = socket.remote_endpoint(ep_ec);
         if (!ep_ec) {
-            const auto decision = ip_filter_->check_client(remote.address());
+            const auto decision = filter->check_client(remote.address());
             if (!decision.allowed) {
                 accept_refused_filter_.fetch_add(1, std::memory_order_relaxed);
                 refuse_client_socket(socket);
@@ -1213,7 +1215,7 @@ bool Manager::reload_auth(std::string* error) {
 }
 
 bool Manager::reload_client_filter(std::string* error) {
-    if (!ip_filter_) {
+    if (!ip_filter_.load(std::memory_order_acquire)) {
         if (error) {
             *error = "client filter not configured";
         }
@@ -1240,14 +1242,16 @@ bool Manager::reload_client_filter(std::string* error) {
         }
         specs.push_back(std::move(*spec));
     }
-    ip_filter_->configure(*client_mode, *egress_mode);
+    auto candidate = std::make_shared<IpFilter>();
+    candidate->configure(*client_mode, *egress_mode);
     std::string load_error;
-    if (!ip_filter_->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
+    if (!candidate->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
         if (error) {
             *error = load_error;
         }
         return false;
     }
+    ip_filter_.store(std::move(candidate), std::memory_order_release);
     return true;
 }
 

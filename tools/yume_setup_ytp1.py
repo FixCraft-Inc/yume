@@ -237,11 +237,15 @@ def _require_output_path(raw_path: Path) -> Path:
 
 
 def _generate_private_key(
-    openssl: str, algorithm: str, destination: Path
+    openssl: str, algorithm: str, destination: Path, *, curve: str | None = None
 ) -> None:
+    arguments = ["genpkey", "-algorithm", algorithm]
+    if curve is not None:
+        arguments += ["-pkeyopt", f"ec_paramgen_curve:{curve}"]
+    arguments += ["-out", str(destination)]
     _run_openssl(
         openssl,
-        ["genpkey", "-algorithm", algorithm, "-out", str(destination)],
+        arguments,
         required_algorithm=algorithm,
     )
     os.chmod(destination, 0o600)
@@ -323,7 +327,9 @@ def _generate_tls_material(
     request = work_directory / "server.csr.pem"
     extensions = work_directory / "server.ext"
 
-    _generate_private_key(openssl, "Ed25519", ca_key)
+    # Outer TLS follows the browser profile; composite YTP identity keys have
+    # a separate algorithm contract. The profile does not offer Ed25519 TLS.
+    _generate_private_key(openssl, "EC", ca_key, curve="prime256v1")
     _run_openssl(
         openssl,
         [
@@ -336,6 +342,7 @@ def _generate_tls_material(
             str(ca_certificate),
             "-days",
             "3650",
+            "-sha256",
             "-subj",
             "/CN=YUME 0.3 Local Setup CA",
             "-addext",
@@ -348,7 +355,7 @@ def _generate_tls_material(
     )
     os.chmod(ca_certificate, 0o600)
 
-    _generate_private_key(openssl, "Ed25519", key_output)
+    _generate_private_key(openssl, "EC", key_output, curve="prime256v1")
     _run_openssl(
         openssl,
         [
@@ -387,6 +394,7 @@ def _generate_tls_material(
             "0x" + secrets.token_hex(16),
             "-days",
             "825",
+            "-sha256",
             "-extfile",
             str(extensions),
             "-out",
@@ -480,6 +488,28 @@ def _client_config(host: str, port: int) -> dict[str, object]:
 
 def _write_cover_site(root: Path) -> None:
     _mkdir_private(root)
+    _mkdir_private(root / "assets")
+    _write_text(
+        root / "assets/site.css",
+        """body { margin: 0; font: 17px/1.6 system-ui, sans-serif; color: #24323d; background: #f4f1e8; }
+main { max-width: 48rem; margin: 10vh auto; padding: 2rem; }
+h1 { font-size: clamp(2rem, 7vw, 4.5rem); line-height: 1; margin-bottom: 1rem; }
+article { background: #fff; border-radius: 1rem; padding: 2rem; box-shadow: 0 1rem 3rem #26323d18; }
+a { color: #176b68; }
+button { font: inherit; color: #176b68; background: transparent; border: 1px solid currentColor; padding: .3rem .75rem; cursor: pointer; }
+@media print { body, article { background: #fff; } main { margin: 0; } article { box-shadow: none; } button { display: none; } }
+""",
+    )
+    _write_text(
+        root / "assets/site.js",
+        """'use strict';
+// Printing is an optional enhancement; field notes remain readable without scripts.
+for (const button of document.querySelectorAll('[data-print-note]')) {
+    button.hidden = false;
+    button.addEventListener('click', () => window.print());
+}
+""",
+    )
     _write_text(
         root / "index.html",
         """<!doctype html>
@@ -488,13 +518,8 @@ def _write_cover_site(root: Path) -> None:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Northwind Field Notes</title>
-  <style>
-    body { margin: 0; font: 17px/1.6 system-ui, sans-serif; color: #24323d; background: #f4f1e8; }
-    main { max-width: 48rem; margin: 10vh auto; padding: 2rem; }
-    h1 { font-size: clamp(2rem, 7vw, 4.5rem); line-height: 1; margin-bottom: 1rem; }
-    article { background: #fff; border-radius: 1rem; padding: 2rem; box-shadow: 0 1rem 3rem #26323d18; }
-    a { color: #176b68; }
-  </style>
+  <link rel="stylesheet" href="/assets/site.css">
+  <script src="/assets/site.js" defer></script>
 </head>
 <body>
   <main>
@@ -503,6 +528,7 @@ def _write_cover_site(root: Path) -> None:
       <h1>Northwind</h1>
       <p>A small notebook about trails, changing weather, and the quiet work of keeping a good map.</p>
       <p><a href="/about.html">About this notebook</a></p>
+      <button type="button" data-print-note hidden>Print this note</button>
     </article>
   </main>
 </body>
@@ -512,8 +538,28 @@ def _write_cover_site(root: Path) -> None:
     _write_text(
         root / "about.html",
         """<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>About Northwind</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>About Northwind</title><link rel="stylesheet" href="/assets/site.css"></head>
 <body><main><h1>About Northwind</h1><p>Independent field notes, maintained slowly and published when useful.</p><p><a href="/">Return home</a></p></main></body></html>
+""",
+    )
+    _write_text(
+        root / "404.html",
+        """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page not found — Northwind Field Notes</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <main>
+    <h1>Page not found</h1>
+    <p>This address does not lead to a field note. The page may have moved or the link may be incomplete.</p>
+    <p><a href="/">Return to Northwind</a></p>
+  </main>
+</body>
+</html>
 """,
     )
 

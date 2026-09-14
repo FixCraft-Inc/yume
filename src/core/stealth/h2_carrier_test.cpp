@@ -3,14 +3,50 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <new>
 #include <string>
 #include <thread>
 
 #include <nghttp2/nghttp2.h>
 
 #include "core/stealth/cover_profile.hpp"
+
+// The test must inherit the codec's public diagnostics setting. Otherwise its
+// conditional assertions silently disappear while the library still collects.
+static_assert(yume::diagnostics::kTimingCompiledIn ==
+              static_cast<bool>(YUME_TEST_EXPECT_DEV_DIAGNOSTICS));
+
+namespace {
+thread_local int allocation_failure_after = -1;
+thread_local bool sustained_allocation_failure = false;
+thread_local bool allocation_failed = false;
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+void* operator new(std::size_t size) {
+    if (allocation_failure_after == 0) {
+        allocation_failed = true;
+        if (!sustained_allocation_failure) allocation_failure_after = -1;
+        throw std::bad_alloc();
+    }
+    if (allocation_failure_after > 0) --allocation_failure_after;
+    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* storage) noexcept { std::free(storage); }
+void operator delete[](void* storage) noexcept { ::operator delete(storage); }
+void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
+void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace {
 
@@ -139,6 +175,86 @@ void OpenCarrier(H2Carrier& client, H2Carrier& server) {
     Pump(server, client);
     Pump(client, server);
     assert(client.carrier_active() && server.carrier_active());
+}
+
+enum class CallbackFixture { Request, Data, StreamClose, PrimingResponse };
+
+void test_callback_allocation_failure_is_contained() {
+    for (const bool sustained : {false, true}) {
+        for (const auto fixture : {CallbackFixture::Request, CallbackFixture::Data,
+                                   CallbackFixture::StreamClose,
+                                   CallbackFixture::PrimingResponse}) {
+            bool reached_success = false;
+            std::size_t callback_failures = 0U;
+            for (int failure_index = 0; failure_index < 256; ++failure_index) {
+                auto client = std::make_unique<H2Carrier>(H2CarrierRole::Client);
+                auto server = std::make_unique<H2Carrier>(H2CarrierRole::Server);
+                H2Bytes wire;
+                H2Carrier* receiver = server.get();
+                if (fixture == CallbackFixture::Request) {
+                    assert(client->StartClient("cover.example"));
+                    wire = client->TakeOutbound();
+                } else if (fixture == CallbackFixture::PrimingResponse) {
+                    assert(client->StartClient("cover.example"));
+                    Pump(*client, *server);
+                    Pump(*server, *client);
+                    const auto requests = server->TakeRequests();
+                    assert(requests.size() == 1U);
+                    assert(server->RespondHttp(requests.front().stream_id, 200,
+                        {{"content-type", "text/html"}}, H2Bytes{'o', 'k'}));
+                    wire = server->TakeOutbound();
+                    receiver = client.get();
+                } else {
+                    OpenCarrier(*client, *server);
+                    // Force the next close event to reserve its own storage.
+                    (void)server->TakeStreamCloses();
+                    if (fixture == CallbackFixture::Data) {
+                        assert(client->SendBinary(H2Bytes(512U, 0x5aU)));
+                        wire = client->TakeOutbound();
+                    } else {
+                        wire = RstStream(static_cast<std::uint32_t>(
+                            server->carrier_stream_id()), NGHTTP2_NO_ERROR);
+                    }
+                }
+                assert(!wire.empty());
+                allocation_failed = false;
+                sustained_allocation_failure = sustained;
+                allocation_failure_after = failure_index;
+                bool threw = false;
+                try {
+                    receiver->Feed(wire);
+                } catch (const std::bad_alloc&) {
+                    // Feed's ordinary C++ serialization can allocate after
+                    // the C callbacks finish. Its caller contains that path.
+                    // An exception escaping a noexcept C callback would abort
+                    // this executable before reaching this boundary.
+                    threw = true;
+                }
+                const bool fault = allocation_failed;
+                const bool failed = receiver->failed();
+                if (fault && failed) {
+                    ++callback_failures;
+                    // A marked callback failure must remain terminal and must
+                    // not allocate a diagnostic on a later Feed/Flush call.
+                    receiver->Feed(wire);
+                    (void)receiver->TakeOutbound();
+                    assert(receiver->failed());
+                }
+                // Destruction must be safe before sustained pressure ends.
+                server.reset();
+                client.reset();
+                allocation_failure_after = -1;
+                sustained_allocation_failure = false;
+                if (!fault) {
+                    assert(!threw && !failed);
+                    reached_success = true;
+                    break;
+                }
+                assert(failed || threw);
+            }
+            assert(reached_success && callback_failures > 0U);
+        }
+    }
 }
 
 void FullSessionRoundTrip() {
@@ -766,6 +882,7 @@ void ServerCreditCanRetireAfterStreamClose() {
 }  // namespace
 
 int main() {
+    test_callback_allocation_failure_is_contained();
     FullSessionRoundTrip();
     InboundContinuationIsObservedWithoutPayloadRetention();
     ObserverDoesNotChangeOpeningWire();

@@ -10,6 +10,8 @@
 #include <cstring>
 #include <limits>
 
+#include "ytp/detail/byte_order.hpp"
+
 namespace yume::ytp1 {
 namespace {
 
@@ -20,39 +22,6 @@ constexpr std::uint16_t kMandatoryAuthFieldCount = 3;
 constexpr std::uint16_t kKeyScheduleFieldCount = 18;
 constexpr std::size_t kKeySchedulePrefixSize = 4;
 constexpr std::size_t kKeyScheduleFieldPrefixSize = 6;
-
-[[nodiscard]] constexpr std::uint16_t ReadU16(
-    std::span<const std::uint8_t> input,
-    std::size_t offset) noexcept {
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(input[offset]) << 8U) |
-        static_cast<std::uint16_t>(input[offset + 1]));
-}
-
-[[nodiscard]] constexpr std::uint32_t ReadU32(
-    std::span<const std::uint8_t> input,
-    std::size_t offset) noexcept {
-    return (static_cast<std::uint32_t>(input[offset]) << 24U) |
-           (static_cast<std::uint32_t>(input[offset + 1]) << 16U) |
-           (static_cast<std::uint32_t>(input[offset + 2]) << 8U) |
-           static_cast<std::uint32_t>(input[offset + 3]);
-}
-
-constexpr void WriteU16(std::span<std::uint8_t> output,
-                        std::size_t offset,
-                        std::uint16_t value) noexcept {
-    output[offset] = static_cast<std::uint8_t>(value >> 8U);
-    output[offset + 1] = static_cast<std::uint8_t>(value);
-}
-
-constexpr void WriteU32(std::span<std::uint8_t> output,
-                        std::size_t offset,
-                        std::uint32_t value) noexcept {
-    output[offset] = static_cast<std::uint8_t>(value >> 24U);
-    output[offset + 1] = static_cast<std::uint8_t>(value >> 16U);
-    output[offset + 2] = static_cast<std::uint8_t>(value >> 8U);
-    output[offset + 3] = static_cast<std::uint8_t>(value);
-}
 
 [[nodiscard]] constexpr bool IsKnownAuthMessageType(
     AuthMessageType type) noexcept {
@@ -157,9 +126,10 @@ void WriteAuthField(std::span<std::uint8_t> output,
                     std::uint16_t id,
                     bool critical,
                     std::span<const std::uint8_t> value) {
-    WriteU16(output, offset, id);
-    WriteU16(output, offset + 2, critical ? kAuthFieldFlagCritical : 0);
-    WriteU32(output, offset + 4, static_cast<std::uint32_t>(value.size()));
+    detail::write_u16_be(output, offset, id);
+    detail::write_u16_be(output, offset + 2, critical ? kAuthFieldFlagCritical : 0);
+    detail::write_u32_be(
+        output, offset + 4, static_cast<std::uint32_t>(value.size()));
     offset += kAuthFieldPrefixSize;
     std::copy(value.begin(), value.end(),
               output.begin() + static_cast<std::ptrdiff_t>(offset));
@@ -276,10 +246,11 @@ Result<std::vector<std::uint8_t>> EncodeAuthRecord(const AuthRecord& record) {
     std::vector<std::uint8_t> output(total);
     output[0] = kAuthSchema;
     output[1] = static_cast<std::uint8_t>(record.type);
-    WriteU16(output, 2,
-             static_cast<std::uint16_t>(kMandatoryAuthFieldCount +
-                                        fields.size()));
-    WriteU32(output, 4, static_cast<std::uint32_t>(total - kAuthPrefixSize));
+    detail::write_u16_be(
+        output, 2,
+        static_cast<std::uint16_t>(kMandatoryAuthFieldCount + fields.size()));
+    detail::write_u32_be(
+        output, 4, static_cast<std::uint32_t>(total - kAuthPrefixSize));
 
     std::size_t offset = kAuthPrefixSize;
     WriteAuthField(output, offset,
@@ -313,14 +284,14 @@ Result<AuthRecord> DecodeAuthRecord(std::span<const std::uint8_t> encoded) {
     if (!IsKnownAuthMessageType(message_type)) {
         return Result<AuthRecord>::Failure(ErrorCode::InvalidEnum, 1);
     }
-    const std::size_t field_count = ReadU16(encoded, 2);
+    const std::size_t field_count = detail::read_u16_be(encoded, 2);
     if (field_count > kMaxAuthFields) {
         return Result<AuthRecord>::Failure(ErrorCode::TooManyFields, 2);
     }
     if (field_count < kMandatoryAuthFieldCount) {
         return Result<AuthRecord>::Failure(ErrorCode::MissingField, 2);
     }
-    const std::size_t body_length = ReadU32(encoded, 4);
+    const std::size_t body_length = detail::read_u32_be(encoded, 4);
     if (body_length > encoded.size() - kAuthPrefixSize) {
         return Result<AuthRecord>::Failure(ErrorCode::Truncated,
                                            encoded.size());
@@ -343,9 +314,9 @@ Result<AuthRecord> DecodeAuthRecord(std::span<const std::uint8_t> encoded) {
         if (encoded.size() - offset < kAuthFieldPrefixSize) {
             return Result<AuthRecord>::Failure(ErrorCode::Truncated, offset);
         }
-        const std::uint16_t id = ReadU16(encoded, offset);
-        const std::uint16_t flags = ReadU16(encoded, offset + 2);
-        const std::size_t length = ReadU32(encoded, offset + 4);
+        const std::uint16_t id = detail::read_u16_be(encoded, offset);
+        const std::uint16_t flags = detail::read_u16_be(encoded, offset + 2);
+        const std::size_t length = detail::read_u32_be(encoded, offset + 4);
         if (id == 0) {
             return Result<AuthRecord>::Failure(ErrorCode::InvalidField, offset);
         }
@@ -512,12 +483,12 @@ Status EncodeKeyScheduleInput(const KeyScheduleInput& input,
 
     output[0] = kWireVersion;
     output[1] = 0;
-    WriteU16(output, 2, kKeyScheduleFieldCount);
+    detail::write_u16_be(output, 2, kKeyScheduleFieldCount);
     std::size_t offset = kKeySchedulePrefixSize;
     for (const TaggedView& field : fields) {
-        WriteU16(output, offset, field.id);
-        WriteU32(output, offset + 2,
-                 static_cast<std::uint32_t>(field.value.size()));
+        detail::write_u16_be(output, offset, field.id);
+        detail::write_u32_be(
+            output, offset + 2, static_cast<std::uint32_t>(field.value.size()));
         offset += kKeyScheduleFieldPrefixSize;
         std::memmove(output.data() + offset, field.value.data(),
                      field.value.size());

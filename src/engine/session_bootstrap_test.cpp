@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "engine/session_bootstrap.hpp"
+#include "test_support/allocation_failure.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
 
@@ -390,6 +391,12 @@ public:
             std::make_unique<FakeByteChannel>(trace_, affinity_);
         completion_(Result<std::unique_ptr<ByteChannel>>(std::move(channel)));
     }
+    void complete(Result<std::unique_ptr<ByteChannel>> result) {
+        CHECK(completion_);
+        Completion completion = std::move(completion_);
+        completion_ = {};
+        completion(std::move(result));
+    }
     void clear() { completion_ = {}; }
 
 private:
@@ -675,6 +682,7 @@ public:
     void on_open(StreamOpenContext,
                  std::shared_ptr<StreamResponder>) override {}
     void on_route(AuthorizedRouteRequest,
+                  std::shared_ptr<RouteProvider>,
                   std::shared_ptr<StreamResponder>) override {}
 
 private:
@@ -882,6 +890,49 @@ void test_role_provenance_and_affinity_rejection() {
     CHECK(trace->front_closed == 0);
 }
 
+void test_carrier_ready_controls_session_start() {
+    for (unsigned mode = 0U; mode < 6U; ++mode) {
+        const auto trace = std::make_shared<Trace>();
+        const auto fixture = make_graph(EndpointRole::Server, trace);
+        auto front = std::make_shared<FakeFrontDoor>(trace, ExecutorAffinity(17U),
+            ExecutorAffinity(17U), make_descriptor(
+                mode == 5U ? "wrong.carrier" : "test.carrier", ProviderKind::Carrier));
+        auto bootstrap = require(SessionBootstrap::create(fixture.graph, front));
+        CompletionCapture completion;
+        unsigned ready_calls = 0U;
+        const std::weak_ptr<SessionBootstrap> weak = bootstrap;
+        CHECK(bootstrap->async_start({}, [&completion](auto result) {
+            completion.accept(std::move(result));
+        }, [&, owner = bootstrap]() -> Status {
+            ++ready_calls;
+            // Queries and reentrant cancellation require no held bootstrap
+            // locks. Session security must not have sent any AUTH yet.
+            CHECK(owner->state() == SessionBootstrapState::CreatingSession);
+            CHECK(trace->carrier && trace->carrier->sent.empty());
+            if (mode == 1U) return Status(StatusCode::ResourceExhausted);
+            if (mode == 2U) throw std::bad_alloc();
+            if (mode == 3U) throw std::runtime_error("readiness failure");
+            if (mode == 4U) owner->cancel();
+            return Status::success();
+        }).ok());
+        CHECK(ready_calls == (mode == 5U ? 0U : 1U));
+        if (mode == 0U) {
+            activate(EndpointRole::Server, trace, completion);
+            completion.engine->stop();
+            CHECK(ready_calls == 1U);
+        } else {
+            CHECK(completion.count == 1 && !completion.engine);
+            CHECK(completion.failure == (mode == 5U ? StatusCode::ProviderMismatch
+                : mode == 4U ? StatusCode::Cancelled : mode == 3U ? StatusCode::Internal
+                : StatusCode::ResourceExhausted));
+            CHECK(trace->carrier_cancelled == 1 && trace->carrier_closed == 1);
+        }
+        CHECK(trace->front_cancelled == 0 && trace->front_closed == 0);
+        bootstrap.reset();
+        CHECK(weak.expired());
+    }
+}
+
 void test_bootstrap_rejects_non_tls13_ytp1_graph() {
     const auto trace = std::make_shared<Trace>();
     GraphFixture fixture = make_graph(
@@ -990,6 +1041,239 @@ void test_cancellation_waits_for_settlement_and_ignores_duplicate() {
     deferred->clear();
 }
 
+class AllocationFailureScope final {
+public:
+    explicit AllocationFailureScope(std::size_t nth, bool sustained = false) {
+        test::arm_allocation_failure(nth);
+        test::fail_allocations.store(sustained, std::memory_order_relaxed);
+    }
+    ~AllocationFailureScope() {
+        test::fail_allocations.store(false, std::memory_order_relaxed);
+        test::disarm_allocation_failure();
+    }
+    bool fired() const noexcept { return test::allocation_countdown == 0U; }
+};
+
+void test_factory_allocation_failures_are_typed() {
+    for (const EndpointRole role : {EndpointRole::Client, EndpointRole::Server}) {
+        const auto trace = std::make_shared<Trace>();
+        const GraphFixture fixture = make_graph(role, trace);
+        const auto front = std::make_shared<FakeFrontDoor>(
+            trace, ExecutorAffinity(17U), ExecutorAffinity(17U),
+            make_descriptor("test.carrier", ProviderKind::Carrier));
+        std::size_t failures = 0U;
+        bool reached_success = false;
+        for (std::size_t nth = 1U; nth <= 32U; ++nth) {
+            Result<std::shared_ptr<SessionBootstrap>> result(
+                Status(StatusCode::Internal));
+            bool fired = false;
+            {
+                AllocationFailureScope allocation_failure(nth);
+                result = role == EndpointRole::Client
+                    ? SessionBootstrap::create(fixture.graph)
+                    : SessionBootstrap::create(fixture.graph, front);
+                fired = allocation_failure.fired();
+            }
+            if (!fired) {
+                CHECK(result.ok());
+                reached_success = true;
+                break;
+            }
+            CHECK(!result.ok());
+            CHECK(result.status().code() == StatusCode::ResourceExhausted);
+            ++failures;
+        }
+        CHECK(reached_success);
+        // Impl storage, CancellationSource state, public object, shared owner.
+        CHECK(failures >= 4U);
+        {
+            AllocationFailureScope allocation_failure(1U, true);
+            auto result = role == EndpointRole::Client
+                ? SessionBootstrap::create(fixture.graph)
+                : SessionBootstrap::create(fixture.graph, front);
+            CHECK(!result.ok());
+            CHECK(result.status().code() == StatusCode::ResourceExhausted);
+        }
+        CHECK(front.use_count() == 1);
+        CHECK(trace->front_cancelled == 0);
+        CHECK(trace->front_closed == 0);
+    }
+}
+
+void test_start_registration_allocation_failures_settle() {
+    for (const bool sustained : {false, true}) {
+        bool reached_pending = false;
+        for (std::size_t nth = 1U; nth <= 32U; ++nth) {
+            const auto trace = std::make_shared<Trace>();
+            const auto deferred = std::make_shared<DeferredByteProvider>(
+                trace, ExecutorAffinity(17U));
+            const auto fixture = make_graph(
+                EndpointRole::Client, trace, ExecutorAffinity(17U),
+                ExecutorAffinity(17U), ExecutorAffinity(17U), deferred);
+            auto bootstrap = require(SessionBootstrap::create(fixture.graph));
+            CancellationSource cancellation;
+            CompletionCapture capture;
+            SessionBootstrap::Completion completion = [&capture](auto result) {
+                capture.accept(std::move(result));
+            };
+            Status admitted;
+            bool fired = false;
+            {
+                AllocationFailureScope allocation_failure(nth, sustained);
+                admitted = bootstrap->async_start(
+                    cancellation.token(), std::move(completion));
+                fired = allocation_failure.fired();
+            }
+            CHECK(admitted.ok());
+            if (!sustained && !fired) {
+                CHECK(capture.count == 0);
+                CHECK(bootstrap->state() ==
+                      SessionBootstrapState::AcquiringByteChannel);
+                bootstrap->cancel();
+                deferred->complete_cancelled();
+                deferred->clear();
+                reached_pending = true;
+                break;
+            }
+            CHECK(capture.count == 1);
+            CHECK(capture.failure == StatusCode::ResourceExhausted);
+            CHECK(bootstrap->state() == SessionBootstrapState::Failed);
+            CHECK(cancellation.cancel());
+            CHECK(capture.count == 1);
+            if (sustained) break;
+        }
+        CHECK(sustained || reached_pending);
+    }
+}
+
+void test_cancel_and_late_success_under_allocation_failure() {
+    for (const bool sustained : {false, true}) {
+        const auto trace = std::make_shared<Trace>();
+        auto deferred = std::make_shared<DeferredByteProvider>(
+            trace, ExecutorAffinity(17U));
+        const auto fixture = make_graph(
+            EndpointRole::Client, trace, ExecutorAffinity(17U),
+            ExecutorAffinity(17U), ExecutorAffinity(17U), deferred);
+        auto bootstrap = require(SessionBootstrap::create(fixture.graph));
+        const std::weak_ptr<SessionBootstrap> weak = bootstrap;
+        CompletionCapture capture;
+        bool closed_before_completion = false;
+        CHECK(bootstrap->async_start({}, [&](auto result) {
+            closed_before_completion = trace->byte_closed == 1;
+            capture.accept(std::move(result));
+        }).ok());
+        std::unique_ptr<ByteChannel> late = std::make_unique<FakeByteChannel>(
+            trace, ExecutorAffinity(17U));
+        {
+            AllocationFailureScope allocation_failure(1U, sustained);
+            bootstrap->cancel();
+            CHECK(deferred->cancelled());
+            CHECK(capture.count == 0);
+            bootstrap.reset();
+            CHECK(!weak.expired());
+            deferred->complete(
+                Result<std::unique_ptr<ByteChannel>>(std::move(late)));
+            CHECK(capture.count == 1);
+            CHECK(capture.failure == StatusCode::Cancelled);
+            CHECK(closed_before_completion);
+            CHECK(weak.expired());
+        }
+        CHECK(trace->byte_cancelled == 1);
+        CHECK(trace->byte_closed == 1);
+        CHECK(trace->secure_closed == 0);
+    }
+}
+
+void test_long_provider_failure_under_allocation_failure() {
+    for (const bool sustained : {false, true}) {
+        const auto trace = std::make_shared<Trace>();
+        auto deferred = std::make_shared<DeferredByteProvider>(
+            trace, ExecutorAffinity(17U));
+        const auto fixture = make_graph(
+            EndpointRole::Client, trace, ExecutorAffinity(17U),
+            ExecutorAffinity(17U), ExecutorAffinity(17U), deferred);
+        auto bootstrap = require(SessionBootstrap::create(fixture.graph));
+        CompletionCapture capture;
+        CHECK(bootstrap->async_start({}, [&capture](auto result) {
+            capture.accept(std::move(result));
+        }).ok());
+        Result<std::unique_ptr<ByteChannel>> failed(Status(
+            StatusCode::Closed, std::string(512U, 'x')));
+        {
+            AllocationFailureScope allocation_failure(1U, sustained);
+            deferred->complete(std::move(failed));
+        }
+        CHECK(capture.count == 1);
+        CHECK(capture.failure == StatusCode::Closed);
+        CHECK(bootstrap->state() == SessionBootstrapState::Failed);
+        bootstrap->cancel();
+        CHECK(capture.count == 1);
+    }
+}
+
+void test_all_bootstrap_layers_allocation_failures_settle() {
+    for (const EndpointRole role : {EndpointRole::Client, EndpointRole::Server}) {
+        for (const bool sustained : {false, true}) {
+            bool completed_sweep = false;
+            std::size_t failures = 0U;
+            for (std::size_t nth = 1U; nth <= 128U; ++nth) {
+                const auto trace = std::make_shared<Trace>();
+                const auto fixture = make_graph(role, trace);
+                const auto front = std::make_shared<FakeFrontDoor>(
+                    trace, ExecutorAffinity(17U), ExecutorAffinity(17U),
+                    make_descriptor("test.carrier", ProviderKind::Carrier));
+                auto bootstrap = role == EndpointRole::Client
+                    ? require(SessionBootstrap::create(fixture.graph))
+                    : require(SessionBootstrap::create(fixture.graph, front));
+                CompletionCapture capture;
+                SessionBootstrap::Completion completion = [&capture](auto result) {
+                    capture.accept(std::move(result));
+                };
+                Status admitted;
+                bool fired = false;
+                {
+                    AllocationFailureScope allocation_failure(nth);
+                    if (sustained) {
+                        // Keep denial armed after the selected operation allocation
+                        // so catch handlers and partial construction destructors run
+                        // under the same memory pressure as the failing operation.
+                        test::before_allocate = [](std::size_t) {
+                            if (test::allocation_countdown != 0U &&
+                                --test::allocation_countdown == 0U) {
+                                test::fail_allocations.store(
+                                    true, std::memory_order_relaxed);
+                                throw std::bad_alloc();
+                            }
+                        };
+                    }
+                    admitted = bootstrap->async_start({}, std::move(completion));
+                    fired = allocation_failure.fired();
+                    if (fired) {
+                        // Callback closure, cancellation, and final owner release
+                        // must remain possible while denial is still sustained.
+                        bootstrap->cancel();
+                        bootstrap.reset();
+                    }
+                }
+                CHECK(admitted.ok());
+                if (!fired) {
+                    CHECK(bootstrap->state() == SessionBootstrapState::StartingSession);
+                    activate(role, trace, capture);
+                    capture.engine->stop();
+                    completed_sweep = true;
+                    break;
+                }
+                CHECK(capture.count == 1);
+                CHECK(capture.failure != StatusCode::Ok);
+                CHECK(trace->carrier == nullptr);
+                ++failures;
+            }
+            CHECK(completed_sweep);
+            CHECK(failures > 20U);
+        }
+    }
+}
+
 void test_completion_exception_is_contained() {
     const auto trace = std::make_shared<Trace>();
     trace->fail_security_factory = true;
@@ -1012,11 +1296,17 @@ int main() {
     try {
         yume::engine::test_client_bootstrap_to_active();
         yume::engine::test_server_bootstrap_preserves_promoted_carrier();
+        yume::engine::test_carrier_ready_controls_session_start();
         yume::engine::test_role_provenance_and_affinity_rejection();
         yume::engine::test_bootstrap_rejects_non_tls13_ytp1_graph();
         yume::engine::test_client_layer_cleanup_and_session_failures();
         yume::engine::test_cancellation_waits_for_settlement_and_ignores_duplicate();
         yume::engine::test_completion_exception_is_contained();
+        yume::engine::test_factory_allocation_failures_are_typed();
+        yume::engine::test_start_registration_allocation_failures_settle();
+        yume::engine::test_cancel_and_late_success_under_allocation_failure();
+        yume::engine::test_long_provider_failure_under_allocation_failure();
+        yume::engine::test_all_bootstrap_layers_allocation_failures_settle();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

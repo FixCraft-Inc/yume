@@ -40,12 +40,14 @@ connects directly trusted servers and is limited to one hop.
 ## Experimental YTP/1 work
 
 YTP/1 (YUME Transport Protocol 1) is the replacement protocol under development.
-Its engine, codecs, schema-1 configuration, and provider tests exist. They do
-not yet form a working client/server endpoint. Transport v2 remains the default
-until the replacement passes the [parity gates](docs/IMPLEMENTATION_STATUS.md).
+Its engine, codecs, schema-1 configuration, providers and a native endpoint
+composition exist. They do not yet form standalone `yume` and `yumed` runtimes.
+Transport v2 remains the default
+until the replacement passes the [required capability gates](docs/IMPLEMENTATION_STATUS.md).
 
-The opt-in C ABI already carries authenticated named byte streams through
-transport v2. Packet channels and the YTP/1 backend remain unsupported.
+The opt-in C ABI carries authenticated named byte streams through transport v2.
+When the native YTP/1 providers are also built, schema-1 documents carry them
+through an experimental YTP/1 backend. Packet channels remain unsupported.
 See the [C ABI reference](docs/ABI.md) and [YTP/1 development guide](docs/development/ytp1/README.md).
 
 ## Build
@@ -94,7 +96,7 @@ operator CA's private key off the server.
 | --- | --- |
 | `yume` | Client, SOCKS endpoint, forwards, packet routing, and attached tools |
 | `yumed` | TLS/H2 endpoint, authentication, policy enforcement, and proxy exit |
-| `libyume` | Opt-in build-tree C ABI; transport-v2 named streams work, while schema-1 start and packets remain unsupported |
+| `libyume` | Opt-in build-tree C ABI. Transport-v2 named streams work, schema-1 named streams work in builds with the native providers, and packets remain unsupported |
 | `yume-gui` | Optional Dear ImGui desktop client and server UI, still a preview |
 | `yume-setup` | Runnable transport-v2 server and client-kit provisioner |
 | `yume-setup-ytp1` / `yume-doctor-ytp1` | Experimental schema-1 generator and validator |

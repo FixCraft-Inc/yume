@@ -30,7 +30,10 @@ file(MAKE_DIRECTORY
     "${YUME_TEST_ROOT}/src/outbound"
     "${YUME_TEST_ROOT}/src/client"
     "${YUME_TEST_ROOT}/src/server"
-    "${YUME_TEST_ROOT}/src/facade")
+    "${YUME_TEST_ROOT}/src/facade"
+    "${YUME_TEST_ROOT}/src/runtime"
+    "${YUME_TEST_ROOT}/src/providers"
+    "${YUME_TEST_ROOT}/src/admission")
 file(WRITE "${YUME_TEST_ROOT}/src/engine/clean.hpp" "#include <vector>\n")
 file(WRITE "${YUME_TEST_ROOT}/src/ytp/clean.hpp" "#include <span>\n")
 file(WRITE "${YUME_TEST_ROOT}/src/config/v1/clean.hpp" "#include <string>\n")
@@ -61,6 +64,15 @@ function(run_layering_check expect_success expected_text)
 endfunction()
 
 run_layering_check(TRUE "")
+
+file(WRITE "${YUME_TEST_ROOT}/src/runtime/forbidden.hpp"
+    "#include <basefwx/crypto.hpp>\n")
+run_layering_check(FALSE "Layering violation")
+file(REMOVE "${YUME_TEST_ROOT}/src/runtime/forbidden.hpp")
+file(WRITE "${YUME_TEST_ROOT}/src/providers/forbidden.hpp"
+    "#include \"runtime/native_endpoint.hpp\"\n")
+run_layering_check(FALSE "Layering violation")
+file(REMOVE "${YUME_TEST_ROOT}/src/providers/forbidden.hpp")
 
 file(WRITE "${YUME_TEST_ROOT}/src/engine/forbidden.hpp"
     "#include <openssl/ssl.h>\n")
@@ -134,5 +146,12 @@ file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.c"
     "#include \"server/config/config.hpp\"\n")
 run_layering_check(FALSE "forbidden.c includes server/")
 file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.c")
+
+foreach(_forbidden IN ITEMS core/security/crypto.hpp providers/ytp1_h2_admission.hpp)
+    file(WRITE "${YUME_TEST_ROOT}/src/admission/forbidden.hpp"
+        "#include \"${_forbidden}\"\n")
+    run_layering_check(FALSE "Layering violation: src/admission/")
+    file(REMOVE "${YUME_TEST_ROOT}/src/admission/forbidden.hpp")
+endforeach()
 
 file(REMOVE_RECURSE "${YUME_TEST_ROOT}")

@@ -24,8 +24,8 @@ struct ValidationReport {
     bool ok() const noexcept { return errors.empty(); }
 };
 
-// JSON ↔ ClientConfig. The format matches what main_client.cpp accepts so
-// the GUI and CLI can share config files. The key set is closed: see
+// JSON ↔ ClientConfig for transport v2. CLI and facade share the key set,
+// while parsing and runtime validation remain separate gates. See
 // config/client_document_keys.hpp. Returns nullopt with *err populated on
 // parse failure. When `json_pointer` is given it receives an RFC 6901
 // pointer to the offending member, or an empty string when the failure
@@ -42,6 +42,8 @@ std::optional<client::ClientConfig> parse_client_json(
 bool save_client(client::ClientConfig const& cfg,
                  std::filesystem::path const& path,
                  std::string* err);
+// Serialization preserves the caller's destination on failure. Saving uses
+// atomic file replacement. Neither operation proves startup acceptance.
 bool serialize_client_json(
     client::ClientConfig const& cfg,
     std::optional<std::string_view> display_name,

@@ -7,23 +7,24 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <future>
 #include <iostream>
 #include <memory>
-#include <mutex>
-#include <set>
+#include <new>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
-#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -32,6 +33,106 @@
 #include <boost/system/error_code.hpp>
 
 #include "providers/asio_tcp_byte_channel_provider.hpp"
+
+namespace test_allocation_failure {
+
+// One-shot injection targets a selected actor turn. Sustained injection covers
+// every thread and both allocation routes used by Boost.Asio.
+thread_local std::ptrdiff_t remaining = -1;
+std::atomic<bool> sustained{false};
+
+class Scope final {
+public:
+    explicit Scope(std::ptrdiff_t count) noexcept { remaining = count; }
+    ~Scope() { remaining = -1; }
+};
+
+class SustainedScope final {
+public:
+    explicit SustainedScope(bool enabled = true) noexcept {
+        sustained.store(enabled, std::memory_order_release);
+    }
+    ~SustainedScope() { sustained.store(false, std::memory_order_release); }
+};
+
+bool consume() noexcept {
+    if (sustained.load(std::memory_order_acquire)) return true;
+    if (remaining < 0) {
+        return false;
+    }
+    if (remaining == 0) {
+        remaining = -1;
+        return true;
+    }
+    --remaining;
+    return false;
+}
+
+}  // namespace test_allocation_failure
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
+void* operator new(std::size_t size) {
+    if (test_allocation_failure::consume()) {
+        throw std::bad_alloc();
+    }
+    if (void* allocation = std::malloc(size == 0U ? 1U : size)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete[](void* allocation) noexcept { ::operator delete(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept {
+    ::operator delete(allocation);
+}
+void operator delete[](void* allocation, std::size_t) noexcept {
+    ::operator delete[](allocation);
+}
+
+// Asio's aligned allocation path can bypass operator new. Interpose it as
+// well, so a passing cleanup test cannot accidentally depend on that escape.
+extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
+    if (test_allocation_failure::consume()) {
+        errno = ENOMEM;
+        return nullptr;
+    }
+    void* allocation = nullptr;
+    const int error = ::posix_memalign(&allocation, alignment, size == 0U ? 1U : size);
+    if (error != 0) errno = error;
+    return allocation;
+}
+
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    if (void* allocation = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) {
+    return ::operator new(size, alignment);
+}
+void operator delete(void* allocation, std::align_val_t) noexcept {
+    std::free(allocation);
+}
+void operator delete[](void* allocation, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+void operator delete(void* allocation, std::size_t, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+void operator delete[](void* allocation, std::size_t, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace yume::providers {
 namespace {
@@ -76,44 +177,58 @@ std::string buffer_text(const Buffer& buffer) {
 
 class IoRuntime final {
 public:
-    explicit IoRuntime(std::size_t thread_count = 2U)
-        : guard_(boost::asio::make_work_guard(context_)) {
-        CHECK(thread_count > 0U);
-        for (std::size_t index = 0U; index < thread_count; ++index) {
-            threads_.emplace_back([this]() {
-                {
-                    std::lock_guard<std::mutex> lock(worker_mutex_);
-                    worker_ids_.insert(std::this_thread::get_id());
-                }
-                context_.run();
-            });
-        }
+    IoRuntime()
+        : context_(require(AsioExecutionContext::create(ExecutorAffinity(93U)))) {
+        std::promise<void> started;
+        auto ready = started.get_future();
+        thread_ = std::thread([this, &started]() {
+            worker_id_ = std::this_thread::get_id();
+            started.set_value();
+            context_->run();
+        });
+        ready.get();
     }
     IoRuntime(const IoRuntime&) = delete;
     IoRuntime& operator=(const IoRuntime&) = delete;
     ~IoRuntime() noexcept {
-        guard_.reset();
-        context_.stop();
-        for (std::thread& thread : threads_) {
-            if (thread.joinable()) {
-                thread.join();
-            }
-        }
+        context_->finish();
+        if (thread_.joinable()) thread_.join();
     }
 
-    boost::asio::io_context& context() noexcept { return context_; }
-    bool is_worker(std::thread::id id) const {
-        std::lock_guard<std::mutex> lock(worker_mutex_);
-        return worker_ids_.contains(id);
+    const std::shared_ptr<AsioExecutionContext>& context() noexcept {
+        return context_;
+    }
+    AsioExecutionContext::Executor executor() noexcept {
+        return context_->executor();
+    }
+    bool is_worker(std::thread::id id) const noexcept { return id == worker_id_; }
+
+    template <typename Function>
+    auto sync(Function&& function) -> std::invoke_result_t<Function> {
+        if (context_->running_in_this_thread()) return function();
+        using Value = std::invoke_result_t<Function>;
+        std::promise<Value> promise;
+        auto future = promise.get_future();
+        boost::asio::post(executor(), [&]() {
+            try {
+                if constexpr (std::is_void_v<Value>) {
+                    function();
+                    promise.set_value();
+                } else {
+                    promise.set_value(function());
+                }
+            } catch (...) {
+                promise.set_exception(std::current_exception());
+            }
+        });
+        CHECK(future.wait_for(3s) == std::future_status::ready);
+        return future.get();
     }
 
 private:
-    boost::asio::io_context context_;
-    boost::asio::executor_work_guard<
-        boost::asio::io_context::executor_type> guard_;
-    std::vector<std::thread> threads_;
-    mutable std::mutex worker_mutex_;
-    std::set<std::thread::id> worker_ids_;
+    std::shared_ptr<AsioExecutionContext> context_;
+    std::thread thread_;
+    std::thread::id worker_id_;
 };
 
 template <typename T>
@@ -137,12 +252,17 @@ T await(AsyncTicket<T>& ticket, std::chrono::milliseconds timeout = 3s) {
     return result;
 }
 
+void run_barrier(IoRuntime& runtime) {
+    runtime.sync([]() {});
+}
+
 AsyncTicket<Result<std::unique_ptr<ByteChannel>>> start_create(
+    IoRuntime& runtime,
     const std::shared_ptr<AsioTcpByteChannelProvider>& provider,
     EndpointRole role = EndpointRole::Client,
     CancellationToken cancellation = {}) {
     AsyncTicket<Result<std::unique_ptr<ByteChannel>>> ticket;
-    provider->async_create(
+    runtime.sync([&]() { provider->async_create(
         role, std::move(cancellation),
         [promise = ticket.promise, calls = ticket.calls,
          callback_thread = ticket.callback_thread](
@@ -151,14 +271,15 @@ AsyncTicket<Result<std::unique_ptr<ByteChannel>>> start_create(
             calls->fetch_add(1U, std::memory_order_relaxed);
             promise->set_value(std::move(result));
         });
+    });
     return ticket;
 }
 
-AsyncTicket<Result<Buffer>> start_read(ByteChannel& channel,
+AsyncTicket<Result<Buffer>> start_read(IoRuntime& runtime, ByteChannel& channel,
                                        std::size_t max_bytes,
                                        CancellationToken cancellation = {}) {
     AsyncTicket<Result<Buffer>> ticket;
-    channel.async_read(
+    runtime.sync([&]() { channel.async_read(
         max_bytes, std::move(cancellation),
         [promise = ticket.promise, calls = ticket.calls,
          callback_thread = ticket.callback_thread](Result<Buffer> result) mutable {
@@ -166,6 +287,7 @@ AsyncTicket<Result<Buffer>> start_read(ByteChannel& channel,
             calls->fetch_add(1U, std::memory_order_relaxed);
             promise->set_value(std::move(result));
         });
+    });
     return ticket;
 }
 
@@ -174,11 +296,11 @@ struct TransferResult final {
     std::size_t transferred{0U};
 };
 
-AsyncTicket<TransferResult> start_write(ByteChannel& channel,
+AsyncTicket<TransferResult> start_write(IoRuntime& runtime, ByteChannel& channel,
                                         Buffer buffer,
                                         CancellationToken cancellation = {}) {
     AsyncTicket<TransferResult> ticket;
-    channel.async_write(
+    runtime.sync([&]() { channel.async_write(
         std::move(buffer), std::move(cancellation),
         [promise = ticket.promise, calls = ticket.calls,
          callback_thread = ticket.callback_thread](
@@ -188,6 +310,7 @@ AsyncTicket<TransferResult> start_write(ByteChannel& channel,
             promise->set_value(
                 TransferResult{std::move(status), transferred});
         });
+    });
     return ticket;
 }
 
@@ -271,8 +394,25 @@ std::shared_ptr<AsioTcpByteChannelProvider> make_provider(
     AsioTcpByteChannelLimits limits = {},
     AsioTcpSocketProtector protector = {}) {
     return require(AsioTcpByteChannelProvider::create(
-        runtime.context().get_executor(), ExecutorAffinity(93U),
+        runtime.context(),
         std::move(host), port, limits, std::move(protector)));
+}
+
+std::shared_ptr<AsioTcpAcceptedChannelOwner> make_accepted_owner(
+    IoRuntime& runtime,
+    AsioTcpChannelLimits limits = {}) {
+    return require(AsioTcpAcceptedChannelOwner::create(
+        runtime.context(), limits));
+}
+
+std::pair<AsioTcpSocket, AsioTcpSocket> connected_pair(
+    AsioExecutionContext::Executor executor) {
+    Tcp::acceptor acceptor(executor, Tcp::endpoint(Tcp::v4(), 0U));
+    AsioTcpSocket peer(executor);
+    peer.connect(acceptor.local_endpoint());
+    AsioTcpSocket accepted(executor);
+    acceptor.accept(accepted);
+    return {std::move(accepted), std::move(peer)};
 }
 
 std::uint16_t unused_tcp_port() {
@@ -300,7 +440,7 @@ void test_descriptor_and_validation() {
 
     auto invalid = [&](AsioTcpByteChannelLimits limits) {
         auto result = AsioTcpByteChannelProvider::create(
-            runtime.context().get_executor(), ExecutorAffinity(1U),
+            runtime.context(),
             "localhost", 443U, limits);
         CHECK(!result.ok());
         CHECK(result.status().code() == StatusCode::InvalidArgument);
@@ -334,23 +474,220 @@ void test_descriptor_and_validation() {
     invalid(limits);
 
     CHECK(!AsioTcpByteChannelProvider::create(
-               boost::asio::any_io_executor{}, ExecutorAffinity(1U),
+               std::shared_ptr<AsioExecutionContext>{},
                "localhost", 443U).ok());
     CHECK(!AsioTcpByteChannelProvider::create(
-               runtime.context().get_executor(), ExecutorAffinity{},
-               "localhost", 443U).ok());
-    CHECK(!AsioTcpByteChannelProvider::create(
-               runtime.context().get_executor(), ExecutorAffinity(1U),
+               runtime.context(),
                "", 443U).ok());
     CHECK(!AsioTcpByteChannelProvider::create(
-               runtime.context().get_executor(), ExecutorAffinity(1U),
+               runtime.context(),
                "localhost", 0U).ok());
 
-    auto server_role = start_create(provider, EndpointRole::Server);
+    auto server_role = start_create(runtime, provider, EndpointRole::Server);
     auto rejected = await(server_role);
     CHECK(!rejected.ok());
     CHECK(rejected.status().code() == StatusCode::InvalidArgument);
     CHECK(runtime.is_worker(*server_role.callback_thread));
+}
+
+void test_accepted_socket_validation_and_capacity_release() {
+    IoRuntime runtime;
+    AsioTcpChannelLimits limits;
+    limits.max_active_channels = 1U;
+    auto owner = make_accepted_owner(runtime, limits);
+    CHECK(owner->executor_affinity() == ExecutorAffinity(93U));
+    CHECK(owner->limits().max_active_channels == 1U);
+
+    CHECK(!AsioTcpAcceptedChannelOwner::create(
+               std::shared_ptr<AsioExecutionContext>{}).ok());
+    AsioTcpChannelLimits invalid_limits;
+    invalid_limits.max_active_channels = 0U;
+    CHECK(!AsioTcpAcceptedChannelOwner::create(
+               runtime.context(),
+               invalid_limits).ok());
+
+    AsioTcpSocket closed(runtime.executor());
+    auto closed_result = runtime.sync([&]() { return owner->adopt(std::move(closed)); });
+    CHECK(!closed_result.ok());
+    CHECK(closed_result.status().code() == StatusCode::InvalidArgument);
+
+    AsioTcpSocket unconnected(runtime.executor());
+    unconnected.open(Tcp::v4());
+    auto unconnected_result = runtime.sync([&]() { return owner->adopt(std::move(unconnected)); });
+    CHECK(!unconnected_result.ok());
+    CHECK(unconnected_result.status().code() == StatusCode::InvalidArgument);
+
+    boost::asio::io_context other_context;
+    auto wrong_pair = connected_pair(other_context.get_executor());
+    auto wrong_executor = runtime.sync([&]() { return owner->adopt(std::move(wrong_pair.first)); });
+    CHECK(!wrong_executor.ok());
+    CHECK(wrong_executor.status().code() == StatusCode::ProviderMismatch);
+
+    auto first_pair = connected_pair(runtime.executor());
+    auto first_result = runtime.sync([&]() { return owner->adopt(std::move(first_pair.first)); });
+    CHECK(first_result.ok());
+    std::unique_ptr<ByteChannel> first =
+        std::move(first_result).take_value();
+    CHECK(first->executor_affinity() == ExecutorAffinity(93U));
+
+    auto refused_pair = connected_pair(runtime.executor());
+    auto refused = runtime.sync([&]() { return owner->adopt(std::move(refused_pair.first)); });
+    CHECK(!refused.ok());
+    CHECK(refused.status().code() == StatusCode::ResourceExhausted);
+
+    auto closing_read = start_read(runtime, *first, 1U);
+    first->close();
+    auto closed_read = await(closing_read);
+    CHECK(!closed_read.ok());
+    CHECK(closed_read.status().code() == StatusCode::Closed);
+    first.reset();
+    run_barrier(runtime);
+
+    auto reused_pair = connected_pair(runtime.executor());
+    auto reused = runtime.sync([&]() { return owner->adopt(std::move(reused_pair.first)); });
+    CHECK(reused.ok());
+    std::unique_ptr<ByteChannel> replacement =
+        std::move(reused).take_value();
+    replacement->close();
+    replacement.reset();
+}
+
+void test_accepted_socket_traffic_half_close_cancel_and_close() {
+    IoRuntime runtime;
+    auto owner = make_accepted_owner(runtime);
+    auto pair = connected_pair(runtime.executor());
+    auto adopted = runtime.sync([&]() { return owner->adopt(std::move(pair.first)); });
+    CHECK(adopted.ok());
+    std::unique_ptr<ByteChannel> channel =
+        std::move(adopted).take_value();
+    AsioTcpSocket peer = std::move(pair.second);
+
+    auto first_write = start_write(runtime, *channel, make_buffer("one"));
+    auto second_write = start_write(runtime, *channel, make_buffer("two"));
+    CHECK(runtime.sync([&]() { return channel->shutdown_write(); }).ok());
+    CHECK(runtime.sync([&]() { return channel->shutdown_write(); }).ok());
+    TransferResult first = await(first_write);
+    TransferResult second = await(second_write);
+    CHECK(first.status.ok() && first.transferred == 3U);
+    CHECK(second.status.ok() && second.transferred == 3U);
+    CHECK(runtime.is_worker(*first_write.callback_thread));
+    CHECK(runtime.is_worker(*second_write.callback_thread));
+
+    std::array<char, 6> input{};
+    boost::system::error_code error;
+    CHECK(boost::asio::read(peer, boost::asio::buffer(input), error) ==
+          input.size());
+    CHECK(!error);
+    CHECK(std::string(input.data(), input.size()) == "onetwo");
+    std::array<char, 1> eof_probe{};
+    CHECK(peer.read_some(boost::asio::buffer(eof_probe), error) == 0U);
+    CHECK(error == boost::asio::error::eof);
+
+    auto cancelled_read = start_read(runtime, *channel, 1U);
+    owner->cancel();
+    auto cancelled = await(cancelled_read);
+    CHECK(!cancelled.ok());
+    CHECK(cancelled.status().code() == StatusCode::Cancelled);
+    CHECK(runtime.is_worker(*cancelled_read.callback_thread));
+
+    boost::asio::write(peer, boost::asio::buffer("AB", 2U), error);
+    CHECK(!error);
+    peer.shutdown(Tcp::socket::shutdown_send, error);
+    CHECK(!error);
+    auto first_read = start_read(runtime, *channel, 1U);
+    auto second_read = start_read(runtime, *channel, 1U);
+    auto a = await(first_read);
+    auto b = await(second_read);
+    CHECK(a.ok() && buffer_text(*a.value_if()) == "A");
+    CHECK(b.ok() && buffer_text(*b.value_if()) == "B");
+    CHECK(runtime.is_worker(*first_read.callback_thread));
+    CHECK(runtime.is_worker(*second_read.callback_thread));
+
+    auto eof = start_read(runtime, *channel, 1U);
+    auto eof_result = await(eof);
+    CHECK(!eof_result.ok());
+    CHECK(eof_result.status().code() == StatusCode::Closed);
+
+    auto closed_write = start_write(runtime, *channel, make_buffer("X"));
+    channel->close();
+    TransferResult closed = await(closed_write);
+    CHECK(!closed.status.ok());
+    CHECK(closed.status.code() == StatusCode::Closed);
+    channel.reset();
+}
+
+void test_accepted_socket_allocation_rollback() {
+    // Exhaust synchronous adoption allocations on its declared context.
+    IoRuntime runtime;
+    AsioTcpChannelLimits limits;
+    limits.max_active_channels = 1U;
+    auto owner = require(AsioTcpAcceptedChannelOwner::create(
+        runtime.context(), limits));
+    std::size_t failed_attempts = 0U;
+    bool reached_success = false;
+    for (std::ptrdiff_t fail_after = 0; fail_after < 64; ++fail_after) {
+        auto pair = connected_pair(runtime.executor());
+        auto adopted = runtime.sync([&]() {
+            test_allocation_failure::Scope failure(fail_after);
+            return owner->adopt(std::move(pair.first));
+        });
+        if (adopted.ok()) {
+            auto channel = std::move(adopted).take_value();
+            channel.reset();
+            run_barrier(runtime);
+            reached_success = true;
+            break;
+        }
+        ++failed_attempts;
+        CHECK(adopted.status().code() == StatusCode::ResourceExhausted);
+
+        // Every failed construction must release its reserved channel slot.
+        auto retry_pair = connected_pair(runtime.executor());
+        auto retry = runtime.sync([&]() { return owner->adopt(std::move(retry_pair.first)); });
+        CHECK(retry.ok());
+        auto channel = std::move(retry).take_value();
+        channel.reset();
+        run_barrier(runtime);
+    }
+    CHECK(failed_attempts > 0U);
+    CHECK(reached_success);
+}
+
+void test_accepted_socket_owner_lifetime_and_active_close() {
+    IoRuntime runtime;
+    auto owner = make_accepted_owner(runtime);
+    auto pair = connected_pair(runtime.executor());
+    auto channel = require(runtime.sync([&]() { return owner->adopt(std::move(pair.first)); }));
+    auto pending = start_read(runtime, *channel, 1U);
+    run_barrier(runtime);
+    owner.reset();
+    auto cancelled = await(pending);
+    CHECK(!cancelled.ok());
+    CHECK(cancelled.status().code() == StatusCode::Cancelled);
+    CHECK(runtime.is_worker(*pending.callback_thread));
+
+    auto live = start_read(runtime, *channel, 1U);
+    boost::asio::write(pair.second, boost::asio::buffer("R", 1U));
+    auto received = await(live);
+    CHECK(received.ok() && buffer_text(*received.value_if()) == "R");
+
+    auto active = start_read(runtime, *channel, 1U);
+    auto queued = start_read(runtime, *channel, 1U);
+    run_barrier(runtime);
+    channel->close();
+    channel->close();
+    channel.reset();
+    auto active_closed = await(active);
+    auto queued_closed = await(queued);
+    CHECK(!active_closed.ok() &&
+          active_closed.status().code() == StatusCode::Closed);
+    CHECK(!queued_closed.ok() &&
+          queued_closed.status().code() == StatusCode::Closed);
+    CHECK(runtime.is_worker(*active.callback_thread));
+    CHECK(runtime.is_worker(*queued.callback_thread));
+    run_barrier(runtime);
+    CHECK(active.calls->load(std::memory_order_relaxed) == 1U);
+    CHECK(queued.calls->load(std::memory_order_relaxed) == 1U);
 }
 
 void test_dns_round_trip_order_and_half_close() {
@@ -380,7 +717,7 @@ void test_dns_round_trip_order_and_half_close() {
             protector_calls.fetch_add(1U, std::memory_order_release);
             return Status::success();
         });
-    auto create = start_create(provider);
+    auto create = start_create(runtime, provider);
     auto created = await(create);
     CHECK(created.ok());
     CHECK(runtime.is_worker(*create.callback_thread));
@@ -388,10 +725,10 @@ void test_dns_round_trip_order_and_half_close() {
     CHECK(channel->executor_affinity() == ExecutorAffinity(93U));
     CHECK(protector_calls.load(std::memory_order_relaxed) >= 1U);
 
-    auto first_write = start_write(*channel, make_buffer("one"));
-    auto second_write = start_write(*channel, make_buffer("two"));
-    CHECK(channel->shutdown_write().ok());
-    CHECK(channel->shutdown_write().ok());
+    auto first_write = start_write(runtime, *channel, make_buffer("one"));
+    auto second_write = start_write(runtime, *channel, make_buffer("two"));
+    CHECK(runtime.sync([&]() { return channel->shutdown_write(); }).ok());
+    CHECK(runtime.sync([&]() { return channel->shutdown_write(); }).ok());
     TransferResult first = await(first_write);
     TransferResult second = await(second_write);
     CHECK(first.status.ok() && first.transferred == 3U);
@@ -399,15 +736,15 @@ void test_dns_round_trip_order_and_half_close() {
     CHECK(runtime.is_worker(*first_write.callback_thread));
     CHECK(runtime.is_worker(*second_write.callback_thread));
 
-    auto first_read = start_read(*channel, 1U);
-    auto second_read = start_read(*channel, 1U);
+    auto first_read = start_read(runtime, *channel, 1U);
+    auto second_read = start_read(runtime, *channel, 1U);
     auto a = await(first_read);
     auto b = await(second_read);
     CHECK(a.ok() && buffer_text(*a.value_if()) == "A");
     CHECK(b.ok() && buffer_text(*b.value_if()) == "B");
     CHECK(runtime.is_worker(*first_read.callback_thread));
     CHECK(runtime.is_worker(*second_read.callback_thread));
-    auto eof = start_read(*channel, 1U);
+    auto eof = start_read(runtime, *channel, 1U);
     auto eof_result = await(eof);
     CHECK(!eof_result.ok());
     CHECK(eof_result.status().code() == StatusCode::Closed);
@@ -428,7 +765,7 @@ void test_protector_fail_throw_and_refused_connect() {
             return Status(StatusCode::FailedPrecondition,
                           "test protector rejection");
         });
-    auto rejected_ticket = start_create(rejected_provider);
+    auto rejected_ticket = start_create(runtime, rejected_provider);
     auto rejected = await(rejected_ticket);
     CHECK(!rejected.ok());
     CHECK(rejected.status().code() == StatusCode::FailedPrecondition);
@@ -439,14 +776,14 @@ void test_protector_fail_throw_and_refused_connect() {
         [](std::uintptr_t) -> Status {
             throw std::runtime_error("protector test");
         });
-    auto throwing_ticket = start_create(throwing_provider);
+    auto throwing_ticket = start_create(runtime, throwing_provider);
     auto thrown = await(throwing_ticket);
     CHECK(!thrown.ok());
     CHECK(thrown.status().code() == StatusCode::Internal);
 
     auto refused_provider = make_provider(
         runtime, "127.0.0.1", port);
-    auto refused_ticket = start_create(refused_provider);
+    auto refused_ticket = start_create(runtime, refused_provider);
     auto refused = await(refused_ticket);
     CHECK(!refused.ok());
     CHECK(refused.status().code() == StatusCode::NotFound);
@@ -454,7 +791,7 @@ void test_protector_fail_throw_and_refused_connect() {
 }
 
 void test_connect_deadline_covers_protection_and_attempts() {
-    IoRuntime runtime(1U);
+    IoRuntime runtime;
     AsioTcpByteChannelLimits limits;
     limits.connect_timeout = 1ms;
     auto provider = make_provider(
@@ -465,7 +802,7 @@ void test_connect_deadline_covers_protection_and_attempts() {
             std::this_thread::sleep_for(25ms);
             return Status::success();
         });
-    auto ticket = start_create(provider);
+    auto ticket = start_create(runtime, provider);
     auto result = await(ticket);
     CHECK(!result.ok());
     CHECK(result.status().code() == StatusCode::Closed);
@@ -490,16 +827,16 @@ void test_operation_bounds_cancel_and_close() {
     limits.max_queued_write_operations = 2U;
     limits.max_queued_write_bytes = limits.max_write_bytes;
     auto provider = make_provider(runtime, "127.0.0.1", server.port(), limits);
-    auto create = start_create(provider);
+    auto create = start_create(runtime, provider);
     auto created = await(create);
     CHECK(created.ok());
     std::unique_ptr<ByteChannel> channel = std::move(created).take_value();
     CHECK(connected.wait_for(3s) == std::future_status::ready);
 
     CancellationSource first_cancel;
-    auto first = start_read(*channel, limits.max_read_bytes,
+    auto first = start_read(runtime, *channel, limits.max_read_bytes,
                             first_cancel.token());
-    auto rejected = start_read(*channel, 1U);
+    auto rejected = start_read(runtime, *channel, 1U);
     auto rejected_result = await(rejected);
     CHECK(!rejected_result.ok());
     CHECK(rejected_result.status().code() == StatusCode::ResourceExhausted);
@@ -508,26 +845,26 @@ void test_operation_bounds_cancel_and_close() {
     CHECK(!cancelled.ok());
     CHECK(cancelled.status().code() == StatusCode::Cancelled);
 
-    auto provider_cancelled = start_read(*channel, 1U);
+    auto provider_cancelled = start_read(runtime, *channel, 1U);
     std::thread cancel_thread([provider]() { provider->cancel(); });
     cancel_thread.join();
     auto provider_cancel_result = await(provider_cancelled);
     CHECK(!provider_cancel_result.ok());
     CHECK(provider_cancel_result.status().code() == StatusCode::Cancelled);
 
-    auto oversized_write = start_write(
+    auto oversized_write = start_write(runtime,
         *channel, require(Buffer::allocate(
             limits.max_write_bytes + 1U, limits.max_write_bytes + 1U)));
     TransferResult oversized = await(oversized_write);
     CHECK(!oversized.status.ok());
     CHECK(oversized.status.code() == StatusCode::ResourceExhausted);
 
-    auto live_read = start_read(*channel, 1U);
+    auto live_read = start_read(runtime, *channel, 1U);
     release_promise.set_value();
     auto live = await(live_read);
     CHECK(live.ok() && buffer_text(*live.value_if()) == "Z");
 
-    auto closed_read = start_read(*channel, 1U);
+    auto closed_read = start_read(runtime, *channel, 1U);
     channel->close();
     auto closed = await(closed_read);
     CHECK(!closed.ok());
@@ -549,7 +886,7 @@ void test_submission_operation_and_byte_bounds() {
         CHECK(!error);
         CHECK(input[0] == 'W');
     });
-    IoRuntime runtime(1U);
+    IoRuntime runtime;
     AsioTcpByteChannelLimits limits;
     limits.max_read_bytes = 8U;
     limits.max_write_bytes = 8U;
@@ -558,27 +895,21 @@ void test_submission_operation_and_byte_bounds() {
     limits.max_queued_read_bytes = 8U;
     limits.max_queued_write_bytes = 8U;
     auto provider = make_provider(runtime, "127.0.0.1", server.port(), limits);
-    auto create = start_create(provider);
+    auto create = start_create(runtime, provider);
     auto created = await(create);
     CHECK(created.ok());
     std::unique_ptr<ByteChannel> channel = std::move(created).take_value();
 
-    std::promise<void> strand_blocked_promise;
-    std::future<void> strand_blocked = strand_blocked_promise.get_future();
-    std::promise<void> release_strand_promise;
-    std::shared_future<void> release_strand =
-        release_strand_promise.get_future();
-    boost::asio::post(runtime.context(), [&]() {
-        strand_blocked_promise.set_value();
-        release_strand.wait();
+    AsyncTicket<Result<Buffer>> accepted_read;
+    AsyncTicket<Result<Buffer>> rejected_read;
+    AsyncTicket<TransferResult> accepted_write;
+    AsyncTicket<TransferResult> rejected_write;
+    runtime.sync([&]() {
+        accepted_read = start_read(runtime, *channel, 8U);
+        rejected_read = start_read(runtime, *channel, 1U);
+        accepted_write = start_write(runtime, *channel, make_buffer("W"));
+        rejected_write = start_write(runtime, *channel, make_buffer("X"));
     });
-    CHECK(strand_blocked.wait_for(3s) == std::future_status::ready);
-
-    auto accepted_read = start_read(*channel, 8U);
-    auto rejected_read = start_read(*channel, 1U);
-    auto accepted_write = start_write(*channel, make_buffer("W"));
-    auto rejected_write = start_write(*channel, make_buffer("X"));
-    release_strand_promise.set_value();
 
     auto read_rejection = await(rejected_read);
     CHECK(!read_rejection.ok());
@@ -605,7 +936,7 @@ void test_create_cancellation_capacity_and_reuse() {
     CHECK(already_cancelled.cancel());
     auto cancelled_provider = make_provider(
         runtime, "localhost", 443U, limits);
-    auto cancelled_ticket = start_create(
+    auto cancelled_ticket = start_create(runtime,
         cancelled_provider, EndpointRole::Client,
         already_cancelled.token());
     auto cancelled = await(cancelled_ticket);
@@ -619,12 +950,12 @@ void test_create_cancellation_capacity_and_reuse() {
     });
     auto provider = make_provider(
         runtime, "127.0.0.1", server.port(), limits);
-    auto first_ticket = start_create(provider);
+    auto first_ticket = start_create(runtime, provider);
     auto first = await(first_ticket);
     CHECK(first.ok());
     std::unique_ptr<ByteChannel> channel = std::move(first).take_value();
 
-    auto capacity_ticket = start_create(provider);
+    auto capacity_ticket = start_create(runtime, provider);
     auto capacity = await(capacity_ticket);
     CHECK(!capacity.ok());
     CHECK(capacity.status().code() == StatusCode::ResourceExhausted);
@@ -637,24 +968,400 @@ void test_create_cancellation_capacity_and_reuse() {
     const std::uint16_t cancelled_port = unused_tcp_port();
     auto external_provider = make_provider(
         runtime, "127.0.0.1", cancelled_port, limits);
-    auto external_ticket = start_create(
-        external_provider, EndpointRole::Client, external_cancel.token());
-    CHECK(external_cancel.cancel());
+    auto external_ticket = runtime.sync([&]() {
+        auto ticket = start_create(runtime, external_provider,
+                                   EndpointRole::Client, external_cancel.token());
+        CHECK(external_cancel.cancel());
+        return ticket;
+    });
     auto external = await(external_ticket);
     CHECK(!external.ok());
     CHECK(external.status().code() == StatusCode::Cancelled);
 
-    auto provider_ticket = start_create(
-        external_provider, EndpointRole::Client);
-    external_provider->cancel();
+    auto provider_ticket = runtime.sync([&]() {
+        auto ticket = start_create(runtime, external_provider);
+        external_provider->cancel();
+        return ticket;
+    });
     auto provider_result = await(provider_ticket);
     CHECK(!provider_result.ok());
     CHECK(provider_result.status().code() == StatusCode::Cancelled);
 
-    auto reused_ticket = start_create(external_provider);
+    auto reused_ticket = start_create(runtime, external_provider);
     auto reused = await(reused_ticket);
     CHECK(!reused.ok());
     CHECK(reused.status().code() == StatusCode::NotFound);
+}
+
+void test_execution_context_affinity_and_single_runner() {
+    auto invalid = AsioExecutionContext::create(ExecutorAffinity{});
+    CHECK(!invalid.ok());
+    CHECK(invalid.status().code() == StatusCode::InvalidArgument);
+    IoRuntime runtime;
+    auto context = runtime.context();
+    CHECK(context->affinity() == ExecutorAffinity(93U));
+    CHECK(!context->running_in_this_thread());
+    bool rejected = false;
+    try {
+        context->require_context();
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    run_barrier(runtime);
+    rejected = false;
+    try {
+        context->poll();
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+    CHECK(rejected);
+    runtime.sync([&]() {
+        context->require_context();
+        CHECK(context->running_in_this_thread());
+        bool recursive_rejected = false;
+        try {
+            context->run();
+        } catch (const std::logic_error&) {
+            recursive_rejected = true;
+        }
+        CHECK(recursive_rejected);
+    });
+
+    auto owner = make_accepted_owner(runtime);
+    auto pair = connected_pair(runtime.executor());
+    auto channel = runtime.sync([&]() {
+        return require(owner->adopt(std::move(pair.first)));
+    });
+    auto provider = make_provider(runtime, "127.0.0.1", unused_tcp_port());
+    unsigned int callbacks = 0U;
+    unsigned int rejected_operations = 0U;
+    try {
+        channel->async_read(1U, {}, [&](Result<Buffer>) { ++callbacks; });
+    } catch (const std::logic_error&) {
+        ++rejected_operations;
+    }
+    try {
+        channel->async_write(make_buffer("X"), {},
+            [&](Status, std::size_t) { ++callbacks; });
+    } catch (const std::logic_error&) {
+        ++rejected_operations;
+    }
+    try {
+        provider->async_create(EndpointRole::Client, {},
+            [&](Result<std::unique_ptr<ByteChannel>>) { ++callbacks; });
+    } catch (const std::logic_error&) {
+        ++rejected_operations;
+    }
+    CHECK(channel->shutdown_write().code() == StatusCode::FailedPrecondition);
+    CHECK(rejected_operations == 3U);
+    run_barrier(runtime);
+    CHECK(callbacks == 0U);
+    auto read = start_read(runtime, *channel, 1U);
+    boost::asio::write(pair.second, boost::asio::buffer("R", 1U));
+    auto result = await(read);
+    CHECK(result.ok() && buffer_text(*result.value_if()) == "R");
+    channel.reset();
+}
+
+struct ControlProbe final : public std::enable_shared_from_this<ControlProbe> {
+    ControlProbe(AsioExecutionContext& selected_context, std::size_t& call_count,
+                 std::size_t& destruction_count, bool& affinity_ok,
+                 std::size_t repeat_count)
+        : context(selected_context), calls(call_count), destroyed(destruction_count),
+          on_context(affinity_ok), repeats(repeat_count), task(&invoke) {}
+    ~ControlProbe() { ++destroyed; }
+
+    static void invoke(void* pointer) noexcept {
+        auto& self = *static_cast<ControlProbe*>(pointer);
+        self.on_context = self.on_context && self.context.running_in_this_thread();
+        ++self.calls;
+        if (self.calls < self.repeats) {
+            self.context.submit(self.task, self.shared_from_this());
+        }
+    }
+
+    AsioExecutionContext& context;
+    std::size_t& calls;
+    std::size_t& destroyed;
+    bool& on_context;
+    std::size_t repeats;
+    AsioExecutionContext::ControlTask task;
+};
+
+void test_reserved_control_dispatch_under_sustained_allocation_failure() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(94U)));
+    std::size_t calls = 0U;
+    std::size_t destroyed = 0U;
+    bool on_context = true;
+    std::size_t normal_handler_observed_calls = 0U;
+    auto probe = std::make_shared<ControlProbe>(
+        *context, calls, destroyed, on_context, 130U);
+    std::weak_ptr<ControlProbe> lifetime = probe;
+    context->submit(probe->task, probe);
+    context->submit(probe->task, probe);
+    boost::asio::post(context->executor(), [&]() noexcept {
+        normal_handler_observed_calls = calls;
+    });
+    probe.reset();
+    CHECK(!lifetime.expired());
+    {
+        test_allocation_failure::SustainedScope failure;
+        context->poll();
+    }
+    CHECK(calls == 130U);
+    CHECK(destroyed == 1U);
+    CHECK(lifetime.expired());
+    CHECK(on_context);
+    // A self-requeued control task must yield to unrelated I/O handlers.
+    CHECK(normal_handler_observed_calls > 0U);
+    CHECK(normal_handler_observed_calls < calls);
+
+    calls = 0U;
+    probe = std::make_shared<ControlProbe>(
+        *context, calls, destroyed, on_context, 1U);
+    {
+        test_allocation_failure::SustainedScope failure;
+        // Test first submission as well as reposting with allocation disabled.
+        context->submit(probe->task, probe);
+        context->submit(probe->task, probe);
+        probe.reset();
+        context->finish();
+        context->run();
+    }
+    CHECK(calls == 1U);
+    CHECK(destroyed == 2U);
+    CHECK(on_context);
+}
+
+struct CompletionRecord final {
+    unsigned int calls{0U};
+    StatusCode code{StatusCode::Internal};
+    bool on_context{false};
+    std::size_t transferred{0U};
+
+    void record(const AsioExecutionContext& context, const Status& status,
+                std::size_t count = 0U) noexcept {
+        ++calls;
+        code = status.code();
+        on_context = context.running_in_this_thread();
+        transferred = count;
+    }
+};
+
+// Fill the sender's bounded kernel queue before adoption so the first async
+// write is still active when cancellation/close runs. The peer never reads.
+void fill_send_queue(AsioTcpSocket& socket) {
+    socket.set_option(Tcp::socket::send_buffer_size(1024));
+    socket.non_blocking(true);
+    const std::array<char, 16U * 1024U> bytes{};
+    boost::system::error_code error;
+    std::size_t total = 0U;
+    for (; total < 2U * 1024U * 1024U;) {
+        total += socket.write_some(boost::asio::buffer(bytes), error);
+        if (error) break;
+    }
+    CHECK(error == boost::asio::error::would_block ||
+          error == boost::asio::error::try_again);
+    socket.non_blocking(false);
+}
+
+enum class CleanupAction { Close, CloseReleaseInCallback, ChannelCancel, OwnerCancel, OwnerDestroy };
+
+void test_pending_cleanup_under_sustained_allocation_failure(CleanupAction action) {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(95U)));
+    auto owner = require(AsioTcpAcceptedChannelOwner::create(context));
+    auto pair = connected_pair(context->executor());
+    pair.second.set_option(Tcp::socket::receive_buffer_size(1024));
+    fill_send_queue(pair.first);
+    std::unique_ptr<ByteChannel> channel;
+    std::array<CompletionRecord, 4U> records{};
+    Buffer first_write = require(Buffer::allocate(64U * 1024U, kAbsoluteMaxBufferBytes));
+    Buffer second_write = require(Buffer::allocate(64U * 1024U, kAbsoluteMaxBufferBytes));
+    boost::asio::post(context->executor(), [&]() {
+        channel = require(owner->adopt(std::move(pair.first)));
+        for (std::size_t index = 0U; index < 2U; ++index) {
+            channel->async_read(1U, {}, [&, index](Result<Buffer> result) noexcept {
+                records[index].record(*context, result.status());
+                if (index == 0U && action == CleanupAction::CloseReleaseInCallback) {
+                    channel.reset();
+                    owner.reset();
+                }
+            });
+        }
+        channel->async_write(std::move(first_write), {},
+            [&](Status status, std::size_t transferred) noexcept {
+                records[2].record(*context, status, transferred);
+            });
+        channel->async_write(std::move(second_write), {},
+            [&](Status status, std::size_t transferred) noexcept {
+                records[3].record(*context, status, transferred);
+            });
+    });
+    context->poll();
+    for (const auto& record : records) CHECK(record.calls == 0U);
+    {
+        test_allocation_failure::SustainedScope failure;
+        switch (action) {
+            case CleanupAction::Close:
+                channel->close();
+                channel->close();
+                channel.reset();
+                break;
+            case CleanupAction::CloseReleaseInCallback:
+                channel->close();
+                break;
+            case CleanupAction::ChannelCancel:
+                channel->cancel();
+                channel->cancel();
+                break;
+            case CleanupAction::OwnerCancel:
+                owner->cancel();
+                owner->cancel();
+                break;
+            case CleanupAction::OwnerDestroy:
+                owner.reset();
+                break;
+        }
+        context->poll();
+    }
+    const StatusCode expected = action == CleanupAction::Close ||
+                                    action == CleanupAction::CloseReleaseInCallback
+                                    ? StatusCode::Closed : StatusCode::Cancelled;
+    for (const auto& record : records) {
+        CHECK(record.calls == 1U);
+        CHECK(record.code == expected);
+        CHECK(record.on_context);
+    }
+    if (channel) {
+        // Cancelling or destroying the owner must leave a channel reusable.
+        CompletionRecord reused;
+        bool correct_byte = false;
+        boost::asio::post(context->executor(), [&]() {
+            channel->async_read(1U, {}, [&](Result<Buffer> result) noexcept {
+                reused.record(*context, result.status());
+                correct_byte = result.ok() && result.value_if()->size() == 1U &&
+                    result.value_if()->bytes()[0] == std::byte{'R'};
+            });
+        });
+        boost::asio::write(pair.second, boost::asio::buffer("R", 1U));
+        context->poll();
+        CHECK(reused.calls == 1U);
+        CHECK(reused.code == StatusCode::Ok);
+        CHECK(reused.on_context);
+        CHECK(correct_byte);
+        channel.reset();
+    }
+    owner.reset();
+    context->finish();
+    context->run();
+    for (const auto& record : records) CHECK(record.calls == 1U);
+}
+
+void test_pending_create_cancel_under_sustained_allocation_failure() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(97U)));
+    auto provider = require(AsioTcpByteChannelProvider::create(
+        context, "localhost", unused_tcp_port()));
+    CompletionRecord record;
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_create(EndpointRole::Client, {},
+            [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
+                record.record(*context, result.status());
+                provider.reset();
+            });
+        test_allocation_failure::sustained.store(true, std::memory_order_release);
+        provider->cancel();
+    });
+    // Arm only after accepted resolution exists, then keep allocation disabled
+    // through cancellation, callback-driven provider destruction and drain.
+    {
+        test_allocation_failure::SustainedScope reset_on_exit(false);
+        context->finish();
+        try {
+            context->run();
+        } catch (const std::bad_alloc&) {
+            // Asio may allocate a completed resolver result before noticing
+            // cancellation. Resume so its reserved lost-handler task drains.
+            context->run();
+        }
+    }
+    CHECK(record.calls == 1U);
+    CHECK(record.code == StatusCode::Cancelled);
+    CHECK(record.on_context);
+    CHECK(!provider);
+}
+
+void test_resolver_delivery_allocation_failure() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(98U)));
+    auto provider = require(AsioTcpByteChannelProvider::create(
+        context, "127.0.0.1", unused_tcp_port()));
+    CompletionRecord record;
+    bool delivery_threw = false;
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_create(EndpointRole::Client, {},
+            [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
+                record.record(*context, result.status());
+                provider.reset();
+            });
+        test_allocation_failure::sustained.store(true, std::memory_order_release);
+    });
+    {
+        test_allocation_failure::SustainedScope reset_on_exit(false);
+        context->finish();
+        try {
+            context->run();
+        } catch (const std::bad_alloc&) {
+            delivery_threw = true;
+            // The accepted create is retained by the reserved failure task.
+            // Runner exception containment alone would lose its completion.
+            context->run();
+        }
+    }
+    CHECK(delivery_threw);
+    CHECK(record.calls == 1U);
+    CHECK(record.code == StatusCode::ResourceExhausted);
+    CHECK(record.on_context);
+    CHECK(!provider);
+}
+
+void test_initiation_failure_stays_on_context() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(96U)));
+    auto owner = require(AsioTcpAcceptedChannelOwner::create(context));
+    auto provider = require(AsioTcpByteChannelProvider::create(
+        context, "127.0.0.1", unused_tcp_port()));
+    auto pair = connected_pair(context->executor());
+    std::unique_ptr<ByteChannel> channel;
+    std::array<CompletionRecord, 3U> records{};
+    Buffer write = make_buffer("W");
+    ByteChannel::ReadCompletion read_completion = [&](Result<Buffer> result) noexcept {
+        records[0].record(*context, result.status());
+    };
+    ByteChannel::WriteCompletion write_completion =
+        [&](Status status, std::size_t count) noexcept {
+            records[1].record(*context, status, count);
+        };
+    ByteChannelProvider::Completion create_completion =
+        [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
+            records[2].record(*context, result.status());
+        };
+    boost::asio::post(context->executor(), [&]() {
+        channel = require(owner->adopt(std::move(pair.first)));
+        test_allocation_failure::SustainedScope failure;
+        channel->async_read(1U, {}, std::move(read_completion));
+        channel->async_write(std::move(write), {}, std::move(write_completion));
+        provider->async_create(EndpointRole::Client, {}, std::move(create_completion));
+    });
+    context->poll();
+    for (const auto& record : records) {
+        CHECK(record.calls == 1U);
+        CHECK(record.code == StatusCode::ResourceExhausted);
+        CHECK(record.on_context);
+    }
+    channel.reset();
+    owner.reset();
+    provider.reset();
+    context->finish();
+    context->run();
 }
 
 }  // namespace
@@ -663,12 +1370,31 @@ void test_create_cancellation_capacity_and_reuse() {
 int main() {
     try {
         yume::providers::test_descriptor_and_validation();
+        yume::providers::test_accepted_socket_validation_and_capacity_release();
+        yume::providers::test_accepted_socket_traffic_half_close_cancel_and_close();
+        yume::providers::test_accepted_socket_allocation_rollback();
+        yume::providers::test_accepted_socket_owner_lifetime_and_active_close();
         yume::providers::test_dns_round_trip_order_and_half_close();
         yume::providers::test_protector_fail_throw_and_refused_connect();
         yume::providers::test_connect_deadline_covers_protection_and_attempts();
         yume::providers::test_operation_bounds_cancel_and_close();
         yume::providers::test_submission_operation_and_byte_bounds();
         yume::providers::test_create_cancellation_capacity_and_reuse();
+        yume::providers::test_execution_context_affinity_and_single_runner();
+        yume::providers::test_reserved_control_dispatch_under_sustained_allocation_failure();
+        yume::providers::test_pending_cleanup_under_sustained_allocation_failure(
+            yume::providers::CleanupAction::Close);
+        yume::providers::test_pending_cleanup_under_sustained_allocation_failure(
+            yume::providers::CleanupAction::CloseReleaseInCallback);
+        yume::providers::test_pending_cleanup_under_sustained_allocation_failure(
+            yume::providers::CleanupAction::ChannelCancel);
+        yume::providers::test_pending_cleanup_under_sustained_allocation_failure(
+            yume::providers::CleanupAction::OwnerCancel);
+        yume::providers::test_pending_cleanup_under_sustained_allocation_failure(
+            yume::providers::CleanupAction::OwnerDestroy);
+        yume::providers::test_pending_create_cancel_under_sustained_allocation_failure();
+        yume::providers::test_resolver_delivery_allocation_failure();
+        yume::providers::test_initiation_failure_stays_on_context();
         std::cout << "asio TCP ByteChannel provider tests passed\n";
         return 0;
     } catch (const std::exception& error) {

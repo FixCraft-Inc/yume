@@ -45,6 +45,12 @@ class SessionBootstrap final
 public:
     using Completion =
         std::function<void(Result<std::shared_ptr<SessionEngine>>)>;
+    // Local startup control after carrier provenance/affinity validation and
+    // before allocating session security. Called once on that affinity, without
+    // bootstrap locks. Failure or exception closes the carrier and settles
+    // startup. This is not authenticated peer evidence. A runtime can begin
+    // its authentication deadline here without timing idle FrontDoor accepts.
+    using CarrierReady = std::function<Status()>;
 
     // Client form. A server graph is rejected before any provider is called.
     static Result<std::shared_ptr<SessionBootstrap>> create(
@@ -69,7 +75,8 @@ public:
     // delivered exactly once with an Active SessionEngine or terminal status.
     // Providers may complete inline; callers must permit callback re-entry.
     Status async_start(CancellationToken cancellation,
-                       Completion completion);
+                       Completion completion,
+                       CarrierReady carrier_ready = {});
 
     // Idempotent. An in-flight provider operation is allowed to settle on its
     // declared executor before the terminal completion is delivered.

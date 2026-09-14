@@ -24,13 +24,69 @@ and resource bounds; weakening those to improve a score changes the product
 being measured. Record an intentional behavior change and its evidence rather
 than calling it a behavior-preserving cleanup.
 
-Keep ownership and dependency direction explicit. The current source graph is
-in [SOURCE_MAP.md](docs/SOURCE_MAP.md); the replacement contracts are in
-[ARCHITECTURE.md](docs/ARCHITECTURE.md). Preserve the runnable transport until
-its replacement passes the documented parity gates. A smaller file, a familiar
+YUME is a reusable transport. Applications own their account, device,
+enrollment and business rules outside YUME. Expose a missing general transport
+capability through a cohesive interface with tests; do not add consumer-specific
+branches, names, policy or build dependencies to the engine. An application
+should integrate through configuration and supported interfaces without patching
+YUME's source. This is a design requirement; the experimental ABI does not yet
+provide every required capability.
+
+The current source graph is in [SOURCE_MAP.md](docs/SOURCE_MAP.md); the
+replacement contracts and rationale are in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+YTP/1 is the implementation being completed. Transport v2 remains runnable as
+a development reference and a source of useful components. Its default build
+does not require finishing its audit backlog, tuning it, or porting every
+historical feature before replacement work. Qualify the required behavior
+before retiring its only working implementation.
+
+## Decision and review discipline
+
+Before editing, state the requested outcome and check its premise against live
+source, callers and tests. Separate observed behavior, product requirements,
+proposals and test results. Agent notes and previous plans cannot establish
+owner approval. Explain an unfamiliar term by its operation and consequences
+before asking the owner to decide about it. Make routine engineering decisions
+within the authorized scope.
+
+Challenge an incorrect premise or a poor solution whether it came from the
+owner, another contributor, an agent, or your own draft. Give concrete evidence,
+explain the consequence in plain language, and recommend a sound alternative.
+An informed owner decision may change direction; record its actual trade-off
+at the relevant contract. Do not invent agreement or treat uncertainty as proof.
+
+Source and executable tests establish what happens, not what ought to happen.
+When an implementation violates an intended security or lifecycle requirement,
+fix the defect or explicitly resolve the design conflict. Do not weaken the
+requirement, expected result, or test fixture merely to make the code pass.
+Review the final diff against the original purpose as well as the tests.
+
+For a disputed feature or interface, identify its behavior, actual callers,
+intended requirement and validation path. Then choose direct reuse, a tested
+port, temporary retention for a named development need, or removal. A code
+change on the older runtime needs a surviving component or requirement, or a
+concrete replacement blocker. Past effort alone justifies neither retaining
+an implementation nor rewriting it.
+
+Distinguish dead-code removal from deliberate retirement. Prove unreachability
+through callers, guards, the signed baseline and relevant integration tests
+before calling a path dead. Reachable code can be retired by an authorized
+change that updates controlled callers and preserves required behavior.
+Record rejected removals and disproved claims once at their topic owner.
+
+Keep ownership and dependency direction explicit. Split code at a demonstrated
+trust, lifetime, dependency or testing boundary. Moving a large class across
+files does not separate its state ownership. Give one contract one owner;
+independent copies of its validation or policy are defects. Distinct trust or
+state types may intentionally have identical fields. A smaller file, a familiar
 competitor feature, or a passing build alone is not an architectural benefit.
 
 ## Build
+
+Linux transport-v2 server builds require liblzma and libarchive 3.6.0 or newer
+(`liblzma-dev` and `libarchive-dev` on Debian/Ubuntu). They are explicit YUME
+filter-archive dependencies. Static builds also need the transitive static
+libraries reported by `pkg-config --static --libs libarchive`.
 
 The normal developer build is:
 
@@ -109,10 +165,18 @@ clang-tidy -p <build-dir> src/path/to/file.cpp
   Preserve existing versioned cryptographic domains and wire labels; add new
   domains for intentional protocol migrations.
 
-YUME has no deployed users. Remove compatibility shims without a current
-consumer, and update active in-tree callers together. New features and planned
-work still need deliberate design decisions. An old name or an uncalled
-function alone does not prove that a feature is obsolete.
+The following predeployment rule applies while YUME has no deployed users.
+Before the first deployment to real users, replace this exception with an
+explicit policy naming the supported interfaces and their migration obligations.
+Do not infer deployment status from an old instruction, memory or version label.
+
+Do not add aliases, fallback dialects, silent
+defaults or no-op options for hypothetical callers. Update controlled readers,
+writers and tests together. A temporary compatibility path must name its
+verified consumer and retirement condition; a source-level caller is no release
+or ABI freeze. New features and planned work still need deliberate design
+decisions. An old name or an uncalled function alone does not prove that a
+feature is obsolete.
 
 ## Experimental replacement ABI changes
 
@@ -138,8 +202,7 @@ Update comments and operator-facing docs in the same patch as behavior. Put
 normative wire requirements under `docs/protocol/`; current support boundaries
 in `docs/IMPLEMENTATION_STATUS.md`; and release notes under `docs/release/`.
 Search CLI help, man pages, release material, and manually maintained website
-pages for duplicate claims. Regenerate website documentation with
-`scripts/sync_website_docs.sh`, then run `scripts/check_website_catalog.py`.
+pages for duplicate claims. Use the unified workflow below for generated views.
 
 Documentation is authored under `docs/src/en_US/`. Edit the `.doc` source
 named in a generated file's banner. Keep one document per aspect; share a
@@ -169,9 +232,11 @@ the changelog is a `.doc` source. Review hand-authored site landing-page
 claims with each behavior change.
 
 Keep public docs focused on setup, behavior, design, and supported interfaces.
-Keep machine evidence, task queues, and agent handoffs in the ignored private
-overlay. Public [automation guidance](docs/agents/README.md) contains only
-repository facts that apply to a fresh clone.
+Keep task queues, checkpoints, run summaries, and agent handoffs in ignored
+private `TEMP_*.md` notes with explicit deletion conditions. Lasting private
+guides contain rules, decisions, and technical rationale, with raw evidence in
+private artifact storage. Public [automation guidance](docs/agents/README.md)
+contains only repository facts that apply to a fresh clone.
 
 The `website/` tree publishes the static project site. Edit the canonical
 `docs/src/` source, never the generated `docs/*.md` or

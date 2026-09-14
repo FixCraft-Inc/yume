@@ -409,6 +409,7 @@ public:
             stats_.h2_feed_ns += feed_timer.elapsed_ns();
         }
 #endif
+        if (callback_failed_) return;
         if (rv < 0) {
             FailNghttp2("receive HTTP/2 bytes", static_cast<int>(rv));
             return;
@@ -583,7 +584,7 @@ public:
     }
     void set_timing_enabled(bool enabled) noexcept { collect_timing_ = enabled; }
 #endif
-    bool failed() const noexcept { return !error_.empty(); }
+    bool failed() const noexcept { return callback_failed_ || !error_.empty(); }
     const std::string& error() const noexcept { return error_; }
 
 private:
@@ -1440,11 +1441,15 @@ private:
     static int OnBeginHeaders(nghttp2_session*, const nghttp2_frame* frame,
                               void* user_data) noexcept {
         auto& self = *static_cast<Impl*>(user_data);
-        if (frame->hd.type == NGHTTP2_HEADERS) {
-            self.incoming_headers_[frame->hd.stream_id].clear();
-            self.incoming_header_bytes_[frame->hd.stream_id] = 0;
+        try {
+            if (frame->hd.type == NGHTTP2_HEADERS) {
+                self.incoming_headers_[frame->hd.stream_id].clear();
+                self.incoming_header_bytes_[frame->hd.stream_id] = 0;
+            }
+            return 0;
+        } catch (...) {
+            return self.fail_callback();
         }
-        return 0;
     }
 
     static int OnHeader(nghttp2_session*, const nghttp2_frame* frame,
@@ -1467,8 +1472,7 @@ private:
                 std::string(reinterpret_cast<const char*>(value), valuelen));
             return 0;
         } catch (...) {
-            self.Fail("exception while retaining HTTP/2 header");
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
+            return self.fail_callback();
         }
     }
 
@@ -1482,12 +1486,8 @@ private:
             self.ObserveInboundH2Frame(*frame);
             self.HandleFrame(*frame);
             return self.failed() ? NGHTTP2_ERR_CALLBACK_FAILURE : 0;
-        } catch (const std::exception& ex) {
-            self.Fail(std::string("HTTP/2 frame callback: ") + ex.what());
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
         } catch (...) {
-            self.Fail("unknown HTTP/2 frame callback exception");
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
+            return self.fail_callback();
         }
     }
 
@@ -1507,12 +1507,8 @@ private:
         try {
             self.HandleData(stream_id, data, len);
             return self.failed() ? NGHTTP2_ERR_CALLBACK_FAILURE : 0;
-        } catch (const std::exception& ex) {
-            self.Fail(std::string("HTTP/2 DATA callback: ") + ex.what());
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
         } catch (...) {
-            self.Fail("unknown HTTP/2 DATA callback exception");
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
+            return self.fail_callback();
         }
     }
 
@@ -1575,12 +1571,8 @@ private:
                     }),
                 self.requests_.end());
             return self.failed() ? NGHTTP2_ERR_CALLBACK_FAILURE : 0;
-        } catch (const std::exception& ex) {
-            self.Fail(std::string("HTTP/2 stream-close callback: ") + ex.what());
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
         } catch (...) {
-            self.Fail("unknown HTTP/2 stream-close callback exception");
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
+            return self.fail_callback();
         }
     }
 
@@ -1591,8 +1583,7 @@ private:
         auto& self = *static_cast<Impl*>(user_data);
         auto it = self.outbound_streams_.find(stream_id);
         if (it == self.outbound_streams_.end()) {
-            self.Fail("missing HTTP/2 outbound stream state");
-            return NGHTTP2_ERR_CALLBACK_FAILURE;
+            return self.fail_callback();
         }
         auto& stream = it->second;
         if (stream.chunks.empty()) {
@@ -1908,6 +1899,7 @@ private:
         while (true) {
             const std::uint8_t* data = nullptr;
             const auto length = nghttp2_session_mem_send2(session_.get(), &data);
+            if (callback_failed_) return;
             if (length < 0) {
                 FailNghttp2("serialize HTTP/2 output", static_cast<int>(length));
                 break;
@@ -1961,6 +1953,14 @@ private:
         return false;
     }
 
+    int fail_callback() noexcept {
+        // A C callback must not escape through noexcept or allocate its error
+        // report after allocation failure. The sticky marker remains visible
+        // even when error_ has no diagnostic storage; Feed/Flush preserve it.
+        callback_failed_ = true;
+        return NGHTTP2_ERR_CALLBACK_FAILURE;
+    }
+
     H2CarrierRole role_;
     WebSocketCodec websocket_;
     std::shared_ptr<OuterCarrierTrace> outer_trace_;
@@ -1987,6 +1987,7 @@ private:
     std::size_t unconsumed_tunnel_bytes_{0};
     std::string authority_;
     std::string error_;
+    bool callback_failed_{false};
     std::int32_t priming_stream_id_{-1};
     std::int32_t css_stream_id_{-1};
     std::int32_t js_stream_id_{-1};

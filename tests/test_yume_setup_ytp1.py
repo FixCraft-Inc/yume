@@ -189,6 +189,28 @@ class YumeSetupTests(unittest.TestCase):
         )
         self.assertEqual(verify.returncode, 0, verify.stderr.decode())
 
+    def test_outer_tls_certificates_use_browser_compatible_p256(self) -> None:
+        credentials = self.kit / "server/credentials"
+        for name in ("server-tls.pem", "server-trust.pem"):
+            certificate = credentials / name
+            details = subprocess.run(
+                ["openssl", "x509", "-in", str(certificate), "-text", "-noout"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=10,
+            ).stdout
+            self.assertIn(b"ASN1 OID: prime256v1", details)
+            self.assertIn(b"Signature Algorithm: ecdsa-with-SHA256", details)
+        key = subprocess.run(
+            ["openssl", "pkey", "-in", str(credentials / "server-tls.key.pem"),
+             "-pubout"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=10,
+        ).stdout
+        certificate_key = subprocess.run(
+            ["openssl", "x509", "-in", str(credentials / "server-tls.pem"),
+             "-pubkey", "-noout"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=10,
+        ).stdout
+        self.assertEqual(key, certificate_key)
+
     def test_admin_store_is_separate_and_starts_empty(self) -> None:
         server_credentials = self.kit / "server/credentials"
         authorized_path = server_credentials / "authorized-keys.json"
@@ -269,10 +291,38 @@ class YumeSetupTests(unittest.TestCase):
             {"tcp.json", "udp.json", "packet.json"},
         )
         self.assertTrue((self.kit / "client/adapters/socks5.json").is_file())
-        cover = (self.kit / "server/cover-site/index.html").read_text().lower()
-        self.assertIn("<!doctype html>", cover)
-        self.assertIn("<body>", cover)
-        self.assertNotIn("yume", cover)
+        for filename in ("index.html", "404.html"):
+            with self.subTest(cover=filename):
+                cover = (self.kit / "server/cover-site" / filename).read_text().lower()
+                self.assertIn("<!doctype html>", cover)
+                self.assertIn("<body>", cover)
+                self.assertGreaterEqual(len(cover), 256)
+                self.assertNotIn("yume", cover)
+        not_found = (self.kit / "server/cover-site/404.html").read_text()
+        self.assertIn("<h1>Page not found</h1>", not_found)
+        self.assertIn('href="/"', not_found)
+
+    def test_cover_serves_the_selected_profile_asset_sequence(self) -> None:
+        registry = json.loads((ROOT / "config/transport_profiles.json").read_text())
+        selected = next(
+            profile for profile in registry["profiles"]
+            if profile["id"] == registry["active_profile"]
+        )
+        profile = json.loads((
+            ROOT / selected["fixture"] / selected["artifacts"]["http2_profile"]
+        ).read_text())
+        cover_root = self.kit / "server/cover-site"
+        index = (cover_root / "index.html").read_text()
+        paths = [asset["path"] for asset in profile["asset_sequence"]]
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(asset=path):
+                asset = cover_root / path.removeprefix("/")
+                self.assertTrue(asset.is_file())
+                self.assertFalse(asset.is_symlink())
+                self.assertGreater(asset.stat().st_size, 0)
+                self.assertIn(f'"{path}"', index)
+                self.assertNotIn("yume", asset.read_text().lower())
 
     def test_cli_has_only_init_and_refuses_legacy_modes(self) -> None:
         help_result = self.run_tool("--help")

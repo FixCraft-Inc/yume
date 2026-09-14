@@ -17,22 +17,18 @@
 #include <span>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
+#include <map>
 #include <utility>
 #include <vector>
 
 #include <boost/asio/async_result.hpp>
-#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address_v4.hpp>
 #include <boost/asio/ip/address_v6.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ip/udp.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/strand.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/asio/write.hpp>
 #include <boost/system/error_code.hpp>
 
 namespace yume::providers {
@@ -59,8 +55,13 @@ using engine::StatusCode;
 
 using Tcp = boost::asio::ip::tcp;
 using Udp = boost::asio::ip::udp;
-using Executor = boost::asio::any_io_executor;
-using Strand = boost::asio::strand<Executor>;
+using Executor = AsioExecutionContext::Executor;
+using TcpSocket = boost::asio::basic_stream_socket<Tcp, Executor>;
+using UdpSocket = boost::asio::basic_datagram_socket<Udp, Executor>;
+using TcpResolver = boost::asio::ip::basic_resolver<Tcp, Executor>;
+using UdpResolver = boost::asio::ip::basic_resolver<Udp, Executor>;
+using Timer = boost::asio::basic_waitable_timer<std::chrono::steady_clock,
+    boost::asio::wait_traits<std::chrono::steady_clock>, Executor>;
 
 constexpr std::size_t kMaximumPendingOpens = 1U << 20U;
 constexpr std::size_t kMaximumActiveConnections = 1U << 20U;
@@ -87,6 +88,13 @@ Status closed_status() noexcept {
 
 Status allocation_status(std::string_view message) noexcept {
     return safe_status(StatusCode::ResourceExhausted, message);
+}
+
+void publish_cancel_id(std::atomic<std::uint64_t>& destination,
+                       std::uint64_t id) noexcept {
+    auto previous = destination.load(std::memory_order_acquire);
+    while (previous < id && !destination.compare_exchange_weak(
+        previous, id, std::memory_order_acq_rel, std::memory_order_acquire)) {}
 }
 
 template <typename Completion, typename... Args>
@@ -217,13 +225,13 @@ struct TargetEntry final {
 
 class ProviderState final : public std::enable_shared_from_this<ProviderState> {
 public:
-    ProviderState(Executor executor,
-                  ExecutorAffinity affinity,
+    ProviderState(std::shared_ptr<AsioExecutionContext> context,
+                  ResolvedRoutePolicy resolved_policy,
                   AsioDirectRouteLimits limits,
                   SocketProtector protector,
                   ProviderDescriptor descriptor) noexcept
-        : executor_(std::move(executor)),
-          affinity_(affinity),
+        : context_(std::move(context)),
+          resolved_policy_(std::move(resolved_policy)),
           limits_(limits),
           protector_(std::move(protector)),
           descriptor_(std::move(descriptor)) {}
@@ -267,21 +275,23 @@ public:
         return reserved_epoch != cancellation_epoch_;
     }
 
-    bool promote(std::uint64_t id,
+    Status promote(std::uint64_t id, std::uint64_t reserved_epoch,
                  const std::shared_ptr<CancelTarget>& target) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto found = targets_.find(id);
+        if (reserved_epoch != cancellation_epoch_) return cancelled_status();
         if (found == targets_.end() ||
             found->second.kind != TargetKind::PendingOpen ||
             pending_opens_ == 0U ||
             active_connections_ >= limits_.max_active_connections) {
-            return false;
+            return safe_status(StatusCode::ResourceExhausted,
+                "direct-route active-connection capacity exhausted");
         }
         found->second.kind = TargetKind::ActiveConnection;
         found->second.target = target;
         --pending_opens_;
         ++active_connections_;
-        return true;
+        return Status::success();
     }
 
     void release(std::uint64_t id) noexcept {
@@ -301,36 +311,49 @@ public:
     }
 
     void cancel_all() noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
-        ++cancellation_epoch_;
-        for (const auto& [_, entry] : targets_) {
-            if (auto target = entry.target.lock()) {
-                // Every target implementation only requests work on its own
-                // executor and contains submission failures. It cannot call
-                // back into ProviderState synchronously, so cancellation can
-                // remain allocation-free under this dedicated state lock.
-                target->request_cancel();
+        std::uint64_t last_id = 0U;
+        std::uint64_t final_id;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++cancellation_epoch_;
+            final_id = next_target_id_ - 1U;
+        }
+        // Neither a cancellation request nor a target's last-reference
+        // destructor may run under this registry lock. Both release ownership.
+        for (;;) {
+            std::shared_ptr<CancelTarget> target;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto next = targets_.upper_bound(last_id);
+                if (next == targets_.end() || next->first > final_id) return;
+                last_id = next->first;
+                target = next->second.target.lock();
             }
+            if (target) target->request_cancel();
         }
     }
 
-    const Executor& executor() const noexcept { return executor_; }
-    ExecutorAffinity affinity() const noexcept { return affinity_; }
+    Executor executor() const noexcept { return context_->executor(); }
+    ExecutorAffinity affinity() const noexcept { return context_->affinity(); }
+    const std::shared_ptr<AsioExecutionContext>& context() const noexcept {
+        return context_;
+    }
     const AsioDirectRouteLimits& limits() const noexcept { return limits_; }
     const SocketProtector& protector() const noexcept { return protector_; }
+    const ResolvedRoutePolicy& resolved_policy() const noexcept { return resolved_policy_; }
     const ProviderDescriptor& descriptor() const noexcept {
         return descriptor_;
     }
 
 private:
-    Executor executor_;
-    ExecutorAffinity affinity_;
+    std::shared_ptr<AsioExecutionContext> context_;
+    ResolvedRoutePolicy resolved_policy_;
     AsioDirectRouteLimits limits_;
     SocketProtector protector_;
     ProviderDescriptor descriptor_;
 
     std::mutex mutex_;
-    std::unordered_map<std::uint64_t, TargetEntry> targets_;
+    std::map<std::uint64_t, TargetEntry> targets_;
     std::uint64_t next_target_id_{1U};
     std::uint64_t cancellation_epoch_{0U};
     std::size_t pending_opens_{0U};
@@ -373,13 +396,15 @@ namespace {
 class TcpChannelState final : public CancelTarget,
                               public std::enable_shared_from_this<TcpChannelState> {
 public:
-    TcpChannelState(Tcp::socket socket,
+    TcpChannelState(TcpSocket socket,
                     std::shared_ptr<ProviderState> provider,
-                    std::uint64_t target_id) noexcept
-        : strand_(boost::asio::make_strand(socket.get_executor())),
-          socket_(std::move(socket)),
+                    std::uint64_t target_id)
+        : socket_(std::move(socket)),
           provider_(std::move(provider)),
-          target_id_(target_id) {}
+          target_id_(target_id),
+          control_([](void* owner) noexcept {
+              static_cast<TcpChannelState*>(owner)->handle_control();
+          }) {}
 
     ~TcpChannelState() noexcept override {
         boost::system::error_code ignored;
@@ -401,217 +426,63 @@ public:
 
     void async_read(std::size_t max_bytes,
                     CancellationToken cancellation,
-                    ByteChannel::ReadCompletion completion) noexcept {
-        if (!completion) {
-            return;
+                    ByteChannel::ReadCompletion completion) {
+        provider_->context()->require_context();
+        const auto owner = shared_from_this();
+        if (!completion) return;
+        if (close_requested_.load(std::memory_order_acquire)) {
+            complete_read(std::move(completion), closed_status());
+        } else if (max_bytes == 0U || max_bytes > max_read_size()) {
+            complete_read(std::move(completion), safe_status(StatusCode::InvalidArgument,
+                "TCP read exceeds the provider bound"));
+        } else {
+            start_read(max_bytes, std::move(cancellation), std::move(completion));
         }
-        std::shared_ptr<ByteChannel::ReadCompletion> completion_holder;
-        try {
-            // make_shared allocates before constructing the stored callback;
-            // std::function's move is noexcept. If allocation fails, the
-            // caller-owned completion below therefore remains callable.
-            completion_holder =
-                std::make_shared<ByteChannel::ReadCompletion>(
-                    std::move(completion));
-        } catch (...) {
-            post_read_completion(
-                std::move(completion),
-                allocation_status("TCP read callback allocation failed"));
-            return;
-        }
-        Status immediate = Status::success();
-        {
-            std::lock_guard<std::mutex> lock(submission_mutex_);
-            if (close_requested_) {
-                immediate = closed_status();
-            } else if (max_bytes == 0U || max_bytes > max_read_size()) {
-                immediate = safe_status(
-                    StatusCode::InvalidArgument,
-                    "TCP read exceeds the provider bound");
-            } else {
-                try {
-                    boost::asio::post(
-                        strand_,
-                        [self = shared_from_this(), max_bytes,
-                         cancellation = std::move(cancellation),
-                         completion_holder]() mutable noexcept {
-                            self->start_read(
-                                max_bytes, std::move(cancellation),
-                                std::move(*completion_holder));
-                        });
-                    return;
-                } catch (const std::bad_alloc&) {
-                    immediate = allocation_status(
-                        "TCP read scheduling allocation failed");
-                } catch (...) {
-                    immediate = safe_status(
-                        StatusCode::Internal, "TCP read scheduling failed");
-                }
-            }
-        }
-        post_read_completion(
-            std::move(*completion_holder), std::move(immediate));
     }
 
     void async_write(Buffer buffer,
                      CancellationToken cancellation,
-                     ByteChannel::WriteCompletion completion) noexcept {
-        if (!completion) {
-            return;
+                     ByteChannel::WriteCompletion completion) {
+        provider_->context()->require_context();
+        const auto owner = shared_from_this();
+        if (!completion) return;
+        if (close_requested_.load(std::memory_order_acquire) || write_shutdown_requested_) {
+            invoke_noexcept(completion, closed_status(), 0U);
+        } else if (buffer.size() > max_write_size()) {
+            invoke_noexcept(completion, safe_status(StatusCode::ResourceExhausted,
+                "TCP write exceeds the provider bound"), 0U);
+        } else {
+            start_write(std::move(buffer), std::move(cancellation), std::move(completion));
         }
-        std::shared_ptr<ByteChannel::WriteCompletion> completion_holder;
-        try {
-            completion_holder =
-                std::make_shared<ByteChannel::WriteCompletion>(
-                    std::move(completion));
-        } catch (...) {
-            post_write_completion(
-                std::move(completion),
-                allocation_status("TCP write callback allocation failed"),
-                0U);
-            return;
-        }
-        Status immediate = Status::success();
-        {
-            std::lock_guard<std::mutex> lock(submission_mutex_);
-            if (close_requested_ || write_shutdown_requested_) {
-                immediate = closed_status();
-            } else if (buffer.size() > max_write_size()) {
-                immediate = safe_status(
-                    StatusCode::ResourceExhausted,
-                    "TCP write exceeds the provider bound");
-            } else {
-                try {
-                    boost::asio::post(
-                        strand_,
-                        [self = shared_from_this(),
-                         buffer = std::move(buffer),
-                         cancellation = std::move(cancellation),
-                         completion_holder]() mutable noexcept {
-                            self->start_write(
-                                std::move(buffer), std::move(cancellation),
-                                std::move(*completion_holder));
-                        });
-                    return;
-                } catch (const std::bad_alloc&) {
-                    immediate = allocation_status(
-                        "TCP write scheduling allocation failed");
-                } catch (...) {
-                    immediate = safe_status(
-                        StatusCode::Internal, "TCP write scheduling failed");
-                }
-            }
-        }
-        post_write_completion(
-            std::move(*completion_holder), std::move(immediate), 0U);
     }
 
     Status shutdown_write() noexcept {
-        std::lock_guard<std::mutex> lock(submission_mutex_);
-        if (close_requested_) {
-            return closed_status();
-        }
-        if (write_shutdown_requested_) {
-            return Status::success();
-        }
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this()]() noexcept {
-                    self->shutdown_write_on_strand();
-                });
+        if (!provider_->context()->running_in_this_thread())
+            return Status(StatusCode::FailedPrecondition);
+        const auto owner = shared_from_this();
+        if (close_requested_.load(std::memory_order_acquire)) return closed_status();
+        if (!write_shutdown_requested_) {
             write_shutdown_requested_ = true;
-            return Status::success();
-        } catch (const std::bad_alloc&) {
-            return allocation_status(
-                "TCP write-shutdown scheduling allocation failed");
-        } catch (...) {
-            return safe_status(StatusCode::Internal,
-                               "TCP write-shutdown scheduling failed");
+            shutdown_write_on_context();
         }
+        return Status::success();
     }
 
     void request_cancel() noexcept override {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this()]() noexcept {
-                    self->cancel_on_strand();
-                });
-        } catch (...) {
-            // Cancellation is best-effort only when the executor itself can no
-            // longer accept work; no exception may escape cleanup.
-        }
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (close_requested_.load(std::memory_order_acquire)) return;
+        publish_cancel_id(cancel_through_,
+            next_operation_id_.load(std::memory_order_acquire) - 1U);
+        provider_->context()->submit(control_, shared_from_this());
     }
 
     void request_close() noexcept {
-        {
-            std::lock_guard<std::mutex> lock(submission_mutex_);
-            if (close_requested_) {
-                return;
-            }
-            close_requested_ = true;
-        }
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this()]() noexcept {
-                    self->close_on_strand();
-                });
-        } catch (...) {
-            // The state still owns the socket. Its noexcept destructor closes
-            // it if the executor has already stopped accepting work.
-        }
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (close_requested_.exchange(true, std::memory_order_acq_rel)) return;
+        provider_->context()->submit(control_, shared_from_this());
     }
 
 private:
-    void post_read_completion(ByteChannel::ReadCompletion completion,
-                              Status status) noexcept {
-        std::shared_ptr<ByteChannel::ReadCompletion> completion_holder;
-        std::shared_ptr<Status> status_holder;
-        try {
-            completion_holder =
-                std::make_shared<ByteChannel::ReadCompletion>(
-                    std::move(completion));
-            status_holder = std::make_shared<Status>(std::move(status));
-            boost::asio::post(
-                strand_, [completion_holder, status_holder]() mutable noexcept {
-                    complete_read(std::move(*completion_holder),
-                                  std::move(*status_holder));
-                });
-        } catch (...) {
-            complete_read(
-                completion_holder ? std::move(*completion_holder)
-                                  : std::move(completion),
-                status_holder ? std::move(*status_holder)
-                              : std::move(status));
-        }
-    }
-
-    void post_write_completion(ByteChannel::WriteCompletion completion,
-                               Status status,
-                               std::size_t transferred) noexcept {
-        std::shared_ptr<ByteChannel::WriteCompletion> completion_holder;
-        std::shared_ptr<Status> status_holder;
-        try {
-            completion_holder =
-                std::make_shared<ByteChannel::WriteCompletion>(
-                    std::move(completion));
-            status_holder = std::make_shared<Status>(std::move(status));
-            boost::asio::post(
-                strand_, [completion_holder, status_holder,
-                          transferred]() mutable noexcept {
-                    invoke_noexcept(*completion_holder,
-                                    std::move(*status_holder),
-                                    transferred);
-                });
-        } catch (...) {
-            auto& selected_completion =
-                completion_holder ? *completion_holder : completion;
-            invoke_noexcept(
-                selected_completion,
-                status_holder ? std::move(*status_holder) : std::move(status),
-                transferred);
-        }
-    }
-
     struct PendingRead final {
         PendingRead(std::uint64_t operation_id,
                     Buffer owned_buffer,
@@ -640,6 +511,7 @@ private:
         ByteChannel::WriteCompletion completion;
         CancellationRegistration cancellation;
         bool cancelled{false};
+        std::size_t transferred{0U};
     };
 
     void start_read(std::size_t max_bytes,
@@ -663,7 +535,7 @@ private:
             }
             auto allocated = Buffer::allocate(max_bytes, max_read_size());
             if (!allocated.ok()) {
-                complete_read(std::move(completion), allocated.status());
+                complete_read(std::move(completion), safe_status(allocated.status().code(), allocated.status().message()));
                 return;
             }
             const std::uint64_t id = next_operation_id_++;
@@ -677,7 +549,7 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_read(registration.status());
+                settle_read(safe_status(registration.status().code(), registration.status().message()));
                 return;
             }
             pending_read_->cancellation =
@@ -685,12 +557,11 @@ private:
             const auto read_bytes = pending_read_->buffer.mutable_bytes();
             socket_.async_read_some(
                 boost::asio::buffer(read_bytes.data(), read_bytes.size()),
-                boost::asio::bind_executor(
-                    strand_, [self = shared_from_this(), id](
-                                 const boost::system::error_code& error,
-                                 std::size_t transferred) noexcept {
-                        self->complete_socket_read(id, error, transferred);
-                    }));
+                [self = shared_from_this(), id](
+                    const boost::system::error_code& error,
+                    std::size_t transferred) noexcept {
+                    self->complete_socket_read(id, error, transferred);
+                });
         } catch (const std::bad_alloc&) {
             if (pending_read_) {
                 settle_read(allocation_status(
@@ -740,21 +611,12 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_write(registration.status(), 0U);
+                settle_write(safe_status(registration.status().code(), registration.status().message()), 0U);
                 return;
             }
             pending_write_->cancellation =
                 std::move(registration).take_value();
-            const auto write_bytes = pending_write_->buffer.bytes();
-            boost::asio::async_write(
-                socket_, boost::asio::buffer(
-                             write_bytes.data(), write_bytes.size()),
-                boost::asio::bind_executor(
-                    strand_, [self = shared_from_this(), id](
-                                 const boost::system::error_code& error,
-                                 std::size_t transferred) noexcept {
-                        self->complete_socket_write(id, error, transferred);
-                    }));
+            continue_write();
         } catch (const std::bad_alloc&) {
             if (pending_write_) {
                 settle_write(allocation_status(
@@ -777,41 +639,32 @@ private:
     }
 
     void cancel_read(std::uint64_t id) noexcept {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this(), id]() noexcept {
-                    if (!self->pending_read_ ||
-                        self->pending_read_->id != id) {
-                        return;
-                    }
-                    self->pending_read_->cancelled = true;
-                    if (self->pending_write_) {
-                        self->pending_write_->cancelled = true;
-                    }
-                    boost::system::error_code ignored;
-                    self->socket_.cancel(ignored);
-                });
-        } catch (...) {
-        }
+        request_operation_cancel(id, cancelled_read_);
     }
 
     void cancel_write(std::uint64_t id) noexcept {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this(), id]() noexcept {
-                    if (!self->pending_write_ ||
-                        self->pending_write_->id != id) {
-                        return;
-                    }
-                    self->pending_write_->cancelled = true;
-                    if (self->pending_read_) {
-                        self->pending_read_->cancelled = true;
-                    }
-                    boost::system::error_code ignored;
-                    self->socket_.cancel(ignored);
-                });
-        } catch (...) {
+        request_operation_cancel(id, cancelled_write_);
+    }
+
+    void request_operation_cancel(std::uint64_t id,
+                                  std::atomic<std::uint64_t>& requested) noexcept {
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (close_requested_.load(std::memory_order_acquire)) return;
+        publish_cancel_id(requested, id);
+        provider_->context()->submit(control_, shared_from_this());
+    }
+
+    void handle_control() noexcept {
+        if (close_requested_.load(std::memory_order_acquire)) {
+            close_on_context();
+            return;
         }
+        const auto through = cancel_through_.load(std::memory_order_acquire);
+        if ((pending_read_ && (pending_read_->id <= through ||
+             pending_read_->id == cancelled_read_.load(std::memory_order_acquire))) ||
+            (pending_write_ && (pending_write_->id <= through ||
+             pending_write_->id == cancelled_write_.load(std::memory_order_acquire))))
+            cancel_on_context();
     }
 
     void complete_socket_read(std::uint64_t id,
@@ -819,6 +672,15 @@ private:
                               std::size_t transferred) noexcept {
         try {
             if (!pending_read_ || pending_read_->id != id) {
+                return;
+            }
+            if (close_requested_.load(std::memory_order_acquire)) {
+                settle_read(closed_status());
+                return;
+            }
+            if (pending_read_->cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
+                id == cancelled_read_.load(std::memory_order_acquire)) {
+                settle_read(cancelled_status());
                 return;
             }
             if (error) {
@@ -838,7 +700,7 @@ private:
             }
             const Status resized = pending_read_->buffer.resize(transferred);
             if (!resized.ok()) {
-                settle_read(resized);
+                settle_read(safe_status(resized.code(), resized.message()));
                 return;
             }
             ByteChannel::ReadCompletion completion =
@@ -852,29 +714,66 @@ private:
         }
     }
 
+    void continue_write() noexcept {
+        if (!pending_write_) return;
+        auto& operation = *pending_write_;
+        const auto id = operation.id;
+        const auto transferred = operation.transferred;
+        if (close_requested_.load(std::memory_order_acquire)) {
+            settle_write(closed_status(), transferred);
+            return;
+        }
+        if (operation.cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
+            id == cancelled_write_.load(std::memory_order_acquire)) {
+            settle_write(cancelled_status(), transferred);
+            return;
+        }
+        const auto remaining = operation.buffer.bytes().subspan(transferred);
+        if (remaining.empty()) {
+            settle_write(Status::success(), transferred);
+            return;
+        }
+        try {
+            socket_.async_write_some(boost::asio::buffer(remaining.data(), remaining.size()),
+                [self = shared_from_this(), id](const boost::system::error_code& error,
+                                               std::size_t count) noexcept {
+                    self->complete_socket_write(id, error, count);
+                });
+        } catch (const std::bad_alloc&) {
+            settle_write(allocation_status("TCP write continuation allocation failed"), transferred);
+        } catch (...) {
+            settle_write(safe_status(StatusCode::Internal, "TCP write continuation failed"), transferred);
+        }
+    }
+
     void complete_socket_write(std::uint64_t id,
                                const boost::system::error_code& error,
                                std::size_t transferred) noexcept {
-        if (!pending_write_ || pending_write_->id != id) {
+        if (!pending_write_ || pending_write_->id != id) return;
+        auto& operation = *pending_write_;
+        if (transferred > operation.buffer.size() - operation.transferred) {
+            settle_write(safe_status(StatusCode::Internal,
+                "TCP write completion exceeded its buffer"), operation.transferred);
             return;
         }
-        const bool cancelled = pending_write_->cancelled;
-        const std::size_t expected = pending_write_->buffer.size();
-        if (error) {
-            settle_write(socket_operation_status(
-                             error, closed_, cancelled, "TCP write failed"),
-                         transferred);
-        } else if (transferred != expected) {
-            settle_write(safe_status(
-                             StatusCode::Internal,
-                             "TCP write completed only partially"),
-                         transferred);
+        operation.transferred += transferred;
+        const auto total = operation.transferred;
+        const bool cancelled = operation.cancelled ||
+            id <= cancel_through_.load(std::memory_order_acquire) ||
+            id == cancelled_write_.load(std::memory_order_acquire);
+        if (close_requested_.load(std::memory_order_acquire)) {
+            settle_write(closed_status(), total);
+        } else if (cancelled) {
+            settle_write(cancelled_status(), total);
+        } else if (error || transferred == 0U) {
+            settle_write(error ? socket_operation_status(error, closed_, false, "TCP write failed")
+                               : closed_status(), total);
+        } else if (total == operation.buffer.size()) {
+            settle_write(Status::success(), total);
         } else {
-            settle_write(Status::success(), transferred);
+            continue_write();
         }
-        if (shutdown_after_write_ && !pending_write_) {
-            shutdown_socket_write();
-        }
+        if (shutdown_after_write_ && !pending_write_) shutdown_socket_write();
     }
 
     void settle_read(Status status) noexcept {
@@ -897,7 +796,7 @@ private:
         invoke_noexcept(completion, std::move(status), transferred);
     }
 
-    void shutdown_write_on_strand() noexcept {
+    void shutdown_write_on_context() noexcept {
         if (closed_ || write_shutdown_) {
             return;
         }
@@ -918,7 +817,7 @@ private:
         shutdown_after_write_ = false;
     }
 
-    void cancel_on_strand() noexcept {
+    void cancel_on_context() noexcept {
         if (closed_) {
             return;
         }
@@ -932,7 +831,7 @@ private:
         socket_.cancel(ignored);
     }
 
-    void close_on_strand() noexcept {
+    void close_on_context() noexcept {
         if (closed_) {
             return;
         }
@@ -950,11 +849,10 @@ private:
         }
     }
 
-    Strand strand_;
-    Tcp::socket socket_;
+    TcpSocket socket_;
     std::shared_ptr<ProviderState> provider_;
     std::uint64_t target_id_{0U};
-    std::uint64_t next_operation_id_{1U};
+    std::atomic<std::uint64_t> next_operation_id_{1U};
     std::optional<PendingRead> pending_read_;
     std::optional<PendingWrite> pending_write_;
     bool read_eof_{false};
@@ -963,9 +861,15 @@ private:
     bool closed_{false};
     bool registered_{true};
 
-    std::mutex submission_mutex_;
-    bool close_requested_{false};
+    // Terminal publication and control admission share this gate. A cancel
+    // racing close must enqueue before close returns, never after final drain.
+    std::mutex publication_mutex_;
+    std::atomic<bool> close_requested_{false};
     bool write_shutdown_requested_{false};
+    std::atomic<std::uint64_t> cancel_through_{0U};
+    std::atomic<std::uint64_t> cancelled_read_{0U};
+    std::atomic<std::uint64_t> cancelled_write_{0U};
+    ControlTask control_;
 };
 
 class AsioTcpByteChannel final : public ByteChannel {
@@ -1010,13 +914,15 @@ private:
 class UdpChannelState final : public CancelTarget,
                               public std::enable_shared_from_this<UdpChannelState> {
 public:
-    UdpChannelState(Udp::socket socket,
+    UdpChannelState(UdpSocket socket,
                     std::shared_ptr<ProviderState> provider,
-                    std::uint64_t target_id) noexcept
-        : strand_(boost::asio::make_strand(socket.get_executor())),
-          socket_(std::move(socket)),
+                    std::uint64_t target_id)
+        : socket_(std::move(socket)),
           provider_(std::move(provider)),
-          target_id_(target_id) {}
+          target_id_(target_id),
+          control_([](void* owner) noexcept {
+              static_cast<UdpChannelState*>(owner)->handle_control();
+          }) {}
 
     ~UdpChannelState() noexcept override {
         boost::system::error_code ignored;
@@ -1040,185 +946,48 @@ public:
     }
 
     void async_receive(CancellationToken cancellation,
-                       PacketChannel::ReceiveCompletion completion) noexcept {
-        if (!completion) {
-            return;
+                       PacketChannel::ReceiveCompletion completion) {
+        provider_->context()->require_context();
+        const auto owner = shared_from_this();
+        if (!completion) return;
+        if (close_requested_.load(std::memory_order_acquire)) {
+            complete_receive(std::move(completion), closed_status());
+        } else {
+            start_receive(std::move(cancellation), std::move(completion));
         }
-        std::shared_ptr<PacketChannel::ReceiveCompletion> completion_holder;
-        try {
-            completion_holder =
-                std::make_shared<PacketChannel::ReceiveCompletion>(
-                    std::move(completion));
-        } catch (...) {
-            post_receive_completion(
-                std::move(completion),
-                allocation_status("UDP receive callback allocation failed"));
-            return;
-        }
-        Status immediate = Status::success();
-        {
-            std::lock_guard<std::mutex> lock(submission_mutex_);
-            if (close_requested_) {
-                immediate = closed_status();
-            } else {
-                try {
-                    boost::asio::post(
-                        strand_,
-                        [self = shared_from_this(),
-                         cancellation = std::move(cancellation),
-                         completion_holder]() mutable noexcept {
-                            self->start_receive(
-                                std::move(cancellation),
-                                std::move(*completion_holder));
-                        });
-                    return;
-                } catch (const std::bad_alloc&) {
-                    immediate = allocation_status(
-                        "UDP receive scheduling allocation failed");
-                } catch (...) {
-                    immediate = safe_status(
-                        StatusCode::Internal,
-                        "UDP receive scheduling failed");
-                }
-            }
-        }
-        post_receive_completion(
-            std::move(*completion_holder), std::move(immediate));
     }
 
     void async_send(Buffer packet,
                     CancellationToken cancellation,
-                    PacketChannel::SendCompletion completion) noexcept {
-        if (!completion) {
-            return;
+                    PacketChannel::SendCompletion completion) {
+        provider_->context()->require_context();
+        const auto owner = shared_from_this();
+        if (!completion) return;
+        if (close_requested_.load(std::memory_order_acquire)) {
+            invoke_noexcept(completion, closed_status(), 0U);
+        } else if (packet.size() > max_packet_size()) {
+            invoke_noexcept(completion, safe_status(StatusCode::ResourceExhausted,
+                "UDP packet exceeds the provider bound"), 0U);
+        } else {
+            start_send(std::move(packet), std::move(cancellation), std::move(completion));
         }
-        std::shared_ptr<PacketChannel::SendCompletion> completion_holder;
-        try {
-            completion_holder =
-                std::make_shared<PacketChannel::SendCompletion>(
-                    std::move(completion));
-        } catch (...) {
-            post_send_completion(
-                std::move(completion),
-                allocation_status("UDP send callback allocation failed"),
-                0U);
-            return;
-        }
-        Status immediate = Status::success();
-        {
-            std::lock_guard<std::mutex> lock(submission_mutex_);
-            if (close_requested_) {
-                immediate = closed_status();
-            } else if (packet.size() > max_packet_size()) {
-                immediate = safe_status(
-                    StatusCode::ResourceExhausted,
-                    "UDP packet exceeds the provider bound");
-            } else {
-                try {
-                    boost::asio::post(
-                        strand_,
-                        [self = shared_from_this(),
-                         packet = std::move(packet),
-                         cancellation = std::move(cancellation),
-                         completion_holder]() mutable noexcept {
-                            self->start_send(
-                                std::move(packet),
-                                std::move(cancellation),
-                                std::move(*completion_holder));
-                        });
-                    return;
-                } catch (const std::bad_alloc&) {
-                    immediate = allocation_status(
-                        "UDP send scheduling allocation failed");
-                } catch (...) {
-                    immediate = safe_status(
-                        StatusCode::Internal, "UDP send scheduling failed");
-                }
-            }
-        }
-        post_send_completion(
-            std::move(*completion_holder), std::move(immediate), 0U);
     }
 
     void request_cancel() noexcept override {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this()]() noexcept {
-                    self->cancel_on_strand();
-                });
-        } catch (...) {
-        }
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (close_requested_.load(std::memory_order_acquire)) return;
+        publish_cancel_id(cancel_through_,
+            next_operation_id_.load(std::memory_order_acquire) - 1U);
+        provider_->context()->submit(control_, shared_from_this());
     }
 
     void request_close() noexcept {
-        {
-            std::lock_guard<std::mutex> lock(submission_mutex_);
-            if (close_requested_) {
-                return;
-            }
-            close_requested_ = true;
-        }
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this()]() noexcept {
-                    self->close_on_strand();
-                });
-        } catch (...) {
-        }
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (close_requested_.exchange(true, std::memory_order_acq_rel)) return;
+        provider_->context()->submit(control_, shared_from_this());
     }
 
 private:
-    void post_receive_completion(
-        PacketChannel::ReceiveCompletion completion,
-        Status status) noexcept {
-        std::shared_ptr<PacketChannel::ReceiveCompletion> completion_holder;
-        std::shared_ptr<Status> status_holder;
-        try {
-            completion_holder =
-                std::make_shared<PacketChannel::ReceiveCompletion>(
-                    std::move(completion));
-            status_holder = std::make_shared<Status>(std::move(status));
-            boost::asio::post(
-                strand_, [completion_holder, status_holder]() mutable noexcept {
-                    complete_receive(std::move(*completion_holder),
-                                     std::move(*status_holder));
-                });
-        } catch (...) {
-            complete_receive(
-                completion_holder ? std::move(*completion_holder)
-                                  : std::move(completion),
-                status_holder ? std::move(*status_holder)
-                              : std::move(status));
-        }
-    }
-
-    void post_send_completion(PacketChannel::SendCompletion completion,
-                              Status status,
-                              std::size_t transferred) noexcept {
-        std::shared_ptr<PacketChannel::SendCompletion> completion_holder;
-        std::shared_ptr<Status> status_holder;
-        try {
-            completion_holder =
-                std::make_shared<PacketChannel::SendCompletion>(
-                    std::move(completion));
-            status_holder = std::make_shared<Status>(std::move(status));
-            boost::asio::post(
-                strand_, [completion_holder, status_holder,
-                          transferred]() mutable noexcept {
-                    invoke_noexcept(*completion_holder,
-                                    std::move(*status_holder),
-                                    transferred);
-                });
-        } catch (...) {
-            auto& selected_completion =
-                completion_holder ? *completion_holder : completion;
-            invoke_noexcept(
-                selected_completion,
-                status_holder ? std::move(*status_holder) : std::move(status),
-                transferred);
-        }
-    }
-
     struct PendingReceive final {
         PendingReceive(std::uint64_t operation_id,
                        Buffer owned_buffer,
@@ -1270,7 +1039,7 @@ private:
             auto allocated = Buffer::allocate(
                 receive_capacity(), receive_capacity());
             if (!allocated.ok()) {
-                complete_receive(std::move(completion), allocated.status());
+                complete_receive(std::move(completion), safe_status(allocated.status().code(), allocated.status().message()));
                 return;
             }
             const std::uint64_t id = next_operation_id_++;
@@ -1284,7 +1053,7 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_receive(registration.status());
+                settle_receive(safe_status(registration.status().code(), registration.status().message()));
                 return;
             }
             pending_receive_->cancellation =
@@ -1294,13 +1063,11 @@ private:
             socket_.async_receive(
                 boost::asio::buffer(
                     receive_bytes.data(), receive_bytes.size()),
-                boost::asio::bind_executor(
-                    strand_, [self = shared_from_this(), id](
-                                 const boost::system::error_code& error,
-                                 std::size_t transferred) noexcept {
-                        self->complete_socket_receive(
-                            id, error, transferred);
-                    }));
+                [self = shared_from_this(), id](
+                    const boost::system::error_code& error,
+                    std::size_t transferred) noexcept {
+                    self->complete_socket_receive(id, error, transferred);
+                });
         } catch (const std::bad_alloc&) {
             if (pending_receive_) {
                 settle_receive(allocation_status(
@@ -1350,7 +1117,7 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_send(registration.status(), 0U);
+                settle_send(safe_status(registration.status().code(), registration.status().message()), 0U);
                 return;
             }
             pending_send_->cancellation =
@@ -1358,12 +1125,11 @@ private:
             const auto send_bytes = pending_send_->buffer.bytes();
             socket_.async_send(
                 boost::asio::buffer(send_bytes.data(), send_bytes.size()),
-                boost::asio::bind_executor(
-                    strand_, [self = shared_from_this(), id](
-                                 const boost::system::error_code& error,
-                                 std::size_t transferred) noexcept {
-                        self->complete_socket_send(id, error, transferred);
-                    }));
+                [self = shared_from_this(), id](
+                    const boost::system::error_code& error,
+                    std::size_t transferred) noexcept {
+                    self->complete_socket_send(id, error, transferred);
+                });
         } catch (const std::bad_alloc&) {
             if (pending_send_) {
                 settle_send(allocation_status(
@@ -1386,41 +1152,32 @@ private:
     }
 
     void cancel_receive(std::uint64_t id) noexcept {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this(), id]() noexcept {
-                    if (!self->pending_receive_ ||
-                        self->pending_receive_->id != id) {
-                        return;
-                    }
-                    self->pending_receive_->cancelled = true;
-                    if (self->pending_send_) {
-                        self->pending_send_->cancelled = true;
-                    }
-                    boost::system::error_code ignored;
-                    self->socket_.cancel(ignored);
-                });
-        } catch (...) {
-        }
+        request_operation_cancel(id, cancelled_receive_);
     }
 
     void cancel_send(std::uint64_t id) noexcept {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this(), id]() noexcept {
-                    if (!self->pending_send_ ||
-                        self->pending_send_->id != id) {
-                        return;
-                    }
-                    self->pending_send_->cancelled = true;
-                    if (self->pending_receive_) {
-                        self->pending_receive_->cancelled = true;
-                    }
-                    boost::system::error_code ignored;
-                    self->socket_.cancel(ignored);
-                });
-        } catch (...) {
+        request_operation_cancel(id, cancelled_send_);
+    }
+
+    void request_operation_cancel(std::uint64_t id,
+                                  std::atomic<std::uint64_t>& requested) noexcept {
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (close_requested_.load(std::memory_order_acquire)) return;
+        publish_cancel_id(requested, id);
+        provider_->context()->submit(control_, shared_from_this());
+    }
+
+    void handle_control() noexcept {
+        if (close_requested_.load(std::memory_order_acquire)) {
+            close_on_context();
+            return;
         }
+        const auto through = cancel_through_.load(std::memory_order_acquire);
+        if ((pending_receive_ && (pending_receive_->id <= through ||
+             pending_receive_->id == cancelled_receive_.load(std::memory_order_acquire))) ||
+            (pending_send_ && (pending_send_->id <= through ||
+             pending_send_->id == cancelled_send_.load(std::memory_order_acquire))))
+            cancel_on_context();
     }
 
     void complete_socket_receive(
@@ -1429,6 +1186,15 @@ private:
         std::size_t transferred) noexcept {
         try {
             if (!pending_receive_ || pending_receive_->id != id) {
+                return;
+            }
+            if (close_requested_.load(std::memory_order_acquire)) {
+                settle_receive(closed_status());
+                return;
+            }
+            if (pending_receive_->cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
+                id == cancelled_receive_.load(std::memory_order_acquire)) {
+                settle_receive(cancelled_status());
                 return;
             }
             if (error) {
@@ -1458,7 +1224,7 @@ private:
             const Status resized =
                 pending_receive_->buffer.resize(transferred);
             if (!resized.ok()) {
-                settle_receive(resized);
+                settle_receive(safe_status(resized.code(), resized.message()));
                 return;
             }
             PacketChannel::ReceiveCompletion completion =
@@ -1480,7 +1246,12 @@ private:
         }
         const bool cancelled = pending_send_->cancelled;
         const std::size_t expected = pending_send_->buffer.size();
-        if (error) {
+        if (close_requested_.load(std::memory_order_acquire)) {
+            settle_send(closed_status(), transferred);
+        } else if (pending_send_->cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
+                   id == cancelled_send_.load(std::memory_order_acquire)) {
+            settle_send(cancelled_status(), transferred);
+        } else if (error) {
             settle_send(socket_operation_status(
                             error, closed_, cancelled, "UDP send failed"),
                         transferred);
@@ -1514,7 +1285,7 @@ private:
         invoke_noexcept(completion, std::move(status), transferred);
     }
 
-    void cancel_on_strand() noexcept {
+    void cancel_on_context() noexcept {
         if (closed_) {
             return;
         }
@@ -1528,7 +1299,7 @@ private:
         socket_.cancel(ignored);
     }
 
-    void close_on_strand() noexcept {
+    void close_on_context() noexcept {
         if (closed_) {
             return;
         }
@@ -1545,18 +1316,23 @@ private:
         }
     }
 
-    Strand strand_;
-    Udp::socket socket_;
+    UdpSocket socket_;
     std::shared_ptr<ProviderState> provider_;
     std::uint64_t target_id_{0U};
-    std::uint64_t next_operation_id_{1U};
+    std::atomic<std::uint64_t> next_operation_id_{1U};
     std::optional<PendingReceive> pending_receive_;
     std::optional<PendingSend> pending_send_;
     bool closed_{false};
     bool registered_{true};
 
-    std::mutex submission_mutex_;
-    bool close_requested_{false};
+    // Terminal publication and control admission share this gate. A cancel
+    // racing close must enqueue before close returns, never after final drain.
+    std::mutex publication_mutex_;
+    std::atomic<bool> close_requested_{false};
+    std::atomic<std::uint64_t> cancel_through_{0U};
+    std::atomic<std::uint64_t> cancelled_receive_{0U};
+    std::atomic<std::uint64_t> cancelled_send_{0U};
+    ControlTask control_;
 };
 
 class AsioUdpPacketChannel final : public PacketChannel {
@@ -1611,21 +1387,10 @@ private:
     engine::RouteProvider::Completion completion_;
 };
 
-void post_open_failure(
-    const Executor& executor,
+void complete_open_failure(
     const std::shared_ptr<OpenCompletion>& completion,
     Status status) noexcept {
-    try {
-        boost::asio::post(
-            executor,
-            [completion,
-             status = std::move(status)]() mutable noexcept {
-                completion->complete(
-                    Result<RouteConnection>(std::move(status)));
-            });
-    } catch (...) {
-        completion->complete(Result<RouteConnection>(std::move(status)));
-    }
+    completion->complete(Result<RouteConnection>(std::move(status)));
 }
 
 class OpenOperation final : public CancelTarget,
@@ -1641,18 +1406,20 @@ public:
           reserved_epoch_(reserved_epoch),
           request_(std::move(request)),
           completion_(std::move(completion)),
-          strand_(boost::asio::make_strand(provider_->executor())),
-          tcp_resolver_(strand_),
-          tcp_socket_(strand_),
-          udp_resolver_(strand_),
-          udp_socket_(strand_),
-          resolve_timer_(strand_),
-          connect_timer_(strand_) {}
+          tcp_resolver_(std::in_place, provider_->executor()),
+          tcp_socket_(provider_->executor()),
+          udp_resolver_(std::in_place, provider_->executor()),
+          udp_socket_(provider_->executor()),
+          resolve_timer_(provider_->executor()),
+          connect_timer_(provider_->executor()),
+          control_([](void* owner) noexcept {
+              static_cast<OpenOperation*>(owner)->handle_control();
+          }) {}
 
     ~OpenOperation() noexcept override {
         boost::system::error_code ignored;
-        tcp_resolver_.cancel();
-        udp_resolver_.cancel();
+        tcp_resolver_.reset();
+        udp_resolver_.reset();
         tcp_socket_.close(ignored);
         udp_socket_.close(ignored);
         resolve_timer_.cancel(ignored);
@@ -1665,51 +1432,69 @@ public:
     std::uint64_t reserved_epoch() const noexcept { return reserved_epoch_; }
 
     void start(CancellationToken cancellation) noexcept {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this(),
-                          cancellation = std::move(cancellation)]() mutable
-                             noexcept {
-                    self->start_on_strand(std::move(cancellation));
-                });
-        } catch (const std::bad_alloc&) {
-            post_finish(allocation_status(
-                "direct-route open scheduling allocation failed"));
-        } catch (...) {
-            post_finish(safe_status(
-                StatusCode::Internal,
-                "direct-route open scheduling failed"));
-        }
+        start_on_context(std::move(cancellation));
     }
 
     void request_cancel() noexcept override {
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (finished_.load(std::memory_order_acquire)) return;
         cancellation_requested_.store(true, std::memory_order_release);
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this()]() noexcept {
-                    self->cancel_on_strand();
-                });
-        } catch (...) {
-        }
+        provider_->context()->submit(control_, shared_from_this());
     }
 
 private:
-    void post_finish(Status status) noexcept {
-        try {
-            boost::asio::post(
-                strand_, [self = shared_from_this(),
-                          status = std::move(status)]() mutable noexcept {
-                    self->finish(Result<RouteConnection>(
-                        std::move(status)));
-                });
-        } catch (...) {
-            finish(Result<RouteConnection>(std::move(status)));
+    // Resolver delivery allocates before entering our callback. Destruction of
+    // its last handler without invocation must settle via reserved dispatch.
+    template <typename Protocol>
+    class ResolveCompletion final {
+    public:
+        explicit ResolveCompletion(std::shared_ptr<OpenOperation> owner) noexcept
+            : owner_(std::move(owner)) {
+            owner_->resolve_handler_owners_.fetch_add(1U, std::memory_order_relaxed);
+        }
+        ResolveCompletion(const ResolveCompletion& other) noexcept : owner_(other.owner_) {
+            if (owner_) owner_->resolve_handler_owners_.fetch_add(1U, std::memory_order_relaxed);
+        }
+        ResolveCompletion(ResolveCompletion&&) noexcept = default;
+        ~ResolveCompletion() noexcept {
+            if (owner_ && owner_->resolve_handler_owners_.fetch_sub(
+                    1U, std::memory_order_acq_rel) == 1U &&
+                !owner_->resolve_handler_invoked_.load(std::memory_order_acquire)) {
+                owner_->request_resolve_failure();
+            }
+        }
+        void operator()(const boost::system::error_code& error,
+                        typename Protocol::resolver::results_type results) noexcept {
+            owner_->resolve_handler_invoked_.store(true, std::memory_order_release);
+            if constexpr (std::is_same_v<Protocol, Tcp>)
+                owner_->complete_tcp_resolve(error, std::move(results));
+            else owner_->complete_udp_resolve(error, std::move(results));
+        }
+    private:
+        std::shared_ptr<OpenOperation> owner_;
+    };
+
+    void request_resolve_failure() noexcept {
+        std::lock_guard<std::mutex> lock(publication_mutex_);
+        if (finished_.load(std::memory_order_acquire)) return;
+        resolve_handler_lost_.store(true, std::memory_order_release);
+        provider_->context()->submit(control_, shared_from_this());
+    }
+
+    void handle_control() noexcept {
+        if (finished_.load(std::memory_order_acquire)) return;
+        if (cancellation_requested_.load(std::memory_order_acquire)) {
+            cancel_on_context();
+        } else if (resolve_handler_lost_.load(std::memory_order_acquire)) {
+            finish(Result<RouteConnection>(allocation_status(
+                "direct-route resolver completion allocation failed")));
         }
     }
 
-    void start_on_strand(CancellationToken cancellation) noexcept {
+    void start_on_context(CancellationToken cancellation) noexcept {
         try {
-            if (cancellation.is_cancelled()) {
+            if (cancellation.is_cancelled() ||
+                cancellation_requested_.load(std::memory_order_acquire)) {
                 finish(Result<RouteConnection>(cancelled_status()));
                 return;
             }
@@ -1763,19 +1548,15 @@ private:
         if (request_.destination().address_kind() ==
             RouteAddressKind::DnsName) {
             arm_resolve_timeout(NetworkProtocol::Tcp);
-            tcp_resolver_.async_resolve(
+            tcp_resolver_->async_resolve(
                 std::string(request_.destination().dns_name()),
                 std::to_string(request_.destination().port()),
                 Tcp::resolver::numeric_service,
-                boost::asio::bind_executor(
-                    strand_, [self = shared_from_this()](
-                                 const boost::system::error_code& error,
-                                 Tcp::resolver::results_type results) noexcept {
-                        self->complete_tcp_resolve(error, std::move(results));
-                    }));
+                ResolveCompletion<Tcp>(shared_from_this()));
             return;
         }
         tcp_endpoints_.push_back(tcp_literal_endpoint());
+        if (!authorize_endpoints(tcp_endpoints_)) return;
         arm_connect_timeout(NetworkProtocol::Tcp);
         connect_next_tcp();
     }
@@ -1784,39 +1565,90 @@ private:
         if (request_.destination().address_kind() ==
             RouteAddressKind::DnsName) {
             arm_resolve_timeout(NetworkProtocol::Udp);
-            udp_resolver_.async_resolve(
+            udp_resolver_->async_resolve(
                 std::string(request_.destination().dns_name()),
                 std::to_string(request_.destination().port()),
                 Udp::resolver::numeric_service,
-                boost::asio::bind_executor(
-                    strand_, [self = shared_from_this()](
-                                 const boost::system::error_code& error,
-                                 Udp::resolver::results_type results) noexcept {
-                        self->complete_udp_resolve(error, std::move(results));
-                    }));
+                ResolveCompletion<Udp>(shared_from_this()));
             return;
         }
         udp_endpoints_.push_back(udp_literal_endpoint());
+        if (!authorize_endpoints(udp_endpoints_)) return;
         arm_connect_timeout(NetworkProtocol::Udp);
         connect_next_udp();
     }
 
+    Result<RouteDestination> policy_destination(
+        boost::asio::ip::address address, std::uint16_t port) const {
+        if (address.is_v6()) {
+            const auto ipv6 = address.to_v6();
+            if (ipv6.scope_id() != 0U) {
+                return Result<RouteDestination>(safe_status(
+                    StatusCode::FailedPrecondition,
+                    "scoped IPv6 routes are unsupported"));
+            }
+            if (!ipv6.is_v4_mapped()) {
+                return RouteDestination::ipv6(
+                    request_.destination().protocol(), ipv6.to_bytes(), port);
+            }
+            const auto bytes = ipv6.to_bytes();
+            return RouteDestination::ipv4(request_.destination().protocol(),
+                {bytes[12], bytes[13], bytes[14], bytes[15]}, port);
+        }
+        return RouteDestination::ipv4(request_.destination().protocol(),
+                                      address.to_v4().to_bytes(), port);
+    }
+
+    template <typename Endpoint>
+    bool authorize_endpoints(const std::vector<Endpoint>& endpoints) noexcept {
+        try {
+            // Validate the complete bounded candidate set before connecting;
+            // an allowed first address cannot conceal a forbidden fallback.
+            for (const auto& endpoint : endpoints) {
+                auto destination = policy_destination(endpoint.address(), endpoint.port());
+                if (!destination.ok()) {
+                    finish(Result<RouteConnection>(destination.status()));
+                    return false;
+                }
+                Status status = provider_->resolved_policy()(request_, destination.value());
+                // Policy may cancel the provider or the original OPEN. Do not
+                // open a socket after a reentrant successful callback cancels.
+                if (cancellation_requested_.load(std::memory_order_acquire)) {
+                    finish(Result<RouteConnection>(cancelled_status()));
+                    return false;
+                }
+                if (!status.ok()) {
+                    finish(Result<RouteConnection>(std::move(status)));
+                    return false;
+                }
+            }
+            return true;
+        } catch (const std::bad_alloc&) {
+            finish(Result<RouteConnection>(allocation_status(
+                "resolved-route policy allocation failed")));
+        } catch (...) {
+            finish(Result<RouteConnection>(safe_status(
+                StatusCode::Internal, "resolved-route policy threw")));
+        }
+        return false;
+    }
+
     void arm_resolve_timeout(NetworkProtocol protocol) {
         resolve_timer_.expires_after(provider_->limits().resolve_timeout);
-        resolve_timer_.async_wait(boost::asio::bind_executor(
-            strand_, [self = shared_from_this(), protocol](
-                         const boost::system::error_code& error) noexcept {
+        resolve_timer_.async_wait(
+            [self = shared_from_this(), protocol](
+                const boost::system::error_code& error) noexcept {
                 self->complete_resolve_timeout(protocol, error);
-            }));
+            });
     }
 
     void arm_connect_timeout(NetworkProtocol protocol) {
         connect_timer_.expires_after(provider_->limits().connect_timeout);
-        connect_timer_.async_wait(boost::asio::bind_executor(
-            strand_, [self = shared_from_this(), protocol](
-                         const boost::system::error_code& error) noexcept {
+        connect_timer_.async_wait(
+            [self = shared_from_this(), protocol](
+                const boost::system::error_code& error) noexcept {
                 self->complete_connect_timeout(protocol, error);
-            }));
+            });
     }
 
     void complete_resolve_timeout(
@@ -1826,9 +1658,9 @@ private:
             return;
         }
         if (protocol == NetworkProtocol::Tcp) {
-            tcp_resolver_.cancel();
+            tcp_resolver_.reset();
         } else {
-            udp_resolver_.cancel();
+            udp_resolver_.reset();
         }
         finish(Result<RouteConnection>(safe_status(
             StatusCode::NotFound,
@@ -1916,6 +1748,7 @@ private:
                     "TCP destination resolution returned no endpoints")));
                 return;
             }
+            if (!authorize_endpoints(tcp_endpoints_)) return;
             arm_connect_timeout(NetworkProtocol::Tcp);
             connect_next_tcp();
         } catch (const std::bad_alloc&) {
@@ -1958,6 +1791,7 @@ private:
                     "UDP destination resolution returned no endpoints")));
                 return;
             }
+            if (!authorize_endpoints(udp_endpoints_)) return;
             arm_connect_timeout(NetworkProtocol::Udp);
             connect_next_udp();
         } catch (const std::bad_alloc&) {
@@ -1998,11 +1832,10 @@ private:
                 }
                 tcp_socket_.async_connect(
                     endpoint,
-                    boost::asio::bind_executor(
-                        strand_, [self = shared_from_this()](
-                                     const boost::system::error_code& error) noexcept {
-                            self->complete_tcp_connect(error);
-                        }));
+                    [self = shared_from_this()](
+                        const boost::system::error_code& error) noexcept {
+                        self->complete_tcp_connect(error);
+                    });
                 return;
             }
             finish(Result<RouteConnection>(safe_status(
@@ -2045,11 +1878,10 @@ private:
                 }
                 udp_socket_.async_connect(
                     endpoint,
-                    boost::asio::bind_executor(
-                        strand_, [self = shared_from_this()](
-                                     const boost::system::error_code& error) noexcept {
-                            self->complete_udp_connect(error);
-                        }));
+                    [self = shared_from_this()](
+                        const boost::system::error_code& error) noexcept {
+                        self->complete_udp_connect(error);
+                    });
                 return;
             }
             finish(Result<RouteConnection>(safe_status(
@@ -2069,6 +1901,10 @@ private:
         if (finished_) {
             return;
         }
+        if (cancellation_requested_.load(std::memory_order_acquire)) {
+            finish(Result<RouteConnection>(cancelled_status()));
+            return;
+        }
         if (error) {
             connect_next_tcp();
             return;
@@ -2079,11 +1915,10 @@ private:
             tcp_socket_.set_option(Tcp::no_delay(true), ignored);
             auto state = std::make_shared<TcpChannelState>(
                 std::move(tcp_socket_), provider_, target_id_);
-            if (!provider_->promote(target_id_, state)) {
+            auto promotion = provider_->promote(target_id_, reserved_epoch_, state);
+            if (!promotion.ok()) {
                 state->request_close();
-                finish(Result<RouteConnection>(safe_status(
-                    StatusCode::ResourceExhausted,
-                    "direct-route active-connection capacity exhausted")));
+                finish(Result<RouteConnection>(std::move(promotion)));
                 return;
             }
             promoted_ = true;
@@ -2091,7 +1926,16 @@ private:
                 std::make_unique<AsioTcpByteChannel>(std::move(state));
             auto connection =
                 RouteConnection::byte_stream(std::move(channel));
-            finish(std::move(connection));
+            if (cancellation_requested_.load(std::memory_order_acquire)) {
+                if (connection.ok()) {
+                    auto owned = std::move(connection).take_value();
+                    if (auto* bytes = owned.byte_channel_if()) bytes->close();
+                    if (auto* packets = owned.packet_channel_if()) packets->close();
+                }
+                finish(Result<RouteConnection>(cancelled_status()));
+            } else {
+                finish(std::move(connection));
+            }
         } catch (const std::bad_alloc&) {
             finish(Result<RouteConnection>(allocation_status(
                 "TCP route-channel allocation failed")));
@@ -2107,6 +1951,10 @@ private:
         if (finished_) {
             return;
         }
+        if (cancellation_requested_.load(std::memory_order_acquire)) {
+            finish(Result<RouteConnection>(cancelled_status()));
+            return;
+        }
         if (error) {
             connect_next_udp();
             return;
@@ -2116,11 +1964,10 @@ private:
             connect_timer_.cancel(ignored);
             auto state = std::make_shared<UdpChannelState>(
                 std::move(udp_socket_), provider_, target_id_);
-            if (!provider_->promote(target_id_, state)) {
+            auto promotion = provider_->promote(target_id_, reserved_epoch_, state);
+            if (!promotion.ok()) {
                 state->request_close();
-                finish(Result<RouteConnection>(safe_status(
-                    StatusCode::ResourceExhausted,
-                    "direct-route active-connection capacity exhausted")));
+                finish(Result<RouteConnection>(std::move(promotion)));
                 return;
             }
             promoted_ = true;
@@ -2128,7 +1975,16 @@ private:
                 std::make_unique<AsioUdpPacketChannel>(std::move(state));
             auto connection =
                 RouteConnection::packet_channel(std::move(channel));
-            finish(std::move(connection));
+            if (cancellation_requested_.load(std::memory_order_acquire)) {
+                if (connection.ok()) {
+                    auto owned = std::move(connection).take_value();
+                    if (auto* bytes = owned.byte_channel_if()) bytes->close();
+                    if (auto* packets = owned.packet_channel_if()) packets->close();
+                }
+                finish(Result<RouteConnection>(cancelled_status()));
+            } else {
+                finish(std::move(connection));
+            }
         } catch (const std::bad_alloc&) {
             finish(Result<RouteConnection>(allocation_status(
                 "UDP route-channel allocation failed")));
@@ -2139,12 +1995,12 @@ private:
         }
     }
 
-    void cancel_on_strand() noexcept {
+    void cancel_on_context() noexcept {
         if (finished_) {
             return;
         }
-        tcp_resolver_.cancel();
-        udp_resolver_.cancel();
+        tcp_resolver_.reset();
+        udp_resolver_.reset();
         boost::system::error_code ignored;
         tcp_socket_.cancel(ignored);
         tcp_socket_.close(ignored);
@@ -2169,16 +2025,25 @@ private:
             }
             return;
         }
-        finished_ = true;
+        {
+            std::lock_guard<std::mutex> lock(publication_mutex_);
+            finished_.store(true, std::memory_order_release);
+        }
         cancellation_.unregister();
         boost::system::error_code ignored;
         resolve_timer_.cancel(ignored);
         connect_timer_.cancel(ignored);
-        tcp_resolver_.cancel();
-        udp_resolver_.cancel();
+        tcp_resolver_.reset();
+        udp_resolver_.reset();
         if (!promoted_) {
             tcp_socket_.close(ignored);
             udp_socket_.close(ignored);
+            // Resetting a resolver cancels its token, not a blocked system
+            // lookup or a queued delivery. Keep its pending reservation until
+            // the retained handler/operation retires, so repeated timeouts
+            // cannot bypass the configured bound on outstanding DNS work.
+            if (resolve_handler_owners_.load(std::memory_order_acquire) == 0U)
+                provider_->release(target_id_);
         }
         completion_->complete(std::move(result));
     }
@@ -2188,21 +2053,27 @@ private:
     std::uint64_t reserved_epoch_{0U};
     AuthorizedRouteRequest request_;
     std::shared_ptr<OpenCompletion> completion_;
-    Strand strand_;
-    Tcp::resolver tcp_resolver_;
-    Tcp::socket tcp_socket_;
-    Udp::resolver udp_resolver_;
-    Udp::socket udp_socket_;
-    boost::asio::steady_timer resolve_timer_;
-    boost::asio::steady_timer connect_timer_;
+    // Resolver::cancel() allocates. Destroying the terminal resolver cancels
+    // without replacing its token, including under sustained allocation failure.
+    std::optional<TcpResolver> tcp_resolver_;
+    TcpSocket tcp_socket_;
+    std::optional<UdpResolver> udp_resolver_;
+    UdpSocket udp_socket_;
+    Timer resolve_timer_;
+    Timer connect_timer_;
     std::vector<Tcp::endpoint> tcp_endpoints_;
     std::vector<Udp::endpoint> udp_endpoints_;
     std::size_t tcp_endpoint_index_{0U};
     std::size_t udp_endpoint_index_{0U};
     CancellationRegistration cancellation_;
     std::atomic<bool> cancellation_requested_{false};
-    bool finished_{false};
+    std::mutex publication_mutex_;
+    std::atomic<bool> finished_{false};
+    std::atomic<unsigned> resolve_handler_owners_{0U};
+    std::atomic<bool> resolve_handler_invoked_{false};
+    std::atomic<bool> resolve_handler_lost_{false};
     bool promoted_{false};
+    ControlTask control_;
 };
 
 }  // namespace
@@ -2217,33 +2088,33 @@ AsioDirectRouteProvider::~AsioDirectRouteProvider() noexcept {
 
 Result<std::shared_ptr<AsioDirectRouteProvider>>
 AsioDirectRouteProvider::create(
-    Executor executor,
-    ExecutorAffinity executor_affinity,
+    std::shared_ptr<AsioExecutionContext> context,
+    ResolvedRoutePolicy resolved_policy,
     AsioDirectRouteLimits limits,
     SocketProtector socket_protector) {
-    if (!executor || !executor_affinity.valid() || !valid_limits(limits)) {
+    if (!context || !resolved_policy || !valid_limits(limits)) {
         return Result<std::shared_ptr<AsioDirectRouteProvider>>(Status(
             StatusCode::InvalidArgument,
-            "Asio route executor, affinity, or limits are invalid"));
-    }
-    auto descriptor = ProviderDescriptor::create(
-        std::string(kAsioDirectRouteProviderId),
-        ProviderKind::RouteProvider,
-        kAsioDirectRouteProviderApiVersion,
-        CapabilitySet::of({
-            Capability::AsynchronousIo,
-            Capability::Cancellation,
-            Capability::IdentityBoundRouting,
-            Capability::DirectTcp,
-            Capability::DirectUdp,
-        }));
-    if (!descriptor.ok()) {
-        return Result<std::shared_ptr<AsioDirectRouteProvider>>(
-            descriptor.status());
+            "Asio route context, resolved policy or limits are invalid"));
     }
     try {
+        auto descriptor = ProviderDescriptor::create(
+            std::string(kAsioDirectRouteProviderId),
+            ProviderKind::RouteProvider,
+            kAsioDirectRouteProviderApiVersion,
+            CapabilitySet::of({
+                Capability::AsynchronousIo,
+                Capability::Cancellation,
+                Capability::IdentityBoundRouting,
+                Capability::DirectTcp,
+                Capability::DirectUdp,
+            }));
+        if (!descriptor.ok()) {
+            return Result<std::shared_ptr<AsioDirectRouteProvider>>(
+                descriptor.status());
+        }
         auto state = std::make_shared<ProviderState>(
-            std::move(executor), executor_affinity, limits,
+            std::move(context), std::move(resolved_policy), limits,
             std::move(socket_protector),
             std::move(descriptor).take_value());
         auto impl = std::make_shared<Impl>(std::move(state));
@@ -2252,13 +2123,11 @@ AsioDirectRouteProvider::create(
         return Result<std::shared_ptr<AsioDirectRouteProvider>>(
             std::move(provider));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<AsioDirectRouteProvider>>(Status(
-            StatusCode::ResourceExhausted,
+        return Result<std::shared_ptr<AsioDirectRouteProvider>>(allocation_status(
             "Asio direct-route provider allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<AsioDirectRouteProvider>>(Status(
-            StatusCode::Internal,
-            "Asio direct-route provider construction failed"));
+        return Result<std::shared_ptr<AsioDirectRouteProvider>>(safe_status(
+            StatusCode::Internal, "Asio direct-route provider construction failed"));
     }
 }
 
@@ -2274,7 +2143,8 @@ void AsioDirectRouteProvider::async_open(
     if (!completion) {
         return;
     }
-    const auto& state = impl_->state();
+    const auto state = impl_->state();
+    state->context()->require_context();
     std::shared_ptr<OpenCompletion> open_completion;
     try {
         open_completion =
@@ -2295,8 +2165,8 @@ void AsioDirectRouteProvider::async_open(
         request.stream_id().is_control() ||
         !engine::valid_service_name(request.service_name()) ||
         request.peer_evidence().identity().empty()) {
-        post_open_failure(
-            state->executor(), open_completion,
+        complete_open_failure(
+            open_completion,
             safe_status(StatusCode::InvalidArgument,
                         "authorized route request is invalid"));
         return;
@@ -2304,8 +2174,8 @@ void AsioDirectRouteProvider::async_open(
 
     auto reservation = state->reserve_open();
     if (!reservation.ok()) {
-        post_open_failure(
-            state->executor(), open_completion,
+        complete_open_failure(
+            open_completion,
             safe_status(reservation.status().code(),
                         reservation.status().message()));
         return;
@@ -2318,19 +2188,17 @@ void AsioDirectRouteProvider::async_open(
             open_completion);
         const bool cancel_now = state->bind_target(
             target_id, reserved_epoch, operation);
+        if (cancel_now) operation->request_cancel();
         operation->start(std::move(cancellation));
-        if (cancel_now) {
-            operation->request_cancel();
-        }
     } catch (const std::bad_alloc&) {
         state->release(target_id);
-        post_open_failure(
-            state->executor(), open_completion,
+        complete_open_failure(
+            open_completion,
             allocation_status("direct-route open allocation failed"));
     } catch (...) {
         state->release(target_id);
-        post_open_failure(
-            state->executor(), open_completion,
+        complete_open_failure(
+            open_completion,
             safe_status(StatusCode::Internal,
                         "direct-route open construction failed"));
     }

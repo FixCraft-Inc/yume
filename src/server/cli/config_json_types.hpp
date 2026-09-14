@@ -86,6 +86,7 @@ inline bool validate_server_config_json_types(const nlohmann::json& document,
     if (!require_all(
             {"obfuscation", "inner_crypto",
              "allow_exec", "allow_local_ip", "control_full",
+             "pq_auto_generate", "allow_embedded_master",
              "allow_monero_rpc_codec", "real_http",
              "robots_deny", "benchmark_enable", "boring", "anonym",
              "relay_enable", "directory_enable", "ipc_enable",

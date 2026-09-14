@@ -24,10 +24,12 @@ present, it can start client and server endpoints and carry authenticated named
 byte streams through open, accept, read, write, half-close, close, and destroy.
 The integration probe exercises that path against a provisioned real server.
 
-This is not a live YTP/1 endpoint. A schema-1 endpoint still fails start with
-`YUME_STATUS_UNSUPPORTED`: the opt-in TLS, H2 carrier, security, and route
-provider candidates are not composed into a production front door or ABI
-backend. Packet handles and destination-routed OPEN are also unsupported. The
+When the build also enables the native YTP/1 provider graph, including
+`YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR`, the same calls start a schema-1
+client or server through `NativeEndpoint` and carry authenticated named byte
+streams. That development backend is not qualified end to end. Without the
+native graph, schema-1 start fails with `YUME_STATUS_UNSUPPORTED`. Packet
+handles and destination-routed OPEN are unsupported in both dialects. The
 library remains build-tree-only, unversioned, uninstalled, and unfrozen.
 
 The remaining sections distinguish current transport-v2 behavior from the
@@ -36,8 +38,10 @@ freeze.
 
 ## Configuration dialects and the backend seam
 
-One runtime is attached behind a single internal seam, so the same public
-symbols serve every backend and a later swap changes no exported name.
+Two runtimes sit behind the internal embedding seam. Transport v2 is reached
+through `yume_embed`, and YTP/1 through `yume_embed_ytp1`, which links neither
+the transport-v2 graph nor BaseFWX. The seam and the public ABI candidate change
+together with their callers and tests. Exported names are not frozen.
 
 A configuration document must name its role. A document that also carries
 `"schema": 1` is a YTP/1 document and is parsed by the strict schema-1 parser.
@@ -52,21 +56,27 @@ security key such as `tls_pin` is an error, never "not configured".
 | Dialect | Start | Byte streams | Packets |
 | --- | --- | --- | --- |
 | transport-v2 | starts the runnable client or daemon | open, accept, read, write, half-close | `YUME_STATUS_UNSUPPORTED` |
-| schema 1 (YTP/1) | `YUME_STATUS_UNSUPPORTED` | `YUME_STATUS_UNSUPPORTED` | `YUME_STATUS_UNSUPPORTED` |
+| schema 1 (YTP/1) | starts the native client or server when the provider graph is built, otherwise `YUME_STATUS_UNSUPPORTED` | open, accept, read, write, half-close with the native graph | `YUME_STATUS_UNSUPPORTED` |
 
 Streams are opened by a client endpoint and accepted by a server endpoint. The
 backend refuses the direction it does not own with
 `YUME_STATUS_INVALID_ARGUMENT`, so neither role can silently behave like the
-other. A server-initiated open is a separate reviewed capability rather than an
-accident of symmetry.
+other. YTP/1 itself lets either peer open a service, so this is an ABI
+boundary rather than a protocol rule. A server has many sessions, and a
+server-initiated open would need an authenticated way to choose one. Until that
+is designed, a schema-1 client refuses OPENs from its server.
 
-`yume_endpoint_register_service` advertises a service the peer may open. On a
-transport-v2 endpoint the running runtime is the authority, so registration
-must follow `yume_endpoint_start` and returns `YUME_STATUS_INVALID_STATE`
-before it. A successful stop discards those runtime registrations; after a
-restart the caller registers them again. On a schema-1 endpoint the
-registration is additionally checked against the immutable service table in
-the configuration and remains attached across stop and restart.
+`yume_endpoint_register_service` names a service that a server endpoint
+accepts. A client endpoint has no accept path, so registration on it fails. A
+schema-1 client and a running transport-v2 client return
+`YUME_STATUS_INVALID_ARGUMENT`. On a transport-v2 server the running runtime is
+the authority, so registration follows `yume_endpoint_start` and returns
+`YUME_STATUS_INVALID_STATE` before it. A successful stop discards those runtime
+registrations, and the caller registers them again after a restart. A schema-1
+server registers while stopped. Each registration must match the immutable
+service table in the configuration and remains attached across stop and
+restart. A configured service that was never registered is refused when a peer
+opens it, so the configuration alone never exposes a service.
 
 A named service stream carries no destination. Declare the shorter prefix size
 to say so:
@@ -153,15 +163,22 @@ yume_endpoint_destroy(endpoint);
 yume_runtime_destroy(runtime);
 ```
 
-A server endpoint calls `yume_endpoint_register_service` **after**
-`yume_endpoint_start`, then `yume_endpoint_accept_stream` instead of
-`yume_endpoint_open_stream`.
+A transport-v2 server calls `yume_endpoint_register_service` **after**
+`yume_endpoint_start`. A schema-1 server calls it **before** start. Both then use
+`yume_endpoint_accept_stream` instead of `yume_endpoint_open_stream`. A
+schema-1 client names its server host as a DNS name, because that name is also
+the TLS server name and the admission binding, and lists every byte-stream
+service it opens.
 
 The complete working version of both sides, including peer-identity checks and
 teardown on every failure path, is
 [`src/abi/stream_integration_probe.c`](../src/abi/stream_integration_probe.c).
 It runs in CI as `yume_abi_stream_integration` against a real provisioned
-server and checks the implemented interface.
+transport-v2 server. The schema-1 counterpart,
+[`src/abi/ytp1_stream_probe.c`](../src/abi/ytp1_stream_probe.c), runs as
+`yume_abi_ytp1_stream_integration` in builds with the native provider graph.
+It provisions a kit with `yume-setup-ytp1` and also checks refusals, deadlines,
+restart, and stream handles that outlive their endpoint.
 
 ## Intended installed interface
 
@@ -243,13 +260,12 @@ contained before returning through the C boundary.
 ## Runtime callbacks and bounds
 
 `yume_runtime_options` configures the maximum simultaneous callback count and
-optional log/event callbacks. Zero selects the bounded default. The ABI layer
+an optional endpoint-event callback. Zero selects the bounded default. The ABI layer
 does not expose an executor-count knob: execution resources belong to the
 selected backend. Endpoint-state events are currently delivered synchronously
-on the initiating lifecycle thread. The log callback field is accepted for
-forward compatibility, but the current ABI backends emit no log records.
+on the initiating lifecycle thread. This ABI has no logging callback.
 
-Log and event callbacks are observational and must not be used as the source of
+Event callbacks are observational and must not be used as the source of
 an authentication, authorization, close, or resource-limit decision. Callback
 delivery is bounded; excess simultaneous observations may be dropped. The
 current event surface reports endpoint-state changes only. Secrets, raw
@@ -257,8 +273,8 @@ credentials, PSKs, plaintext, and packet contents are never callback fields.
 
 The socket-protection callback is endpoint-scoped. It runs synchronously after
 an outbound socket is created and before connect. Its `uintptr_t` argument
-holds the platform-native socket value. Returning zero fails closed
-and the current transport-v2 start reports `YUME_STATUS_IO_ERROR` with a
+holds the platform-native socket value. Returning zero fails closed, and a
+client start in either dialect then reports `YUME_STATUS_IO_ERROR` with a
 diagnostic. The callback and its user data must stay valid until cleared or
 endpoint destruction finishes. No ABI re-entry is allowed from this callback.
 
@@ -278,6 +294,15 @@ exception applies to transport-v2 client config: Android's config writer emits
 `tls_pin_sha256`, which is accepted alongside `tls_pin`. Native writers emit
 `tls_pin`, and it takes precedence if both are present. Other client keys use
 one spelling: `threads`, `udp`, and `app_codec`.
+Both pin fields require strings even when the canonical field wins. Transport-v2
+shaping values can parse, but nonzero padding or jitter fails configuration
+validation with `YUME_STATUS_INVALID_ARGUMENT`. A malformed client codec
+endpoint fails parsing at `/app_codec_listen`.
+
+Server `auth_keys_meta` and `upstream_response_dir` use `config_base_dir` for
+relative paths, alongside the other configuration file references. A nonempty
+`real_root` or `real_backend` enables `real_http` and its cover-source validation
+even when the document also contains `real_http:false`.
 
 Both dialects report the first failure with an RFC 6901 JSON pointer when it
 is attributable to one member, and an empty pointer when it is not, such as
@@ -306,25 +331,46 @@ CREATED -> STARTING -> RUNNING -> STOPPING -> STOPPED
    \-----------------------> STOPPING -> STOPPED
 ```
 
-`yume_endpoint_start` is blocking. A transport-v2 client uses a positive
-millisecond deadline; zero selects the backend's 30-second default. A
-transport-v2 server accepts only zero because server startup currently has no
-caller-bounded deadline. Schema-1 start accepts the descriptor but returns
-`YUME_STATUS_UNSUPPORTED`. Success means the client completed authenticated
-establishment or the server is accepting work. Failure never publishes a
-partially started backend.
+`yume_endpoint_start` is blocking. A client uses a positive millisecond
+deadline, and zero selects the backend's 30-second default. A schema-1 client
+deadline may not exceed five minutes. A server accepts only zero because
+server startup has no caller-bounded deadline. Success means the client
+completed authenticated establishment or the server is accepting work. Failure
+never publishes a partially started backend.
+
+For schema 1, idle server accepts retain bounded queue slots without consuming
+an authentication deadline. Validated carrier promotion begins a separate
+30-second session-creation/AUTH budget. FrontDoor independently limits
+pre-promotion connections and work; idle waiting grants no peer authority.
 
 A start failure carries the runtime's typed outcome rather than one generic
 code, so an embedder does not have to read the diagnostic prose to tell the
-cases apart. A refused bind is `YUME_STATUS_PERMISSION_DENIED`, a runtime that
-is already running or is still stopping is `YUME_STATUS_INVALID_STATE` or
-`YUME_STATUS_WOULD_BLOCK`, an exhausted resource is
-`YUME_STATUS_RESOURCE_EXHAUSTED`, and a failure with no more specific
-classification stays `YUME_STATUS_IO_ERROR`. Never infer a status from the
-message. `stop` is synchronous, idempotent after a start
-attempt, and currently accepts only zero. A successful transport-v2 stop also
-discards registrations owned by that stopped runtime, so callers re-register
-services after restarting it; immutable schema-1 registrations remain.
+cases apart. Transport v2's privileged-port precheck reports
+`YUME_STATUS_PERMISSION_DENIED`,
+a runtime that is already running or is still stopping is
+`YUME_STATUS_INVALID_STATE` or `YUME_STATUS_WOULD_BLOCK`, an exhausted resource
+is `YUME_STATUS_RESOURCE_EXHAUSTED`, and a failure with no more specific
+classification stays `YUME_STATUS_IO_ERROR`. Schema-1 listener socket setup
+reports OS permission refusal as `YUME_STATUS_PERMISSION_DENIED`, an occupied
+address as `YUME_STATUS_INVALID_STATE`, an unavailable or invalid local address
+as `YUME_STATUS_INVALID_ARGUMENT`, and exhausted socket resources as
+`YUME_STATUS_RESOURCE_EXHAUSTED`. Other socket failures remain
+`YUME_STATUS_IO_ERROR`. A failed listener publishes no running endpoint and
+can retry after the cause is resolved and `yume_endpoint_stop(endpoint, 0)`
+settles `FAILED` through `STOPPING` to `STOPPED`. Start accepts only `CREATED`
+or `STOPPED`; a direct retry from `FAILED` returns `YUME_STATUS_INVALID_STATE`
+without starting work or emitting lifecycle events. A client start
+that outlives its deadline reports `YUME_STATUS_TIMEOUT`. Declared schema-1
+adapters and reverse-proxy cover report `YUME_STATUS_UNSUPPORTED` instead of
+starting without them. Never infer a status from the message.
+
+`stop` is synchronous, idempotent after a start attempt, and accepts only zero.
+It closes the endpoint's sessions, wakes blocked calls, and joins the backend's
+execution threads before `STOPPED` is published. A successful transport-v2 stop
+also discards registrations owned by that stopped runtime, so callers
+re-register services after restarting it. Schema-1 registrations remain. A
+schema-1 client whose session ends later stays `RUNNING`, and its OPENs report
+`YUME_STATUS_INVALID_STATE` until the application stops and starts it again.
 Explicit stop, runtime destruction, or endpoint destruction may take an
 endpoint directly from `CREATED` through `STOPPING` to `STOPPED` without
 starting a backend.
@@ -349,24 +395,38 @@ same dispatcher and cannot bypass those checks.
 optional typed destination. Custom named services omit the suffix or use
 destination kind `NONE`. Hostname, IPv4, and IPv6 descriptors are validated
 strictly, including a nonzero port, but destination-routed ABI OPEN currently
-returns `YUME_STATUS_UNSUPPORTED` before sending anything. The opt-in direct
-route provider belongs to the uncomposed YTP/1 graph and is not silently used
-by the transport-v2 ABI backend. There is no generic JSON metadata channel.
+returns `YUME_STATUS_UNSUPPORTED` before sending anything. Neither backend
+composes a route provider, so the ABI grants no destination authority. There is
+no generic JSON metadata channel.
 
 Open and accept publish an output handle only on success. A timeout before an
 OPEN is admitted sends nothing. A timeout after an OPEN crossed the wire
 causes the transport-v2 bridge to close and permanently retire its 8-bit
 service-stream identifier for that tunnel, so a late ACK or DATA frame cannot
-alias a new stream. YTP/1 separately owns 31-bit odd/even identifiers in its
-session engine, but that engine is not the current ABI backend.
+alias a new stream. The schema-1 backend uses YTP/1's 31-bit odd/even stream
+identifiers. A timed-out schema-1 OPEN is cancelled on the endpoint's execution
+thread. An OPEN still held behind a rekey is dropped, a sent one is aborted,
+and a crossed acceptance is closed instead of published.
 
-The accepted stream exposes a sized `yume_peer_identity`: authenticated state,
-peer role, an optional composite fingerprint, an opaque transport
-`peer_label`, and service. The label carries no application meaning: it is not
-a device, account, or enrollment record. On the transport-v2 server, the
-client fingerprint is present after composite authentication. On the client,
-the server is authenticated by the outer TLS channel and the composite
-fingerprint field remains zero because that backend does not expose one.
+A schema-1 client opens only byte-stream services its configuration declares.
+An undeclared name returns `YUME_STATUS_NOT_FOUND` without sending OPEN. When
+the server's credential grant or registration refuses the service, the OPEN
+returns `YUME_STATUS_PERMISSION_DENIED` and the session stays usable. A schema-1
+server holds each authorized OPEN until `yume_endpoint_accept_stream` takes it,
+so a client OPEN succeeds only after the server application accepted the
+stream. At most 256 OPENs wait per endpoint, and they hold no receive credit.
+An OPEN that its client abandons is skipped. Taking an OPEN that is already
+waiting finishes on the execution thread, even with a zero timeout.
+
+Each stream exposes a sized `yume_peer_identity`: authenticated state, peer
+role, an optional composite fingerprint, an opaque transport `peer_label`, and
+service. The label carries no application meaning: it is not a device, account,
+or enrollment record. On the transport-v2 server, the client fingerprint is
+present after composite authentication. A transport-v2 client authenticates the
+server through the outer TLS channel, and its composite fingerprint field stays
+zero because that backend does not expose one. A schema-1 stream in either role
+reports the composite fingerprint that YTP/1 authentication established for its
+peer, and `peer_label` holds the same value in lowercase hex.
 
 ## Stream I/O
 
@@ -383,19 +443,41 @@ and immediate-close timeouts are operation-specific as described above.
 
 Reads may be partial. `YUME_STATUS_OK` with a positive byte count returns data.
 `YUME_STATUS_EOF` means the peer shut down its write side and all buffered data
-has been returned. A local cancellation or reset is a typed non-EOF status.
+has been returned. A local cancellation or reset is a typed non-EOF status. A
+lost session, peer abort, or endpoint stop is never reported as EOF, so EOF is
+the peer's authenticated end of data. Termination takes precedence even after
+an earlier read returned EOF. A schema-1 abort or session loss discards
+data that was not yet read.
 
 Writes copy the complete input into a bounded queue before returning OK and
-report the complete size in `bytes_written`. Admission is all-or-none. A zero-
-timeout full queue returns `WOULD_BLOCK`, an expiring positive deadline returns
-`TIMEOUT`, and a transport that had capacity but could not take ownership of
-the write returns `YUME_STATUS_IO_ERROR`. None of the three consumes the input,
+report the complete size in `bytes_written`. Admission is all-or-none. One
+write carries at most 256 KiB, and a larger write returns
+`YUME_STATUS_INVALID_ARGUMENT`. A write is admitted once the previous accepted
+write was sent. A zero-timeout call while that is in progress returns
+`WOULD_BLOCK`, an expiring positive deadline returns `TIMEOUT`, and a transport
+that had capacity but could not take ownership of the write returns
+`YUME_STATUS_IO_ERROR`. None of the three consumes the input,
 reserves capacity, or sends a partial record. A zero-length write is a
 successful no-op on an open stream.
 
-`shutdown_write` sends an authenticated half-close after prior writes. `close`
-cancels both directions and releases retained inbound credit. Data received
-after terminal close is a protocol failure and is never delivered.
+`shutdown_write` sends an authenticated half-close after prior writes. A
+positive deadline bounds the wait for those writes and the execution-thread
+result. For schema 1, once shutdown is queued, `WOULD_BLOCK` or `TIMEOUT` can
+leave it pending. Later writes are refused; retrying shutdown observes the
+same operation and never sends another FIN. A timeout while prior writes are
+still draining does not begin shutdown.
+
+Schema-1 accept transfers an already authenticated waiting stream to the
+application and queues its peer acceptance without waiting for runner dispatch.
+The peer's OPEN completes only after that acceptance executes. A crossed abort
+can leave the returned handle closed. Failed public handle publication aborts
+it; if that close precedes runner dispatch, pending peer acceptance is refused.
+
+`close` cancels
+both directions and releases retained inbound credit. Data received after
+terminal close is a protocol failure and is never delivered. A stream handle
+may outlive its endpoint's stop. Its operations then report
+`YUME_STATUS_CLOSED`, and closing or destroying it remains safe.
 
 ## Packet I/O
 
@@ -420,11 +502,12 @@ allocated size where required. The library:
 3. reports its known layout in `struct_size`; and
 4. ignores zeroed trailing storage from a newer caller.
 
-This append-only rule applies to build, compatibility, status, diagnostic, and
-peer-identity structures. It is not permission to reinterpret or reorder an
-existing field.
+These are the current layout and bounds rules for build, compatibility, status,
+diagnostic and peer-identity structures. They do not freeze the development
+candidate: a deliberate layout change updates the header, implementation and
+consumers together. No call may read or write outside its declared storage.
 
-Sized input structures use the same append-only rule. The library reads only
+Sized input structures follow the same storage bounds. The library reads only
 complete fields contained by `struct_size`; omitted optional suffix fields use
 their documented zero/default behavior. The current service descriptor's
 complete `(name, kind)` layout is required, while the destination suffix of an
@@ -461,6 +544,12 @@ as `YUME_STATUS_INTERNAL_ERROR` after local state is made safe.
 - cryptographic backend; and
 - evidence profile name/version.
 
+The session security provider is `openssl35.ytp1-security` only when the
+library links the schema-1 backend, and `unwired` otherwise. The cryptographic
+backend follows the same rule. A linked backend reports `openssl-` followed by
+the loaded OpenSSL version, such as `openssl-3.5.7`, in both the manifest and
+`yume_get_build_info`.
+
 Provider/suite mismatch is a hard `YUME_STATUS_INCOMPATIBLE`. YTP/1 never
 negotiates a weaker suite and never retries through another provider.
 
@@ -481,8 +570,10 @@ must update:
 The current opt-in gate is build-tree-only. It checks the exact symbol set,
 header/map/Debian-symbol agreement, strict C/C++ header consumption, metadata,
 both config dialects, lifecycle/callback containment, diagnostics, ownership,
-transport-v2 start and authenticated named-stream traffic, plus the intentional
-typed `UNSUPPORTED` schema-1, packet, and routed-OPEN boundaries. The
+transport-v2 start and authenticated named-stream traffic, schema-1
+named-stream traffic when the native provider graph is built, plus the
+intentional typed `UNSUPPORTED` boundaries for packets, routed OPEN, declared
+schema-1 adapters, and schema-1 start without the native graph. The
 clean-prefix CMake and pkg-config fixtures are future acceptance material, not
 a claim that the candidate is currently installed.
 

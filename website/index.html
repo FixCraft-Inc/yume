@@ -54,7 +54,7 @@ section_nav:
       <ul class="card-list card-list-spaced">
         <li>The default build produces the transport-v2 client and daemon</li>
         <li>The C ABI is opt-in and has no installed SDK contract</li>
-        <li>YTP/1 components do not yet form a working endpoint</li>
+        <li>YTP/1 has native endpoints but no standalone client or daemon yet</li>
       </ul>
     </div>
     <div class="panel-foot">
@@ -72,7 +72,7 @@ section_nav:
     </div>
     <div class="release-stat">
       <strong>Experimental C ABI</strong>
-      <span>Named streams through transport v2</span>
+      <span>Named streams through transport v2 or native YTP/1</span>
     </div>
     <div class="release-stat">
       <strong>Hybrid authentication</strong>
@@ -131,9 +131,9 @@ section_nav:
       are independent.
     </p>
     <p>
-      The default transport remains in place until YTP/1 passes tunnel, cover,
-      routing, embedding, packaging, and qualification parity. Supported paths
-      and open release gates are in the
+      The default transport remains in place until YTP/1 passes the required
+      tunnel, cover, routing, embedding, packaging, and qualification gates.
+      Supported paths and open release gates are in the
       <a href="{{ '/docs/IMPLEMENTATION_STATUS/' | relative_url }}">implementation status</a>.
     </p>
   </div>
@@ -144,15 +144,15 @@ section_nav:
     </div>
     <div class="card">
       <h3>Experimental C ABI</h3>
-      <p>The opt-in build-tree library carries authenticated named streams through transport v2. Packet channels, schema-1 endpoint start, and an installed SDK remain unsupported.</p>
+      <p>The opt-in build-tree library carries authenticated named streams through transport v2, or through native YTP/1 when every native provider is built. Packet channels and an installed SDK remain unsupported.</p>
     </div>
     <div class="card">
       <h3>YTP/1 components</h3>
-      <p>Focused tests cover the engine, codecs, schema-1 tools, and opt-in security, TLS, HTTP/2, TCP, and direct-route providers.</p>
+      <p>Focused tests cover the engine, codecs, schema-1 tools, opt-in providers, and native endpoints with configured TCP and UDP routes.</p>
     </div>
     <div class="card">
       <h3>Remaining integration</h3>
-      <p>YTP/1 still needs a public front door, admission, connected providers, runtime adapters, and end-to-end qualification before it can carry application traffic.</p>
+      <p>YTP/1 composes authenticated native sessions behind website cover and admission, and the opt-in library carries its named streams. Standalone client and daemon, SOCKS and packet adapters, and end-to-end qualification remain unfinished.</p>
     </div>
   </div>
 </section>

@@ -102,19 +102,12 @@ Most-specific match wins. If two rules have the same specificity, deny wins.
 This lets exact allow rules override broad country or VPN-provider denies
 while keeping ambiguous equal matches fail-closed.
 
-At startup, each archive is copied into a newly created owner-only temporary
-directory so validation and extraction consume one private snapshot. Archive
-members must have relative, traversal-free names without backslashes or control
-escapes and be regular files or directories; links and special files are
-refused. Extracted data is loaded into memory and removed on shutdown, while a
-partial failed extraction is removed immediately. No archive extraction or
-disk parsing is done in the hot path.
+@include shared/filter_archives.part
 
-Archive extraction is supported only on Linux and depends on a shell and GNU
-tar. Other platforms refuse archives; use unpacked lists or databases there.
-Compressed size, member count, expanded bytes, disk use, and
-decompression time have no complete extraction budget. Use only trusted
-operator archives on the tested Linux/GNU-tar path.
+Initial loading and reload build a complete filter candidate. A failed load
+preserves the previous rules and files. A successful reload replaces them;
+concurrent lookups retain an immutable snapshot until they finish. Extraction
+and file parsing occur during loading, outside the lookup path.
 
 `vpn_db.tar.xz` is private/operator-supplied and remains untracked.
 `GeoLiteCountry.tar.xz` may contain a compact `geoip_country_ipv4.db` or a

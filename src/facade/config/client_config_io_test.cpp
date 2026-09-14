@@ -800,8 +800,8 @@ bool test_server_key_set_is_closed(const std::filesystem::path& base) {
         return false;
     }
 
-    // The facade used to drop these on load while validate() still judged
-    // them, so a GUI-loaded server was quietly unshaped.
+    // Preserve the shaping inputs for validation. Parsing them does not
+    // enable shaping in the current transport profile.
     auto shaping = yume::facade::config_io::parse_server_json(
         R"({"listen_port":443,"obfs_pad_multiple":16,"obfs_jitter_ms":25})",
         base, &error);

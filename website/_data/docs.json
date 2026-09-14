@@ -10,7 +10,7 @@
   },
   {
     "title": "YTP/1 foundation",
-    "summary": "Build experimental providers and create a schema-1 kit. These components do not yet form a working endpoint.",
+    "summary": "Build experimental providers, create a schema-1 kit and embed native named streams. Standalone runtimes remain unfinished.",
     "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md",
     "source": "docs/development/ytp1/README.md",
     "landing_group": "Start here",
@@ -127,7 +127,7 @@
   },
   {
     "title": "Source map",
-    "summary": "Which directory owns what, which of the two stacks a file belongs to, and where layering is enforced.",
+    "summary": "Runtime ownership, YTP/1 data and cryptographic paths, shared components, and missing integration.",
     "url": "/docs/SOURCE_MAP/",
     "source": "docs/SOURCE_MAP.md",
     "landing_group": "Reference and development",

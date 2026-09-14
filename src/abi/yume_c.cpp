@@ -66,6 +66,34 @@ std::unique_ptr<EndpointBackend> make_transport_v2_backend(
 }  // namespace yume::embed
 #endif
 
+#if !defined(YUME_ABI_YTP1) || !YUME_ABI_YTP1
+// Without the native provider graph a schema-1 document still parses and
+// registers services, but no endpoint can start. The typed outcome says so.
+namespace yume::embed {
+
+std::unique_ptr<EndpointBackend> make_ytp1_backend(
+    const config::v1::Config&,
+    std::string_view,
+    std::vector<BackendService>,
+    SocketProtector,
+    BackendIo& outcome,
+    std::string& error) {
+    outcome = BackendIo::Unsupported;
+    error = "native ytp1-tls13-h2 endpoint provider is not linked";
+    return nullptr;
+}
+
+std::string_view ytp1_session_security_provider() noexcept {
+    return yume::kCompatibilityManifest.session_security_provider;
+}
+
+std::string_view ytp1_crypto_backend() noexcept {
+    return yume::kCompatibilityManifest.crypto_backend;
+}
+
+}  // namespace yume::embed
+#endif
+
 namespace {
 
 constexpr std::uint64_t kHandleMagic = UINT64_C(0x59554d4530334142);
@@ -122,7 +150,6 @@ struct EndpointControl {
 
 struct RuntimeState {
     std::uint32_t max_pending_callbacks{kDefaultPendingCallbacks};
-    yume_log_callback log_callback{nullptr};
     yume_event_callback event_callback{nullptr};
     void* callback_user_data{nullptr};
     std::string config_base_dir{"."};
@@ -863,7 +890,12 @@ yume_status status_from_backend(yume::embed::BackendIo io) noexcept {
     case yume::embed::BackendIo::ResourceExhausted:
         return YUME_STATUS_RESOURCE_EXHAUSTED;
     case yume::embed::BackendIo::AlreadyRunning:
+    case yume::embed::BackendIo::AddressInUse:
         return YUME_STATUS_INVALID_STATE;
+    case yume::embed::BackendIo::Unsupported:
+        return YUME_STATUS_UNSUPPORTED;
+    case yume::embed::BackendIo::Incompatible:
+        return YUME_STATUS_INCOMPATIBLE;
     case yume::embed::BackendIo::Failed:     return YUME_STATUS_IO_ERROR;
     }
     return YUME_STATUS_INTERNAL_ERROR;
@@ -1090,7 +1122,7 @@ yume_status yume_get_build_info(yume_build_info* out,
     copy_text(value.product_version, sizeof(value.product_version),
               yume::kCompatibilityManifest.product_version);
     copy_text(value.crypto_backend, sizeof(value.crypto_backend),
-              yume::kCompatibilityManifest.crypto_backend);
+              yume::embed::ytp1_crypto_backend());
 #if defined(__clang__)
     copy_text(value.compiler, sizeof(value.compiler), "clang");
 #elif defined(__GNUC__)
@@ -1119,7 +1151,7 @@ yume_status yume_get_compatibility(yume_compatibility* out,
     copy_text(value.suite, sizeof(value.suite),
               yume::kCompatibilityManifest.transport_suite);
     copy_text(value.crypto_backend, sizeof(value.crypto_backend),
-              yume::kCompatibilityManifest.crypto_backend);
+              yume::embed::ytp1_crypto_backend());
     copy_text(value.secure_channel_provider,
               sizeof(value.secure_channel_provider),
               yume::kCompatibilityManifest.secure_channel_provider);
@@ -1131,7 +1163,7 @@ yume_status yume_get_compatibility(yume_compatibility* out,
               yume::kCompatibilityManifest.session_component);
     copy_text(value.session_security_provider,
               sizeof(value.session_security_provider),
-              yume::kCompatibilityManifest.session_security_provider);
+              yume::embed::ytp1_session_security_provider());
     copy_text(value.evidence_profile, sizeof(value.evidence_profile),
               yume::kCompatibilityManifest.evidence_profile);
     return copy_sized(out, out_size, YUME_COMPATIBILITY_MIN_SIZE, value,
@@ -1170,7 +1202,6 @@ yume_status yume_runtime_create(const yume_runtime_options* options,
         auto runtime = std::make_unique<yume_runtime>();
         runtime->state = std::make_shared<RuntimeState>();
         runtime->state->max_pending_callbacks = pending;
-        runtime->state->log_callback = options->log_callback;
         if (contains_field(*options,
                            offsetof(yume_runtime_options, event_callback),
                            sizeof(options->event_callback))) {
@@ -1225,7 +1256,6 @@ void yume_runtime_destroy(yume_runtime* runtime) noexcept {
             state->callback_cv.wait(callback_lock, [&state] {
                 return state->callbacks_in_flight == 0;
             });
-            state->log_callback = nullptr;
             state->event_callback = nullptr;
             state->callback_user_data = nullptr;
         }
@@ -1522,6 +1552,13 @@ yume_status yume_endpoint_register_service(
             clear_diagnostic(&endpoint->header);
             return YUME_STATUS_OK;
         }
+        if (!endpoint->server) {
+            // A client opens the services its configuration declares. It has
+            // no accept path, so a registration would change nothing.
+            return fail_with_diagnostic(
+                &endpoint->header, YUME_STATUS_INVALID_ARGUMENT,
+                "a client endpoint does not register services");
+        }
         const auto configured_service = std::find_if(
             endpoint->config->services().begin(),
             endpoint->config->services().end(),
@@ -1562,6 +1599,9 @@ yume_status yume_endpoint_register_service(
                                             YUME_STATUS_INVALID_ARGUMENT,
                                             "service name and kind are already registered");
             }
+            // A schema-1 backend snapshots registrations when it is built.
+            // They change only while stopped, so the next start rebuilds it.
+            endpoint->control->backend.reset();
         }
         clear_diagnostic(&endpoint->header);
         return YUME_STATUS_OK;
@@ -1581,10 +1621,10 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
     return guard(&endpoint->header, [&]() -> yume_status {
         std::lock_guard<std::mutex> lifecycle_lock(
             endpoint->control->lifecycle_mutex);
-        if (endpoint->transport_v2 && endpoint->server && timeout_ms != 0U) {
+        if (endpoint->server && timeout_ms != 0U) {
             return fail_with_diagnostic(
                 &endpoint->header, YUME_STATUS_UNSUPPORTED,
-                "transport-v2 server start has no bounded deadline; pass zero");
+                "server start has no caller-bounded deadline, pass zero");
         }
         {
             std::lock_guard<std::mutex> lock(endpoint->control->mutex);
@@ -1605,60 +1645,75 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
         emit_endpoint_event(endpoint->runtime, endpoint->control->id,
                             YUME_ENDPOINT_STARTING, YUME_STATUS_OK);
 
-        // A schema-1 endpoint targets the YTP/1 provider graph, which has no
-        // live TLS/H2 front door yet. Never substitute a test or in-memory
-        // channel for the configured mandatory suite to make this path look
-        // like it works.
-        yume_status failure = YUME_STATUS_UNSUPPORTED;
-        std::string detail =
-            "native ytp1-tls13-h2 endpoint provider is not linked";
+        // Each dialect selects its own backend. A build without one reports a
+        // typed unsupported start, and neither dialect falls back to the other.
+        yume_status failure = YUME_STATUS_INTERNAL_ERROR;
+        std::string detail = "endpoint backend unavailable";
         bool started = false;
-
-        if (endpoint->transport_v2) {
-            std::string error;
-            if (!endpoint->control->backend) {
-                yume::embed::SocketProtector socket_protector;
-                {
-                    std::lock_guard<std::mutex> lock(endpoint->mutex);
-                    if (endpoint->socket_protector) {
-                        const auto callback = endpoint->socket_protector;
-                        void* const callback_data =
-                            endpoint->socket_protector_data;
-                        socket_protector =
-                            [callback, callback_data](std::intptr_t socket) {
-                                try {
-                                    CallbackScope callback_scope;
-                                    return callback(
-                                               static_cast<std::uintptr_t>(socket),
-                                               callback_data) != 0;
-                                } catch (...) {
-                                    return false;
-                                }
-                            };
+        std::string error;
+        if (!endpoint->control->backend) {
+            yume::embed::SocketProtector socket_protector;
+            std::vector<yume::embed::BackendService> registrations;
+            {
+                std::lock_guard<std::mutex> lock(endpoint->mutex);
+                if (endpoint->socket_protector) {
+                    const auto callback = endpoint->socket_protector;
+                    void* const callback_data =
+                        endpoint->socket_protector_data;
+                    socket_protector =
+                        [callback, callback_data](std::intptr_t socket) {
+                            try {
+                                CallbackScope callback_scope;
+                                return callback(
+                                           static_cast<std::uintptr_t>(socket),
+                                           callback_data) != 0;
+                            } catch (...) {
+                                return false;
+                            }
+                        };
+                }
+                if (endpoint->config.has_value()) {
+                    registrations.reserve(endpoint->services.size());
+                    for (const auto& [key, registration] : endpoint->services) {
+                        registrations.push_back(yume::embed::BackendService{
+                            key.name,
+                            registration.kind == YUME_SERVICE_PACKET
+                                ? yume::embed::BackendServiceKind::Packet
+                                : yume::embed::BackendServiceKind::ByteStream});
                     }
                 }
+            }
+            if (endpoint->transport_v2) {
                 endpoint->control->backend =
                     yume::embed::make_transport_v2_backend(
                         *endpoint->transport_v2,
                         std::move(socket_protector), error);
-            }
-            if (!endpoint->control->backend) {
-                failure = YUME_STATUS_INTERNAL_ERROR;
-                detail = error.empty() ? "endpoint backend unavailable" : error;
-            } else if (const auto io =
-                           endpoint->control->backend->start(timeout_ms, error);
-                       io == yume::embed::BackendIo::Ok) {
-                started = true;
             } else {
-                // A failed start leaves no half-open runtime behind: the
-                // backend is torn down so a retry re-runs the whole sequence.
-                endpoint->control->backend->stop();
-                // The backend carries the runtime's typed outcome, so a
-                // refused bind stays PERMISSION_DENIED instead of collapsing
-                // into a generic I/O failure the embedder cannot act on.
-                failure = status_from_backend(io);
-                detail = error.empty() ? "endpoint failed to start" : error;
+                auto outcome = yume::embed::BackendIo::Failed;
+                endpoint->control->backend = yume::embed::make_ytp1_backend(
+                    *endpoint->config, endpoint->runtime->config_base_dir,
+                    std::move(registrations), std::move(socket_protector),
+                    outcome, error);
+                if (!endpoint->control->backend &&
+                    outcome != yume::embed::BackendIo::Failed) {
+                    failure = status_from_backend(outcome);
+                }
             }
+        }
+        if (!endpoint->control->backend) {
+            if (!error.empty()) detail = error;
+        } else if (const auto io =
+                       endpoint->control->backend->start(timeout_ms, error);
+                   io == yume::embed::BackendIo::Ok) {
+            started = true;
+        } else {
+            // A failed start leaves no half-open runtime behind. The backend
+            // is torn down so a retry re-runs the whole sequence.
+            endpoint->control->backend->stop();
+            // The backend carries the runtime's typed outcome, so an embedder
+            // never recovers the failure class from diagnostic text.
+            failure = status_from_backend(io);
+            detail = error.empty() ? "endpoint failed to start" : error;
         }
 
         bool cancelled = false;
@@ -1777,7 +1832,7 @@ yume_status unavailable_endpoint_io(yume_endpoint* endpoint,
         }
         return fail_with_diagnostic(
             &endpoint->header, YUME_STATUS_UNSUPPORTED,
-            "native ytp1-tls13-h2 endpoint provider is not linked");
+            "packet channels are not implemented by this ABI candidate");
     });
 }
 
@@ -1824,8 +1879,8 @@ yume_status backend_stream_io(yume_endpoint* endpoint,
         }
         if (!backend) {
             return fail_with_diagnostic(
-                &endpoint->header, YUME_STATUS_UNSUPPORTED,
-                "native ytp1-tls13-h2 endpoint provider is not linked");
+                &endpoint->header, YUME_STATUS_INTERNAL_ERROR,
+                "running endpoint has no backend");
         }
         if (destination_requested) {
             return fail_with_diagnostic(

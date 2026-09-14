@@ -20,6 +20,13 @@ inline constexpr std::string_view kYtp1OpenSslSecurityProviderId =
 inline constexpr std::uint32_t kYtp1OpenSslSecurityProviderApiVersion = 1U;
 inline constexpr std::size_t kMaxYtp1AuthorizedIdentities = 1024U;
 
+// Names the OpenSSL release this provider runs on as "openssl-" followed by
+// the loaded library's full version text, for example "openssl-3.5.7". A
+// shared build can load a later compatible release than the headers it was
+// compiled with, so the text comes from the runtime library. It is formatted
+// once and may be read from any thread.
+std::string_view ytp1_openssl_crypto_backend() noexcept;
+
 // Key inputs use one canonical encoding: unencrypted PKCS#8 DER for private
 // keys and SubjectPublicKeyInfo DER for public keys. Views are borrowed only
 // for factory creation. The factory parses and copies their key state before

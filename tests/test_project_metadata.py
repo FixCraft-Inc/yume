@@ -523,7 +523,13 @@ class MetadataTests(unittest.TestCase):
         )
         self.assertIn("SSL_OP_YUME_CHROME_CLIENT_HELLO", cmake)
         self.assertIn("SSL_CTRL_YUME_CHROME_CLIENT_HELLO", cmake)
-        self.assertIn("Stock libssl is not accepted for a normal build", cmake)
+        self.assertIn("Stock libssl is not accepted for native TLS", cmake)
+        self.assertRegex(
+            cmake,
+            r'if\(\(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY\) OR'
+            r'\s+YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER\)'
+            r'\s+include\(CheckCXXSourceCompiles\)',
+        )
 
         package_script = (ROOT / "scripts/package_linux_release.py").read_text(
             encoding="utf-8")

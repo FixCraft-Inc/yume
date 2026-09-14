@@ -549,10 +549,13 @@ private:
         bool write_shutdown_pending{false};
         bool write_shutdown_sent{false};
         std::unique_ptr<boost::asio::steady_timer> open_timer;
+        // Stream and session close must cancel pacing before releasing owners.
+        boost::asio::steady_timer write_delay_timer;
 
         explicit RemoteStream(boost::asio::any_io_executor exec)
             : socket(exec)
-            , resolver(exec) {
+            , resolver(exec)
+            , write_delay_timer(exec) {
             read_buf.resize(util::server_relay_read_buf_size());
         }
     };
@@ -560,6 +563,7 @@ private:
     struct UdpStream {
         boost::asio::ip::udp::socket socket;
         boost::asio::ip::udp::resolver resolver;
+        boost::asio::steady_timer write_delay_timer;
         boost::asio::ip::udp::endpoint remote;
         std::array<uint8_t, 65535> read_buf{};
         std::deque<InboundWrite> write_queue;
@@ -579,7 +583,8 @@ private:
 
         explicit UdpStream(boost::asio::any_io_executor exec)
             : socket(exec)
-            , resolver(exec) {}
+            , resolver(exec)
+            , write_delay_timer(exec) {}
     };
 
     struct CodecStream {

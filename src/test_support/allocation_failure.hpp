@@ -12,8 +12,8 @@
 #include <new>
 
 // Include in exactly one translation unit of an isolated test executable.
-// These hooks intercept ordinary C++ allocations, not aligned or C/library
-// allocation families. Observers must not allocate or throw during delete.
+// These hooks intercept ordinary and nothrow C++ allocations, not aligned or
+// C/library allocation families. Observers must not allocate or throw during delete.
 namespace yume::test {
 inline std::atomic<bool> fail_allocations{false};
 inline thread_local void (*before_allocate)(std::size_t) = nullptr;
@@ -61,6 +61,14 @@ void* operator new(std::size_t size) {
 }
 
 void* operator new[](std::size_t size) { return ::operator new(size); }
+// Keep nothrow allocations in the same malloc/free family as ordinary new.
+// Sanitizer runtimes may otherwise supply these overloads independently.
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+    try { return ::operator new(size); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+    try { return ::operator new[](size); } catch (...) { return nullptr; }
+}
 void operator delete(void* storage) noexcept {
     if (yume::test::before_deallocate) yume::test::before_deallocate(storage);
     std::free(storage);
@@ -68,6 +76,9 @@ void operator delete(void* storage) noexcept {
 void operator delete[](void* storage) noexcept { ::operator delete(storage); }
 void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
 void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
+// Matching cleanup if a constructor throws after a nothrow allocation.
+void operator delete(void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
+void operator delete[](void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop

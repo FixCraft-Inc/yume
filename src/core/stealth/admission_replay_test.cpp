@@ -52,21 +52,21 @@ void test_saturation_and_expiry() {
     const auto first = path_for('1');
     const auto second = path_for('2');
     const auto third = path_for('3');
-    require(!cache.AcceptPath("/invalid", 100), "invalid path was accepted");
-    require(cache.AcceptPath(first, 100), "first admission failed");
-    require(cache.AcceptPath(second, 101), "second admission failed");
-    require(!cache.AcceptPath(third, 102), "saturation displaced a live nonce");
+    require(!cache.AcceptPathAt("/invalid", 100), "invalid path was accepted");
+    require(cache.AcceptPathAt(first, 100), "first admission failed");
+    require(cache.AcceptPathAt(second, 101), "second admission failed");
+    require(!cache.AcceptPathAt(third, 102), "saturation displaced a live nonce");
     require(cache.size() == 2, "cache exceeded its cap");
-    require(!cache.AcceptPath(first, 102) && !cache.AcceptPath(second, 102),
+    require(!cache.AcceptPathAt(first, 102) && !cache.AcceptPathAt(second, 102),
             "saturation allowed a replay");
     auto changed_token = first;
     changed_token[1] = 'b';
-    require(!cache.AcceptPath(changed_token, 103), "another token reused a live nonce");
-    require(cache.AcceptPath(third, 7300), "expired entry did not return capacity");
-    require(!cache.AcceptPath(second, 7300), "entry expired early");
-    require(cache.AcceptPath(first, 7301), "second expiry did not return capacity");
+    require(!cache.AcceptPathAt(changed_token, 103), "another token reused a live nonce");
+    require(cache.AcceptPathAt(third, 7300), "expired entry did not return capacity");
+    require(!cache.AcceptPathAt(second, 7300), "entry expired early");
+    require(cache.AcceptPathAt(first, 7301), "second expiry did not return capacity");
     require(cache.size() == 2, "expiry changed the capacity bound");
-    require(!cache.AcceptPath(path_for('4'), std::numeric_limits<std::int64_t>::max()),
+    require(!cache.AcceptPathAt(path_for('4'), std::numeric_limits<std::uint64_t>::max()),
             "expiry arithmetic overflow was accepted");
 }
 
@@ -76,19 +76,14 @@ void test_failed_insert_preserves_capacity() {
     bool reached_success = false;
     for (int allocation = 0; allocation < 32; ++allocation) {
         yume::obfs::AdmissionReplayCache cache(1, 7200);
-        bool failed = false;
         fail_after = allocation;
-        try {
-            reached_success = cache.AcceptPath(first, 100);
-        } catch (const std::bad_alloc&) {
-            failed = true;
-        }
+        reached_success = cache.AcceptPathAt(first, 100);
         fail_after = -1;
-        if (!failed) break;
+        if (reached_success) break;
         require(cache.size() == 0, "failed insertion retained a nonce");
-        require(cache.AcceptPath(second, 101), "failed insertion consumed capacity");
-        require(!cache.AcceptPath(second, 102), "failed insertion broke replay refusal");
-        require(cache.AcceptPath(first, 7301), "failed insertion broke expiry recovery");
+        require(cache.AcceptPathAt(second, 101), "failed insertion consumed capacity");
+        require(!cache.AcceptPathAt(second, 102), "failed insertion broke replay refusal");
+        require(cache.AcceptPathAt(first, 7301), "failed insertion broke expiry recovery");
         require(cache.size() == 1, "failed insertion broke the cache bound");
     }
     require(reached_success, "allocation sweep never reached successful insertion");

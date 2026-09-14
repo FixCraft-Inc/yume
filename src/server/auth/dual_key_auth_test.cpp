@@ -55,6 +55,7 @@
 #include "server/cli/key.hpp"
 #include "server/config/config.hpp"
 #include "server/runtime/manager.hpp"
+#include "test_support/tls_identity.hpp"
 
 namespace {
 
@@ -98,49 +99,6 @@ std::string read_file(const fs::path& path) {
                        std::istreambuf_iterator<char>());
 }
 
-void write_test_tls_identity(const fs::path& certificate_path,
-                             const fs::path& private_key_path) {
-    using KeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
-    using CertPtr = std::unique_ptr<X509, decltype(&X509_free)>;
-    using BioPtr = std::unique_ptr<BIO, decltype(&BIO_free)>;
-
-    KeyPtr key(EVP_EC_gen("P-256"), EVP_PKEY_free);
-    assert(key);
-    CertPtr certificate(X509_new(), X509_free);
-    assert(certificate);
-    assert(X509_set_version(certificate.get(), 2) == 1);
-    assert(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) == 1);
-    assert(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), 0));
-    assert(X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600));
-    assert(X509_set_pubkey(certificate.get(), key.get()) == 1);
-    X509_NAME* name = X509_get_subject_name(certificate.get());
-    assert(name);
-    assert(X509_NAME_add_entry_by_txt(
-               name, "CN", MBSTRING_ASC,
-               reinterpret_cast<const unsigned char*>("yume-lock-test"), -1,
-               -1, 0) == 1);
-    assert(X509_set_issuer_name(certificate.get(), name) == 1);
-    assert(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
-
-    BioPtr certificate_bio(BIO_new(BIO_s_mem()), BIO_free);
-    BioPtr key_bio(BIO_new(BIO_s_mem()), BIO_free);
-    assert(certificate_bio && key_bio);
-    assert(PEM_write_bio_X509(certificate_bio.get(), certificate.get()) == 1);
-    assert(PEM_write_bio_PrivateKey(key_bio.get(), key.get(), nullptr, nullptr,
-                                    0, nullptr, nullptr) == 1);
-    char* certificate_data = nullptr;
-    char* key_data = nullptr;
-    const long certificate_size =
-        BIO_get_mem_data(certificate_bio.get(), &certificate_data);
-    const long key_size = BIO_get_mem_data(key_bio.get(), &key_data);
-    assert(certificate_size > 0 && certificate_data);
-    assert(key_size > 0 && key_data);
-    write_file(certificate_path,
-               std::string(certificate_data,
-                           static_cast<std::size_t>(certificate_size)));
-    write_file(private_key_path,
-               std::string(key_data, static_cast<std::size_t>(key_size)));
-}
 
 yume::server::cli::CliCommandResult run_manager_ui(
     yume::server::ServerConfig* config,
@@ -310,7 +268,7 @@ void test_manager_auth_snapshot_waits_for_transaction_writer() {
     write_file(config.operator_keys, "");
     write_file(config.operator_keys_meta, "{}");
     write_file(config.admin_keys, "");
-    write_test_tls_identity(config.tls_cert, config.tls_key);
+    yume::test::write_tls_identity(config.tls_cert, config.tls_key);
 
     const std::vector<fs::path> resources{
         config.auth_keys, config.auth_keys_meta, config.operator_keys,

@@ -78,4 +78,4 @@ signature manifest.
 YTP/1 uses one security suite and source-linked providers. Its next integration
 step is a working client/server endpoint with cover traffic, routing, and
 embedding support. The current client and daemon remain the default build
-until that endpoint passes the [parity gates](IMPLEMENTATION_STATUS.md).
+until that endpoint passes the [required capability gates](IMPLEMENTATION_STATUS.md).

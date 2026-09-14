@@ -11,7 +11,8 @@ catalog-order: 180
 ---
 YUME `0.3.0-dev1` is development software. The default `yume` and `yumed`
 binaries use the transport-v2 wire `0.2.0-dev6`. YTP/1 is an experimental
-replacement whose components do not yet form a working endpoint.
+replacement. Its native endpoint carries authenticated named streams through
+the opt-in C ABI, but no standalone `yume` or `yumed` runtime uses it yet.
 
 ## Run YUME
 
@@ -38,8 +39,9 @@ replacement whose components do not yet form a working endpoint.
 
 Start with the [source map](SOURCE_MAP.md) and [contributor guide](../CONTRIBUTING.md).
 The [C ABI](ABI.md) is an opt-in build-tree library. Its transport-v2 backend
-supports named streams. Packet channels and schema-1 endpoint start remain
-unsupported, and the install contract is unfrozen.
+supports named streams, and builds with every native YTP/1 provider also start
+schema-1 endpoints. Packet channels remain unsupported, and the install
+contract is unfrozen.
 
 The replacement has its own references:
 
@@ -54,11 +56,30 @@ design-only. Current federation is single-hop.
 ## Reference ownership
 
 Source and executable tests take precedence when prose disagrees. Update the
-relevant contract with each behavior change.
+relevant contract with each behavior change. A discovered bug does not cancel
+an intended requirement: fix it or explicitly resolve the design conflict.
 
-Documents are generated. One `.doc` file under [docs/src](src/README.md)
-writes the Markdown on this map and the manual a terminal renders, so a fact
-is corrected once. Edit the source, not the page it produces.
+@table
+| Question | Owner |
+| --- | --- |
+| Where is it implemented and connected? | [Source map](SOURCE_MAP.md) |
+| What is the intended composition and why? | [Architecture](ARCHITECTURE.md) |
+| What bytes, fields and trust checks define a protocol? | Its [protocol reference](protocol/) |
+| What works and what still needs qualification? | [Implementation status](IMPLEMENTATION_STATUS.md) |
+| How do I configure and operate the runnable tools? | [Operations](OPERATIONS.md), [quick start](QUICKSTART.md) and manuals |
+| How do I embed or change YUME? | [ABI](ABI.md) and [contributor guide](../CONTRIBUTING.md) |
+@end
+
+Keep the full explanation at its owner and link from other topics. Split a
+document when its readers or contract differ; a line-count target alone does
+not justify a split. Do not copy status inventories into architecture, API and
+workflow guides, or describe proposed functionality as implemented.
+
+Product documents are generated from `.doc` owners under
+[docs/src](src/README.md). The unified sync renders their Markdown, manuals,
+website pages and catalog, enabled diagrams, and YUME CLI help/completion.
+Edit the source named by the generated banner. The source guide identifies
+directly edited instructions, tooling references, and website layouts.
 
 Keep product, wire, configuration, ABI, provider, and evidence-profile
 versions independent.

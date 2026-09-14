@@ -393,7 +393,7 @@ std::string active_client_ua() {
         cover_profile::active().user_agent);
 }
 
-std::string render_404(const ServerProfile& p, bool /*connection_close*/) {
+std::string render_404(const ServerProfile& p) {
     std::string out = "HTTP/1.1 404 Not Found\r\n";
     out += replace_placeholders(p.headers_404, p.body_404);
     out += p.body_404;

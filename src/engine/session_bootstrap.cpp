@@ -9,10 +9,29 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace yume::engine {
 namespace {
+
+// Diagnostics are optional at the allocation-failure boundary; the typed
+// failure and completion ownership must survive even sustained exhaustion.
+Status bootstrap_status(StatusCode code, std::string_view message = {}) noexcept {
+    try {
+        return Status(code, message);
+    } catch (...) {
+        return Status(code);
+    }
+}
+
+Status copy_status(const Status& status) noexcept {
+    return bootstrap_status(status.code(), status.message());
+}
+
+static_assert(std::is_nothrow_move_assignable_v<Status>);
+static_assert(std::is_nothrow_move_constructible_v<Status>);
 
 bool terminal_state(SessionBootstrapState state) noexcept {
     return state == SessionBootstrapState::Succeeded ||
@@ -56,39 +75,39 @@ void close_accepted_carrier(AcceptedCarrier accepted) noexcept {
 Status validate_graph(const std::shared_ptr<const EngineGraph>& graph,
                       EndpointRole expected_role) {
     if (!graph) {
-        return Status(StatusCode::InvalidArgument,
-                      "session bootstrap requires a frozen engine graph");
+        return bootstrap_status(StatusCode::InvalidArgument,
+                                "session bootstrap requires a frozen engine graph");
     }
     if (graph->local_role() != expected_role) {
-        return Status(StatusCode::InvalidArgument,
-                      "session bootstrap form does not match graph role");
+        return bootstrap_status(StatusCode::InvalidArgument,
+                                "session bootstrap form does not match graph role");
     }
     if (graph->suite().wire_protocol() != "YTP/1") {
-        return Status(StatusCode::ProviderMismatch,
-                      "session bootstrap requires an exact YTP/1 graph");
+        return bootstrap_status(StatusCode::ProviderMismatch,
+                                "session bootstrap requires an exact YTP/1 graph");
     }
-    if (!graph->carrier_provider() ||
-        !graph->session_security_provider_factory()) {
-        return Status(StatusCode::FailedPrecondition,
-                      "session bootstrap graph is incomplete");
+    if (!graph->session_security_provider_factory()) {
+        return bootstrap_status(StatusCode::FailedPrecondition,
+                                "session bootstrap graph is incomplete");
     }
     if (expected_role == EndpointRole::Client &&
         (!graph->byte_channel_provider() ||
-         !graph->secure_channel_provider())) {
-        return Status(StatusCode::FailedPrecondition,
-                      "client bootstrap graph lacks transport providers");
+         !graph->secure_channel_provider() ||
+         !graph->carrier_provider())) {
+        return bootstrap_status(StatusCode::FailedPrecondition,
+                                "client bootstrap graph lacks transport providers");
     }
     if (!graph->suite().provider_requirement(ProviderKind::Carrier)) {
-        return Status(StatusCode::FailedPrecondition,
-                      "session bootstrap graph lacks a carrier requirement");
+        return bootstrap_status(StatusCode::FailedPrecondition,
+                                "session bootstrap graph lacks a carrier requirement");
     }
     const ProviderRequirement* secure_requirement =
         graph->suite().provider_requirement(ProviderKind::SecureChannel);
     if (!secure_requirement ||
         !secure_requirement->required_capabilities().contains(
             Capability::Tls13)) {
-        return Status(StatusCode::ProviderMismatch,
-                      "YTP/1 bootstrap requires an exact TLS 1.3 secure channel");
+        return bootstrap_status(StatusCode::ProviderMismatch,
+                                "YTP/1 bootstrap requires an exact TLS 1.3 secure channel");
     }
     return Status::success();
 }
@@ -99,19 +118,19 @@ Status validate_accepted_carrier(
     const ProviderRequirement* requirement =
         graph.suite().provider_requirement(ProviderKind::Carrier);
     if (!requirement) {
-        return Status(StatusCode::FailedPrecondition,
-                      "engine graph lacks its carrier requirement");
+        return bootstrap_status(StatusCode::FailedPrecondition,
+                                "engine graph lacks its carrier requirement");
     }
     if (descriptor.kind() != ProviderKind::Carrier ||
         descriptor.provider_id() != requirement->provider_id() ||
         descriptor.api_version() != requirement->api_version()) {
-        return Status(StatusCode::ProviderMismatch,
-                      "front door promoted the wrong carrier provider");
+        return bootstrap_status(StatusCode::ProviderMismatch,
+                                "front door promoted the wrong carrier provider");
     }
     if (!descriptor.capabilities().contains_all(
             requirement->required_capabilities())) {
-        return Status(StatusCode::FailedPrecondition,
-                      "promoted carrier lacks required suite capabilities");
+        return bootstrap_status(StatusCode::FailedPrecondition,
+                                "promoted carrier lacks required suite capabilities");
     }
     return Status::success();
 }
@@ -122,7 +141,7 @@ class SessionBootstrap::Impl final {
 public:
     Impl(std::shared_ptr<const EngineGraph> graph,
          std::shared_ptr<FrontDoor> front_door,
-         SessionLimits limits) noexcept
+         SessionLimits limits)
         : graph_(std::move(graph)),
           front_door_(std::move(front_door)),
           limits_(limits) {
@@ -136,9 +155,7 @@ public:
         cancellation_.cancel();
         if (starting_engine_) {
             try {
-                starting_engine_->stop(
-                    Status(StatusCode::Closed,
-                           "session bootstrap destroyed"));
+                starting_engine_->stop(bootstrap_status(StatusCode::Closed));
             } catch (...) {
             }
         }
@@ -157,27 +174,28 @@ public:
     }
 
     Status async_start(CancellationToken external,
-                       Completion completion) {
+                       Completion completion,
+                       CarrierReady carrier_ready) {
         if (!completion) {
-            return Status(StatusCode::InvalidArgument,
-                          "session bootstrap completion must not be empty");
+            return bootstrap_status(StatusCode::InvalidArgument,
+                                    "session bootstrap completion must not be empty");
         }
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (state_ != SessionBootstrapState::Created) {
-                return Status(StatusCode::FailedPrecondition,
-                              "session bootstrap starts exactly once");
+                return bootstrap_status(StatusCode::FailedPrecondition,
+                                        "session bootstrap starts exactly once");
             }
             completion_ = std::move(completion);
+            carrier_ready_ = std::move(carrier_ready);
             state_ = graph_->local_role() == EndpointRole::Client
                 ? SessionBootstrapState::AcquiringByteChannel
                 : SessionBootstrapState::AcceptingCarrier;
         }
 
-        Result<CancellationRegistration> registration(Status(
-            StatusCode::Internal,
-            "external cancellation registration did not run"));
+        Result<CancellationRegistration> registration(
+            bootstrap_status(StatusCode::Internal));
         try {
             std::weak_ptr<SessionBootstrap> weak =
                 owner_->shared_from_this();
@@ -187,18 +205,18 @@ public:
                 }
             });
         } catch (const std::bad_alloc&) {
-            finish_failure(Status(
+            finish_failure(bootstrap_status(
                 StatusCode::ResourceExhausted,
                 "bootstrap cancellation registration allocation failed"));
             return Status::success();
         } catch (...) {
-            finish_failure(Status(
+            finish_failure(bootstrap_status(
                 StatusCode::Internal,
                 "bootstrap cancellation registration failed"));
             return Status::success();
         }
         if (!registration.ok()) {
-            finish_failure(registration.status());
+            finish_failure(copy_status(registration.status()));
             return Status::success();
         }
 
@@ -215,8 +233,8 @@ public:
             return Status::success();
         }
         if (stopped) {
-            finish_failure(Status(StatusCode::Cancelled,
-                                  "session bootstrap cancelled"));
+            finish_failure(bootstrap_status(StatusCode::Cancelled,
+                                            "session bootstrap cancelled"));
             return Status::success();
         }
 
@@ -230,35 +248,24 @@ public:
 
     void cancel() noexcept {
         std::shared_ptr<SessionEngine> engine;
-        bool created = false;
-        try {
+        {
             std::lock_guard<std::mutex> lock(mutex_);
             if (terminal_state(state_)) {
                 return;
             }
             if (state_ == SessionBootstrapState::Created) {
                 state_ = SessionBootstrapState::Cancelled;
-                created = true;
             } else if (!stop_reason_.has_value()) {
-                stop_reason_.emplace(
-                    StatusCode::Cancelled,
-                    "session bootstrap cancelled");
+                // Never allocate before recording cancellation. A provider may
+                // return success while its cancellation token is being settled.
+                stop_reason_.emplace(StatusCode::Cancelled);
             }
             engine = starting_engine_;
-        } catch (...) {
-            // The ordinary cancellation status is deliberately short and uses
-            // bounded Status storage. If even that allocation fails, the
-            // internal token still tears down the active provider operation.
         }
         cancellation_.cancel();
         if (engine) {
-            try {
-                engine->stop(Status(StatusCode::Cancelled,
-                                    "session bootstrap cancelled"));
-            } catch (...) {
-            }
+            engine->stop(bootstrap_status(StatusCode::Cancelled));
         }
-        (void)created;
     }
 
 private:
@@ -267,14 +274,14 @@ private:
         return state_ == expected && !terminal_state(state_);
     }
 
-    std::optional<Status> requested_stop() const {
+    bool stop_requested() const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
-        return stop_reason_;
+        return stop_reason_.has_value();
     }
 
     void request_failure(Status status) noexcept {
         std::shared_ptr<SessionEngine> engine;
-        try {
+        {
             std::lock_guard<std::mutex> lock(mutex_);
             if (terminal_state(state_)) {
                 return;
@@ -283,51 +290,46 @@ private:
                 stop_reason_.emplace(std::move(status));
             }
             engine = starting_engine_;
-        } catch (...) {
         }
         cancellation_.cancel();
         if (engine) {
-            try {
-                engine->stop(Status(StatusCode::Internal,
-                                    "session bootstrap provider failed"));
-            } catch (...) {
-            }
+            engine->stop(bootstrap_status(StatusCode::Internal));
         }
     }
 
-    void finish_failure(Status fallback) noexcept {
+    void finish_failure(Status reason) noexcept {
         Completion completion;
+        CarrierReady carrier_ready;
         CancellationRegistration external_registration;
         std::shared_ptr<SessionEngine> engine;
-        Status reason = std::move(fallback);
-        try {
+        std::shared_ptr<FrontDoor> front_door;
+        {
             std::lock_guard<std::mutex> lock(mutex_);
             if (terminal_state(state_)) {
                 return;
             }
+            // Extract the first failure and all completion ownership without
+            // copying diagnostics. A failed copy here used to strand completion.
             if (stop_reason_.has_value()) {
-                reason = *stop_reason_;
+                reason = std::move(*stop_reason_);
+                stop_reason_.reset();
             }
             state_ = reason.code() == StatusCode::Cancelled
                 ? SessionBootstrapState::Cancelled
                 : SessionBootstrapState::Failed;
             completion = std::move(completion_);
+            carrier_ready = std::move(carrier_ready_);
             external_registration = std::move(external_cancellation_);
             engine = std::move(starting_engine_);
-            front_door_.reset();
-        } catch (...) {
-            // No exception may escape a provider callback. Cancellation below
-            // still prevents partially constructed transport from continuing.
+            front_door = std::move(front_door_);
         }
 
         external_registration.unregister();
         cancellation_.cancel();
         if (engine) {
-            try {
-                engine->stop(Status(reason.code(), reason.message()));
-            } catch (...) {
-            }
+            engine->stop(bootstrap_status(reason.code()));
         }
+        front_door.reset();
         invoke_noexcept(completion,
                         Result<std::shared_ptr<SessionEngine>>(
                             std::move(reason)));
@@ -343,7 +345,7 @@ private:
     }
 
     void unexpected_callback() noexcept {
-        request_failure(Status(
+        request_failure(bootstrap_status(
             StatusCode::ProviderMismatch,
             "provider completed a bootstrap layer more than once or out of order"));
     }
@@ -358,25 +360,28 @@ private:
                     try {
                         self->impl_->on_byte_channel(std::move(result));
                     } catch (const std::bad_alloc&) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::ResourceExhausted,
-                            "byte-channel bootstrap callback allocation failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::AcquiringByteChannel,
+                            bootstrap_status(
+                                StatusCode::ResourceExhausted,
+                                "byte-channel bootstrap callback allocation failed"));
                     } catch (...) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::Internal,
-                            "byte-channel bootstrap callback failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::AcquiringByteChannel,
+                            bootstrap_status(StatusCode::Internal,
+                                             "byte-channel bootstrap callback failed"));
                     }
                 });
         } catch (const std::bad_alloc&) {
             handle_invocation_failure(
                 SessionBootstrapState::AcquiringByteChannel,
-                Status(StatusCode::ResourceExhausted,
-                       "byte-channel provider allocation failed"));
+                bootstrap_status(StatusCode::ResourceExhausted,
+                                 "byte-channel provider allocation failed"));
         } catch (...) {
             handle_invocation_failure(
                 SessionBootstrapState::AcquiringByteChannel,
-                Status(StatusCode::Internal,
-                       "byte-channel provider threw"));
+                bootstrap_status(StatusCode::Internal,
+                                 "byte-channel provider threw"));
         }
     }
 
@@ -390,22 +395,22 @@ private:
             unexpected_callback();
             return;
         }
-        if (const auto stopped = requested_stop()) {
+        if (stop_requested()) {
             if (result.ok()) {
                 close_transport(std::move(result).take_value());
             }
-            finish_failure(*stopped);
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
         if (!result.ok()) {
-            finish_failure(result.status());
+            finish_failure(copy_status(result.status()));
             return;
         }
         std::unique_ptr<ByteChannel> channel =
             std::move(result).take_value();
         if (!channel || !channel->executor_affinity().valid()) {
             close_transport(std::move(channel));
-            finish_failure(Status(
+            finish_failure(bootstrap_status(
                 StatusCode::ProviderMismatch,
                 "byte-channel provider returned an invalid channel"));
             return;
@@ -431,25 +436,28 @@ private:
                     try {
                         self->impl_->on_secure_channel(std::move(result));
                     } catch (const std::bad_alloc&) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::ResourceExhausted,
-                            "secure-channel bootstrap callback allocation failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::SecuringByteChannel,
+                            bootstrap_status(
+                                StatusCode::ResourceExhausted,
+                                "secure-channel bootstrap callback allocation failed"));
                     } catch (...) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::Internal,
-                            "secure-channel bootstrap callback failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::SecuringByteChannel,
+                            bootstrap_status(StatusCode::Internal,
+                                             "secure-channel bootstrap callback failed"));
                     }
                 });
         } catch (const std::bad_alloc&) {
             handle_invocation_failure(
                 SessionBootstrapState::SecuringByteChannel,
-                Status(StatusCode::ResourceExhausted,
-                       "secure-channel provider allocation failed"));
+                bootstrap_status(StatusCode::ResourceExhausted,
+                                 "secure-channel provider allocation failed"));
         } catch (...) {
             handle_invocation_failure(
                 SessionBootstrapState::SecuringByteChannel,
-                Status(StatusCode::Internal,
-                       "secure-channel provider threw"));
+                bootstrap_status(StatusCode::Internal,
+                                 "secure-channel provider threw"));
         }
     }
 
@@ -463,22 +471,22 @@ private:
             unexpected_callback();
             return;
         }
-        if (const auto stopped = requested_stop()) {
+        if (stop_requested()) {
             if (result.ok()) {
                 close_transport(std::move(result).take_value());
             }
-            finish_failure(*stopped);
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
         if (!result.ok()) {
-            finish_failure(result.status());
+            finish_failure(copy_status(result.status()));
             return;
         }
         std::unique_ptr<SecureChannel> channel =
             std::move(result).take_value();
         if (!channel || channel->executor_affinity() != affinity_) {
             close_transport(std::move(channel));
-            finish_failure(Status(
+            finish_failure(bootstrap_status(
                 StatusCode::ProviderMismatch,
                 "secure channel changed bootstrap executor affinity"));
             return;
@@ -503,25 +511,27 @@ private:
                     try {
                         self->impl_->on_client_carrier(std::move(result));
                     } catch (const std::bad_alloc&) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::ResourceExhausted,
-                            "carrier bootstrap callback allocation failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::CreatingCarrier,
+                            bootstrap_status(StatusCode::ResourceExhausted,
+                                             "carrier bootstrap callback allocation failed"));
                     } catch (...) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::Internal,
-                            "carrier bootstrap callback failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::CreatingCarrier,
+                            bootstrap_status(StatusCode::Internal,
+                                             "carrier bootstrap callback failed"));
                     }
                 });
         } catch (const std::bad_alloc&) {
             handle_invocation_failure(
                 SessionBootstrapState::CreatingCarrier,
-                Status(StatusCode::ResourceExhausted,
-                       "carrier provider allocation failed"));
+                bootstrap_status(StatusCode::ResourceExhausted,
+                                 "carrier provider allocation failed"));
         } catch (...) {
             handle_invocation_failure(
                 SessionBootstrapState::CreatingCarrier,
-                Status(StatusCode::Internal,
-                       "carrier provider threw"));
+                bootstrap_status(StatusCode::Internal,
+                                 "carrier provider threw"));
         }
     }
 
@@ -534,15 +544,15 @@ private:
             unexpected_callback();
             return;
         }
-        if (const auto stopped = requested_stop()) {
+        if (stop_requested()) {
             if (result.ok()) {
                 close_transport(std::move(result).take_value());
             }
-            finish_failure(*stopped);
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
         if (!result.ok()) {
-            finish_failure(result.status());
+            finish_failure(copy_status(result.status()));
             return;
         }
         std::unique_ptr<Carrier> carrier =
@@ -550,7 +560,7 @@ private:
         if (!carrier || carrier->executor_affinity() != affinity_ ||
             carrier->secure_channel().executor_affinity() != affinity_) {
             close_transport(std::move(carrier));
-            finish_failure(Status(
+            finish_failure(bootstrap_status(
                 StatusCode::ProviderMismatch,
                 "carrier changed bootstrap executor affinity"));
             return;
@@ -568,25 +578,28 @@ private:
                     try {
                         self->impl_->on_accepted_carrier(std::move(result));
                     } catch (const std::bad_alloc&) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::ResourceExhausted,
-                            "front-door bootstrap callback allocation failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::AcceptingCarrier,
+                            bootstrap_status(
+                                StatusCode::ResourceExhausted,
+                                "front-door bootstrap callback allocation failed"));
                     } catch (...) {
-                        self->impl_->request_failure(Status(
-                            StatusCode::Internal,
-                            "front-door bootstrap callback failed"));
+                        self->impl_->handle_invocation_failure(
+                            SessionBootstrapState::AcceptingCarrier,
+                            bootstrap_status(StatusCode::Internal,
+                                             "front-door bootstrap callback failed"));
                     }
                 });
         } catch (const std::bad_alloc&) {
             handle_invocation_failure(
                 SessionBootstrapState::AcceptingCarrier,
-                Status(StatusCode::ResourceExhausted,
-                       "front-door provider allocation failed"));
+                bootstrap_status(StatusCode::ResourceExhausted,
+                                 "front-door provider allocation failed"));
         } catch (...) {
             handle_invocation_failure(
                 SessionBootstrapState::AcceptingCarrier,
-                Status(StatusCode::Internal,
-                       "front door threw while accepting"));
+                bootstrap_status(StatusCode::Internal,
+                                 "front door threw while accepting"));
         }
     }
 
@@ -598,15 +611,15 @@ private:
             unexpected_callback();
             return;
         }
-        if (const auto stopped = requested_stop()) {
+        if (stop_requested()) {
             if (result.ok()) {
                 close_accepted_carrier(std::move(result).take_value());
             }
-            finish_failure(*stopped);
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
         if (!result.ok()) {
-            finish_failure(result.status());
+            finish_failure(copy_status(result.status()));
             return;
         }
         AcceptedCarrier accepted = std::move(result).take_value();
@@ -614,14 +627,14 @@ private:
             *graph_, accepted.descriptor());
         if (!provenance.ok()) {
             close_accepted_carrier(std::move(accepted));
-            finish_failure(provenance);
+            finish_failure(copy_status(provenance));
             return;
         }
         if (accepted.carrier().executor_affinity() != affinity_ ||
             accepted.carrier().secure_channel().executor_affinity() !=
                 affinity_) {
             close_accepted_carrier(std::move(accepted));
-            finish_failure(Status(
+            finish_failure(bootstrap_status(
                 StatusCode::ProviderMismatch,
                 "front door changed bootstrap executor affinity"));
             return;
@@ -630,37 +643,52 @@ private:
     }
 
     void create_session(std::unique_ptr<Carrier> carrier) noexcept {
+        CarrierReady carrier_ready;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             state_ = SessionBootstrapState::CreatingSession;
+            carrier_ready = std::move(carrier_ready_);
+        }
+        Status readiness;
+        try {
+            if (carrier_ready) readiness = carrier_ready();
+        } catch (const std::bad_alloc&) {
+            readiness = bootstrap_status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            readiness = bootstrap_status(StatusCode::Internal);
+        }
+        if (!readiness.ok() || stop_requested()) {
+            close_transport(std::move(carrier));
+            finish_failure(readiness.ok() ? bootstrap_status(StatusCode::Cancelled)
+                                           : std::move(readiness));
+            return;
         }
 
-        Result<std::shared_ptr<SessionEngine>> created(Status(
-            StatusCode::Internal,
-            "session engine construction did not run"));
+        Result<std::shared_ptr<SessionEngine>> created(
+            bootstrap_status(StatusCode::Internal));
         try {
             created = SessionEngine::create(
                 graph_, std::move(carrier), limits_);
         } catch (const std::bad_alloc&) {
-            created = Result<std::shared_ptr<SessionEngine>>(Status(
+            created = Result<std::shared_ptr<SessionEngine>>(bootstrap_status(
                 StatusCode::ResourceExhausted,
                 "session engine bootstrap allocation failed"));
         } catch (...) {
-            created = Result<std::shared_ptr<SessionEngine>>(Status(
+            created = Result<std::shared_ptr<SessionEngine>>(bootstrap_status(
                 StatusCode::Internal,
                 "session engine bootstrap construction failed"));
         }
 
-        if (const auto stopped = requested_stop()) {
+        if (stop_requested()) {
             if (created.ok()) {
                 const auto engine = std::move(created).take_value();
-                engine->stop(Status(stopped->code(), stopped->message()));
+                engine->stop(bootstrap_status(StatusCode::Cancelled));
             }
-            finish_failure(*stopped);
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
         if (!created.ok()) {
-            finish_failure(created.status());
+            finish_failure(copy_status(created.status()));
             return;
         }
         std::shared_ptr<SessionEngine> engine =
@@ -670,8 +698,8 @@ private:
             starting_engine_ = engine;
             state_ = SessionBootstrapState::StartingSession;
         }
-        if (const auto stopped = requested_stop()) {
-            finish_failure(*stopped);
+        if (stop_requested()) {
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
 
@@ -681,25 +709,28 @@ private:
                 try {
                     self->impl_->on_session_started(std::move(status));
                 } catch (const std::bad_alloc&) {
-                    self->impl_->request_failure(Status(
-                        StatusCode::ResourceExhausted,
-                        "session-start bootstrap callback allocation failed"));
+                    self->impl_->handle_invocation_failure(
+                        SessionBootstrapState::StartingSession,
+                        bootstrap_status(
+                            StatusCode::ResourceExhausted,
+                            "session-start bootstrap callback allocation failed"));
                 } catch (...) {
-                    self->impl_->request_failure(Status(
-                        StatusCode::Internal,
-                        "session-start bootstrap callback failed"));
+                    self->impl_->handle_invocation_failure(
+                        SessionBootstrapState::StartingSession,
+                        bootstrap_status(StatusCode::Internal,
+                                         "session-start bootstrap callback failed"));
                 }
             });
         } catch (const std::bad_alloc&) {
             handle_invocation_failure(
                 SessionBootstrapState::StartingSession,
-                Status(StatusCode::ResourceExhausted,
-                       "session start allocation failed"));
+                bootstrap_status(StatusCode::ResourceExhausted,
+                                 "session start allocation failed"));
         } catch (...) {
             handle_invocation_failure(
                 SessionBootstrapState::StartingSession,
-                Status(StatusCode::Internal,
-                       "session start threw"));
+                bootstrap_status(StatusCode::Internal,
+                                 "session start threw"));
         }
     }
 
@@ -708,8 +739,8 @@ private:
             unexpected_callback();
             return;
         }
-        if (const auto stopped = requested_stop()) {
-            finish_failure(*stopped);
+        if (stop_requested()) {
+            finish_failure(bootstrap_status(StatusCode::Cancelled));
             return;
         }
         if (!status.ok()) {
@@ -720,6 +751,7 @@ private:
         Completion completion;
         CancellationRegistration external_registration;
         std::shared_ptr<SessionEngine> engine;
+        std::shared_ptr<FrontDoor> front_door;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (stop_reason_.has_value()) {
@@ -731,14 +763,14 @@ private:
                 external_registration =
                     std::move(external_cancellation_);
                 engine = std::move(starting_engine_);
-                front_door_.reset();
+                front_door = std::move(front_door_);
             }
         }
         if (!engine) {
-            if (const auto stopped = requested_stop()) {
-                finish_failure(*stopped);
+            if (stop_requested()) {
+                finish_failure(bootstrap_status(StatusCode::Cancelled));
             } else {
-                finish_failure(Status(
+                finish_failure(bootstrap_status(
                     StatusCode::ProviderMismatch,
                     "session start succeeded without an active engine"));
             }
@@ -746,6 +778,7 @@ private:
         }
 
         external_registration.unregister();
+        front_door.reset();
         invoke_noexcept(completion,
                         Result<std::shared_ptr<SessionEngine>>(
                             std::move(engine)));
@@ -761,6 +794,7 @@ private:
     ExecutorAffinity affinity_;
     std::optional<Status> stop_reason_;
     Completion completion_;
+    CarrierReady carrier_ready_;
     CancellationRegistration external_cancellation_;
     CancellationSource cancellation_;
     std::shared_ptr<SessionEngine> starting_engine_;
@@ -769,9 +803,9 @@ private:
 Result<std::shared_ptr<SessionBootstrap>> SessionBootstrap::create(
     std::shared_ptr<const EngineGraph> graph,
     SessionLimits limits) {
-    const Status validation = validate_graph(graph, EndpointRole::Client);
+    Status validation = validate_graph(graph, EndpointRole::Client);
     if (!validation.ok()) {
-        return Result<std::shared_ptr<SessionBootstrap>>(validation);
+        return Result<std::shared_ptr<SessionBootstrap>>(std::move(validation));
     }
     try {
         auto impl = std::make_unique<Impl>(
@@ -782,11 +816,11 @@ Result<std::shared_ptr<SessionBootstrap>> SessionBootstrap::create(
         return Result<std::shared_ptr<SessionBootstrap>>(
             std::move(bootstrap));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<SessionBootstrap>>(Status(
+        return Result<std::shared_ptr<SessionBootstrap>>(bootstrap_status(
             StatusCode::ResourceExhausted,
             "client session bootstrap allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<SessionBootstrap>>(Status(
+        return Result<std::shared_ptr<SessionBootstrap>>(bootstrap_status(
             StatusCode::Internal,
             "client session bootstrap construction failed"));
     }
@@ -796,17 +830,17 @@ Result<std::shared_ptr<SessionBootstrap>> SessionBootstrap::create(
     std::shared_ptr<const EngineGraph> graph,
     std::shared_ptr<FrontDoor> front_door,
     SessionLimits limits) {
-    const Status validation = validate_graph(graph, EndpointRole::Server);
+    Status validation = validate_graph(graph, EndpointRole::Server);
     if (!validation.ok()) {
-        return Result<std::shared_ptr<SessionBootstrap>>(validation);
+        return Result<std::shared_ptr<SessionBootstrap>>(std::move(validation));
     }
     if (!front_door) {
-        return Result<std::shared_ptr<SessionBootstrap>>(Status(
+        return Result<std::shared_ptr<SessionBootstrap>>(bootstrap_status(
             StatusCode::InvalidArgument,
             "server session bootstrap requires a front door"));
     }
     if (!front_door->executor_affinity().valid()) {
-        return Result<std::shared_ptr<SessionBootstrap>>(Status(
+        return Result<std::shared_ptr<SessionBootstrap>>(bootstrap_status(
             StatusCode::ProviderMismatch,
             "server front door has no executor affinity"));
     }
@@ -819,11 +853,11 @@ Result<std::shared_ptr<SessionBootstrap>> SessionBootstrap::create(
         return Result<std::shared_ptr<SessionBootstrap>>(
             std::move(bootstrap));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<SessionBootstrap>>(Status(
+        return Result<std::shared_ptr<SessionBootstrap>>(bootstrap_status(
             StatusCode::ResourceExhausted,
             "server session bootstrap allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<SessionBootstrap>>(Status(
+        return Result<std::shared_ptr<SessionBootstrap>>(bootstrap_status(
             StatusCode::Internal,
             "server session bootstrap construction failed"));
     }
@@ -843,9 +877,10 @@ ExecutorAffinity SessionBootstrap::executor_affinity() const noexcept {
 }
 
 Status SessionBootstrap::async_start(CancellationToken cancellation,
-                                     Completion completion) {
+                                     Completion completion,
+                                     CarrierReady carrier_ready) {
     return impl_->async_start(std::move(cancellation),
-                              std::move(completion));
+                              std::move(completion), std::move(carrier_ready));
 }
 
 void SessionBootstrap::cancel() noexcept {

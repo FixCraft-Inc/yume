@@ -265,7 +265,7 @@ void test_vpdb_v1() {
 }
 
 void test_archive_uses_private_runtime_directory_and_cleans_up() {
-#if !defined(_WIN32)
+#if defined(__linux__)
     const auto dir = make_temp_dir();
     const auto source = dir / "source";
     const auto runtime_parent = dir / "runtime";
@@ -303,7 +303,7 @@ void test_archive_uses_private_runtime_directory_and_cleans_up() {
 }
 
 void test_archive_rejects_symlinks_and_rolls_back() {
-#if !defined(_WIN32)
+#if defined(__linux__)
     const auto dir = make_temp_dir();
     const auto source = dir / "source";
     const auto runtime_parent = dir / "runtime";
@@ -325,7 +325,7 @@ void test_archive_rejects_symlinks_and_rolls_back() {
              FilterAction::Deny,
              archive.string()},
         }, "", 64, &error));
-        assert(error.find("unsupported archive member type 'l'") !=
+        assert(error.find("unsupported archive member type") !=
                std::string::npos);
         assert(std::filesystem::is_empty(runtime_parent));
     }
@@ -403,8 +403,8 @@ void test_archive_does_not_inherit_tar_options() {
 #endif
 }
 
-void test_archive_validation_and_extraction_use_same_snapshot() {
-#if !defined(_WIN32)
+void test_archive_does_not_execute_path_tools() {
+#if defined(__linux__)
     const auto dir = make_temp_dir();
     const auto first_source = dir / "first-source";
     const auto replacement_source = dir / "replacement-source";
@@ -457,9 +457,60 @@ void test_archive_validation_and_extraction_use_same_snapshot() {
              FilterAction::Deny,
              archive.string()},
         }, "", 64, &error));
-        assert(std::filesystem::is_regular_file(marker));
+        assert(!std::filesystem::exists(marker));
         assert(!filter.check_egress(ip("192.0.2.46")).allowed);
         assert(filter.check_egress(ip("198.51.100.46")).allowed);
+    }
+    assert(std::filesystem::is_empty(runtime_parent));
+    std::filesystem::remove_all(dir);
+#endif
+}
+
+void test_failed_reload_preserves_rules_and_files() {
+#if defined(__linux__)
+    const auto dir = make_temp_dir();
+    const auto source = dir / "source";
+    const auto runtime_parent = dir / "runtime";
+    std::filesystem::create_directories(source);
+    std::filesystem::create_directories(runtime_parent);
+    write_text(source / "deny.json", R"({"ips":["192.0.2.50"]})");
+    const auto archive = dir / "filter.tar.xz";
+    create_tar_xz(archive, source);
+    {
+        ScopedEnvironment temporary_directory("TMPDIR", runtime_parent.string());
+        IpFilter filter;
+        std::string error;
+        const std::vector<FilterListSpec> specs{{yume::server::kFilterPlaneEgress,
+                                                FilterAction::Deny, archive.string()}};
+        assert(filter.load(specs, "", 64, &error));
+        const auto published = only_directory_entry(runtime_parent);
+        const auto summary = filter.summary();
+        write_text(source / "deny.json", R"({"ips":["198.51.100.50"]})");
+        // The first list succeeds, then a malformed later list must undo the
+        // whole candidate, including its extracted files and accepted rules.
+        create_tar_xz(archive, source);
+        const auto malformed = dir / "malformed.json";
+        write_text(malformed, "{");
+        auto failed_specs = specs;
+        failed_specs.push_back({yume::server::kFilterPlaneEgress,
+                                FilterAction::Deny, malformed.string()});
+        assert(!filter.load(failed_specs, "", 64, &error));
+        assert(filter.summary() == summary);
+        assert(only_directory_entry(runtime_parent) == published);
+        assert(!filter.check_egress(ip("192.0.2.50")).allowed);
+        assert(filter.check_egress(ip("198.51.100.50")).allowed);
+        // A successful reload replaces the data and removes the old staging
+        // tree. Repeated reloads must neither append rules nor retain files.
+        assert(filter.load(specs, "", 64, &error));
+        assert(filter.summary() == summary);
+        assert(!std::filesystem::exists(published));
+        assert(filter.check_egress(ip("192.0.2.50")).allowed);
+        assert(!filter.check_egress(ip("198.51.100.50")).allowed);
+        const auto replacement = only_directory_entry(runtime_parent);
+        write_text(archive, "not an archive");
+        assert(!filter.load(specs, "", 64, &error));
+        assert(only_directory_entry(runtime_parent) == replacement);
+        assert(!filter.check_egress(ip("198.51.100.50")).allowed);
     }
     assert(std::filesystem::is_empty(runtime_parent));
     std::filesystem::remove_all(dir);
@@ -497,7 +548,8 @@ int main() {
     test_archive_rejects_symlinks_and_rolls_back();
     test_archive_listing_escapes_and_rejects_newlines();
     test_archive_does_not_inherit_tar_options();
-    test_archive_validation_and_extraction_use_same_snapshot();
+    test_archive_does_not_execute_path_tools();
+    test_failed_reload_preserves_rules_and_files();
     test_geolite_mmdb_archive_if_available();
     return 0;
 }

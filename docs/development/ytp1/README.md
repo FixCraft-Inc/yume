@@ -5,7 +5,8 @@ YUME 0.3 is being rebuilt around an experimental C ABI and YTP/1. This page
 is the one development reference for that replacement: what the schema-1
 tools do today, the contracts the runtime must meet, and the gates that
 separate a passing foundation test from a usable tunnel. It is a design
-input, not an installed contract and not evidence that a runtime exists.
+input, not an installed contract and not evidence that a standalone runtime
+exists.
 [IMPLEMENTATION_STATUS.md](../../IMPLEMENTATION_STATUS.md) is the
 authoritative boundary; the runnable transport-v2 product keeps its own
 [quick start](../../QUICKSTART.md), [operations](../../OPERATIONS.md),
@@ -21,13 +22,90 @@ Implemented: the schema-1 provisioning and validation tools, the strict
 numeric config parser, the dependency-pure engine and YTP/1 codecs, and the
 opt-in TLS 1.3, HTTP/2 duplex carrier, hybrid session-security, TCP
 byte-channel, and direct-route provider candidates, each with focused tests.
+The client carrier generates exporter-bound admission proofs. The native
+FrontDoor combines accepted TCP ownership, actual TLS SNI/exporter verification,
+shared replay protection and genuine configured static cover, then transfers
+the live connection into the H2 carrier once per TLS lifetime. Ordinary cover
+accepts TLS 1.2/1.3 and HTTP/1.1/H2; YTP promotion requires TLS 1.3 and H2.
 
-Not implemented: their composition into a YTP/1 endpoint, the genuine
-HTTP/2 front door and replay-protected admission, the replacement `yume` and
-`yumed` runtimes, the authenticated setup-to-SOCKS path, packet handles and
-adapters, and every qualification gate below. A schema-1 kit is not valid
+The source-level `runtime::NativeEndpoint` now composes schema-1 credentials,
+the native provider graph, per-identity named-service authorization and bounded
+bootstrap/session lifetimes on a caller-owned execution context. Configured
+direct TCP/UDP adapters require explicit request and resolved-address policy.
+The native integration test uses generated setup credentials and real loopback
+TLS/H2.
+When the shared ABI is built with the same providers, an experimental schema-1
+backend drives that endpoint behind the C ABI and carries named byte streams.
+
+Not implemented: the replacement `yume` and
+`yumed` runtimes, the authenticated setup-to-SOCKS path, public ABI packet
+handles, TUN adapters, and production qualification of the complete endpoint.
+A schema-1 kit is not valid
 input for the runnable transport-v2 binaries, and nothing converts between
-the two dialects.
+the two dialects. A generated kit declares adapters, which the ABI backend
+refuses instead of dropping. An embedding application removes them and lists
+the named services it uses.
+
+The opt-in native TLS client uses the same browser-profile emitter as the
+runnable transport. Prepare the pinned patched OpenSSL through `ezbuild.sh`
+or the [documented direct-CMake setup](../../CONTRIBUTING.md#build).
+Stock OpenSSL remains sufficient for the isolated session-security provider;
+it is not sufficient for the native TLS provider. The profile's broader TLS
+and ALPN offer never permits a YTP channel below TLS 1.3 or without H2.
+
+### Build the native ingress candidate
+
+The source-level listener target `yume::ytp1_front_door` is enabled with all
+four options below; CMake rejects the FrontDoor option without its providers:
+
+```bash
+cmake -S . -B build-ingress -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DYUME_BUILD_TRANSPORT_V2=OFF -DYUME_BUILD_TESTING=ON \
+  -DYUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER=ON \
+  -DYUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER=ON \
+  -DYUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER=ON \
+  -DYUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR=ON \
+  -DYUME_WARNINGS_AS_ERRORS=ON
+cmake --build build-ingress --target yume_ytp1_front_door -j2
+```
+
+Use the pinned patched OpenSSL installation described above and libnghttp2.
+This builds a provider library, not a standalone daemon or public C ABI backend.
+The caller loads credentials and an immutable `Ytp1CoverSite` from an operator
+site root with an index and explicit not-found file. The site uses confined
+`FileRoot` reads at load time; requests perform no file access or resolution.
+There is no built-in fallback site or reverse-proxy implementation here.
+
+Add `-DYUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER=ON` to compose
+`yume_native_endpoint`. With tests enabled, `yume_native_credentials_test` and
+`yume_native_endpoint_test` exercise protected loading and native session traffic
+on POSIX. The endpoint test provisions temporary named-service kits; enabling
+the route provider also exercises configured direct adapters. These tests do not
+establish that the generated SOCKS/packet kit can run in the CLI.
+Set `YUME_NATIVE_TEST_OPENSSL` to the pinned
+installation's `bin/openssl` when configuring tests. Native startup requires a
+frame budget of at least 64 KiB for the AUTH envelope and applies the engine's
+queue bounds before opening listeners. Enabling
+`YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER` also tests authenticated TCP
+and connected-UDP destinations through the native endpoint, including packet
+boundaries and refusal before socket creation. The caller supplies
+`NativeEndpointOptions::route_provider` and either explicit policy-bearing
+handlers or `route_authorization` for configured `direct_tcp`/`direct_udp`
+declarations. The engine supplies that selected provider to handlers. Credential
+service authorization precedes request policy, and the Asio provider checks
+every selected numeric address before connecting. This source-level composition
+supplies no standalone egress rules or SOCKS/TUN implementation; the ABI backend
+still refuses adapter declarations.
+
+The caller retains a single-runner `AsioExecutionContext` through the promoted
+carrier lifetimes. The front door supplies H2 dispatch from its context,
+including reserved control tasks for close, cancellation and credit return. It initiates on that context,
+contains runner exceptions and resumes execution, closes owners, calls
+`finish()` and drains completions. Promotion settles cover output and its
+timer before transferring the same TLS/H2 state; published carriers preserve
+ordinary cover handling after listener destruction. Ingress resolves no names.
+Any wider runtime adding system DNS must account for resolver shutdown that
+can outlive the application deadline.
 
 ## Build the ABI candidate and the schema-1 tools
 
@@ -49,9 +127,10 @@ The build tree contains an unversioned `src/libyume.so` and its contract
 tests. The install contains `yume-setup-ytp1` and `yume-doctor-ytp1` only:
 no ABI library, header, CMake package, or pkg-config metadata is installed.
 Transport-v2 configurations start and move authenticated named-stream bytes
-through the build-tree ABI; a schema-1 endpoint fails closed with
-`YUME_STATUS_UNSUPPORTED`, and packet and destination-routed paths are
-unsupported on both.
+through the build-tree ABI. A schema-1 endpoint does the same when the build
+also enables every `YUME_BUILD_EXPERIMENTAL_YTP1_*` option, including the
+FrontDoor, and otherwise fails closed with `YUME_STATUS_UNSUPPORTED`. Packet and
+destination-routed paths are unsupported in both dialects.
 
 ## Provision a kit and validate it
 
@@ -70,12 +149,27 @@ per-identity composite Ed25519 + ML-DSA-87 keys, ML-KEM-1024 server material,
 one 32-byte access PSK per client identity, an `authorized_keys` traffic
 store plus a separate and initially empty `admin_keys` store, separate client
 references for the server identity, TLS trust, and ML-KEM public material, a
-separate admission key with TLS CA and leaf material, strict schema-1 server
-and client configurations, a static default cover site, and service and
-adapter manifests. Private values are never printed. Generate one kit per
-deployment and one bundle per client, move a bundle over an authenticated
-channel, remove offline CA material from the server host, and never commit a
-kit, capture, profile, or diagnostic artifact.
+separate admission key with P-256 TLS CA and leaf material, strict schema-1 server
+and client configurations, a static default cover site with an explicit
+`404.html` page and linked profile CSS/JavaScript assets, and service and
+adapter manifests. Doctor requires both complete HTML pages and the ordinary
+asset files used by the selected browser profile. Private values are never
+printed. Generate one kit per deployment and one bundle per client, move a
+bundle over an authenticated channel, remove offline CA material from the
+server host, and never commit a kit, capture, profile, or diagnostic artifact.
+
+Outer TLS certificates are independent of the composite YTP identity. Setup
+uses ECDSA with SHA-256 because the browser signature profile does not offer
+Ed25519 TLS signatures. Doctor accepts named P-256/P-384/P-521 or RSA leaf
+keys of at least 2048 bits and validates the server chain and key match.
+These offline checks do not prove that a supplied chain negotiates with the
+actual browser profile. A locally issued certificate is development material;
+it does not establish a credible public HTTPS cover identity.
+
+Setup can encode an IP endpoint, but the candidate native TLS/H2 client
+currently requires a DNS server name. Configuring a connection address
+separately from the authenticated DNS name remains an integration gap; an
+IP-address kit is not a working native endpoint.
 
 Run doctor as the identity that will run YUME. It rejects unknown schema
 keys, provider or profile mismatch, unsafe limits, missing cover content,
@@ -123,6 +217,11 @@ is, the capability manifest carries only named services and kinds, while
 `admin_keys` is parsed, validated, and overlap-checked so the store boundary
 exists before the capability does.
 
+The traffic store accepts 1 through 1024 identities, matching the native
+security factory's bound. The independent admin store accepts 0 through 4096
+identities. Both stores reject duplicate names and composite identities;
+an admin identity must not appear in the traffic store.
+
 Each authorized key receives a composite Ed25519 + ML-DSA-87 identity and its
 own 32-byte access PSK; one deployment-wide PSK is forbidden. Both signature
 components and all establishment contributions must verify, with no partial
@@ -142,15 +241,17 @@ the first YTP/1 path and have no schema-1 aliases.
 Packet channels are a first-class YTP/1 service kind, not a byte stream
 carrying a private subprotocol. OPEN names a bounded packet service and may
 carry the strict built-in UDP destination; each write is one opaque packet
-with boundaries preserved end to end; the ABI batches packet views while
+with boundaries preserved end to end; the intended packet ABI batches views while
 keeping individual boundaries and all-or-none write admission; packet size,
 batch count, stream count, queued bytes, pending opens, and outer and
 in-session credit are bounded before allocation; and every packet OPEN is
 independently authorized. Direct UDP is an explicit `RouteProvider`, and a
 future TUN adapter is an ordinary ABI consumer that cannot bypass route
-policy. The codec and ABI surface exist and an opt-in Asio candidate
-implements bounded connected-UDP egress, but packet handle creation, adapters,
-and the authenticated data path are not implemented.
+policy. The codec and ABI declarations exist. NativeEndpoint composes the
+opt-in Asio provider and configured `direct_udp` handlers into an authenticated
+connected-UDP path with explicit policy and preserved packet boundaries.
+Public ABI packet handle creation and I/O, standalone packet/TUN adapters, and
+production qualification remain unfinished.
 
 ## Diagnostics and evidence
 

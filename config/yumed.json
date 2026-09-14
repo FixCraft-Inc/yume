@@ -1,8 +1,8 @@
 {
   "listen_port": 443,
   "transport_profile": "chrome151-node24-v1",
-  "tls_cert": "/etc/ssl/fixcraft.crt",
-  "tls_key": "/etc/ssl/fixcraft.key",
+  "tls_cert": "/etc/yume/server.crt",
+  "tls_key": "/etc/yume/server.key",
   "auth_keys": "/etc/yume/authorized_keys",
   "threads": 8,
   "max_sessions": 256,

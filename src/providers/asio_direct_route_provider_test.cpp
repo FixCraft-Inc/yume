@@ -11,6 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
+#include <cerrno>
+#include <new>
+#include <type_traits>
 #include <exception>
 #include <future>
 #include <iostream>
@@ -25,7 +29,7 @@
 #include <utility>
 #include <vector>
 
-#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -39,6 +43,109 @@
 #include "providers/asio_direct_route_provider.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
+
+#if !defined(_WIN32)
+namespace test_allocation_failure {
+
+// One-shot injection targets a selected actor turn. Sustained injection covers
+// every thread and both allocation routes used by Boost.Asio.
+thread_local std::ptrdiff_t remaining = -1;
+std::atomic<bool> sustained{false};
+
+class Scope final {
+public:
+    explicit Scope(std::ptrdiff_t count) noexcept { remaining = count; }
+    ~Scope() { remaining = -1; }
+};
+
+class SustainedScope final {
+public:
+    explicit SustainedScope(bool enabled = true) noexcept {
+        sustained.store(enabled, std::memory_order_release);
+    }
+    ~SustainedScope() { sustained.store(false, std::memory_order_release); }
+};
+
+bool consume() noexcept {
+    if (sustained.load(std::memory_order_acquire)) return true;
+    if (remaining < 0) {
+        return false;
+    }
+    if (remaining == 0) {
+        remaining = -1;
+        return true;
+    }
+    --remaining;
+    return false;
+}
+
+}  // namespace test_allocation_failure
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
+void* operator new(std::size_t size) {
+    if (test_allocation_failure::consume()) {
+        throw std::bad_alloc();
+    }
+    if (void* allocation = std::malloc(size == 0U ? 1U : size)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* allocation) noexcept { std::free(allocation); }
+void operator delete[](void* allocation) noexcept { ::operator delete(allocation); }
+void operator delete(void* allocation, std::size_t) noexcept {
+    ::operator delete(allocation);
+}
+void operator delete[](void* allocation, std::size_t) noexcept {
+    ::operator delete[](allocation);
+}
+
+// Asio's aligned allocation path can bypass operator new. Interpose it as
+// well, so a passing cleanup test cannot accidentally depend on that escape.
+extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
+    if (test_allocation_failure::consume()) {
+        errno = ENOMEM;
+        return nullptr;
+    }
+    void* allocation = nullptr;
+    const int error = ::posix_memalign(&allocation, alignment, size == 0U ? 1U : size);
+    if (error != 0) errno = error;
+    return allocation;
+}
+
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    if (void* allocation = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) {
+        return allocation;
+    }
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) {
+    return ::operator new(size, alignment);
+}
+void operator delete(void* allocation, std::align_val_t) noexcept {
+    std::free(allocation);
+}
+void operator delete[](void* allocation, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+void operator delete(void* allocation, std::size_t, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+void operator delete[](void* allocation, std::size_t, std::align_val_t alignment) noexcept {
+    ::operator delete(allocation, alignment);
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+#endif
 
 namespace yume::providers {
 namespace {
@@ -291,6 +398,7 @@ public:
                              "expected routed OPEN"));
     }
     void on_route(AuthorizedRouteRequest route,
+                  std::shared_ptr<RouteProvider>,
                   std::shared_ptr<StreamResponder> stream) override {
         request.emplace(std::move(route));
         responder = std::move(stream);
@@ -650,28 +758,42 @@ ytp1::Destination dns_destination(ytp1::TransportProtocol protocol,
 
 class IoRuntime final {
 public:
-    IoRuntime()
-        : guard_(boost::asio::make_work_guard(context_)) {
-        threads_.emplace_back([this]() { context_.run(); });
-        threads_.emplace_back([this]() { context_.run(); });
-    }
+    IoRuntime() : context_(require(AsioExecutionContext::create(ExecutorAffinity(91U)))),
+        thread_([this]() {
+            for (;;) {
+                try { context_->run(); break; }
+                catch (...) { runner_failed_.store(true, std::memory_order_release); }
+            }
+        }) {}
     IoRuntime(const IoRuntime&) = delete;
     IoRuntime& operator=(const IoRuntime&) = delete;
     ~IoRuntime() noexcept {
-        guard_.reset();
-        context_.stop();
-        for (std::thread& thread : threads_) {
-            if (thread.joinable()) {
-                thread.join();
-            }
-        }
+        context_->finish();
+        if (thread_.joinable()) thread_.join();
     }
-    boost::asio::io_context& context() noexcept { return context_; }
+    const std::shared_ptr<AsioExecutionContext>& context() const noexcept { return context_; }
+
+    template <typename Function>
+    auto invoke(Function function) {
+        using Return = std::invoke_result_t<Function>;
+        auto promise = std::make_shared<std::promise<Return>>();
+        auto future = promise->get_future();
+        boost::asio::post(context_->executor(),
+            [promise, function = std::move(function)]() mutable noexcept {
+                try {
+                    if constexpr (std::is_void_v<Return>) {
+                        function(); promise->set_value();
+                    } else promise->set_value(function());
+                } catch (...) { promise->set_exception(std::current_exception()); }
+            });
+        CHECK(future.wait_for(3s) == std::future_status::ready);
+        CHECK(!runner_failed_.load(std::memory_order_acquire));
+        return future.get();
+    }
 private:
-    boost::asio::io_context context_;
-    boost::asio::executor_work_guard<
-        boost::asio::io_context::executor_type> guard_;
-    std::vector<std::thread> threads_;
+    std::shared_ptr<AsioExecutionContext> context_;
+    std::atomic<bool> runner_failed_{false};
+    std::thread thread_;
 };
 
 template <typename T>
@@ -684,16 +806,19 @@ struct AsyncTicket final {
 };
 
 AsyncTicket<Result<RouteConnection>> start_open(
+    IoRuntime& runtime,
     const std::shared_ptr<AsioDirectRouteProvider>& provider,
     const AuthorizedRouteRequest& request,
     CancellationToken cancellation = {}) {
     AsyncTicket<Result<RouteConnection>> ticket;
-    provider->async_open(
-        request, std::move(cancellation),
-        [promise = ticket.promise, calls = ticket.calls](
-            Result<RouteConnection> result) mutable {
-            calls->fetch_add(1U, std::memory_order_relaxed);
-            promise->set_value(std::move(result));
+    boost::asio::post(runtime.context()->executor(),
+        [provider, request, cancellation = std::move(cancellation),
+         promise = ticket.promise, calls = ticket.calls]() mutable {
+            provider->async_open(request, std::move(cancellation),
+                [promise, calls](Result<RouteConnection> result) mutable {
+                    calls->fetch_add(1U, std::memory_order_relaxed);
+                    promise->set_value(std::move(result));
+                });
         });
     return ticket;
 }
@@ -709,10 +834,11 @@ T await(AsyncTicket<T>& ticket, std::chrono::milliseconds timeout = 3s) {
 }
 
 Result<RouteConnection> open_route(
+    IoRuntime& runtime,
     const std::shared_ptr<AsioDirectRouteProvider>& provider,
     const AuthorizedRouteRequest& request,
     CancellationToken cancellation = {}) {
-    auto ticket = start_open(provider, request, std::move(cancellation));
+    auto ticket = start_open(runtime, provider, request, std::move(cancellation));
     return await(ticket);
 }
 
@@ -844,26 +970,39 @@ private:
     std::uint16_t port_{0U};
 };
 
+Status loopback_policy(const AuthorizedRouteRequest&, const RouteDestination& destination) {
+    const auto bytes = destination.address_bytes();
+    const bool loopback = destination.address_kind() == RouteAddressKind::Ipv4
+        ? bytes.size() == 4U && bytes[0] == 127U
+        : destination.address_kind() == RouteAddressKind::Ipv6 && bytes.size() == 16U &&
+          std::all_of(bytes.begin(), bytes.end() - 1, [](auto byte) { return byte == 0U; }) &&
+          bytes.back() == 1U;
+    return loopback ? Status::success() : Status(StatusCode::FailedPrecondition);
+}
+
 std::shared_ptr<AsioDirectRouteProvider> make_provider(
     IoRuntime& runtime,
     AsioDirectRouteLimits limits = {},
     SocketProtector protector = {}) {
     return require(AsioDirectRouteProvider::create(
-        runtime.context().get_executor(), ExecutorAffinity(91U), limits,
+        runtime.context(), loopback_policy, limits,
         std::move(protector)));
 }
 
-AsyncTicket<Result<Buffer>> start_read(ByteChannel& channel,
+AsyncTicket<Result<Buffer>> start_read(IoRuntime& runtime, ByteChannel& channel,
                                        std::size_t max_bytes,
                                        CancellationToken cancellation = {}) {
     AsyncTicket<Result<Buffer>> ticket;
-    channel.async_read(
-        max_bytes, std::move(cancellation),
-        [promise = ticket.promise, calls = ticket.calls](
-            Result<Buffer> result) mutable {
-            calls->fetch_add(1U, std::memory_order_relaxed);
-            promise->set_value(std::move(result));
-        });
+    runtime.invoke([&channel, max_bytes, cancellation = std::move(cancellation),
+                    promise = ticket.promise, calls = ticket.calls]() mutable {
+        channel.async_read(
+            max_bytes, std::move(cancellation),
+            [promise, calls](
+                Result<Buffer> result) mutable {
+                calls->fetch_add(1U, std::memory_order_relaxed);
+                promise->set_value(std::move(result));
+            });
+    });
     return ticket;
 }
 
@@ -872,59 +1011,64 @@ struct TransferResult final {
     std::size_t transferred{0U};
 };
 
-AsyncTicket<TransferResult> start_write(ByteChannel& channel,
+AsyncTicket<TransferResult> start_write(IoRuntime& runtime, ByteChannel& channel,
                                         Buffer buffer,
                                         CancellationToken cancellation = {}) {
     AsyncTicket<TransferResult> ticket;
-    channel.async_write(
-        std::move(buffer), std::move(cancellation),
-        [promise = ticket.promise, calls = ticket.calls](
-            Status status, std::size_t transferred) mutable {
-            calls->fetch_add(1U, std::memory_order_relaxed);
-            promise->set_value(
-                TransferResult{std::move(status), transferred});
-        });
+    runtime.invoke([&channel, buffer = std::move(buffer), cancellation = std::move(cancellation),
+                    promise = ticket.promise, calls = ticket.calls]() mutable {
+        channel.async_write(
+            std::move(buffer), std::move(cancellation),
+            [promise, calls](
+                Status status, std::size_t transferred) mutable {
+                calls->fetch_add(1U, std::memory_order_relaxed);
+                promise->set_value(
+                    TransferResult{std::move(status), transferred});
+            });
+    });
     return ticket;
 }
 
 AsyncTicket<Result<Buffer>> start_receive(
+    IoRuntime& runtime,
     PacketChannel& channel,
     CancellationToken cancellation = {}) {
     AsyncTicket<Result<Buffer>> ticket;
-    channel.async_receive(
-        std::move(cancellation),
-        [promise = ticket.promise, calls = ticket.calls](
-            Result<Buffer> result) mutable {
-            calls->fetch_add(1U, std::memory_order_relaxed);
-            promise->set_value(std::move(result));
-        });
+    runtime.invoke([&channel, cancellation = std::move(cancellation),
+                    promise = ticket.promise, calls = ticket.calls]() mutable {
+        channel.async_receive(
+            std::move(cancellation),
+            [promise, calls](
+                Result<Buffer> result) mutable {
+                calls->fetch_add(1U, std::memory_order_relaxed);
+                promise->set_value(std::move(result));
+            });
+    });
     return ticket;
 }
 
 AsyncTicket<TransferResult> start_send(
+    IoRuntime& runtime,
     PacketChannel& channel,
     Buffer packet,
     CancellationToken cancellation = {}) {
     AsyncTicket<TransferResult> ticket;
-    channel.async_send(
-        std::move(packet), std::move(cancellation),
-        [promise = ticket.promise, calls = ticket.calls](
-            Status status, std::size_t transferred) mutable {
-            calls->fetch_add(1U, std::memory_order_relaxed);
-            promise->set_value(
-                TransferResult{std::move(status), transferred});
-        });
+    runtime.invoke([&channel, packet = std::move(packet), cancellation = std::move(cancellation),
+                    promise = ticket.promise, calls = ticket.calls]() mutable {
+        channel.async_send(
+            std::move(packet), std::move(cancellation),
+            [promise, calls](
+                Status status, std::size_t transferred) mutable {
+                calls->fetch_add(1U, std::memory_order_relaxed);
+                promise->set_value(
+                    TransferResult{std::move(status), transferred});
+            });
+    });
     return ticket;
 }
 
 void run_barrier(IoRuntime& runtime) {
-    auto promise = std::make_shared<std::promise<void>>();
-    std::future<void> future = promise->get_future();
-    boost::asio::post(runtime.context(), [promise]() {
-        promise->set_value();
-    });
-    CHECK(future.wait_for(3s) == std::future_status::ready);
-    future.get();
+    runtime.invoke([]() {});
 }
 
 void test_creation_and_limits() {
@@ -950,7 +1094,7 @@ void test_creation_and_limits() {
 
     auto rejected = [&](AsioDirectRouteLimits limits) {
         const auto result = AsioDirectRouteProvider::create(
-            runtime.context().get_executor(), ExecutorAffinity(1U), limits);
+            runtime.context(), loopback_policy, limits);
         CHECK(!result.ok());
         CHECK(result.status().code() == StatusCode::InvalidArgument);
     };
@@ -980,14 +1124,13 @@ void test_creation_and_limits() {
     invalid.connect_timeout = 601s;
     rejected(invalid);
 
-    auto bad_executor = AsioDirectRouteProvider::create(
-        boost::asio::any_io_executor{}, ExecutorAffinity(1U));
-    CHECK(!bad_executor.ok());
-    CHECK(bad_executor.status().code() == StatusCode::InvalidArgument);
-    auto bad_affinity = AsioDirectRouteProvider::create(
-        runtime.context().get_executor(), ExecutorAffinity{});
-    CHECK(!bad_affinity.ok());
-    CHECK(bad_affinity.status().code() == StatusCode::InvalidArgument);
+    auto missing_policy = AsioDirectRouteProvider::create(runtime.context(), {});
+    CHECK(!missing_policy.ok());
+    CHECK(missing_policy.status().code() == StatusCode::InvalidArgument);
+
+    auto bad_context = AsioDirectRouteProvider::create({}, loopback_policy);
+    CHECK(!bad_context.ok());
+    CHECK(bad_context.status().code() == StatusCode::InvalidArgument);
 }
 
 void test_tcp_round_trip_and_half_close(RequestFactory& requests) {
@@ -1034,7 +1177,7 @@ void test_tcp_round_trip_and_half_close(RequestFactory& requests) {
     provider_cancel_before_open.join();
     auto request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, server.port()));
-    auto opened = open_route(provider, request);
+    auto opened = open_route(runtime, provider, request);
     CHECK(opened.ok());
     RouteConnection connection = std::move(opened).take_value();
     CHECK(connection.kind() == ServiceKind::ByteStream);
@@ -1046,50 +1189,59 @@ void test_tcp_round_trip_and_half_close(RequestFactory& requests) {
     CHECK(protector_calls.load(std::memory_order_relaxed) == 1U);
     CHECK(protected_tcp.load(std::memory_order_relaxed));
 
+    unsigned rejected_calls = 0U;
+    bool affinity_rejected = false;
+    try {
+        channel->async_read(1U, {}, [&](Result<Buffer>) { ++rejected_calls; });
+    } catch (const std::logic_error&) { affinity_rejected = true; }
+    CHECK(affinity_rejected && rejected_calls == 0U);
+    CHECK(channel->shutdown_write().code() == StatusCode::FailedPrecondition);
+
     std::promise<std::thread::id> immediate_callback_thread;
     std::future<std::thread::id> immediate_callback_future =
         immediate_callback_thread.get_future();
-    channel->async_read(
-        0U, {}, [&immediate_callback_thread](Result<Buffer>) {
+    runtime.invoke([&]() {
+        channel->async_read(0U, {}, [&immediate_callback_thread](Result<Buffer>) {
             immediate_callback_thread.set_value(std::this_thread::get_id());
         });
+    });
     CHECK(immediate_callback_future.wait_for(3s) ==
           std::future_status::ready);
     CHECK(immediate_callback_future.get() != std::this_thread::get_id());
 
-    auto invalid_read = start_read(*channel, 0U);
+    auto invalid_read = start_read(runtime, *channel, 0U);
     auto invalid_read_result = await(invalid_read);
     CHECK(!invalid_read_result.ok());
     CHECK(invalid_read_result.status().code() ==
           StatusCode::InvalidArgument);
 
-    auto oversized_write = start_write(
+    auto oversized_write = start_write(runtime,
         *channel, make_buffer("123456789", 9U));
     TransferResult oversized = await(oversized_write);
     CHECK(!oversized.status.ok());
     CHECK(oversized.status.code() == StatusCode::ResourceExhausted);
     CHECK(oversized.transferred == 0U);
 
-    auto write = start_write(*channel, make_buffer("ping", 8U));
+    auto write = start_write(runtime, *channel, make_buffer("ping", 8U));
     TransferResult written = await(write);
     CHECK(written.status.ok());
     CHECK(written.transferred == 4U);
-    auto first_read = start_read(*channel, 4U);
+    auto first_read = start_read(runtime, *channel, 4U);
     auto pong = await(first_read);
     CHECK(pong.ok());
     CHECK(buffer_text(*pong.value_if()) == "pong");
 
-    CHECK(channel->shutdown_write().ok());
-    CHECK(channel->shutdown_write().ok());
-    auto tail_read = start_read(*channel, 4U);
+    CHECK(runtime.invoke([&]() { return channel->shutdown_write(); }).ok());
+    CHECK(runtime.invoke([&]() { return channel->shutdown_write(); }).ok());
+    auto tail_read = start_read(runtime, *channel, 4U);
     auto tail = await(tail_read);
     CHECK(tail.ok());
     CHECK(buffer_text(*tail.value_if()) == "tail");
-    auto eof_read = start_read(*channel, 4U);
+    auto eof_read = start_read(runtime, *channel, 4U);
     auto eof = await(eof_read);
     CHECK(!eof.ok());
     CHECK(eof.status().code() == StatusCode::Closed);
-    auto after_shutdown = start_write(*channel, make_buffer("x", 8U));
+    auto after_shutdown = start_write(runtime, *channel, make_buffer("x", 8U));
     TransferResult rejected = await(after_shutdown);
     CHECK(!rejected.status.ok());
     CHECK(rejected.status.code() == StatusCode::Closed);
@@ -1132,7 +1284,7 @@ void test_udp_round_trip_and_truncation(RequestFactory& requests) {
         });
     auto request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Udp, server.port()));
-    auto opened = open_route(provider, request);
+    auto opened = open_route(runtime, provider, request);
     CHECK(opened.ok());
     RouteConnection connection = std::move(opened).take_value();
     CHECK(connection.kind() == ServiceKind::PacketChannel);
@@ -1144,24 +1296,25 @@ void test_udp_round_trip_and_truncation(RequestFactory& requests) {
     CHECK(protector_calls.load(std::memory_order_relaxed) == 1U);
 
     auto oversized_send = start_send(
+        runtime,
         *channel, make_buffer("12345", 5U));
     TransferResult oversized = await(oversized_send);
     CHECK(!oversized.status.ok());
     CHECK(oversized.status.code() == StatusCode::ResourceExhausted);
     CHECK(oversized.transferred == 0U);
 
-    auto send = start_send(*channel, make_buffer("ping", 4U));
+    auto send = start_send(runtime, *channel, make_buffer("ping", 4U));
     TransferResult sent = await(send);
     CHECK(sent.status.ok());
     CHECK(sent.transferred == 4U);
-    auto receive = start_receive(*channel);
+    auto receive = start_receive(runtime, *channel);
     auto pong = await(receive);
     CHECK(pong.ok());
     CHECK(buffer_text(*pong.value_if()) == "pong");
 
-    auto trigger = start_send(*channel, make_buffer("x", 4U));
+    auto trigger = start_send(runtime, *channel, make_buffer("x", 4U));
     CHECK(await(trigger).status.ok());
-    auto truncated = start_receive(*channel);
+    auto truncated = start_receive(runtime, *channel);
     auto oversized_packet = await(truncated);
     CHECK(!oversized_packet.ok());
     CHECK(oversized_packet.status().code() ==
@@ -1201,7 +1354,7 @@ void test_dns_and_connect_errors(RequestFactory& requests) {
     auto provider = make_provider(runtime, limits);
     auto request = requests.make(dns_destination(
         ytp1::TransportProtocol::Tcp, "localhost", server.port()));
-    auto opened = open_route(provider, request);
+    auto opened = open_route(runtime, provider, request);
     CHECK(opened.ok());
     RouteConnection connection = std::move(opened).take_value();
     CHECK(connection.kind() == ServiceKind::ByteStream);
@@ -1209,7 +1362,7 @@ void test_dns_and_connect_errors(RequestFactory& requests) {
     channel->close();
     server.wait();
 
-    Tcp::acceptor unused(runtime.context());
+    Tcp::acceptor unused(runtime.context()->executor());
     boost::system::error_code error;
     unused.open(Tcp::v4(), error);
     CHECK(!error);
@@ -1220,16 +1373,105 @@ void test_dns_and_connect_errors(RequestFactory& requests) {
     CHECK(!error);
     auto closed_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, closed_port));
-    auto refused = open_route(provider, closed_request);
+    auto refused = open_route(runtime, provider, closed_request);
     CHECK(!refused.ok());
     CHECK(refused.status().code() == StatusCode::NotFound);
 
     auto missing_request = requests.make(dns_destination(
         ytp1::TransportProtocol::Tcp,
         "definitely-missing.invalid", 443U));
-    auto missing = open_route(provider, missing_request);
+    auto missing = open_route(runtime, provider, missing_request);
     CHECK(!missing.ok());
     CHECK(missing.status().code() == StatusCode::NotFound);
+}
+
+void test_resolved_route_policy(RequestFactory& requests, bool tcp) {
+    IoRuntime runtime;
+    const auto protocol = tcp ? ytp1::TransportProtocol::Tcp : ytp1::TransportProtocol::Udp;
+    AsioDirectRouteLimits limits;
+    limits.max_pending_opens = 1U;
+    limits.max_active_connections = 1U;
+    unsigned policy_calls = 0U;
+    unsigned protector_calls = 0U;
+    bool observed_request = false;
+    bool observed_numeric = false;
+    unsigned action = 0U;
+    std::shared_ptr<AsioDirectRouteProvider> provider;
+    auto selected = ipv4_destination(protocol, 443U);
+    auto request = requests.make(selected);
+    provider = require(AsioDirectRouteProvider::create(runtime.context(),
+        [&](const AuthorizedRouteRequest& original, const RouteDestination& resolved) -> Status {
+            ++policy_calls;
+            observed_request = original.stream_id() == request.stream_id() &&
+                original.service_name() == request.service_name() &&
+                original.peer_evidence().identity() == request.peer_evidence().identity() &&
+                original.destination().address_kind() == request.destination().address_kind();
+            observed_numeric = resolved.port() == 443U &&
+                resolved.protocol() == (tcp ? NetworkProtocol::Tcp : NetworkProtocol::Udp) &&
+                loopback_policy(original, resolved).ok();
+            if (action == 1U) throw std::runtime_error("policy exception");
+            if (action == 2U) throw std::bad_alloc();
+            if (action == 3U) {
+                provider->cancel();
+                return Status::success();
+            }
+            return Status(StatusCode::FailedPrecondition);
+        }, limits, [&](NativeSocket) {
+            ++protector_calls;
+            return Status::success();
+        }));
+    for (unsigned form = 0U; form < 4U; ++form) {
+        selected = ipv4_destination(protocol, 443U);
+        if (form == 1U) selected = dns_destination(protocol, "localhost", 443U);
+        if (form >= 2U) {
+            selected.address_kind = ytp1::AddressKind::Ipv6;
+            selected.address.fill(0U);
+            selected.address_length = 16U;
+            selected.address[15] = 1U;
+            if (form == 3U) {
+                // Mapped IPv6 must undergo the same IPv4 loopback policy.
+                selected.address[10] = selected.address[11] = 0xffU;
+                selected.address[12] = 127U;
+            }
+        }
+        for (action = 0U; action < 4U; ++action) {
+            request = requests.make(selected);
+            policy_calls = 0U;
+            auto result = open_route(runtime, provider, request);
+            CHECK(!result.ok());
+            const auto expected = action == 0U ? StatusCode::FailedPrecondition :
+                action == 1U ? StatusCode::Internal :
+                action == 2U ? StatusCode::ResourceExhausted : StatusCode::Cancelled;
+            CHECK(result.status().code() == expected);
+            CHECK(policy_calls == 1U);
+            CHECK(observed_request && observed_numeric);
+            CHECK(protector_calls == 0U);
+        }
+    }
+}
+
+void test_dns_policy_before_any_connect(RequestFactory& requests, bool tcp) {
+    IoRuntime runtime;
+    unsigned policy_calls = 0U;
+    unsigned protector_calls = 0U;
+    // Require an allowed candidate followed by a refused one in the actual
+    // async result set. A host resolving localhost to only one address fails
+    // this regression instead of silently missing the mixed-answer branch.
+    auto provider = require(AsioDirectRouteProvider::create(runtime.context(),
+        [&](const AuthorizedRouteRequest&, const RouteDestination&) {
+            ++policy_calls;
+            return policy_calls == 1U ? Status::success() : Status(StatusCode::FailedPrecondition);
+        }, {}, [&](NativeSocket) {
+            ++protector_calls;
+            return Status(StatusCode::FailedPrecondition);
+        }));
+    auto request = requests.make(dns_destination(tcp ? ytp1::TransportProtocol::Tcp
+        : ytp1::TransportProtocol::Udp, "localhost", 443U));
+    auto result = open_route(runtime, provider, request);
+    CHECK(!result.ok());
+    CHECK(result.status().code() == StatusCode::FailedPrecondition);
+    CHECK(policy_calls == 2U);
+    CHECK(protector_calls == 0U);
 }
 
 void test_active_capacity_and_release(RequestFactory& requests) {
@@ -1249,14 +1491,14 @@ void test_active_capacity_and_release(RequestFactory& requests) {
     auto provider = make_provider(runtime, limits);
     auto first_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, first_server.port()));
-    auto first_open = open_route(provider, first_request);
+    auto first_open = open_route(runtime, provider, first_request);
     CHECK(first_open.ok());
     RouteConnection first_connection = std::move(first_open).take_value();
     auto first_channel = first_connection.take_byte_channel();
 
     auto second_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, first_server.port()));
-    auto second_open = open_route(provider, second_request);
+    auto second_open = open_route(runtime, provider, second_request);
     CHECK(!second_open.ok());
     CHECK(second_open.status().code() == StatusCode::ResourceExhausted);
 
@@ -1267,7 +1509,7 @@ void test_active_capacity_and_release(RequestFactory& requests) {
     TcpServer second_server(drain);
     auto third_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, second_server.port()));
-    auto third_open = open_route(provider, third_request);
+    auto third_open = open_route(runtime, provider, third_request);
     CHECK(third_open.ok());
     RouteConnection third_connection = std::move(third_open).take_value();
     auto third_channel = third_connection.take_byte_channel();
@@ -1316,32 +1558,32 @@ void test_pending_capacity(RequestFactory& requests) {
     TcpServer server([](Tcp::socket& socket) {
         std::array<char, 8> bytes{};
         boost::system::error_code error;
-        while (socket.read_some(boost::asio::buffer(bytes), error) > 0U) {
-        }
+        while (socket.read_some(boost::asio::buffer(bytes), error) > 0U) {}
     });
     IoRuntime runtime;
     AsioDirectRouteLimits limits;
     limits.max_pending_opens = 1U;
     limits.max_active_connections = 2U;
-    auto blocker = std::make_shared<BlockingProtector>();
-    auto provider = make_provider(
-        runtime, limits,
-        [blocker](NativeSocket socket) { return (*blocker)(socket); });
+    auto provider = make_provider(runtime, limits);
     auto first_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, server.port()));
     auto second_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, server.port()));
-    auto first = start_open(provider, first_request);
-    blocker->wait_until_entered();
-    auto second = start_open(provider, second_request);
-    blocker->release();
-
+    AsyncTicket<Result<RouteConnection>> first;
+    AsyncTicket<Result<RouteConnection>> second;
+    runtime.invoke([&]() {
+        provider->async_open(first_request, {}, [&](Result<RouteConnection> result) {
+            first.calls->fetch_add(1U); first.promise->set_value(std::move(result));
+        });
+        provider->async_open(second_request, {}, [&](Result<RouteConnection> result) {
+            second.calls->fetch_add(1U); second.promise->set_value(std::move(result));
+        });
+    });
     auto first_result = await(first);
     auto second_result = await(second);
     CHECK(first_result.ok());
     CHECK(!second_result.ok());
     CHECK(second_result.status().code() == StatusCode::ResourceExhausted);
-    CHECK(blocker->calls() == 1U);
     RouteConnection connection = std::move(first_result).take_value();
     connection.byte_channel_if()->close();
     server.wait();
@@ -1355,6 +1597,7 @@ void test_open_and_channel_cancellation(RequestFactory& requests) {
     auto cancelled_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, 9U));
     auto cancelled = open_route(
+        runtime,
         provider, cancelled_request, already_cancelled.token());
     CHECK(!cancelled.ok());
     CHECK(cancelled.status().code() == StatusCode::Cancelled);
@@ -1383,7 +1626,7 @@ void test_open_and_channel_cancellation(RequestFactory& requests) {
     });
     auto active_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, server.port()));
-    auto active = open_route(provider, active_request);
+    auto active = open_route(runtime, provider, active_request);
     CHECK(active.ok());
     RouteConnection connection = std::move(active).take_value();
     auto channel = connection.take_byte_channel();
@@ -1394,7 +1637,7 @@ void test_open_and_channel_cancellation(RequestFactory& requests) {
     }
 
     CancellationSource read_cancel;
-    auto pending_read = start_read(*channel, 2U, read_cancel.token());
+    auto pending_read = start_read(runtime, *channel, 2U, read_cancel.token());
     CHECK(read_cancel.cancel());
     auto read_result = await(pending_read);
     CHECK(!read_result.ok());
@@ -1405,12 +1648,12 @@ void test_open_and_channel_cancellation(RequestFactory& requests) {
         gate->send = true;
         gate->condition.notify_all();
     }
-    auto next_read = start_read(*channel, 2U);
+    auto next_read = start_read(runtime, *channel, 2U);
     auto recovered = await(next_read);
     CHECK(recovered.ok());
     CHECK(buffer_text(*recovered.value_if()) == "ok");
 
-    auto provider_cancelled_read = start_read(*channel, 2U);
+    auto provider_cancelled_read = start_read(runtime, *channel, 2U);
     provider->cancel();
     auto provider_cancelled = await(provider_cancelled_read);
     CHECK(!provider_cancelled.ok());
@@ -1420,27 +1663,24 @@ void test_open_and_channel_cancellation(RequestFactory& requests) {
 }
 
 void test_provider_cancel_pending_open(RequestFactory& requests) {
-    TcpServer server([](Tcp::socket& socket) {
-        std::array<char, 8> bytes{};
-        boost::system::error_code error;
-        while (socket.read_some(boost::asio::buffer(bytes), error) > 0U) {
-        }
-    });
+    // Cancellation is allowed to prevent connect from reaching accept. A
+    // passive backlog supplies a real endpoint without requiring that side effect.
+    boost::asio::io_context peer_context;
+    Tcp::acceptor peer(peer_context, {boost::asio::ip::address_v4::loopback(), 0U});
     IoRuntime runtime;
     auto blocker = std::make_shared<BlockingProtector>();
     auto provider = make_provider(
         runtime, {},
         [blocker](NativeSocket socket) { return (*blocker)(socket); });
     auto request = requests.make(ipv4_destination(
-        ytp1::TransportProtocol::Tcp, server.port()));
-    auto pending = start_open(provider, request);
+        ytp1::TransportProtocol::Tcp, peer.local_endpoint().port()));
+    auto pending = start_open(runtime, provider, request);
     blocker->wait_until_entered();
     provider->cancel();
     blocker->release();
     auto result = await(pending);
     CHECK(!result.ok());
     CHECK(result.status().code() == StatusCode::Cancelled);
-    server.wait();
 }
 
 void test_socket_protector_failures(RequestFactory& requests) {
@@ -1456,7 +1696,7 @@ void test_socket_protector_failures(RequestFactory& requests) {
         });
     auto denied_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, 9U));
-    auto denied = open_route(denied_provider, denied_request);
+    auto denied = open_route(runtime, denied_provider, denied_request);
     CHECK(!denied.ok());
     CHECK(denied.status().code() == StatusCode::FailedPrecondition);
     CHECK(calls.load(std::memory_order_relaxed) == 1U);
@@ -1467,10 +1707,209 @@ void test_socket_protector_failures(RequestFactory& requests) {
         });
     auto throwing_request = requests.make(ipv4_destination(
         ytp1::TransportProtocol::Tcp, 9U));
-    auto failed = open_route(throwing_provider, throwing_request);
+    auto failed = open_route(runtime, throwing_provider, throwing_request);
     CHECK(!failed.ok());
     CHECK(failed.status().code() == StatusCode::Internal);
 }
+
+#if !defined(_WIN32)
+struct CompletionRecord final {
+    unsigned calls{0U};
+    StatusCode code{StatusCode::Internal};
+    bool on_context{false};
+    void record(const AsioExecutionContext& context, const Status& status) noexcept {
+        ++calls;
+        code = status.code();
+        on_context = context.running_in_this_thread();
+    }
+};
+
+enum class CleanupAction { Cancel, Close, DestroyProvider, CloseInCallback };
+
+void test_cleanup_under_sustained_allocation_failure(RequestFactory& requests,
+                                                     bool tcp,
+                                                     CleanupAction action) {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(100U)));
+    std::weak_ptr<AsioExecutionContext> weak_context = context;
+    boost::asio::io_context peer_context;
+    Tcp::acceptor tcp_peer(peer_context, {boost::asio::ip::address_v4::loopback(), 0U});
+    Udp::socket udp_peer(peer_context, {boost::asio::ip::address_v4::loopback(), 0U});
+    auto request = requests.make(ipv4_destination(tcp ? ytp1::TransportProtocol::Tcp
+                                                     : ytp1::TransportProtocol::Udp,
+        tcp ? tcp_peer.local_endpoint().port() : udp_peer.local_endpoint().port()));
+    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy));
+    std::optional<RouteConnection> connection;
+    CompletionRecord opened, read;
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_open(request, {}, [&](Result<RouteConnection> result) noexcept {
+            opened.record(*context, result.status());
+            if (result.ok()) connection.emplace(std::move(result).take_value());
+        });
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (opened.calls == 0U && std::chrono::steady_clock::now() < deadline) context->poll();
+    CHECK(opened.calls == 1U && opened.code == StatusCode::Ok && opened.on_context);
+    boost::asio::post(context->executor(), [&]() {
+        auto completion = [&](Result<Buffer> result) noexcept {
+            read.record(*context, result.status());
+            if (action == CleanupAction::CloseInCallback) {
+                connection.reset(); provider.reset();
+            }
+        };
+        if (tcp) connection->byte_channel_if()->async_read(1U, {}, completion);
+        else connection->packet_channel_if()->async_receive({}, completion);
+    });
+    context->poll();
+    CHECK(read.calls == 0U);
+    {
+        test_allocation_failure::SustainedScope failure;
+        if (action == CleanupAction::DestroyProvider) provider.reset();
+        else if (action == CleanupAction::Cancel) {
+            provider->cancel(); provider->cancel();
+        } else if (tcp) {
+            connection->byte_channel_if()->close();
+            connection->byte_channel_if()->close();
+        } else {
+            connection->packet_channel_if()->close();
+            connection->packet_channel_if()->close();
+        }
+        context->poll();
+    }
+    CHECK(read.calls == 1U && read.on_context);
+    CHECK(read.code == (action == CleanupAction::Cancel || action == CleanupAction::DestroyProvider
+        ? StatusCode::Cancelled : StatusCode::Closed));
+    connection.reset();
+    provider.reset();
+    context->finish();
+    context->run();
+    CHECK(read.calls == 1U);
+    context.reset();
+    CHECK(weak_context.expired());
+}
+
+void test_pending_dns_under_sustained_allocation_failure(RequestFactory& requests,
+                                                         bool tcp, bool cancel) {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(101U)));
+    std::weak_ptr<AsioExecutionContext> weak_context = context;
+    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy));
+    auto request = requests.make(dns_destination(tcp ? ytp1::TransportProtocol::Tcp
+                                                    : ytp1::TransportProtocol::Udp,
+                                                 "localhost", 9U));
+    CompletionRecord record;
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_open(request, {}, [&](Result<RouteConnection> result) noexcept {
+            record.record(*context, result.status());
+            provider.reset();
+        });
+        test_allocation_failure::sustained.store(true, std::memory_order_release);
+        if (cancel) provider->cancel();
+    });
+    {
+        test_allocation_failure::SustainedScope reset_on_exit(false);
+        context->finish();
+        for (;;) {
+            try { context->run(); break; }
+            catch (const std::bad_alloc&) {}
+        }
+    }
+    CHECK(record.calls == 1U && record.on_context);
+    CHECK(record.code == (cancel ? StatusCode::Cancelled : StatusCode::ResourceExhausted));
+    CHECK(!provider);
+    context.reset();
+    CHECK(weak_context.expired());
+}
+
+void test_cancelled_dns_keeps_pending_reservation(RequestFactory& requests, bool tcp) {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(103U)));
+    AsioDirectRouteLimits limits;
+    limits.max_pending_opens = 1U;
+    limits.max_active_connections = 1U;
+    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy, limits));
+    auto dns_request = requests.make(dns_destination(tcp ? ytp1::TransportProtocol::Tcp
+                                                        : ytp1::TransportProtocol::Udp,
+                                                     "localhost", 9U));
+    auto literal_request = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp, 9U));
+    CompletionRecord cancelled, refused, reused;
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_open(dns_request, {}, [&](Result<RouteConnection> result) noexcept {
+            cancelled.record(*context, result.status());
+            provider->async_open(literal_request, {}, [&](Result<RouteConnection> next) noexcept {
+                refused.record(*context, next.status());
+            });
+        });
+        provider->cancel();
+    });
+    const auto deadline = std::chrono::steady_clock::now() + 3s;
+    while (cancelled.calls == 0U && std::chrono::steady_clock::now() < deadline) context->poll();
+    CHECK(cancelled.calls == 1U && cancelled.code == StatusCode::Cancelled && cancelled.on_context);
+    CHECK(refused.calls == 1U && refused.code == StatusCode::ResourceExhausted && refused.on_context);
+    // Final drain retires the resolver handler. The same provider can then
+    // admit a new route; cancellation did not permanently consume its slot.
+    context->finish(); context->run();
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_open(literal_request, {}, [&](Result<RouteConnection> result) noexcept {
+            reused.record(*context, result.status());
+        });
+    });
+    context->run();
+    CHECK(reused.calls == 1U && reused.code == StatusCode::Ok && reused.on_context);
+    provider.reset(); context->run();
+}
+
+void test_open_allocation_failure_releases_capacity(RequestFactory& requests) {
+    boost::asio::io_context peer_context;
+    Udp::socket peer(peer_context, {boost::asio::ip::address_v4::loopback(), 0U});
+    auto request = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp,
+                                                 peer.local_endpoint().port()));
+    unsigned failures = 0U;
+    unsigned successes = 0U;
+    for (std::ptrdiff_t count = 0; count < 48; ++count) {
+        auto context = require(AsioExecutionContext::create(ExecutorAffinity(102U)));
+        std::weak_ptr<AsioExecutionContext> weak_context = context;
+        AsioDirectRouteLimits limits;
+        limits.max_pending_opens = 1U;
+        limits.max_active_connections = 1U;
+        auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy, limits));
+        CompletionRecord record;
+        std::optional<RouteConnection> connection;
+        RouteProvider::Completion completion = [&](Result<RouteConnection> result) noexcept {
+            record.record(*context, result.status());
+            if (result.ok()) connection.emplace(std::move(result).take_value());
+        };
+        boost::asio::post(context->executor(), [&]() {
+            test_allocation_failure::remaining = count;
+            provider->async_open(request, {}, std::move(completion));
+        });
+        const auto deadline = std::chrono::steady_clock::now() + 3s;
+        while (record.calls == 0U && std::chrono::steady_clock::now() < deadline) {
+            try { context->poll(); }
+            catch (const std::bad_alloc&) {}
+        }
+        test_allocation_failure::remaining = -1;
+        CHECK(record.calls == 1U && record.on_context);
+        if (record.code == StatusCode::ResourceExhausted) ++failures;
+        else { CHECK(record.code == StatusCode::Ok); ++successes; }
+        connection.reset();
+        context->poll();
+        // A failed create or channel adoption must release capacity before the
+        // next operation, including every failed wrapper allocation.
+        CompletionRecord reused;
+        boost::asio::post(context->executor(), [&]() {
+            provider->async_open(request, {}, [&](Result<RouteConnection> result) noexcept {
+                reused.record(*context, result.status());
+                if (result.ok()) connection.emplace(std::move(result).take_value());
+            });
+        });
+        while (reused.calls == 0U && std::chrono::steady_clock::now() < deadline) context->poll();
+        CHECK(reused.calls == 1U && reused.code == StatusCode::Ok && reused.on_context);
+        connection.reset(); provider.reset();
+        context->finish(); context->run();
+        context.reset();
+        CHECK(weak_context.expired());
+    }
+    CHECK(failures > 0U && successes > 0U);
+}
+#endif
 
 }  // namespace
 }  // namespace yume::providers
@@ -1487,6 +1926,24 @@ int main() {
         yume::providers::test_open_and_channel_cancellation(requests);
         yume::providers::test_provider_cancel_pending_open(requests);
         yume::providers::test_socket_protector_failures(requests);
+        for (const bool tcp : {false, true}) {
+            yume::providers::test_resolved_route_policy(requests, tcp);
+            yume::providers::test_dns_policy_before_any_connect(requests, tcp);
+        }
+#if !defined(_WIN32)
+        for (const bool tcp : {false, true}) {
+            for (const auto action : {yume::providers::CleanupAction::Cancel,
+                    yume::providers::CleanupAction::Close,
+                    yume::providers::CleanupAction::DestroyProvider,
+                    yume::providers::CleanupAction::CloseInCallback}) {
+                yume::providers::test_cleanup_under_sustained_allocation_failure(requests, tcp, action);
+            }
+            yume::providers::test_cancelled_dns_keeps_pending_reservation(requests, tcp);
+            yume::providers::test_pending_dns_under_sustained_allocation_failure(requests, tcp, true);
+            yume::providers::test_pending_dns_under_sustained_allocation_failure(requests, tcp, false);
+        }
+        yume::providers::test_open_allocation_failure_releases_capacity(requests);
+#endif
         std::cout << "Asio direct-route provider tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

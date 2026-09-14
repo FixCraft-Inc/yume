@@ -118,6 +118,39 @@ therefore not a standalone deployable server artifact despite the binary name;
 use the exact-source/CMake install layout for development. Packaging the pinned
 cover backend and supervision contract is a release blocker.
 
+## Transport-v2 configuration loading and saving
+
+Client and server CLI/facade readers reject unknown keys, explicit `null`,
+and wrong scalar types. Omitted fields keep initialized defaults or CLI
+overrides. Parsing,
+validation, and startup are separate gates: a value that fits its storage type
+can still be refused by the transport profile or by a startup resource limit.
+Schema 1 belongs to the separate YTP/1 path.
+
+@table
+| Field or operation | Current contract |
+| --- | --- |
+| `obfs_pad_multiple`, `obfs_jitter_ms` | Default `0`. Successful load/save preserves the values. Client and server profile validation requires both to be `0`; saving a configuration does not enable shaping. |
+| Server `auth_keys_meta`, `upstream_response_dir` | Nonempty relative paths resolve beside the configuration file, or against the explicit base directory for an in-memory facade parse. Empty paths stay empty. Metadata policy is loaded under the authorization snapshot transaction at startup/reload. |
+| Server `real_root`, `real_backend` | A nonempty value enables `real_http`, including when `real_http:false` is also present. Empty fields do not enable it. The backend still needs a separate static or captured cover source for probe paths. |
+| Server `pq_auto_generate`, `allow_embedded_master` | JSON booleans only, including when a CLI override supplies the effective value. Parsing `pq_auto_generate:true` does not implement automatic key generation. |
+| Client `tls_pin`, `tls_pin_sha256` | Both must be strings when present. The canonical `tls_pin` wins, including an empty string. The Android writer still uses `tls_pin_sha256`; native writers emit `tls_pin`. |
+| Client `app_codec_listen` | A malformed combined endpoint is a load error even when a CLI listener override is present. Split host/port fields, when supplied, take precedence after the combined endpoint parses. Native saves emit the combined endpoint without stale split fields. |
+| Client `--save-server` | Saves effective values, including automatic thread/control-port selection, one tunnel, disabled SOCKS/shaping, and cleared identity, trust and storage references. Previous values cannot survive by being omitted from an update. |
+@end
+
+Failed CLI loads preserve the supplied configuration and, for the daemon,
+its path-resolution context. Facade parsers return no candidate on failure.
+Serialization completes before atomic file replacement, so a serialization
+failure preserves the existing file. The client string serializer also
+preserves its caller's output on failure. These publication guarantees do
+not imply that saving runs startup checks or validates referenced files.
+
+The parsers retain separate field ordering and validation stages. A document
+with several errors can produce a different first diagnostic in the CLI and
+facade. Use the [ABI's typed result and JSON pointer](ABI.md#strict-configuration)
+where available rather than interpreting diagnostic text as a status code.
+
 ## Capacity, fairness, and process limits
 
 Set `egress_mbps` at or below the server's measured upload/link capacity. Leave

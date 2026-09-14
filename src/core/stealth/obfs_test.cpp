@@ -111,6 +111,27 @@ void test_path_token_round_trip() {
     assert(!yume::obfs::verify_path_token(keys, "carrier.example", malformed_token, now_s));
 }
 
+void test_transport_v2_admission_vector() {
+    // Fixed against the signed transport-v2 implementation and independently
+    // reproduced with HMAC-SHA256. Profile/version bytes remain v2-only inputs.
+    const auto key = yume::obfs::derive_signal_key("alpha-secret");
+    const std::string nonce =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    const std::string expected =
+        "58dc98878665b2edcd9130f1d556011ca6222547c816c09e74cc8f53cc61d2a0";
+    assert(yume::obfs::derive_path_token(
+        key, "carrier.example", 500000, nonce) == expected);
+    assert(yume::obfs::derive_path_token(
+        key, "Carrier.Example.", 500000, nonce) == expected);
+    const auto path = yume::obfs::build_path(expected, nonce);
+    assert(yume::obfs::verify_path_token(
+        {key}, "carrier.example", path, 500000LL * 3600));
+    assert(yume::obfs::verify_path_token(
+        {key}, "carrier.example", path, 500001LL * 3600 + 3599));
+    assert(!yume::obfs::verify_path_token(
+        {key}, "carrier.example", path, 500002LL * 3600));
+}
+
 void test_authority_matches_tls_sni() {
     assert(yume::obfs::authority_matches_tls_sni("Example.COM", "example.com"));
     assert(yume::obfs::authority_matches_tls_sni("example.com:443", "example.com"));
@@ -159,8 +180,8 @@ void test_carrier_path_admission_boundary() {
         "", sni, sni, "/malformed", now_s));
 
     yume::obfs::AdmissionReplayCache replay(2, 7200);
-    assert(replay.AcceptPath(path, now_s));
-    assert(!replay.AcceptPath(path, now_s));
+    assert(replay.AcceptPath(path));
+    assert(!replay.AcceptPath(path));
 }
 
 void test_handshake_extracts_path() {
@@ -819,6 +840,7 @@ int main() {
     test_carrier_alpn_wire_order();
     test_carrier_alpn_selection_prefers_h2();
     test_path_token_round_trip();
+    test_transport_v2_admission_vector();
     test_authority_matches_tls_sni();
     test_carrier_path_admission_boundary();
     test_handshake_extracts_path();

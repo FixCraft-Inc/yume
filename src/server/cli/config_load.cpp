@@ -346,11 +346,11 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             }
             if (json.contains("real_root") && cfg.real_root.empty()) {
                 cfg.real_root = resolve_cfg_path(json["real_root"].get<std::string>());
-                cfg.real_http = true;
+                cfg.real_http = cfg.real_http || !cfg.real_root.empty();
             }
             if (json.contains("real_backend") && cfg.real_backend.empty()) {
                 cfg.real_backend = json["real_backend"].get<std::string>();
-                cfg.real_http = true;
+                cfg.real_http = cfg.real_http || !cfg.real_backend.empty();
             }
             if (json.contains("real_secret_file") && cfg.real_secret_file.empty()) {
                 cfg.real_secret_file = resolve_cfg_path(json["real_secret_file"].get<std::string>());

@@ -14,33 +14,84 @@
 #include <string>
 #include <string_view>
 
-#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/ip/tcp.hpp>
 
 #include "engine/byte_channel.hpp"
+#include "providers/asio_execution_context.hpp"
 
 namespace yume::providers {
 
 inline constexpr std::string_view kAsioTcpByteChannelProviderId = "asio-tcp";
 inline constexpr std::uint32_t kAsioTcpByteChannelProviderApiVersion = 1U;
 
+// Native I/O shares one caller-owned execution context. Async initiation must
+// occur on that context; wrong-affinity initiation throws before acceptance.
+// Admission failures may complete inline on the context. shutdown_write()
+// returns FailedPrecondition for wrong affinity, preserving its noexcept API.
+// cancel()/close() remain callable from other threads and use reserved control
+// dispatch. Keep the context running until channel and operation cleanup drains.
+using AsioTcpSocket = boost::asio::basic_stream_socket<
+    boost::asio::ip::tcp, AsioExecutionContext::Executor>;
+
 // Provider-local bounds apply even when this source-level provider is embedded
-// without the included runtime. Queue byte limits include operations accepted
-// by callers but not yet started on the provider strand.
-struct AsioTcpByteChannelLimits final {
-    std::size_t max_pending_creates{32U};
+// without the included runtime. Queue byte limits include every accepted
+// operation until completion.
+struct AsioTcpChannelLimits {
     std::size_t max_active_channels{1024U};
-    std::size_t max_resolved_endpoints{32U};
-    std::size_t max_connect_attempts{16U};
     std::size_t max_read_bytes{64U * 1024U};
     std::size_t max_write_bytes{64U * 1024U};
     std::size_t max_queued_read_operations{64U};
     std::size_t max_queued_write_operations{64U};
     std::size_t max_queued_read_bytes{1024U * 1024U};
     std::size_t max_queued_write_bytes{1024U * 1024U};
+};
+
+struct AsioTcpByteChannelLimits final : AsioTcpChannelLimits {
+    std::size_t max_pending_creates{32U};
+    std::size_t max_resolved_endpoints{32U};
+    std::size_t max_connect_attempts{16U};
     std::chrono::milliseconds resolve_timeout{10'000};
     // One deadline covers every bounded endpoint attempt, rather than granting
     // a fresh attacker-controlled delay for each DNS result.
     std::chrono::milliseconds connect_timeout{10'000};
+};
+
+// Bounded ownership for connected sockets accepted by a server front door.
+// Adopted channels use the same queue, cancellation, half-close, and cleanup
+// implementation as client-created channels. The owner contains no listener,
+// remote-host, resolver, or connection policy.
+// Channels retain their own lifetime after owner destruction, which cancels
+// current operations without closing those channels.
+class AsioTcpAcceptedChannelOwner final {
+public:
+    static engine::Result<std::shared_ptr<AsioTcpAcceptedChannelOwner>> create(
+        std::shared_ptr<AsioExecutionContext> context,
+        AsioTcpChannelLimits limits = {});
+
+    AsioTcpAcceptedChannelOwner(const AsioTcpAcceptedChannelOwner&) = delete;
+    AsioTcpAcceptedChannelOwner& operator=(
+        const AsioTcpAcceptedChannelOwner&) = delete;
+    ~AsioTcpAcceptedChannelOwner() noexcept;
+
+    // Consumes one already-connected, exclusively owned socket with no pending
+    // operations. Closed, unconnected, or differently-executed sockets fail
+    // closed and are not published. Adoption is synchronous and may occur outside
+    // the execution context when the socket has no concurrent users.
+    engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(
+        AsioTcpSocket socket);
+
+    // Cancels current channel operations without closing the channels or
+    // preventing later adoption.
+    void cancel() noexcept;
+
+    engine::ExecutorAffinity executor_affinity() const noexcept;
+    const AsioTcpChannelLimits& limits() const noexcept;
+
+private:
+    class Impl;
+    explicit AsioTcpAcceptedChannelOwner(std::shared_ptr<Impl> impl) noexcept;
+
+    std::shared_ptr<Impl> impl_;
 };
 
 // Invoked after a native TCP socket is open and before connect is attempted.
@@ -52,8 +103,7 @@ using AsioTcpSocketProtector =
 class AsioTcpByteChannelProvider final : public engine::ByteChannelProvider {
 public:
     static engine::Result<std::shared_ptr<AsioTcpByteChannelProvider>> create(
-        boost::asio::any_io_executor executor,
-        engine::ExecutorAffinity executor_affinity,
+        std::shared_ptr<AsioExecutionContext> context,
         std::string remote_host,
         std::uint16_t remote_port,
         AsioTcpByteChannelLimits limits = {},
@@ -65,6 +115,7 @@ public:
     ~AsioTcpByteChannelProvider() noexcept override;
 
     const engine::ProviderDescriptor& descriptor() const noexcept override;
+    // Requires the supplied context; wrong affinity throws before admission.
     void async_create(engine::EndpointRole role,
                       engine::CancellationToken cancellation,
                       Completion completion) override;

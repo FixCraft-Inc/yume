@@ -10,11 +10,13 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include "core/stealth/h2_carrier.hpp"
 #include "engine/carrier.hpp"
+#include "providers/control_task.hpp"
 
 namespace yume::providers {
 
@@ -23,13 +25,30 @@ inline constexpr std::uint32_t kYtp1H2CarrierProviderApiVersion = 1U;
 inline constexpr std::size_t kYtp1H2CarrierEnvelopeBytes = 12U;
 
 // The supplied executor owns every carrier state transition. It must accept
-// work until all carriers and provider operations have settled, invoke tasks
-// serially on the declared affinity, and must not throw or silently discard a
-// task. Keeping this seam source-level makes the carrier usable with Asio,
-// libuv, an application loop, or a deterministic test executor without
-// introducing one of them into the dependency-pure engine.
-using Ytp1H2PostHandler =
-    std::function<void(std::function<void()>)>;
+// work until all carriers and provider operations have settled and invoke tasks
+// serially on the declared affinity. post may throw before accepting work;
+// it must never accept and then throw or discard it. submit retains the owner
+// of an embedded control task, coalesces submissions, and MUST NOT allocate,
+// throw, invoke inline or discard work. It is used for close, cancellation and
+// credit return, including under sustained allocation failure. The caller
+// retains and drains the executor after releasing the last open carrier handle.
+// Repeated close/cancel, credit return and destruction of a carrier that has
+// already closed and drained enqueue no further control work.
+struct Ytp1H2Dispatch final {
+    std::function<void(std::function<void()>)> post;
+    std::function<void(ControlTask&, std::shared_ptr<void>)> submit;
+    explicit operator bool() const noexcept { return post && submit; }
+};
+
+// A promoted server keeps serving ordinary streams on the same connection.
+// This handler must be bounded, synchronous and retain its cover source. It
+// never performs another admission or promotion. False terminates the carrier.
+class Ytp1H2CoverHandler {
+public:
+    virtual ~Ytp1H2CoverHandler() = default;
+    virtual bool respond(obfs::H2Carrier&, const obfs::H2Request&) = 0;
+    virtual void stream_closed(std::int32_t stream_id) noexcept = 0;
+};
 
 struct Ytp1H2CarrierLimits final {
     // Includes the protected YTP envelope and AEAD output handed to Carrier,
@@ -41,21 +60,30 @@ struct Ytp1H2CarrierLimits final {
     std::size_t secure_read_bytes{64U * 1024U};
 };
 
+engine::Status validate_ytp1_h2_carrier_limits(const Ytp1H2CarrierLimits& limits);
+
 struct Ytp1H2ClientConfig final {
-    std::string authority;
-    std::string carrier_path;
+    std::string server_name;
+    std::uint16_t server_port{443U};
     Ytp1H2CarrierLimits limits{};
 };
 
 // Client-side provider. Creation performs the genuine profile priming GET and
 // asset exchange, waits for SETTINGS_ENABLE_CONNECT_PROTOCOL, submits RFC 8441
 // extended CONNECT, and returns only after the peer accepts it with 200.
+// The intended server name must match the name authenticated by the TLS
+// provider. Each create consumes its SecureChannel once, derives its own
+// exporter-bound admission path, and closes on failure without retrying it.
 class Ytp1H2CarrierProvider final : public engine::CarrierProvider {
 public:
+    // Key storage is borrowed only for this call. The provider copies exactly
+    // 32 bytes into one immutable owner shared with pending creates; its final
+    // destruction wipes those bytes. The caller owns wiping its input.
     static engine::Result<std::shared_ptr<Ytp1H2CarrierProvider>> create(
         engine::ExecutorAffinity executor_affinity,
-        Ytp1H2PostHandler post,
-        Ytp1H2ClientConfig config);
+        Ytp1H2Dispatch dispatch,
+        Ytp1H2ClientConfig config,
+        std::span<const std::byte> admission_key);
 
     Ytp1H2CarrierProvider(const Ytp1H2CarrierProvider&) = delete;
     Ytp1H2CarrierProvider& operator=(const Ytp1H2CarrierProvider&) = delete;
@@ -71,19 +99,23 @@ public:
     const Ytp1H2ClientConfig& config() const noexcept;
 
 private:
+    struct AdmissionKey;
+
     Ytp1H2CarrierProvider(
         engine::ProviderDescriptor descriptor,
         engine::ExecutorAffinity executor_affinity,
-        Ytp1H2PostHandler post,
-        Ytp1H2ClientConfig config) noexcept;
+        Ytp1H2Dispatch dispatch,
+        Ytp1H2ClientConfig config,
+        std::shared_ptr<const AdmissionKey> admission_key) noexcept;
 
     engine::ProviderDescriptor descriptor_;
     engine::ExecutorAffinity executor_affinity_;
-    Ytp1H2PostHandler post_;
+    Ytp1H2Dispatch dispatch_;
     Ytp1H2ClientConfig config_;
+    std::shared_ptr<const AdmissionKey> admission_key_;
 };
 
-// Typed promotion seam for a future h2-web FrontDoor. The front door retains
+// Typed promotion seam used by the native h2-web FrontDoor. The front door retains
 // and validates the live nghttp2 session through admission, calls
 // H2Carrier::AcceptCarrier(), writes no further bytes itself, and transfers
 // both objects here on its executor. SETTINGS, stream, HPACK, and flow-credit
@@ -94,7 +126,8 @@ make_ytp1_h2_admitted_server_carrier(
     std::unique_ptr<engine::SecureChannel> channel,
     std::unique_ptr<obfs::H2Carrier> admitted_h2,
     engine::ExecutorAffinity executor_affinity,
-    Ytp1H2PostHandler post,
-    Ytp1H2CarrierLimits limits = {});
+    Ytp1H2Dispatch dispatch,
+    Ytp1H2CarrierLimits limits = {},
+    std::shared_ptr<Ytp1H2CoverHandler> cover = {});
 
 }  // namespace yume::providers

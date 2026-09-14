@@ -2925,6 +2925,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor_ytp1.py"
     )
+    # The nDPI and direct-link scripts decide from these parsers whether a run
+    # counts, so a misread report must fail here instead of passing silently.
+    add_test(NAME yume_evaluation_reports_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_evaluation_reports.py"
+    )
     set_tests_properties(
         yume_setup_transport_v2_test
         yume_setup_ytp1_test

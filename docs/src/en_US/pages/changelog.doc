@@ -35,8 +35,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   records nDPI output for one rootless loopback session with Ethernet-sized
   frames. `scripts/yume_ethernet_smoke.py` compares repeated untunnelled and
   tunnelled transfers over a direct link after a preflight that fails when the
-  link is unavailable. Their results are observations, not classifier verdicts
-  or benchmarks.
+  link is unavailable. It can capture the tunnel on the remote interface, with
+  offloads off for wire-sized frames, and run nDPI on that capture. Their
+  results are observations, not classifier verdicts or benchmarks.
 - **Configured egress destinations.** Server `direct_tcp` and `direct_udp`
   adapters require `destinations`: `public` for globally reachable unicast
   addresses and `networks` for canonical CIDR prefixes. `NativeEgressPolicy`

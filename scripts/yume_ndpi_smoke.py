@@ -20,11 +20,9 @@ result and supports no claim that YUME is undetectable.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -35,10 +33,9 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yume_native_session as session  # noqa: E402
+import yume_ndpi_report as ndpi  # noqa: E402
 
 INSIDE = "YUME_NDPI_SMOKE_INSIDE"
-# ndpiReader opens live captures with this snap length and discards longer frames.
-READER_SNAPLEN = 1536
 DOES_NOT_PROVE = [
     "That DPI, JA3/JA4 or machine-learning classifiers cannot identify YUME.",
     "Anything about real networks, other vantage points, timing or volume.",
@@ -66,34 +63,6 @@ def wait_for_log(path: Path, marker: str, process: subprocess.Popen, deadline: f
             raise session.SessionFailure(f"process exited with {process.returncode} before listening")
         time.sleep(0.1)
     raise session.SessionFailure(f"'{marker}' did not appear in {path.name}")
-
-
-def flows_on_port(csv_path: Path, port: int) -> list[dict[str, str]]:
-    if not csv_path.is_file():
-        return []
-    lines = csv_path.read_text(encoding="utf-8", errors="replace").lstrip("#").splitlines()
-    if not lines:
-        return []
-    # nDPI 6.0 separates CSV fields with '|'.
-    delimiter = "|" if "|" in lines[0] else ","
-    rows = []
-    for row in csv.DictReader(lines, delimiter=delimiter):
-        if str(port) in {(row.get("src_port") or "").strip(), (row.get("dst_port") or "").strip()}:
-            rows.append({key.strip(): (value or "").strip() for key, value in row.items() if key})
-    return rows
-
-
-def reader_report(path: Path, port: int) -> dict[str, object]:
-    """Totals and per-flow lines from ndpiReader's text output, which carries JA4 and risks."""
-    text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-
-    def total(label: str) -> int | None:
-        match = re.search(rf"^\s*{label}:\s+(\d+)", text, re.MULTILINE)
-        return int(match.group(1)) if match else None
-
-    flows = [line.strip() for line in text.splitlines()
-             if re.match(r"^\s+\d+\s+(TCP|UDP)\s", line) and f":{port} " in line]
-    return {"ip_bytes": total("IP bytes"), "discarded_bytes": total("Discarded bytes"), "flows": flows}
 
 
 def observe(arguments: argparse.Namespace, kit: Path, environment: dict[str, str]) -> list[dict[str, object]]:
@@ -169,14 +138,10 @@ def run_inside(arguments: argparse.Namespace) -> int:
     captures = {}
     failures = []
     for name in ("default", "dpi-only"):
-        capture = reader_report(output / f"ndpi-{name}.txt", arguments.port)
-        capture["csv_flows"] = flows_on_port(output / f"ndpi-{name}.csv", arguments.port)
+        capture = ndpi.reader_report(output / f"ndpi-{name}.txt", arguments.port)
+        capture["csv_flows"] = ndpi.flows_on_port(output / f"ndpi-{name}.csv", arguments.port)
         captures[name] = capture
-        if not capture["csv_flows"]:
-            failures.append(f"{name}: no flow on port {arguments.port} was recorded")
-        if capture["discarded_bytes"]:
-            failures.append(f"{name}: the reader discarded {capture['discarded_bytes']} bytes "
-                            f"of frames longer than its {READER_SNAPLEN}-byte snap length")
+        failures += ndpi.capture_failures(name, capture, arguments.port)
     summary = {
         "schema": "yume.ndpi-smoke/2",
         "ndpi_reader": {"path": str(arguments.ndpi_reader), "sha256": session.file_digest(arguments.ndpi_reader)},
@@ -193,7 +158,7 @@ def run_inside(arguments: argparse.Namespace) -> int:
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     for name, capture in captures.items():
         for line in capture["flows"]:
-            print(f"{name}: {line}")
+            print(f"{name}: {ndpi.flow_summary(line)}")
     for failure in failures:
         print(failure, file=sys.stderr)
     return 1 if failures else 0
@@ -220,7 +185,7 @@ def main() -> int:
     if not 1 <= arguments.requests <= 100 or not 1 <= arguments.payload_bytes <= 1 << 30:
         parser.error("requests must be 1..100 and payload bytes 1..1 GiB")
     if not 1280 <= arguments.mtu <= 1500:
-        parser.error("mtu must be 1280..1500 so frames fit the reader's snap length")
+        parser.error(f"mtu must be 1280..1500 so frames fit the reader's {ndpi.READER_SNAPLEN}-byte snap length")
     if os.environ.get(INSIDE) != "1":
         unshare = shutil.which("unshare")
         if not unshare:

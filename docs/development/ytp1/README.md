@@ -217,8 +217,13 @@ runs the client on this machine and the daemon on a directly connected host,
 after a link preflight that fails when the direct route is unavailable. It
 alternates untunnelled and tunnelled fetches of one payload. The daemon reaches
 the tunnel destination on its own host, and the untunnelled fetch crosses the
-link to `--baseline-port`, which a firewall on that host must allow. Neither
-result is a classifier verdict or a qualified benchmark.
+link to `--baseline-port`, which a firewall on that host must allow. With
+`--capture-ssh` naming a root login on that host, the runner records the tunnel
+with tcpdump, which drops to the normal user once the interface is open, and
+`--remote-ndpi-reader` runs nDPI on the capture as that user. `--wire-frames`
+turns segmentation and receive offloads off for the run and restores them, so
+the capture holds frames as they crossed the wire. Neither result is a
+classifier verdict or a qualified benchmark.
 
 ## Configuration authority
 

@@ -34,6 +34,13 @@ MAX_DOCUMENT_BYTES = 1024 * 1024
 MAX_FILE_REFERENCE_BYTES = 4096
 MAX_SERVICES = 64
 MAX_ADAPTERS = 16
+MAX_DESTINATION_NETWORKS = 64
+MAX_NETWORK_TEXT_BYTES = 43
+# Networks no destination can match. IPv4-mapped IPv6 is evaluated as IPv4.
+NEVER_ALLOWED_NETWORKS = tuple(
+    ipaddress.ip_network(text)
+    for text in ("0.0.0.0/8", "224.0.0.0/3", "::/128", "ff00::/8", "::ffff:0:0/96")
+)
 MAX_LISTEN_ADDRESSES = 16
 MAX_CONFIG_STREAMS = 65_535
 MAX_SERVICE_NAME_BYTES = 128
@@ -128,6 +135,82 @@ def _integer(value: Any, pointer: str, minimum: int, maximum: int) -> int:
     if not minimum <= value <= maximum:
         _fail(pointer, f"must be in {minimum}..{maximum}")
     return value
+
+
+def _boolean(value: Any, pointer: str) -> bool:
+    if type(value) is not bool:
+        _fail(pointer, "must be a boolean")
+    return value
+
+
+def _canonical_network_text(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+) -> str:
+    # RFC 5952, independent of how this Python release prints mapped addresses.
+    if network.version == 4:
+        return f"{network.network_address}/{network.prefixlen}"
+    packed = network.network_address.packed
+    groups = [int.from_bytes(packed[index:index + 2], "big") for index in range(0, 16, 2)]
+    best_start, best_length, index = 8, 0, 0
+    while index < 8:
+        if groups[index]:
+            index += 1
+            continue
+        end = index
+        while end < 8 and groups[end] == 0:
+            end += 1
+        if end - index > best_length:
+            best_start, best_length = index, end - index
+        index = end
+    if best_length < 2:
+        text = ":".join(f"{group:x}" for group in groups)
+    else:
+        head = ":".join(f"{group:x}" for group in groups[:best_start])
+        tail = ":".join(f"{group:x}" for group in groups[best_start + best_length:])
+        text = f"{head}::{tail}"
+    return f"{text}/{network.prefixlen}"
+
+
+def _destination_network(
+    value: Any, pointer: str
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    text = _string(value, pointer, MAX_NETWORK_TEXT_BYTES)
+    network = None
+    if text.isascii() and "%" not in text:
+        try:
+            network = ipaddress.ip_network(text, strict=True)
+        except ValueError:
+            network = None
+    if network is None or _canonical_network_text(network) != text:
+        _fail(pointer, "must be a canonical IPv4 or IPv6 network with zero host bits")
+    if any(
+        network.version == never.version and network.subnet_of(never)
+        for never in NEVER_ALLOWED_NETWORKS
+    ):
+        _fail(pointer, "can never match a destination")
+    return network
+
+
+def _validate_destinations(value: Any, pointer: str) -> None:
+    policy = _closed_object(value, pointer, {"public", "networks"})
+    public = _boolean(policy["public"], f"{pointer}/public")
+    networks = policy["networks"]
+    if type(networks) is not list:
+        _fail(f"{pointer}/networks", "must be an array")
+    if len(networks) > MAX_DESTINATION_NETWORKS:
+        _fail(
+            f"{pointer}/networks",
+            f"must contain at most {MAX_DESTINATION_NETWORKS} networks",
+        )
+    seen: set[ipaddress.IPv4Network | ipaddress.IPv6Network] = set()
+    for index, item in enumerate(networks):
+        item_pointer = f"{pointer}/networks/{index}"
+        network = _destination_network(item, item_pointer)
+        if network in seen:
+            _fail(item_pointer, "duplicate destination network")
+        seen.add(network)
+    if not public and not networks:
+        _fail(pointer, "must permit public addresses or at least one network")
 
 
 def _valid_identifier(value: str, maximum: int = 64) -> bool:
@@ -404,7 +487,9 @@ def _validate_adapters(
             _integer(adapter["mtu"], f"{pointer}/mtu", 576, 65535)
             required_kind = "packet"
         else:
-            adapter = _closed_object(item, pointer, {"kind", "service"})
+            adapter = _closed_object(
+                item, pointer, {"kind", "service", "destinations"}
+            )
             if role != "server":
                 _fail(f"{pointer}/kind", "direct adapters are server-only")
             required_kind = "stream" if kind == "direct_tcp" else "packet"
@@ -428,6 +513,10 @@ def _validate_adapters(
             _fail(f"{pointer}/service", "references an undeclared service")
         if (service, required_kind) not in services:
             _fail(f"{pointer}/service", f"requires a {required_kind} service")
+        if kind in {"direct_tcp", "direct_udp"}:
+            _validate_destinations(
+                adapter["destinations"], f"{pointer}/destinations"
+            )
 
 
 def _validate_limits(value: Any, adapters: list[Any]) -> None:

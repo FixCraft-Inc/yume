@@ -20,6 +20,18 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Configured egress destinations.** Server `direct_tcp` and `direct_udp`
+  adapters require `destinations`: `public` for globally reachable unicast
+  addresses and `networks` for canonical CIDR prefixes. `NativeEgressPolicy`
+  enforces them before DNS or socket creation, and for every resolved address
+  when the route provider uses it. Unspecified, multicast and reserved addresses
+  are never permitted, IPv4-mapped IPv6 is evaluated as IPv4, and public space
+  excludes private, shared, loopback, link-local, documentation, benchmarking,
+  6to4, Teredo and NAT64 prefixes. The native endpoint no longer requires an
+  application route callback, which can now only refuse more. Setup kits declare
+  public destinations explicitly, and the native parser and `yume-doctor-ytp1`
+  share network test vectors. Direct adapters without `destinations` no longer
+  parse.
 - **Endpoint-owned native accepts.** `NativeEndpoint` can keep a sized number of
   server starts pending on every listener, re-arming after each settlement and
   retrying refused or immediately failed starts after a delay. The schema-1 ABI

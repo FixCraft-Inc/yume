@@ -122,6 +122,10 @@ Json ClientDocument() {
     };
 }
 
+Json PublicDestinations() {
+    return {{"public", true}, {"networks", Json::array()}};
+}
+
 Json ServerDocument() {
     return {
         {"schema", 1},
@@ -157,8 +161,12 @@ Json ServerDocument() {
          })},
         {"adapters",
          Json::array({
-             {{"kind", "direct_tcp"}, {"service", "tcp"}},
-             {{"kind", "direct_udp"}, {"service", "udp"}},
+             {{"kind", "direct_tcp"},
+              {"service", "tcp"},
+              {"destinations", PublicDestinations()}},
+             {{"kind", "direct_udp"},
+              {"service", "udp"},
+              {"destinations", PublicDestinations()}},
          })},
         {"limits", LimitsDocument()},
     };
@@ -645,7 +653,9 @@ void TestAdapterValidation() {
     ExpectError(document, "/adapters/0/kind", "client-only");
     document = ClientDocument();
     document["adapters"] =
-        Json::array({{{"kind", "direct_tcp"}, {"service", "tcp"}}});
+        Json::array({{{"kind", "direct_tcp"},
+                      {"service", "tcp"},
+                      {"destinations", PublicDestinations()}}});
     ExpectError(document, "/adapters/0/kind", "server-only");
 
     document = ClientDocument();
@@ -689,7 +699,9 @@ void TestAdapterValidation() {
          {"kind", "stream"},
          {"max_concurrent_streams", 8}});
     document["adapters"].push_back(
-        {{"kind", "direct_tcp"}, {"service", "admin"}});
+        {{"kind", "direct_tcp"},
+         {"service", "admin"},
+         {"destinations", PublicDestinations()}});
     Check(Parse(document).adapters().size() == 3,
           "distinct direct adapters of the same kind were rejected");
 
@@ -727,6 +739,72 @@ void TestAdapterValidation() {
         document["adapters"].push_back(Json::object());
     }
     ExpectError(document, "/adapters", "16");
+}
+
+void TestDirectAdapterDestinations() {
+    Json document = ServerDocument();
+    document["adapters"][0].erase("destinations");
+    ExpectError(document, "/adapters/0/destinations", "required key");
+    document = ServerDocument();
+    document["adapters"][0]["destinations"] = true;
+    ExpectError(document, "/adapters/0/destinations", "object");
+    document = ServerDocument();
+    document["adapters"][0]["destinations"]["hosts"] = Json::array();
+    ExpectError(document, "/adapters/0/destinations/hosts", "unknown key");
+    document = ServerDocument();
+    document["adapters"][0]["destinations"]["public"] = 1;
+    ExpectError(document, "/adapters/0/destinations/public", "boolean");
+    document = ServerDocument();
+    document["adapters"][0]["destinations"]["networks"] = "10.0.0.0/8";
+    ExpectError(document, "/adapters/0/destinations/networks", "array");
+    document = ServerDocument();
+    document["adapters"][0]["destinations"]["public"] = false;
+    ExpectError(document, "/adapters/0/destinations", "at least one network");
+
+    for (const char* text : {"10.0.0.1/8", "2001:DB8::/32", "localhost/32",
+                             "::ffff:10.0.0.0/104"}) {
+        document = ServerDocument();
+        document["adapters"][1]["destinations"]["networks"] =
+            Json::array({"192.168.0.0/16", text});
+        ExpectError(document, "/adapters/1/destinations/networks/1", "canonical");
+    }
+    document = ServerDocument();
+    document["adapters"][0]["destinations"]["networks"] = Json::array({1});
+    ExpectError(document, "/adapters/0/destinations/networks/0", "string");
+    for (const char* text : {"0.0.0.0/8", "224.0.0.0/4", "255.255.255.255/32",
+                             "::/128", "ff02::1/128", "::ffff:0:0/96",
+                             "::ffff:a00:0/120"}) {
+        document = ServerDocument();
+        document["adapters"][0]["destinations"]["networks"] = Json::array({text});
+        ExpectError(document, "/adapters/0/destinations/networks/0", "never");
+    }
+    document = ServerDocument();
+    document["adapters"][0]["destinations"]["networks"] =
+        Json::array({"10.0.0.0/8", "10.0.0.0/8"});
+    ExpectError(document, "/adapters/0/destinations/networks/1", "duplicate");
+    document = ServerDocument();
+    for (std::size_t index = 0; index <= kMaxDestinationNetworks; ++index) {
+        document["adapters"][0]["destinations"]["networks"].push_back(
+            "10." + std::to_string(index) + ".0.0/16");
+    }
+    ExpectError(document, "/adapters/0/destinations/networks", "64");
+
+    document = ServerDocument();
+    document["adapters"][0]["destinations"] = {
+        {"public", false},
+        {"networks", Json::array({"127.0.0.1/32", "fd00::/8", "0.0.0.0/7"})}};
+    const Config parsed = Parse(document);
+    const auto* tcp = std::get_if<DirectTcpAdapter>(&parsed.adapters()[0]);
+    Check(tcp != nullptr && !tcp->destinations().public_addresses() &&
+              tcp->destinations().networks().size() == 3,
+          "direct TCP destinations were not retained");
+    Check(tcp->destinations().networks()[1] ==
+              *yume::common::parse_canonical_ip_network("fd00::/8"),
+          "IPv6 destination network changed");
+    const auto* udp = std::get_if<DirectUdpAdapter>(&parsed.adapters()[1]);
+    Check(udp != nullptr && udp->destinations().public_addresses() &&
+              udp->destinations().networks().empty(),
+          "direct UDP destinations were not retained");
 }
 
 void TestResourceLimits() {
@@ -860,6 +938,7 @@ int main(int argc, char** argv) {
         TestCoverValidation();
         TestServiceValidation();
         TestAdapterValidation();
+    TestDirectAdapterDestinations();
         TestResourceLimits();
         TestTextBoundsAndSyntax();
         if (argc == 2) {

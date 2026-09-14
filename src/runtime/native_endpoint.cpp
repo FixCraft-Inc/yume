@@ -17,6 +17,7 @@
 
 #include "runtime/accept_scheduler.hpp"
 #include "runtime/native_credentials.hpp"
+#include "runtime/native_egress_policy.hpp"
 #include "providers/ytp1_front_door.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
@@ -406,15 +407,16 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         return Result<std::shared_ptr<NativeEndpoint>>(Status(StatusCode::InvalidArgument));
     std::shared_ptr<State> state;
     try {
+        const auto egress = require(NativeEgressPolicy::create(config.adapters()));
         for (const auto& adapter : config.adapters()) {
             const auto* tcp = std::get_if<config::v1::DirectTcpAdapter>(&adapter);
             const auto* udp = std::get_if<config::v1::DirectUdpAdapter>(&adapter);
             if (!tcp && !udp)
                 throw Status(StatusCode::FailedPrecondition,
                     "native SOCKS5 and packet/TUN adapters are not implemented");
-            if (!options.route_provider || !options.route_authorization)
+            if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
-                    "direct adapters require an explicit route provider and authorization policy");
+                    "direct adapters require an explicit route provider");
             const auto& name = tcp ? tcp->service() : udp->service();
             const auto kind = tcp ? ServiceKind::ByteStream : ServiceKind::PacketChannel;
             if (std::any_of(services.begin(), services.end(), [&](const auto& binding) {
@@ -429,8 +431,17 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             auto descriptor = require(ProviderDescriptor::create(
                 tcp ? "yume.direct-tcp" : "yume.direct-udp",
                 ProviderKind::StreamHandler, 1U, capabilities));
+            // Configured destinations decide first. The application callback
+            // can only refuse more.
+            DirectRouteHandler::AuthorizationPolicy authorization =
+                [egress, application = options.route_authorization](
+                    const StreamOpenContext& context) -> Status {
+                    auto status = egress->authorize_request(context);
+                    if (!status.ok() || !application) return status;
+                    return application(context);
+                };
             services.push_back({name, require(DirectRouteHandler::create(
-                std::move(descriptor), kind, options.route_authorization))});
+                std::move(descriptor), kind, std::move(authorization)))});
         }
         if (services.size() != config.services().size() ||
             (config.adapters().empty() && options.route_authorization))

@@ -80,7 +80,8 @@ Implemented and covered by focused tests:
   and connection-lifetime promotion policy;
 - strict immutable numeric config schema 1 with closed objects, duplicate-key
   rejection, exact provider values, file-only credential references, bounded
-  services/adapters/resources, and RFC 6901 error locations;
+  services/adapters/resources, canonical direct-adapter destination networks,
+  and RFC 6901 error locations;
 - the experimental role-neutral C ABI v1 candidate header, symbol allowlist,
   typed metadata and diagnostics, and exception-contained handle scaffolding;
 - an explicitly enabled unversioned `libyume.so` build-tree library with
@@ -185,11 +186,15 @@ exclusivity, capacity recovery and a promoted carrier that never authenticates,
 plus two listeners and an injected OS accept failure on Linux.
 Enabling the Asio route provider also exercises
 real TCP and UDP destination traffic through configured `direct_tcp`/`direct_udp`
-adapters, packet boundaries, credential/request/resolved-policy refusal before
-socket creation, and retained route/credit destruction after endpoint drain.
-Native composition requires an explicit provider and request policy, refuses
-duplicate binding ownership, and preserves the caller's provider on failed
-creation. Engine dispatch supplies the selected provider to the handler; it
+adapters, packet boundaries, refusal by credentials, configured destinations,
+request policy and resolved-address policy before socket creation, and retained
+route/credit destruction after endpoint drain. Native composition requires an
+explicit provider, enforces each direct adapter's schema-1 destinations before
+an optional application policy, refuses duplicate binding ownership, and
+preserves the caller's provider on failed creation. `NativeEgressPolicy` tests
+cover public and explicit networks, never-permitted addresses, IPv4-mapped IPv6
+and per-protocol rules. The canonical network grammar shares test vectors with
+`yume-doctor-ytp1`. Engine dispatch supplies the selected provider to the handler; it
 cannot accidentally validate one instance while the built-in handler uses
 another. The public ABI backend still rejects adapter declarations.
 Engine tests separately exercise acceptance and
@@ -230,8 +235,8 @@ must not be advertised as working:
   production qualification of the experimental schema-1 ABI backend;
 - comprehensive real-carrier rekey, close-ordering and credit/backpressure
   qualification beyond the focused native-session regressions;
-- standalone egress rules and working
-  SOCKS5, named-service and packet adapters on the new engine;
+- working standalone SOCKS5, named-service and packet adapters on the new
+  engine, using the configured destination policy;
 - a public-ABI packet data path in either configuration dialect;
 - authenticated clean-prefix C and C++ consumers using an installed CMake
   package and pkg-config, which the build does not generate yet;

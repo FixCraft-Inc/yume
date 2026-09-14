@@ -196,7 +196,11 @@ class YumeDoctorTests(unittest.TestCase):
             }
         )
         server["adapters"].append(
-            {"kind": "direct_tcp", "service": "admin"}
+            {
+                "kind": "direct_tcp",
+                "service": "admin",
+                "destinations": {"public": False, "networks": ["10.0.0.0/8"]},
+            }
         )
         server_path.write_text(json.dumps(server))
         os.chmod(server_path, 0o600)
@@ -211,6 +215,66 @@ class YumeDoctorTests(unittest.TestCase):
         os.chmod(authorized_path, 0o600)
         result = self.run_doctor(server_path)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_direct_adapter_destinations_are_validated(self) -> None:
+        config_path = self.case / "server/yumed.json"
+        original = json.loads(config_path.read_text())
+        self.assertEqual(original["adapters"][0]["kind"], "direct_tcp")
+        cases = (
+            (lambda policy: policy.clear(), "/adapters/0/destinations/networks: required key is missing"),
+            (lambda policy: policy.update(public="yes"), "/adapters/0/destinations/public: must be a boolean"),
+            (lambda policy: policy.update(networks=["10.0.0.1/8"]), "/adapters/0/destinations/networks/0: must be a canonical"),
+            (lambda policy: policy.update(networks=["224.0.0.0/4"]), "/adapters/0/destinations/networks/0: can never match"),
+            (lambda policy: policy.update(networks=["10.0.0.0/8", "10.0.0.0/8"]), "/adapters/0/destinations/networks/1: duplicate"),
+            (lambda policy: policy.update(public=False), "/adapters/0/destinations: must permit"),
+            (lambda policy: policy.update(hosts=[]), "/adapters/0/destinations/hosts: unknown key"),
+        )
+        for mutate, expected in cases:
+            document = copy.deepcopy(original)
+            mutate(document["adapters"][0]["destinations"])
+            config_path.write_text(json.dumps(document))
+            os.chmod(config_path, 0o600)
+            result = self.run_doctor(config_path)
+            self.assertEqual(result.returncode, 1, expected)
+            self.assertIn(expected, result.stderr)
+
+        document = copy.deepcopy(original)
+        del document["adapters"][0]["destinations"]
+        config_path.write_text(json.dumps(document))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/adapters/0/destinations: required key is missing", result.stderr)
+
+        document = copy.deepcopy(original)
+        document["adapters"][0]["destinations"] = {
+            "public": False,
+            "networks": ["127.0.0.1/32", "fd00::/8", "0.0.0.0/7"],
+        }
+        config_path.write_text(json.dumps(document))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_destination_network_vectors_match_native_parser(self) -> None:
+        doctor = runpy.run_path(str(DOCTOR))
+        check, error_type = doctor["_destination_network"], doctor["DoctorError"]
+        vectors = ROOT / "src/common/testdata/ip_network_vectors.txt"
+        seen = set()
+        for line in vectors.read_text().splitlines():
+            if not line or line.startswith("#"):
+                continue
+            kind, text = line.split(" ", 1)
+            seen.add(kind)
+            with self.subTest(vector=line):
+                if kind == "valid":
+                    check(text, "/network")
+                    continue
+                with self.assertRaises(error_type) as raised:
+                    check(text, "/network")
+                detail = " ".join(map(str, raised.exception.args))
+                self.assertIn("never" if kind == "never" else "canonical", detail)
+        self.assertEqual(seen, {"valid", "never", "invalid"})
 
     def test_adapter_instance_collisions_are_rejected(self) -> None:
         config_path = self.case / "client/yume.json"

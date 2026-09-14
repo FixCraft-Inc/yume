@@ -668,10 +668,20 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
     server_options.route_provider = routes;
     if (declared) {
         runner.sync([&] {
-            auto missing_policy = NativeEndpoint::create(runner.context, server_config,
-                kit / "server", server_bindings, server_options);
-            CHECK(!missing_policy.ok() &&
-                missing_policy.status().code() == StatusCode::FailedPrecondition);
+            // Configured destinations are the request authority. The application
+            // callback is an optional further restriction.
+            auto config_options = server_options;
+            config_options.route_provider = take(AsioDirectRouteProvider::create(runner.context,
+                [](const AuthorizedRouteRequest&, const RouteDestination&) {
+                    return Status(StatusCode::PermissionDenied);
+                }));
+            auto config_only = NativeEndpoint::create(runner.context, server_config,
+                kit / "server", server_bindings, std::move(config_options));
+            CHECK(config_only.ok());
+            config_only.value()->close();
+        });
+        runner.sync([] {}); // Drain that listener close before later binds.
+        runner.sync([&] {
             server_options.route_authorization = policy;
             auto missing_provider_options = server_options;
             missing_provider_options.route_provider.reset();
@@ -726,6 +736,12 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
         "localhost", port))).ok());
     CHECK(!open_route("denied", take(RouteDestination::ipv4(protocol,
         {127U, 0U, 0U, 1U}, port))).ok());
+    if (declared) {
+        // 127.0.0.2 is outside the configured 127.0.0.1/32. Configuration
+        // refuses it before the application policy, resolution or a socket.
+        CHECK(!open_route("echo", take(RouteDestination::ipv4(protocol,
+            {127U, 0U, 0U, 2U}, port))).ok());
+    }
     runner.sync([&] {
         CHECK(request_checks == 1U); // Credential refusal preceded destination policy.
         CHECK(resolved_checks == 0U && protected_sockets == 0U);

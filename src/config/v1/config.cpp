@@ -6,6 +6,7 @@
 
 #include "config/v1/config.hpp"
 
+#include "common/egress_address.hpp"
 #include "common/service_name.hpp"
 
 #include <algorithm>
@@ -119,6 +120,13 @@ std::string ReadString(const Json& value,
              "must be at most " + std::to_string(maximum) + " bytes");
     }
     return text;
+}
+
+bool ReadBoolean(const Json& value, std::string pointer) {
+    if (!value.is_boolean()) {
+        Fail(std::move(pointer), "must be a boolean");
+    }
+    return value.get<bool>();
 }
 
 std::uint32_t ReadBoundedUnsigned(const Json& value,
@@ -661,6 +669,50 @@ std::string ParseInterfaceName(const Json& value, const std::string& pointer) {
     return name;
 }
 
+DestinationPolicy ParseDestinations(const Json& value,
+                                    const std::string& pointer) {
+    CheckClosedObject(value, pointer, {"public", "networks"},
+                      {"public", "networks"});
+    const bool public_addresses =
+        ReadBoolean(value.at("public"), JoinPointer(pointer, "public"));
+    const std::string networks_pointer = JoinPointer(pointer, "networks");
+    const auto& networks = value.at("networks");
+    if (!networks.is_array()) {
+        Fail(networks_pointer, "must be an array");
+    }
+    if (networks.size() > kMaxDestinationNetworks) {
+        Fail(networks_pointer,
+             "must contain at most " + std::to_string(kMaxDestinationNetworks) +
+                 " networks");
+    }
+    std::vector<common::IpNetwork> parsed;
+    parsed.reserve(networks.size());
+    for (std::size_t index = 0; index < networks.size(); ++index) {
+        const std::string item_pointer = IndexPointer(networks_pointer, index);
+        const std::string text = ReadString(networks.at(index), item_pointer,
+                                            common::kMaxIpNetworkTextBytes);
+        const auto network = common::parse_canonical_ip_network(text);
+        if (!network) {
+            Fail(item_pointer,
+                 "must be a canonical IPv4 or IPv6 network with zero host bits");
+        }
+        if (common::ip_network_never_allowed(*network)) {
+            Fail(item_pointer,
+                 "can never match a destination: unspecified, multicast and "
+                 "reserved space is refused, and IPv4-mapped destinations use "
+                 "IPv4 networks");
+        }
+        if (std::find(parsed.begin(), parsed.end(), *network) != parsed.end()) {
+            Fail(item_pointer, "duplicate destination network");
+        }
+        parsed.push_back(*network);
+    }
+    if (!public_addresses && parsed.empty()) {
+        Fail(pointer, "must permit public addresses or at least one network");
+    }
+    return DestinationPolicy(public_addresses, std::move(parsed));
+}
+
 std::vector<Adapter> ParseAdapters(const Json& adapters,
                                    Role role,
                                    const std::vector<Service>& services) {
@@ -746,8 +798,8 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             continue;
         }
 
-        CheckClosedObject(adapter, pointer, {"kind", "service"},
-                          {"kind", "service"});
+        CheckClosedObject(adapter, pointer, {"kind", "service", "destinations"},
+                          {"kind", "service", "destinations"});
         if (role != Role::Server) {
             Fail(kind_pointer, "direct adapters are server-only");
         }
@@ -757,14 +809,20 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
         if (!direct_services.emplace(kind, service).second) {
             Fail(service_pointer, "duplicate direct adapter service and kind");
         }
+        const std::string destinations_pointer =
+            JoinPointer(pointer, "destinations");
         if (kind == AdapterKind::DirectTcp) {
             RequireService(services, service, ServiceKind::Stream,
                            service_pointer);
-            parsed.emplace_back(DirectTcpAdapter(service));
+            parsed.emplace_back(DirectTcpAdapter(
+                service, ParseDestinations(adapter.at("destinations"),
+                                           destinations_pointer)));
         } else {
             RequireService(services, service, ServiceKind::Packet,
                            service_pointer);
-            parsed.emplace_back(DirectUdpAdapter(service));
+            parsed.emplace_back(DirectUdpAdapter(
+                service, ParseDestinations(adapter.at("destinations"),
+                                           destinations_pointer)));
         }
     }
     return parsed;

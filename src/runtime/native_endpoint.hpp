@@ -38,18 +38,18 @@ struct NativeEndpointOptions final {
     // addresses avoid system resolution; they never replace TLS identity.
     std::string connection_address;
     providers::AsioTcpSocketProtector socket_protector;
-    // Optional, explicitly composed destination routing. Use this endpoint's
-    // execution context. The engine supplies this provider to route handlers.
-    // Each handler must authorize destination access; the Asio route provider
-    // also requires explicit policy for every selected numeric address. No default egress
-    // authority is granted here. A successful endpoint owns cancellation of
+    // Explicitly composed destination routing, required by configured direct
+    // adapters. Use this endpoint's execution context. The engine supplies this
+    // provider to route handlers. The endpoint cannot see addresses the
+    // provider resolves, so build it with NativeEgressPolicy::authorize_resolved
+    // for this same configuration. A successful endpoint owns cancellation of
     // this instance, which must not be shared with another live endpoint.
     std::shared_ptr<engine::RouteProvider> route_provider;
-    // Required for configured direct_tcp/direct_udp adapters. Called after
-    // credential service authorization and before DNS or socket creation.
-    // Must authorize the authenticated identity, service and destination;
-    // exceptions fail closed. It grants no resolved-address authority and is
-    // rejected when there are no configured direct adapters to consume it.
+    // Optional further restriction for configured direct_tcp/direct_udp
+    // adapters. Their schema-1 destinations are always enforced first, after
+    // credential service authorization and before DNS or socket creation. This
+    // callback runs only when they permit the OPEN and can only refuse more.
+    // Exceptions fail closed. It is rejected when no direct adapter is configured.
     std::function<engine::Status(const engine::StreamOpenContext&)> route_authorization;
 };
 
@@ -67,10 +67,11 @@ struct NativeAcceptOptions final {
 // Config and protected credentials are loaded before publishing any listener.
 // Every configured service needs a concrete handler; per-identity capability
 // authorization wraps that handler and is applied independently to every OPEN.
-// direct_tcp/direct_udp declarations create DirectRouteHandlers using the
-// explicit route provider and policy above. Supply bindings only for the other
-// services; duplicate binding/declaration ownership is refused. SOCKS5 and
-// packet/TUN declarations remain unsupported and fail creation.
+// direct_tcp/direct_udp declarations create DirectRouteHandlers that enforce
+// their configured destinations through NativeEgressPolicy and use the route
+// provider above. Supply bindings only for the other services. Duplicate
+// binding/declaration ownership is refused. SOCKS5 and packet/TUN declarations
+// remain unsupported and fail creation.
 //
 // create(), async_start_session(), start_accepting(), listener_endpoint() and
 // session operations require the supplied single-runner context. The caller

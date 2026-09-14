@@ -17,6 +17,8 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include "common/ip_network.hpp"
+
 namespace yume::config::v1 {
 
 inline constexpr std::uint32_t kSchema = 1;
@@ -26,6 +28,7 @@ inline constexpr std::size_t kMaxFileReferenceBytes = 4096;
 inline constexpr std::size_t kMaxServices = 64;
 inline constexpr std::size_t kMaxAdapters = 16;
 inline constexpr std::size_t kMaxListenAddresses = 16;
+inline constexpr std::size_t kMaxDestinationNetworks = 64;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -326,26 +329,54 @@ private:
     std::uint16_t mtu_;
 };
 
+// Destinations a direct adapter may reach. Public addresses are globally
+// reachable unicast addresses. Each network also permits its explicit prefix,
+// including private or loopback space. Unspecified, multicast and reserved
+// addresses are never reachable. A policy permits at least one destination.
+class DestinationPolicy final {
+public:
+    DestinationPolicy(bool public_addresses,
+                      std::vector<common::IpNetwork> networks)
+        : public_addresses_(public_addresses), networks_(std::move(networks)) {}
+
+    bool public_addresses() const noexcept { return public_addresses_; }
+    const std::vector<common::IpNetwork>& networks() const noexcept {
+        return networks_;
+    }
+
+private:
+    bool public_addresses_;
+    std::vector<common::IpNetwork> networks_;
+};
+
 class DirectTcpAdapter final {
 public:
-    explicit DirectTcpAdapter(std::string service)
-        : service_(std::move(service)) {}
+    DirectTcpAdapter(std::string service, DestinationPolicy destinations)
+        : service_(std::move(service)), destinations_(std::move(destinations)) {}
 
     const std::string& service() const noexcept { return service_; }
+    const DestinationPolicy& destinations() const noexcept {
+        return destinations_;
+    }
 
 private:
     std::string service_;
+    DestinationPolicy destinations_;
 };
 
 class DirectUdpAdapter final {
 public:
-    explicit DirectUdpAdapter(std::string service)
-        : service_(std::move(service)) {}
+    DirectUdpAdapter(std::string service, DestinationPolicy destinations)
+        : service_(std::move(service)), destinations_(std::move(destinations)) {}
 
     const std::string& service() const noexcept { return service_; }
+    const DestinationPolicy& destinations() const noexcept {
+        return destinations_;
+    }
 
 private:
     std::string service_;
+    DestinationPolicy destinations_;
 };
 
 using Adapter = std::variant<Socks5Adapter,

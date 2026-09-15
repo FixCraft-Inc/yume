@@ -135,6 +135,93 @@ def check_optimistic_refusal(socks_port: int) -> None:
         raise session.SessionFailure("optimistic data bypassed destination policy")
 
 
+def udp_request(host: str, port: int, payload: bytes) -> bytes:
+    """A SOCKS5 UDP datagram for an IPv4 destination."""
+    return b"\x00\x00\x00\x01" + socket.inet_aton(host) + port.to_bytes(2, "big") + payload
+
+
+def udp_associate(socks_port: int) -> tuple[socket.socket, tuple[str, int]]:
+    """Returns the control connection and the relay address the reply names."""
+    control = socket.create_connection(("127.0.0.1", socks_port), timeout=10)
+    try:
+        control.sendall(b"\x05\x01\x00")
+        if session.recv_exact(control, 2) != b"\x05\x00":
+            raise session.SessionFailure("UDP ASSOCIATE: method selection failed")
+        control.sendall(b"\x05\x03\x00\x01\x00\x00\x00\x00\x00\x00")
+        reply = session.recv_exact(control, 10)
+        if reply[:4] != b"\x05\x00\x00\x01" or reply[4:8] != socket.inet_aton("127.0.0.1"):
+            raise session.SessionFailure(f"UDP ASSOCIATE reply {reply.hex()}")
+        return control, ("127.0.0.1", int.from_bytes(reply[8:10], "big"))
+    except BaseException:
+        control.close()
+        raise
+
+
+def expect_silence(receiver: socket.socket, what: str) -> None:
+    receiver.settimeout(0.5)
+    try:
+        receiver.recvfrom(65536)
+    except socket.timeout:
+        return
+    finally:
+        receiver.settimeout(10)
+    raise session.SessionFailure(what)
+
+
+def check_udp_associate(socks_port: int) -> None:
+    # An echo target inside 127.0.0.1/32 and a live listener outside it, so a
+    # policy bypass would be seen rather than refused by the kernel.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as target, \
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as outside, \
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as app, \
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        target.bind(("127.0.0.1", 0))
+        outside.bind(("127.0.0.2", 0))
+        app.bind(("127.0.0.1", 0))
+        for sock in (target, outside, app):
+            sock.settimeout(10)
+        target_port = target.getsockname()[1]
+        control, relay = udp_associate(socks_port)
+        with control:
+            payload = bytes(range(256)) * 16
+            app.sendto(udp_request("127.0.0.1", target_port, payload), relay)
+            data, exit_address = target.recvfrom(65536)
+            if data != payload:
+                raise session.SessionFailure("UDP payload changed on its way out")
+            # UDP allows an empty datagram. YTP cannot carry it, and it must
+            # not end the flow that the next reply uses.
+            target.sendto(b"", exit_address)
+            target.sendto(payload[::-1], exit_address)
+            reply, source = app.recvfrom(65536)
+            if source != relay or reply != udp_request("127.0.0.1", target_port, payload[::-1]):
+                raise session.SessionFailure("UDP reply differs or came from elsewhere")
+
+            outside_port = outside.getsockname()[1]
+            app.sendto(udp_request("127.0.0.2", outside_port, b"must not arrive"), relay)
+            app.sendto(udp_request("127.0.0.1", target_port, b"after refusal"), relay)
+            data, _ = target.recvfrom(65536)
+            if data != b"after refusal":
+                raise session.SessionFailure("UDP traffic stopped after a refused destination")
+            expect_silence(outside, "UDP ASSOCIATE bypassed configured destinations")
+            probe.connect(relay)
+
+        # The relay closes with its TCP connection. A connected probe then
+        # sees the closed port as a refused connection.
+        deadline = time.monotonic() + 10
+        probe.settimeout(0.05)
+        while True:
+            if time.monotonic() > deadline:
+                raise session.SessionFailure("UDP relay stayed open after its TCP connection closed")
+            try:
+                probe.send(b"x")
+                probe.recv(1)
+            except ConnectionRefusedError:
+                break
+            except socket.timeout:
+                continue
+    print("UDP ASSOCIATE verified: datagrams both ways, destination refusal, relay closed with its TCP connection")
+
+
 def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) -> None:
     environment = session.openssl_environment(openssl)
     with tempfile.TemporaryDirectory(prefix="yume-native-runtime-") as temporary:
@@ -181,6 +268,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
             check_optimistic_data(socks_port)
             check_optimistic_refusal(socks_port)
             check_payload(socks_port, "127.0.0.1", target_port)
+            check_udp_associate(socks_port)
 
             session.stop_process(client, "yume-ytp1")
             client = None

@@ -72,6 +72,11 @@ def run(binary: Path, openssl: Path) -> None:
             packet_name = "direct-udp.json" if config["role"] == "server" else "routes-udp.json"
             path.with_name(packet_name).write_text(json.dumps(packets), encoding="utf-8")
             if config["role"] == "server":
+                # Packet services without adapters, so a test handler can hold
+                # each authorized OPEN before it accepts the stream.
+                held = dict(packets, adapters=[])
+                path.with_name("packet-services.json").write_text(json.dumps(held), encoding="utf-8")
+            if config["role"] == "server":
                 unsupported = dict(packets, adapters=[
                     {"kind": "packet", "service": "echo", "interface_name": "ytptest0", "mtu": 1400}
                 ])

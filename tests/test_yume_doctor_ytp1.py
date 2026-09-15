@@ -216,6 +216,34 @@ class YumeDoctorTests(unittest.TestCase):
         result = self.run_doctor(server_path)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_socks5_udp_service_is_validated(self) -> None:
+        client_path = self.case / "client/yume.json"
+        original = json.loads(client_path.read_text())
+        self.assertEqual(original["adapters"][0]["udp_service"], "udp")
+        for value, expected in (
+            ("tcp", "/adapters/0/udp_service: requires a packet service"),
+            ("missing", "/adapters/0/udp_service: requires a packet service"),
+            (
+                "Udp",
+                "/adapters/0/udp_service: must use lowercase ASCII namespace segments",
+            ),
+            (7, "/adapters/0/udp_service: must be a string"),
+        ):
+            document = copy.deepcopy(original)
+            document["adapters"][0]["udp_service"] = value
+            client_path.write_text(json.dumps(document))
+            os.chmod(client_path, 0o600)
+            result = self.run_doctor(client_path)
+            self.assertEqual(result.returncode, 1, value)
+            self.assertIn(expected, result.stderr)
+        # Without udp_service the adapter refuses UDP ASSOCIATE and stays valid.
+        document = copy.deepcopy(original)
+        del document["adapters"][0]["udp_service"]
+        client_path.write_text(json.dumps(document))
+        os.chmod(client_path, 0o600)
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_client_connect_address_is_validated(self) -> None:
         client_path = self.case / "client/yume.json"
         original = json.loads(client_path.read_text())
@@ -308,13 +336,14 @@ class YumeDoctorTests(unittest.TestCase):
     def test_adapter_instance_collisions_are_rejected(self) -> None:
         config_path = self.case / "client/yume.json"
         client = json.loads(config_path.read_text())
+        duplicate = len(client["adapters"])
         client["adapters"].append(copy.deepcopy(client["adapters"][0]))
         config_path.write_text(json.dumps(client))
         os.chmod(config_path, 0o600)
         result = self.run_doctor(config_path)
         self.assertEqual(result.returncode, 1)
         self.assertIn(
-            "/adapters/2/listen_port: duplicate SOCKS5 listen address and port",
+            f"/adapters/{duplicate}/listen_port: duplicate SOCKS5 listen address and port",
             result.stderr,
         )
 

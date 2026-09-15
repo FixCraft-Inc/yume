@@ -26,15 +26,17 @@ struct NativeClientRuntimeOptions final {
     // Dial, TLS, carrier and AUTH for one attempt.
     std::chrono::milliseconds start_timeout{30'000};
     std::chrono::milliseconds reconnect_initial{1'000};
+    // Also how long a session must stay up before its end resets the backoff
+    // and reconnects at once. A shorter session counts as a failed attempt.
     std::chrono::milliseconds reconnect_max{30'000};
     NativeSocks5Limits socks5;
 };
 
 // Runs one schema-1 client configuration: one authenticated session, replaced
 // when the endpoint reports closure, and the configured SOCKS5 listeners over
-// it. Failed attempts use exponential backoff. Server-initiated OPENs are
-// refused. Packet/TUN adapters are not
-// implemented and fail creation.
+// it. Failed attempts and short sessions use exponential backoff.
+// Server-initiated OPENs are refused. Packet/TUN adapters are not implemented
+// and fail creation.
 //
 // All calls run on the supplied single-runner context. The caller closes the
 // runtime, calls finish() and drains. Reports carry no secrets.

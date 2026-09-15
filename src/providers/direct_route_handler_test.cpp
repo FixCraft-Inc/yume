@@ -1136,6 +1136,19 @@ void test_packet_boundaries_and_credit() {
     stream->complete_write();
     CHECK(channel->receive_issues == 2);
 
+    // UDP allows an empty datagram, but a YTP packet cannot be empty. The
+    // bridge drops it and keeps the flow reading instead of closing it.
+    channel->deliver("");
+    CHECK(stream->write_issues == 1);
+    CHECK(stream->close_calls == 0);
+    CHECK(channel->receive_issues == 3);
+    channel->deliver("after-empty");
+    CHECK(stream->write_issues == 2);
+    CHECK((stream->writes ==
+           std::vector<std::string>{"reply-packet", "after-empty"}));
+    stream->complete_write();
+    CHECK(channel->receive_issues == 4);
+
     stream->end();
     CHECK(stream->close_calls == 1);
     CHECK(trace->cancel_calls == 1);

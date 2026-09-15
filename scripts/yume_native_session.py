@@ -191,33 +191,30 @@ def provision_kit(kit: Path, server_name: str, port: int, environment: dict[str,
 
 def configure_kit(kit: Path, *, listen_address: str, networks: Iterable[str],
                   connect_address: str, socks_port: int) -> None:
-    """One TCP service, one direct adapter with explicit networks, one SOCKS5 listener."""
-    service = [{"name": "tcp", "kind": "stream", "max_concurrent_streams": 64}]
+    """Points a generated kit at one test network without changing what it runs.
+
+    Services, adapters and identity grants stay as setup wrote them. Only the
+    server listener, the direct adapters' destinations, the client's dial
+    address and its SOCKS5 port change.
+    """
+    permitted = list(networks)
     server_path = kit / "server/yumed.json"
     server = json.loads(server_path.read_text(encoding="utf-8"))
     server["endpoint"]["listen_addresses"] = [listen_address]
-    server["services"] = service
-    server["adapters"] = [{
-        "kind": "direct_tcp", "service": "tcp",
-        "destinations": {"public": False, "networks": list(networks)},
-    }]
+    for adapter in server["adapters"]:
+        if adapter["kind"] not in {"direct_tcp", "direct_udp"}:
+            raise SessionFailure(f"unexpected server adapter {adapter['kind']!r} in the kit")
+        adapter["destinations"] = {"public": False, "networks": list(permitted)}
     server_path.write_text(json.dumps(server, indent=2), encoding="utf-8")
 
     client_path = kit / "client/yume.json"
     client = json.loads(client_path.read_text(encoding="utf-8"))
     client["endpoint"]["connect_address"] = connect_address
-    client["services"] = service
-    client["adapters"] = [{
-        "kind": "socks5", "service": "tcp",
-        "listen_address": "127.0.0.1", "listen_port": socks_port,
-    }]
+    socks = [adapter for adapter in client["adapters"] if adapter["kind"] == "socks5"]
+    if len(socks) != 1:
+        raise SessionFailure("the kit must declare exactly one SOCKS5 adapter")
+    socks[0]["listen_port"] = socks_port
     client_path.write_text(json.dumps(client, indent=2), encoding="utf-8")
-
-    authorization = kit / "server/credentials/authorized-keys.json"
-    store = json.loads(authorization.read_text(encoding="utf-8"))
-    for entry in store["keys"]:
-        entry["capabilities"] = [{"service": "tcp", "kind": "stream"}]
-    authorization.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
 
 def openssl_environment(openssl: Path) -> dict[str, str]:

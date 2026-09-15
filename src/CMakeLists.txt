@@ -668,6 +668,7 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
                 runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
                 runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
                 runtime/native_socks5.cpp runtime/native_socks5.hpp
+                runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
                 runtime/socks5_request.cpp runtime/socks5_request.hpp)
             target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
             target_link_libraries(yume_native_runtime

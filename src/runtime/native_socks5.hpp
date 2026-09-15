@@ -21,22 +21,39 @@
 namespace yume::runtime {
 
 struct NativeSocks5Limits final {
+    // Local connections still in their handshake or holding a UDP association.
+    // Accepting pauses at this count. Every local TCP socket, bridged CONNECT
+    // streams included, also counts toward the same bound in the channel owner.
     std::size_t max_connections{256U};
     // The greeting and the request must both arrive within this time.
     std::chrono::milliseconds handshake_timeout{10'000};
-    // Bounds one authenticated OPEN, including the server's route setup.
-    // Expiry cancels that OPEN and replies with SOCKS5 TTL expired (0x06).
+    // Bounds one authenticated OPEN, including the server's route setup. For
+    // CONNECT, expiry cancels the OPEN and replies with TTL expired (0x06). For
+    // a UDP destination, expiry cancels the OPEN and starts the retry delay.
     std::chrono::milliseconds open_timeout{30'000};
+    // Destinations one UDP association may use at once. Datagrams for another
+    // destination are dropped until one of them closes.
+    std::size_t max_udp_destinations{32U};
+    // A UDP destination with no datagram in either direction for this long
+    // closes and releases its stream.
+    std::chrono::milliseconds udp_idle_timeout{60'000};
+    // Datagrams to a UDP destination whose OPEN was refused, expired or ended
+    // are dropped for this long before a new OPEN is tried.
+    std::chrono::milliseconds udp_retry_delay{1'000};
 };
 
 // Returns the current active session, or null when none is available.
 using NativeSessionSource = std::function<std::shared_ptr<engine::SessionEngine>()>;
 
-// One loopback SOCKS5 listener. A CONNECT request becomes an authenticated
-// byte-stream OPEN on the configured service. After the peer accepts it, the
-// local socket and the stream are joined by the shared route bridge. Only the
-// no-authentication method and CONNECT are offered. A request is refused when
-// no session is active rather than queued.
+// One loopback SOCKS5 listener offering only the no-authentication method.
+//
+// CONNECT becomes an authenticated byte-stream OPEN on the adapter's service.
+// After the peer accepts it, the local socket and the stream are joined by the
+// shared route bridge. When the adapter names a UDP service, UDP ASSOCIATE
+// starts a NativeSocks5UdpAssociation that lasts as long as the client's TCP
+// connection. Without one, UDP ASSOCIATE is refused as unsupported. BIND is
+// always refused. A request made while no session is active is refused rather
+// than queued.
 //
 // Creation, close and every callback run on the supplied single-runner
 // context. The caller closes the adapter, calls finish() and drains. Bridged
@@ -54,7 +71,8 @@ public:
     ~NativeSocks5Adapter() noexcept;
 
     boost::asio::ip::tcp::endpoint local_endpoint() const noexcept;
-    // Stops accepting and closes every connection not yet handed to the bridge.
+    // Stops accepting and closes every connection not yet handed to the bridge,
+    // including every UDP association.
     void close() noexcept;
 
 private:

@@ -302,21 +302,29 @@ class Socks5Adapter final {
 public:
     Socks5Adapter(std::string service,
                   std::string listen_address,
-                  std::uint16_t listen_port)
+                  std::uint16_t listen_port,
+                  std::optional<std::string> udp_service = std::nullopt)
         : service_(std::move(service)),
           listen_address_(std::move(listen_address)),
-          listen_port_(listen_port) {}
+          listen_port_(listen_port),
+          udp_service_(std::move(udp_service)) {}
 
     const std::string& service() const noexcept { return service_; }
     const std::string& listen_address() const noexcept {
         return listen_address_;
     }
     std::uint16_t listen_port() const noexcept { return listen_port_; }
+    // The packet service UDP ASSOCIATE opens. Without one, the adapter
+    // refuses UDP ASSOCIATE.
+    const std::optional<std::string>& udp_service() const noexcept {
+        return udp_service_;
+    }
 
 private:
     std::string service_;
     std::string listen_address_;
     std::uint16_t listen_port_;
+    std::optional<std::string> udp_service_;
 };
 
 class PacketAdapter final {

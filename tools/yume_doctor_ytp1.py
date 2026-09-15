@@ -462,6 +462,7 @@ def _validate_adapters(
             adapter = _closed_object(
                 item,
                 pointer,
+                {"kind", "service", "listen_address", "listen_port", "udp_service"},
                 {"kind", "service", "listen_address", "listen_port"},
             )
             if role != "client":
@@ -480,6 +481,21 @@ def _validate_adapters(
                     "duplicate SOCKS5 listen address and port",
                 )
             socks_listeners.add((listen_address, listen_port))
+            if "udp_service" in adapter:
+                # UDP ASSOCIATE opens this packet service. Without it the
+                # adapter refuses UDP ASSOCIATE.
+                udp_service = _string(
+                    adapter["udp_service"],
+                    f"{pointer}/udp_service",
+                    MAX_SERVICE_NAME_BYTES,
+                )
+                if not _valid_service_name(udp_service):
+                    _fail(
+                        f"{pointer}/udp_service",
+                        "must use lowercase ASCII namespace segments",
+                    )
+                if (udp_service, "packet") not in services:
+                    _fail(f"{pointer}/udp_service", "requires a packet service")
             required_kind = "stream"
         elif kind == "packet":
             adapter = _closed_object(

@@ -291,6 +291,24 @@ void TestValidDocumentsAndTypedValues() {
     Check(std::holds_alternative<PacketAdapter>(
               Parse(packet).adapters().front()),
           "packet adapter was not typed");
+
+    const Config without_udp = Parse(ClientDocument());
+    Check(!std::get<Socks5Adapter>(without_udp.adapters().front())
+               .udp_service(),
+          "a SOCKS5 adapter without udp_service gained one");
+    Json udp = ClientDocument();
+    udp["adapters"][0]["udp_service"] = "packet";
+    const Config udp_config = Parse(udp);
+    const auto& socks = std::get<Socks5Adapter>(udp_config.adapters().front());
+    Check(socks.udp_service() && *socks.udp_service() == "packet",
+          "SOCKS5 udp_service was not retained");
+    // UDP ASSOCIATE needs a declared packet service.
+    udp["adapters"][0]["udp_service"] = "tcp";
+    ExpectError(udp, "/adapters/0/udp_service");
+    udp["adapters"][0]["udp_service"] = "missing";
+    ExpectError(udp, "/adapters/0/udp_service");
+    udp["adapters"][0]["udp_service"] = 7;
+    ExpectError(udp, "/adapters/0/udp_service");
 }
 
 void TestTopLevelClosureAndVersion() {

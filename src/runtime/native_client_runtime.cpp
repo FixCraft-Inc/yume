@@ -113,7 +113,7 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
             return;
         }
         session = std::move(result).take_value();
-        backoff = options.reconnect_initial;
+        authenticated_at = Clock::now();
         say("session authenticated");
     }
 
@@ -121,11 +121,20 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
         if (closing || session != ended) return;
         session.reset();
         say("session ended, reconnecting");
-        connect();
+        // Reconnect at once only after a session that stayed up for the longest
+        // backoff. A path that drops every connection right after AUTH would
+        // otherwise redial in a tight loop, which stands out on the wire and
+        // uses up entries in the server's admission replay cache, shared by
+        // every client.
+        if (Clock::now() - authenticated_at >= options.reconnect_max) {
+            backoff = options.reconnect_initial;
+            connect();
+        } else {
+            schedule_reconnect();
+        }
     }
 
-    // Failed attempts back off; an established session ending starts the first
-    // replacement attempt directly from its endpoint notification.
+    // Failed attempts and short sessions wait, doubling up to reconnect_max.
     void schedule_reconnect() noexcept {
         if (closing) return;
         const auto delay = backoff;
@@ -158,6 +167,7 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
     NativeClientRuntimeOptions options;
     Timer timer;
     std::chrono::milliseconds backoff;
+    Clock::time_point authenticated_at{};
     std::shared_ptr<NativeEndpoint> endpoint;
     std::vector<config::v1::Socks5Adapter> socks5;
     std::vector<std::shared_ptr<NativeSocks5Adapter>> adapters;

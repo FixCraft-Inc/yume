@@ -686,7 +686,7 @@ plugins remain a separate design decision.
 The first complete YTP/1 path targets direct routing, SOCKS5, named-service,
 and packet adapters. Native endpoints accept configured direct TCP and UDP
 routes under configured destinations, and development processes run SOCKS5
-CONNECT. SOCKS5 UDP, named-service and packet adapters are not wired yet. GUI, direct
+CONNECT and UDP ASSOCIATE. Named-service and packet adapters are not wired yet. GUI, direct
 single-hop federation, directory, relay applications, reverse administration,
 and product-specific codecs remain separate transport-v2 surfaces. Transit is
 design-only, and command execution is reserved and disabled. None is a

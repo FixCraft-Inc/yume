@@ -40,10 +40,12 @@ LIMITS = {
     "max_packet_bytes": 65_535,
     "max_packet_batch": 64,
 }
+# What the development runtimes serve: TCP through SOCKS5 CONNECT and
+# direct_tcp, UDP through SOCKS5 UDP ASSOCIATE and direct_udp. A packet/TUN
+# service belongs here once a runtime implements that adapter.
 SERVICES = (
     {"name": "tcp", "kind": "stream", "max_concurrent_streams": 256},
     {"name": "udp", "kind": "packet", "max_concurrent_streams": 256},
-    {"name": "packet", "kind": "packet", "max_concurrent_streams": 256},
 )
 CLIENT_NAME = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,61}[A-Za-z0-9])?\Z"
@@ -447,12 +449,6 @@ def _server_config(port: int) -> dict[str, object]:
                 "service": "udp",
                 "destinations": _public_destinations(),
             },
-            {
-                "kind": "packet",
-                "service": "packet",
-                "interface_name": "yume0",
-                "mtu": 1420,
-            },
         ],
         "limits": dict(LIMITS),
     }
@@ -482,12 +478,7 @@ def _client_config(host: str, port: int) -> dict[str, object]:
                 "service": "tcp",
                 "listen_address": "127.0.0.1",
                 "listen_port": 1080,
-            },
-            {
-                "kind": "packet",
-                "service": "packet",
-                "interface_name": "yume0",
-                "mtu": 1420,
+                "udp_service": "udp",
             },
         ],
         "limits": dict(LIMITS),
@@ -594,12 +585,6 @@ def _write_service_manifests(server: Path, client: Path) -> None:
             "service": "udp",
             "destinations": _public_destinations(),
         },
-        "packet": {
-            "kind": "packet",
-            "service": "packet",
-            "interface_name": "yume0",
-            "mtu": 1420,
-        },
     }
     for service in SERVICES:
         name = service["name"]
@@ -616,18 +601,7 @@ def _write_service_manifests(server: Path, client: Path) -> None:
                 "service": "tcp",
                 "listen_address": "127.0.0.1",
                 "listen_port": 1080,
-            },
-        },
-    )
-    _write_json(
-        client_adapters / "packet.json",
-        {
-            "schema": 1,
-            "adapter": {
-                "kind": "packet",
-                "service": "packet",
-                "interface_name": "yume0",
-                "mtu": 1420,
+                "udp_service": "udp",
             },
         },
     )
@@ -639,7 +613,7 @@ def _write_launchers(server: Path, client: Path) -> None:
         """#!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-exec "${YUMED_BIN:-yumed}" --config yumed.json
+exec "${YUMED_BIN:-yumed-ytp1}" --config yumed.json
 """,
         0o700,
     )
@@ -648,7 +622,7 @@ exec "${YUMED_BIN:-yumed}" --config yumed.json
         """#!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-exec "${YUME_BIN:-yume}" --config yume.json
+exec "${YUME_BIN:-yume-ytp1}" --config yume.json
 """,
         0o700,
     )
@@ -876,7 +850,7 @@ def init_kit(host: str, output_path: Path, port: int, client_name: str) -> Path:
                 "providers": dict(SUITE),
                 "profile": PROFILE,
                 "suite": SUITE["id"],
-                "runtime_status": "unwired-development-foundation",
+                "runtime_status": "development-runtimes",
                 "server": {
                     "host": host,
                     "port": port,

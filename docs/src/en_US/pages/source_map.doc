@@ -79,7 +79,7 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `abi/` | The opt-in C ABI translation unit: handles, input validation, diagnostics, callback rules, and backend leasing. It parses schema 1 through `config/v1` and reaches each runtime only through its embed backend. Without the native provider graph, schema-1 start is unsupported. |
 | `facade/session/` | The embedding seam `endpoint_backend.hpp` and its two backends. `transport_v2_backend.cpp` belongs to `yume_embed`. `ytp1_backend.cpp` is `yume_embed_ytp1`, which runs `NativeEndpoint` on its own execution thread and links no transport-v2 target or BaseFWX. |
 | `include/yume/` | The public candidate C header. It is build-tree-only and unfrozen. |
-| `common/` | Dependency-pure contracts shared across replacement layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, and the egress address classes that configuration and native policy share |
+| `common/` | Dependency-pure contracts shared across replacement layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, and the UDP datagram budget both SOCKS5 UDP relays use |
 @end
 
 ### Replacement foundation
@@ -90,7 +90,7 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `engine/` | Dependency-pure contracts: `ByteChannel`, `SecureChannel`, `Carrier`, `FrontDoor`, `SessionEngine` |
 | `ytp/` | YTP/1 protocol kernel and security domains. Protocol and AUTH/key-schedule codecs share internal big-endian operations in `ytp/detail/byte_order.hpp`; each codec owns its bounds checks and error order. May not include the engine |
 | `providers/` | Opt-in OpenSSL security, TLS channels, Asio TCP/UDP routes and client/accepted TCP channels, H2 carrier, native FrontDoor and configured static cover |
-| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*` and `native_cli.cpp` build the development `yumed-ytp1` and `yume-ytp1` processes |
+| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the development `yumed-ytp1` and `yume-ytp1` processes |
 | `admission/` | Shared path/authority parsing, private-context HMAC and bounded monotonic replay reservations; no protocol/runtime dependency |
 | `config/v1/` | Strict numeric schema 1 parser with RFC 6901 error pointers |
 @end
@@ -109,7 +109,7 @@ replacement merely because both builds pass. Follow actual target inputs:
 | TLS profile | `providers/ytp1_tls13_secure_channel.cpp` applies `core/stealth/tls_client_profile.*`, shared with transport v2; a published YTP channel still requires TLS 1.3 and H2 | Qualify actual provider output and full-session behavior; native profile configuration alone does not establish circumvention |
 | Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | Named-service and packet adapters. `facade/session/ytp1_backend.cpp` drives named streams for the ABI but still rejects adapter declarations |
 | Embedding | `abi/yume_c.cpp` selects `make_transport_v2_backend` or `make_ytp1_backend` by dialect. The YTP/1 backend carries named byte streams | Packet bindings, destination-routed OPEN, and production qualification of the schema-1 backend |
-| Applications | The default client/daemon use the transport-v2 graph. Development `yumed-ytp1`/`yume-ytp1` run direct routes and SOCKS5 CONNECT over `NativeEndpoint` | SOCKS5 UDP, named-service and packet/TUN adapters, qualification and the coordinated primary switch |
+| Applications | The default client/daemon use the transport-v2 graph. Development `yumed-ytp1`/`yume-ytp1` run direct routes and SOCKS5 CONNECT and UDP ASSOCIATE over `NativeEndpoint` | Named-service and packet/TUN adapters, qualification and the coordinated primary switch |
 @end
 
 `yume_h2_carrier` is the single build owner of the `core/stealth/` H2,
@@ -182,8 +182,8 @@ protocol rule.
 
 The following path is composed by the source-level native endpoint. The
 schema-1 ABI backend supplies named byte streams to it, and the development SOCKS5
-adapter supplies CONNECT byte streams. Packet adapters must still supply packets
-to the engine.
+adapter supplies CONNECT byte streams and UDP ASSOCIATE packets. A packet/TUN
+adapter must still supply IP packets to the engine.
 
 @table
 | Stage | Data and operation | Source owner |

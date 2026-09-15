@@ -19,14 +19,26 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   build produces `yumed-ytp1` and `yume-ytp1`. The daemon serves configured
   direct TCP/UDP adapters within their destinations. The client keeps one
   authenticated session with bounded reconnect and runs loopback SOCKS5
-  CONNECT listeners, joined to streams by the existing direct-route bridge.
+  listeners. CONNECT streams join the existing direct-route bridge.
   Payload sent before the CONNECT reply stays in the socket until the remote
   endpoint accepts the route; the bridge preserves it and the client's half-close.
   An OPEN deadline returns SOCKS5 0x06 (TTL expired); other cancellation keeps
   its existing status, and late acceptance cannot revive an expired request.
   `yume_native_runtime_test` carries a payload through SOCKS5, checks refusals
-  and requires clean SIGTERM exits. SOCKS5 UDP, named-service and packet/TUN
-  adapters remain unfinished, and the programs are not installed.
+  and requires clean SIGTERM exits. Named-service and packet/TUN adapters
+  remain unfinished, and the programs are not installed.
+- **SOCKS5 UDP ASSOCIATE.** A client `socks5` adapter that names a packet
+  `udp_service` relays UDP through a loopback socket tied to the client's TCP
+  connection. Each destination opens its own authenticated packet stream, so
+  identity grants and `direct_udp` destinations apply as they do to CONNECT.
+  Backlogs use the transport-v2 UDP budget of 64 datagrams and 1 MiB, now owned
+  by `common/udp_queue_budget.hpp`, and destinations are bounded, expire when
+  idle and wait before a refused OPEN is repeated. The schema-1 parser, doctor
+  and setup kit carry the new key. Endpoint and process tests cover traffic,
+  refusals, source locking, the budget and relay closure.
+- **Runnable development kit.** `yume-setup-ytp1` no longer declares the
+  unimplemented packet/TUN service, adapters and grant, so its kit starts
+  `yumed-ytp1` and `yume-ytp1` without edits. Its launchers name those programs.
 - **Client dial address.** Schema-1 clients may set `endpoint.connect_address`
   to dial a numeric address while TLS and admission still authenticate `host`.
 - **Evaluation tooling.** `scripts/ensure-ndpi.sh` builds pinned nDPI 6.0, or
@@ -229,8 +241,17 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Session closure and reconnect.** The native client reconnects from an
   endpoint notification instead of checking session state every second.
   Teardown settles pending engine callbacks before the endpoint frees the
-  session slot and reports closure on its context. Failed starts retain
-  exponential backoff.
+  session slot and reports closure on its context. Failed starts, and sessions
+  that end sooner than the longest backoff after authenticating, keep
+  exponential backoff. A path that drops each connection right after AUTH can
+  no longer drive a tight reconnect loop that uses up the server's shared
+  admission replay entries.
+- **Empty UDP datagrams.** The direct-route bridge drops an empty datagram from
+  a destination instead of closing the flow, since a YTP packet cannot be empty.
+- **GCC 11 allocation hooks.** The AUTH publication and admission replay
+  regressions now use the shared out-of-line test hooks as well. GCC 11 CI had
+  reported the AUTH publication test's inlined malloc/free pair as a mismatched
+  new/delete call. Both keep their injection points and cases.
 - **DNS route refusal.** Asynchronous OPEN permission failures now send the
   existing unauthorized CLOSE code, so SOCKS5 returns 0x02 instead of host
   unreachable. A Linux process test runs the production daemon with controlled

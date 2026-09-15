@@ -27,9 +27,9 @@ The current 0.3.0-dev1 tree does not install this client. A development build
 with every native provider produces
 **yume-ytp1**,
 which accepts **--config**, **--validate** and **--version**, keeps one
-authenticated session and runs the configured SOCKS5 CONNECT listeners.
-SOCKS5 UDP, named-service and packet adapters and production qualification are
-unfinished. A schema-1 endpoint in the build-tree C ABI carries named byte
+authenticated session and runs the configured SOCKS5 listeners, which offer
+CONNECT and UDP ASSOCIATE. Named-service and packet adapters and production
+qualification are unfinished. A schema-1 endpoint in the build-tree C ABI carries named byte
 streams through the same native endpoint.
 
 ## OPTIONS

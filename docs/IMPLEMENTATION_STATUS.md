@@ -172,7 +172,8 @@ cancellation settle the OPEN without connecting.
 Session teardown notifies the endpoint through reserved control dispatch.
 The endpoint frees the session slot before its optional `session_ended`
 callback runs on the endpoint context. The native client uses this notification
-to start reconnecting without polling. Failed attempts retain bounded
+to start reconnecting without polling. Failed attempts, and sessions that end
+sooner than the longest backoff after authenticating, retain bounded
 exponential backoff. Pending starts report failure through their own completion.
 
 Listener socket setup preserves OS permission refusal, address conflict,
@@ -187,8 +188,9 @@ loopback TLS/H2, composite AUTH, named bytes in both directions, simultaneous
 directional rekeys, half-close, refused service opens with a surviving session,
 idle accept survival, stalled AUTH deadlines and final handle cleanup. Lifecycle
 regressions cover closure from another thread, pending-read settlement before
-notification, reentrant slot reuse, callback exceptions, and client reconnect
-with SOCKS traffic through the replacement session.
+notification, reentrant slot reuse, callback exceptions, client reconnect
+with SOCKS traffic through the replacement session, and backoff after a session
+that ends right after AUTH.
 Deterministic pacing tests cover accept refusal, unschedulable retries,
 re-entrant completion, stopped listeners and close. Socket tests cover loop
 exclusivity, capacity recovery and a promoted carrier that never authenticates,
@@ -240,13 +242,14 @@ network and security policy have no CLI override. The daemon serves configured
 `direct_tcp`/`direct_udp` adapters and refuses a service without one, because
 only an embedding application can supply a named-service handler. The client
 keeps one authenticated session and starts a replacement when the endpoint
-reports closure. Failed attempts use bounded exponential backoff. It refuses
+reports closure. Failed attempts and short sessions use bounded exponential
+backoff. It refuses
 server-initiated OPENs and runs the configured loopback SOCKS5
 listeners. A CONNECT becomes an authenticated OPEN, and after the peer accepts
 it the socket and stream share the direct-route bridge. Payload sent with
 CONNECT stays unread in the socket until that bridge takes ownership. Only the
-no-authentication method and CONNECT are offered, and a request without an
-active session is refused rather than queued. A client may set
+no-authentication method, CONNECT and UDP ASSOCIATE are offered, and a request
+without an active session is refused rather than queued. A client may set
 `connect_address` to dial a numeric address while TLS and admission still
 authenticate `host`. `yume_native_runtime_test` provisions a kit, runs both
 processes, moves a payload through SOCKS5, checks refusal by configured
@@ -265,6 +268,22 @@ resolver and observes socket creation while running the production runtime.
 Refused sets open no sockets, return SOCKS5 reply 0x02, and leave the session
 usable. Asynchronous permission refusal uses the existing unauthorized CLOSE
 code instead of reporting a handler failure.
+UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
+relay accepts datagrams only from the requesting client and gives each
+destination its own authenticated packet OPEN, so identity grants and
+`direct_udp` destinations apply as they do to CONNECT. Backlogs follow the
+shared UDP policy of 64 datagrams and 1 MiB per budget, dropping the newest
+datagram when full. Destinations close after an idle timeout, refused ones wait
+a retry delay, and the association ends with its TCP connection. The route
+bridge drops an empty datagram from a destination instead of closing the flow,
+because a YTP packet cannot be empty. The native endpoint test runs UDP
+ASSOCIATE over the production daemon composition with real UDP sockets. It
+checks traffic both ways, an empty datagram from the destination, refusal by
+configured destinations and by a missing identity grant, source locking, the
+unsupported reply without a UDP service, relay closure, and the 64-datagram
+budget while an OPEN is held. `yume_native_runtime_test` repeats the traffic,
+refusal and closure checks between the two processes, which start from the
+generated setup kit's services and adapters.
 These programs are development runtimes: they are not installed and not
 qualified.
 
@@ -279,8 +298,7 @@ must not be advertised as working:
   the development standalone runtimes;
 - comprehensive real-carrier rekey, close-ordering and credit/backpressure
   qualification beyond the focused native-session regressions;
-- SOCKS5 UDP ASSOCIATE, named-service and packet/TUN adapters in the
-  standalone runtimes;
+- named-service and packet/TUN adapters in the standalone runtimes;
 - a public-ABI packet data path in either configuration dialect;
 - authenticated clean-prefix C and C++ consumers using an installed CMake
   package and pkg-config, which the build does not generate yet;

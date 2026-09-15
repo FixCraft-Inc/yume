@@ -90,7 +90,7 @@ class YumeSetupTests(unittest.TestCase):
         client = json.loads((self.kit / "client/yume.json").read_text())
         manifest = json.loads((self.kit / "manifest.json").read_text())
         self.assertEqual(
-            manifest["runtime_status"], "unwired-development-foundation"
+            manifest["runtime_status"], "development-runtimes"
         )
         top_keys = {
             "schema",
@@ -151,7 +151,7 @@ class YumeSetupTests(unittest.TestCase):
             self.assertEqual(config["cover"]["profile"], "chrome151-node24-v1")
             self.assertEqual(
                 {(item["name"], item["kind"]) for item in config["services"]},
-                {("tcp", "stream"), ("udp", "packet"), ("packet", "packet")},
+                {("tcp", "stream"), ("udp", "packet")},
             )
             self.assertTrue(
                 all(
@@ -159,6 +159,24 @@ class YumeSetupTests(unittest.TestCase):
                     for item in config["services"]
                 )
             )
+        # The development runtimes start from the kit as generated. No adapter
+        # names a packet/TUN device they cannot serve, and SOCKS5 carries UDP.
+        self.assertEqual(
+            [adapter["kind"] for adapter in server["adapters"]],
+            ["direct_tcp", "direct_udp"],
+        )
+        self.assertEqual(
+            client["adapters"],
+            [
+                {
+                    "kind": "socks5",
+                    "service": "tcp",
+                    "listen_address": "127.0.0.1",
+                    "listen_port": 1080,
+                    "udp_service": "udp",
+                }
+            ],
+        )
 
     def test_cryptographic_material_uses_mandatory_algorithms(self) -> None:
         server_credentials = self.kit / "server/credentials"
@@ -249,7 +267,7 @@ class YumeSetupTests(unittest.TestCase):
         self.assertEqual(entry["name"], "phone")
         self.assertEqual(
             {capability["service"] for capability in entry["capabilities"]},
-            {"tcp", "udp", "packet"},
+            {"tcp", "udp"},
         )
         server_psk = (
             authorized_path.parent / entry["access_psk"]["file"]
@@ -296,11 +314,24 @@ class YumeSetupTests(unittest.TestCase):
         ):
             text = launcher.read_text()
             self.assertEqual(re.findall(r"--[a-z-]+", text), ["--config"])
+        self.assertIn(
+            '"${YUMED_BIN:-yumed-ytp1}"',
+            (self.kit / "server/start-server").read_text(),
+        )
+        self.assertIn(
+            '"${YUME_BIN:-yume-ytp1}"',
+            (self.kit / "client/start-client").read_text(),
+        )
         self.assertEqual(
             {path.name for path in (self.kit / "server/services").glob("*.json")},
-            {"tcp.json", "udp.json", "packet.json"},
+            {"tcp.json", "udp.json"},
         )
-        self.assertTrue((self.kit / "client/adapters/socks5.json").is_file())
+        self.assertEqual(
+            {path.name for path in (self.kit / "client/adapters").glob("*.json")},
+            {"socks5.json"},
+        )
+        socks5 = json.loads((self.kit / "client/adapters/socks5.json").read_text())
+        self.assertEqual(socks5["adapter"]["udp_service"], "udp")
         for filename in ("index.html", "404.html"):
             with self.subTest(cover=filename):
                 cover = (self.kit / "server/cover-site" / filename).read_text().lower()

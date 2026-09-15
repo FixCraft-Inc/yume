@@ -9,121 +9,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
 
+#include "common/udp_queue_budget.hpp"
+
 namespace yume::outbound::detail {
 
-// UDP has no delivery guarantee to preserve when a local consumer or an OPEN
-// handshake falls behind. Keep each backlog small and deterministic instead
-// of allowing a datagram burst to consume unbounded process memory.
-inline constexpr std::size_t kMaxUdpQueuedDatagrams = 64U;
-inline constexpr std::size_t kMaxUdpQueuedBytes = 1U * 1024U * 1024U;
-
-class UdpQueueBudget {
-private:
-    struct State;
-
-public:
-    class Reservation {
-    public:
-        Reservation() = default;
-        Reservation(const Reservation&) = delete;
-        Reservation& operator=(const Reservation&) = delete;
-
-        Reservation(Reservation&& other) noexcept
-            : state_(std::move(other.state_))
-            , bytes_(std::exchange(other.bytes_, 0U)) {}
-
-        Reservation& operator=(Reservation&& other) noexcept {
-            if (this != &other) {
-                release_now();
-                state_ = std::move(other.state_);
-                bytes_ = std::exchange(other.bytes_, 0U);
-            }
-            return *this;
-        }
-
-        ~Reservation() noexcept { release_now(); }
-
-        void release_now() noexcept;
-
-    private:
-        friend class UdpQueueBudget;
-
-        Reservation(std::shared_ptr<State> state, std::size_t bytes)
-            : state_(std::move(state)), bytes_(bytes) {}
-
-        std::shared_ptr<State> state_;
-        std::size_t bytes_{0U};
-    };
-
-    UdpQueueBudget()
-        : state_(std::make_shared<State>()) {}
-
-    UdpQueueBudget(const UdpQueueBudget&) = delete;
-    UdpQueueBudget& operator=(const UdpQueueBudget&) = delete;
-
-    // The caller drops the newest datagram when admission fails. Unlike the
-    // reliable-stream budget, saturation does not seal this queue: releasing
-    // older datagrams immediately restores admission and keeps UDP usable.
-    [[nodiscard]] std::optional<Reservation> try_reserve(
-        std::size_t bytes) {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        if (state_->closed ||
-            state_->queued_datagrams >= kMaxUdpQueuedDatagrams ||
-            bytes > kMaxUdpQueuedBytes ||
-            state_->queued_bytes > kMaxUdpQueuedBytes - bytes) {
-            return std::nullopt;
-        }
-        ++state_->queued_datagrams;
-        state_->queued_bytes += bytes;
-        return Reservation(state_, bytes);
-    }
-
-    void close() noexcept {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        state_->closed = true;
-    }
-
-    [[nodiscard]] std::size_t queued_datagrams() const noexcept {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        return state_->queued_datagrams;
-    }
-
-    [[nodiscard]] std::size_t queued_bytes() const noexcept {
-        std::lock_guard<std::mutex> lock(state_->mutex);
-        return state_->queued_bytes;
-    }
-
-private:
-    struct State {
-        std::mutex mutex;
-        std::size_t queued_datagrams{0U};
-        std::size_t queued_bytes{0U};
-        bool closed{false};
-    };
-
-    std::shared_ptr<State> state_;
-};
-
-inline void UdpQueueBudget::Reservation::release_now() noexcept {
-    const std::size_t bytes = std::exchange(bytes_, 0U);
-    auto state = std::move(state_);
-    if (!state) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (state->queued_datagrams > 0U) {
-        --state->queued_datagrams;
-    }
-    state->queued_bytes = bytes >= state->queued_bytes
-        ? 0U
-        : state->queued_bytes - bytes;
-}
+// The shared UDP backlog policy and its budget have one owner in
+// common/udp_queue_budget.hpp.
+inline constexpr std::size_t kMaxUdpQueuedDatagrams =
+    common::kMaxUdpQueuedDatagrams;
+inline constexpr std::size_t kMaxUdpQueuedBytes = common::kMaxUdpQueuedBytes;
+using UdpQueueBudget = common::UdpQueueBudget;
 
 // Several destinations can wait for OPEN at once, but they all share one
 // session/server budget. Each per-destination queue therefore owns only RAII

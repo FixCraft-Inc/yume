@@ -106,15 +106,96 @@ void test_name_requests() {
     }
     const std::vector<std::uint8_t> empty_name{kVersion, 0x01, 0x00, 0x03, 0x00};
     CHECK(parse_request(empty_name, request) == Parse::Complete && request.reply == Reply::AddressNotSupported);
-    for (const std::uint8_t command : {0x02, 0x03}) {
-        bytes = name_request(command, "example.com", 53U);
-        CHECK(parse_request(bytes, request) == Parse::Complete &&
-              request.reply == Reply::CommandNotSupported && request.consumed == bytes.size());
-    }
+    bytes = name_request(0x02, "example.com", 53U);
+    CHECK(parse_request(bytes, request) == Parse::Complete &&
+          request.reply == Reply::CommandNotSupported && request.consumed == bytes.size());
     const std::string longest(255U, 'a');
     bytes = name_request(0x01, longest, 443U);
     CHECK(bytes.size() == kMaxRequestBytes);
     CHECK(parse_request(bytes, request) == Parse::Complete && request.reply == Reply::AddressNotSupported);
+}
+
+void test_udp_associate_requests() {
+    Request request;
+    // Clients usually announce 0.0.0.0:0. The address is never a destination.
+    const std::vector<std::uint8_t> unknown_source{kVersion, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0};
+    for (std::size_t size = 0U; size < unknown_source.size(); ++size) {
+        CHECK(parse_request(std::span(unknown_source).first(size), request) == Parse::NeedMore);
+    }
+    CHECK(parse_request(unknown_source, request) == Parse::Complete);
+    CHECK(request.reply == Reply::Succeeded && request.command == Command::UdpAssociate);
+    CHECK(request.udp_source_port == 0U && !request.destination && request.consumed == 10U);
+
+    // A name or an invalid literal is accepted too, since only the port is used.
+    auto bytes = name_request(0x03, "bad_name!", 5353U);
+    CHECK(parse_request(bytes, request) == Parse::Complete && request.reply == Reply::Succeeded);
+    CHECK(request.command == Command::UdpAssociate && request.udp_source_port == 5353U);
+
+    // A refusal after an association must not leave the UDP fields behind.
+    const std::vector<std::uint8_t> unknown_type{kVersion, 0x03, 0x00, 0x09, 1, 2};
+    CHECK(parse_request(unknown_type, request) == Parse::Complete);
+    CHECK(request.reply == Reply::AddressNotSupported && request.command == Command::Connect);
+    CHECK(request.udp_source_port == 0U);
+}
+
+std::vector<std::uint8_t> datagram(std::vector<std::uint8_t> header, std::string_view payload) {
+    header.insert(header.end(), payload.begin(), payload.end());
+    return header;
+}
+
+void test_udp_datagrams() {
+    const auto v4 = datagram({0, 0, 0, 0x01, 192, 0, 2, 7, 0x00, 0x35}, "query");
+    auto parsed = parse_udp_datagram(v4);
+    CHECK(parsed && parsed->payload_offset == 10U);
+    CHECK(parsed->destination.protocol() == yume::engine::NetworkProtocol::Udp);
+    CHECK(parsed->destination.address_kind() == RouteAddressKind::Ipv4 && parsed->destination.port() == 53U);
+    CHECK(udp_header(parsed->destination) ==
+          (std::vector<std::uint8_t>{0, 0, 0, 0x01, 192, 0, 2, 7, 0x00, 0x35}));
+
+    std::vector<std::uint8_t> v6_header{0, 0, 0, 0x04};
+    v6_header.resize(20U, 0x00);
+    v6_header[19] = 0x01;
+    v6_header.push_back(0x01);
+    v6_header.push_back(0xbb);
+    parsed = parse_udp_datagram(datagram(v6_header, "x"));
+    CHECK(parsed && parsed->payload_offset == 22U && parsed->destination.address_kind() == RouteAddressKind::Ipv6);
+    CHECK(udp_header(parsed->destination) == v6_header);
+
+    const std::vector<std::uint8_t> name_header{0, 0, 0, 0x03, 7, 'E', 'x', 'a', 'm', 'p', 'l', 'e', 0x00, 0x35};
+    parsed = parse_udp_datagram(datagram(name_header, "q"));
+    CHECK(parsed && parsed->payload_offset == name_header.size());
+    CHECK(parsed->destination.address_kind() == RouteAddressKind::DnsName &&
+          parsed->destination.dns_name() == "example");
+    // Replies name the destination as the client's lowercase request did.
+    const std::vector<std::uint8_t> lowered{0, 0, 0, 0x03, 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x00, 0x35};
+    CHECK(udp_header(parsed->destination) == lowered);
+
+    // The payload may be empty here. The relay decides what to do with it.
+    parsed = parse_udp_datagram(std::vector<std::uint8_t>{0, 0, 0, 0x01, 127, 0, 0, 1, 0x00, 0x35});
+    CHECK(parsed && parsed->payload_offset == 10U);
+
+    // Dropped: reserved bytes, fragments, unknown or empty address types,
+    // truncated headers, a zero port and scoped literals.
+    for (const auto& refused : std::vector<std::vector<std::uint8_t>>{
+             {0, 1, 0, 0x01, 127, 0, 0, 1, 0x00, 0x35},
+             {1, 0, 0, 0x01, 127, 0, 0, 1, 0x00, 0x35},
+             {0, 0, 1, 0x01, 127, 0, 0, 1, 0x00, 0x35},
+             {0, 0, 0, 0x02, 127, 0, 0, 1, 0x00, 0x35},
+             {0, 0, 0, 0x03, 0x00, 0x00, 0x35},
+             {0, 0, 0, 0x01, 127, 0, 0, 1, 0x00},
+             {0, 0, 0, 0x03, 5, 'a', 'b'},
+             {0, 0, 0, 0x01, 127, 0, 0, 1, 0x00, 0x00},
+             {0, 0, 0},
+             datagram({0, 0, 0, 0x03, 12}, "fe80::1%eth0\x00\x35"),
+         }) {
+        CHECK(!parse_udp_datagram(refused));
+    }
+
+    const auto relay = yume::engine::RouteDestination::ipv4(
+        yume::engine::NetworkProtocol::Udp, {127, 0, 0, 1}, 40000U);
+    CHECK(relay.ok());
+    CHECK(associate_reply(relay.value()) ==
+          (std::vector<std::uint8_t>{kVersion, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x9c, 0x40}));
 }
 
 void test_replies() {
@@ -138,6 +219,8 @@ int main() {
     test_greeting();
     test_numeric_requests();
     test_name_requests();
+    test_udp_associate_requests();
+    test_udp_datagrams();
     test_replies();
     std::cout << "SOCKS5 request checks passed\n";
 }

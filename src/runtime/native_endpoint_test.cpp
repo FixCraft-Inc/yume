@@ -17,8 +17,12 @@
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <optional>
+#include <span>
+#include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -30,6 +34,7 @@
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
 #include "runtime/native_client_runtime.hpp"
+#include "runtime/native_server_runtime.hpp"
 #include "runtime/native_socks5.hpp"
 #endif
 
@@ -1031,6 +1036,166 @@ void check_socket_closed(boost::asio::ip::tcp::socket& socket) {
     CHECK(read_socket(socket, byte) == 0U);
 }
 
+// A SOCKS5 UDP datagram for an IPv4 destination.
+std::vector<std::uint8_t> socks_datagram(const std::array<std::uint8_t, 4>& address,
+                                         std::uint16_t port, std::string_view payload) {
+    std::vector<std::uint8_t> bytes{0, 0, 0, 1, address[0], address[1], address[2], address[3],
+        static_cast<std::uint8_t>(port >> 8U), static_cast<std::uint8_t>(port)};
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+    return bytes;
+}
+
+// Polls a nonblocking UDP socket. Nothing within the wait is nullopt.
+std::optional<std::vector<std::uint8_t>> receive_datagram(boost::asio::ip::udp::socket& socket,
+    boost::asio::ip::udp::endpoint& sender, std::chrono::milliseconds wait) {
+    std::vector<std::uint8_t> bytes(65'536U);
+    const auto deadline = std::chrono::steady_clock::now() + wait;
+    for (;;) {
+        boost::system::error_code error;
+        const auto size = socket.receive_from(boost::asio::buffer(bytes), sender, 0, error);
+        if (!error) {
+            bytes.resize(size);
+            return bytes;
+        }
+        CHECK(error == boost::asio::error::would_block || error == boost::asio::error::try_again);
+        if (std::chrono::steady_clock::now() >= deadline) return std::nullopt;
+        std::this_thread::sleep_for(1ms);
+    }
+}
+
+std::string text_of(const std::optional<std::vector<std::uint8_t>>& bytes) {
+    return bytes ? std::string(bytes->begin(), bytes->end()) : std::string("<nothing>");
+}
+
+// Sends UDP ASSOCIATE announcing client_port and returns the control connection.
+// The relay endpoint named by the success reply is written to relay.
+boost::asio::ip::tcp::socket associate_udp(boost::asio::io_context& io,
+    const boost::asio::ip::tcp::endpoint& adapter, std::uint16_t client_port,
+    boost::asio::ip::udp::endpoint& relay) {
+    boost::asio::ip::tcp::socket control(io);
+    control.connect(adapter);
+    const std::array<std::uint8_t, 13> request{5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0,
+        static_cast<std::uint8_t>(client_port >> 8U), static_cast<std::uint8_t>(client_port)};
+    boost::asio::write(control, boost::asio::buffer(request));
+    control.non_blocking(true);
+    std::array<std::uint8_t, 12> reply{};
+    for (std::size_t offset = 0; offset < reply.size();) {
+        const auto read = read_socket(control, std::span(reply).subspan(offset));
+        CHECK(read != 0U);
+        offset += read;
+    }
+    // Method selection, then success naming the IPv4 loopback relay socket.
+    const std::array<std::uint8_t, 10> expected{5, 0, 5, 0, 0, 1, 127, 0, 0, 1};
+    CHECK(std::equal(expected.begin(), expected.end(), reply.begin()));
+    relay = boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::loopback(),
+        static_cast<std::uint16_t>((reply[10] << 8U) | reply[11]));
+    CHECK(relay.port() != 0U);
+    return control;
+}
+
+// Holds every authorized packet OPEN so a test decides when it is accepted.
+class HeldPacketHandler final : public StreamHandler {
+public:
+    struct HeldOpen final {
+        std::uint16_t port{0U};
+        std::shared_ptr<StreamResponder> stream;
+        AcceptanceCompletion completion;
+    };
+
+    HeldPacketHandler()
+        : descriptor_(take(ProviderDescriptor::create("native-test.held-packet-route",
+            ProviderKind::StreamHandler, 1U,
+            mandatory_capabilities(ProviderKind::StreamHandler)
+                .with(Capability::DirectUdp).with(Capability::PacketChannels)))) {}
+    const ProviderDescriptor& descriptor() const noexcept override { return descriptor_; }
+    ServiceKind service_kind() const noexcept override { return ServiceKind::PacketChannel; }
+    Status authorize(const StreamOpenContext& context) override {
+        const auto* destination = context.destination_if();
+        CHECK(destination && destination->protocol() == NetworkProtocol::Udp);
+        return Status::success();
+    }
+    void on_open(StreamOpenContext, std::shared_ptr<StreamResponder>) override {
+        throw std::runtime_error("SOCKS UDP omitted its destination");
+    }
+    void async_route(AuthorizedRouteRequest request, std::shared_ptr<RouteProvider>,
+                     std::shared_ptr<StreamResponder> stream,
+                     AcceptanceCompletion completion) override {
+        opens.push_back({request.destination().port(), std::move(stream), std::move(completion)});
+        if (arrived && opens.size() >= expected) std::exchange(arrived, nullptr)->set_value();
+    }
+    std::vector<HeldOpen> opens;
+    std::size_t expected{0U};
+    std::shared_ptr<std::promise<void>> arrived;
+
+private:
+    ProviderDescriptor descriptor_;
+};
+
+// A session that ends right after AUTH counts as a failed attempt. Without
+// backoff, a path that drops every connection after AUTH would make the client
+// redial in a tight loop and fill the server's shared admission replay cache.
+void test_client_short_session_backoff(const std::filesystem::path& kit) {
+    using Clock = std::chrono::steady_clock;
+    Runner runner;
+    auto handler = std::make_shared<DelayedRouteHandler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 2U;
+    server_options.max_pending_starts = 1U;
+    server_options.route_provider = runner.sync([&] {
+        return take(yume::providers::AsioDirectRouteProvider::create(runner.context,
+            [](const auto&, const auto&) { return Status(StatusCode::PermissionDenied); }));
+    });
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
+            kit / "server", {{"echo", handler}, {"denied", handler}}, server_options));
+    });
+    constexpr auto backoff = 1s;
+    std::vector<Clock::time_point> authenticated;
+    std::vector<Clock::time_point> ended;
+    std::promise<void> first_auth;
+    std::promise<void> second_auth;
+    auto first_ready = first_auth.get_future();
+    auto second_ready = second_auth.get_future();
+    auto client = runner.sync([&] {
+        NativeClientRuntimeOptions options;
+        options.reconnect_initial = backoff;
+        // Every session here ends sooner than this, so each end backs off.
+        options.reconnect_max = 60s;
+        return take(NativeClientRuntime::create(runner.context,
+            load(kit / "client/runtime-client.json"), kit / "client", [&](std::string_view message) {
+                if (message == "session ended, reconnecting") ended.push_back(Clock::now());
+                if (message != "session authenticated") return;
+                authenticated.push_back(Clock::now());
+                if (authenticated.size() == 1U) first_auth.set_value();
+                if (authenticated.size() == 2U) second_auth.set_value();
+            }, options));
+    });
+    auto accepting = start(runner, server);
+    runner.sync([&] { CHECK(client->start().ok()); });
+    auto first = take(await(accepting));
+    await(first_ready);
+    auto next_accept = start(runner, server);
+    // End the session at once, as a path that resets it after AUTH would.
+    runner.sync([&] {
+        first->stop();
+        first.reset();
+    });
+    auto second = take(await(next_accept));
+    await(second_ready);
+    runner.sync([&] {
+        CHECK(authenticated.size() == 2U && ended.size() == 1U);
+        CHECK(authenticated[1] - ended[0] >= backoff);
+        second.reset();
+        client->close();
+        server->close();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+    client.reset();
+    server.reset();
+    CHECK(runner.context->poll() == 0U);
+}
+
 void test_client_reconnect(const std::filesystem::path& kit) {
     Runner runner;
     auto handler = std::make_shared<DelayedRouteHandler>();
@@ -1249,6 +1414,250 @@ void test_socks5_deadlines(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
     runner.finish_and_join();
 }
+
+// UDP ASSOCIATE over the production daemon composition: configured direct_udp
+// destinations, per-identity grants and real UDP sockets on both sides.
+void test_socks5_udp_associate(const std::filesystem::path& kit) {
+    using Udp = boost::asio::ip::udp;
+    Runner runner;
+    bool server_stopped = false;
+    auto server = runner.sync([&] {
+        return take(NativeServerRuntime::create(runner.context, load(kit / "server/direct-udp.json"),
+            kit / "server", [&](Status) { server_stopped = true; }));
+    });
+    runner.sync([&] { CHECK(server->start().ok()); });
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "client/routes-udp.json"),
+            kit / "client", bindings(std::make_shared<Handler>(ServiceKind::PacketChannel)),
+            client_options));
+    });
+    auto connecting = start(runner, client);
+    auto client_session = take(await(connecting));
+    NativeSocks5Limits limits;
+    limits.udp_retry_delay = 200ms;
+    const NativeSessionSource sessions = [client_session] { return client_session; };
+    auto adapters = runner.sync([&] {
+        return std::array{
+            take(NativeSocks5Adapter::create(runner.context,
+                {"echo", "127.0.0.1", 0U, "echo"}, sessions, limits)),
+            // The authenticated identity holds no packet grant for this service.
+            take(NativeSocks5Adapter::create(runner.context,
+                {"echo", "127.0.0.1", 0U, "denied"}, sessions, limits)),
+            // Without a UDP service, UDP ASSOCIATE is unsupported.
+            take(NativeSocks5Adapter::create(runner.context,
+                {"echo", "127.0.0.1", 0U}, sessions, limits)),
+        };
+    });
+    boost::asio::io_context local_io;
+    const auto bound = [&](const char* address) {
+        Udp::socket socket(local_io, Udp::endpoint(boost::asio::ip::make_address_v4(address), 0U));
+        socket.non_blocking(true);
+        return socket;
+    };
+    auto target = bound("127.0.0.1");
+    auto outside = bound("127.0.0.2");
+    auto app = bound("127.0.0.1");
+    auto stranger = bound("127.0.0.1");
+    const std::uint16_t target_port = target.local_endpoint().port();
+    const auto send = [](Udp::socket& from, const Udp::endpoint& relay,
+                         const std::array<std::uint8_t, 4>& address, std::uint16_t port,
+                         std::string_view payload) {
+        from.send_to(boost::asio::buffer(socks_datagram(address, port, payload)), relay);
+    };
+    Udp::endpoint exit;
+
+    {
+        boost::asio::ip::tcp::socket socket(local_io);
+        socket.connect(adapters[2]->local_endpoint());
+        const std::array<std::uint8_t, 13> request{5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0};
+        boost::asio::write(socket, boost::asio::buffer(request));
+        socket.non_blocking(true);
+        check_socks_reply(socket, 0x07);
+        check_socket_closed(socket);
+    }
+
+    Udp::endpoint relay;
+    auto control = associate_udp(local_io, adapters[0]->local_endpoint(), 0U, relay);
+    const std::string query(1'200U, 'q');
+    send(app, relay, {127, 0, 0, 1}, target_port, query);
+    auto received = receive_datagram(target, exit, 10s);
+    CHECK(text_of(received) == query);
+    // UDP allows an empty datagram. YTP cannot carry it, and it must not close
+    // the flow the next reply needs.
+    target.send_to(boost::asio::const_buffer(nullptr, 0U), exit);
+    const std::string answer = "reply from the destination";
+    target.send_to(boost::asio::buffer(answer), exit);
+    Udp::endpoint from;
+    received = receive_datagram(app, from, 10s);
+    CHECK(received && from == relay);
+    CHECK(*received == socks_datagram({127, 0, 0, 1}, target_port, answer));
+
+    // The association now belongs to app's port. Outside 127.0.0.1/32 the
+    // server refuses the OPEN before any socket, and the session keeps working.
+    send(stranger, relay, {127, 0, 0, 1}, target_port, "from another local port");
+    send(app, relay, {127, 0, 0, 2}, outside.local_endpoint().port(), "must not arrive");
+    send(app, relay, {127, 0, 0, 1}, target_port, "after refusal");
+    received = receive_datagram(target, exit, 10s);
+    CHECK(text_of(received) == "after refusal");
+    CHECK(!receive_datagram(outside, exit, 300ms));
+
+    Udp::endpoint denied_relay;
+    auto denied_control = associate_udp(local_io, adapters[1]->local_endpoint(), 0U, denied_relay);
+    send(app, denied_relay, {127, 0, 0, 1}, target_port, "no packet grant");
+    CHECK(!receive_datagram(target, exit, 300ms));
+    send(app, relay, {127, 0, 0, 1}, target_port, "still permitted");
+    received = receive_datagram(target, exit, 10s);
+    CHECK(text_of(received) == "still permitted");
+
+    // The relay socket closes with its TCP connection. A connected probe then
+    // reports the port as refused.
+    Udp::socket probe(local_io, Udp::v4());
+    probe.connect(relay);
+    probe.non_blocking(true);
+    control.close();
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    for (bool closed = false; !closed;) {
+        CHECK(std::chrono::steady_clock::now() < deadline);
+        boost::system::error_code error;
+        probe.send(boost::asio::buffer("x", 1U), 0, error);
+        closed = error == boost::asio::error::connection_refused;
+        std::this_thread::sleep_for(5ms);
+        std::array<char, 1> byte{};
+        probe.receive(boost::asio::buffer(byte), 0, error);
+        closed = closed || error == boost::asio::error::connection_refused;
+    }
+
+    denied_control.close();
+    runner.sync([&] {
+        CHECK(!server_stopped);
+        for (const auto& adapter : adapters) adapter->close();
+    });
+    client->close();
+    server->close();
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+// The datagram budget of an association while its OPEN is held: the first 64
+// datagrams wait, newer ones are dropped, and replies carry the destination.
+void test_socks5_udp_backlog(const std::filesystem::path& kit) {
+    using Udp = boost::asio::ip::udp;
+    Runner runner;
+    auto held = std::make_shared<HeldPacketHandler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = server_options.max_pending_starts = 1U;
+    server_options.route_provider = runner.sync([&] {
+        return take(yume::providers::AsioDirectRouteProvider::create(runner.context,
+            [](const auto&, const auto&) { return Status(StatusCode::PermissionDenied); }));
+    });
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/packet-services.json"),
+            kit / "server", {{"echo", held}, {"denied", held}}, server_options));
+    });
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "client/routes-udp.json"),
+            kit / "client", bindings(std::make_shared<Handler>(ServiceKind::PacketChannel)),
+            client_options));
+    });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto server_session = take(await(accepting));
+    auto client_session = take(await(connecting));
+    auto adapter = runner.sync([&] {
+        return take(NativeSocks5Adapter::create(runner.context, {"echo", "127.0.0.1", 0U, "echo"},
+            [client_session] { return client_session; }));
+    });
+    const auto wait_for_opens = [&](std::size_t count) {
+        auto promise = std::make_shared<std::promise<void>>();
+        auto future = promise->get_future();
+        runner.sync([&] {
+            if (held->opens.size() >= count) {
+                promise->set_value();
+                return;
+            }
+            held->expected = count;
+            held->arrived = promise;
+        });
+        CHECK(future.wait_for(10s) == std::future_status::ready);
+    };
+    const auto read_text = [&](const std::shared_ptr<StreamResponder>& stream) {
+        auto promise = std::make_shared<std::promise<std::optional<std::string>>>();
+        auto future = promise->get_future();
+        // The record, and the receive credit it holds, is released on the runner.
+        runner.sync([stream, promise] {
+            stream->async_read({}, [promise](Result<ReceivedRecord> result) {
+                if (!result.ok()) {
+                    promise->set_value(std::nullopt);
+                    return;
+                }
+                const auto bytes = result.value().payload().bytes();
+                promise->set_value(std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+            });
+        });
+        return await(future);
+    };
+
+    boost::asio::io_context local_io;
+    Udp::endpoint relay;
+    auto control = associate_udp(local_io, adapter->local_endpoint(), 0U, relay);
+    Udp::socket app(local_io, Udp::endpoint(boost::asio::ip::address_v4::loopback(), 0U));
+    app.non_blocking(true);
+    constexpr std::uint16_t held_port = 9U;
+    constexpr std::uint16_t barrier_port = 10U;
+    const auto send = [&](std::uint16_t port, std::string_view payload) {
+        app.send_to(boost::asio::buffer(socks_datagram({127, 0, 0, 1}, port, payload)), relay);
+    };
+    send(held_port, "datagram-0");
+    wait_for_opens(1U);
+    for (int index = 1; index < 100; ++index) send(held_port, "datagram-" + std::to_string(index));
+    // A new destination sends an OPEN of its own. Its arrival shows the relay
+    // has handled every earlier datagram, in order.
+    send(barrier_port, "barrier");
+    wait_for_opens(2U);
+    std::shared_ptr<StreamResponder> held_stream;
+    runner.sync([&] {
+        CHECK(held->opens.size() == 2U);
+        CHECK(held->opens[0].port == held_port && held->opens[1].port == barrier_port);
+        held_stream = held->opens[0].stream;
+        std::exchange(held->opens[0].completion, {})(Status::success());
+        std::exchange(held->opens[1].completion, {})(Status(StatusCode::PermissionDenied));
+    });
+    for (int index = 0; index < 64; ++index) {
+        CHECK(read_text(held_stream) == "datagram-" + std::to_string(index));
+    }
+    send(held_port, "after acceptance");
+    CHECK(read_text(held_stream) == std::string("after acceptance"));
+
+    runner.sync([&] {
+        const std::string_view reply = "held reply";
+        held_stream->async_write(take(Buffer::copy_from(
+            {reinterpret_cast<const std::byte*>(reply.data()), reply.size()}, reply.size())), {},
+            [](Status status, std::size_t) { CHECK(status.ok()); });
+    });
+    Udp::endpoint from;
+    const auto reply = receive_datagram(app, from, 10s);
+    CHECK(reply && from == relay && *reply == socks_datagram({127, 0, 0, 1}, held_port, "held reply"));
+
+    // Closing the TCP connection ends the association and its packet stream.
+    control.close();
+    CHECK(!read_text(held_stream));
+    runner.sync([&] {
+        CHECK(held_stream->terminated());
+        held_stream.reset();
+        held->opens.clear();
+        adapter->close();
+    });
+    client->close();
+    server->close();
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
 #endif
 
 void test_adapter_configuration_rejections(const std::filesystem::path& kit) {
@@ -1413,8 +1822,11 @@ int main(int argc, char** argv) {
         run(argv[1]);
         test_session_ended_notifications(argv[1]);
 #ifdef YUME_NATIVE_TEST_ROUTES
+        test_client_short_session_backoff(argv[1]);
         test_client_reconnect(argv[1]);
         test_socks5_deadlines(argv[1]);
+        test_socks5_udp_associate(argv[1]);
+        test_socks5_udp_backlog(argv[1]);
         test_destination_route<boost::asio::ip::tcp>(argv[1], false);
         test_destination_route<boost::asio::ip::tcp>(argv[1], true);
         test_destination_route<boost::asio::ip::udp>(argv[1], true);

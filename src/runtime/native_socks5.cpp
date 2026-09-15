@@ -10,6 +10,8 @@
 #include <array>
 #include <list>
 #include <new>
+#include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +25,7 @@
 #include "engine/route_provider.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
 #include "providers/direct_route_handler.hpp"
+#include "runtime/native_socks5_udp.hpp"
 #include "runtime/socks5_request.hpp"
 
 namespace yume::runtime {
@@ -30,6 +33,7 @@ namespace {
 using engine::Buffer;
 using engine::ByteChannel;
 using engine::Result;
+using engine::RouteDestination;
 using engine::ServiceKind;
 using engine::Status;
 using engine::StatusCode;
@@ -51,6 +55,17 @@ Status diagnostic(StatusCode code, std::string_view message) noexcept {
     }
 }
 
+// The relay socket as the BND field of a UDP ASSOCIATE reply.
+Result<RouteDestination> relay_destination(const boost::asio::ip::udp::endpoint& relay) {
+    const auto address = relay.address();
+    if (address.is_v4()) {
+        return RouteDestination::ipv4(engine::NetworkProtocol::Udp, address.to_v4().to_bytes(),
+                                      relay.port());
+    }
+    return RouteDestination::ipv6(engine::NetworkProtocol::Udp, address.to_v6().to_bytes(),
+                                  relay.port());
+}
+
 }  // namespace
 
 struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
@@ -58,16 +73,27 @@ struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
 
     State(std::shared_ptr<providers::AsioExecutionContext> execution,
           std::string service_name,
+          std::optional<std::string> udp_service_name,
           NativeSessionSource session_source,
           NativeSocks5Limits bounds,
           std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> owner)
         : context(std::move(execution)),
           service(std::move(service_name)),
+          udp_service(std::move(udp_service_name)),
           sessions(std::move(session_source)),
           limits(bounds),
           channels(std::move(owner)),
           acceptor(context->executor()),
           retry(context->executor()) {}
+
+    std::shared_ptr<engine::SessionEngine> active_session() const noexcept {
+        if (closing || !sessions) return nullptr;
+        try {
+            return sessions();
+        } catch (...) {
+            return nullptr;
+        }
+    }
 
     void start_accept() noexcept;
     void retry_accept() noexcept;
@@ -77,6 +103,7 @@ struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
 
     std::shared_ptr<providers::AsioExecutionContext> context;
     std::string service;
+    std::optional<std::string> udp_service;
     NativeSessionSource sessions;
     NativeSocks5Limits limits;
     std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
@@ -89,17 +116,21 @@ struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
     bool closing{false};
 };
 
-// One local client from accept until its stream is bridged or it closes.
+// One local client from accept until its stream is bridged, its UDP
+// association ends, or it closes.
 class NativeSocks5Adapter::State::Connection final
     : public std::enable_shared_from_this<Connection> {
 public:
     Connection(std::weak_ptr<State> owner, std::string service,
-               NativeSocks5Limits limits, std::unique_ptr<ByteChannel> channel,
+               std::optional<std::string> udp_service, NativeSocks5Limits limits,
+               std::unique_ptr<ByteChannel> channel, boost::asio::ip::address peer,
                providers::AsioExecutionContext::Executor executor)
         : owner_(std::move(owner)),
           service_(std::move(service)),
+          udp_service_(std::move(udp_service)),
           limits_(limits),
           channel_(std::move(channel)),
+          peer_(std::move(peer)),
           timer_(executor) {}
 
     void start() noexcept {
@@ -110,8 +141,8 @@ public:
     void close() noexcept { finish(); }
 
 private:
-    enum class Phase : std::uint8_t { Greeting, Request, Opening, Replying };
-    enum class AfterWrite : std::uint8_t { ReadRequest, Close, Bridge };
+    enum class Phase : std::uint8_t { Greeting, Request, Opening, Replying, Associated };
+    enum class AfterWrite : std::uint8_t { ReadRequest, Close, Bridge, WatchControl };
 
     void read(std::size_t required_bytes) noexcept {
         if (done_ || reading_) return;
@@ -189,22 +220,28 @@ private:
             return;
         }
         input_.clear();
-        if (request.reply != socks5::Reply::Succeeded || !request.destination) {
+        if (request.reply != socks5::Reply::Succeeded) {
             write(socks5::reply(request.reply), AfterWrite::Close);
+            return;
+        }
+        if (request.command == socks5::Command::UdpAssociate) {
+            associate(request.udp_source_port);
+            return;
+        }
+        if (!request.destination) {
+            write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
             return;
         }
         open(std::move(*request.destination));
     }
 
-    void open(engine::RouteDestination destination) noexcept {
-        std::shared_ptr<engine::SessionEngine> session;
-        if (const auto owner = owner_.lock(); owner && !owner->closing && owner->sessions) {
-            try {
-                session = owner->sessions();
-            } catch (...) {
-                session.reset();
-            }
-        }
+    std::shared_ptr<engine::SessionEngine> current_session() const noexcept {
+        const auto owner = owner_.lock();
+        return owner ? owner->active_session() : nullptr;
+    }
+
+    void open(RouteDestination destination) noexcept {
+        const auto session = current_session();
         if (!session) {
             write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
             return;
@@ -242,18 +279,64 @@ private:
         write(socks5::reply(socks5::Reply::Succeeded), AfterWrite::Bridge);
     }
 
-    template <std::size_t N>
-    void write(const std::array<std::uint8_t, N>& bytes, AfterWrite after) noexcept {
+    // The association relays datagrams from this client's own address only.
+    // The server authorizes each destination when its packet stream opens.
+    void associate(std::uint16_t client_port) noexcept {
+        if (!udp_service_) {
+            write(socks5::reply(socks5::Reply::CommandNotSupported), AfterWrite::Close);
+            return;
+        }
+        const auto owner = owner_.lock();
+        if (!owner || !owner->active_session()) {
+            write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
+            return;
+        }
+        phase_ = Phase::Replying;
+        std::vector<std::uint8_t> bound;
+        try {
+            auto created = NativeSocks5UdpAssociation::create(owner->context, *udp_service_,
+                owner->sessions, limits_, owner->endpoint.address(),
+                boost::asio::ip::udp::endpoint(peer_, client_port));
+            if (created.ok()) {
+                association_ = std::move(created).take_value();
+                const auto relay = relay_destination(association_->relay_endpoint());
+                if (relay.ok()) bound = socks5::associate_reply(relay.value());
+            }
+        } catch (...) {
+            bound.clear();
+        }
+        if (bound.empty()) {
+            write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
+            return;
+        }
+        write(bound, AfterWrite::WatchControl);
+    }
+
+    // RFC 1928 ties the association to this TCP connection. Nothing more is
+    // expected on it, so its closure or any further byte ends the association.
+    void watch_control() noexcept {
+        disarm_deadline();
+        phase_ = Phase::Associated;
+        try {
+            channel_->async_read(1U, io_cancellation_.token(),
+                [self = shared_from_this()](Result<Buffer>) noexcept { self->finish(); });
+        } catch (...) {
+            finish();
+        }
+    }
+
+    void write(std::span<const std::uint8_t> bytes, AfterWrite after) noexcept {
         if (done_) return;
-        auto buffer = Buffer::copy_from(std::as_bytes(std::span(bytes)), N);
+        auto buffer = Buffer::copy_from(std::as_bytes(bytes), bytes.size());
         if (!buffer.ok()) {
             finish();
             return;
         }
         try {
             channel_->async_write(std::move(buffer).take_value(), io_cancellation_.token(),
-                [self = shared_from_this(), after](Status status, std::size_t written) noexcept {
-                    self->on_write(std::move(status), written, N, after);
+                [self = shared_from_this(), after, expected = bytes.size()](
+                    Status status, std::size_t written) noexcept {
+                    self->on_write(std::move(status), written, expected, after);
                 });
         } catch (...) {
             finish();
@@ -269,6 +352,8 @@ private:
         }
         if (after == AfterWrite::ReadRequest) {
             advance();
+        } else if (after == AfterWrite::WatchControl) {
+            watch_control();
         } else {
             bridge();
         }
@@ -332,6 +417,10 @@ private:
             stream_->close(Status(StatusCode::Cancelled));
             stream_.reset();
         }
+        if (association_) {
+            association_->close();
+            association_.reset();
+        }
         if (channel_) {
             channel_->cancel();
             channel_->close();
@@ -341,13 +430,16 @@ private:
 
     std::weak_ptr<State> owner_;
     const std::string service_;
+    const std::optional<std::string> udp_service_;
     const NativeSocks5Limits limits_;
     std::unique_ptr<ByteChannel> channel_;
+    const boost::asio::ip::address peer_;
     Timer timer_;
     engine::CancellationSource io_cancellation_;
     engine::CancellationSource open_cancellation_;
     std::vector<std::uint8_t> input_;
     std::shared_ptr<StreamResponder> stream_;
+    std::shared_ptr<NativeSocks5UdpAssociation> association_;
     std::uint64_t deadline_generation_{0U};
     Phase phase_{Phase::Greeting};
     bool reading_{false};
@@ -399,11 +491,15 @@ void NativeSocks5Adapter::State::retry_accept() noexcept {
 
 void NativeSocks5Adapter::State::adopt(providers::AsioTcpSocket socket) noexcept {
     try {
+        // A UDP association accepts datagrams only from this address.
+        Error error;
+        const auto peer = socket.remote_endpoint(error);
+        if (error) return;
         auto channel = channels->adopt(std::move(socket));
         if (!channel.ok()) return;
-        auto connection = std::make_shared<Connection>(weak_from_this(), service, limits,
-                                                       std::move(channel).take_value(),
-                                                       context->executor());
+        auto connection = std::make_shared<Connection>(weak_from_this(), service, udp_service,
+                                                       limits, std::move(channel).take_value(),
+                                                       peer.address(), context->executor());
         connections.push_back(connection);
         connection->start();
     } catch (...) {
@@ -435,7 +531,10 @@ engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create
     using Created = engine::Result<std::shared_ptr<NativeSocks5Adapter>>;
     if (!context || !sessions || limits.max_connections == 0U || limits.max_connections > 4096U ||
         limits.handshake_timeout <= std::chrono::milliseconds::zero() ||
-        limits.open_timeout <= std::chrono::milliseconds::zero()) {
+        limits.open_timeout <= std::chrono::milliseconds::zero() ||
+        limits.max_udp_destinations == 0U || limits.max_udp_destinations > 1024U ||
+        limits.udp_idle_timeout <= std::chrono::milliseconds::zero() ||
+        limits.udp_retry_delay <= std::chrono::milliseconds::zero()) {
         return Created(Status(StatusCode::InvalidArgument));
     }
     context->require_context();
@@ -450,8 +549,9 @@ engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create
         channel_limits.max_active_channels = limits.max_connections;
         auto channels = providers::AsioTcpAcceptedChannelOwner::create(context, channel_limits);
         if (!channels.ok()) return Created(channels.status());
-        auto state = std::make_shared<State>(context, adapter.service(), std::move(sessions),
-                                             limits, std::move(channels).take_value());
+        auto state = std::make_shared<State>(context, adapter.service(), adapter.udp_service(),
+                                             std::move(sessions), limits,
+                                             std::move(channels).take_value());
         const boost::asio::ip::tcp::endpoint listen{address, adapter.listen_port()};
         state->acceptor.open(listen.protocol(), error);
         if (!error && address.is_v6()) state->acceptor.set_option(boost::asio::ip::v6_only(true), error);

@@ -618,9 +618,14 @@ private:
                         failure = result.status();
                     }
                 } else if (result.value().empty()) {
-                    failure = Status(
-                        StatusCode::ProviderMismatch,
-                        "route provider returned an empty read");
+                    // UDP allows an empty datagram, but a YTP packet record
+                    // cannot be empty. Drop it and keep the flow. An empty
+                    // byte-stream read breaks the channel contract.
+                    if (kind_ == ServiceKind::ByteStream) {
+                        failure = Status(
+                            StatusCode::ProviderMismatch,
+                            "route provider returned an empty read");
+                    }
                 } else if (result.value().size() >
                            stream_->max_write_size() ||
                            (kind_ == ServiceKind::PacketChannel &&
@@ -642,6 +647,10 @@ private:
             }
             if (eof) {
                 propagate_route_eof();
+                return;
+            }
+            if (!payload) {
+                issue_route_read();
                 return;
             }
 

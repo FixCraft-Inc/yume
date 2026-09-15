@@ -18,6 +18,7 @@
 #include "core/security/auth_v2.hpp"
 #include "core/security/channel_binding.hpp"
 #include "core/security/secret_file.hpp"
+#include "test_support/allocation_failure.hpp"
 
 namespace yume::server {
 
@@ -68,32 +69,18 @@ using Peer = yume::server::SessionAuthPublicationTestPeer;
 using Bytes = yume::crypto::Bytes;
 thread_local const yume::server::Session* fail_after_publication = nullptr;
 thread_local bool injected = false;
-}
 
 // The first allocation after publication belongs to optional last_seen work.
 // Observe the real Session state so the test fails if AUTH returns false after
 // publishing it. One-shot failure leaves diagnostics and test teardown usable.
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-void* operator new(std::size_t size) {
+void fail_first_allocation_after_publication(std::size_t) {
     if (fail_after_publication && Peer::published(*fail_after_publication)) {
         fail_after_publication = nullptr;
         injected = true;
         throw std::bad_alloc();
     }
-    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
-    throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* storage) noexcept { std::free(storage); }
-void operator delete[](void* storage) noexcept { ::operator delete(storage); }
-void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
+}
 
 namespace {
 
@@ -196,8 +183,10 @@ void test_auth(AuthCase which, const yume::crypto::CompositeKeyPair& visitor,
     if (which == AuthCase::MetadataFailure) {
         injected = false;
         fail_after_publication = &session;
+        yume::test::before_allocate = fail_first_allocation_after_publication;
     }
     const bool accepted = Peer::authenticate(session, frame);
+    yume::test::before_allocate = nullptr;
     fail_after_publication = nullptr;
     if (which == AuthCase::Valid || which == AuthCase::MetadataFailure) {
         require(accepted && Peer::admin(session), which == AuthCase::MetadataFailure

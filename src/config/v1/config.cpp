@@ -755,7 +755,7 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
         if (kind == AdapterKind::Socks5) {
             CheckClosedObject(adapter, pointer,
                               {"kind", "service", "listen_address",
-                               "listen_port"},
+                               "listen_port", "udp_service"},
                               {"kind", "service", "listen_address",
                                "listen_port"});
             if (role != Role::Client) {
@@ -781,7 +781,17 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             if (!socks_listeners.emplace(listen, port).second) {
                 Fail(port_pointer, "duplicate SOCKS5 listen address and port");
             }
-            parsed.emplace_back(Socks5Adapter(service, listen, port));
+            std::optional<std::string> udp_service;
+            if (adapter.contains("udp_service")) {
+                const std::string udp_pointer =
+                    JoinPointer(pointer, "udp_service");
+                udp_service =
+                    ParseServiceName(adapter.at("udp_service"), udp_pointer);
+                RequireService(services, *udp_service, ServiceKind::Packet,
+                               udp_pointer);
+            }
+            parsed.emplace_back(
+                Socks5Adapter(service, listen, port, std::move(udp_service)));
             continue;
         }
 

@@ -6,36 +6,24 @@
 
 #include "core/stealth/obfs_signal.hpp"
 
-#include <cstdlib>
+#include <cstddef>
 #include <limits>
 #include <new>
 #include <stdexcept>
 #include <string>
 
+#include "test_support/allocation_failure.hpp"
+
 namespace {
 thread_local int fail_after = -1;
-}
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-void* operator new(std::size_t size) {
+// Fails the allocation numbered fail_after, counting from zero, and every
+// allocation after it until the sweep disarms the hook.
+void fail_numbered_allocation(std::size_t) {
     if (fail_after == 0) throw std::bad_alloc();
     if (fail_after > 0) --fail_after;
-    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
-    throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* storage) noexcept { std::free(storage); }
-void operator delete[](void* storage) noexcept { ::operator delete(storage); }
-void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
-namespace {
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -77,7 +65,9 @@ void test_failed_insert_preserves_capacity() {
     for (int allocation = 0; allocation < 32; ++allocation) {
         yume::obfs::AdmissionReplayCache cache(1, 7200);
         fail_after = allocation;
+        yume::test::before_allocate = fail_numbered_allocation;
         reached_success = cache.AcceptPathAt(first, 100);
+        yume::test::before_allocate = nullptr;
         fail_after = -1;
         if (reached_success) break;
         require(cache.size() == 0, "failed insertion retained a nonce");

@@ -29,8 +29,8 @@ The transport-v2 embedding path provides real named streams. The replacement
 now composes native ingress, credentials and sessions through `NativeEndpoint`,
 and an experimental schema-1 ABI backend carries named streams over it.
 Development `yumed-ytp1` and `yume-ytp1` processes run direct routes and a
-SOCKS5 CONNECT adapter over the same endpoint, while named-service and packet
-adapters remain unfinished. These are useful
+SOCKS5 adapter with CONNECT and UDP ASSOCIATE over the same endpoint, while
+named-service and packet adapters remain unfinished. These are useful
 components and development paths, not evidence that the replacement is complete.
 
 Complete and qualify the required connections and application capabilities
@@ -262,7 +262,8 @@ application stream IDs and servers own even IDs.
 outside engine locks after teardown, or inline if registered afterward, and
 contains callback exceptions. Callers dispatch onto their own executor when
 needed. The native client uses the endpoint notification to reconnect when its
-session ends; only failed attempts wait for exponential backoff.
+session ends. Failed attempts, and sessions shorter than the longest backoff,
+wait for exponential backoff.
 
 Only a successful complete YTP authentication creates `PeerEvidence`. That
 post-YTP evidence represents the authenticated application peer and is the

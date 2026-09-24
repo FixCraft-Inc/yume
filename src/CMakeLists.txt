@@ -856,21 +856,36 @@ if(YUME_BUILD_BASEFWX_MODULES)
             "YUME_BUILD_BASEFWX_MODULES needs the BaseFWX checkout in basefwx/ "
             "at the revision config/dependencies.json pins")
     endif()
+    if(NOT UNIX)
+        message(FATAL_ERROR
+            "YUME_BUILD_BASEFWX_MODULES needs POSIX descriptor-relative file access")
+    endif()
     # The relay v2 end-to-end channel between two users: handshake, records
-    # and the hybrid ratchet.
+    # and the hybrid ratchet, plus the protected chat history, relay secret
+    # and peer trust stores its users keep.
     add_library(yume_module_relay STATIC
+        modules/relay/base64.cpp modules/relay/base64.hpp
         modules/relay/frame.hpp
         modules/relay/handshake.cpp modules/relay/handshake.hpp
+        modules/relay/history.cpp modules/relay/history.hpp
         modules/relay/identity.cpp modules/relay/identity.hpp
+        modules/relay/peer_trust.cpp modules/relay/peer_trust.hpp
         modules/relay/ratchet.cpp modules/relay/ratchet.hpp
         modules/relay/ratchet_policy.hpp
         modules/relay/record.cpp modules/relay/record.hpp
         modules/relay/rekey_record.cpp modules/relay/rekey_record.hpp
-        modules/relay/session_ratchet.cpp modules/relay/session_ratchet.hpp)
+        modules/relay/secret.cpp modules/relay/secret.hpp
+        modules/relay/session_ratchet.cpp modules/relay/session_ratchet.hpp
+        modules/relay/storage_crypto.cpp modules/relay/storage_crypto.hpp)
     target_include_directories(yume_module_relay PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(yume_module_relay PUBLIC basefwxcpp OpenSSL::Crypto)
+    # Public so its consumers also get the non-LTO compile option a shared-ABI
+    # build puts on yume_private_files. A private edge would pass on only the
+    # link option, and LTO-only test objects would then fail to link.
+    target_link_libraries(yume_module_relay
+        PUBLIC basefwxcpp OpenSSL::Crypto nlohmann_json::nlohmann_json yume_private_files)
     yume_apply_perf_opts(yume_module_relay)
-    yume_assert_exact_link_dependencies(yume_module_relay basefwxcpp OpenSSL::Crypto)
+    yume_assert_exact_link_dependencies(yume_module_relay
+        basefwxcpp OpenSSL::Crypto nlohmann_json::nlohmann_json yume_private_files)
 endif()
 
 # The 0.3 ABI is intentionally build-tree-only and unfrozen. Each configuration
@@ -1045,7 +1060,8 @@ if(YUME_BUILD_TESTING)
         TIMEOUT 300 LABELS "native-runtime;provisioning")
 
     if(TARGET yume_module_relay)
-        foreach(_yume_relay_test IN ITEMS ratchet rekey_record session_ratchet record handshake)
+        foreach(_yume_relay_test IN ITEMS ratchet rekey_record session_ratchet record handshake
+                identity persistence peer_trust)
             set(_yume_relay_target yume_module_relay_${_yume_relay_test}_test)
             add_executable(${_yume_relay_target} modules/relay/${_yume_relay_test}_test.cpp)
             target_link_libraries(${_yume_relay_target} PRIVATE yume_module_relay)
@@ -1060,6 +1076,8 @@ if(YUME_BUILD_TESTING)
             set_tests_properties(${_yume_relay_target} PROPERTIES
                 TIMEOUT 120 LABELS "module;relay")
         endforeach()
+        target_compile_definitions(yume_module_relay_identity_test PRIVATE
+            YUME_RELAY_TESTDATA="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata")
     endif()
     if(YUME_BUILD_NATIVE_APPLICATION)
         add_test(NAME yume_setup_installed_layout

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -85,5 +86,15 @@ Bytes encode_composite_identity(EVP_PKEY* classical_pub, EVP_PKEY* pq_pub);
 // Strict: exactly two PEM public-key blocks, Ed25519 then ML-DSA-87. Anything
 // else returns an invalid result, never half an identity.
 CompositePublicKey parse_composite_identity(const Bytes& pem_bundle);
+
+// The composite key fingerprint, as lowercase hex of SHA-256 over
+// "yume/ytp/1/composite-identity/v1" followed by each half's DER public key
+// behind a 4-byte big-endian length, Ed25519 first. It is the YTP/1 identity
+// fingerprint, so a peer's fingerprint here equals the one yume-setup prints
+// and authorized-keys stores for the same key. Throws for an invalid key.
+std::string composite_fingerprint(const CompositePublicKey& key);
+
+// Lowercase hex of SHA-256 over the bytes.
+std::string sha256_hex(std::string_view input);
 
 }  // namespace yume::relay::identity

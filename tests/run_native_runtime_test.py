@@ -295,10 +295,12 @@ def check_module(forward: Path, identity: str) -> None:
 
 
 def process_gone(pid: int) -> bool:
-    # A dead child of init can stay a zombie briefly until it is reaped.
+    # A dead child of init can stay a zombie briefly until it is reaped. A
+    # process that exits between opening and reading its stat file makes the
+    # read fail with ESRCH, which also means it is gone.
     try:
         state = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[0]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
     return state == "Z"
 
@@ -322,7 +324,10 @@ def check_module_dies_with_daemon(yumed: Path, config: Path, environment: dict[s
         deadline = time.monotonic() + 10
         while not process_gone(module):
             if time.monotonic() > deadline:
-                os.kill(module, 9)
+                try:
+                    os.kill(module, 9)
+                except ProcessLookupError:
+                    pass
                 raise session.SessionFailure("the module outlived a killed yumed")
             time.sleep(0.05)
     finally:

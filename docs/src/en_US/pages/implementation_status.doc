@@ -356,8 +356,12 @@ end-to-end channel apart from transport v2: the composite-identity handshake
 with ML-KEM-1024, X25519 and an optional PSK, the sealed record format and the
 hybrid ratchet with its rekey records. Its tests check known answers produced
 by the transport-v2 code for epoch roots, ciphertexts and whole records, so
-the copy keeps every label and wire value. No module uses it yet, and chat,
-history, peer trust and file transfer are not moved.
+the copy keeps every label and wire value. The same library holds the stores a
+relay user keeps: chat history encrypted at rest, the relay secret derived
+from a password with PBKDF2, and peer trust with first-use and pinned
+fingerprints. Peer fingerprints are now YTP/1 identity fingerprints, the value
+`yume-setup` prints for a key. No module uses the library yet, and file
+transfer is not moved.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and

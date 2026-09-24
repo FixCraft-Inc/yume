@@ -12,6 +12,7 @@
 
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/x509.h>
 
 #include "core/security/secure_erase.hpp"
 
@@ -19,6 +20,7 @@ namespace yume::relay::identity {
 namespace {
 
 constexpr std::size_t kSha256Bytes = 32U;
+constexpr std::string_view kFingerprintDomain = "yume/ytp/1/composite-identity/v1";
 // Well above the roughly 3.7 KB of a composite identity.
 constexpr std::size_t kMaxIdentityPemBytes = 64U * 1024U;
 
@@ -113,6 +115,17 @@ bool consume_pem_block(const Bytes& bundle, std::size_t& cursor, std::string_vie
     if (end_it == bundle.end()) return false;
     cursor = static_cast<std::size_t>(end_it - bundle.begin()) + end.size();
     return cursor >= bundle.size() || is_pem_whitespace(bundle[cursor]);
+}
+
+std::string hex_lower(const Bytes& bytes) {
+    static constexpr char kDigits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2U);
+    for (const std::uint8_t byte : bytes) {
+        out.push_back(kDigits[byte >> 4U]);
+        out.push_back(kDigits[byte & 15U]);
+    }
+    return out;
 }
 
 bool has_exact_pem_sequence(const Bytes& bundle, std::string_view label, std::size_t count) {
@@ -246,6 +259,36 @@ CompositePublicKey parse_composite_identity(const Bytes& pem_bundle) {
     parsed.classical = std::move(first);
     parsed.pq = std::move(second);
     return parsed;
+}
+
+std::string composite_fingerprint(const CompositePublicKey& key) {
+    if (!key.valid()) throw std::runtime_error("composite fingerprint needs a valid key");
+    Sha256Stream digest;
+    digest.Update(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(kFingerprintDomain.data()),
+        kFingerprintDomain.size()));
+    for (EVP_PKEY* half : {key.classical.get(), key.pq.get()}) {
+        // OPENSSL_free is a macro, so it is wrapped to serve as a deleter.
+        const auto free_der = [](unsigned char* pointer) { OPENSSL_free(pointer); };
+        unsigned char* der = nullptr;
+        const int length = i2d_PUBKEY(half, &der);
+        if (length <= 0 || der == nullptr) throw ssl_error("failed to encode identity half");
+        std::unique_ptr<unsigned char, decltype(free_der)> owned(der, free_der);
+        const auto size = static_cast<std::uint32_t>(length);
+        const std::uint8_t prefix[4] = {
+            static_cast<std::uint8_t>(size >> 24U), static_cast<std::uint8_t>(size >> 16U),
+            static_cast<std::uint8_t>(size >> 8U), static_cast<std::uint8_t>(size)};
+        digest.Update(prefix);
+        digest.Update(std::span<const std::uint8_t>(der, static_cast<std::size_t>(length)));
+    }
+    return hex_lower(digest.Finish());
+}
+
+std::string sha256_hex(std::string_view input) {
+    Sha256Stream digest;
+    digest.Update(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(input.data()), input.size()));
+    return hex_lower(digest.Finish());
 }
 
 }  // namespace yume::relay::identity

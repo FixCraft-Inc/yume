@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -252,6 +253,26 @@ def add_module(kit: Path, program: Path) -> tuple[Path, str]:
     return forward, keys["keys"][0]["identity"]["sha256"]
 
 
+def check_module_validation(yumed: Path, kit: Path, program: Path,
+                            environment: dict[str, str], root: Path) -> None:
+    # --validate refuses a program that the daemon would refuse at start.
+    unsafe = root / "unsafe-module"
+    shutil.copyfile(program, unsafe)
+    unsafe.chmod(0o775)
+    config = json.loads((kit / "server/yumed.json").read_text(encoding="utf-8"))
+    for adapter in config["adapters"]:
+        if adapter["kind"] == "module":
+            adapter["program"] = str(unsafe)
+    variant = kit / "server/unsafe-module.json"
+    variant.write_text(json.dumps(config), encoding="utf-8")
+    result = subprocess.run([str(yumed), "--config", str(variant), "--validate"],
+                            env=environment, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 2 or \
+            "module 'echo' is invalid: module program must be owned" not in result.stderr:
+        raise session.SessionFailure(
+            f"--validate accepted an unsafe module program: {result.returncode} {result.stderr.strip()}")
+
+
 def check_module(forward: Path, identity: str) -> None:
     # The echo module greets with the identity from its header line, so the
     # greeting proves that yumed ran it and passed the authenticated client.
@@ -330,6 +351,8 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             environment = dict(environment, TMPDIR=str(module_root))
         validate(yumed, kit / "server/yumed.json", environment)
         validate(yume, kit / "client/yume.json", environment)
+        if module is not None:
+            check_module_validation(yumed, kit, module.resolve(strict=True), environment, root)
 
         target = session.serve_payload("127.0.0.1", target_port, PAYLOAD_BYTES)
         logs = {name: (root / f"{name}.log").open("wb") for name in ("yumed", "yume")}

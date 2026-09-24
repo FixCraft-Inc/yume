@@ -30,16 +30,24 @@ adapter:
 }
 @end
 
+The build produces the example as `bin/yume-echo-module`, and nothing installs
+it. To try it at the path above, install a root-owned copy:
+
+@code bash
+sudo install -D -o root -g root -m 0755 build/bin/yume-echo-module \
+  /usr/local/libexec/yume/yume-echo-module
+@end
+
 `program` is an absolute, normalized path, and the optional `arguments` hold
 at most 32 strings of up to 1024 bytes each. On the server a stream service
 has one adapter, so a service with a module has no `direct_tcp` adapter. Identities reach the
 service through their grants as usual, such as
 `{"service": "echo", "kind": "stream"}` in an authorized-keys entry.
 
-At startup `yumed` refuses a program that is a symbolic link or not a regular
-file, belongs to a user other than root or the daemon's, is writable by group
-or others, is not executable, is set-user-ID or set-group-ID, or has file
-capabilities. SIGHUP reloads credential stores only, so a changed module
+`yumed --validate` and daemon startup refuse a program that is a symbolic
+link or not a regular file, belongs to a user other than root or the daemon's,
+is writable by group or others, is not executable, is set-user-ID or
+set-group-ID, or has file capabilities. SIGHUP reloads credential stores only, so a changed module
 adapter takes effect when `yumed` restarts. Supervision needs Linux 5.3 or
 newer and glibc 2.34 or newer.
 

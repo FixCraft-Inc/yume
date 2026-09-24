@@ -211,8 +211,8 @@ policy claim that clients cannot verify remotely.
 
 ## Troubleshooting
 
-`--validate` checks configuration, credentials and destination policy without
-opening a network connection. `yume-doctor` also checks the cover site and TLS
+`--validate` checks configuration, credentials, destination policy and module
+programs without opening a network connection. `yume-doctor` also checks the cover site and TLS
 material. Both programs exit with `0` after a requested stop, `1` for a runtime
 failure, and `2` for a usage or configuration error.
 

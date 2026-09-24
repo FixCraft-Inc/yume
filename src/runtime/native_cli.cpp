@@ -24,6 +24,7 @@
 #include "core/runtime/bounded_file.hpp"
 #include "core/version.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "providers/child_process.hpp"
 #include "providers/system_resolver_helper.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "runtime/module_launcher.hpp"
@@ -179,6 +180,17 @@ int validate(NativeCliRole role, const config::v1::Config& config,
     if (!egress.ok()) {
         say(role, describe("destinations are invalid", egress.status()));
         return exit_for(egress.status());
+    }
+    // The same check a module supervisor makes at start, so a service
+    // manager's validation step reports a program the daemon would refuse.
+    for (const auto& adapter : config.adapters()) {
+        const auto* module = std::get_if<config::v1::ModuleAdapter>(&adapter);
+        if (!module) continue;
+        const auto program = providers::validate_program(module->program(), "module program");
+        if (!program.ok()) {
+            say(role, describe("module '" + module->service() + "' is invalid", program));
+            return exit_for(program);
+        }
     }
     say(role, "configuration and credentials are valid");
     return kExitStopped;

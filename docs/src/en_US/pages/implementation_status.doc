@@ -369,7 +369,14 @@ receiver that writes into a private staging file and publishes it without
 replacing anything, only after the declared size and SHA-256 match.
 `yume_module_codecs` holds the application codec core without BaseFWX: the
 HTTP request and response envelope, backend dialing rules and the Monero RPC
-descriptor with its request allow-list. No module uses these libraries yet.
+descriptor with its request allow-list. `yume_module_share` holds the `.yss`
+container that transport v2 kept its client settings in: a 12-byte header over
+a JSON document that BaseFWX seals with AES-GCM under an Argon2id key from a
+password of at least 12 characters, with a 16 MiB bound, bounded reads and
+exclusive owner-only writes. It refuses passwords that start with `file://` or
+`password://`, which BaseFWX would otherwise resolve. Its headers are
+plaintext, so a file shows that it is a YUME bundle. A kit import format has
+yet to define its document. No module uses these libraries yet.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and

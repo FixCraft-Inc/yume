@@ -625,10 +625,10 @@ if(YUME_BUILD_YTP1_TLS13_PROVIDER)
     yume_apply_perf_opts(yume_ytp1_tls13_secure_channel)
 endif()
 
-# Bounded, confined file reads are shared by native cover and v2 stores/sites.
-# Keep their handle ownership independent of either runtime.
+# Bounded, confined file reads are shared by native cover, v2 stores/sites and
+# the share module. Keep their handle ownership independent of any runtime.
 if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_YTP1_FRONT_DOOR)
+   YUME_BUILD_YTP1_FRONT_DOOR OR YUME_BUILD_BASEFWX_MODULES)
     add_library(yume_bounded_files STATIC
         core/runtime/bounded_file.cpp
         core/runtime/bounded_file.hpp)
@@ -905,6 +905,17 @@ if(YUME_BUILD_BASEFWX_MODULES)
     target_link_libraries(yume_module_files PUBLIC yume_module_relay PRIVATE basefwxcpp)
     yume_apply_perf_opts(yume_module_files)
     yume_assert_exact_link_dependencies(yume_module_files yume_module_relay basefwxcpp)
+
+    # The password-sealed .yss container, for a planned kit import format.
+    # Public edges for the same non-LTO reason as the relay library.
+    add_library(yume_module_share STATIC
+        modules/share/bundle_file.cpp modules/share/bundle_file.hpp)
+    target_include_directories(yume_module_share PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_module_share PUBLIC
+        basefwxcpp nlohmann_json::nlohmann_json yume_bounded_files yume_private_files)
+    yume_apply_perf_opts(yume_module_share)
+    yume_assert_exact_link_dependencies(yume_module_share
+        basefwxcpp nlohmann_json::nlohmann_json yume_bounded_files yume_private_files)
 endif()
 
 # The application codec core for the planned codec module: the HTTP request
@@ -1143,6 +1154,23 @@ if(YUME_BUILD_TESTING)
             add_test(NAME ${_yume_files_target} COMMAND ${_yume_files_target})
             set_tests_properties(${_yume_files_target} PROPERTIES
                 TIMEOUT 120 LABELS "module;files")
+        endforeach()
+    endif()
+    if(TARGET yume_module_share)
+        foreach(_yume_share_test IN ITEMS bundle_file bundle_file_lifetime)
+            set(_yume_share_target yume_module_share_${_yume_share_test}_test)
+            add_executable(${_yume_share_target} modules/share/${_yume_share_test}_test.cpp)
+            target_link_libraries(${_yume_share_target} PRIVATE yume_module_share)
+            yume_apply_perf_opts(${_yume_share_target})
+            # These tests check with assert, which must stay on in release builds.
+            if(MSVC)
+                target_compile_options(${_yume_share_target} PRIVATE /UNDEBUG)
+            else()
+                target_compile_options(${_yume_share_target} PRIVATE -UNDEBUG)
+            endif()
+            add_test(NAME ${_yume_share_target} COMMAND ${_yume_share_target})
+            set_tests_properties(${_yume_share_target} PROPERTIES
+                TIMEOUT 120 LABELS "module;share")
         endforeach()
     endif()
     if(YUME_BUILD_NATIVE_APPLICATION)

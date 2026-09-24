@@ -30,6 +30,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Application codec library.** The application codec core (the HTTP
   envelope, backend dialing rules and the Monero RPC descriptor) builds apart
   from transport v2 as `yume_module_codecs` for a planned codec module.
+- **Share container library.** `yume_module_share` holds the password-sealed
+  `.yss` container from transport v2 for a planned kit import format. It keeps
+  the file layout and always derives the key with Argon2id. Passwords that
+  start with `file://` or `password://` are now refused, where transport v2
+  let BaseFWX read the first from a file.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

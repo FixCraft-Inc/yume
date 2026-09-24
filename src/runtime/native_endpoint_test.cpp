@@ -1984,6 +1984,72 @@ void test_forward_adapter(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+#if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
+// The daemon composition runs a module for a service, and a client forward
+// without a destination reaches it. The module learns the client's identity
+// from the header of its connection.
+void test_module_through_forward(const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    std::string text;
+    CHECK(read_text_file_bounded(kit / "server/yumed.json", v1::kMaxDocumentBytes, &text));
+    auto document = nlohmann::json::parse(text);
+    document["services"] = nlohmann::json::array(
+        {{{"name", "echo"}, {"kind", "stream"}, {"max_concurrent_streams", 8}}});
+    document["adapters"] = nlohmann::json::array(
+        {{{"kind", "module"}, {"service", "echo"}, {"program", YUME_TEST_ECHO_MODULE}}});
+    CHECK(read_text_file_bounded(kit / "server/credentials/authorized-keys.json",
+                                 v1::kMaxDocumentBytes, &text));
+    const std::string identity = nlohmann::json::parse(text)["keys"][0]["identity"]["sha256"];
+    Runner runner;
+    std::vector<std::string> reports;
+    auto server = runner.sync([&] {
+        NativeServerRuntimeOptions options;
+        options.module_launcher = YUME_TEST_MODULE_LAUNCHER;
+        options.report = [&reports](std::string_view line) { reports.emplace_back(line); };
+        return take(NativeServerRuntime::create(runner.context, v1::Parse(document),
+            kit / "server", [](Status) {}, std::move(options)));
+    });
+    runner.sync([&] { CHECK(server->start().ok()); });
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "client/yume.json"), kit / "client", bindings(handler), client_options)); });
+    auto connecting = start(runner, client);
+    auto session = take(await(connecting));
+    auto forward = runner.sync([&] {
+        return take(NativeForwardAdapter::create(runner.context,
+            v1::ForwardAdapter("echo", v1::LoopbackListener{"127.0.0.1", 0U}, std::nullopt),
+            [session] { return session; }));
+    });
+    boost::asio::io_context local_io;
+    boost::asio::ip::tcp::socket local(local_io);
+    local.connect(runner.sync([&] { return forward->local_endpoint(); }));
+    boost::asio::write(local, boost::asio::buffer("module", 6U));
+    local.non_blocking(true);
+    const std::string expected = "hello " + identity + "\nmodule";
+    std::string received;
+    while (received.size() < expected.size()) {
+        std::array<std::uint8_t, 256> bytes{};
+        const auto read = read_socket(local, bytes);
+        CHECK(read != 0U);
+        received.append(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(read));
+    }
+    CHECK(received == expected);
+    local.close();
+    runner.sync([&] {
+        forward->close();
+        client->close();
+        server->close();
+        session.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+    CHECK(!reports.empty() && reports.front().find("module echo: started") == 0U);
+}
+#endif
+
 void test_socks5_deadlines(const std::filesystem::path& kit) {
     Runner runner;
     auto handler = std::make_shared<DelayedRouteHandler>();
@@ -2538,6 +2604,9 @@ int main(int argc, char** argv) {
         test_socks5_udp_associate(argv[1]);
         test_socks5_udp_backlog(argv[1]);
         test_forward_adapter(argv[1]);
+#if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
+        test_module_through_forward(argv[1]);
+#endif
         test_destination_route<boost::asio::ip::tcp>(argv[1], false);
         test_destination_route<boost::asio::ip::tcp>(argv[1], true);
         test_destination_route<boost::asio::ip::udp>(argv[1], true);

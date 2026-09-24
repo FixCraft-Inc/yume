@@ -5,7 +5,7 @@ title:       yume
 summary:     native YTP/1 client, SOCKS5 proxy and Linux TUN
 man:         docs/man/yume.1
 man-section: 1
-man-date:    2026-09-20
+man-date:    2026-09-24
 man-source:  YUME 0.3.0-dev1
 man-manual:  YUME Manual
 ---

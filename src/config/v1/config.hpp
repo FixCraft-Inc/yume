@@ -32,6 +32,8 @@ inline constexpr std::size_t kMaxListenAddresses = 16;
 inline constexpr std::size_t kMaxDestinationNetworks = 64;
 // A UNIX socket path must fit sockaddr_un with its terminator.
 inline constexpr std::size_t kMaxUnixSocketPathBytes = 107;
+inline constexpr std::size_t kMaxModuleArguments = 32;
+inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -55,6 +57,7 @@ enum class AdapterKind {
     DirectTcp,
     DirectUdp,
     Forward,
+    Module,
 };
 
 class ValidationError final : public std::runtime_error {
@@ -459,11 +462,37 @@ private:
     std::optional<ForwardDestination> destination_;
 };
 
+// A server module: a program that serves one stream service. The daemon
+// starts it, restarts it after it exits and hands it each authorized stream
+// of the service as a connection on a private UNIX socket.
+class ModuleAdapter final {
+public:
+    ModuleAdapter(std::string service,
+                  std::string program,
+                  std::vector<std::string> arguments)
+        : service_(std::move(service)),
+          program_(std::move(program)),
+          arguments_(std::move(arguments)) {}
+
+    const std::string& service() const noexcept { return service_; }
+    // An absolute path. The daemon runs it with arguments after its own name.
+    const std::string& program() const noexcept { return program_; }
+    const std::vector<std::string>& arguments() const noexcept {
+        return arguments_;
+    }
+
+private:
+    std::string service_;
+    std::string program_;
+    std::vector<std::string> arguments_;
+};
+
 using Adapter = std::variant<Socks5Adapter,
                              PacketAdapter,
                              DirectTcpAdapter,
                              DirectUdpAdapter,
-                             ForwardAdapter>;
+                             ForwardAdapter,
+                             ModuleAdapter>;
 
 class ResourceLimits final {
 public:

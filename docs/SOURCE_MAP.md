@@ -73,8 +73,9 @@ Implementation paths below are relative to `src/`. The candidate header in
 | --- | --- |
 | `engine/` | Dependency-pure contracts: `ByteChannel`, `SecureChannel`, `Carrier`, `FrontDoor`, `SessionEngine` |
 | `ytp/` | YTP/1 protocol kernel and security domains. Protocol and AUTH/key-schedule codecs share internal big-endian operations in `ytp/detail/byte_order.hpp`; each codec owns its bounds checks and error order. May not include the engine |
-| `providers/` | Opt-in OpenSSL security, internal deterministic `ytp1_crypto` constructions, TLS channels, Asio TCP/UDP routes and client/accepted TCP channels, H2 carrier, native FrontDoor and configured static cover |
-| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations. `local_listener.*` owns the loopback TCP and private UNIX socket accept loop that `native_socks5.*` and `native_forward.*` share. `egress_limiter.*` shares a server's configured egress rate between identities by weight, and `paced_stream.*` applies it to each stream the endpoint serves. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the development `yumed` and `yume` processes |
+| `providers/` | Opt-in OpenSSL security, internal deterministic `ytp1_crypto` constructions, TLS channels, Asio TCP/UDP routes and client/accepted TCP channels, H2 carrier, native FrontDoor and configured static cover. `child_process.*` starts a helper program with one passed descriptor and watches it through a pidfd, and `process_privileges.*` drops a helper's privileges before it works |
+| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations. `local_listener.*` owns the loopback TCP and private UNIX socket accept loop that `native_socks5.*` and `native_forward.*` share. `egress_limiter.*` shares a server's configured egress rate between identities by weight, and `paced_stream.*` applies it to each stream the endpoint serves. `module_supervisor.*` runs each configured module program, restarts it and hands it its service's streams over a private UNIX socket, and `module_launcher.*` is the `yume-module` entry that drops privileges before running the program. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the development `yumed` and `yume` processes |
+| `modules/` | Module programs, which link no YUME library. `echo/` is the example module that the tests run |
 | `admission/` | Shared path/authority parsing, private-context HMAC and bounded monotonic replay reservations; no protocol/runtime dependency |
 | `config/v1/` | Strict numeric schema 1 parser with RFC 6901 error pointers |
 
@@ -152,7 +153,8 @@ allocation failure as well as ordinary cancellation.
 
 `providers/system_resolver.*` owns name lookup for both Asio network
 providers through a killable helper process, described in the
-[ByteChannel lifecycle](ARCHITECTURE.md#bytechannel).
+[ByteChannel lifecycle](ARCHITECTURE.md#bytechannel). It starts the helper
+through `providers/child_process.*`, as the module supervisor starts modules.
 `providers/system_resolver_protocol.hpp` is the private message format and
 `providers/system_resolver_helper.*` the helper side, which links only libc
 and threads. The standalone `yume-resolver` program

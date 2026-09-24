@@ -395,6 +395,61 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("client-only", result.stderr)
 
+    def test_module_adapters_match_the_native_parser(self) -> None:
+        server_path = self.case / "server/yumed.json"
+        original = json.loads(server_path.read_text())
+        original["services"].append(
+            {"kind": "stream", "max_concurrent_streams": 16, "name": "echo"}
+        )
+        base = {"kind": "module", "service": "echo", "program": "/usr/lib/yume/echo"}
+        server = copy.deepcopy(original)
+        server["adapters"].append(dict(base, arguments=["--greeting", "hi"]))
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        index = len(original["adapters"])
+        invalid = (
+            ({"program": "echo"}, "program", "must be a normalized absolute path"),
+            ({"program": "/usr/lib/../echo"}, "program", "must be a normalized absolute path"),
+            ({"arguments": "--greeting"}, "arguments", "must be an array of at most 32 strings"),
+            ({"arguments": ["x"] * 33}, "arguments", "must be an array of at most 32 strings"),
+            ({"arguments": ["x" * 1025]}, "arguments/0", "must be at most 1024 bytes"),
+            ({"arguments": ["a\0b"]}, "arguments/0", "must not contain NUL"),
+            ({"arguments": [1]}, "arguments/0", "must be a string"),
+            ({"service": "tcp"}, "service", "stream service already has an adapter"),
+            ({"service": "udp"}, "service", "requires a stream service"),
+            ({"listen_path": "/run/a.sock"}, "listen_path", "unknown key"),
+        )
+        for extra, key, message in invalid:
+            server = copy.deepcopy(original)
+            server["adapters"].append(dict(base, **extra))
+            server_path.write_text(json.dumps(server))
+            result = self.run_doctor(server_path)
+            self.assertEqual(result.returncode, 1, extra)
+            self.assertIn(f"/adapters/{index}/{key}: {message}", result.stderr)
+
+        # A direct_tcp adapter cannot take a stream service a module serves.
+        server = copy.deepcopy(original)
+        direct = next(item for item in server["adapters"] if item["kind"] == "direct_tcp")
+        server["adapters"].remove(direct)
+        server["adapters"].extend([dict(base, service="tcp"), direct])
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            f"/adapters/{index}/service: stream service already has an adapter",
+            result.stderr,
+        )
+
+        client_path = self.case / "client/yume.json"
+        client = json.loads(client_path.read_text())
+        client["adapters"].append(dict(base, service="tcp"))
+        client_path.write_text(json.dumps(client))
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("module adapter is server-only", result.stderr)
+
     def test_symlink_and_non_regular_credentials_are_rejected(self) -> None:
         credential = self.case / "client/credentials/client-access.psk"
         replacement = credential.with_name("replacement.psk")

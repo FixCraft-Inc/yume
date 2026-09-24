@@ -695,8 +695,9 @@ AdapterKind ParseAdapterKind(const Json& value, const std::string& pointer) {
     if (kind == "direct_tcp") return AdapterKind::DirectTcp;
     if (kind == "direct_udp") return AdapterKind::DirectUdp;
     if (kind == "forward") return AdapterKind::Forward;
+    if (kind == "module") return AdapterKind::Module;
     Fail(pointer,
-         "must be 'socks5', 'packet', 'direct_tcp', 'direct_udp', or 'forward'");
+         "must be 'socks5', 'packet', 'direct_tcp', 'direct_udp', 'forward', or 'module'");
 }
 
 std::string ParseInterfaceName(const Json& value, const std::string& pointer) {
@@ -877,6 +878,8 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
     std::set<std::string> unix_listeners;
     std::set<std::string> packet_interfaces;
     std::set<std::pair<AdapterKind, std::string>> direct_services;
+    // One server adapter handles each stream service.
+    std::set<std::string> stream_handlers;
     for (std::size_t index = 0; index < adapters.size(); ++index) {
         const std::string pointer = IndexPointer("/adapters", index);
         const auto& adapter = adapters.at(index);
@@ -1012,6 +1015,51 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             continue;
         }
 
+        if (kind == AdapterKind::Module) {
+            CheckClosedObject(adapter, pointer,
+                              {"kind", "service", "program", "arguments"},
+                              {"kind", "service", "program"});
+            if (role != Role::Server) {
+                Fail(kind_pointer, "module adapter is server-only");
+            }
+            const std::string service_pointer = JoinPointer(pointer, "service");
+            const std::string service =
+                ParseServiceName(adapter.at("service"), service_pointer);
+            RequireService(services, service, ServiceKind::Stream,
+                           service_pointer);
+            if (!stream_handlers.insert(service).second) {
+                Fail(service_pointer, "stream service already has an adapter");
+            }
+            const std::string program_pointer = JoinPointer(pointer, "program");
+            const auto& program = ReadString(adapter.at("program"), program_pointer,
+                                             kMaxFileReferenceBytes);
+            if (!IsNormalizedAbsolutePath(program)) {
+                Fail(program_pointer, "must be a normalized absolute path");
+            }
+            std::vector<std::string> arguments;
+            if (adapter.contains("arguments")) {
+                const std::string arguments_pointer =
+                    JoinPointer(pointer, "arguments");
+                const auto& values = adapter.at("arguments");
+                if (!values.is_array() || values.size() > kMaxModuleArguments) {
+                    Fail(arguments_pointer,
+                         "must be an array of at most " +
+                             std::to_string(kMaxModuleArguments) + " strings");
+                }
+                for (std::size_t item = 0; item < values.size(); ++item) {
+                    const std::string item_pointer = IndexPointer(arguments_pointer, item);
+                    const auto& argument = ReadString(values.at(item), item_pointer,
+                                                      kMaxModuleArgumentBytes);
+                    if (argument.find('\0') != std::string::npos) {
+                        Fail(item_pointer, "must not contain NUL");
+                    }
+                    arguments.push_back(argument);
+                }
+            }
+            parsed.emplace_back(ModuleAdapter(service, program, std::move(arguments)));
+            continue;
+        }
+
         if (kind == AdapterKind::Packet) {
             CheckClosedObject(adapter, pointer,
                               {"kind", "service", "interface_name", "mtu", "network"},
@@ -1045,6 +1093,9 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             ParseServiceName(adapter.at("service"), service_pointer);
         if (!direct_services.emplace(kind, service).second) {
             Fail(service_pointer, "duplicate direct adapter service and kind");
+        }
+        if (kind == AdapterKind::DirectTcp && !stream_handlers.insert(service).second) {
+            Fail(service_pointer, "stream service already has an adapter");
         }
         const std::string destinations_pointer =
             JoinPointer(pointer, "destinations");

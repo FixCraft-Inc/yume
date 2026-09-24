@@ -26,6 +26,7 @@
 #include "providers/asio_execution_context.hpp"
 #include "providers/system_resolver_helper.hpp"
 #include "providers/ytp1_security_provider.hpp"
+#include "runtime/module_launcher.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
@@ -43,9 +44,9 @@ using SignalSet = boost::asio::basic_signal_set<providers::AsioExecutionContext:
 constexpr int kExitStopped = 0;
 constexpr int kExitFailure = 1;
 constexpr int kExitUsage = 2;
-// These programs are their own resolver helper, so a single-file release
-// needs nothing installed beside it.
-constexpr std::string_view kSelfResolverProgram = "/proc/self/exe";
+// These programs are their own resolver helper and module launcher, so a
+// single-file release needs nothing installed beside it.
+constexpr std::string_view kSelfHelperProgram = "/proc/self/exe";
 
 struct Arguments final {
     std::optional<std::filesystem::path> config;
@@ -240,10 +241,14 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         try {
             wait_for_signal();
             if (role == NativeCliRole::Server) {
+                NativeServerRuntimeOptions server_options;
+                server_options.resolver_program = std::string(kSelfHelperProgram);
+                server_options.module_launcher = std::string(kSelfHelperProgram);
+                server_options.report = [role](std::string_view text) { say(role, text); };
                 auto runtime = NativeServerRuntime::create(context, config, base, [&](Status status) noexcept {
                     say_stopped(role, status);
                     stop(kExitFailure);
-                }, std::string(kSelfResolverProgram));
+                }, std::move(server_options));
                 if (!runtime.ok()) {
                     say(role, describe("cannot start", runtime.status()));
                     stop(exit_for(runtime.status()));
@@ -263,7 +268,7 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                 return;
             }
             NativeClientRuntimeOptions client_options;
-            client_options.resolver_program = std::string(kSelfResolverProgram);
+            client_options.resolver_program = std::string(kSelfHelperProgram);
             auto runtime = NativeClientRuntime::create(context, config, base,
                 [role](std::string_view text) { say(role, text); }, std::move(client_options),
                 [&](Status status) noexcept {
@@ -312,9 +317,12 @@ int serve(NativeCliRole role, const config::v1::Config& config,
 }  // namespace
 
 int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
-    // Name lookups re-execute this program as their helper process.
+    // Name lookups and modules re-execute this program as their helpers.
     if (providers::is_system_resolver_helper(argc, argv)) {
         return providers::run_system_resolver_helper();
+    }
+    if (role == NativeCliRole::Server && is_module_launcher(argc, argv)) {
+        return run_module_launcher(argc, argv);
     }
     try {
         std::signal(SIGPIPE, SIG_IGN);

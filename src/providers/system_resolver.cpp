@@ -30,12 +30,14 @@
 #include <boost/asio/basic_seq_packet_socket.hpp>
 #include <boost/system/error_code.hpp>
 
+#include "providers/child_process.hpp"
 #include "providers/system_resolver_protocol.hpp"
 
 namespace yume::providers {
 namespace {
 
 namespace protocol = resolver_protocol;
+static_assert(protocol::kHelperDescriptor == kPassedDescriptor);
 
 using engine::Result;
 using engine::Status;
@@ -44,17 +46,6 @@ using Addresses = std::vector<boost::asio::ip::address>;
 using Socket = boost::asio::basic_seq_packet_socket<
     boost::asio::local::seq_packet_protocol, AsioExecutionContext::Executor>;
 
-// glibc 2.34 added the descriptor-closing spawn action. Without it the helper
-// would inherit every descriptor lacking FD_CLOEXEC, including accepted
-// connections, and keep them open after this process closes them.
-#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
-constexpr bool kSpawnSupported = true;
-#else
-constexpr bool kSpawnSupported = false;
-#endif
-
-constexpr std::string_view kSelfProgram = "/proc/self/exe";
-
 Status safe_status(StatusCode code, std::string_view message) noexcept {
     try {
         return Status(code, message);
@@ -62,144 +53,6 @@ Status safe_status(StatusCode code, std::string_view message) noexcept {
         return Status(code);
     }
 }
-
-Status validate_program(const std::filesystem::path& program) noexcept {
-    if (program.native() == kSelfProgram) return Status::success();
-    if (!program.is_absolute()) {
-        return safe_status(StatusCode::InvalidArgument,
-                           "resolver helper path must be absolute");
-    }
-    struct stat status {};
-    if (::lstat(program.c_str(), &status) != 0) {
-        return safe_status(StatusCode::FailedPrecondition,
-                           "resolver helper is missing");
-    }
-    if (!S_ISREG(status.st_mode)) {
-        return safe_status(StatusCode::FailedPrecondition,
-                           "resolver helper is not a regular file");
-    }
-    if ((status.st_mode & (S_IWGRP | S_IWOTH)) != 0U ||
-        (status.st_uid != 0U && status.st_uid != ::geteuid())) {
-        return safe_status(StatusCode::PermissionDenied,
-                           "resolver helper must be owned by root or this user "
-                           "and not writable by others");
-    }
-    if (::access(program.c_str(), X_OK) != 0) {
-        return safe_status(StatusCode::PermissionDenied,
-                           "resolver helper is not executable");
-    }
-    return Status::success();
-}
-
-class Descriptor final {
-public:
-    explicit Descriptor(int value = -1) noexcept : value_(value) {}
-    Descriptor(const Descriptor&) = delete;
-    Descriptor& operator=(const Descriptor&) = delete;
-    ~Descriptor() { reset(); }
-    int get() const noexcept { return value_; }
-    int release() noexcept { return std::exchange(value_, -1); }
-    void reset() noexcept {
-        if (value_ >= 0) ::close(value_);
-        value_ = -1;
-    }
-
-private:
-    int value_;
-};
-
-// A spawned helper. pidfd signalling cannot reach an unrelated process that
-// reused the PID after a host reaped this child, for example by ignoring
-// SIGCHLD. Reaping waits only for this PID after SIGKILL, which ends it.
-class ChildProcess final {
-public:
-    ChildProcess() = default;
-    ChildProcess(const ChildProcess&) = delete;
-    ChildProcess& operator=(const ChildProcess&) = delete;
-    ~ChildProcess() { terminate(); }
-
-    void adopt(pid_t pid) noexcept {
-        pid_ = pid;
-#if defined(SYS_pidfd_open)
-        pidfd_ = static_cast<int>(::syscall(SYS_pidfd_open, pid, 0));
-#endif
-    }
-
-    void terminate() noexcept {
-        if (pid_ <= 0) return;
-#if defined(SYS_pidfd_send_signal)
-        if (pidfd_ >= 0) {
-            (void)::syscall(SYS_pidfd_send_signal, pidfd_, SIGKILL, nullptr, 0U);
-        } else {
-            (void)::kill(pid_, SIGKILL);
-        }
-#else
-        (void)::kill(pid_, SIGKILL);
-#endif
-        int status = 0;
-        while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {
-        }
-        if (pidfd_ >= 0) ::close(pidfd_);
-        pidfd_ = -1;
-        pid_ = -1;
-    }
-
-private:
-    pid_t pid_{-1};
-    int pidfd_{-1};
-};
-
-class SpawnSetup final {
-public:
-    SpawnSetup() noexcept {
-        actions_ready_ = ::posix_spawn_file_actions_init(&actions_) == 0;
-        attributes_ready_ = ::posix_spawnattr_init(&attributes_) == 0;
-    }
-    SpawnSetup(const SpawnSetup&) = delete;
-    SpawnSetup& operator=(const SpawnSetup&) = delete;
-    ~SpawnSetup() {
-        if (actions_ready_) (void)::posix_spawn_file_actions_destroy(&actions_);
-        if (attributes_ready_) (void)::posix_spawnattr_destroy(&attributes_);
-    }
-
-    // The helper gets the socketpair as descriptor 3, /dev/null as input and
-    // the inherited output streams, and nothing else. It starts with default
-    // signal handling and an empty mask, in its own process group so terminal
-    // signals reach only the parent, which ends the helper itself.
-    bool prepare(int helper_socket) noexcept {
-        if (!actions_ready_ || !attributes_ready_) return false;
-        sigset_t empty;
-        sigset_t all;
-        sigemptyset(&empty);
-        sigfillset(&all);
-        bool ok = ::posix_spawn_file_actions_addopen(
-                      &actions_, 0, "/dev/null", O_RDONLY, 0) == 0 &&
-                  ::posix_spawn_file_actions_adddup2(
-                      &actions_, helper_socket, protocol::kHelperDescriptor) == 0;
-#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
-        ok = ok && ::posix_spawn_file_actions_addclosefrom_np(
-                       &actions_, protocol::kHelperDescriptor + 1) == 0;
-#else
-        ok = false;
-#endif
-        return ok &&
-               ::posix_spawnattr_setflags(&attributes_,
-                   POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF |
-                   POSIX_SPAWN_SETPGROUP) == 0 &&
-               ::posix_spawnattr_setsigmask(&attributes_, &empty) == 0 &&
-               ::posix_spawnattr_setsigdefault(&attributes_, &all) == 0 &&
-               ::posix_spawnattr_setpgroup(&attributes_, 0) == 0;
-    }
-
-    const posix_spawn_file_actions_t* actions() const noexcept { return &actions_; }
-    const posix_spawnattr_t* attributes() const noexcept { return &attributes_; }
-
-private:
-    posix_spawn_file_actions_t actions_{};
-    posix_spawnattr_t attributes_{};
-    bool actions_ready_{false};
-    bool attributes_ready_{false};
-};
 
 template <typename Callback, typename... Args>
 void invoke_contained(Callback& callback, Args&&... args) noexcept {
@@ -386,11 +239,7 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
     }
 
     Status start_helper() noexcept {
-        if (!kSpawnSupported) {
-            return safe_status(StatusCode::FailedPrecondition,
-                               "a resolver helper is unsupported on this platform");
-        }
-        Status valid = validate_program(options.program);
+        Status valid = validate_program(options.program, "resolver helper");
         if (!valid.ok()) return valid;
         try {
             int pair[2] = {-1, -1};
@@ -400,35 +249,17 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
             }
             Descriptor parent(pair[0]);
             Descriptor child(pair[1]);
-            // dup2 onto an equal descriptor would keep FD_CLOEXEC set. A copy
-            // above the target makes the spawn action always clear it.
-            Descriptor child_copy(::fcntl(child.get(), F_DUPFD_CLOEXEC,
-                                          protocol::kHelperDescriptor + 1));
-            if (child_copy.get() < 0) {
-                return safe_status(StatusCode::ResourceExhausted,
-                                   "resolver helper descriptor copy failed");
-            }
             auto started = std::make_shared<Helper>(context->executor(), ++generation);
-            SpawnSetup setup;
-            if (!setup.prepare(child_copy.get())) {
-                return safe_status(StatusCode::ResourceExhausted,
-                                   "resolver helper spawn setup failed");
+            const std::string arguments[] = {std::string(protocol::kHelperArgv0)};
+            auto spawned = ChildProcess::spawn(options.program, arguments, child.get());
+            if (!spawned.ok()) {
+                return safe_status(spawned.status().code(),
+                                   spawned.status().message().empty()
+                                       ? std::string_view("resolver helper could not start")
+                                       : std::string_view(spawned.status().message()));
             }
-            std::string program = options.program.string();
-            std::string argv0(protocol::kHelperArgv0);
-            char* arguments[] = {argv0.data(), nullptr};
-            pid_t pid = -1;
-            const int spawn_error = ::posix_spawn(&pid, program.c_str(), setup.actions(),
-                                                  setup.attributes(), arguments, environ);
-            if (spawn_error != 0) {
-                return safe_status(spawn_error == ENOMEM || spawn_error == EAGAIN
-                                       ? StatusCode::ResourceExhausted
-                                       : StatusCode::FailedPrecondition,
-                                   "resolver helper could not start");
-            }
-            started->child.adopt(pid);
+            started->child = std::move(spawned).take_value();
             child.reset();
-            child_copy.reset();
             boost::system::error_code error;
             started->socket.assign(boost::asio::local::seq_packet_protocol(),
                                    parent.get(), error);
@@ -522,7 +353,7 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
     void stop_helper() noexcept {
         boost::system::error_code ignored;
         helper->socket.close(ignored);
-        helper->child.terminate();
+        helper->child.kill_and_reap();
         helper.reset();
     }
 
@@ -548,7 +379,7 @@ Result<std::shared_ptr<SystemResolver>> SystemResolver::create(
             StatusCode::InvalidArgument, "invalid system resolver options"));
     }
     if (!options.program.empty()) {
-        Status valid = validate_program(options.program);
+        Status valid = validate_program(options.program, "resolver helper");
         if (!valid.ok()) return Result<std::shared_ptr<SystemResolver>>(std::move(valid));
     }
     try {

@@ -339,6 +339,18 @@ destination and early payload, OPEN expiry, a refused service, no active
 session and a UNIX listener. The client runtime test forwards through a
 configured UNIX socket after a reconnect. Unit tests cover the UNIX path rules
 and channel adoption.
+A server `module` adapter binds its stream service to a `ModuleSupervisor`.
+It opens a listening UNIX socket in a new 0700 directory and starts the
+program through the `yume-module` launcher, which arms SIGKILL for the
+daemon's death, sets no_new_privs and clears capabilities before running it.
+Each authorized OPEN without a destination becomes a connection that starts
+with a `yume-module 1` header naming the client identity, joined to the stream
+by the route bridge. A module that exits is restarted with backoff, and close
+sends SIGTERM, then SIGKILL after the grace period, and removes the socket.
+Unit tests cover spawning, descriptor passing, program checks, a crash and
+restart with half-close, and graceful and forced stops. The endpoint test
+reaches the echo module through a client forward, and the runtime test runs
+it under the real `yumed` and checks that it dies with a killed daemon.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and
@@ -395,7 +407,10 @@ must not be advertised as working:
   qualification beyond the focused native-session regressions;
 - acceptance evidence for automatic directional root rotation and competing-stream
   scheduling, including stalled readers, cancellation and real-carrier pressure;
-- standalone application-service adapters and production managed-TUN qualification;
+- modules kept away from the daemon's keys: a module runs as the daemon's user
+  and can read its credential files, so modules are trusted programs until each
+  runs as a user of its own;
+- production qualification of module adapters and managed TUN;
 - transport-v2 public-ABI packets, which remain explicitly unsupported;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native

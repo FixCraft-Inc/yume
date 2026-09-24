@@ -17,13 +17,9 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/syscall.h>
 #include <unistd.h>
-#if defined(__linux__)
-#include <linux/capability.h>
-#include <sys/prctl.h>
-#endif
 
+#include "providers/process_privileges.hpp"
 #include "providers/system_resolver_protocol.hpp"
 
 namespace yume::providers {
@@ -125,24 +121,6 @@ void lookup(std::uint32_t id, std::uint8_t max_addresses, const std::string& hos
     active_lookups.fetch_sub(1U, std::memory_order_acq_rel);
 }
 
-// The helper runs the system's DNS and NSS parsing and needs no privilege.
-// yumed may hold CAP_NET_BIND_SERVICE or run as root, so drop every
-// capability before serving. This is best effort: where the kernel or a
-// sandbox refuses, the helper keeps only what its parent already had.
-void drop_privileges() noexcept {
-#if defined(__linux__)
-    (void)::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-#if defined(PR_CAP_AMBIENT)
-    (void)::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
-#endif
-    __user_cap_header_struct header{};
-    header.version = _LINUX_CAPABILITY_VERSION_3;
-    header.pid = 0;
-    __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_3]{};
-    (void)::syscall(SYS_capset, &header, data);
-#endif
-}
-
 bool inherited_socketpair() noexcept {
     int value = 0;
     socklen_t length = sizeof(value);
@@ -169,7 +147,8 @@ int run_system_resolver_helper() noexcept {
         [[maybe_unused]] const auto ignored = ::write(2, kMessage, sizeof(kMessage) - 1U);
         return 2;
     }
-    drop_privileges();
+    // The helper runs the system's DNS and NSS parsing and needs no privilege.
+    drop_process_privileges();
     const auto hello = protocol::encode_hello();
     send_message(hello.data(), hello.size());
 

@@ -43,6 +43,8 @@ listed separately at the end.
 - [YTP/1](protocol/YTP_1.md): the wire and security contract.
 - [C ABI](ABI.md): embedding the client or server. The ABI is experimental and
   its install contract is not frozen.
+- [Modules](MODULES.md): running a program behind a stream service, and
+  writing one.
 - [YTP/1 development guide](development/ytp1/README.md): build options, setup
   tools, embedding and verification gates.
 - [Development notes](release/CHANGELOG.md), [SBOM](release/SBOM.spdx.json)

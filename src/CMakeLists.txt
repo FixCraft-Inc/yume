@@ -411,17 +411,34 @@ if(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER OR
     # helper side links nothing but libc and threads. yume and yumed serve as
     # their own helper, and yume-resolver serves embedding hosts.
     find_package(Threads REQUIRED)
+    # Helpers and modules drop privileges before serving. It links nothing.
+    add_library(yume_process_privileges STATIC
+        providers/process_privileges.cpp providers/process_privileges.hpp)
+    target_include_directories(yume_process_privileges PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    yume_apply_perf_opts(yume_process_privileges)
+    yume_prepare_static_for_shared_abi(yume_process_privileges)
+    yume_assert_exact_link_dependencies(yume_process_privileges)
+
     add_library(yume_system_resolver_helper STATIC
         providers/system_resolver_helper.cpp
         providers/system_resolver_helper.hpp
         providers/system_resolver_protocol.hpp)
     target_include_directories(yume_system_resolver_helper PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(yume_system_resolver_helper PRIVATE Threads::Threads)
+    target_link_libraries(yume_system_resolver_helper PRIVATE yume_process_privileges Threads::Threads)
     yume_apply_perf_opts(yume_system_resolver_helper)
     # yume and yumed link without LTO when a shared-ABI build makes their
     # other archives non-LTO, so this archive must not hold LTO-only objects.
     yume_prepare_static_for_shared_abi(yume_system_resolver_helper)
-    yume_assert_exact_link_dependencies(yume_system_resolver_helper Threads::Threads)
+    yume_assert_exact_link_dependencies(yume_system_resolver_helper
+        yume_process_privileges Threads::Threads)
+
+    # Spawning, signalling and reaping helper and module processes.
+    add_library(yume_child_process STATIC
+        providers/child_process.cpp providers/child_process.hpp)
+    target_include_directories(yume_child_process PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_child_process PUBLIC yume_engine)
+    yume_apply_perf_opts(yume_child_process)
+    yume_assert_exact_link_dependencies(yume_child_process yume_engine)
 
     add_library(yume_system_resolver STATIC
         providers/system_resolver.cpp
@@ -429,10 +446,11 @@ if(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER OR
         providers/system_resolver_protocol.hpp)
     target_include_directories(yume_system_resolver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_system_resolver
-        PUBLIC yume_engine yume_asio_execution_context Boost::system)
+        PUBLIC yume_engine yume_asio_execution_context Boost::system
+        PRIVATE yume_child_process)
     yume_apply_perf_opts(yume_system_resolver)
     yume_assert_exact_link_dependencies(yume_system_resolver
-        yume_engine yume_asio_execution_context Boost::system)
+        yume_engine yume_asio_execution_context Boost::system yume_child_process)
 
     if(NOT WIN32)
         add_executable(yume-resolver providers/system_resolver_main.cpp)
@@ -752,6 +770,16 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
             list(APPEND _yume_native_network_libraries yume_linux_tun_network)
         endif()
 
+        # yume and yumed run as yume-module to launch a module after dropping
+        # privileges. Like the resolver helper it links almost nothing.
+        add_library(yume_module_launcher STATIC
+            runtime/module_launcher.cpp runtime/module_launcher.hpp)
+        target_include_directories(yume_module_launcher PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_module_launcher PRIVATE yume_process_privileges)
+        yume_apply_perf_opts(yume_module_launcher)
+        yume_prepare_static_for_shared_abi(yume_module_launcher)
+        yume_assert_exact_link_dependencies(yume_module_launcher yume_process_privileges)
+
         # One application composition owns the normal client and daemon.
         # Reference transport-v2 programs below are never installed.
         if(TARGET yume_asio_direct_route_provider)
@@ -760,6 +788,7 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
                 runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
                 runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
                 runtime/local_listener.cpp runtime/local_listener.hpp
+                runtime/module_supervisor.cpp runtime/module_supervisor.hpp
                 runtime/native_forward.cpp runtime/native_forward.hpp
                 runtime/native_session_source.hpp
                 runtime/native_socks5.cpp runtime/native_socks5.hpp
@@ -771,6 +800,7 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
                 PRIVATE yume_native_endpoint yume_native_egress_policy yume_native_credentials
                     yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
                     yume_system_resolver yume_system_resolver_helper
+                    yume_child_process yume_module_launcher
                     yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files ${_yume_native_network_libraries}
                     Boost::system)
             yume_apply_perf_opts(yume_native_runtime)
@@ -779,8 +809,15 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
                 yume_native_endpoint yume_native_egress_policy yume_native_credentials
                 yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
                 yume_system_resolver yume_system_resolver_helper
+                yume_child_process yume_module_launcher
                 yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files ${_yume_native_network_libraries}
                 Boost::system)
+            # The example module. It links nothing of YUME.
+            add_executable(yume-echo-module modules/echo/echo_module.cpp)
+            target_link_libraries(yume-echo-module PRIVATE Threads::Threads)
+            yume_apply_perf_opts(yume-echo-module)
+            add_custom_command(TARGET yume-echo-module POST_BUILD
+                COMMAND chmod 0755 "$<TARGET_FILE:yume-echo-module>" VERBATIM)
             if(YUME_BUILD_NATIVE_APPLICATION)
                 add_executable(yumed runtime/yumed_main.cpp)
                 add_executable(yume runtime/yume_main.cpp)
@@ -855,6 +892,7 @@ if(YUME_BUILD_SHARED_ABI)
                 yume_embed_ytp1 yume_native_endpoint yume_native_egress_policy yume_native_credentials
                 yume_egress_pacing yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
                 yume_asio_execution_context yume_asio_tcp_byte_channel_provider yume_system_resolver
+                yume_child_process
                 yume_ytp1_front_door yume_ytp1_cover_site yume_ytp1_h2_carrier
                 yume_ytp1_h2_admission yume_h2_admission
                 yume_ytp1_tls13_secure_channel yume_tls_client_profile
@@ -1184,13 +1222,21 @@ if(YUME_BUILD_TESTING)
             providers/system_resolver_helper.cpp providers/system_resolver_main.cpp)
         target_include_directories(yume_resolver_stall_helper PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
         target_compile_definitions(yume_resolver_stall_helper PRIVATE YUME_SYSTEM_RESOLVER_TEST_STALL=1)
-        target_link_libraries(yume_resolver_stall_helper PRIVATE Threads::Threads)
+        target_link_libraries(yume_resolver_stall_helper PRIVATE yume_process_privileges Threads::Threads)
         yume_apply_perf_opts(yume_resolver_stall_helper)
         add_custom_command(TARGET yume_resolver_stall_helper POST_BUILD
             COMMAND chmod 0755 "$<TARGET_FILE:yume_resolver_stall_helper>" VERBATIM)
         set(YUME_TEST_RESOLVER_DEFINITIONS
             YUME_TEST_RESOLVER_PROGRAM="$<TARGET_FILE:yume-resolver>"
             YUME_TEST_STALL_RESOLVER_PROGRAM="$<TARGET_FILE:yume_resolver_stall_helper>")
+
+        add_executable(yume_child_process_test providers/child_process_test.cpp)
+        target_link_libraries(yume_child_process_test PRIVATE yume_child_process)
+        yume_apply_perf_opts(yume_child_process_test)
+        yume_assert_exact_link_dependencies(yume_child_process_test yume_child_process)
+        add_test(NAME yume_child_process_test COMMAND yume_child_process_test)
+        set_tests_properties(yume_child_process_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
 
         add_executable(yume_system_resolver_test providers/system_resolver_test.cpp)
         target_link_libraries(yume_system_resolver_test
@@ -1397,7 +1443,10 @@ if(YUME_BUILD_TESTING)
         if(TARGET yume_asio_direct_route_provider)
             target_link_libraries(yume_native_endpoint_test PRIVATE
                 yume_asio_direct_route_provider yume_direct_route_handler yume_native_runtime)
-            target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1)
+            target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1
+                YUME_TEST_MODULE_LAUNCHER="$<TARGET_FILE:yume-module-launcher>"
+                YUME_TEST_ECHO_MODULE="$<TARGET_FILE:yume-echo-module>")
+            add_dependencies(yume_native_endpoint_test yume-module-launcher yume-echo-module)
         endif()
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             # Inject one OS accept error in this test process without changing
@@ -1421,6 +1470,23 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_native_run_loop_test COMMAND yume_native_run_loop_test)
         set_tests_properties(yume_native_run_loop_test PROPERTIES
             TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+        # Tests launch modules through this standalone launcher. yume and
+        # yumed launch them by running themselves as yume-module.
+        add_executable(yume-module-launcher runtime/module_launcher_main.cpp)
+        target_link_libraries(yume-module-launcher PRIVATE yume_module_launcher)
+        yume_apply_perf_opts(yume-module-launcher)
+        add_custom_command(TARGET yume-module-launcher POST_BUILD
+            COMMAND chmod 0755 "$<TARGET_FILE:yume-module-launcher>" VERBATIM)
+        add_executable(yume_module_supervisor_test runtime/module_supervisor_test.cpp)
+        target_link_libraries(yume_module_supervisor_test PRIVATE yume_native_runtime Boost::system)
+        target_compile_definitions(yume_module_supervisor_test PRIVATE
+            YUME_TEST_MODULE_LAUNCHER="$<TARGET_FILE:yume-module-launcher>"
+            YUME_TEST_ECHO_MODULE="$<TARGET_FILE:yume-echo-module>")
+        add_dependencies(yume_module_supervisor_test yume-module-launcher yume-echo-module)
+        yume_apply_perf_opts(yume_module_supervisor_test)
+        add_test(NAME yume_module_supervisor_test COMMAND yume_module_supervisor_test)
+        set_tests_properties(yume_module_supervisor_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_local_listener_test runtime/local_listener_test.cpp)
         target_link_libraries(yume_native_local_listener_test PRIVATE
             yume_native_runtime yume_asio_tcp_byte_channel_provider Boost::system)
@@ -1479,13 +1545,15 @@ if(YUME_BUILD_TESTING)
             set_tests_properties(yume_native_cli_test PROPERTIES
                 TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
             # Real processes: setup kit, daemon, client SOCKS5 listener and a
-            # local HTTP destination behind configured egress destinations.
+            # local HTTP destination behind configured egress destinations,
+            # plus the echo module that yumed launches as itself.
             add_test(NAME yume_native_runtime_test
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tests/run_native_runtime_test.py"
                     --yumed "$<TARGET_FILE:yumed>"
                     --yume "$<TARGET_FILE:yume>"
-                    --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                    --openssl "${YUME_NATIVE_TEST_OPENSSL}"
+                    --module "$<TARGET_FILE:yume-echo-module>")
             set_tests_properties(yume_native_runtime_test PROPERTIES
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
             if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

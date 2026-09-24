@@ -159,7 +159,7 @@ A generated kit runs as written. It declares a `tcp` stream service and a
 `direct_udp` adapters that permit public destinations, and the client's SOCKS5
 adapter names `udp` for UDP ASSOCIATE. Add an explicit network such as
 `10.0.0.0/8` to reach private or loopback destinations. The daemon needs a
-direct or packet adapter for every configured service. The packet adapter
+direct, module or packet adapter for every configured service. The packet adapter
 requires the managed network configuration below. The kit's `start-server` and `start-client` launchers
 run `yumed` and `yume` from `PATH`, or the programs that `YUMED_BIN`
 and `YUME_BIN` name.
@@ -228,6 +228,13 @@ connection from another user is closed, and the file is removed on exit. A
 file left by an earlier run is replaced, while a live listener or any other
 file at the path stops startup. Like SOCKS5, forward TCP listeners accept only
 127.0.0.1 or ::1.
+
+A server `module` adapter serves its stream service with a program that
+`yumed` starts before its listeners accept and restarts with backoff. Each
+authorized stream reaches the program as one connection on a private UNIX
+socket, after a header line naming the client identity. A stream that names a
+destination is refused. [Modules](../../MODULES.md) describes what the program
+receives and its trust boundary.
 
 `scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
 network namespace with Ethernet-sized frames and records what nDPI reports.
@@ -363,6 +370,9 @@ Schema 1 is role tagged and contains these sections only:
   or ::1) with `listen_port` or an absolute, normalized `listen_path` of at most
   107 bytes, and an optional `destination` with `host` and `port`. SOCKS5 and
   forward listeners may not share an address and port;
+- a server `module` adapter: a stream `service`, an absolute, normalized
+  `program` and optional `arguments` of at most 32 strings of up to 1024
+  bytes. A stream service has at most one `direct_tcp` or `module` adapter;
 - `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
   packets. Frames allow 1676–1048576 bytes so hybrid rekey INIT fits;
   concurrent rekey jobs allow 2–64 so crossed rotation has both slots. A

@@ -1,5 +1,5 @@
 .\" Generated from docs/src/en_US/man/yumed_8.doc by scripts/yume_docs.py. Edit that file, not this one.
-.TH YUMED 8 "2026-09-23" "YUME 0.3.0-dev1" "YUME Manual"
+.TH YUMED 8 "2026-09-24" "YUME 0.3.0-dev1" "YUME Manual"
 .SH NAME
 yumed \- native YTP/1 daemon with configured TCP and UDP egress
 .SH SYNOPSIS
@@ -20,11 +20,19 @@ yumed \- native YTP/1 daemon with configured TCP and UDP egress
 is the native YUME Transport Protocol 1 daemon.
 It reads a schema-1 server configuration, serves its configured static
 cover site, authenticates clients and carries traffic for declared
-services through direct TCP/UDP adapters or a Linux managed TUN.
+services through direct TCP/UDP adapters, module programs or a Linux
+managed TUN.
 Each service needs a matching adapter; application-owned named services
 use the embedding interface.
 The daemon checks destination policy before routing and checks every
 resolved address before connecting.
+.PP
+A module adapter's program runs as a supervised child process that
+receives its service's streams over a private UNIX socket below
+.BR TMPDIR .
+The daemon restarts it with backoff when it exits.
+See
+.BR docs/MODULES.md .
 .PP
 The daemon is not yet qualified for production, and relay and federation
 are not yet available.
@@ -112,11 +120,17 @@ and access to
 .B /dev/net/tun
 in its network namespace; configured per-link DNS also requires
 systemd-resolved authorization.
+Module programs run as the daemon's user without capabilities.
 .SH SIGNALS
 .B SIGINT
 and
 .B SIGTERM
 stop the daemon after its sessions close.
+Modules receive
+.BR SIGTERM ,
+then
+.B SIGKILL
+after five seconds.
 .B SIGHUP
 reloads the authorized and admin key stores and the server's composite
 and ML-KEM keys without dropping other clients.

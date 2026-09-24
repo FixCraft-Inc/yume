@@ -159,6 +159,16 @@ a directory only this user can write, such as `$XDG_RUNTIME_DIR/yume/git.sock`,
 instead of an address and port. `yume-doctor` checks the adapter, and `yume`
 reports a directory with the wrong owner or mode at startup.
 
+## Run a module
+
+A server `module` adapter runs a program for one stream service, as
+[modules](MODULES.md) describes. The program runs as the daemon's user and can
+read the daemon's credentials, so configure only programs you trust with them.
+Under the packaged service a module shares the daemon's control group and
+sandbox: the unit's memory and task limits count it, and it can write only
+where the daemon can. The daemon logs each start and exit under the service
+name, as in `module echo: exited with exit status 1, restarting in 1000 ms`.
+
 ## Name resolution
 
 The client resolves a server host that is a name, and the daemon resolves the

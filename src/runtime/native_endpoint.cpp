@@ -699,6 +699,11 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 return std::holds_alternative<config::v1::ForwardAdapter>(adapter);
             }))
             throw Status(StatusCode::InvalidArgument, "no configured forward adapter needs a caller");
+        if (options.caller_runs_module_adapters &&
+            std::none_of(config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
+                return std::holds_alternative<config::v1::ModuleAdapter>(adapter);
+            }))
+            throw Status(StatusCode::InvalidArgument, "no configured module adapter needs a caller");
         if (options.caller_runs_packet_adapters &&
             std::none_of(config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
                 return std::holds_alternative<config::v1::PacketAdapter>(adapter);
@@ -713,12 +718,15 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             if (std::holds_alternative<config::v1::ForwardAdapter>(adapter) &&
                 options.caller_runs_forward_adapters)
                 continue;
+            if (std::holds_alternative<config::v1::ModuleAdapter>(adapter) &&
+                options.caller_runs_module_adapters)
+                continue;
             if (std::holds_alternative<config::v1::PacketAdapter>(adapter) &&
                 options.caller_runs_packet_adapters)
                 continue;
             if (!tcp && !udp)
                 throw Status(StatusCode::FailedPrecondition,
-                    "SOCKS5, forward and packet adapters need a caller that runs them");
+                    "SOCKS5, forward, module and packet adapters need a caller that runs them");
             if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
                     "direct adapters require an explicit route provider");

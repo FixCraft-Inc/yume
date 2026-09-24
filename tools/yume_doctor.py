@@ -54,6 +54,8 @@ MAX_EGRESS_MBPS = 1_000_000
 MAX_ADMIN_IDENTITIES = 4096
 # A UNIX socket path must fit sockaddr_un with its terminator.
 MAX_UNIX_SOCKET_PATH_BYTES = 107
+MAX_MODULE_ARGUMENTS = 32
+MAX_MODULE_ARGUMENT_BYTES = 1024
 SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
 SERVICE_NAME = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
@@ -524,6 +526,35 @@ def _normalized_absolute_path(path: str) -> bool:
     return all(part not in {"", ".", ".."} for part in path[1:].split("/"))
 
 
+def _claim_stream_service(handlers: set[str], service: str, pointer: str) -> None:
+    if service in handlers:
+        _fail(f"{pointer}/service", "stream service already has an adapter")
+    handlers.add(service)
+
+
+def _validate_module(adapter: dict[str, Any], pointer: str) -> None:
+    # yumed runs the program itself, so the path must name one file exactly.
+    program = _string(
+        adapter["program"], f"{pointer}/program", MAX_FILE_REFERENCE_BYTES
+    )
+    if not _normalized_absolute_path(program):
+        _fail(f"{pointer}/program", "must be a normalized absolute path")
+    if "arguments" not in adapter:
+        return
+    arguments = adapter["arguments"]
+    if type(arguments) is not list or len(arguments) > MAX_MODULE_ARGUMENTS:
+        _fail(
+            f"{pointer}/arguments",
+            f"must be an array of at most {MAX_MODULE_ARGUMENTS} strings",
+        )
+    for index, argument in enumerate(arguments):
+        text = _string(
+            argument, f"{pointer}/arguments/{index}", MAX_MODULE_ARGUMENT_BYTES
+        )
+        if "\0" in text:
+            _fail(f"{pointer}/arguments/{index}", "must not contain NUL")
+
+
 def _validate_forward_listener(
     adapter: dict[str, Any],
     pointer: str,
@@ -567,6 +598,8 @@ def _validate_adapters(
     unix_listeners: set[str] = set()
     packet_interfaces: set[str] = set()
     direct_services: set[tuple[str, str]] = set()
+    # One direct_tcp or module adapter serves each stream service.
+    stream_handlers: set[str] = set()
     for index, item in enumerate(value):
         pointer = f"/adapters/{index}"
         if type(item) is not dict:
@@ -574,7 +607,9 @@ def _validate_adapters(
         if "kind" not in item:
             _fail(f"{pointer}/kind", "required key is missing")
         kind = _string(item["kind"], f"{pointer}/kind", 24)
-        if kind not in {"socks5", "packet", "direct_tcp", "direct_udp", "forward"}:
+        if kind not in {
+            "socks5", "packet", "direct_tcp", "direct_udp", "forward", "module"
+        }:
             _fail(f"{pointer}/kind", "unsupported adapter kind")
         if kind == "socks5":
             adapter = _closed_object(
@@ -638,6 +673,16 @@ def _validate_adapters(
                           "must be an IP literal or DNS host name")
                 _integer(destination["port"], f"{pointer}/destination/port", 1, 65535)
             required_kind = "stream"
+        elif kind == "module":
+            adapter = _closed_object(
+                item,
+                pointer,
+                {"kind", "service", "program", "arguments"},
+                {"kind", "service", "program"},
+            )
+            if role != "server":
+                _fail(f"{pointer}/kind", "module adapter is server-only")
+            required_kind = "stream"
         elif kind == "packet":
             adapter = _closed_object(
                 item,
@@ -680,10 +725,15 @@ def _validate_adapters(
                     "duplicate direct adapter service and kind",
                 )
             direct_services.add(direct_key)
+        if kind == "direct_tcp":
+            _claim_stream_service(stream_handlers, service, pointer)
         if not any(name == service for name, _ in services):
             _fail(f"{pointer}/service", "references an undeclared service")
         if (service, required_kind) not in services:
             _fail(f"{pointer}/service", f"requires a {required_kind} service")
+        if kind == "module":
+            _claim_stream_service(stream_handlers, service, pointer)
+            _validate_module(adapter, pointer)
         if kind in {"direct_tcp", "direct_udp"}:
             _validate_destinations(
                 adapter["destinations"], f"{pointer}/destinations"

@@ -928,6 +928,73 @@ void TestForwardAdapters() {
     ExpectError(server, "/adapters/2/kind", "client-only");
 }
 
+// A server module runs one program for a stream service, with optional
+// arguments, and no other adapter may serve that service.
+void TestModuleAdapters() {
+    Json document = ServerDocument();
+    document["services"].push_back(
+        {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+    document["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
+        {"program", "/usr/libexec/yume/yume-chat"}, {"arguments", {"--history", "7"}}});
+    const Config parsed = Parse(document);
+    const auto* module = std::get_if<ModuleAdapter>(&parsed.adapters().back());
+    Check(module != nullptr && module->service() == "chat" &&
+              module->program() == "/usr/libexec/yume/yume-chat" &&
+              module->arguments() == std::vector<std::string>{"--history", "7"},
+          "the module adapter was not retained");
+
+    const auto rejects = [](const std::function<void(Json&)>& change, const std::string& pointer,
+                            std::string_view detail) {
+        Json candidate = ServerDocument();
+        candidate["services"].push_back(
+            {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+        candidate["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
+                                         {"program", "/usr/libexec/yume/yume-chat"}});
+        change(candidate);
+        ExpectError(candidate, pointer, detail);
+    };
+    Check(Parse([] {
+              Json candidate = ServerDocument();
+              candidate["services"].push_back(
+                  {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+              candidate["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
+                                               {"program", "/usr/libexec/yume/yume-chat"}});
+              return candidate;
+          }()).adapters().size() == 3,
+          "a module without arguments was refused");
+    rejects([](Json& value) { value["adapters"][2]["program"] = "yume-chat"; },
+            "/adapters/2/program", "normalized absolute path");
+    rejects([](Json& value) { value["adapters"][2]["program"] = "/usr/../bin/sh"; },
+            "/adapters/2/program", "normalized absolute path");
+    rejects([](Json& value) { value["adapters"][2]["arguments"] = Json::array({1}); },
+            "/adapters/2/arguments/0", "string");
+    rejects([](Json& value) {
+                value["adapters"][2]["arguments"] = Json::array();
+                for (int count = 0; count < 33; ++count) value["adapters"][2]["arguments"].push_back("x");
+            },
+            "/adapters/2/arguments", "at most 32");
+    rejects([](Json& value) { value["adapters"][2]["arguments"] = {std::string(1025U, 'a')}; },
+            "/adapters/2/arguments/0", "at most 1024 bytes");
+    rejects([](Json& value) { value["adapters"][2]["arguments"] = {std::string("a\0b", 3U)}; },
+            "/adapters/2/arguments/0", "NUL");
+    rejects([](Json& value) { value["adapters"][2]["service"] = "udp"; },
+            "/adapters/2/service", "");
+    rejects([](Json& value) { value["adapters"][2]["fallback"] = true; },
+            "/adapters/2/fallback", "unknown key");
+    rejects([](Json& value) { value["adapters"][2]["service"] = "tcp"; },
+            "/adapters/2/service", "already has an adapter");
+    rejects([](Json& value) {
+                value["adapters"].push_back({{"kind", "direct_tcp"}, {"service", "chat"},
+                                             {"destinations", PublicDestinations()}});
+            },
+            "/adapters/3/service", "already has an adapter");
+
+    Json client = ClientDocument();
+    client["adapters"].push_back({{"kind", "module"}, {"service", "tcp"},
+                                  {"program", "/usr/libexec/yume/yume-chat"}});
+    ExpectError(client, "/adapters/1/kind", "server-only");
+}
+
 // The egress rate is optional and server-only.
 void TestEgressRate() {
     Check(!Parse(ServerDocument()).limits().max_egress_mbps(),
@@ -1129,6 +1196,7 @@ int main(int argc, char** argv) {
     TestDirectAdapterDestinations();
         TestResourceLimits();
         TestForwardAdapters();
+        TestModuleAdapters();
         TestEgressRate();
         test_managed_tun_network();
         TestTextBoundsAndSyntax();

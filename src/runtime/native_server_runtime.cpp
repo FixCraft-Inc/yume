@@ -19,6 +19,7 @@
 #ifdef __linux__
 #include "runtime/linux_tun_network.hpp"
 #endif
+#include "runtime/module_supervisor.hpp"
 #include "runtime/native_packet_adapter.hpp"
 
 namespace yume::runtime {
@@ -41,6 +42,9 @@ bool has_runtime_adapter(const config::v1::Config& config, const config::v1::Ser
         }
         if (const auto* packet = std::get_if<config::v1::PacketAdapter>(&adapter)) {
             return service.kind() == config::v1::ServiceKind::Packet && packet->service() == service.name();
+        }
+        if (const auto* module = std::get_if<config::v1::ModuleAdapter>(&adapter)) {
+            return service.kind() == config::v1::ServiceKind::Stream && module->service() == service.name();
         }
         return false;
     });
@@ -83,6 +87,7 @@ struct NativeServerRuntime::State final {
     std::shared_ptr<providers::AsioExecutionContext> context;
     std::shared_ptr<NativeEndpoint> endpoint;
     std::vector<std::pair<config::v1::PacketAdapter, std::shared_ptr<NativePacketAdapter>>> packets;
+    std::vector<std::shared_ptr<ModuleSupervisor>> modules;
     // Shared through managed-network drain, without retaining this runtime.
     std::shared_ptr<Stopped> on_stopped;
     NativeAcceptOptions accept;
@@ -94,6 +99,7 @@ struct NativeServerRuntime::State final {
         closing = true;
         if (endpoint) endpoint->close();
         for (const auto& packet : packets) packet.second->close();
+        for (const auto& module : modules) module->close();
     }
 };
 
@@ -102,7 +108,7 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
     const config::v1::Config& config,
     const std::filesystem::path& config_base_directory,
     Stopped on_stopped,
-    std::filesystem::path resolver_program) {
+    NativeServerRuntimeOptions runtime_options) {
     using Created = engine::Result<std::shared_ptr<NativeServerRuntime>>;
     if (!context || !on_stopped || config.role() != config::v1::Role::Server) {
         return Created(Status(StatusCode::InvalidArgument, "a server configuration is required"));
@@ -113,7 +119,7 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
             if (!has_runtime_adapter(config, service)) {
                 return Created(Status(StatusCode::FailedPrecondition,
                     "service '" + service.name() +
-                    "' needs a direct or packet adapter, or an application embedding it through the C ABI"));
+                    "' needs a direct, module or packet adapter, or an application embedding it through the C ABI"));
             }
         }
         auto state = std::make_shared<State>();
@@ -138,6 +144,15 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                 bindings.push_back({packet->service(), handler});
                 state->packets.emplace_back(*packet, std::move(handler));
 #endif
+            } else if (const auto* module = std::get_if<config::v1::ModuleAdapter>(&adapter)) {
+                ModuleSupervisorOptions module_options;
+                module_options.launcher = runtime_options.module_launcher;
+                auto created = ModuleSupervisor::create(context, *module, std::move(module_options),
+                                                        runtime_options.report);
+                if (!created.ok()) return Created(created.status());
+                auto supervisor = std::move(created).take_value();
+                bindings.push_back({module->service(), supervisor->handler()});
+                state->modules.push_back(std::move(supervisor));
             } else if (std::holds_alternative<config::v1::DirectTcpAdapter>(adapter) ||
                        std::holds_alternative<config::v1::DirectUdpAdapter>(adapter)) {
                 has_direct = true;
@@ -151,12 +166,13 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
         options.max_sessions = kServerSessions;
         options.max_pending_starts = state->accept.pending_per_listener * listeners;
         options.caller_runs_packet_adapters = !state->packets.empty();
+        options.caller_runs_module_adapters = !state->modules.empty();
         if (has_direct) {
             auto egress = NativeEgressPolicy::create(config.adapters());
             if (!egress.ok()) return Created(egress.status());
-            if (!resolver_program.empty()) {
+            if (!runtime_options.resolver_program.empty()) {
                 providers::SystemResolverOptions resolver_options;
-                resolver_options.program = std::move(resolver_program);
+                resolver_options.program = std::move(runtime_options.resolver_program);
                 auto resolver = providers::SystemResolver::create(context, std::move(resolver_options));
                 if (!resolver.ok()) return Created(resolver.status());
                 options.resolver = std::move(resolver).take_value();
@@ -193,6 +209,13 @@ engine::Status NativeServerRuntime::start() {
     if (state->started || state->closing) return Status(StatusCode::FailedPrecondition);
     state->started = true;
     try {
+        for (const auto& module : state->modules) {
+            const auto status = module->start();
+            if (!status.ok()) {
+                state->close();
+                return status;
+            }
+        }
 #ifdef __linux__
         for (const auto& [config, adapter] : state->packets) {
             auto created = LinuxTunNetwork::create(state->context, config);

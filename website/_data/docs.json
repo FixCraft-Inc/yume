@@ -161,6 +161,15 @@
     "home_group": "Internals and status"
   },
   {
+    "title": "Modules",
+    "summary": "Programs that serve a stream service: configuration, what the program receives, the connection header, restarts and the trust boundary.",
+    "url": "/docs/MODULES/",
+    "source": "docs/MODULES.md",
+    "landing_group": "Reference and development",
+    "order": 142,
+    "home_group": "Internals and status"
+  },
+  {
     "title": "Transport-v2 control API",
     "summary": "JSON operations used by transport-v2 runtime IPC and the optional GUI.",
     "url": "/docs/CONTROL_API/",

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include <boost/asio/ip/tcp.hpp>
@@ -19,9 +20,23 @@
 
 namespace yume::runtime {
 
+struct NativeServerRuntimeOptions final {
+    // The SystemResolver helper for destination names of direct adapters.
+    // Empty refuses those names, while numeric destinations still work.
+    std::filesystem::path resolver_program;
+    // Launches configured modules, run as yume-module. Required with a module
+    // adapter.
+    std::filesystem::path module_launcher;
+    // Module starts, exits and restarts, for the operator. Runs on the
+    // context and must not throw.
+    std::function<void(std::string_view)> report;
+};
+
 // Runs one schema-1 server configuration as a standalone daemon. Every
-// configured service needs a direct_tcp, direct_udp or managed packet adapter;
-// other named services need application handlers supplied by an embedder.
+// configured service needs a direct_tcp, direct_udp, module or managed packet
+// adapter. Other named services need application handlers from an embedder.
+// Each module adapter runs its program under a ModuleSupervisor, which starts
+// before the listeners accept and stops with the runtime.
 // Destinations are enforced by NativeEgressPolicy for the request and for
 // every resolved address. Each packet adapter admits one authenticated stream
 // across all sessions and enforces local/peer address policy in both directions.
@@ -34,15 +49,12 @@ class NativeServerRuntime final {
 public:
     using Stopped = std::function<void(engine::Status)>;
 
-    // resolver_program is the SystemResolver helper for destination names of
-    // direct adapters. Empty refuses those names, while numeric destinations
-    // still work.
     static engine::Result<std::shared_ptr<NativeServerRuntime>> create(
         std::shared_ptr<providers::AsioExecutionContext> context,
         const config::v1::Config& config,
         const std::filesystem::path& config_base_directory,
         Stopped on_stopped,
-        std::filesystem::path resolver_program = {});
+        NativeServerRuntimeOptions options = {});
 
     NativeServerRuntime(const NativeServerRuntime&) = delete;
     NativeServerRuntime& operator=(const NativeServerRuntime&) = delete;

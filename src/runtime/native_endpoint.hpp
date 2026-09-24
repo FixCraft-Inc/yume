@@ -66,8 +66,10 @@ struct NativeEndpointOptions final {
     // sessions. Without it a SOCKS5 declaration fails creation, and setting it
     // without one is refused.
     bool caller_runs_socks5_adapters{false};
-    // Likewise for configured forward adapters.
+    // Likewise for configured forward and module adapters. Module services
+    // also need the caller's handler bindings.
     bool caller_runs_forward_adapters{false};
+    bool caller_runs_module_adapters{false};
     // The caller owns every configured packet device and supplies the service
     // bindings. Setting this without a packet adapter is also refused.
     bool caller_runs_packet_adapters{false};

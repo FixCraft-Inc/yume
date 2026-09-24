@@ -21,6 +21,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Relay channel library.** The relay v2 end-to-end channel between two users
+  (handshake, sealed records and hybrid ratchet) builds apart from transport
+  v2 as `yume_module_relay` when `YUME_BUILD_BASEFWX_MODULES` is on. Its labels
+  and wire format are unchanged, which tests check against known answers from
+  the transport-v2 code. It is the base of the planned chat and file modules.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

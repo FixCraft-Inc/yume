@@ -848,6 +848,31 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
     endif()
 endif()
 
+# Module libraries built on BaseFWX. They link nothing of the transport core,
+# and the exact link lists above keep BaseFWX out of every core target.
+if(YUME_BUILD_BASEFWX_MODULES)
+    if(NOT TARGET basefwxcpp)
+        message(FATAL_ERROR
+            "YUME_BUILD_BASEFWX_MODULES needs the BaseFWX checkout in basefwx/ "
+            "at the revision config/dependencies.json pins")
+    endif()
+    # The relay v2 end-to-end channel between two users: handshake, records
+    # and the hybrid ratchet.
+    add_library(yume_module_relay STATIC
+        modules/relay/frame.hpp
+        modules/relay/handshake.cpp modules/relay/handshake.hpp
+        modules/relay/identity.cpp modules/relay/identity.hpp
+        modules/relay/ratchet.cpp modules/relay/ratchet.hpp
+        modules/relay/ratchet_policy.hpp
+        modules/relay/record.cpp modules/relay/record.hpp
+        modules/relay/rekey_record.cpp modules/relay/rekey_record.hpp
+        modules/relay/session_ratchet.cpp modules/relay/session_ratchet.hpp)
+    target_include_directories(yume_module_relay PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_module_relay PUBLIC basefwxcpp OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_module_relay)
+    yume_assert_exact_link_dependencies(yume_module_relay basefwxcpp OpenSSL::Crypto)
+endif()
+
 # The 0.3 ABI is intentionally build-tree-only and unfrozen. Each configuration
 # dialect reaches its own backend through the embed seam. Transport v2 links
 # yume_embed. Schema 1 starts only when the native provider graph supplies
@@ -1018,6 +1043,24 @@ if(YUME_BUILD_TESTING)
             "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor.py")
     set_tests_properties(yume_setup_test yume_doctor_test PROPERTIES
         TIMEOUT 300 LABELS "native-runtime;provisioning")
+
+    if(TARGET yume_module_relay)
+        foreach(_yume_relay_test IN ITEMS ratchet rekey_record session_ratchet record handshake)
+            set(_yume_relay_target yume_module_relay_${_yume_relay_test}_test)
+            add_executable(${_yume_relay_target} modules/relay/${_yume_relay_test}_test.cpp)
+            target_link_libraries(${_yume_relay_target} PRIVATE yume_module_relay)
+            yume_apply_perf_opts(${_yume_relay_target})
+            # These tests check with assert, which must stay on in release builds.
+            if(MSVC)
+                target_compile_options(${_yume_relay_target} PRIVATE /UNDEBUG)
+            else()
+                target_compile_options(${_yume_relay_target} PRIVATE -UNDEBUG)
+            endif()
+            add_test(NAME ${_yume_relay_target} COMMAND ${_yume_relay_target})
+            set_tests_properties(${_yume_relay_target} PROPERTIES
+                TIMEOUT 120 LABELS "module;relay")
+        endforeach()
+    endif()
     if(YUME_BUILD_NATIVE_APPLICATION)
         add_test(NAME yume_setup_installed_layout
             COMMAND "${CMAKE_COMMAND}"

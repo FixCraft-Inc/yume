@@ -342,6 +342,13 @@ Unit tests cover spawning, descriptor passing, program checks, a crash and
 restart with half-close, and graceful and forced stops. The endpoint test
 reaches the echo module through a client forward, and the runtime test runs
 it under the real `yumed` and checks that it dies with a killed daemon.
+With `YUME_BUILD_BASEFWX_MODULES`, `yume_module_relay` builds the relay v2
+end-to-end channel apart from transport v2: the composite-identity handshake
+with ML-KEM-1024, X25519 and an optional PSK, the sealed record format and the
+hybrid ratchet with its rekey records. Its tests check known answers produced
+by the transport-v2 code for epoch roots, ciphertexts and whole records, so
+the copy keeps every label and wire value. No module uses it yet, and chat,
+history, peer trust and file transfer are not moved.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and

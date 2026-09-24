@@ -28,6 +28,12 @@ option(YUME_BUILD_TRANSPORT_V2
     OFF)
 option(YUME_BUILD_NATIVE_APPLICATION
     "Build the native YTP/1 yume client and yumed daemon" ON)
+# Module libraries built on BaseFWX, such as the end-to-end relay channel.
+# They need the pinned BaseFWX checkout and liboqs, so an ordinary yume and
+# yumed build leaves them out. No core target links BaseFWX.
+option(YUME_BUILD_BASEFWX_MODULES
+    "Build module libraries that use BaseFWX, such as the end-to-end relay channel"
+    OFF)
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
 set(YUME_DEPENDENCY_MANIFEST
@@ -875,7 +881,13 @@ if(YUME_BUILD_TRANSPORT_V2)
     unset(_yume_oqs_via_config)
 endif()
 
-if(YUME_BUILD_TRANSPORT_V2 AND YUME_USE_BASEFWX)
+if((YUME_BUILD_TRANSPORT_V2 AND YUME_USE_BASEFWX) OR YUME_BUILD_BASEFWX_MODULES)
+    if(YUME_BUILD_BASEFWX_MODULES)
+        # The relay channel's ML-KEM-1024 comes from BaseFWX's liboqs support.
+        # Without this BaseFWX would build without it and fail only at run time.
+        set(BASEFWX_REQUIRE_OQS ON CACHE BOOL
+            "Require liboqs with ML-KEM-768 and ML-KEM-1024 support" FORCE)
+    endif()
     if(NOT CMAKE_CROSSCOMPILING)
         set(BASEFWX_NATIVE_OPT ${YUME_NATIVE_OPT} CACHE BOOL "Enable -march/-mtune native optimizations" FORCE)
     endif()

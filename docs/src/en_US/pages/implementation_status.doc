@@ -360,8 +360,11 @@ the copy keeps every label and wire value. The same library holds the stores a
 relay user keeps: chat history encrypted at rest, the relay secret derived
 from a password with PBKDF2, and peer trust with first-use and pinned
 fingerprints. Peer fingerprints are now YTP/1 identity fingerprints, the value
-`yume-setup` prints for a key. No module uses the library yet, and file
-transfer is not moved.
+`yume-setup` prints for a key. `yume_module_files` adds relay file transfer:
+a source pinned to one opened file that hashes and sends the same bytes, and a
+receiver that writes into a private staging file and publishes it without
+replacing anything, only after the declared size and SHA-256 match. No module
+uses these libraries yet.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and

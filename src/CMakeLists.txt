@@ -886,6 +886,17 @@ if(YUME_BUILD_BASEFWX_MODULES)
     yume_apply_perf_opts(yume_module_relay)
     yume_assert_exact_link_dependencies(yume_module_relay
         basefwxcpp OpenSSL::Crypto nlohmann_json::nlohmann_json yume_private_files)
+
+    # Relay file transfer for the planned file module: an outbound source
+    # pinned to one opened file, and a confined receiver that publishes only
+    # a verified file.
+    add_library(yume_module_files STATIC
+        modules/files/file_receiver.cpp modules/files/file_receiver.hpp
+        modules/files/outbound_source.cpp modules/files/outbound_source.hpp)
+    target_include_directories(yume_module_files PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_module_files PUBLIC yume_module_relay PRIVATE basefwxcpp)
+    yume_apply_perf_opts(yume_module_files)
+    yume_assert_exact_link_dependencies(yume_module_files yume_module_relay basefwxcpp)
 endif()
 
 # The 0.3 ABI is intentionally build-tree-only and unfrozen. Each configuration
@@ -1078,6 +1089,23 @@ if(YUME_BUILD_TESTING)
         endforeach()
         target_compile_definitions(yume_module_relay_identity_test PRIVATE
             YUME_RELAY_TESTDATA="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata")
+    endif()
+    if(TARGET yume_module_files)
+        foreach(_yume_files_test IN ITEMS file_receiver outbound_source)
+            set(_yume_files_target yume_module_files_${_yume_files_test}_test)
+            add_executable(${_yume_files_target} modules/files/${_yume_files_test}_test.cpp)
+            target_link_libraries(${_yume_files_target} PRIVATE yume_module_files)
+            yume_apply_perf_opts(${_yume_files_target})
+            # These tests check with assert, which must stay on in release builds.
+            if(MSVC)
+                target_compile_options(${_yume_files_target} PRIVATE /UNDEBUG)
+            else()
+                target_compile_options(${_yume_files_target} PRIVATE -UNDEBUG)
+            endif()
+            add_test(NAME ${_yume_files_target} COMMAND ${_yume_files_target})
+            set_tests_properties(${_yume_files_target} PROPERTIES
+                TIMEOUT 120 LABELS "module;files")
+        endforeach()
     endif()
     if(YUME_BUILD_NATIVE_APPLICATION)
         add_test(NAME yume_setup_installed_layout

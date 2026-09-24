@@ -28,7 +28,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   the transport-v2 code. It also holds the encrypted chat history, the relay
   secret and peer trust. Peer fingerprints changed from the transport-v2
   identity domain to the YTP/1 one, so a peer's fingerprint is the one
-  `yume-setup` prints for its key. It is the base of the planned chat and file
+  `yume-setup` prints for its key. `yume_module_files` adds the relay file
+  transfer source and receiver. They are the base of the planned chat and file
   modules.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each

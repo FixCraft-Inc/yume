@@ -35,6 +35,8 @@ public:
 
     void Update(std::span<const std::uint8_t> input);
     Bytes Finish();
+    // Finish() as lowercase hex.
+    std::string FinishHex();
 
 private:
     struct Impl;
@@ -96,5 +98,6 @@ std::string composite_fingerprint(const CompositePublicKey& key);
 
 // Lowercase hex of SHA-256 over the bytes.
 std::string sha256_hex(std::string_view input);
+std::string sha256_hex(std::span<const std::uint8_t> input);
 
 }  // namespace yume::relay::identity

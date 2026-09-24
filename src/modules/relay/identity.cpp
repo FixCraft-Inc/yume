@@ -184,6 +184,13 @@ Bytes Sha256Stream::Finish() {
     return digest;
 }
 
+std::string Sha256Stream::FinishHex() {
+    Bytes digest = Finish();
+    std::string encoded = hex_lower(digest);
+    security::secure_erase(digest);
+    return encoded;
+}
+
 CompositeKeyPair generate_composite_keypair() {
     CompositeKeyPair keys;
     keys.classical = generate_named_keypair("ED25519");
@@ -285,9 +292,13 @@ std::string composite_fingerprint(const CompositePublicKey& key) {
 }
 
 std::string sha256_hex(std::string_view input) {
-    Sha256Stream digest;
-    digest.Update(std::span<const std::uint8_t>(
+    return sha256_hex(std::span<const std::uint8_t>(
         reinterpret_cast<const std::uint8_t*>(input.data()), input.size()));
+}
+
+std::string sha256_hex(std::span<const std::uint8_t> input) {
+    Sha256Stream digest;
+    digest.Update(input);
     return hex_lower(digest.Finish());
 }
 

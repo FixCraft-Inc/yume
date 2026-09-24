@@ -27,6 +27,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `yume-setup` prints for its key. `yume_module_files` adds the relay file
   transfer source and receiver. They are the base of the planned chat and file
   modules.
+- **Application codec library.** The application codec core (the HTTP
+  envelope, backend dialing rules and the Monero RPC descriptor) builds apart
+  from transport v2 as `yume_module_codecs` for a planned codec module.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

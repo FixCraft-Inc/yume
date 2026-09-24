@@ -907,6 +907,21 @@ if(YUME_BUILD_BASEFWX_MODULES)
     yume_assert_exact_link_dependencies(yume_module_files yume_module_relay basefwxcpp)
 endif()
 
+# The application codec core for the planned codec module: the HTTP request
+# and response envelope, backend dialing rules and the Monero RPC descriptor.
+# It needs no BaseFWX and links nothing of the transport core.
+if(TARGET Boost::headers)
+    add_library(yume_module_codecs STATIC
+        modules/codecs/codec.cpp modules/codecs/codec.hpp
+        modules/codecs/internal.hpp
+        modules/codecs/monero_rpc.cpp modules/codecs/monero_rpc.hpp)
+    target_include_directories(yume_module_codecs PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_module_codecs PRIVATE Boost::headers nlohmann_json::nlohmann_json)
+    yume_apply_perf_opts(yume_module_codecs)
+    yume_assert_exact_link_dependencies(yume_module_codecs
+        Boost::headers nlohmann_json::nlohmann_json)
+endif()
+
 # The 0.3 ABI is intentionally build-tree-only and unfrozen. Each configuration
 # dialect reaches its own backend through the embed seam. Transport v2 links
 # yume_embed. Schema 1 starts only when the native provider graph supplies
@@ -1097,6 +1112,21 @@ if(YUME_BUILD_TESTING)
         endforeach()
         target_compile_definitions(yume_module_relay_identity_test PRIVATE
             YUME_RELAY_TESTDATA="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata")
+    endif()
+    if(TARGET yume_module_codecs)
+        add_executable(yume_module_codecs_codec_test modules/codecs/codec_test.cpp)
+        target_link_libraries(yume_module_codecs_codec_test
+            PRIVATE yume_module_codecs nlohmann_json::nlohmann_json)
+        yume_apply_perf_opts(yume_module_codecs_codec_test)
+        # The test checks with assert, which must stay on in release builds.
+        if(MSVC)
+            target_compile_options(yume_module_codecs_codec_test PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(yume_module_codecs_codec_test PRIVATE -UNDEBUG)
+        endif()
+        add_test(NAME yume_module_codecs_codec_test COMMAND yume_module_codecs_codec_test)
+        set_tests_properties(yume_module_codecs_codec_test PROPERTIES
+            TIMEOUT 60 LABELS "module;codecs")
     endif()
     if(TARGET yume_module_files)
         foreach(_yume_files_test IN ITEMS file_receiver outbound_source)

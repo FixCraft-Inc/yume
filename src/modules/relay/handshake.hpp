@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "modules/relay/channel_kind.hpp"
 #include "modules/relay/identity.hpp"
 #include "modules/relay/session_ratchet.hpp"
 
@@ -44,14 +45,6 @@ inline constexpr std::size_t kMaxRecordBytes = 32U * 1024U;
 class Error : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
-};
-
-// What the channel carries. The wire codes are 1 to 4 in this order.
-enum class ChannelKind : std::uint8_t {
-    Chat,
-    File,
-    Bytes,
-    Admin,
 };
 
 // This is a signed policy value, not a password or KDF selection. A required

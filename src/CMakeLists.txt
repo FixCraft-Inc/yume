@@ -861,19 +861,27 @@ if(YUME_BUILD_BASEFWX_MODULES)
             "YUME_BUILD_BASEFWX_MODULES needs POSIX descriptor-relative file access")
     endif()
     # The relay v2 end-to-end channel between two users: handshake, records
-    # and the hybrid ratchet, plus the protected chat history, relay secret
-    # and peer trust stores its users keep.
+    # and the hybrid ratchet, the protected chat history, relay secret and
+    # peer trust stores its users keep, and the invite and directory records
+    # with the policies that check them.
     add_library(yume_module_relay STATIC
         modules/relay/base64.cpp modules/relay/base64.hpp
+        modules/relay/channel_kind.hpp
+        modules/relay/control.cpp modules/relay/control.hpp
+        modules/relay/control_fields.hpp
+        modules/relay/directory_policy.cpp modules/relay/directory_policy.hpp
         modules/relay/frame.hpp
         modules/relay/handshake.cpp modules/relay/handshake.hpp
         modules/relay/history.cpp modules/relay/history.hpp
         modules/relay/identity.cpp modules/relay/identity.hpp
+        modules/relay/json_policy.hpp
         modules/relay/peer_trust.cpp modules/relay/peer_trust.hpp
         modules/relay/ratchet.cpp modules/relay/ratchet.hpp
         modules/relay/ratchet_policy.hpp
         modules/relay/record.cpp modules/relay/record.hpp
         modules/relay/rekey_record.cpp modules/relay/rekey_record.hpp
+        modules/relay/relay_limits.hpp
+        modules/relay/relay_policy.cpp modules/relay/relay_policy.hpp
         modules/relay/secret.cpp modules/relay/secret.hpp
         modules/relay/session_ratchet.cpp modules/relay/session_ratchet.hpp
         modules/relay/storage_crypto.cpp modules/relay/storage_crypto.hpp)
@@ -1072,7 +1080,7 @@ if(YUME_BUILD_TESTING)
 
     if(TARGET yume_module_relay)
         foreach(_yume_relay_test IN ITEMS ratchet rekey_record session_ratchet record handshake
-                identity persistence peer_trust)
+                identity persistence peer_trust relay_policy directory_policy)
             set(_yume_relay_target yume_module_relay_${_yume_relay_test}_test)
             add_executable(${_yume_relay_target} modules/relay/${_yume_relay_test}_test.cpp)
             target_link_libraries(${_yume_relay_target} PRIVATE yume_module_relay)

@@ -201,11 +201,11 @@ For an optional, reversible TUN/NAT/UFW setup, review and apply the separate
 host helper instead of granting firewall privileges to the daemon:
 
 @code bash
-yume-packet-quick up --listen 192.168.1.10:8443 \
+tools/yume_packet_quick.py up --listen 192.168.1.10:8443 \
   --allow-from 192.168.1.0/24 --dry-run
-sudo yume-packet-quick up --listen 192.168.1.10:8443 \
+sudo tools/yume_packet_quick.py up --listen 192.168.1.10:8443 \
   --allow-from 192.168.1.0/24
-sudo yume-packet-quick down
+sudo tools/yume_packet_quick.py down
 @end
 
 The helper refuses existing TUN/nft objects, does not flush firewall state or

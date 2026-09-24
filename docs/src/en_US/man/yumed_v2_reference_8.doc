@@ -323,7 +323,7 @@ Destination filter mode: **blacklist** or **whitelist**.
 @cli help: prepared Linux TUN/NAT interface.
 
 Enable packet-native egress over an operator-prepared Linux TUN/NAT interface.
-Disabled by default. The separately installed **yume-packet-quick** helper can
+Disabled by default. The source-tree helper **tools/yume_packet_quick.py** can
 prepare and later remove a scoped TUN/NAT/UFW setup after an explicit dry run
 and administrator confirmation; yumed-v2-reference never invokes it.
 @opt **--packet-tun-name** *ifname*

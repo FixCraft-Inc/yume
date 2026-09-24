@@ -70,9 +70,10 @@ not advertise `packet_bulk_v1`.
 
 ### Optional host-network helper
 
-`yumed` deliberately does not run firewall or routing commands. Linux
-administrators who want a `wg-quick`-style setup can use the separate,
-explicit `yume-packet-quick` helper. Review its complete plan first:
+`yumed-v2-reference` deliberately does not run firewall or routing commands.
+Linux administrators who want a `wg-quick`-style setup can use the separate,
+explicit `tools/yume_packet_quick.py` helper from the source tree. Review its
+complete plan first:
 
 @code bash
 tools/yume_packet_quick.py up \

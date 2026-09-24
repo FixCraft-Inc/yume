@@ -8,17 +8,30 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cerrno>
 #include <cstdlib>
 #include <new>
 
 // Include in exactly one translation unit of an isolated test executable.
-// These hooks intercept ordinary and nothrow C++ allocations, not aligned or
-// C/library allocation families. Observers must not allocate or throw during delete.
+// These hooks intercept ordinary and nothrow C++ allocations. POSIX provider
+// tests can opt into aligned C/C++ allocation interception below. Other C/library
+// families are not intercepted. Delete observers must neither allocate nor throw.
 namespace yume::test {
 inline std::atomic<bool> fail_allocations{false};
+// Installed before worker launch by tests whose injection policy spans threads.
+inline std::atomic<void (*)(std::size_t)> before_allocate_on_any_thread{nullptr};
 inline thread_local void (*before_allocate)(std::size_t) = nullptr;
 inline thread_local void (*after_allocate)(void*, std::size_t) = nullptr;
 inline thread_local void (*before_deallocate)(void*) noexcept = nullptr;
+// A secret-lifetime probe may quarantine storage to detect late wiping or a
+// duplicate release. Returning true transfers eventual free() to that probe.
+inline thread_local bool (*retain_deallocation)(void*) noexcept = nullptr;
+
+inline void check_allocation(std::size_t size) {
+    if (fail_allocations.load(std::memory_order_relaxed)) throw std::bad_alloc();
+    if (const auto hook = before_allocate_on_any_thread.load(std::memory_order_relaxed)) hook(size);
+    if (before_allocate) before_allocate(size);
+}
 
 // Single-shot injection for sweeping one failure across every allocation an
 // operation performs. Failing once rather than continuously keeps the
@@ -61,10 +74,7 @@ inline bool disarm_allocation_failure() {
 #endif
 
 YUME_TEST_ALLOCATION_FUNCTION void* operator new(std::size_t size) {
-    if (yume::test::fail_allocations.load(std::memory_order_relaxed)) {
-        throw std::bad_alloc();
-    }
-    if (yume::test::before_allocate) yume::test::before_allocate(size);
+    yume::test::check_allocation(size);
     void* storage = std::malloc(size == 0U ? 1U : size);
     if (!storage) throw std::bad_alloc();
     if (yume::test::after_allocate) yume::test::after_allocate(storage, size);
@@ -82,6 +92,7 @@ YUME_TEST_ALLOCATION_FUNCTION void* operator new[](std::size_t size, const std::
 }
 YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage) noexcept {
     if (yume::test::before_deallocate) yume::test::before_deallocate(storage);
+    if (yume::test::retain_deallocation && yume::test::retain_deallocation(storage)) return;
     std::free(storage);
 }
 YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage) noexcept { ::operator delete(storage); }
@@ -90,6 +101,37 @@ YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, std::size_t)
 // Matching cleanup if a constructor throws after a nothrow allocation.
 YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
 YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, const std::nothrow_t&) noexcept { ::operator delete(storage); }
+
+// Opt in only for POSIX provider tests that also intercept Asio's C allocation
+// route. Preserve that route's failure policy and malloc/free storage family.
+#if defined(YUME_TEST_ALIGNED_ALLOCATIONS) && !defined(_WIN32)
+extern "C" YUME_TEST_ALLOCATION_FUNCTION void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
+    try { yume::test::check_allocation(size); } catch (...) { errno = ENOMEM; return nullptr; }
+    void* storage = nullptr;
+    const int error = ::posix_memalign(&storage, alignment, size == 0U ? 1U : size);
+    if (error != 0) errno = error;
+    return storage;
+}
+YUME_TEST_ALLOCATION_FUNCTION void* operator new(std::size_t size, std::align_val_t alignment) {
+    if (void* storage = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) return storage;
+    throw std::bad_alloc();
+}
+YUME_TEST_ALLOCATION_FUNCTION void* operator new[](std::size_t size, std::align_val_t alignment) {
+    return ::operator new(size, alignment);
+}
+YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage, std::align_val_t) noexcept { std::free(storage); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, std::align_val_t alignment) noexcept { ::operator delete(storage, alignment); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage, std::size_t, std::align_val_t alignment) noexcept { ::operator delete(storage, alignment); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, std::size_t, std::align_val_t alignment) noexcept { ::operator delete(storage, alignment); }
+YUME_TEST_ALLOCATION_FUNCTION void* operator new(std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+    try { return ::operator new(size, alignment); } catch (...) { return nullptr; }
+}
+YUME_TEST_ALLOCATION_FUNCTION void* operator new[](std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+    try { return ::operator new[](size, alignment); } catch (...) { return nullptr; }
+}
+YUME_TEST_ALLOCATION_FUNCTION void operator delete(void* storage, std::align_val_t alignment, const std::nothrow_t&) noexcept { ::operator delete(storage, alignment); }
+YUME_TEST_ALLOCATION_FUNCTION void operator delete[](void* storage, std::align_val_t alignment, const std::nothrow_t&) noexcept { ::operator delete(storage, alignment); }
+#endif
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop

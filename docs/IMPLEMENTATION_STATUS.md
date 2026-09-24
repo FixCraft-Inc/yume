@@ -10,11 +10,13 @@ three terms deliberately:
   named platform and environment.
 
 YUME is development software at product version `0.3.0-dev1`, with no deployed
-users or stable interface. The default client/daemon currently use transport v2
-and AUTH v2, speaking wire `0.2.0-dev6`. YTP/1 is their unfinished replacement.
-The default build describes what runs today; it does not create a compatibility
-obligation or require a separate transport-v2 optimization campaign before
-replacement integration. Neither implementation is production-qualified.
+users or stable interface. The default CMake graph composes native YTP/1 as
+`yume` and `yumed`, using schema-1 configuration. Transport v2 is off by default;
+its explicitly enabled, uninstalled reference programs retain unresolved
+capability implementations. This build switch does not complete application
+migration or authorize capability retirement. Neither implementation is
+production-qualified. Native manuals and package definitions follow schema 1;
+package/service qualification, GUI and other consumers retain separate gates.
 
 ## Current 0.3 foundation
 
@@ -29,7 +31,7 @@ Implemented and covered by focused tests:
   validates TLS 1.3 suite provenance and exact carrier/affinity continuity,
   waits for cancellation settlement, cleans every rejected layer, and reports
   success only after the YTP session becomes active in focused in-memory tests;
-- an opt-in bounded `h2-duplex` carrier provider over `SecureChannel`, with
+- a bounded `h2-duplex` carrier provider over `SecureChannel`, with
   genuine client priming plus extended-CONNECT acceptance, a typed live-state
   server-promotion seam, carrier-private record framing, move-owned outer
   credit, and flow-controlled send completion. Focused fake-channel tests and
@@ -42,13 +44,13 @@ Implemented and covered by focused tests:
   key-schedule-input codecs;
 - entirely new `yume/ytp/1/...` domains plus checked-in canonical encoding
   vectors;
-- an opt-in, build-tree-only OpenSSL 3.5 session-security provider candidate
+- an OpenSSL 3.5 session-security provider candidate
   with exact Ed25519 plus ML-DSA-87 authentication, X25519 plus ML-KEM-1024
   establishment, per-identity access PSKs, exporter/transcript/capability binding,
   one-use AES-256-GCM record keys, and crossed directional rekey tests. It is
   wired to the source-level native endpoint composition, with production
   qualification still open;
-- an opt-in, build-tree-only Boost.Asio client TCP ByteChannel provider with
+- a Boost.Asio client TCP ByteChannel provider with
   bounded DNS/connect work, socket-protection-before-connect, bounded ordered
   operation queues, per-operation and provider cancellation, real TCP
   half-close, and explicit executor affinity. An accepted-channel owner shares
@@ -59,12 +61,21 @@ Implemented and covered by focused tests:
   dispatch. Initiation occurs on its context, while cancel/close can cross
   threads; the runtime must close owners and drain completions before stopping
   execution. Provider regressions exercise sustained allocation failure during
-  control dispatch, active read/write cleanup, owner destruction and lost DNS
-  completion delivery. The native runtime contains Asio delivery exceptions
-  and resumes cleanup; endpoint integration tests are described below.
-  System DNS resolution can outlive the user-facing deadline; bounded final
-  resolver shutdown remains an integration limitation;
-- an independent opt-in OpenSSL 3.5 TLS 1.3 secure-channel foundation which
+  control dispatch, read/write initiation and queue reuse, active read/write
+  cleanup, owner destruction and resolver delivery under allocation failure.
+  The native runtime contains Asio delivery exceptions and resumes cleanup.
+  Endpoint integration tests are described below;
+- a `SystemResolver` that runs system name lookup in a killable helper
+  process, one thread per lookup, with bounded outstanding and abandoned work.
+  Cancellation settles at once, and closing the resolver kills and reaps the
+  helper. The helper inherits only its standard streams and socketpair and
+  drops every capability. Resolver, provider and endpoint tests use a helper
+  whose test name never resolves: cancellation, helper replacement after
+  abandoned lookups and endpoint close all settle, and final drain finishes
+  within two seconds. The development programs are their own helper. The
+  ABI names an installed `yume-resolver` through `resolver_program`, and
+  without one a client that dials a name fails to start;
+- an independent OpenSSL 3.5 TLS 1.3 secure-channel foundation which
   wraps arbitrary engine byte channels through memory BIOs, enforces exact
   TLS 1.3 plus ALPN `h2`, verifies client-side hostname/trust, exposes bounded
   outer certificate evidence and exporter binding, and keeps its provider
@@ -91,10 +102,9 @@ Implemented and covered by focused tests:
   provisions a real server and client and moves bytes both directions over an
   authenticated named service stream. Client socket protection is connected
   to every outbound transport-v2 dial and fails closed. The candidate has no
-  install rules, no generated CMake package or pkg-config metadata, and is not
-  emitted as an ABI package. `cmake/yumeConfig.cmake.in`,
-  `cmake/yume.pc.in`, and `cmake/check_yume_abi_install.cmake` are retained
-  for that future installed contract and are unreferenced by the build.
+  frozen ABI package. `YUME_INSTALL_EXPERIMENTAL_SDK=ON` enables development
+  installation of the unversioned library, C header, CMake package and pkg-config
+  metadata. The clean-prefix consumer gate runs when installation and tests are enabled.
   `tests/abi/install_consumer/consumer.c` is not idle: the shared-ABI build
   compiles it as `yume_c_abi_consumer_c`, which is the only check that the
   public header still parses as strict C11 rather than C++;
@@ -105,7 +115,7 @@ Implemented and covered by focused tests:
   a source-dependency SPDX SBOM. This inventory is not proof of source
   ancestry.
 
-The opt-in native `Ytp1FrontDoor` now implements a TCP listener over the
+The native `Ytp1FrontDoor` now implements a TCP listener over the
 accepted-channel owner, ordinary TLS 1.2/1.3 and HTTP/1.1/H2 cover traffic,
 and strict TLS 1.3/H2 admission promotion. Its operator-supplied immutable
 static site uses confined `FileRoot` reads and has no fallback content.
@@ -122,8 +132,7 @@ contains runner exceptions and resumes cleanup. The front door binds H2
 ordinary dispatch and reserved control delivery to that context. H2 close,
 cancellation and credit return use the same allocation-free mailbox as TCP;
 TLS/H2 failure settlement preserves callbacks when diagnostics cannot allocate.
-Ingress resolves no names; a wider runtime using system DNS still must account
-for final resolver shutdown outliving its application deadline. The source-level native endpoint now connects this ingress to session bootstrap,
+Ingress resolves no names. The source-level native endpoint now connects this ingress to session bootstrap,
 and the experimental schema-1 ABI backend composes that endpoint.
 
 `yume_ytp1_front_door_test` exercises real loopback TLS/H2 ingress, configured
@@ -175,6 +184,20 @@ callback runs on the endpoint context. The native client uses this notification
 to start reconnecting without polling. Failed attempts, and sessions that end
 sooner than the longest backoff after authenticating, retain bounded
 exponential backoff. Pending starts report failure through their own completion.
+`NativeClientRuntime::status()` gives embedding applications a thread-safe
+snapshot: connecting, connected, waiting or closed, the last failure, the
+verified server fingerprint, attempt counts and traffic totals across sessions.
+An optional callback reports each state change on the runtime context.
+`SessionEngine::traffic()` supplies the per-session payload and record byte
+counts. The endpoint test checks both across a reconnect.
+
+A server endpoint reloads its credential stores on request, and `yumed` does
+so on SIGHUP. Reload builds a new engine graph for later sessions and swaps the
+authorization policy that every service wrapper consults, so established
+sessions apply changed grants to their next OPEN. It ends sessions of removed
+identities and those beyond a lowered `max_sessions`, and refuses a store that
+fails validation or a changed admission key. The endpoint test covers grant
+changes, refusal of a malformed store and revocation of a live session.
 
 Listener socket setup preserves OS permission refusal, address conflict,
 invalid-address and resource-exhaustion status through the runtime and embedding
@@ -191,6 +214,18 @@ regressions cover closure from another thread, pending-read settlement before
 notification, reentrant slot reuse, callback exceptions, client reconnect
 with SOCKS traffic through the replacement session, and backoff after a session
 that ends right after AUTH.
+The established endpoint rekey cases explicitly initiate rotation. The session
+engine also contains an automatic rotation candidate: one MiB of directional
+payload, 512 protected records, or 500 ms checked on the next protected send.
+It reserves outbound space for rekey controls. Focused engine tests cover byte,
+record and send-age thresholds, crossed rotation, synchronous ACK delivery,
+reserved queue capacity, peer overshoot refusal, deferred publication and ACK
+deadline expiry. The native endpoint also tests its unanswered-ACK watchdog.
+Competing-stream tests cover credit changes, stalled readers, callback reentry
+and release after rekey. These cases do not establish sustained real-carrier
+fairness, high-RTT behavior or security equivalence to transport-v2 Extreme.
+Automatic rotation remains an open security-preservation gate despite the
+changed build default.
 Deterministic pacing tests cover accept refusal, unschedulable retries,
 re-entrant completion, stopped listeners and close. Socket tests cover loop
 exclusivity, capacity recovery and a promoted carrier that never authenticates,
@@ -205,7 +240,7 @@ an optional application policy, refuses duplicate binding ownership, and
 preserves the caller's provider on failed creation. `NativeEgressPolicy` tests
 cover public and explicit networks, never-permitted addresses, IPv4-mapped IPv6
 and per-protocol rules. The canonical network grammar shares test vectors with
-`yume-doctor-ytp1`. Engine dispatch supplies the selected provider to the handler; it
+`yume-doctor`. Engine dispatch supplies the selected provider to the handler; it
 cannot accidentally validate one instance while the built-in handler uses
 another. The public ABI backend still rejects adapter declarations.
 Engine tests separately exercise acceptance and
@@ -216,7 +251,8 @@ allocation-failure, application-adapter, sanitizer or security qualification.
 When the shared ABI and every native provider are enabled, the experimental
 `yume_embed_ytp1` backend runs `NativeEndpoint` on its own execution thread
 behind the blocking C ABI. Schema-1 clients open, and servers accept,
-authenticated named byte streams with the composite peer identity. A server
+authenticated named byte streams and packet channels with the composite peer identity.
+Clients also open TCP/UDP destinations through a native daemon's declared direct services. A server
 holds each authorized OPEN until the application accepts it, and a client opens
 only services its configuration declares. Configured services the application
 did not register are refused, and declared adapters or reverse-proxy cover fail
@@ -235,8 +271,9 @@ credit lifetime and cleanup after an escaped delivery exception.
 No standalone YTP/1 runtime uses
 this backend, and it has no production qualification.
 
-The development executables `yumed-ytp1` and `yume-ytp1` run schema-1
-configurations as processes when every native provider is built. `--config`
+The native executables `yumed` and `yume` run schema-1 configurations.
+`YUME_BUILD_NATIVE_APPLICATION=ON` defaults all required providers on and refuses
+an incomplete cached provider selection. `--config`
 selects the file, `--validate` checks configuration and credentials, and
 network and security policy have no CLI override. The daemon serves configured
 `direct_tcp`/`direct_udp` adapters and refuses a service without one, because
@@ -284,8 +321,32 @@ unsupported reply without a UDP service, relay closure, and the 64-datagram
 budget while an OPEN is held. `yume_native_runtime_test` repeats the traffic,
 refusal and closure checks between the two processes, which start from the
 generated setup kit's services and adapters.
-These programs are development runtimes: they are not installed and not
-qualified.
+CMake installs these development programs together with the schema-1
+`yume-setup` and `yume-doctor` tools. Installation does not qualify the application:
+Debian/service definitions use schema 1, while installed-service and production
+qualification remain incomplete.
+
+An unrecoverable reconnect timer or SOCKS listener retry failure closes the
+client runtime and reports a typed terminal status. Both CLIs exit with failure
+after draining owned work. Explicit shutdown does not emit that failure, and
+ordinary connection failures still retry with backoff. After a runner exception,
+the CLI uses a reserved control task to close every runtime on its execution
+context, then drains accepted completions. The runner regression covers live
+accept/timer cancellation during sustained allocation failure and a second
+exception during drain.
+
+The native Linux runtimes also compose named IP packet services through
+`NativePacketAdapter`, `IpPacketChannel` and `LinuxTunNetwork`. They own an
+ephemeral TUN, explicit addresses/routes and optional systemd-resolved per-link
+DNS. An exclusive session lease drains OS callbacks before reconnect; shutdown
+checks network cleanup. See the [native guide](development/ytp1/README.md)
+for address policy, routing exclusions and qualification limits.
+The optional `yume_native_resolved_test` runs an actual systemd-resolved
+service and a private D-Bus inside unprivileged user, mount and network
+namespaces. It verifies per-link DNS servers, routing domains, default-route
+policy, DNS queries through the tunnel, reconnect and shutdown cleanup. The
+regular TUN test still exercises DNS-free configurations. Service deployment
+and managed TUN DNS have separate lifetime and privilege boundaries.
 
 ## Not yet implemented end to end
 
@@ -294,46 +355,78 @@ must not be advertised as working:
 
 - complete-session qualification of the native FrontDoor, including external
   comparison of ordinary and rejected-admission cover behavior;
-- production qualification of the experimental schema-1 ABI backend and of
-  the development standalone runtimes;
+- production qualification of `yume`, `yumed` and the experimental schema-1
+  ABI backend;
 - comprehensive real-carrier rekey, close-ordering and credit/backpressure
   qualification beyond the focused native-session regressions;
-- named-service and packet/TUN adapters in the standalone runtimes;
-- a public-ABI packet data path in either configuration dialect;
-- authenticated clean-prefix C and C++ consumers using an installed CMake
-  package and pkg-config, which the build does not generate yet;
-- the final narrow `yume` and `yumed` runtimes, the coordinated switch from
-  transport v2, and a qualified setup-to-first-SOCKS path over a real network;
+- acceptance evidence for automatic directional root rotation and competing-stream
+  scheduling, including stalled readers, cancellation and real-carrier pressure;
+- standalone application-service adapters and production managed-TUN qualification;
+- transport-v2 public-ABI packets, which remain explicitly unsupported;
+- complete installed-SDK qualification across the supported build/toolchain matrix;
+- installed package/service and remaining consumer migration around native
+  `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;
 - external active-probe, classifier, performance, soak, fuzz, sanitizer, and
   security-review gates.
 
-The replacement ABI attaches a runtime through one backend seam per dialect.
-When the ABI library is explicitly enabled, its transport-v2 backend starts the
-runnable client or daemon through `yume_endpoint_start`. `yume_endpoint_register_service`,
+Native CTest registration includes the schema-1 setup and doctor negative
+cases, project metadata and Linux release-archive checks without enabling v2.
+The Clang fuzz profile instruments the YTP frame/OPEN/capability codecs, AUTH
+TLVs and schema-1 parser, including their source libraries. Numeric overflow
+in JSON is a typed validation failure. Reference parsers remain separately
+available when the reference graph is enabled.
+
+With Linux namespace tests enabled, `YUME_TEST_NATIVE_STRESS=ON` adds a delayed
+carrier workload with an unread destination, competing transfers, ordered
+recovery, half-close, stable carrier sockets and RSS/descriptor growth guards.
+Address-sanitized builds select the fixture's `--asan` profile: a 16 MiB global
+quarantine and 64 KiB per-thread quarantine, with leak detection and fatal
+sanitizer errors enabled. This bounds deliberately retained freed storage
+without raising the 256 MiB RSS growth guard. Other sanitizer tests keep their
+existing options. This finite workload does not measure live queue ownership,
+prove a memory plateau or observe automatic rekeys.
+
+GUI, helper and CodeQL configurations explicitly select the reference graph
+when their targets require it. The GUI uses the reference daemon in its live
+fixture and remains uninstalled until consumer migration. Debian definitions
+use the native config-only daemon, validate configuration before startup and
+leave the service disabled after installation. Native release archives carry
+setup/doctor and enforce native executable identities; packaging regression
+checks do not qualify a distribution or an installed service.
+
+The C ABI attaches a runtime through one backend per dialect. When the ABI
+library and the transport-v2 reference graph are both enabled, the v2 backend
+starts the reference client or daemon through `yume_endpoint_start`. `yume_endpoint_register_service`,
 `yume_endpoint_open_stream`, and `yume_endpoint_accept_stream` carry
 authenticated named byte streams, and `yume_stream_read`/`write`/
 `shutdown_write`/`close` move real bytes with typed transport failures. A
 schema-1 endpoint uses the same calls through the native backend when the
 provider graph is built, and fails start with a typed unsupported status
 otherwise. Nothing silently
-reroutes one configuration dialect into another runtime. Packet channels remain
-unsupported by the public ABI. The working `yume` and `yumed` binaries continue
-to use transport v2 during the transition.
+reroutes one configuration dialect into another runtime. Native packet channels
+support named services and routed UDP with bounded whole-packet batches. The ordinary shared-ABI build links the native
+backend; adding the explicit reference graph can still add the v2 backend.
+Removing that second dialect is unfinished consumer migration.
 
-## Default transport-v2 runtime
+`IpPacketChannel` validates IPv4/IPv6 lengths, exact packet size, MTU and
+directional address policy before forwarding through the native route bridge.
+The Linux packet adapter puts it behind a managed TUN device, which owns
+addresses, routes and per-link DNS.
 
-The default build produces `yume` and `yumed` with transport v2 and AUTH v2.
-The quick start, operations guide, control API, and transport-v2 wire reference
-describe that implementation. It remains the default until YTP/1 passes tunnel,
-cover, routing and embedding gates for the required product capabilities.
-This is functional replacement work, not a requirement to preserve every
-transport-v2 interface or qualify that implementation for release first.
+## Retained transport-v2 reference
 
-The GUI, federation, relay applications, and codecs are working parts of this
-runtime and remain available during stabilization. Their scope in the
-replacement remains undecided.
+`YUME_BUILD_TRANSPORT_V2=ON` builds `yume-v2-reference` and
+`yumed-v2-reference` without installing them. Their source retains capabilities
+that have not yet been ported. The transport-v2 operations, control API and wire pages
+describe that graph; their command examples must not be applied to native schema-1
+binaries. Features move to YTP/1 one at a time with their tests. There is
+no requirement to keep every transport-v2 interface or to qualify the
+reference build for release first.
 
-The runnable product enforces these boundaries:
+The GUI, federation, relay applications and codecs still work in this build.
+Which of them move to YTP/1, and in what form, is not yet decided.
+
+The transport-v2 reference enforces these boundaries:
 
 - Admission retains live replay entries when its bounded process-local cache
   is full and refuses new admissions until capacity recovers. AUTH parsing
@@ -348,7 +441,7 @@ The runnable product enforces these boundaries:
   output once, and signing contexts have RAII ownership on allocation failure.
   Mutable-buffer erasure includes retained capacity. This is best-effort
   secret-lifetime reduction; library scratch copies and locked memory remain
-  outside the guarantee. See [key operations](OPERATIONS.md#key-and-permission-operations).
+  outside the guarantee. See [transport-v2 key operations](TRANSPORT_V2_OPERATIONS.md#key-and-permission-operations).
 - POSIX bounded/private file readers reject embedded NUL paths and refuse
   FIFOs without waiting for a writer. Static-root reads use directory
   descriptors and reject symlinks in every path component. Captured HTTP
@@ -423,13 +516,16 @@ The YTP/1 design requires all of the following:
 - hard failure on a missing component, provider mismatch, role confusion,
   replay, malformed canonical encoding, or authentication failure.
 
-The opt-in provider candidate implements the cryptographic portions in focused
-in-memory tests; dependency-pure engine tests cover the matching record and
-resource contracts. They remain design and acceptance requirements, not a
-product guarantee, until the live TLS exporter, native carrier/runtime wiring,
-and full qualification gates land. They are not an independent proof, audit,
-or certification. The ratchet is described only as
-post-compromise-oriented.
+The provider selected by the native application implements the cryptographic
+portions and has focused tests with real keys; dependency-pure engine tests
+cover the matching record and resource contracts. Native endpoint integration
+connects the live TLS exporter, carrier and session security. Published
+synthetic construction vectors check deterministic transcript, key schedule,
+record protection and rekey calculations against an independent generator.
+Complete asymmetric peer interoperability, broader qualification and
+independent review remain open. Existing tests are not a product security
+guarantee, independent proof, audit or certification. The ratchet is described
+only as post-compromise-oriented.
 
 ## Ingress evidence boundary
 

@@ -388,6 +388,24 @@ const Json& closed_object(const Json& value,
     return value;
 }
 
+// Like closed_object, with fields that may be absent.
+const Json& closed_object(const Json& value,
+                          std::initializer_list<std::string_view> fields,
+                          std::initializer_list<std::string_view> optional) {
+    require(value.is_object(), "credential store object has missing or unknown fields");
+    std::size_t present = 0U;
+    for (auto field : fields) {
+        require(value.contains(field), "credential store object is missing a field");
+        ++present;
+    }
+    for (auto field : optional) {
+        if (value.contains(field)) ++present;
+    }
+    require(value.size() == present,
+            "credential store object has missing or unknown fields");
+    return value;
+}
+
 const std::string& string_field(const Json& value, std::size_t maximum) {
     require(value.is_string(), "credential store field must be a string");
     const auto& text = value.get_ref<const std::string&>();
@@ -537,9 +555,10 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     std::vector<AuthorizedIdentity> authorized;
     authorized.reserve(store.at("keys").size());
     std::vector<NativeAuthorizationPolicy::Grant> grants;
+    std::vector<NativeAuthorizationPolicy::SessionLimit> session_limits;
     for (const auto& entry : store.at("keys")) {
-        closed_object(entry,
-                      {"name", "identity", "access_psk", "capabilities"});
+        closed_object(entry, {"name", "identity", "access_psk", "capabilities"},
+                      {"max_sessions"});
         const auto& label = string_field(entry.at("name"), 63);
         validate_label(label);
         require(labels.insert(label).second,
@@ -566,6 +585,15 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
                                          identity.fingerprint);
         grants.insert(grants.end(), std::make_move_iterator(allowed.begin()),
                       std::make_move_iterator(allowed.end()));
+        if (const auto limit = entry.find("max_sessions"); limit != entry.end()) {
+            require(limit->is_number_unsigned() &&
+                        limit->get<std::uint64_t>() >= 1U &&
+                        limit->get<std::uint64_t>() <= kMaxSessionsPerIdentity,
+                    "credential max_sessions must be an integer from 1 to 1024");
+            session_limits.push_back(
+                {identity.fingerprint,
+                 static_cast<std::size_t>(limit->get<std::uint64_t>())});
+        }
         authorized.push_back({std::move(identity), std::move(psk)});
     }
 
@@ -609,7 +637,8 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
             tls.status().code());
     return {std::move(factory).take_value(), std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
-                engine::EndpointRole::Client, std::move(grants)),
+                engine::EndpointRole::Client, std::move(grants),
+                std::move(session_limits)),
             NativeAdmissionKey(
                 std::span<const std::byte, 32>(admission.bytes().data(), 32))};
 }
@@ -684,8 +713,26 @@ NativeAdmissionKey::~NativeAdmissionKey() {
 }
 
 NativeAuthorizationPolicy::NativeAuthorizationPolicy(
-    engine::EndpointRole peer_role, std::vector<Grant> grants) noexcept
-    : peer_role_(peer_role), grants_(std::move(grants)) {}
+    engine::EndpointRole peer_role, std::vector<Grant> grants,
+    std::vector<SessionLimit> session_limits) noexcept
+    : peer_role_(peer_role),
+      grants_(std::move(grants)),
+      session_limits_(std::move(session_limits)) {}
+
+bool NativeAuthorizationPolicy::recognizes(
+    std::string_view peer_identity) const noexcept {
+    return std::any_of(grants_.begin(), grants_.end(), [&](const auto& grant) {
+        return grant.peer_identity == peer_identity;
+    });
+}
+
+std::size_t NativeAuthorizationPolicy::max_sessions(
+    std::string_view peer_identity) const noexcept {
+    for (const auto& limit : session_limits_) {
+        if (limit.peer_identity == peer_identity) return limit.max_sessions;
+    }
+    return 0U;
+}
 
 Status NativeAuthorizationPolicy::authorize(
     const engine::StreamOpenContext& context) const noexcept {

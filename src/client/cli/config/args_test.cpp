@@ -25,7 +25,8 @@ void CheckDomainDispatch() {
         "--port", "8443", "--bench-direction", "UP", "--threads", "3",
         "--rhost", "127.0.0.1", "--rport", "9000", "--udp",
         "--relay-mode", "trusted", "--allow-chat", "--history-dir", "hist",
-        "--tls-name", "origin.example", "--tor", "--live-status"});
+        "--tls-name", "origin.example", "--proxy", "socks5://127.0.0.1:1080",
+        "--live-status"});
     assert(args.parse_error.empty());
     assert(args.config_specified && args.config_path == "client.json");
     assert(args.server == "cover.example" && args.port == 8443);
@@ -38,7 +39,7 @@ void CheckDomainDispatch() {
     assert(args.history_dir == "hist" && args.history_override);
     assert(args.tls_server_name == "origin.example");
     assert(args.outbound_proxy_override &&
-           args.outbound_proxy_url == "socks5://127.0.0.1:9050");
+           args.outbound_proxy_url == "socks5://127.0.0.1:1080");
     assert(args.live_status);
 }
 
@@ -54,7 +55,7 @@ void CheckOptionalValuesAndAliases() {
     assert(args.control_mode && args.control_id == "peer");
     assert(args.non_interactive);
 
-    auto proxy = parse({"yume", "--tor", "--no-proxy"});
+    auto proxy = parse({"yume", "--proxy", "socks5://127.0.0.1:1080", "--no-proxy"});
     assert(proxy.parse_error.empty());
     assert(proxy.outbound_proxy_override);
     assert(proxy.outbound_proxy_url.empty());

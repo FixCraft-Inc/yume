@@ -24,7 +24,6 @@ PROFILE = "linux-desktop-0.3.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
 BUNDLE_DIRECTORY = "yume-amd64-linux"
-GO_VERSION = "go1.26.5"
 
 
 def require(condition: bool, message: str) -> None:
@@ -46,7 +45,8 @@ def require_regular_file(path: pathlib.Path, description: str) -> None:
 
 def require_elf_amd64(path: pathlib.Path, description: str) -> None:
     require_regular_file(path, description)
-    header = path.read_bytes()[:20]
+    with path.open("rb") as handle:
+        header = handle.read(20)
     require(len(header) == 20 and header[:4] == b"\x7fELF", f"{description} is not ELF: {path}")
     require(header[4] == 2 and header[5] == 1, f"{description} is not little-endian ELF64: {path}")
     require(int.from_bytes(header[18:20], "little") == 62, f"{description} is not x86-64: {path}")
@@ -113,7 +113,7 @@ def normalized_tar(output: pathlib.Path, root: pathlib.Path) -> None:
                 info.mode = 0o755
                 archive.addfile(info)
             else:
-                info.mode = 0o755 if path.name in {"yume", "yume-chrome-tls-helper"} else 0o644
+                info.mode = 0o755 if path.name in {"yume", "yume-setup", "yume-doctor"} else 0o644
                 with path.open("rb") as handle:
                     archive.addfile(info, handle)
     os.replace(temporary_output, output)
@@ -123,8 +123,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build the YUME 0.3.0 Linux x86-64 release bundle")
     parser.add_argument("--yume", required=True, type=pathlib.Path)
     parser.add_argument("--yumed", required=True, type=pathlib.Path)
-    parser.add_argument("--helper", required=True, type=pathlib.Path)
-    parser.add_argument("--helper-rebuild", required=True, type=pathlib.Path)
+    parser.add_argument("--setup", required=True, type=pathlib.Path)
+    parser.add_argument("--doctor", required=True, type=pathlib.Path)
     parser.add_argument("--license", required=True, type=pathlib.Path)
     parser.add_argument("--notices", required=True, type=pathlib.Path)
     parser.add_argument("--quick-start", required=True, type=pathlib.Path)
@@ -140,34 +140,27 @@ def main() -> None:
         transport = active_profile_metadata()
     except (OSError, ProfileError) as error:
         raise SystemExit(f"Invalid active transport profile: {error}") from error
-    helper_build_id = transport["helper_build_id"]
     transport_profile = transport["id"]
     require(bool(re.fullmatch(r"[0-9a-f]{40}", args.source_commit)),
             "Source commit must be an exact 40-hex Git object ID")
     require_glibc_dynamic(args.yume, "yume client")
     require_glibc_dynamic(args.yumed, "yumed server")
-    require_elf_amd64(args.helper, "Chrome TLS helper")
-    require_elf_amd64(args.helper_rebuild, "rebuilt Chrome TLS helper")
     for path, description in (
+        (args.setup, "schema-1 setup tool"),
+        (args.doctor, "schema-1 doctor tool"),
         (args.license, "license"),
         (args.notices, "third-party notices"),
         (args.quick_start, "quick-start document"),
     ):
         require_regular_file(path, description)
 
-    helper_hash = sha256_file(args.helper)
-    rebuilt_helper_hash = sha256_file(args.helper_rebuild)
-    require(helper_hash == rebuilt_helper_hash,
-            "Chrome TLS helper clean rebuild SHA-256 mismatch")
-
     yume_version = version_output(args.yume)
     yumed_version = version_output(args.yumed)
-    helper_version = version_output(args.helper)
-    require(args.version in yume_version, "yume --version does not match source version")
-    require(args.version in yumed_version, "yumed --version does not match source version")
-    require(helper_build_id in helper_version, "Chrome TLS helper build identity mismatch")
-    require("protocol=1" in helper_version, "Chrome TLS helper IPC version mismatch")
-    require(f"go={GO_VERSION}" in helper_version, "Chrome TLS helper Go version mismatch")
+    for name, output in (("yume", yume_version), ("yumed", yumed_version)):
+        require(bool(output) and output.splitlines()[0] == f"{name} {args.version}",
+                f"{name} --version does not match source version")
+        require("transport YTP/1, config schema 1, suite ytp1-tls13-h2" in output,
+                f"{name} is not the native schema-1 YTP/1 application")
     server_hash = sha256_file(args.yumed)
     server_size = args.yumed.stat().st_size
 
@@ -180,7 +173,8 @@ def main() -> None:
         bundle_root.mkdir(mode=0o755)
         copies = {
             "yume": (args.yume, 0o755),
-            "yume-chrome-tls-helper": (args.helper, 0o755),
+            "yume-setup": (args.setup, 0o755),
+            "yume-doctor": (args.doctor, 0o755),
             "LICENSE": (args.license, 0o644),
             "THIRD_PARTY_NOTICES.md": (args.notices, 0o644),
             "QUICKSTART.md": (args.quick_start, 0o644),
@@ -208,14 +202,10 @@ def main() -> None:
             "architecture": "x86_64",
             "libc": "glibc",
             "transport_profile": transport_profile,
-            "chrome_tls_helper": {
-                "required_at_runtime": False,
-                "build_id": helper_build_id,
-                "ipc_protocol": 1,
-                "go_version": GO_VERSION,
-                "sha256": helper_hash,
-                "clean_rebuild_sha256": rebuilt_helper_hash,
-            },
+            "transport": "YTP/1",
+            "config_schema": 1,
+            "suite": "ytp1-tls13-h2",
+            "client_version_output": yume_version,
             "standalone_server": {
                 "file": SERVER_NAME,
                 "mode": "0755",
@@ -224,16 +214,12 @@ def main() -> None:
                 "version_output": yumed_version,
             },
             "required_features": {
-                "argon2": True,
                 "post_quantum": True,
                 "native_chrome_client_hello": True,
                 "patched_openssl_embedded": True,
                 "openssl_minimum": "3.5.0",
             },
-            "optional_features": {
-                "chrome_tls_helper": True,
-            },
-            "unsupported_in_first_2_0_release": [
+            "unsupported_platforms": [
                 "android", "gui", "windows", "macos", "arm", "openwrt",
                 "static", "debian-archive",
             ],

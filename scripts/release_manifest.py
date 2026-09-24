@@ -57,11 +57,6 @@ def classify(name: str) -> dict:
         "arch": arch,
         "os": os_name,
         "linkage": linkage,
-        "features": {
-            "argon2": True,
-            "oqs": True,
-            "lzma": True,
-        },
     }
 
 

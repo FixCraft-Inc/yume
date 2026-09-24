@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Run the YUME fuzz harnesses for a bounded time and fail on any finding.
 #
-# Usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]
+# Usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR] [--with-reference]
 #
 #   BIN_DIR   directory holding the built yume_fuzz_* executables
 #   SECONDS   wall-clock budget per harness
 #   OUT_DIR   working directory for seeds, corpora, logs and artifacts
+#   --with-reference also require and run the retained transport-v2 harnesses
 #
 # A libFuzzer finding is written under OUT_DIR/artifacts and this script exits
 # nonzero, so the same invocation works as a CI gate and as a local run. Longer
@@ -16,23 +17,38 @@ set -euo pipefail
 BIN_DIR=${1:?usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]}
 SECONDS_PER_TARGET=${2:?usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]}
 OUT_DIR=${3:-fuzz-out}
+REFERENCE_MODE=${4:-}
+if [[ ! "$SECONDS_PER_TARGET" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SECONDS must be a positive integer" >&2
+    exit 2
+fi
+if [[ $# -gt 4 || ( -n "$REFERENCE_MODE" && "$REFERENCE_MODE" != --with-reference ) ]]; then
+    echo "usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR] [--with-reference]" >&2
+    exit 2
+fi
 
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 mkdir -p "$OUT_DIR/artifacts"
 python3 "$HERE/make_seeds.py" "$OUT_DIR"
 
-# harness binary : seed and corpus suffix
+# harness binary : seed and corpus suffix : maximum input bytes
 TARGETS=(
-    "yume_fuzz_h2_probe_decoder:h2"
-    "yume_fuzz_client_config:client"
-    "yume_fuzz_server_config:server"
+    "yume_fuzz_ytp1_protocol:ytp1_protocol:1048589"
+    "yume_fuzz_ytp1_auth:ytp1_auth:65537"
+    "yume_fuzz_config_v1:config_v1:1048577"
 )
+if [[ "$REFERENCE_MODE" == --with-reference ]]; then
+    TARGETS+=(
+        "yume_fuzz_h2_probe_decoder:h2:1048576"
+        "yume_fuzz_client_config:client:1048577"
+        "yume_fuzz_server_config:server:1048577"
+    )
+fi
 
 status=0
 for entry in "${TARGETS[@]}"; do
-    binary=${entry%%:*}
-    tag=${entry##*:}
+    IFS=: read -r binary tag max_length <<< "$entry"
     path="$BIN_DIR/$binary"
     if [[ ! -x "$path" ]]; then
         echo "missing harness: $path" >&2
@@ -47,6 +63,7 @@ for entry in "${TARGETS[@]}"; do
     if ! "$path" \
             "$OUT_DIR/corpus_$tag" "$OUT_DIR/seeds_$tag" \
             -max_total_time="$SECONDS_PER_TARGET" \
+            -max_len="$max_length" \
             -rss_limit_mb=4096 \
             -timeout=25 \
             -artifact_prefix="$OUT_DIR/artifacts/${tag}_" \

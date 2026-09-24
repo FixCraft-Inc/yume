@@ -25,14 +25,14 @@ PROFILE = "linux-desktop-0.3.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
 BUNDLE_DIRECTORY = "yume-amd64-linux"
-HELPER_NAME = "yume-chrome-tls-helper"
 EXPECTED_BUNDLE_FILES = {
     "LICENSE": 0o644,
     "QUICKSTART.md": 0o644,
     "THIRD_PARTY_NOTICES.md": 0o644,
     "manifest.json": 0o644,
     "yume": 0o755,
-    HELPER_NAME: 0o755,
+    "yume-setup": 0o755,
+    "yume-doctor": 0o755,
 }
 MAX_BUNDLE_FILE_BYTES = {
     "LICENSE": 1024 * 1024,
@@ -40,7 +40,8 @@ MAX_BUNDLE_FILE_BYTES = {
     "THIRD_PARTY_NOTICES.md": 1024 * 1024,
     "manifest.json": 1024 * 1024,
     "yume": 512 * 1024 * 1024,
-    HELPER_NAME: 64 * 1024 * 1024,
+    "yume-setup": 1024 * 1024,
+    "yume-doctor": 1024 * 1024,
 }
 MAX_SERVER_BYTES = 512 * 1024 * 1024
 
@@ -162,6 +163,8 @@ def validate_workflow_guards() -> None:
         "libbrotli-dev",
         'go-version: "1.26.5"',
         "check-latest: false",
+        "-DYUME_BUILD_NATIVE_APPLICATION=ON",
+        "-DYUME_BUILD_TRANSPORT_V2=ON",
         "-DYUME_BUILD_CHROME_TLS_HELPER=ON",
         "-DYUME_BUILD_GUI=OFF",
         "-DYUME_STATIC=OFF",
@@ -287,6 +290,8 @@ def validate_cmake_cache(path: pathlib.Path) -> None:
     require(path.is_file(), f"Missing CMake cache: {path}")
     cache = path.read_text(encoding="utf-8", errors="replace")
     required = {
+        "YUME_BUILD_NATIVE_APPLICATION": "ON",
+        "YUME_BUILD_TRANSPORT_V2": "ON",
         "YUME_USE_BASEFWX": "ON",
         "YUME_BUILD_CHROME_TLS_HELPER": "ON",
         "YUME_STATIC_OPENSSL": "ON",
@@ -430,7 +435,6 @@ def require_no_runtime_search_path(data: bytes, description: str) -> None:
 
 
 def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
-                    expected_helper_hash: str | None,
                     transport: dict[str, object]) -> dict[str, object]:
     require(bundle.is_file() and not bundle.is_symlink(), f"Missing release bundle: {bundle}")
     with tarfile.open(bundle, "r:xz") as archive:
@@ -441,8 +445,12 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
         expected_names = {BUNDLE_DIRECTORY} | {
             f"{BUNDLE_DIRECTORY}/{name}" for name in EXPECTED_BUNDLE_FILES
         }
-        require(names == expected_names,
+        require(len(members) == len(expected_names) and names == expected_names,
                 "Release bundle contents are incomplete or contain unexpected files")
+        root = next(member for member in members
+                    if member.name.rstrip("/") == BUNDLE_DIRECTORY)
+        require(root.isdir(), "Release bundle root must be a directory")
+        require(root.mode == 0o755, "Release bundle root must have mode 0755")
         payloads: dict[str, bytes] = {}
         for name, mode in EXPECTED_BUNDLE_FILES.items():
             member = archive.getmember(f"{BUNDLE_DIRECTORY}/{name}")
@@ -456,7 +464,6 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
 
     require_glibc_amd64(payloads["yume"], "bundled yume")
     require_no_runtime_search_path(payloads["yume"], "bundled yume")
-    require_elf_amd64(payloads[HELPER_NAME], "bundled Chrome TLS helper")
     manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
     require(isinstance(manifest, dict), "Bundle manifest must be an object")
     require(manifest.get("schema") == 1, "Bundle manifest schema mismatch")
@@ -469,35 +476,32 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     require(manifest.get("libc") == "glibc", "Bundle libc mismatch")
     require(manifest.get("transport_profile") == transport["id"],
             "Bundle transport profile mismatch")
-    helper = manifest.get("chrome_tls_helper", {})
-    require(helper.get("build_id") == transport["helper_build_id"],
-            "Bundle helper identity mismatch")
-    require(helper.get("ipc_protocol") == 1, "Bundle helper IPC mismatch")
-    require(helper.get("required_at_runtime") is False,
-            "Bundled helper must be declared optional at runtime")
-    require(helper.get("go_version") == "go1.26.5", "Bundle helper Go version mismatch")
-    helper_hash = sha256_bytes(payloads[HELPER_NAME])
-    require(helper.get("sha256") == helper_hash, "Bundle helper SHA-256 mismatch")
-    require(helper.get("clean_rebuild_sha256") == helper_hash,
-            "Bundle helper reproducibility evidence mismatch")
-    if expected_helper_hash is not None:
-        require(helper_hash == expected_helper_hash,
-                "Bundled helper differs from clean rebuilds")
+    require(manifest.get("transport") == "YTP/1" and
+            manifest.get("config_schema") == 1 and
+            manifest.get("suite") == "ytp1-tls13-h2",
+            "Bundle must declare the native schema-1 YTP/1 application")
+    server_metadata = manifest.get("standalone_server")
+    require(isinstance(server_metadata, dict), "Bundle standalone server metadata is missing")
+    for name, output in (
+            ("yume", manifest.get("client_version_output")),
+            ("yumed", server_metadata.get("version_output"))):
+        require(isinstance(output, str) and
+                output.startswith(f"{name} {version}\n") and
+                "transport YTP/1, config schema 1, suite ytp1-tls13-h2" in output,
+                f"Bundle {name} native identity is missing or mismatched")
     features = manifest.get("required_features", {})
     require(features == {
-        "argon2": True,
         "native_chrome_client_hello": True,
         "openssl_minimum": "3.5.0",
         "patched_openssl_embedded": True,
         "post_quantum": True,
     }, "Bundle mandatory feature declarations are incomplete or relaxed")
-    require(manifest.get("optional_features") == {"chrome_tls_helper": True},
-            "Bundle optional helper declaration is missing or malformed")
     entries = manifest.get("files")
     require(isinstance(entries, list), "Bundle manifest file list is missing")
     by_name = {entry.get("file"): entry for entry in entries if isinstance(entry, dict)}
     expected_manifest_files = set(EXPECTED_BUNDLE_FILES) - {"manifest.json"}
-    require(set(by_name) == expected_manifest_files,
+    require(len(entries) == len(expected_manifest_files) and
+            set(by_name) == expected_manifest_files,
             "Bundle manifest file list is incomplete or unexpected")
     for name in expected_manifest_files:
         entry = by_name[name]
@@ -511,14 +515,12 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
 
 
 def validate_artifacts(directory: pathlib.Path, version: str, commit: str,
-                       expected_helper_hash: str | None,
                        transport: dict[str, object]) -> None:
     require(directory.is_dir(), f"Release artifact directory not found: {directory}")
     present = {path.name for path in directory.iterdir() if path.is_file()}
     require(present == {BUNDLE_NAME, SERVER_NAME},
             "Release artifacts are incomplete or include unexpected platforms/variants")
-    manifest = validate_bundle(directory / BUNDLE_NAME, version, commit,
-                               expected_helper_hash, transport)
+    manifest = validate_bundle(directory / BUNDLE_NAME, version, commit, transport)
     server = directory / SERVER_NAME
     require(server.is_file() and not server.is_symlink(),
             "Server artifact must be a regular file")
@@ -580,12 +582,11 @@ def main() -> None:
         validate_cmake_cache(args.cmake_cache)
     require((args.helper_build_a is None) == (args.helper_build_b is None),
             "Both helper rebuild paths are required together")
-    helper_hash = None
     if args.helper_build_a is not None:
-        helper_hash = validate_helper_rebuilds(
+        validate_helper_rebuilds(
             args.helper_build_a, args.helper_build_b)
     if args.artifacts is not None:
-        validate_artifacts(args.artifacts, version, commit, helper_hash, transport)
+        validate_artifacts(args.artifacts, version, commit, transport)
     print(f"Preflight OK: profile={PROFILE} version={version} "
           f"transport={transport['id']} BaseFWX={ref}")
 

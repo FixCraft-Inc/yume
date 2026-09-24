@@ -28,9 +28,9 @@ using Json = nlohmann::json;
 
 constexpr std::size_t kMaxHostBytes = 253;
 constexpr std::size_t kMaxProfileBytes = 128;
-constexpr std::size_t kMaxInterfaceNameBytes = 32;
+constexpr std::size_t kMaxInterfaceNameBytes = 15;
 
-constexpr std::uint32_t kMinFrameBytes = 1024;
+constexpr std::uint32_t kMinFrameBytes = 1676;
 constexpr std::uint32_t kMaxFrameBytes = 1024U * 1024U;
 constexpr std::uint32_t kMinStreams = 1;
 constexpr std::uint32_t kMaxStreams = 65535;
@@ -38,7 +38,7 @@ constexpr std::uint32_t kMinQueuedBytes = 64U * 1024U;
 constexpr std::uint32_t kMaxQueuedBytes = 64U * 1024U * 1024U;
 constexpr std::uint32_t kMinPendingOpens = 1;
 constexpr std::uint32_t kMaxPendingOpens = 1024;
-constexpr std::uint32_t kMinRekeyJobs = 1;
+constexpr std::uint32_t kMinRekeyJobs = 2;
 constexpr std::uint32_t kMaxRekeyJobs = 64;
 constexpr std::uint32_t kMinControlMessages = 8;
 constexpr std::uint32_t kMaxControlMessages = 4096;
@@ -724,6 +724,113 @@ DestinationPolicy ParseDestinations(const Json& value,
     return DestinationPolicy(public_addresses, std::move(parsed));
 }
 
+std::vector<common::IpNetwork> parse_tun_prefixes(const Json& value,
+                                                   const std::string& pointer,
+                                                   bool required) {
+    if (!value.is_array() || value.size() > 64U || (required && value.empty()))
+        Fail(pointer, "must be an array of " + std::string(required ? "1" : "0") + " to 64 prefixes");
+    std::vector<common::IpNetwork> result;
+    result.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        const auto item = IndexPointer(pointer, i);
+        const auto text = ReadString(value.at(i), item, common::kMaxIpNetworkTextBytes);
+        const auto prefix = common::parse_canonical_ip_network(text);
+        if (!prefix || common::ip_network_never_allowed(*prefix))
+            Fail(item, "must be a canonical unicast IPv4 or IPv6 network with zero host bits");
+        if (std::find(result.begin(), result.end(), *prefix) != result.end())
+            Fail(item, "duplicate prefix");
+        result.push_back(*prefix);
+    }
+    return result;
+}
+
+bool tun_contains(const std::vector<common::IpNetwork>& networks,
+                  const common::IpInterfaceAddress& address) {
+    return std::any_of(networks.begin(), networks.end(), [&](const auto& network) {
+        return common::ip_network_contains(network, address.family,
+            std::span<const std::uint8_t>(address.address).first(
+                common::detail::ip_address_bytes(address.family)));
+    });
+}
+
+TunNetwork parse_tun_network(const Json& value, const std::string& pointer, std::uint16_t mtu) {
+    CheckClosedObject(value, pointer,
+        {"addresses", "routes", "local_networks", "peer_networks", "dns"},
+        {"addresses", "routes", "local_networks", "peer_networks", "dns"});
+    TunNetwork result;
+    result.routes = parse_tun_prefixes(value.at("routes"), JoinPointer(pointer, "routes"), false);
+    result.local_networks = parse_tun_prefixes(value.at("local_networks"), JoinPointer(pointer, "local_networks"), true);
+    result.peer_networks = parse_tun_prefixes(value.at("peer_networks"), JoinPointer(pointer, "peer_networks"), true);
+    for (const auto* networks : {&result.routes, &result.local_networks, &result.peer_networks}) {
+        if (mtu < 1280U && std::any_of(networks->begin(), networks->end(), [](const auto& prefix) {
+                return prefix.family == common::IpFamily::V6;
+            })) Fail(pointer, "IPv6 requires an MTU of at least 1280");
+    }
+    for (std::size_t i = 0; i < result.routes.size(); ++i) {
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto& a = result.routes[i];
+            const auto& b = result.routes[j];
+            const auto& outer = a.prefix_length < b.prefix_length ? a : b;
+            const auto& inner = a.prefix_length < b.prefix_length ? b : a;
+            if (common::ip_network_contains(outer, inner.family,
+                    std::span<const std::uint8_t>(inner.address).first(common::detail::ip_address_bytes(inner.family))))
+                Fail(IndexPointer(JoinPointer(pointer, "routes"), i), "managed routes must not overlap");
+        }
+    }
+    const auto parse_addresses = [&](const Json& list, const std::string& path, bool dns) {
+        if (!list.is_array() || list.size() > 16U || (!dns && list.empty()))
+            Fail(path, "must be an array of " + std::string(dns ? "0" : "1") + " to 16 addresses");
+        std::vector<common::IpInterfaceAddress> parsed;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const auto item = IndexPointer(path, i);
+            const auto text = ReadString(list.at(i), item, common::kMaxIpNetworkTextBytes);
+            if (dns && text.find('/') != std::string::npos) Fail(item, "DNS server must be an address without prefix");
+            const auto address = common::parse_canonical_ip_interface(dns ?
+                text + (text.find(':') == std::string::npos ? "/32" : "/128") : text);
+            if (!address) Fail(item, "must be a canonical IPv4 or IPv6 address" + std::string(dns ? "" : " with prefix"));
+            const auto bytes = std::span<const std::uint8_t>(address->address).first(common::detail::ip_address_bytes(address->family));
+            const auto egress = common::EgressAddress::from_bytes(address->family, bytes);
+            if (!egress || egress->family() != address->family ||
+                common::classify_egress_address(*egress) == common::EgressAddressClass::NeverAllowed ||
+                (address->family == common::IpFamily::V4 && address->address[0] == 127U) ||
+                (address->family == common::IpFamily::V6 &&
+                 common::ip_network_contains(*common::parse_canonical_ip_network("::1/128"), address->family, bytes)))
+                Fail(item, "unspecified, loopback, multicast, mapped and reserved addresses are refused");
+            if (address->family == common::IpFamily::V6 && mtu < 1280U)
+                Fail(item, "IPv6 requires an MTU of at least 1280");
+            if (!tun_contains(dns ? result.peer_networks : result.local_networks, *address))
+                Fail(item, dns ? "DNS server must be within peer_networks" : "interface address must be within local_networks");
+            if (dns && !tun_contains(result.routes, *address)) Fail(item, "DNS server needs a managed route");
+            if (std::any_of(parsed.begin(), parsed.end(), [&](const auto& other) {
+                    return other.family == address->family && other.address == address->address;
+                })) Fail(item, "duplicate address");
+            parsed.push_back(*address);
+        }
+        return parsed;
+    };
+    result.addresses = parse_addresses(value.at("addresses"), JoinPointer(pointer, "addresses"), false);
+    const auto dns_pointer = JoinPointer(pointer, "dns");
+    const auto& dns = value.at("dns");
+    CheckClosedObject(dns, dns_pointer, {"servers", "domains"}, {"servers", "domains"});
+    result.dns_servers = parse_addresses(dns.at("servers"), JoinPointer(dns_pointer, "servers"), true);
+    const auto& domains = dns.at("domains");
+    if (!domains.is_array() || domains.size() > 16U)
+        Fail(JoinPointer(dns_pointer, "domains"), "must be an array of 0 to 16 routing domains");
+    for (std::size_t i = 0; i < domains.size(); ++i) {
+        const auto item = IndexPointer(JoinPointer(dns_pointer, "domains"), i);
+        auto text = ReadString(domains.at(i), item, kMaxHostBytes);
+        if (text != "." && (!IsDnsName(text) || text.back() == '.' ||
+            std::any_of(text.begin(), text.end(), [](char ch) { return ch >= 'A' && ch <= 'Z'; })))
+            Fail(item, "must be a lowercase DNS routing domain or '.'");
+        if (std::find(result.dns_domains.begin(), result.dns_domains.end(), text) != result.dns_domains.end())
+            Fail(item, "duplicate routing domain");
+        result.dns_domains.push_back(std::move(text));
+    }
+    if (result.dns_servers.empty() != result.dns_domains.empty())
+        Fail(dns_pointer, "DNS servers and routing domains must both be empty or both supplied");
+    return result;
+}
+
 std::vector<Adapter> ParseAdapters(const Json& adapters,
                                    Role role,
                                    const std::vector<Service>& services) {
@@ -797,8 +904,8 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
 
         if (kind == AdapterKind::Packet) {
             CheckClosedObject(adapter, pointer,
-                              {"kind", "service", "interface_name", "mtu"},
-                              {"kind", "service", "interface_name", "mtu"});
+                              {"kind", "service", "interface_name", "mtu", "network"},
+                              {"kind", "service", "interface_name", "mtu", "network"});
             const std::string service_pointer = JoinPointer(pointer, "service");
             const std::string service =
                 ParseServiceName(adapter.at("service"), service_pointer);
@@ -811,11 +918,10 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             if (!packet_interfaces.insert(interface_name).second) {
                 Fail(interface_pointer, "duplicate packet interface name");
             }
-            parsed.emplace_back(PacketAdapter(
-                service, interface_name,
-                static_cast<std::uint16_t>(ReadBoundedUnsigned(
-                    adapter.at("mtu"), JoinPointer(pointer, "mtu"), 576,
-                    65535))));
+            const auto mtu = static_cast<std::uint16_t>(ReadBoundedUnsigned(
+                adapter.at("mtu"), JoinPointer(pointer, "mtu"), 576, 65535));
+            parsed.emplace_back(PacketAdapter(service, interface_name, mtu,
+                parse_tun_network(adapter.at("network"), JoinPointer(pointer, "network"), mtu)));
             continue;
         }
 
@@ -960,6 +1066,7 @@ Config ParseJson(std::string_view text) {
     if (text.size() > kMaxDocumentBytes) {
         Fail("", "document exceeds the 1 MiB limit");
     }
+    Json document;
     try {
         struct ParseScope {
             std::string pointer;
@@ -1017,13 +1124,20 @@ Config ParseJson(std::string_view text) {
                 }
                 return true;
             };
-        return Parse(Json::parse(text.begin(), text.end(), structure_guard,
-                                true, false));
+        document = Json::parse(text.begin(), text.end(), structure_guard,
+                               true, false);
     } catch (const ValidationError&) {
         throw;
     } catch (const Json::parse_error& error) {
         Fail("", "invalid JSON syntax at byte " + std::to_string(error.byte));
+    } catch (const Json::out_of_range& error) {
+        // nlohmann reports a syntactically valid but unrepresentable number
+        // as 406 rather than parse_error. Keep untrusted text on the typed
+        // rejection path without hiding errors in the schema parser below.
+        if (error.id != 406) throw;
+        Fail("", "JSON number exceeds the supported range");
     }
+    return Parse(document);
 }
 
 }  // namespace yume::config::v1

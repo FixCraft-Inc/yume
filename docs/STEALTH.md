@@ -1,14 +1,14 @@
 <!-- Generated from docs/src/en_US/pages/stealth.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME stealth transport
 
-This page describes transport profiles and evidence for the default
-transport-v2 runtime.
-The YTP/1 foundation does not yet wire the native TLS 1.3 secure
-channel, HTTP/2 front door or carrier, replay-protected admission, or
-production YTP/1 security provider. See the current
-[implementation status](IMPLEMENTATION_STATUS.md). Descriptions below of live
-carrier behavior apply to the transport-v2 product and remain evidence inputs,
-not claims that the replacement runtime works.
+This page describes transport profiles and evidence for the transport-v2
+reference runtime.
+The development YTP/1 runtimes and schema-1 ABI backend compose native TLS 1.3,
+the HTTP/2 front door and carrier, exporter-bound replay-protected admission,
+and hybrid session security. They reuse the browser TLS profile and H2 state
+machine; their complete-session stealth qualification remains open. See the
+current [implementation status](IMPLEMENTATION_STATUS.md). Descriptions below
+of transport-v2 behavior are comparison inputs, not qualification of YTP/1.
 
 YUME keeps its admitted tunnel inside a TLS 1.3, HTTP/2, and WebSocket
 connection. The same public listener sends ordinary requests to a separate
@@ -200,8 +200,8 @@ uncompromised contributions. It is not correct to say that every key becomes
 useless after a fixed number of milliseconds.
 
 The [transport-v2 wire contract](protocol/YUME_2_0_WIRE.md)
-records the runnable product's record and ratchet formulas. The
-[YTP/1 kernel contract](protocol/YTP_1.md) records the replacement's canonical
+records the reference build's record and ratchet formulas. The
+[YTP/1 kernel contract](protocol/YTP_1.md) records YTP/1's canonical
 encodings, fixed security constants, and exact unfinished cryptographic/runtime
 boundary. The [implementation status](IMPLEMENTATION_STATUS.md) records the
 current release and evidence boundary.

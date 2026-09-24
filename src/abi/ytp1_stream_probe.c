@@ -113,7 +113,7 @@ fail:
     return NULL;
 }
 
-static yume_runtime* make_runtime(const char* base_dir) {
+static yume_runtime* make_runtime(const char* base_dir, const char* resolver) {
     yume_runtime_options options;
     yume_runtime* runtime = NULL;
     yume_status status;
@@ -122,6 +122,8 @@ static yume_runtime* make_runtime(const char* base_dir) {
     options.abi_version = YUME_ABI_VERSION;
     /* Kit credential references are relative to each role's directory. */
     options.config_base_dir = base_dir;
+    /* The kit's client dials its server by name. */
+    options.resolver_program = resolver;
     status = yume_runtime_create(&options, &runtime);
     if (status != YUME_STATUS_OK) {
         report("yume_runtime_create", status, NULL);
@@ -483,10 +485,10 @@ int main(int argc, char** argv) {
     atomic_init(&pairing.entered, 0);
     atomic_init(&blocked.entered, 0);
 
-    if (argc != 5) {
+    if (argc != 6) {
         fprintf(stderr,
                 "usage: %s SERVER_DIR CLIENT_DIR CLIENT_FINGERPRINT "
-                "SERVER_FINGERPRINT\n",
+                "SERVER_FINGERPRINT RESOLVER_PROGRAM\n",
                 argv[0]);
         return 2;
     }
@@ -500,8 +502,24 @@ int main(int argc, char** argv) {
     client_fingerprint = argv[3];
     server_fingerprint = argv[4];
 
-    server_runtime = make_runtime(argv[1]);
-    client_runtime = make_runtime(argv[2]);
+    /* Without a resolver program a client that dials a name fails closed at
+     * start. It never falls back to an in-process system lookup. */
+    client_runtime = make_runtime(argv[2], NULL);
+    if (client_runtime == NULL) goto cleanup;
+    client = make_endpoint(client_runtime, client_path, YUME_ROLE_CLIENT);
+    if (client == NULL) goto cleanup;
+    status = yume_endpoint_start(client, 5000u);
+    if (status == YUME_STATUS_OK) {
+        fprintf(stderr, "client without a resolver program started\n");
+        goto cleanup;
+    }
+    yume_endpoint_destroy(client);
+    client = NULL;
+    yume_runtime_destroy(client_runtime);
+    client_runtime = NULL;
+
+    server_runtime = make_runtime(argv[1], NULL);
+    client_runtime = make_runtime(argv[2], argv[5]);
     if (server_runtime == NULL || client_runtime == NULL) goto cleanup;
     server = make_endpoint(server_runtime, server_path, YUME_ROLE_SERVER);
     client = make_endpoint(client_runtime, client_path, YUME_ROLE_CLIENT);
@@ -605,7 +623,7 @@ int main(int argc, char** argv) {
                            client) ||
             !expect_status(
                 yume_endpoint_open_stream(client, &routed, 20000u, &stream),
-                YUME_STATUS_UNSUPPORTED, "destination-routed OPEN", client) ||
+                YUME_STATUS_PERMISSION_DENIED, "named service refuses destination-routed OPEN", client) ||
             !expect_status(open_named(client, kUndeclared, 20000u, &stream),
                            YUME_STATUS_NOT_FOUND, "undeclared service OPEN",
                            client) ||

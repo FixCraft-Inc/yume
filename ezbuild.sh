@@ -1225,6 +1225,7 @@ install_deps_linux() {
             libssl-dev \
             libboost-all-dev \
             libboost-system-dev \
+            libsystemd-dev \
             libboost-thread-dev \
             nlohmann-json3-dev \
             libspdlog-dev \
@@ -1325,6 +1326,7 @@ install_deps_linux() {
             zstd \
             argon2 \
             libnghttp2 \
+            systemd \
             liboqs \
             libarchive \
             xz
@@ -1363,6 +1365,7 @@ install_deps_linux() {
             libzstd-devel \
             argon2-devel \
             libnghttp2-devel \
+            systemd-devel \
             liboqs-devel \
             libarchive-devel \
             xz-devel
@@ -1403,6 +1406,7 @@ install_deps_linux() {
             libzstd-devel \
             libargon2-devel \
             libnghttp2-devel \
+            systemd-devel \
             liboqs-devel \
             libarchive-devel \
             xz-devel
@@ -1534,14 +1538,20 @@ build_project() {
             exit 1
         fi
     fi
-    step "Cleaning previous build..."
-    rm -rf "${build_dir}"
+    # Keep prior objects/evidence intact. A dedicated directory also prevents
+    # old cached provider switches from silently selecting another runtime.
+    if [[ -f "${build_dir}/CMakeCache.txt" ]] &&
+       ! grep -q '^YUME_BUILD_NATIVE_APPLICATION:BOOL=ON$' "${build_dir}/CMakeCache.txt"; then
+        error "Existing build predates native integration; select a fresh YUME_BUILD_DIR."
+        exit 1
+    fi
     mkdir -p "${build_dir}"
     step "Configuring build..."
     cmake -B "${build_dir}" "${CMAKE_ARGS[@]}"
     step "Compiling..."
     local jobs
-    jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
+    jobs="${YUME_BUILD_JOBS:-2}"
+    [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { error "YUME_BUILD_JOBS must be positive"; exit 1; }
     if [[ ${SELFTEST_ONLY:-0} -eq 1 ]]; then
         cmake --build "${build_dir}" \
             --target yume yumed yume-selftest yume-basefwx-bench yume-relay-bench \
@@ -1705,6 +1715,12 @@ main() {
 
     info "YUME ezbuild starting..."
 
+    if [[ $BUILD_GUI -eq 1 || $BUILD_SELFTEST -eq 1 || $BUILD_TOOLS -eq 1 ]]; then
+        error "GUI, v2 benchmark and topology tools still need native integration. Use an explicit uninstalled CMake reference build for their development tests."
+        exit 1
+    fi
+    CMAKE_ARGS+=( -DYUME_BUILD_NATIVE_APPLICATION=ON -DYUME_BUILD_TRANSPORT_V2=OFF -DYUME_USE_BASEFWX=OFF )
+
     maybe_sync_repo
 
     if [[ "${YUME_USE_VENDOR}" == "1" ]]; then
@@ -1732,11 +1748,11 @@ main() {
             error "--dev cannot be combined with minimal/OpenWRT/BusyBox production builds."
             exit 1
         fi
-        warn "Minimal mode: enabling static build and BaseFWX."
+        warn "Minimal mode: enabling the static native application."
         CMAKE_ARGS+=(
             -DYUME_MINIMAL=ON
             -DYUME_STATIC=ON
-            -DYUME_USE_BASEFWX=ON
+            -DYUME_USE_BASEFWX=OFF
             -DYUME_USE_SPDLOG=OFF
             -DCMAKE_BUILD_TYPE=Release
         )
@@ -2189,239 +2205,8 @@ EOF
         fi
     fi
 
-    ensure_basefwx
-    prepare_basefwx_build_cache
-    if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
-        if [[ $OPENWRT -eq 1 && -d "${YUME_VENDOR_ROOT}/openwrt-mips" ]] && vendor_access_enabled; then
-            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${YUME_VENDOR_ROOT}/openwrt-mips")
-        elif [[ $BUSYBOX -eq 1 && -n "${TARGET_ARCH}" ]]; then
-            local busybox_prefix=""
-            busybox_prefix="$(busybox_vendor_dir || true)"
-            if [[ -n "${busybox_prefix}" ]]; then
-                CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${busybox_prefix}")
-            fi
-        fi
-        if detect_liboqs_target; then
-            info "liboqs detected; enabling PQ in BaseFWX."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
-            IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_sysroot_paths)
-            if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
-                CMAKE_ARGS+=(
-                    "-DOQS_INCLUDE_DIR=${_oqs_inc}"
-                    "-DOQS_LIBRARY=${_oqs_lib}"
-                    "-DOQS_INCLUDE_DIRS=${_oqs_inc}"
-                    "-DOQS_LIBRARIES=${_oqs_lib}"
-                    "-DOQS_FOUND=TRUE"
-                )
-                if [[ -n "${_oqs_lib}" && "${_oqs_lib}" == *.a ]]; then
-                    CMAKE_ARGS+=("-DOQS_LIBRARY_STATIC=${_oqs_lib}")
-                fi
-            fi
-            # Static-link selection. Old code only checked OPENWRT_USR
-            # so this branch tripped over `unbound variable` for the
-            # BUSYBOX vendor path now that detect_liboqs_target returns
-            # success there too. Probe both, with the resolved .a from
-            # resolve_oqs_sysroot_paths as the canonical source of truth.
-            _oqs_static_path=""
-            if [[ -n "${OPENWRT_USR:-}" && -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
-                _oqs_static_path="${OPENWRT_USR}/lib/liboqs.a"
-            elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
-                local busybox_static_prefix=""
-                busybox_static_prefix="$(busybox_vendor_dir || true)"
-                if [[ -n "${busybox_static_prefix}" && -f "${busybox_static_prefix}/lib/liboqs.a" ]]; then
-                    _oqs_static_path="${busybox_static_prefix}/lib/liboqs.a"
-                fi
-            fi
-            if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -n "${_oqs_static_path}" ]]; then
-                if [[ -n "${_oqs_static_path}" ]]; then
-                    info "Using static liboqs."
-                    CMAKE_ARGS+=("-DBASEFWX_OQS_STATIC=ON")
-                else
-                    warn "YUME_OQS_STATIC=1 set but no static liboqs.a found; falling back to shared."
-                fi
-            fi
-        else
-            warn "liboqs not detected for this target; PQ will be disabled."
-            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Provide a sysroot/vendor liboqs or unset YUME_REQUIRE_OQS."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
-        fi
-        if detect_argon2; then
-            IFS='|' read -r _argon2_inc _argon2_lib < <(resolve_argon2_sysroot_paths)
-            if [[ -n "${_argon2_inc}" && -n "${_argon2_lib}" ]]; then
-                info "OpenWRT libargon2 detected in sysroot; enabling Argon2 in BaseFWX."
-                CMAKE_ARGS+=(
-                    "-DBASEFWX_REQUIRE_ARGON2=ON"
-                    "-DARGON2_INCLUDE_DIR=${_argon2_inc}"
-                    "-DARGON2_LIBRARY=${_argon2_lib}"
-                    "-DARGON2_INCLUDE_DIRS=${_argon2_inc}"
-                    "-DARGON2_LIBRARIES=${_argon2_lib}"
-                    "-DARGON2_FOUND=TRUE"
-                )
-            else
-                warn "OpenWRT libargon2 headers found but library missing; disabling Argon2."
-                require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Provide a sysroot/vendor libargon2 or unset YUME_REQUIRE_ARGON2."
-                CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
-            fi
-        else
-            warn "OpenWRT libargon2 not detected in sysroot; heavy KDF will fall back to HKDF."
-            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Provide a sysroot/vendor libargon2 or unset YUME_REQUIRE_ARGON2."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
-        fi
-    elif [[ "${WINDOWS_CROSS}" == "1" ]]; then
-        if [[ -f "${VCPKG_PREFIX}/include/oqs/oqs.h" ]]; then
-            info "Windows cross: liboqs detected in dependency prefix; enabling PQ in BaseFWX."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
-        else
-            warn "Windows cross: liboqs not detected in dependency prefix; PQ will be disabled."
-            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Ensure the Windows dependency prefix provides liboqs."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
-        fi
-        if [[ -f "${VCPKG_PREFIX}/include/argon2.h" ]]; then
-            info "Windows cross: libargon2 detected in dependency prefix; enabling Argon2 in BaseFWX."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
-        else
-            warn "Windows cross: libargon2 not detected in dependency prefix; heavy KDF will fall back to HKDF."
-            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Ensure the Windows dependency prefix provides argon2."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
-        fi
-    elif [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
-        CMAKE_ARGS+=("-DYUME_FORCE_CROSS=ON")
-        # Disable LTO and native optimization for macOS cross-compilation to prevent LLVM bitcode
-        CMAKE_ARGS+=("-DBASEFWX_NATIVE_OPT=OFF" "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF" "-DBUILD_SHARED_LIBS=ON")
-        # Disable tests for macOS cross builds (linking issues with bitcode objects)
-        CMAKE_ARGS+=("-DBUILD_TESTING=OFF" "-DYUME_BUILD_TESTING=OFF")
-        local macos_vendor_prefix=""
-        macos_vendor_prefix="$(macos_vendor_dir || true)"
-        if [[ -n "${macos_vendor_prefix}" ]]; then
-            info "macOS cross: using vendored dependency prefix at ${macos_vendor_prefix}"
-            CMAKE_ARGS+=(
-                "-DBASEFWX_VENDOR_DIR=${macos_vendor_prefix}"
-                "-DCMAKE_PREFIX_PATH=${macos_vendor_prefix}"
-                "-DOPENSSL_ROOT_DIR=${macos_vendor_prefix}"
-                "-DBoost_DIR=${macos_vendor_prefix}/share/boost"
-                "-DZSTD_DIR=${macos_vendor_prefix}/share/zstd"
-            )
-            if [[ -d "${macos_vendor_prefix}/share/spdlog" ]]; then
-                CMAKE_ARGS+=("-Dspdlog_DIR=${macos_vendor_prefix}/share/spdlog")
-            fi
-            if [[ -d "${macos_vendor_prefix}/share/fmt" ]]; then
-                CMAKE_ARGS+=("-Dfmt_DIR=${macos_vendor_prefix}/share/fmt")
-            fi
-        fi
-    else
-        local host_vendor_dir=""
-        host_vendor_dir="$(vendor_dir_for_build)"
-        if [[ -n "${host_vendor_dir}" ]]; then
-            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${host_vendor_dir}")
-            # An explicit --use-vendor selection, or fullau's isolated
-            # source-built staging tree, is the dependency source the caller
-            # asked us to use. Do not silently replace either with unrelated
-            # system libraries just because pkg-config can see them.
-            if ! append_selected_vendor_crypto_args; then
-                error "Selected vendor crypto dependencies are incomplete."
-                exit 1
-            fi
-        fi
-        if [[ -z "${host_vendor_dir}" && -n "${YUME_OQS_STATIC:-}" ]] &&
-           [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a &&
-              ! -f /usr/local/lib/liboqs.a ]]; then
-            local oqs_vendor_dir=""
-            oqs_vendor_dir="$(vendor_dir_for_build)"
-            if vendor_has_liboqs "${oqs_vendor_dir}"; then
-                info "Vendored liboqs detected; skipping source build."
-            elif [[ -n "${YUME_VENDOR_ONLY:-}" ]]; then
-                warn "YUME_VENDOR_ONLY=1 set; skipping liboqs source build."
-            else
-                warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs (static) from source."
-                build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
-            fi
-        fi
-        if [[ -n "${host_vendor_dir}" ]]; then
-            :
-        elif detect_liboqs; then
-            info "liboqs detected; enabling PQ in BaseFWX."
-            CMAKE_ARGS+=(
-                "-DBASEFWX_REQUIRE_OQS=ON"
-                "-DBASEFWX_USE_VENDOR_OQS=OFF"
-            )
-            IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_host_paths)
-            if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
-                CMAKE_ARGS+=(
-                    "-DOQS_INCLUDE_DIR=${_oqs_inc}"
-                    "-DOQS_LIBRARY=${_oqs_lib}"
-                    "-DOQS_INCLUDE_DIRS=${_oqs_inc}"
-                    "-DOQS_LIBRARIES=${_oqs_lib}"
-                    "-DOQS_FOUND=TRUE"
-                )
-                if [[ -n "${_oqs_lib}" && "${_oqs_lib}" == *.a ]]; then
-                    CMAKE_ARGS+=("-DOQS_LIBRARY_STATIC=${_oqs_lib}")
-                fi
-            fi
-            if [[ -n "${YUME_OQS_STATIC:-}" ]]; then
-                if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then
-                    info "Using static liboqs."
-                    CMAKE_ARGS+=("-DBASEFWX_OQS_STATIC=ON")
-                else
-                    warn "YUME_OQS_STATIC=1 set but liboqs.a not found; falling back to shared."
-                fi
-            fi
-        else
-            # System liboqs is missing. Try the explicitly selected vendor
-            # root before giving up; the access gate prevents a default build
-            # from seeing arbitrary ignored repository residue.
-            ensure_vendor_for_host "$(host_default_vendor_key)" || true
-            IFS='|' read -r _vendor_oqs_inc _vendor_oqs_lib < <(resolve_vendor_oqs_paths)
-            if [[ -n "${_vendor_oqs_inc}" && -n "${_vendor_oqs_lib}" ]]; then
-                info "liboqs not on the system; using vendor copy at ${_vendor_oqs_lib}."
-                CMAKE_ARGS+=(
-                    "-DBASEFWX_REQUIRE_OQS=ON"
-                    "-DOQS_INCLUDE_DIR=${_vendor_oqs_inc}"
-                    "-DOQS_LIBRARY=${_vendor_oqs_lib}"
-                    "-DOQS_INCLUDE_DIRS=${_vendor_oqs_inc}"
-                    "-DOQS_LIBRARIES=${_vendor_oqs_lib}"
-                    "-DOQS_FOUND=TRUE"
-                )
-                if [[ "${_vendor_oqs_lib}" == *.a ]]; then
-                    CMAKE_ARGS+=(
-                        "-DOQS_LIBRARY_STATIC=${_vendor_oqs_lib}"
-                        "-DBASEFWX_OQS_STATIC=ON"
-                    )
-                fi
-            else
-                warn "liboqs not detected; PQ will be disabled unless you install it."
-                require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Install liboqs or stage it in vendor/ before building."
-                CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
-            fi
-        fi
-        if [[ -n "${host_vendor_dir}" ]]; then
-            :
-        elif detect_argon2; then
-            info "libargon2 detected; enabling Argon2 in BaseFWX."
-            CMAKE_ARGS+=(
-                "-DBASEFWX_REQUIRE_ARGON2=ON"
-                "-DBASEFWX_USE_VENDOR_ARGON2=OFF"
-            )
-        else
-            # Same selected-root fallback as liboqs above.
-            ensure_vendor_for_host "$(host_default_vendor_key)" || true
-            IFS='|' read -r _vendor_argon2_inc _vendor_argon2_lib < <(resolve_vendor_argon2_paths)
-            if [[ -n "${_vendor_argon2_inc}" && -n "${_vendor_argon2_lib}" ]]; then
-                info "libargon2 not on the system; using vendor copy at ${_vendor_argon2_lib}."
-                CMAKE_ARGS+=(
-                    "-DBASEFWX_REQUIRE_ARGON2=ON"
-                    "-DARGON2_INCLUDE_DIR=${_vendor_argon2_inc}"
-                    "-DARGON2_LIBRARY=${_vendor_argon2_lib}"
-                    "-DARGON2_INCLUDE_DIRS=${_vendor_argon2_inc}"
-                    "-DARGON2_LIBRARIES=${_vendor_argon2_lib}"
-                    "-DARGON2_FOUND=TRUE"
-                )
-            else
-                warn "libargon2 not detected; heavy KDF will fall back to HKDF."
-                require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Install libargon2 or stage it in vendor/ before building."
-                CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
-            fi
-        fi
-    fi
+    # BaseFWX/liboqs/Argon2 belong to the explicit v2 reference graph.
+    # Native session crypto uses the pinned OpenSSL provider prepared above.
     build_project
     if [[ $BUILD_DEB -eq 1 ]]; then
         package_deb
@@ -2434,12 +2219,12 @@ EOF
     esac
     info "Done."
     local build_dir="${YUME_BUILD_DIR:-build}"
-    echo -e "${COLOR_GREEN}Runtime:${COLOR_RESET} YUME 0.3 development product using the current transport-v2 wire"
+    echo -e "${COLOR_GREEN}Runtime:${COLOR_RESET} YUME development product using native YTP/1 (schema 1)"
     echo -e "${COLOR_GREEN}Server:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix}"
     echo -e "${COLOR_GREEN}Client:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix}"
-    echo -e "${COLOR_GREEN}Ready test kit:${COLOR_RESET} python3 tools/yume_setup_transport_v2.py init --output \"\$HOME/yume-test-kit\" --host SERVER_IP --tls-name SERVER_NAME --client-name phone"
-    echo "The generated server/start-yumed and clients/phone/start-socks launchers use ./${build_dir}/bin automatically."
-    echo "YTP/1, schema 1, and the role-neutral ABI remain experimental foundations and are not the runtime built above."
+    echo -e "${COLOR_GREEN}Ready test kit:${COLOR_RESET} python3 tools/yume_setup.py init --output \"\$HOME/yume-test-kit\" --host SERVER_IP --client-name phone"
+    echo "Set YUMED_BIN and YUME_BIN to the absolute paths above when using the generated launchers."
+    echo "Native application integration remains experimental; see docs/IMPLEMENTATION_STATUS.md for capability blockers."
     if [[ $BUILD_SELFTEST -eq 1 ]]; then
         echo -e "${COLOR_GREEN}Benchmark smoke:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --quick-bench"
         echo -e "${COLOR_GREEN}Full benchmark:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --full-bench"

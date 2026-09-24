@@ -16,6 +16,8 @@ headers have to stay current, which is the same comparison the CI gate runs.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -124,6 +126,10 @@ class Grammar(Harness):
     def test_an_unknown_header_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(CliError, "unknown header key"):
             self.write(layout=LAYOUT.replace("namespace: yume::sample", "colour:    red"))
+
+    def test_an_unknown_output_kind_is_rejected(self) -> None:
+        with self.assertRaisesRegex(CliError, "output-kind must be"):
+            self.write(layout=LAYOUT.replace("---", "output-kind: arbitrary\n---"))
 
     def test_a_missing_header_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(CliError, "the header has no"):
@@ -302,14 +308,66 @@ class Interpolation(Harness):
                       yume_cli.render_header(layout, ordered, completed))
 
 
+class StaticHelp(Harness):
+    def layout(self, manual: str = MANUAL) -> yume_cli.Layout:
+        return self.write(manual=manual, layout=LAYOUT.replace("---", "output-kind: static-help\n---"))
+
+    def test_static_help_is_an_include_free_literal(self) -> None:
+        layout = self.layout()
+        text = yume_cli.build(layout)
+        self.assertIn("inline constexpr char kHelpBody[] =", text)
+        self.assertNotIn("#include", text)
+        self.assertNotIn("write_bash_completion", text)
+
+    def test_static_help_escapes_quotes_and_backslashes(self) -> None:
+        layout = self.layout(MANUAL.replace("fast or slow", 'read "C:\\sample"'))
+        text = yume_cli.build(layout)
+        self.assertIn(r'read \"C:\\sample\"\n"', text)
+
+    def test_static_help_rejects_runtime_interpolation(self) -> None:
+        for value in ("reverse-port-min", "absent"):
+            with self.subTest(value=value):
+                layout = self.layout(MANUAL.replace("fast or slow", "{{" + value + "}}"))
+                with self.assertRaisesRegex(CliError, "static-help cannot interpolate"):
+                    yume_cli.build(layout)
+
+
 class Tracked(unittest.TestCase):
     """The real sources, and the headers a clone builds from."""
 
     def setUp(self) -> None:
         self.layouts = yume_cli.load_layouts()
 
-    def test_both_binaries_have_a_layout(self) -> None:
-        self.assertEqual(sorted(item.binary for item in self.layouts), ["yume", "yumed"])
+    def test_native_and_reference_binaries_have_separate_layouts(self) -> None:
+        self.assertEqual(sorted(item.binary for item in self.layouts),
+                         ["yume", "yume-v2-reference", "yumed", "yumed-v2-reference"])
+
+    def test_native_help_has_exactly_the_parser_options(self) -> None:
+        for layout in self.layouts:
+            if layout.binary not in ("yume", "yumed"):
+                continue
+            with self.subTest(binary=layout.binary):
+                ordered, _ = yume_cli.resolve(layout)
+                self.assertEqual({flag for entry in ordered for flag in entry.flags},
+                                 {"--config", "--validate", "--version", "--help", "-h"})
+                self.assertEqual(layout.output_kind, "static-help")
+
+    @unittest.skipUnless(shutil.which("bash"), "Bash is unavailable")
+    def test_reference_completion_registers_only_its_binary(self) -> None:
+        for layout in self.layouts:
+            if not layout.binary.endswith("-v2-reference"):
+                continue
+            with self.subTest(binary=layout.binary):
+                _, completed = yume_cli.resolve(layout)
+                script = "\n".join(yume_cli.render_completion(layout, completed))
+                result = subprocess.run(
+                    ["bash", "--noprofile", "--norc"],
+                    input=script + "\ncomplete -p\n", text=True, capture_output=True,
+                    check=False, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(),
+                                 f"complete -F _{layout.binary}_complete {layout.binary}")
 
     def test_every_generated_header_is_current(self) -> None:
         # The same comparison `scripts/yume_cli.py check` runs in CI.

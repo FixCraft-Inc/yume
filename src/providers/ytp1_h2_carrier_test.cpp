@@ -4,6 +4,9 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
+#define YUME_TEST_ALIGNED_ALLOCATIONS 1
+#include "test_support/allocation_failure.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -64,69 +67,12 @@ bool consume() noexcept {
 
 }  // namespace test_allocation_failure
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-
-void* operator new(std::size_t size) {
-    if (test_allocation_failure::consume()) {
-        throw std::bad_alloc();
-    }
-    if (void* allocation = std::malloc(size == 0U ? 1U : size)) {
-        return allocation;
-    }
-    throw std::bad_alloc();
+namespace {
+void check_test_allocation(std::size_t) {
+    if (test_allocation_failure::consume()) throw std::bad_alloc();
+}
 }
 
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* allocation) noexcept { std::free(allocation); }
-void operator delete[](void* allocation) noexcept { ::operator delete(allocation); }
-void operator delete(void* allocation, std::size_t) noexcept {
-    ::operator delete(allocation);
-}
-void operator delete[](void* allocation, std::size_t) noexcept {
-    ::operator delete[](allocation);
-}
-
-// Asio's aligned allocation path can bypass operator new. Interpose it as
-// well, so a passing cleanup test cannot accidentally depend on that escape.
-extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
-    if (test_allocation_failure::consume()) {
-        errno = ENOMEM;
-        return nullptr;
-    }
-    void* allocation = nullptr;
-    const int error = ::posix_memalign(&allocation, alignment, size == 0U ? 1U : size);
-    if (error != 0) errno = error;
-    return allocation;
-}
-
-void* operator new(std::size_t size, std::align_val_t alignment) {
-    if (void* allocation = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) {
-        return allocation;
-    }
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-    return ::operator new(size, alignment);
-}
-void operator delete(void* allocation, std::align_val_t) noexcept {
-    std::free(allocation);
-}
-void operator delete[](void* allocation, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-void operator delete(void* allocation, std::size_t, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-void operator delete[](void* allocation, std::size_t, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
 namespace yume::providers {
 namespace {
@@ -1302,6 +1248,8 @@ void test_read_failure_settles_both_callbacks_under_allocation_failure() {
 }  // namespace yume::providers
 
 int main() {
+    yume::test::before_allocate_on_any_thread.store(check_test_allocation);
+
     try {
         yume::providers::test_client_creation_allocation_failures_settle_once();
         yume::providers::test_receive_allocation_failures_settle_once();

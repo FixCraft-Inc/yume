@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * yumed help, version, credits, and bash-completion output. The option text
- * itself is generated from the yumed(8) manual source, so this file owns
+ * itself is generated from the yumed-v2-reference(8) manual source, so this file owns
  * presentation and control flow rather than a second list of every option.
  */
 

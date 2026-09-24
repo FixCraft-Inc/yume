@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,6 +55,7 @@ enum class BackendIo {
     NotFound,
     PermissionDenied,
     ResourceExhausted,
+    BufferTooSmall,
     AlreadyRunning,
     // The configuration requests something this backend does not compose.
     Unsupported,
@@ -73,6 +76,20 @@ enum class BackendServiceKind {
 struct BackendService {
     std::string name;
     BackendServiceKind kind{BackendServiceKind::ByteStream};
+};
+
+enum class BackendAddressKind {
+    Hostname,
+    Ipv4,
+    Ipv6,
+};
+
+// The ABI validates the address spelling before handing an owned destination
+// to a backend. Hostnames are resolved and authorized by the remote endpoint.
+struct BackendDestination {
+    BackendAddressKind kind;
+    std::string host;
+    std::uint16_t port;
 };
 
 struct BackendPeerIdentity {
@@ -114,6 +131,37 @@ public:
     virtual BackendPeerIdentity peer_identity() const = 0;
 };
 
+inline constexpr std::size_t kMaxPacketBatch = 256U;
+inline constexpr std::size_t kMaxPacketBytes = 65535U;
+inline constexpr std::size_t kMaxPacketBatchBytes = 16U * 1024U * 1024U;
+
+struct BackendPacketView {
+    const void* data;
+    std::size_t size;
+};
+
+struct BackendPacketSlot {
+    std::size_t offset;
+    std::size_t size;
+};
+
+class BackendPacket {
+public:
+    virtual ~BackendPacket() = default;
+    // One reader and one writer may run concurrently. Writes copy and admit
+    // the whole batch or none. Received packets retain credit until copied;
+    // BufferTooSmall leaves the first packet queued and reports its size.
+    virtual BackendIo write(std::span<const BackendPacketView> packets,
+                            std::uint32_t timeout_ms, std::string& error) = 0;
+    virtual BackendIo read(void* storage, std::size_t storage_size,
+                           std::span<BackendPacketSlot> slots,
+                           std::uint32_t timeout_ms, std::size_t& packets_read,
+                           std::size_t& required_storage, std::string& error) = 0;
+    virtual void publish() noexcept = 0;
+    virtual void close() noexcept = 0;
+    virtual BackendPeerIdentity peer_identity() const = 0;
+};
+
 using SocketProtector = std::function<bool(std::intptr_t)>;
 
 class EndpointBackend {
@@ -138,6 +186,7 @@ public:
     // Client roles open, server roles accept. A backend that cannot perform
     // the direction asked of it returns Invalid rather than blocking.
     virtual BackendIo open_stream(const std::string& service,
+                                  const std::optional<BackendDestination>& destination,
                                   std::uint32_t timeout_ms,
                                   std::unique_ptr<BackendStream>& out,
                                   std::string& error) = 0;
@@ -145,6 +194,16 @@ public:
     virtual BackendIo accept_stream(const std::string& service,
                                     std::uint32_t timeout_ms,
                                     std::unique_ptr<BackendStream>& out,
+                                    std::string& error) = 0;
+
+    virtual BackendIo open_packet(const std::string& service,
+                                  const std::optional<BackendDestination>& destination,
+                                  std::uint32_t timeout_ms,
+                                  std::unique_ptr<BackendPacket>& out,
+                                  std::string& error) = 0;
+    virtual BackendIo accept_packet(const std::string& service,
+                                    std::uint32_t timeout_ms,
+                                    std::unique_ptr<BackendPacket>& out,
                                     std::string& error) = 0;
 };
 
@@ -193,11 +252,14 @@ std::unique_ptr<EndpointBackend> make_transport_v2_backend(
 // Creates an unstarted YTP/1 backend for a parsed schema-1 configuration.
 // Only a server registers services, and each registration must name a
 // service the configuration declares. Relative credential references resolve
-// against `base_dir`. A build without the native provider graph returns
-// nullptr with `outcome` set to Unsupported.
+// against `base_dir`. `resolver_program` is the SystemResolver helper for a
+// transport host that is a name, and empty leaves such a host unresolvable.
+// A build without the native provider graph returns nullptr with `outcome`
+// set to Unsupported.
 std::unique_ptr<EndpointBackend> make_ytp1_backend(
     const config::v1::Config& config,
     std::string_view base_dir,
+    std::string_view resolver_program,
     std::vector<BackendService> registered_services,
     SocketProtector socket_protector,
     BackendIo& outcome,

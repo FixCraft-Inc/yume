@@ -19,7 +19,6 @@ together.
 | --- | --- |
 | Admission | The keyed, replay-protected check a tunnel request passes before YUME authentication starts. Failures stay on the cover path. |
 | AEAD | Authenticated encryption with associated data: encryption that also detects tampering. YUME uses AES-256-GCM. |
-| AUTH v2 | Transport v2's authentication and key establishment: composite identity, hybrid key exchange, then a directional ratchet. |
 | ClientHello | The first TLS message. Its exact structure reveals which software sent it. |
 | Cover site | The ordinary website a visitor without admission sees. YUME has no built-in cover page, so the operator configures one. |
 | Epoch | A span of message keys from one root. Rekeying starts the next epoch with fresh key material. |
@@ -33,8 +32,8 @@ together.
 | PSK | Pre-shared key: a secret both sides hold before they connect. |
 | Ratchet | Keys that only move forward. Each one is derived, used, and erased. |
 | SNI | The site name a client sends at the start of TLS. Observers can read it. |
-| Transport v2 | The protocol the current client and daemon use. |
-| YTP/1 | YUME Transport Protocol 1, the unfinished replacement for transport v2. |
+| Transport v2 | The previous protocol, kept in the uninstalled reference programs while its remaining features move to YTP/1. |
+| YTP/1 | YUME Transport Protocol 1, which `yume` and `yumed` speak. |
 @end
 
 ## Programs and runtime
@@ -44,8 +43,8 @@ together.
 | --- | --- |
 | `yume`, `yumed` | The client and the server daemon. |
 | Asio | The C++ library that runs YUME's event loop. Code starts an operation and is called back when it completes. |
+| Execution context | The single event loop that runs one endpoint's network I/O and callbacks in order. |
 | SOCKS5 | A small local proxy protocol that many applications already support. |
-| Strand | An Asio lane that runs one session's handlers in order, even with several threads. |
 | Stream | One application connection inside a tunnel, identified by its stream number. |
 | TUN | A virtual network interface through which a device's packets can be routed. |
 @end

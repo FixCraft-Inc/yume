@@ -15,12 +15,14 @@ man-manual:  YUME Manual
 
 ## DESCRIPTION
 
-**yume-gui** is an optional Dear ImGui desktop application. It embeds the same
-facade sessions used by automation and tests: a man:yumed(8) server controller
-and a linked, in-process man:yume(1) client runtime.
+**yume-gui** is an optional Dear ImGui desktop application in the explicit
+transport-v2 reference build. It embeds the same facade sessions used by
+automation and tests: a man:yumed-v2-reference(8) server controller and a linked,
+in-process man:yume-v2-reference(1) client runtime.
 
 The GUI does not reimplement the transport stack. JSON profiles written here are
-compatible with the CLI binaries.
+compatible with the transport-v2 reference CLI binaries. Native YTP/1 and
+schema-1 configuration integration remain unfinished.
 
 ## WORKSPACES
 
@@ -28,9 +30,9 @@ The sidebar switches between two workspaces:
 
 @options
 @opt **Client**
-Connect, security, logs, settings, and credits for the man:yume(1) runtime.
+Connect, security, logs, settings, and credits for the man:yume-v2-reference(1) runtime.
 @opt **Server**
-Server control, authorized keys, logs, settings, and credits for man:yumed(8).
+Server control, authorized keys, logs, settings, and credits for man:yumed-v2-reference(8).
 @end
 
 ## PAGES
@@ -109,14 +111,12 @@ directly.
 
 ## BUILD
 
-The GUI is optional:
+Build the GUI in a separate CMake reference tree with
+**YUME_BUILD_TRANSPORT_V2=ON**, **YUME_BUILD_NATIVE_APPLICATION=OFF** and
+**YUME_BUILD_GUI=ON**. The reference graph remains uninstalled. See
+**CONTRIBUTING.md** for dependency setup.
 
-@code bash
-./ezbuild.sh --gui
-@end
-
-Requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake. Debian packaging skips
-the GUI when **DEB_BUILD_PROFILES** contains **nogui**.
+The GUI requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake.
 
 ## FILES
 
@@ -136,7 +136,7 @@ Default key generation directory.
 
 ## SEE ALSO
 
-man:yume(1), man:yumed(8), **docs/ARCHITECTURE.md**
+man:yume-v2-reference(1), man:yumed-v2-reference(8), **docs/ARCHITECTURE.md**
 
 ## AUTHOR
 

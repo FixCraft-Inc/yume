@@ -2,10 +2,10 @@
 name:     leak_tight
 kind:     page
 title:    Preventing SOCKS bypass
-summary:  Browser proxy settings, route checks, and the operating-system kill-switch boundary for the runnable tunnel.
+summary:  Browser proxy settings, route checks, and what a SOCKS proxy cannot enforce.
 markdown: docs/LEAK_TIGHT.md
 web:      yes
-catalog-title: Transport-v2 SOCKS bypass prevention
+catalog-title: Preventing SOCKS bypass
 catalog-group: Operating
 catalog-home: Operating
 catalog-order: 90
@@ -28,7 +28,7 @@ through the SOCKS proxy:
 @code bash
 chromium \
   --user-data-dir=/tmp/chromium-yume-profile \
-  --proxy-server="socks5://127.0.0.1:1088" \
+  --proxy-server="socks5://127.0.0.1:1080" \
   --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" \
   --disable-quic \
   --webrtc-ip-handling-policy=disable_non_proxied_udp \
@@ -49,7 +49,7 @@ deployment. The relevant preferences include:
 @code text
 network.proxy.type = 1
 network.proxy.socks = 127.0.0.1
-network.proxy.socks_port = 1088
+network.proxy.socks_port = 1080
 network.proxy.socks_version = 5
 network.proxy.socks_remote_dns = true
 network.http.http3.enabled = false
@@ -69,7 +69,7 @@ First confirm that a request explicitly sent through SOCKS exits from the YUME
 server's address:
 
 @code bash
-curl --socks5-hostname 127.0.0.1:1088 https://ipinfo.io/ip
+curl --socks5-hostname 127.0.0.1:1080 https://ipinfo.io/ip
 @end
 
 Then observe the client host while loading pages. Replace the example server
@@ -99,9 +99,10 @@ recovery paths differ. Resolve those inputs first, apply the rules through a
 recoverable console, and test that stopping YUME blocks the protected workload
 without locking out administration.
 
-YUME does not currently publish a qualified full-system routing or kill-switch
-configuration. The packet and TUN paths are separate features with their own
-platform and release gates.
+On Linux, a client `packet` adapter routes the whole device through a managed
+TUN instead of relying on applications to use SOCKS. It is not yet qualified as
+a kill switch, and YUME publishes no qualified full-system firewall
+configuration.
 
 ## Android boundary
 

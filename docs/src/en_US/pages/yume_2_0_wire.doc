@@ -2,11 +2,11 @@
 name:     yume_2_0_wire
 kind:     page
 title:    YUME transport v2 wire contract
-summary:  The runnable transport-v2 wire contract and its incompatibility with the YTP/1 replacement.
+summary:  The transport-v2 reference wire contract, which is not compatible with YTP/1.
 markdown: docs/protocol/YUME_2_0_WIRE.md
 web:      yes
 ---
-> **Current transport-v2 contract:** this wire remains in the runnable default
+> **Transport-v2 reference contract:** this wire remains in the opt-in reference
 > product during the transition. It is incompatible with the experimental
 > [YTP/1 replacement](YTP_1.md); neither protocol silently downgrades to the
 > other.

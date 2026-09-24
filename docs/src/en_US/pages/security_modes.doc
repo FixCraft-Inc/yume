@@ -2,7 +2,7 @@
 name:     security_modes
 kind:     page
 title:    YUME security modes
-summary:  The authenticated rekey policies retained by the runnable tunnel and not inherited by YTP/1.
+summary:  Transport-v2 rekey modes. YTP/1 has one fixed policy and does not use them.
 markdown: docs/SECURITY_MODES.md
 web:      yes
 catalog-title: Transport-v2 security modes

@@ -2,7 +2,7 @@
 name:     threat_model
 kind:     page
 title:    YUME 0.3 threat model
-summary:  The intended replacement's attacker, operator, endpoint, and metadata boundaries.
+summary:  Attackers, operators, endpoints and metadata: what YUME protects and what it does not.
 markdown: docs/THREAT_MODEL.md
 web:      yes
 catalog-title: YTP/1 threat model

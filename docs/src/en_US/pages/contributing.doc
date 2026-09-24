@@ -32,13 +32,13 @@ should integrate through configuration and supported interfaces without patching
 YUME's source. This is a design requirement; the experimental ABI does not yet
 provide every required capability.
 
-The current source graph is in [SOURCE_MAP.md](docs/SOURCE_MAP.md); the
-replacement contracts and rationale are in [ARCHITECTURE.md](docs/ARCHITECTURE.md).
-YTP/1 is the implementation being completed. Transport v2 remains runnable as
-a development reference and a source of useful components. Its default build
-does not require finishing its audit backlog, tuning it, or porting every
-historical feature before replacement work. Qualify the required behavior
-before retiring its only working implementation.
+The source graph is in [SOURCE_MAP.md](docs/SOURCE_MAP.md), and the
+contracts and rationale are in [ARCHITECTURE.md](docs/ARCHITECTURE.md). The
+default build is native YTP/1. Transport v2 stays as an opt-in reference and a
+source of reusable components. Moving a feature does not require finishing the
+reference runtime's audit backlog, tuning it, or porting every historical
+feature. Qualify the required behavior before retiring its only working
+implementation.
 
 ## Decision and review discipline
 
@@ -83,6 +83,12 @@ competitor feature, or a passing build alone is not an architectural benefit.
 
 ## Build
 
+Native Linux applications require libsystemd development headers and libraries
+(`libsystemd-dev` on Debian/Ubuntu). The managed TUN adapter uses rtnetlink for
+addresses/routes and systemd-resolved's D-Bus API for per-link DNS. DNS-free
+TUN configurations do not require a running resolved service. The C ABI and
+engine do not link the Linux network manager.
+
 Linux transport-v2 server builds require liblzma and libarchive 3.6.0 or newer
 (`liblzma-dev` and `libarchive-dev` on Debian/Ubuntu). They are explicit YUME
 filter-archive dependencies. Static builds also need the transitive static
@@ -97,18 +103,17 @@ The normal developer build is:
 Tests are off by default; omit `--tests` only when you do not intend to run
 `ctest`.
 
-This prepares the exact BaseFWX revision and YUME's checksum-pinned,
-default-off patched OpenSSL build. A normal full CMake configuration rejects
+This prepares YUME's checksum-pinned, default-off patched OpenSSL build.
+The native application does not use BaseFWX; the explicit transport-v2 reference
+graph retains its independent BaseFWX pin. A normal full CMake configuration rejects
 stock OpenSSL because the default `openssl-chrome151` backend requires the
 additive capability. Minimal/transport-core-only configurations have their own
 documented dependency boundary.
 
-Do not delete or replace an existing `basefwx/` developer checkout. To request
-the exact clean pin explicitly, use:
-
-@code bash
-BASEFWX_SYNC_MODE=pinned ./ezbuild.sh
-@end
+Do not delete or replace an existing `basefwx/` developer checkout. For reference
+qualification, use an isolated checkout at the exact pin. Native `ezbuild.sh`
+leaves BaseFWX untouched; GUI, selftest and topology tools still require explicit
+reference builds and are not native application capabilities.
 
 ## Test
 

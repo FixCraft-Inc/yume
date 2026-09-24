@@ -207,6 +207,16 @@ typedef struct yume_runtime_options {
      * selects the process working directory, which is rarely what an embedded
      * host wants: pass an explicit directory, or use absolute paths. */
     const char* config_base_dir;
+    /* Absolute path of a resolver helper program, which schema-1 client
+     * endpoints start to look up a server host that is a name. The yume-resolver
+     * program installed with the SDK serves this role, and pkg-config and CMake
+     * package metadata name its location. The file must be owned by root or
+     * the effective user and must not be writable by group or others. NULL
+     * leaves names unresolvable: such an endpoint fails to start, while a
+     * numeric host or endpoint.connect_address never needs the helper. Name
+     * lookup runs in that separate process so stopping an endpoint never waits
+     * for a system lookup that does not return. */
+    const char* resolver_program;
 } yume_runtime_options;
 
 #define YUME_RUNTIME_OPTIONS_MIN_SIZE \
@@ -355,6 +365,13 @@ YUME_API yume_status yume_endpoint_stop(yume_endpoint* endpoint,
 YUME_API uint32_t yume_endpoint_state(const yume_endpoint* endpoint)
     YUME_NOEXCEPT;
 
+/* Schema-1 clients open a named byte service, optionally with a TCP hostname,
+ * IPv4 or IPv6 destination. The server must expose that service through its
+ * direct TCP adapter; it resolves hostnames and authorizes every result.
+ * Application-accepted named services refuse destination-routed OPENs.
+ * Transport-v2 embedding supports named streams without a destination only.
+ * Destination and service bytes are copied during the call, including when
+ * timeout or cancellation leaves an OPEN settling on the endpoint runner. */
 YUME_API yume_status yume_endpoint_open_stream(
     yume_endpoint* endpoint,
     const yume_open_options* options,
@@ -413,7 +430,33 @@ YUME_API yume_status yume_stream_close(yume_stream* stream,
                                        uint32_t timeout_ms) YUME_NOEXCEPT;
 YUME_API void yume_stream_destroy(yume_stream* stream) YUME_NOEXCEPT;
 
-/* Packet batches are all-or-none on write and preserve packet boundaries. */
+/*
+ * Schema-1 packet channels support named services and destination-routed UDP.
+ * Only clients open and only servers accept; a server registers a named packet
+ * service before start. Transport-v2 embedding returns UNSUPPORTED.
+ *
+ * A channel permits one reader and one writer concurrently; close cancels
+ * both directions without waiting for either application's deadline. Callers
+ * must not overlap operations in one direction or race destroy with any call
+ * on the same handle. A channel may outlive endpoint stop/destroy; I/O then
+ * returns CLOSED and the caller still destroys the channel handle.
+ *
+ * Writes copy and admit the entire batch or none, preserving packet boundaries.
+ * A batch has 1..256 packets, each with 1..65535 bytes, and at most 16 MiB total.
+ * limits.max_packet_batch can set a lower count bound; writes above it return
+ * RESOURCE_EXHAUSTED and reads return at most that many packets per call.
+ * The negotiated channel record bound can be smaller than 65535; a larger
+ * packet returns INVALID_ARGUMENT without fragmenting or admitting the batch.
+ * Packet delivery remains subject to later channel or session failure.
+ *
+ * Reads copy as many complete queued packets as fit the storage and slots.
+ * If the first packet does not fit, BUFFER_TOO_SMALL leaves it queued and sets
+ * required_storage to that packet's size. Later packets are never skipped.
+ * Other results set required_storage to zero; unused slots remain untouched.
+ * EOF reports authenticated peer write shutdown after queued packets are read.
+ * Zero polls; a positive timeout is a relative deadline in milliseconds.
+ * A zero-timeout client OPEN returns WOULD_BLOCK without sending OPEN.
+ */
 YUME_API yume_status yume_packet_get_peer_identity(
     const yume_packet* packet,
     yume_peer_identity* out,

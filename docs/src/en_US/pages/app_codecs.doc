@@ -6,7 +6,7 @@ summary:  Application codecs the transport-v2 client and daemon carry, and the b
 markdown: docs/APP_CODECS.md
 web:      yes
 ---
-> **Transport-v2 surface:** this document describes codecs in the default
+> **Transport-v2 surface:** this document describes codecs in the reference
 > client and daemon. They are not built into YTP/1. A future application may
 > reintroduce a useful codec as an ordinary named service.
 

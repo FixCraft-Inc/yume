@@ -4,6 +4,9 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
+#define YUME_TEST_ALIGNED_ALLOCATIONS 1
+#include "test_support/allocation_failure.hpp"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -33,6 +36,11 @@
 #include <boost/system/error_code.hpp>
 
 #include "providers/asio_tcp_byte_channel_provider.hpp"
+#include "providers/system_resolver.hpp"
+
+#ifndef YUME_TEST_RESOLVER_PROGRAM
+#error "YUME_TEST_RESOLVER_PROGRAM names the resolver helper"
+#endif
 
 namespace test_allocation_failure {
 
@@ -70,69 +78,12 @@ bool consume() noexcept {
 
 }  // namespace test_allocation_failure
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-
-void* operator new(std::size_t size) {
-    if (test_allocation_failure::consume()) {
-        throw std::bad_alloc();
-    }
-    if (void* allocation = std::malloc(size == 0U ? 1U : size)) {
-        return allocation;
-    }
-    throw std::bad_alloc();
+namespace {
+void check_test_allocation(std::size_t) {
+    if (test_allocation_failure::consume()) throw std::bad_alloc();
+}
 }
 
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* allocation) noexcept { std::free(allocation); }
-void operator delete[](void* allocation) noexcept { ::operator delete(allocation); }
-void operator delete(void* allocation, std::size_t) noexcept {
-    ::operator delete(allocation);
-}
-void operator delete[](void* allocation, std::size_t) noexcept {
-    ::operator delete[](allocation);
-}
-
-// Asio's aligned allocation path can bypass operator new. Interpose it as
-// well, so a passing cleanup test cannot accidentally depend on that escape.
-extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
-    if (test_allocation_failure::consume()) {
-        errno = ENOMEM;
-        return nullptr;
-    }
-    void* allocation = nullptr;
-    const int error = ::posix_memalign(&allocation, alignment, size == 0U ? 1U : size);
-    if (error != 0) errno = error;
-    return allocation;
-}
-
-void* operator new(std::size_t size, std::align_val_t alignment) {
-    if (void* allocation = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) {
-        return allocation;
-    }
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-    return ::operator new(size, alignment);
-}
-void operator delete(void* allocation, std::align_val_t) noexcept {
-    std::free(allocation);
-}
-void operator delete[](void* allocation, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-void operator delete(void* allocation, std::size_t, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-void operator delete[](void* allocation, std::size_t, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
 namespace yume::providers {
 namespace {
@@ -175,10 +126,19 @@ std::string buffer_text(const Buffer& buffer) {
         reinterpret_cast<const char*>(buffer.bytes().data()), buffer.size());
 }
 
+std::shared_ptr<SystemResolver> make_resolver(
+    const std::shared_ptr<AsioExecutionContext>& context,
+    const char* program = YUME_TEST_RESOLVER_PROGRAM) {
+    SystemResolverOptions options;
+    options.program = program;
+    return require(SystemResolver::create(context, std::move(options)));
+}
+
 class IoRuntime final {
 public:
     IoRuntime()
-        : context_(require(AsioExecutionContext::create(ExecutorAffinity(93U)))) {
+        : context_(require(AsioExecutionContext::create(ExecutorAffinity(93U)))),
+          resolver_(make_resolver(context_)) {
         std::promise<void> started;
         auto ready = started.get_future();
         thread_ = std::thread([this, &started]() {
@@ -191,6 +151,7 @@ public:
     IoRuntime(const IoRuntime&) = delete;
     IoRuntime& operator=(const IoRuntime&) = delete;
     ~IoRuntime() noexcept {
+        resolver_->close();
         context_->finish();
         if (thread_.joinable()) thread_.join();
     }
@@ -198,6 +159,7 @@ public:
     const std::shared_ptr<AsioExecutionContext>& context() noexcept {
         return context_;
     }
+    const std::shared_ptr<SystemResolver>& resolver() noexcept { return resolver_; }
     AsioExecutionContext::Executor executor() noexcept {
         return context_->executor();
     }
@@ -227,6 +189,7 @@ public:
 
 private:
     std::shared_ptr<AsioExecutionContext> context_;
+    std::shared_ptr<SystemResolver> resolver_;
     std::thread thread_;
     std::thread::id worker_id_;
 };
@@ -395,7 +358,7 @@ std::shared_ptr<AsioTcpByteChannelProvider> make_provider(
     AsioTcpSocketProtector protector = {}) {
     return require(AsioTcpByteChannelProvider::create(
         runtime.context(),
-        std::move(host), port, limits, std::move(protector)));
+        std::move(host), port, limits, std::move(protector), runtime.resolver()));
 }
 
 std::shared_ptr<AsioTcpAcceptedChannelOwner> make_accepted_owner(
@@ -441,7 +404,7 @@ void test_descriptor_and_validation() {
     auto invalid = [&](AsioTcpByteChannelLimits limits) {
         auto result = AsioTcpByteChannelProvider::create(
             runtime.context(),
-            "localhost", 443U, limits);
+            "127.0.0.1", 443U, limits);
         CHECK(!result.ok());
         CHECK(result.status().code() == StatusCode::InvalidArgument);
     };
@@ -482,6 +445,21 @@ void test_descriptor_and_validation() {
     CHECK(!AsioTcpByteChannelProvider::create(
                runtime.context(),
                "localhost", 0U).ok());
+    // A name needs a resolver on the provider's own context. Numeric hosts
+    // never need one.
+    CHECK(AsioTcpByteChannelProvider::create(runtime.context(), "localhost", 443U)
+              .status().code() == StatusCode::InvalidArgument);
+    CHECK(AsioTcpByteChannelProvider::create(runtime.context(), "::1", 443U).ok());
+    {
+        auto other = require(AsioExecutionContext::create(ExecutorAffinity(94U)));
+        auto foreign = make_resolver(other);
+        CHECK(AsioTcpByteChannelProvider::create(runtime.context(), "localhost", 443U,
+                                                 {}, {}, foreign)
+                  .status().code() == StatusCode::InvalidArgument);
+        foreign->close();
+        other->finish();
+        other->run();
+    }
 
     auto server_role = start_create(runtime, provider, EndpointRole::Server);
     auto rejected = await(server_role);
@@ -1260,30 +1238,27 @@ void test_pending_cleanup_under_sustained_allocation_failure(CleanupAction actio
 
 void test_pending_create_cancel_under_sustained_allocation_failure() {
     auto context = require(AsioExecutionContext::create(ExecutorAffinity(97U)));
+    auto resolver = make_resolver(context);
     auto provider = require(AsioTcpByteChannelProvider::create(
-        context, "localhost", unused_tcp_port()));
+        context, "localhost", unused_tcp_port(), {}, {}, resolver));
     CompletionRecord record;
     boost::asio::post(context->executor(), [&]() {
         provider->async_create(EndpointRole::Client, {},
             [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
                 record.record(*context, result.status());
                 provider.reset();
+                resolver->close();
             });
         test_allocation_failure::sustained.store(true, std::memory_order_release);
         provider->cancel();
     });
-    // Arm only after accepted resolution exists, then keep allocation disabled
-    // through cancellation, callback-driven provider destruction and drain.
+    // Arm only after the lookup is outstanding, then keep allocation disabled
+    // through cancellation, callback-driven provider destruction, resolver
+    // close and drain. A cancelled lookup's late answer must not escape.
     {
         test_allocation_failure::SustainedScope reset_on_exit(false);
         context->finish();
-        try {
-            context->run();
-        } catch (const std::bad_alloc&) {
-            // Asio may allocate a completed resolver result before noticing
-            // cancellation. Resume so its reserved lost-handler task drains.
-            context->run();
-        }
+        context->run();
     }
     CHECK(record.calls == 1U);
     CHECK(record.code == StatusCode::Cancelled);
@@ -1291,42 +1266,73 @@ void test_pending_create_cancel_under_sustained_allocation_failure() {
     CHECK(!provider);
 }
 
+// The resolver's answer arrives while every allocation fails. Its delivery
+// cannot build the address list, so the create settles once with
+// ResourceExhausted instead of losing its completion or throwing from run().
 void test_resolver_delivery_allocation_failure() {
     auto context = require(AsioExecutionContext::create(ExecutorAffinity(98U)));
+    auto resolver = make_resolver(context);
     auto provider = require(AsioTcpByteChannelProvider::create(
-        context, "127.0.0.1", unused_tcp_port()));
+        context, "localhost", unused_tcp_port(), {}, {}, resolver));
     CompletionRecord record;
-    bool delivery_threw = false;
     boost::asio::post(context->executor(), [&]() {
         provider->async_create(EndpointRole::Client, {},
             [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
                 record.record(*context, result.status());
                 provider.reset();
+                resolver->close();
             });
         test_allocation_failure::sustained.store(true, std::memory_order_release);
     });
     {
         test_allocation_failure::SustainedScope reset_on_exit(false);
         context->finish();
-        try {
-            context->run();
-        } catch (const std::bad_alloc&) {
-            delivery_threw = true;
-            // The accepted create is retained by the reserved failure task.
-            // Runner exception containment alone would lose its completion.
-            context->run();
-        }
+        context->run();
     }
-    CHECK(delivery_threw);
     CHECK(record.calls == 1U);
     CHECK(record.code == StatusCode::ResourceExhausted);
     CHECK(record.on_context);
     CHECK(!provider);
 }
 
+// A lookup that never returns is cancelled at once. Closing the resolver ends
+// its helper, so the final drain does not wait for the stalled system call.
+void test_stalled_lookup_cancel_and_drain() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(99U)));
+    auto resolver = make_resolver(context, YUME_TEST_STALL_RESOLVER_PROGRAM);
+    auto provider = require(AsioTcpByteChannelProvider::create(
+        context, "resolver-stall.invalid", 443U, {}, {}, resolver));
+    CompletionRecord record;
+    std::chrono::steady_clock::time_point closed_at{};
+    boost::asio::post(context->executor(), [&]() {
+        provider->async_create(EndpointRole::Client, {},
+            [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
+                record.record(*context, result.status());
+            });
+        boost::asio::post(context->executor(), [&]() {
+            provider->cancel();
+            resolver->close();
+            closed_at = std::chrono::steady_clock::now();
+            context->finish();
+        });
+    });
+    context->run();
+    CHECK(std::chrono::steady_clock::now() - closed_at < 2s);
+    CHECK(record.calls == 1U);
+    CHECK(record.code == StatusCode::Cancelled);
+    CHECK(record.on_context);
+}
+
 void test_initiation_failure_stays_on_context() {
     auto context = require(AsioExecutionContext::create(ExecutorAffinity(96U)));
-    auto owner = require(AsioTcpAcceptedChannelOwner::create(context));
+    AsioTcpChannelLimits limits;
+    limits.max_read_bytes = 1U;
+    limits.max_write_bytes = 1U;
+    limits.max_queued_read_operations = 1U;
+    limits.max_queued_write_operations = 1U;
+    limits.max_queued_read_bytes = 1U;
+    limits.max_queued_write_bytes = 1U;
+    auto owner = require(AsioTcpAcceptedChannelOwner::create(context, limits));
     auto provider = require(AsioTcpByteChannelProvider::create(
         context, "127.0.0.1", unused_tcp_port()));
     auto pair = connected_pair(context->executor());
@@ -1352,22 +1358,55 @@ void test_initiation_failure_stays_on_context() {
         provider->async_create(EndpointRole::Client, {}, std::move(create_completion));
     });
     context->poll();
+    CHECK(records[0].calls == 1U);
+    CHECK(records[1].calls == 1U);
+    CHECK(records[2].calls == 1U);
     for (const auto& record : records) {
-        CHECK(record.calls == 1U);
         CHECK(record.code == StatusCode::ResourceExhausted);
         CHECK(record.on_context);
     }
+
+    // Each refusal must return its only queue slot and byte reservation. A
+    // subsequent read/write uses the same channel after allocation recovers.
+    std::array<CompletionRecord, 2U> reused{};
+    bool correct_byte = false;
+    Buffer retry_write = make_buffer("W");
+    boost::asio::write(pair.second, boost::asio::buffer("R", 1U));
+    boost::asio::post(context->executor(), [&]() {
+        channel->async_read(1U, {}, [&](Result<Buffer> result) noexcept {
+            reused[0].record(*context, result.status());
+            correct_byte = result.ok() && result.value_if()->size() == 1U &&
+                result.value_if()->bytes()[0] == std::byte{'R'};
+        });
+        channel->async_write(std::move(retry_write), {},
+            [&](Status status, std::size_t count) noexcept {
+                reused[1].record(*context, status, count);
+            });
+    });
+    context->finish();
+    context->run();
+    for (const auto& record : reused) {
+        CHECK(record.calls == 1U);
+        CHECK(record.code == StatusCode::Ok);
+        CHECK(record.on_context);
+    }
+    CHECK(correct_byte);
+    CHECK(reused[1].transferred == 1U);
     channel.reset();
     owner.reset();
     provider.reset();
     context->finish();
     context->run();
+    for (const auto& record : records) CHECK(record.calls == 1U);
+    for (const auto& record : reused) CHECK(record.calls == 1U);
 }
 
 }  // namespace
 }  // namespace yume::providers
 
 int main() {
+    yume::test::before_allocate_on_any_thread.store(check_test_allocation);
+
     try {
         yume::providers::test_descriptor_and_validation();
         yume::providers::test_accepted_socket_validation_and_capacity_release();
@@ -1394,6 +1433,7 @@ int main() {
             yume::providers::CleanupAction::OwnerDestroy);
         yume::providers::test_pending_create_cancel_under_sustained_allocation_failure();
         yume::providers::test_resolver_delivery_allocation_failure();
+        yume::providers::test_stalled_lookup_cancel_and_drain();
         yume::providers::test_initiation_failure_stays_on_context();
         std::cout << "asio TCP ByteChannel provider tests passed\n";
         return 0;

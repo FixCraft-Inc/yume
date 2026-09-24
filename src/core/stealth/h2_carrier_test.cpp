@@ -1,3 +1,5 @@
+#include "test_support/allocation_failure.hpp"
+
 #include "core/stealth/h2_carrier.hpp"
 
 #include <algorithm>
@@ -25,28 +27,17 @@ thread_local bool sustained_allocation_failure = false;
 thread_local bool allocation_failed = false;
 }
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-void* operator new(std::size_t size) {
+namespace {
+void check_test_allocation(std::size_t) {
     if (allocation_failure_after == 0) {
         allocation_failed = true;
         if (!sustained_allocation_failure) allocation_failure_after = -1;
         throw std::bad_alloc();
     }
     if (allocation_failure_after > 0) --allocation_failure_after;
-    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
-    throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* storage) noexcept { std::free(storage); }
-void operator delete[](void* storage) noexcept { ::operator delete(storage); }
-void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
+}
+
 
 namespace {
 
@@ -882,6 +873,8 @@ void ServerCreditCanRetireAfterStreamClose() {
 }  // namespace
 
 int main() {
+    yume::test::before_allocate_on_any_thread.store(check_test_allocation);
+
     test_callback_allocation_failure_is_contained();
     FullSessionRoundTrip();
     InboundContinuationIsObservedWithoutPayloadRetention();

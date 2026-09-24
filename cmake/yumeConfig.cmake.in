@@ -1,3 +1,8 @@
 @PACKAGE_INIT@
 
+set(yume_VERSION "@YUME_PACKAGE_VERSION@")
+set(yume_EXPERIMENTAL TRUE)
+# Helper program for yume_runtime_options.resolver_program.
+set_and_check(yume_RESOLVER_PROGRAM "@PACKAGE_YUME_RESOLVER_INSTALL_PATH@")
+
 include("${CMAKE_CURRENT_LIST_DIR}/yumeTargets.cmake")

@@ -1,10 +1,11 @@
 <!-- Generated from docs/src/en_US/pages/selftest.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME benchmarks
 
-> **Runnable transport-v2 path:** these checks and evidence rules qualify the
-> current product. Replacement engine, YTP/1, schema-1, and ABI gates are kept
-> in the [YTP/1 foundation page](development/ytp1/README.md#verification-gates); passing
-> foundation tests does not qualify the tunnel.
+> **Transport-v2 reference:** these benchmark paths and evidence rules
+> qualify the uninstalled transport-v2 reference programs. Native engine,
+> YTP/1, schema-1 and ABI gates are in the
+> [native guide](development/ytp1/README.md#verification-gates). Neither set of
+> results qualifies the other implementation.
 
 Native CTest executables keep `assert()` enabled even in Release and
 RelWithDebInfo builds. A test configuration must not report success merely

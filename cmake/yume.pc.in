@@ -1,6 +1,7 @@
 prefix=${pcfiledir}/@YUME_PC_PREFIX_FROM_PKGCONFIG@
 libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
 includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+resolver_program=${prefix}/@CMAKE_INSTALL_LIBEXECDIR@/yume/yume-resolver
 
 Name: yume
 Description: YUME authenticated session-layer C ABI

@@ -27,6 +27,8 @@
 #include <variant>
 #include <vector>
 
+#include <boost/asio/ip/address.hpp>
+
 #include "config/v1/config.hpp"
 #include "engine/cancellation.hpp"
 #include "engine/session_engine.hpp"
@@ -188,6 +190,12 @@ public:
     BackendIo write(const void* data, std::size_t size,
                     std::uint32_t timeout_ms, std::string& error);
     BackendIo shutdown_write(std::uint32_t timeout_ms, std::string& error);
+    BackendIo read_packets(void* storage, std::size_t storage_size,
+                           std::span<BackendPacketSlot> slots,
+                           std::uint32_t timeout_ms, std::size_t& packets_read,
+                           std::size_t& required_storage, std::string& error);
+    BackendIo write_packets(std::span<const BackendPacketView> packets,
+                            std::uint32_t timeout_ms, std::string& error);
     void close() noexcept;
 
 private:
@@ -202,6 +210,9 @@ private:
     void pump_writes() noexcept;
     void on_write(Status status, std::size_t written,
                   std::size_t expected) noexcept;
+    BackendIo admit_write(std::vector<engine::Buffer> chunks, std::size_t size,
+                           Clock::time_point deadline, std::uint32_t timeout_ms,
+                           std::string& error);
     void finish_shutdown() noexcept;
     void drop_records() noexcept;
     void fail_locked(std::string_view reason) noexcept;
@@ -216,6 +227,7 @@ private:
     const std::shared_ptr<engine::StreamResponder> responder_;
     const BackendPeerIdentity identity_;
     const std::size_t max_record_;
+    const std::size_t max_packet_batch_;
     providers::ControlTask task_;
 
     mutable std::mutex mutex_;
@@ -267,6 +279,7 @@ public:
     NativeRun(std::shared_ptr<providers::AsioExecutionContext> execution,
               const v1::Config& endpoint_config,
               std::filesystem::path base_directory,
+              std::filesystem::path resolver,
               const std::vector<BackendService>& registrations,
               providers::AsioTcpSocketProtector protector);
 
@@ -276,6 +289,8 @@ public:
     const std::shared_ptr<providers::AsioExecutionContext> context;
     const v1::Config config;
     const std::filesystem::path base;
+    // SystemResolver helper program. Empty leaves names unresolvable.
+    const std::filesystem::path resolver_program;
     const providers::AsioTcpSocketProtector socket_protector;
     const bool server;
 
@@ -319,7 +334,8 @@ public:
                engine::StreamHandler::AcceptanceCompletion acceptance);
 
     std::optional<std::size_t> waiting_index(
-        std::string_view service) const noexcept;
+        std::string_view service,
+        BackendServiceKind kind = BackendServiceKind::ByteStream) const noexcept;
     BackendIo accept(std::size_t index, std::uint32_t timeout_ms,
                      std::shared_ptr<NativeStream>& out, std::string& error);
 
@@ -351,14 +367,14 @@ private:
     Status accept_failure_;
 
     // Server OPENs waiting for an application accept, one queue per
-    // registered byte-stream service. The service list never changes.
+    // registered service. The service list never changes.
     std::mutex waiting_mutex_;
     std::condition_variable waiting_cv_;
-    std::vector<std::pair<std::string, std::deque<WaitingOpen>>> waiting_;
+    std::vector<std::pair<BackendService, std::deque<WaitingOpen>>> waiting_;
     std::size_t waiting_count_{0U};
 };
 
-// Every configured service needs a handler. Only registered byte-stream
+// Every configured service needs a handler. Only registered
 // services on a server accept. Other entries refuse at authorization, so a
 // service the application never registered cannot be opened by a peer.
 class ServiceHandler final : public engine::StreamHandler {
@@ -376,7 +392,11 @@ public:
     }
     engine::ServiceKind service_kind() const noexcept override { return kind_; }
 
-    Status authorize(const engine::StreamOpenContext&) override {
+    Status authorize(const engine::StreamOpenContext& open) override {
+        if (open.destination_if()) {
+            return Status(StatusCode::FailedPrecondition,
+                          "application service does not accept routed destinations");
+        }
         if (!waiting_index_) {
             return Status(StatusCode::FailedPrecondition,
                           "service is not accepting streams on this endpoint");
@@ -431,8 +451,11 @@ private:
 // wins under mutex_, and a late success is closed on the runner.
 class OpenOperation final : public std::enable_shared_from_this<OpenOperation> {
 public:
-    OpenOperation(std::shared_ptr<NativeRun> run, std::string service)
-        : run_(std::move(run)), service_(std::move(service)) {}
+    OpenOperation(std::shared_ptr<NativeRun> run, std::string service,
+                  std::optional<engine::RouteDestination> destination,
+                  engine::ServiceKind kind = engine::ServiceKind::ByteStream)
+        : run_(std::move(run)), service_(std::move(service)),
+          destination_(std::move(destination)), kind_(kind) {}
 
     providers::ControlTask open_task{&OpenOperation::on_open_task};
     providers::ControlTask cancel_task{&OpenOperation::on_cancel_task};
@@ -454,6 +477,8 @@ private:
 
     std::shared_ptr<NativeRun> run_;
     const std::string service_;
+    const std::optional<engine::RouteDestination> destination_;
+    const engine::ServiceKind kind_;
     engine::CancellationSource cancellation_;
     std::mutex mutex_;
     std::condition_variable cv_;
@@ -502,6 +527,7 @@ NativeStream::NativeStream(std::shared_ptr<NativeRun> run,
       responder_(std::move(responder)),
       identity_(std::move(identity)),
       max_record_(std::max<std::size_t>(1U, responder_->max_write_size())),
+      max_packet_batch_(run_->config.limits().max_packet_batch()),
       task_(&NativeStream::on_service) {}
 
 NativeStream::~NativeStream() {
@@ -612,6 +638,131 @@ BackendIo NativeStream::send_refusal_locked(std::string& error) const noexcept {
     return BackendIo::Ok;
 }
 
+BackendIo NativeStream::read_packets(void* storage, std::size_t storage_size,
+                                     std::span<BackendPacketSlot> slots,
+                                     std::uint32_t timeout_ms,
+                                     std::size_t& packets_read,
+                                     std::size_t& required_storage,
+                                     std::string& error) {
+    packets_read = 0U;
+    required_storage = 0U;
+    if (slots.empty() || slots.size() > kMaxPacketBatch ||
+        storage_size > kMaxPacketBatchBytes || (storage_size != 0U && !storage) ||
+        responder_->service_kind() != engine::ServiceKind::PacketChannel) {
+        describe(error, "packet read buffers or channel kind are invalid");
+        return BackendIo::Invalid;
+    }
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto ready = [this] {
+            return consumed_ < records_.size() || end_of_stream_ || failed_ ||
+                   local_closed_ || stopped() || responder_->terminated();
+        };
+        if (!ready()) {
+            if (timeout_ms == 0U) {
+                describe(error, "no packet is ready");
+                return BackendIo::WouldBlock;
+            }
+            if (!wait_until(lock, deadline, ready)) {
+                describe(error, "packet read deadline expired");
+                return BackendIo::Timeout;
+            }
+        }
+        if (local_closed_ || stopped() || responder_->terminated() || failed_) {
+            describe(error, "packet channel or endpoint is closed");
+            return BackendIo::Closed;
+        }
+        if (consumed_ == records_.size()) {
+            error.clear();
+            return end_of_stream_ ? BackendIo::Eof : BackendIo::Closed;
+        }
+        const auto first_size = records_[consumed_].payload().size();
+        if (first_size > storage_size) {
+            required_storage = first_size;
+            describe(error, "storage cannot hold the first queued packet");
+            return BackendIo::BufferTooSmall;
+        }
+        std::size_t offset = 0U;
+        while (packets_read < std::min(slots.size(), max_packet_batch_) &&
+               consumed_ < records_.size()) {
+            const auto bytes = records_[consumed_].payload().bytes();
+            if (bytes.size() > storage_size - offset) break;
+            std::memcpy(static_cast<std::byte*>(storage) + offset, bytes.data(), bytes.size());
+            slots[packets_read] = {offset, bytes.size()};
+            ++packets_read;
+            ++consumed_;
+            offset += bytes.size();
+        }
+    }
+    (void)request_service();
+    error.clear();
+    return BackendIo::Ok;
+}
+
+BackendIo NativeStream::write_packets(std::span<const BackendPacketView> packets,
+                                      std::uint32_t timeout_ms, std::string& error) {
+    if (packets.empty() || packets.size() > kMaxPacketBatch ||
+        responder_->service_kind() != engine::ServiceKind::PacketChannel) {
+        describe(error, "packet batch count or channel kind is invalid");
+        return BackendIo::Invalid;
+    }
+    if (packets.size() > max_packet_batch_) {
+        describe(error, "packet batch exceeds the endpoint's configured count bound");
+        return BackendIo::ResourceExhausted;
+    }
+    std::size_t total = 0U;
+    for (const auto& packet : packets) {
+        if (!packet.data || packet.size == 0U ||
+            packet.size > std::min(kMaxPacketBytes, max_record_)) {
+            describe(error, "packet exceeds the channel's record bound or has no payload");
+            return BackendIo::Invalid;
+        }
+        if (packet.size > kMaxPacketBatchBytes - total) {
+            describe(error, "packet batch exceeds the admission bound");
+            return BackendIo::ResourceExhausted;
+        }
+        total += packet.size;
+    }
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    // Check admission before copying. One writer owns this direction; the
+    // runner may drain an earlier batch while this caller waits.
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto idle = [this] {
+            return (queued_bytes_ == 0U && !write_in_flight_) || local_closed_ ||
+                   failed_ || write_failed_ || shutdown_requested_ || stopped();
+        };
+        if (!idle()) {
+            if (timeout_ms == 0U) {
+                describe(error, "an earlier packet batch is still being sent");
+                return BackendIo::WouldBlock;
+            }
+            if (!wait_until(lock, deadline, idle)) {
+                describe(error, "packet write deadline expired");
+                return BackendIo::Timeout;
+            }
+        }
+        if (const auto refusal = send_refusal_locked(error); refusal != BackendIo::Ok) {
+            return refusal;
+        }
+    }
+    std::vector<engine::Buffer> chunks;
+    chunks.reserve(packets.size());
+    for (const auto& packet : packets) {
+        auto chunk = engine::Buffer::copy_from(
+            {static_cast<const std::byte*>(packet.data), packet.size}, packet.size);
+        if (!chunk.ok()) {
+            describe(error, chunk.status(), "packet allocation failed");
+            return io_from(chunk.status().code());
+        }
+        chunks.push_back(std::move(chunk).take_value());
+    }
+    // Each buffer remains one packet. Admission swaps the complete vector;
+    // allocation failure or a rejected batch changes no channel state.
+    return admit_write(std::move(chunks), total, deadline, timeout_ms, error);
+}
+
 BackendIo NativeStream::write(const void* data, std::size_t size,
                               std::uint32_t timeout_ms, std::string& error) {
     if (size == 0U) return BackendIo::Ok;
@@ -634,6 +785,12 @@ BackendIo NativeStream::write(const void* data, std::size_t size,
         }
         chunks.push_back(std::move(chunk).take_value());
     }
+    return admit_write(std::move(chunks), size, deadline, timeout_ms, error);
+}
+
+BackendIo NativeStream::admit_write(std::vector<engine::Buffer> chunks,
+                                     std::size_t size, Clock::time_point deadline,
+                                     std::uint32_t timeout_ms, std::string& error) {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         const auto idle = [this] {
@@ -1039,7 +1196,7 @@ void OpenOperation::open_on_runner() noexcept {
     }
     try {
         session->async_open(
-            service_, engine::ServiceKind::ByteStream, std::nullopt,
+            service_, kind_, destination_,
             cancellation_.token(),
             [self = shared_from_this()](
                 engine::Result<std::shared_ptr<engine::StreamResponder>> result) {
@@ -1219,19 +1376,19 @@ void StartOperation::settle(Status status) noexcept {
 NativeRun::NativeRun(std::shared_ptr<providers::AsioExecutionContext> execution,
                      const v1::Config& endpoint_config,
                      std::filesystem::path base_directory,
+                     std::filesystem::path resolver,
                      const std::vector<BackendService>& registrations,
                      providers::AsioTcpSocketProtector protector)
     : context(std::move(execution)),
       config(endpoint_config),
       base(std::move(base_directory)),
+      resolver_program(std::move(resolver)),
       socket_protector(std::move(protector)),
       server(endpoint_config.role() == v1::Role::Server),
       close_task_(&NativeRun::on_close) {
     if (!server) return;
     for (const auto& registration : registrations) {
-        if (registration.kind == BackendServiceKind::ByteStream) {
-            waiting_.emplace_back(registration.name, std::deque<WaitingOpen>{});
-        }
+        waiting_.emplace_back(registration, std::deque<WaitingOpen>{});
     }
 }
 
@@ -1336,8 +1493,8 @@ Status NativeRun::create_endpoint(
             std::string(kServiceProviderId), engine::ProviderKind::StreamHandler,
             1U, capabilities);
         if (!descriptor.ok()) return copy_status(descriptor.status());
-        const std::optional<std::size_t> queue =
-            packet ? std::nullopt : waiting_index(service.name());
+        const std::optional<std::size_t> queue = waiting_index(service.name(),
+            packet ? BackendServiceKind::Packet : BackendServiceKind::ByteStream);
         bindings.push_back({service.name(),
                             std::make_shared<ServiceHandler>(
                                 std::move(descriptor).take_value(),
@@ -1367,6 +1524,13 @@ Status NativeRun::create_endpoint(
         options.max_pending_starts = 1U;
         options.start_timeout = client_start_timeout;
         options.socket_protector = socket_protector;
+    }
+    if (!resolver_program.empty()) {
+        providers::SystemResolverOptions resolver_options;
+        resolver_options.program = resolver_program;
+        auto resolver = providers::SystemResolver::create(context, std::move(resolver_options));
+        if (!resolver.ok()) return copy_status(resolver.status());
+        options.resolver = std::move(resolver).take_value();
     }
 
     auto created = runtime::NativeEndpoint::create(
@@ -1404,9 +1568,9 @@ std::string_view NativeRun::stop_reason() const noexcept {
 }
 
 std::optional<std::size_t> NativeRun::waiting_index(
-    std::string_view service) const noexcept {
+    std::string_view service, BackendServiceKind kind) const noexcept {
     for (std::size_t index = 0U; index < waiting_.size(); ++index) {
-        if (waiting_[index].first == service) return index;
+        if (waiting_[index].first.name == service && waiting_[index].first.kind == kind) return index;
     }
     return std::nullopt;
 }
@@ -1563,13 +1727,45 @@ private:
     std::shared_ptr<NativeStream> stream_;
 };
 
+class Ytp1BackendPacket final : public BackendPacket {
+public:
+    ~Ytp1BackendPacket() override { close(); }
+    void attach(std::shared_ptr<NativeStream> stream) noexcept {
+        stream_ = std::move(stream);
+    }
+    BackendIo write(std::span<const BackendPacketView> packets,
+                    std::uint32_t timeout_ms, std::string& error) override {
+        if (!stream_) return BackendIo::Closed;
+        return stream_->write_packets(packets, timeout_ms, error);
+    }
+    BackendIo read(void* storage, std::size_t storage_size,
+                   std::span<BackendPacketSlot> slots, std::uint32_t timeout_ms,
+                   std::size_t& packets_read, std::size_t& required_storage,
+                   std::string& error) override {
+        packets_read = 0U;
+        required_storage = 0U;
+        if (!stream_) return BackendIo::Closed;
+        return stream_->read_packets(storage, storage_size, slots, timeout_ms,
+                                      packets_read, required_storage, error);
+    }
+    void publish() noexcept override {}
+    void close() noexcept override { if (stream_) stream_->close(); }
+    BackendPeerIdentity peer_identity() const override {
+        return stream_ ? stream_->identity() : BackendPeerIdentity{};
+    }
+private:
+    std::shared_ptr<NativeStream> stream_;
+};
+
 class Ytp1Backend final : public EndpointBackend {
 public:
     Ytp1Backend(const v1::Config& config, std::filesystem::path base,
+                std::filesystem::path resolver_program,
                 std::vector<BackendService> registrations,
                 SocketProtector socket_protector)
         : config_(config),
           base_(std::move(base)),
+          resolver_program_(std::move(resolver_program)),
           registrations_(std::move(registrations)),
           socket_protector_(std::move(socket_protector)) {}
 
@@ -1582,12 +1778,23 @@ public:
     bool running() const noexcept override;
     BackendIo register_service(const std::string& service,
                                std::string& error) override;
-    BackendIo open_stream(const std::string& service, std::uint32_t timeout_ms,
+    BackendIo open_stream(const std::string& service,
+                          const std::optional<BackendDestination>& destination,
+                          std::uint32_t timeout_ms,
                           std::unique_ptr<BackendStream>& out,
                           std::string& error) override;
     BackendIo accept_stream(const std::string& service,
                             std::uint32_t timeout_ms,
                             std::unique_ptr<BackendStream>& out,
+                            std::string& error) override;
+    BackendIo open_packet(const std::string& service,
+                          const std::optional<BackendDestination>& destination,
+                          std::uint32_t timeout_ms,
+                          std::unique_ptr<BackendPacket>& out,
+                          std::string& error) override;
+    BackendIo accept_packet(const std::string& service,
+                            std::uint32_t timeout_ms,
+                            std::unique_ptr<BackendPacket>& out,
                             std::string& error) override;
 
 private:
@@ -1600,6 +1807,7 @@ private:
 
     const v1::Config config_;
     const std::filesystem::path base_;
+    const std::filesystem::path resolver_program_;
     const std::vector<BackendService> registrations_;
     const SocketProtector socket_protector_;
     std::mutex lifecycle_mutex_;
@@ -1679,7 +1887,8 @@ BackendIo Ytp1Backend::start(std::uint32_t timeout_ms, std::string& error) {
         };
     }
     auto run = std::make_shared<NativeRun>(std::move(context).take_value(), config_,
-                                           base_, registrations_, std::move(protector));
+                                           base_, resolver_program_, registrations_,
+                                           std::move(protector));
     auto operation = std::make_shared<StartOperation>(run, client_deadline);
     std::thread runner;
     try {
@@ -1752,6 +1961,7 @@ BackendIo Ytp1Backend::register_service(const std::string&, std::string& error) 
 }
 
 BackendIo Ytp1Backend::open_stream(const std::string& service,
+                                   const std::optional<BackendDestination>& destination,
                                    std::uint32_t timeout_ms,
                                    std::unique_ptr<BackendStream>& out,
                                    std::string& error) {
@@ -1779,9 +1989,33 @@ BackendIo Ytp1Backend::open_stream(const std::string& service,
         describe(error, "client endpoint is not running");
         return BackendIo::NotRunning;
     }
+    std::optional<engine::RouteDestination> route;
+    if (destination) {
+        engine::Result<engine::RouteDestination> parsed{Status(StatusCode::InvalidArgument)};
+        if (destination->kind == BackendAddressKind::Hostname) {
+            parsed = engine::RouteDestination::dns_name(
+                engine::NetworkProtocol::Tcp, destination->host, destination->port);
+        } else {
+            boost::system::error_code code;
+            const auto address = boost::asio::ip::make_address(destination->host, code);
+            if (!code && destination->kind == BackendAddressKind::Ipv4 && address.is_v4()) {
+                parsed = engine::RouteDestination::ipv4(
+                    engine::NetworkProtocol::Tcp, address.to_v4().to_bytes(), destination->port);
+            } else if (!code && destination->kind == BackendAddressKind::Ipv6 && address.is_v6() &&
+                       address.to_v6().scope_id() == 0U) {
+                parsed = engine::RouteDestination::ipv6(
+                    engine::NetworkProtocol::Tcp, address.to_v6().to_bytes(), destination->port);
+            }
+        }
+        if (!parsed.ok()) {
+            describe(error, "stream destination is invalid");
+            return BackendIo::Invalid;
+        }
+        route.emplace(std::move(parsed).take_value());
+    }
     const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
     auto handle = std::make_unique<Ytp1BackendStream>();
-    auto operation = std::make_shared<OpenOperation>(run, service);
+    auto operation = std::make_shared<OpenOperation>(run, service, std::move(route));
     if (!run->submit(operation->open_task, operation)) {
         describe(error, "client endpoint is not running");
         return BackendIo::NotRunning;
@@ -1809,12 +2043,118 @@ BackendIo Ytp1Backend::accept_stream(const std::string& service,
                             : std::string_view("server endpoint is not running"));
         return BackendIo::NotRunning;
     }
+    const bool declared = std::any_of(config_.services().begin(), config_.services().end(),
+        [&service](const v1::Service& entry) {
+            return entry.name() == service && entry.kind() == v1::ServiceKind::Stream;
+        });
     const auto index = run->waiting_index(service);
-    if (!index) {
+    if (!declared || !index) {
         describe(error, "byte-stream service is not registered on this endpoint");
         return BackendIo::NotFound;
     }
     auto handle = std::make_unique<Ytp1BackendStream>();
+    std::shared_ptr<NativeStream> stream;
+    const BackendIo io = run->accept(*index, timeout_ms, stream, error);
+    if (io != BackendIo::Ok) return io;
+    handle->attach(std::move(stream));
+    out = std::move(handle);
+    return BackendIo::Ok;
+}
+
+BackendIo Ytp1Backend::open_packet(const std::string& service,
+                                   const std::optional<BackendDestination>& destination,
+                                   std::uint32_t timeout_ms,
+                                   std::unique_ptr<BackendPacket>& out,
+                                   std::string& error) {
+    out.reset();
+    if (config_.role() != v1::Role::Client) {
+        describe(error, "a server endpoint does not open packets");
+        return BackendIo::Invalid;
+    }
+    const bool declared = std::any_of(
+        config_.services().begin(), config_.services().end(),
+        [&service](const v1::Service& entry) {
+            return entry.name() == service &&
+                   entry.kind() == v1::ServiceKind::Packet;
+        });
+    if (!declared) {
+        describe(error, "packet service is not declared by the endpoint configuration");
+        return BackendIo::NotFound;
+    }
+    if (timeout_ms == 0U) {
+        describe(error, "packet OPEN would block, no OPEN was sent");
+        return BackendIo::WouldBlock;
+    }
+    const auto run = current();
+    if (!run || !run->running()) {
+        describe(error, "client endpoint is not running");
+        return BackendIo::NotRunning;
+    }
+    std::optional<engine::RouteDestination> route;
+    if (destination) {
+        engine::Result<engine::RouteDestination> parsed{Status(StatusCode::InvalidArgument)};
+        if (destination->kind == BackendAddressKind::Hostname) {
+            parsed = engine::RouteDestination::dns_name(
+                engine::NetworkProtocol::Udp, destination->host, destination->port);
+        } else {
+            boost::system::error_code code;
+            const auto address = boost::asio::ip::make_address(destination->host, code);
+            if (!code && destination->kind == BackendAddressKind::Ipv4 && address.is_v4()) {
+                parsed = engine::RouteDestination::ipv4(
+                    engine::NetworkProtocol::Udp, address.to_v4().to_bytes(), destination->port);
+            } else if (!code && destination->kind == BackendAddressKind::Ipv6 && address.is_v6() &&
+                       address.to_v6().scope_id() == 0U) {
+                parsed = engine::RouteDestination::ipv6(
+                    engine::NetworkProtocol::Udp, address.to_v6().to_bytes(), destination->port);
+            }
+        }
+        if (!parsed.ok()) {
+            describe(error, "packet destination is invalid");
+            return BackendIo::Invalid;
+        }
+        route.emplace(std::move(parsed).take_value());
+    }
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto handle = std::make_unique<Ytp1BackendPacket>();
+    auto operation = std::make_shared<OpenOperation>(run, service, std::move(route),
+                                                      engine::ServiceKind::PacketChannel);
+    if (!run->submit(operation->open_task, operation)) {
+        describe(error, "client endpoint is not running");
+        return BackendIo::NotRunning;
+    }
+    std::shared_ptr<NativeStream> stream;
+    const BackendIo io = operation->wait(deadline, stream, error);
+    if (io != BackendIo::Ok) return io;
+    handle->attach(std::move(stream));
+    out = std::move(handle);
+    return BackendIo::Ok;
+}
+
+BackendIo Ytp1Backend::accept_packet(const std::string& service,
+                                     std::uint32_t timeout_ms,
+                                     std::unique_ptr<BackendPacket>& out,
+                                     std::string& error) {
+    out.reset();
+    if (config_.role() != v1::Role::Server) {
+        describe(error, "a client endpoint does not accept packets");
+        return BackendIo::Invalid;
+    }
+    const auto run = current();
+    if (!run || !run->running()) {
+        describe(error, run ? run->stop_reason()
+                            : std::string_view("server endpoint is not running"));
+        return BackendIo::NotRunning;
+    }
+    const bool declared = std::any_of(config_.services().begin(), config_.services().end(),
+        [&service](const v1::Service& entry) {
+            return entry.name() == service && entry.kind() == v1::ServiceKind::Packet;
+        });
+    const auto index = run->waiting_index(service, BackendServiceKind::Packet);
+    if (!declared || !index) {
+        describe(error, "packet service is not registered on this endpoint");
+        return BackendIo::NotFound;
+    }
+    auto handle = std::make_unique<Ytp1BackendPacket>();
     std::shared_ptr<NativeStream> stream;
     const BackendIo io = run->accept(*index, timeout_ms, stream, error);
     if (io != BackendIo::Ok) return io;
@@ -1828,6 +2168,7 @@ BackendIo Ytp1Backend::accept_stream(const std::string& service,
 std::unique_ptr<EndpointBackend> make_ytp1_backend(
     const config::v1::Config& config,
     std::string_view base_dir,
+    std::string_view resolver_program,
     std::vector<BackendService> registered_services,
     SocketProtector socket_protector,
     BackendIo& outcome,
@@ -1854,6 +2195,7 @@ std::unique_ptr<EndpointBackend> make_ytp1_backend(
         }
         auto backend = std::make_unique<Ytp1Backend>(
             config, std::filesystem::path(std::string(base_dir)),
+            std::filesystem::path(std::string(resolver_program)),
             std::move(registered_services), std::move(socket_protector));
         outcome = BackendIo::Ok;
         error.clear();

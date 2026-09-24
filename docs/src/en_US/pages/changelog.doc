@@ -12,16 +12,76 @@ withdrawn version plans and test builds. They are not support contracts. See
 
 ## [Unreleased 0.3.0-dev1]
 
-The product version moved to `0.3.0-dev1`. The runnable `yume` and `yumed`
-binaries keep speaking the transport-v2 wire `0.2.0-dev6` recorded in the next
-section; the wire, AUTH, relay, YTP/1, schema, ABI, and evidence-profile
+The product version moved to `0.3.0-dev1`. The default `yume` and `yumed`
+binaries now compose native YTP/1 with schema-1 configuration. The explicit,
+uninstalled transport-v2 reference retains its wire `0.2.0-dev6`; the wire,
+AUTH, relay, YTP/1, schema, ABI, and evidence-profile
 versions are independent axes. `docs/IMPLEMENTATION_STATUS.md` is the current
 boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Bounded name-lookup shutdown.** Client hosts and destination names now
+  resolve in a separate helper process instead of Boost.Asio's single
+  in-process resolver thread. Cancellation settles immediately, one slow name no
+  longer delays other lookups, and closing a runtime kills and reaps the helper,
+  so SIGTERM or SDK stop no longer waits for a stalled `getaddrinfo`. The helper
+  holds no inherited connections and drops every capability. `yume` and `yumed`
+  serve as their own helper. The SDK installs `yume-resolver`, which embedding
+  hosts pass as `yume_runtime_options.resolver_program`. Without it, a client
+  that dials a name fails closed at start.
+- **Per-identity session limits.** An authorized-keys entry may set
+  `max_sessions`. A new session beyond it replaces that identity's oldest
+  session, so a reconnecting client displaces its own half-open session
+  instead of being refused. Without the field the daemon's capacity is the
+  only bound, as before. Doctor validates the field against the daemon's bound.
+- **Credential reload.** `yumed` reloads its key stores and server keys on
+  SIGHUP, and the Debian unit wires `systemctl reload`, validating first.
+  Removed identities lose their sessions at once, established sessions apply
+  changed grants to their next stream, and an invalid store keeps the previous
+  credentials. TLS and admission key changes still need a restart.
+- **More client bundles.** `yume-setup add-client` issues another client for an
+  existing server tree and extends its authorized-keys store in one
+  all-or-nothing step that keeps the store's file owner. `remove-client`
+  revokes one, and a reload ends its sessions.
+- **Client status for embedding.** `NativeClientRuntime::status()` reports the
+  connection state, last failure, verified server fingerprint, attempt counts
+  and cumulative traffic from any thread, with an optional state-change
+  callback. `SessionEngine::traffic()` supplies per-session byte counts.
+- **Native operations guide.** `docs/OPERATIONS.md` now covers the native
+  programs. The transport-v2 operator material moved to
+  `docs/TRANSPORT_V2_OPERATIONS.md` under its reference program names.
+  Release verification, which describes the native release, stays on the
+  native page. The duplicate website build notes were dropped in favor of the
+  documentation source guide.
+- **Native acceptance tooling.** Native-only builds register setup, doctor and
+  packaging regressions. Bounded libFuzzer targets cover YTP framing, AUTH and
+  schema-1 configuration; numeric JSON overflow now reports a typed validation
+  error. Optional isolated network tests exercise the actual systemd-resolved
+  service and competing streams under kernel-induced latency and backpressure.
+- **Cryptographic construction vectors.** A public synthetic corpus and an
+  independent generator cover transcripts, key schedules, record protection
+  and directional rekey calculations. The internal crypto module exposes those
+  deterministic constructions to tests without exposing them through the SDK.
+- **Native packaging migration.** Release archives and Debian definitions use
+  schema-1 tools and configuration. GUI and helper build lanes explicitly select
+  the retained reference graph. The Debian service waits for operator-provided
+  credentials and validates configuration before starting; package installation
+  does not enable or start it. Release qualification remains open.
+- **Native terminal failure cleanup.** The CLI reserves its runner-exception
+  stop task before execution. Client reconnect and SOCKS accept retry failures
+  that cannot recover close the runtime and report a typed terminal status,
+  allowing the process to drain and exit. Ordinary failures keep backoff.
+- **TCP allocation-failure completion.** Pending read/write construction keeps
+  callback ownership with the caller until storage exists. Allocation refusal
+  settles each callback once and returns queue capacity for subsequent traffic.
+- **Shared allocation test hooks.** The remaining ten private new/delete
+  replacements use the shared out-of-line helper, including optional aligned
+  provider allocation interception and secret-buffer quarantine. Fault policies
+  and wipe-before-release observations remain owned by their tests.
+
 - **Development standalone runtimes.** With every native provider enabled the
-  build produces `yumed-ytp1` and `yume-ytp1`. The daemon serves configured
+  default build installs `yumed` and `yume`. The daemon serves configured
   direct TCP/UDP adapters within their destinations. The client keeps one
   authenticated session with bounded reconnect and runs loopback SOCKS5
   listeners. CONNECT streams join the existing direct-route bridge.
@@ -30,8 +90,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   An OPEN deadline returns SOCKS5 0x06 (TTL expired); other cancellation keeps
   its existing status, and late acceptance cannot revive an expired request.
   `yume_native_runtime_test` carries a payload through SOCKS5, checks refusals
-  and requires clean SIGTERM exits. Named-service and packet/TUN adapters
-  remain unfinished, and the programs are not installed.
+  and requires clean SIGTERM exits. Managed Linux packet/TUN adapters and
+  experimental SDK streams, packets and routes are also implemented;
+  arbitrary standalone named-service handlers remain unfinished.
 - **SOCKS5 UDP ASSOCIATE.** A client `socks5` adapter that names a packet
   `udp_service` relays UDP through a loopback socket tied to the client's TCP
   connection. Each destination opens its own authenticated packet stream, so
@@ -41,9 +102,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   idle and wait before a refused OPEN is repeated. The schema-1 parser, doctor
   and setup kit carry the new key. Endpoint and process tests cover traffic,
   refusals, source locking, the budget and relay closure.
-- **Runnable development kit.** `yume-setup-ytp1` no longer declares the
-  unimplemented packet/TUN service, adapters and grant, so its kit starts
-  `yumed-ytp1` and `yume-ytp1` without edits. Its launchers name those programs.
+- **Runnable development kit.** Installed `yume-setup` and `yume-doctor` use
+  schema 1. The generated kit starts native `yumed` and `yume` with SOCKS
+  TCP/UDP. Managed TUN addresses, routes and DNS are explicit operator choices.
 - **Client dial address.** Schema-1 clients may set `endpoint.connect_address`
   to dial a numeric address while TLS and admission still authenticate `host`.
 - **Evaluation tooling.** `scripts/ensure-ndpi.sh` builds pinned nDPI 6.0, or

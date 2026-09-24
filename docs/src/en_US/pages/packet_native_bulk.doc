@@ -2,13 +2,12 @@
 name:     packet_native_bulk
 kind:     page
 title:    Packet-native bulk mode
-summary:  The current packet service and the unfinished YTP/1 packet-channel contract that replaces it.
+summary:  Transport-v2 packet-bulk framing and its boundary with native YTP/1 packet channels.
 markdown: docs/PACKET_NATIVE_BULK.md
 web:      yes
 ---
-> **Runnable transport-v2 path:** this document describes the current packet
-> service. First-class YTP/1 packet channels are an unfinished replacement
-> contract documented in the
+> **Transport-v2 reference:** this document describes its packet-bulk
+> service. Native YTP/1 packet channels and managed Linux TUN are documented in the
 > [YTP/1 foundation page](development/ytp1/README.md#packet-channels).
 
 Packet-bulk mode carries batches of IP packets through one authenticated

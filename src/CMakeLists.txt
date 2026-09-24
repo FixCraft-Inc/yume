@@ -298,10 +298,9 @@ endfunction()
 # ----------------------------------------------------------------------
 # YUME 0.3 dependency-clean foundations
 # ----------------------------------------------------------------------
-# The experimental C++ provider and C ABI surfaces remain build-tree-only
-# while they are changing. The ABI always parses config v1; when transport v2
-# is enabled it also links the embed seam, while schema-1 endpoint start stays
-# unsupported until the native provider graph is composed.
+# C++ providers remain internal. The experimental C ABI can be installed by
+# explicit opt-in; schema-1 endpoints use the native provider graph. Enabling
+# transport v2 also links its reference embedding backend.
 include("${CMAKE_SOURCE_DIR}/cmake/YumeLayering.cmake")
 
 add_library(yume_engine STATIC
@@ -378,15 +377,26 @@ target_link_libraries(yume_direct_route_handler PUBLIC yume_engine)
 # Only the native endpoint brings this archive into the shared ABI closure.
 # Without that backend, propagating -fno-lto breaks consumers that also link
 # the LTO-built session/engine archives (including the direct-route test).
-if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
-   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER AND
-   YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
+   YUME_BUILD_YTP1_TLS13_PROVIDER AND
+   YUME_BUILD_YTP1_FRONT_DOOR)
     yume_prepare_static_for_shared_abi(yume_direct_route_handler)
 endif()
 yume_apply_perf_opts(yume_direct_route_handler)
 
-if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+# Packet validation is independent of device attachment and network privilege.
+# A caller supplies the device channel and both directional address policies.
+add_library(yume_ip_packet_channel STATIC
+    common/ip_packet.hpp
+    providers/ip_packet_channel.cpp
+    providers/ip_packet_channel.hpp)
+target_include_directories(yume_ip_packet_channel PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(yume_ip_packet_channel PUBLIC yume_engine)
+yume_apply_perf_opts(yume_ip_packet_channel)
+yume_assert_exact_link_dependencies(yume_ip_packet_channel yume_engine)
+
+if(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER OR
+   YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
     add_library(yume_asio_execution_context STATIC
         providers/asio_execution_context.cpp
         providers/asio_execution_context.hpp
@@ -395,12 +405,50 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER OR
     target_link_libraries(yume_asio_execution_context PUBLIC yume_engine Boost::system)
     yume_apply_perf_opts(yume_asio_execution_context)
     yume_assert_exact_link_dependencies(yume_asio_execution_context yume_engine Boost::system)
+
+    # System name lookup runs in a killable helper process: getaddrinfo cannot
+    # be interrupted, so an in-process lookup could hold final shutdown. The
+    # helper side links nothing but libc and threads. yume and yumed serve as
+    # their own helper, and yume-resolver serves embedding hosts.
+    find_package(Threads REQUIRED)
+    add_library(yume_system_resolver_helper STATIC
+        providers/system_resolver_helper.cpp
+        providers/system_resolver_helper.hpp
+        providers/system_resolver_protocol.hpp)
+    target_include_directories(yume_system_resolver_helper PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_system_resolver_helper PRIVATE Threads::Threads)
+    yume_apply_perf_opts(yume_system_resolver_helper)
+    # yume and yumed link without LTO when a shared-ABI build makes their
+    # other archives non-LTO, so this archive must not hold LTO-only objects.
+    yume_prepare_static_for_shared_abi(yume_system_resolver_helper)
+    yume_assert_exact_link_dependencies(yume_system_resolver_helper Threads::Threads)
+
+    add_library(yume_system_resolver STATIC
+        providers/system_resolver.cpp
+        providers/system_resolver.hpp
+        providers/system_resolver_protocol.hpp)
+    target_include_directories(yume_system_resolver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_system_resolver
+        PUBLIC yume_engine yume_asio_execution_context Boost::system)
+    yume_apply_perf_opts(yume_system_resolver)
+    yume_assert_exact_link_dependencies(yume_system_resolver
+        yume_engine yume_asio_execution_context Boost::system)
+
+    if(NOT WIN32)
+        add_executable(yume-resolver providers/system_resolver_main.cpp)
+        target_link_libraries(yume-resolver PRIVATE yume_system_resolver_helper)
+        yume_apply_perf_opts(yume-resolver)
+        # SystemResolver refuses a helper that group or others may modify,
+        # whatever the build's umask.
+        add_custom_command(TARGET yume-resolver POST_BUILD
+            COMMAND chmod 0755 "$<TARGET_FILE:yume-resolver>" VERBATIM)
+    endif()
 endif()
 
 # Concrete direct TCP/connected-UDP egress remains an opt-in provider until
 # the replacement endpoint graph is wired and qualified. Its public header is
 # a source-level C++20 provider contract; it is not part of the C ABI.
-if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
+if(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER)
     add_library(yume_asio_direct_route_provider STATIC
         providers/asio_direct_route_provider.cpp
         providers/asio_direct_route_provider.hpp)
@@ -409,13 +457,13 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
     target_include_directories(yume_asio_direct_route_provider
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_asio_direct_route_provider
-        PUBLIC yume_engine yume_asio_execution_context Boost::system)
+        PUBLIC yume_engine yume_asio_execution_context yume_system_resolver Boost::system)
     yume_apply_perf_opts(yume_asio_direct_route_provider)
 endif()
 
 # Client connections and adopted server sockets share one bounded TCP channel
 # implementation. Listening and ingress policy belong to the native FrontDoor.
-if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+if(YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
     add_library(yume_asio_tcp_byte_channel_provider STATIC
         providers/asio_tcp_byte_channel_provider.cpp
         providers/asio_tcp_byte_channel_provider.hpp)
@@ -424,15 +472,15 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
     target_include_directories(yume_asio_tcp_byte_channel_provider
         PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_asio_tcp_byte_channel_provider
-        PUBLIC yume_engine yume_asio_execution_context Boost::system)
+        PUBLIC yume_engine yume_asio_execution_context yume_system_resolver Boost::system)
     yume_apply_perf_opts(yume_asio_tcp_byte_channel_provider)
 endif()
 
 # Profile data and fingerprint interpretation are shared by TLS and H2. Keep
 # the SSL_CTX emitter separate so the H2 carrier never acquires a TLS edge.
 if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+   YUME_BUILD_YTP1_H2_CARRIER OR
+   YUME_BUILD_YTP1_TLS13_PROVIDER)
     add_library(yume_cover_profile STATIC
         core/stealth/cover_profile.cpp
         core/stealth/cover_profile.hpp
@@ -446,7 +494,7 @@ if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
 endif()
 
 if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+   YUME_BUILD_YTP1_TLS13_PROVIDER)
     add_library(yume_tls_client_profile STATIC
         core/stealth/tls_client_profile.cpp
         core/stealth/tls_client_profile.hpp)
@@ -461,7 +509,7 @@ endif()
 # Shared admission owns path/authority parsing, the HMAC primitive, and
 # replay reservations. Protocol encodings remain with their separate owners.
 if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+   YUME_BUILD_YTP1_H2_CARRIER)
     add_library(yume_h2_admission STATIC
         admission/h2_admission.cpp
         admission/h2_admission.hpp)
@@ -471,7 +519,7 @@ if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
     yume_assert_exact_link_dependencies(yume_h2_admission Boost::headers OpenSSL::Crypto)
 endif()
 
-if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+if(YUME_BUILD_YTP1_H2_CARRIER)
     add_library(yume_ytp1_h2_admission STATIC
         providers/ytp1_h2_admission.cpp
         providers/ytp1_h2_admission.hpp)
@@ -486,7 +534,7 @@ endif()
 # One HTTP/2/WebSocket state machine serves native YTP and the remaining v2
 # callers. It owns framing and receive credit, not TLS or session admission.
 if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+   YUME_BUILD_YTP1_H2_CARRIER)
     find_package(Threads REQUIRED)
     add_library(yume_h2_carrier STATIC
         core/stealth/h2_carrier.cpp
@@ -510,7 +558,7 @@ if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
         yume_cover_profile ${YUME_NGHTTP2_TARGET} OpenSSL::Crypto Threads::Threads)
 endif()
 
-if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+if(YUME_BUILD_YTP1_H2_CARRIER)
     add_library(yume_ytp1_h2_carrier STATIC
         providers/ytp1_h2_carrier.cpp
         providers/ytp1_h2_carrier.hpp
@@ -527,8 +575,10 @@ endif()
 # The first concrete YTP/1 security-provider candidate is deliberately an
 # opt-in, build-tree-only target. It uses upstream OpenSSL 3.5 primitives but
 # is not part of the runnable transport-v2 graph and is not release-qualified.
-if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER)
+if(YUME_BUILD_YTP1_OPENSSL_PROVIDER)
     add_library(yume_ytp1_openssl_security STATIC
+        providers/ytp1_crypto.cpp
+        providers/ytp1_crypto.hpp
         providers/ytp1_security_provider.cpp
         providers/ytp1_security_provider.hpp)
     add_library(yume::ytp1_openssl_security ALIAS
@@ -544,7 +594,7 @@ endif()
 # Memory-BIO TLS wraps the engine ByteChannel contract and therefore has no
 # socket dependency. Its client applies the shared browser TLS profile; it
 # does not implement the HTTP front door or H2 carrier.
-if(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+if(YUME_BUILD_YTP1_TLS13_PROVIDER)
     add_library(yume_ytp1_tls13_secure_channel STATIC
         providers/ytp1_tls13_secure_channel.cpp
         providers/ytp1_tls13_secure_channel.hpp)
@@ -560,7 +610,7 @@ endif()
 # Bounded, confined file reads are shared by native cover and v2 stores/sites.
 # Keep their handle ownership independent of either runtime.
 if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+   YUME_BUILD_YTP1_FRONT_DOOR)
     add_library(yume_bounded_files STATIC
         core/runtime/bounded_file.cpp
         core/runtime/bounded_file.hpp)
@@ -570,7 +620,7 @@ if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
     yume_assert_exact_link_dependencies(yume_bounded_files)
 endif()
 
-if(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+if(YUME_BUILD_YTP1_FRONT_DOOR)
     add_library(yume_ytp1_cover_site STATIC
         providers/ytp1_cover_site.cpp
         providers/ytp1_cover_site.hpp)
@@ -619,8 +669,8 @@ else()
     yume_assert_exact_link_dependencies(yume_private_files)
 endif()
 
-if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
-   YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
+   YUME_BUILD_YTP1_TLS13_PROVIDER)
     add_library(yume_native_credentials STATIC
         runtime/native_credentials.cpp runtime/native_credentials.hpp)
     target_include_directories(yume_native_credentials PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -633,7 +683,7 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
         yume_config_v1 yume_engine yume_private_files yume_ytp1_openssl_security
         yume_ytp1_tls13_secure_channel OpenSSL::Crypto)
 
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+    if(YUME_BUILD_YTP1_FRONT_DOOR)
         # Destination authority from schema-1 direct adapters. The endpoint and
         # standalone route providers share this one evaluator.
         add_library(yume_native_egress_policy STATIC
@@ -660,8 +710,38 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
             yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
             yume_direct_route_handler yume_native_egress_policy Boost::system)
 
-        # Standalone development runtimes over NativeEndpoint. The yume and
-        # yumed names stay with transport v2 until the coordinated switch.
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET yume_asio_direct_route_provider)
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(YUME_SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
+            add_library(yume_linux_tun_packet_channel STATIC
+                providers/linux_tun_packet_channel.cpp providers/linux_tun_packet_channel.hpp)
+            target_include_directories(yume_linux_tun_packet_channel PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+            target_link_libraries(yume_linux_tun_packet_channel PUBLIC yume_engine yume_asio_execution_context PRIVATE Boost::system)
+            yume_apply_perf_opts(yume_linux_tun_packet_channel)
+            yume_assert_exact_link_dependencies(yume_linux_tun_packet_channel yume_engine yume_asio_execution_context Boost::system)
+            add_library(yume_linux_tun_network STATIC
+                runtime/linux_tun_network.cpp runtime/linux_tun_network.hpp)
+            target_include_directories(yume_linux_tun_network PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+            target_link_libraries(yume_linux_tun_network PUBLIC yume_config_v1 yume_linux_tun_packet_channel yume_asio_execution_context yume_engine PRIVATE PkgConfig::YUME_SYSTEMD)
+            yume_apply_perf_opts(yume_linux_tun_network)
+            yume_assert_exact_link_dependencies(yume_linux_tun_network yume_config_v1 yume_linux_tun_packet_channel yume_asio_execution_context yume_engine PkgConfig::YUME_SYSTEMD)
+        endif()
+
+        add_library(yume_native_packet_adapter STATIC
+            runtime/native_packet_adapter.cpp runtime/native_packet_adapter.hpp)
+        target_include_directories(yume_native_packet_adapter PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_native_packet_adapter PUBLIC yume_config_v1 yume_engine yume_asio_execution_context
+            PRIVATE yume_ip_packet_channel yume_direct_route_handler)
+        yume_apply_perf_opts(yume_native_packet_adapter)
+        yume_assert_exact_link_dependencies(yume_native_packet_adapter
+            yume_config_v1 yume_engine yume_asio_execution_context yume_ip_packet_channel yume_direct_route_handler)
+        set(_yume_native_network_libraries yume_native_packet_adapter)
+        if(TARGET yume_linux_tun_network)
+            list(APPEND _yume_native_network_libraries yume_linux_tun_network)
+        endif()
+
+        # One application composition owns the normal client and daemon.
+        # Reference transport-v2 programs below are never installed.
         if(TARGET yume_asio_direct_route_provider)
             add_library(yume_native_runtime STATIC
                 runtime/native_cli.cpp runtime/native_cli.hpp
@@ -675,24 +755,27 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
                 PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context
                 PRIVATE yume_native_endpoint yume_native_egress_policy yume_native_credentials
                     yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
-                    yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files
+                    yume_system_resolver yume_system_resolver_helper
+                    yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files ${_yume_native_network_libraries}
                     Boost::system)
             yume_apply_perf_opts(yume_native_runtime)
             yume_assert_exact_link_dependencies(yume_native_runtime
                 yume_config_v1 yume_session_bootstrap yume_asio_execution_context
                 yume_native_endpoint yume_native_egress_policy yume_native_credentials
                 yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
-                yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files
+                yume_system_resolver yume_system_resolver_helper
+                yume_direct_route_handler yume_ytp1_openssl_security yume_bounded_files ${_yume_native_network_libraries}
                 Boost::system)
-            # yume_ytp1 already names the protocol kernel library.
-            add_executable(yume_ytp1_server_program runtime/yumed_ytp1_main.cpp)
-            add_executable(yume_ytp1_client_program runtime/yume_ytp1_main.cpp)
-            set_target_properties(yume_ytp1_server_program PROPERTIES OUTPUT_NAME yumed-ytp1)
-            set_target_properties(yume_ytp1_client_program PROPERTIES OUTPUT_NAME yume-ytp1)
-            foreach(_yume_native_program IN ITEMS yume_ytp1_server_program yume_ytp1_client_program)
-                target_link_libraries(${_yume_native_program} PRIVATE yume_native_runtime)
-                yume_apply_perf_opts(${_yume_native_program})
-            endforeach()
+            if(YUME_BUILD_NATIVE_APPLICATION)
+                add_executable(yumed runtime/yumed_main.cpp)
+                add_executable(yume runtime/yume_main.cpp)
+                foreach(_yume_native_program IN ITEMS yumed yume)
+                    target_link_libraries(${_yume_native_program} PRIVATE yume_native_runtime)
+                    yume_apply_perf_opts(${_yume_native_program})
+                endforeach()
+                install(TARGETS yume yumed
+                    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT yume_cli)
+            endif()
         endif()
 
         # The YTP/1 embedding backend adapts the native endpoint to the
@@ -706,10 +789,10 @@ if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER AND
         # release, so it names that provider rather than reaching it through
         # the runtime's private links.
         target_link_libraries(yume_embed_ytp1 PRIVATE
-            yume_native_endpoint yume_ytp1_openssl_security Threads::Threads)
+            yume_native_endpoint yume_ytp1_openssl_security Threads::Threads Boost::system)
         yume_apply_perf_opts(yume_embed_ytp1)
         yume_assert_exact_link_dependencies(yume_embed_ytp1
-            yume_native_endpoint yume_ytp1_openssl_security Threads::Threads)
+            yume_native_endpoint yume_ytp1_openssl_security Threads::Threads Boost::system)
     endif()
 endif()
 
@@ -735,6 +818,7 @@ if(YUME_BUILD_SHARED_ABI)
     target_include_directories(yume_abi
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
         PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}"
     )
@@ -755,13 +839,42 @@ if(YUME_BUILD_SHARED_ABI)
         foreach(_yume_absorbed IN ITEMS
                 yume_embed_ytp1 yume_native_endpoint yume_native_egress_policy yume_native_credentials
                 yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
-                yume_asio_execution_context yume_asio_tcp_byte_channel_provider
+                yume_asio_execution_context yume_asio_tcp_byte_channel_provider yume_system_resolver
                 yume_ytp1_front_door yume_ytp1_cover_site yume_ytp1_h2_carrier
                 yume_ytp1_h2_admission yume_h2_admission
                 yume_ytp1_tls13_secure_channel yume_tls_client_profile
                 yume_cover_profile yume_ytp1_openssl_security yume_private_files)
             yume_prepare_static_for_shared_abi(${_yume_absorbed})
         endforeach()
+    endif()
+
+    if(YUME_INSTALL_EXPERIMENTAL_SDK)
+        include(CMakePackageConfigHelpers)
+        install(TARGETS yume_abi EXPORT yumeTargets
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libyume_runtime
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT libyume_runtime
+            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT libyume_development)
+        install(FILES "${CMAKE_SOURCE_DIR}/include/yume/yume.h"
+            DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/yume" COMPONENT libyume_development)
+        install(EXPORT yumeTargets NAMESPACE yume::
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume" COMPONENT libyume_development)
+        # Embedding hosts pass this helper as the runtime's resolver program.
+        # The package metadata names its installed location.
+        set(YUME_RESOLVER_INSTALL_PATH "${CMAKE_INSTALL_LIBEXECDIR}/yume/yume-resolver")
+        install(TARGETS yume-resolver
+            RUNTIME DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/yume" COMPONENT libyume_runtime)
+        configure_package_config_file("${CMAKE_SOURCE_DIR}/cmake/yumeConfig.cmake.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/yumeConfig.cmake"
+            INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
+            PATH_VARS YUME_RESOLVER_INSTALL_PATH)
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/yumeConfig.cmake"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume" COMPONENT libyume_development)
+        file(RELATIVE_PATH YUME_PC_PREFIX_FROM_PKGCONFIG
+            "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_PREFIX}")
+        configure_file("${CMAKE_SOURCE_DIR}/cmake/yume.pc.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/yume.pc" @ONLY)
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/yume.pc"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig" COMPONENT libyume_development)
     endif()
 
     # The canonical map is the only exported-symbol allowlist on ELF and the
@@ -796,12 +909,12 @@ yume_assert_exact_link_dependencies(
     yume_session_engine yume_engine yume_ytp1)
 yume_assert_exact_link_dependencies(
     yume_session_bootstrap yume_session_engine)
-if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER)
+if(YUME_BUILD_YTP1_OPENSSL_PROVIDER)
     yume_assert_exact_link_dependencies(
         yume_ytp1_openssl_security
         yume_session_engine yume_ytp1 OpenSSL::Crypto)
 endif()
-if(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+if(YUME_BUILD_YTP1_TLS13_PROVIDER)
     yume_assert_exact_link_dependencies(
         yume_ytp1_tls13_secure_channel
         yume_engine yume_tls_client_profile OpenSSL::SSL OpenSSL::Crypto)
@@ -810,15 +923,19 @@ yume_assert_exact_link_dependencies(
     yume_config_v1 nlohmann_json::nlohmann_json)
 yume_assert_exact_link_dependencies(
     yume_direct_route_handler yume_engine)
-if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
+# Both network providers resolve names only through the SystemResolver helper
+# process, never an in-process getaddrinfo.
+if(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER)
     yume_assert_exact_link_dependencies(
-        yume_asio_direct_route_provider yume_engine yume_asio_execution_context Boost::system)
+        yume_asio_direct_route_provider yume_engine yume_asio_execution_context
+        yume_system_resolver Boost::system)
 endif()
-if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+if(YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
     yume_assert_exact_link_dependencies(
-        yume_asio_tcp_byte_channel_provider yume_engine yume_asio_execution_context Boost::system)
+        yume_asio_tcp_byte_channel_provider yume_engine yume_asio_execution_context
+        yume_system_resolver Boost::system)
 endif()
-if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+if(YUME_BUILD_YTP1_H2_CARRIER)
     yume_assert_exact_link_dependencies(
         yume_ytp1_h2_carrier
         yume_engine yume_h2_carrier yume_ytp1_h2_admission OpenSSL::Crypto)
@@ -837,6 +954,70 @@ endif()
 yume_check_03_source_layering("${CMAKE_SOURCE_DIR}")
 
 if(YUME_BUILD_TESTING)
+    # Schema-1 provisioning is part of the native application contract. Keep
+    # these tests outside the optional transport-v2 reference graph.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME yume_setup_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_setup.py")
+    add_test(NAME yume_doctor_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor.py")
+    set_tests_properties(yume_setup_test yume_doctor_test PROPERTIES
+        TIMEOUT 300 LABELS "native-runtime;provisioning")
+    add_test(NAME yume_project_metadata_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME yume_linux_release_package_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/scripts/test_package_linux_release.py")
+        set_tests_properties(yume_linux_release_package_test PROPERTIES
+            TIMEOUT 60 LABELS "native-runtime;packaging")
+    endif()
+
+    if(TARGET yume_native_packet_adapter)
+        add_executable(yume_native_packet_adapter_test runtime/native_packet_adapter_test.cpp)
+        target_link_libraries(yume_native_packet_adapter_test PRIVATE yume_native_packet_adapter)
+        yume_apply_perf_opts(yume_native_packet_adapter_test)
+        add_test(NAME yume_native_packet_adapter_test COMMAND yume_native_packet_adapter_test)
+        set_tests_properties(yume_native_packet_adapter_test PROPERTIES TIMEOUT 60 LABELS "native;packet;tun")
+    endif()
+
+    if(TARGET yume_linux_tun_packet_channel)
+        add_executable(yume_linux_tun_packet_channel_test providers/linux_tun_packet_channel_test.cpp)
+        target_link_libraries(yume_linux_tun_packet_channel_test PRIVATE yume_linux_tun_packet_channel)
+        yume_apply_perf_opts(yume_linux_tun_packet_channel_test)
+        foreach(_wrapped IN ITEMS open fstat ioctl socket write)
+            target_link_options(yume_linux_tun_packet_channel_test PRIVATE "LINKER:--wrap=${_wrapped}")
+        endforeach()
+        add_test(NAME yume_linux_tun_packet_channel_test COMMAND yume_linux_tun_packet_channel_test)
+        set_tests_properties(yume_linux_tun_packet_channel_test PROPERTIES TIMEOUT 60 LABELS "native;packet;tun")
+    endif()
+
+    if(TARGET yume_linux_tun_network)
+        add_executable(yume_linux_tun_network_test runtime/linux_tun_network_test.cpp)
+        target_link_libraries(yume_linux_tun_network_test PRIVATE yume_linux_tun_network PkgConfig::YUME_SYSTEMD)
+        yume_apply_perf_opts(yume_linux_tun_network_test)
+        foreach(_wrapped IN ITEMS open fstat stat ioctl socket bind sendto recvmsg poll
+                sd_bus_open_system sd_bus_unref sd_bus_set_method_call_timeout sd_bus_get_name_creds sd_bus_get_owner_creds
+                sd_bus_creds_unref sd_bus_creds_get_pid sd_bus_creds_get_unique_name
+                sd_bus_message_new_method_call sd_bus_message_unref sd_bus_message_set_allow_interactive_authorization
+                sd_bus_message_append sd_bus_message_open_container sd_bus_message_close_container
+                sd_bus_message_append_array sd_bus_call)
+            target_link_options(yume_linux_tun_network_test PRIVATE "LINKER:--wrap=${_wrapped}")
+        endforeach()
+        add_test(NAME yume_linux_tun_network_test COMMAND yume_linux_tun_network_test)
+        set_tests_properties(yume_linux_tun_network_test PROPERTIES TIMEOUT 60 LABELS "native;packet;tun")
+    endif()
+
+    add_executable(yume_ip_packet_channel_test providers/ip_packet_channel_test.cpp)
+    target_link_libraries(yume_ip_packet_channel_test
+        PRIVATE yume_ip_packet_channel yume_direct_route_handler)
+    yume_apply_perf_opts(yume_ip_packet_channel_test)
+    add_test(NAME yume_ip_packet_channel_test COMMAND yume_ip_packet_channel_test)
+    set_tests_properties(yume_ip_packet_channel_test PROPERTIES
+        TIMEOUT 15 LABELS "foundation;packet")
     if(TARGET yume_h2_carrier)
         add_executable(yume_websocket_codec_test core/stealth/websocket_codec_test.cpp)
         target_link_libraries(yume_websocket_codec_test PRIVATE yume_h2_carrier)
@@ -860,7 +1041,7 @@ if(YUME_BUILD_TESTING)
             set_tests_properties(${_shared_test} PROPERTIES LABELS "shared-component")
         endif()
     endforeach()
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR)
+    if(YUME_BUILD_YTP1_FRONT_DOOR)
         add_executable(yume_ytp1_cover_site_test providers/ytp1_cover_site_test.cpp)
         target_link_libraries(yume_ytp1_cover_site_test PRIVATE yume_ytp1_cover_site)
         yume_apply_perf_opts(yume_ytp1_cover_site_test)
@@ -939,16 +1120,47 @@ if(YUME_BUILD_TESTING)
     add_test(NAME yume_direct_route_handler_test
         COMMAND yume_direct_route_handler_test)
 
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER)
+    if(TARGET yume-resolver)
+        # The same helper source with one test-only name that never resolves,
+        # standing in for a system lookup that does not return.
+        add_executable(yume_resolver_stall_helper
+            providers/system_resolver_helper.cpp providers/system_resolver_main.cpp)
+        target_include_directories(yume_resolver_stall_helper PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(yume_resolver_stall_helper PRIVATE YUME_SYSTEM_RESOLVER_TEST_STALL=1)
+        target_link_libraries(yume_resolver_stall_helper PRIVATE Threads::Threads)
+        yume_apply_perf_opts(yume_resolver_stall_helper)
+        add_custom_command(TARGET yume_resolver_stall_helper POST_BUILD
+            COMMAND chmod 0755 "$<TARGET_FILE:yume_resolver_stall_helper>" VERBATIM)
+        set(YUME_TEST_RESOLVER_DEFINITIONS
+            YUME_TEST_RESOLVER_PROGRAM="$<TARGET_FILE:yume-resolver>"
+            YUME_TEST_STALL_RESOLVER_PROGRAM="$<TARGET_FILE:yume_resolver_stall_helper>")
+
+        add_executable(yume_system_resolver_test providers/system_resolver_test.cpp)
+        target_link_libraries(yume_system_resolver_test
+            PRIVATE yume_system_resolver yume_system_resolver_helper)
+        target_compile_definitions(yume_system_resolver_test PRIVATE ${YUME_TEST_RESOLVER_DEFINITIONS})
+        add_dependencies(yume_system_resolver_test yume-resolver yume_resolver_stall_helper)
+        yume_apply_perf_opts(yume_system_resolver_test)
+        add_test(NAME yume_system_resolver_test COMMAND yume_system_resolver_test)
+        set_tests_properties(yume_system_resolver_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;resolver")
+    endif()
+
+    if(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER)
         add_executable(yume_asio_direct_route_provider_test
             providers/asio_direct_route_provider_test.cpp)
         target_link_libraries(yume_asio_direct_route_provider_test
             PRIVATE yume_asio_direct_route_provider yume_asio_execution_context
-                    yume_session_engine yume_ytp1)
+                    yume_system_resolver yume_session_engine yume_ytp1)
+        target_compile_definitions(yume_asio_direct_route_provider_test
+            PRIVATE ${YUME_TEST_RESOLVER_DEFINITIONS})
+        add_dependencies(yume_asio_direct_route_provider_test
+            yume-resolver yume_resolver_stall_helper)
         yume_apply_perf_opts(yume_asio_direct_route_provider_test)
         yume_assert_exact_link_dependencies(
             yume_asio_direct_route_provider_test
-            yume_asio_direct_route_provider yume_asio_execution_context yume_session_engine yume_ytp1)
+            yume_asio_direct_route_provider yume_asio_execution_context yume_system_resolver
+            yume_session_engine yume_ytp1)
         add_test(NAME yume_asio_direct_route_provider_test
             COMMAND yume_asio_direct_route_provider_test)
         set_tests_properties(yume_asio_direct_route_provider_test PROPERTIES
@@ -966,7 +1178,7 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_h2_admission_test COMMAND yume_h2_admission_test)
     endif()
 
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER)
+    if(YUME_BUILD_YTP1_H2_CARRIER)
         add_executable(yume_ytp1_h2_admission_test
             providers/ytp1_h2_admission_test.cpp)
         target_link_libraries(yume_ytp1_h2_admission_test
@@ -1012,15 +1224,21 @@ if(YUME_BUILD_TESTING)
             LABELS "foundation;0.3;carrier-provider;transport-v2-regression")
     endif()
 
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
+    if(YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
         add_executable(yume_asio_tcp_byte_channel_provider_test
             providers/asio_tcp_byte_channel_provider_test.cpp)
         target_link_libraries(yume_asio_tcp_byte_channel_provider_test
-            PRIVATE yume_asio_tcp_byte_channel_provider yume_asio_execution_context)
+            PRIVATE yume_asio_tcp_byte_channel_provider yume_asio_execution_context
+                yume_system_resolver)
+        target_compile_definitions(yume_asio_tcp_byte_channel_provider_test
+            PRIVATE ${YUME_TEST_RESOLVER_DEFINITIONS})
+        add_dependencies(yume_asio_tcp_byte_channel_provider_test
+            yume-resolver yume_resolver_stall_helper)
         yume_apply_perf_opts(yume_asio_tcp_byte_channel_provider_test)
         yume_assert_exact_link_dependencies(
             yume_asio_tcp_byte_channel_provider_test
-            yume_asio_tcp_byte_channel_provider yume_asio_execution_context)
+            yume_asio_tcp_byte_channel_provider yume_asio_execution_context
+            yume_system_resolver)
         add_test(NAME yume_asio_tcp_byte_channel_provider_test
             COMMAND yume_asio_tcp_byte_channel_provider_test)
         set_tests_properties(
@@ -1035,11 +1253,13 @@ if(YUME_BUILD_TESTING)
     yume_assert_exact_link_dependencies(yume_ytp1_kernel_test yume_ytp1)
     add_test(NAME yume_ytp1_kernel_test COMMAND yume_ytp1_kernel_test)
 
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER)
+    if(YUME_BUILD_YTP1_OPENSSL_PROVIDER)
         add_executable(yume_ytp1_openssl_security_test
             providers/ytp1_security_provider_test.cpp)
         target_link_libraries(yume_ytp1_openssl_security_test
             PRIVATE yume_ytp1_openssl_security OpenSSL::Crypto)
+        target_compile_definitions(yume_ytp1_openssl_security_test PRIVATE
+            YUME_YTP1_CRYPTO_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/ytp/testdata/ytp1_crypto_vectors.txt")
         yume_apply_perf_opts(yume_ytp1_openssl_security_test)
         yume_assert_exact_link_dependencies(
             yume_ytp1_openssl_security_test
@@ -1050,7 +1270,7 @@ if(YUME_BUILD_TESTING)
             LABELS "foundation;0.3;security-provider")
     endif()
 
-    if(YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER)
+    if(YUME_BUILD_YTP1_TLS13_PROVIDER)
         add_executable(yume_ytp1_tls13_secure_channel_test
             providers/ytp1_tls13_secure_channel_test.cpp)
         target_link_libraries(yume_ytp1_tls13_secure_channel_test
@@ -1097,7 +1317,10 @@ if(YUME_BUILD_TESTING)
         add_executable(yume_native_endpoint_test runtime/native_endpoint_test.cpp)
         target_link_libraries(yume_native_endpoint_test PRIVATE
             yume_native_endpoint yume_asio_execution_context yume_ytp1_cover_site
-            yume_native_credentials yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel)
+            yume_native_credentials yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel
+            yume_system_resolver)
+        target_compile_definitions(yume_native_endpoint_test PRIVATE ${YUME_TEST_RESOLVER_DEFINITIONS})
+        add_dependencies(yume_native_endpoint_test yume-resolver yume_resolver_stall_helper)
         if(TARGET yume_asio_direct_route_provider)
             target_link_libraries(yume_native_endpoint_test PRIVATE
                 yume_asio_direct_route_provider yume_direct_route_handler yume_native_runtime)
@@ -1119,20 +1342,69 @@ if(YUME_BUILD_TESTING)
             TIMEOUT 120 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_native_runtime)
+        add_executable(yume_native_run_loop_test runtime/native_run_loop_test.cpp)
+        target_link_libraries(yume_native_run_loop_test PRIVATE yume_asio_execution_context)
+        yume_apply_perf_opts(yume_native_run_loop_test)
+        add_test(NAME yume_native_run_loop_test COMMAND yume_native_run_loop_test)
+        set_tests_properties(yume_native_run_loop_test PROPERTIES
+            TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_socks5_request_test runtime/socks5_request_test.cpp)
         target_link_libraries(yume_native_socks5_request_test PRIVATE yume_native_runtime)
         yume_apply_perf_opts(yume_native_socks5_request_test)
         add_test(NAME yume_native_socks5_request_test COMMAND yume_native_socks5_request_test)
         set_tests_properties(yume_native_socks5_request_test PROPERTIES
             TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
-        if(NOT WIN32)
+        if(NOT WIN32 AND YUME_BUILD_NATIVE_APPLICATION)
+            if(YUME_TEST_LINUX_NAMESPACES)
+                if(NOT TARGET yume_linux_tun_network)
+                    message(FATAL_ERROR "TUN namespace tests require the native Linux network target")
+                endif()
+                add_test(NAME yume_native_tun_integration
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/run_native_tun_test.py"
+                        --yume "$<TARGET_FILE:yume>" --yumed "$<TARGET_FILE:yumed>"
+                        --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                set_tests_properties(yume_native_tun_integration PROPERTIES TIMEOUT 150 LABELS "native;packet;tun;namespace")
+                option(YUME_TEST_NATIVE_STRESS
+                    "Run bounded native stream stress with isolated kernel netem" OFF)
+                if(YUME_TEST_NATIVE_STRESS)
+                    find_program(YUME_NATIVE_TEST_TC NAMES tc HINTS /usr/sbin /sbin REQUIRED)
+                    set(_yume_native_stress_options)
+                    if(_yume_sanitize MATCHES "address")
+                        list(APPEND _yume_native_stress_options --asan)
+                    endif()
+                    add_test(NAME yume_native_stress_test
+                        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/run_native_stress_test.py"
+                            --yume "$<TARGET_FILE:yume>" --yumed "$<TARGET_FILE:yumed>"
+                            --openssl "${YUME_NATIVE_TEST_OPENSSL}" --tc "${YUME_NATIVE_TEST_TC}"
+                            ${_yume_native_stress_options})
+                    set_tests_properties(yume_native_stress_test PROPERTIES
+                        TIMEOUT 330 LABELS "native;stress;namespace")
+                endif()
+                set(YUME_NATIVE_TEST_RESOLVED "" CACHE FILEPATH
+                    "systemd-resolved executable for the isolated native DNS integration test")
+                if(YUME_NATIVE_TEST_RESOLVED)
+                    add_test(NAME yume_native_resolved_test
+                        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/run_native_tun_test.py"
+                            --yume "$<TARGET_FILE:yume>" --yumed "$<TARGET_FILE:yumed>"
+                            --openssl "${YUME_NATIVE_TEST_OPENSSL}"
+                            --resolved "${YUME_NATIVE_TEST_RESOLVED}")
+                    set_tests_properties(yume_native_resolved_test PROPERTIES
+                        TIMEOUT 180 LABELS "native;packet;tun;namespace;resolved")
+                endif()
+            endif()
+            add_test(NAME yume_native_cli_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/check_native_cli.py"
+                    --yume "$<TARGET_FILE:yume>" --yumed "$<TARGET_FILE:yumed>")
+            set_tests_properties(yume_native_cli_test PROPERTIES
+                TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
             # Real processes: setup kit, daemon, client SOCKS5 listener and a
             # local HTTP destination behind configured egress destinations.
             add_test(NAME yume_native_runtime_test
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tests/run_native_runtime_test.py"
-                    --yumed "$<TARGET_FILE:yume_ytp1_server_program>"
-                    --yume "$<TARGET_FILE:yume_ytp1_client_program>"
+                    --yumed "$<TARGET_FILE:yumed>"
+                    --yume "$<TARGET_FILE:yume>"
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}")
             set_tests_properties(yume_native_runtime_test PROPERTIES
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
@@ -1141,13 +1413,13 @@ if(YUME_BUILD_TESTING)
                     runtime/native_runtime_dns_server_test.cpp)
                 target_link_libraries(yume_native_runtime_dns_server_test PRIVATE yume_native_runtime)
                 target_link_options(yume_native_runtime_dns_server_test PRIVATE
-                    "-Wl,--wrap=getaddrinfo" "-Wl,--wrap=socket")
+                    "-Wl,--wrap=getaddrinfo")
                 yume_apply_perf_opts(yume_native_runtime_dns_server_test)
                 add_test(NAME yume_native_runtime_dns_test
                     COMMAND "${Python3_EXECUTABLE}"
                         "${CMAKE_SOURCE_DIR}/tests/run_native_runtime_test.py"
                         --yumed "$<TARGET_FILE:yume_native_runtime_dns_server_test>"
-                        --yume "$<TARGET_FILE:yume_ytp1_client_program>"
+                        --yume "$<TARGET_FILE:yume>"
                         --openssl "${YUME_NATIVE_TEST_OPENSSL}" --dns-fixture)
                 set_tests_properties(yume_native_runtime_dns_test PROPERTIES
                     TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
@@ -1249,10 +1521,51 @@ if(YUME_BUILD_TESTING)
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_ytp1_stream.py"
                     --probe "$<TARGET_FILE:yume_abi_ytp1_stream_probe>"
-                    --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                    --openssl "${YUME_NATIVE_TEST_OPENSSL}"
+                    --resolver "$<TARGET_FILE:yume-resolver>")
             set_tests_properties(yume_abi_ytp1_stream_integration PROPERTIES
                 TIMEOUT 180
                 LABELS "foundation;0.3;abi;integration;native-runtime")
+            if(TARGET yumed)
+                add_executable(yume_abi_ytp1_packet_probe abi/ytp1_packet_probe.cpp)
+                target_link_libraries(yume_abi_ytp1_packet_probe PRIVATE yume_abi Threads::Threads)
+                yume_apply_warnings(yume_abi_ytp1_packet_probe)
+                add_test(NAME yume_abi_ytp1_packet_integration
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_ytp1_packet.py"
+                        --probe "$<TARGET_FILE:yume_abi_ytp1_packet_probe>" --yumed "$<TARGET_FILE:yumed>"
+                        --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                set_tests_properties(yume_abi_ytp1_packet_integration PROPERTIES TIMEOUT 300 LABELS "abi;packet;native")
+                add_executable(yume_abi_ytp1_route_probe abi/ytp1_route_probe.cpp)
+                target_link_libraries(yume_abi_ytp1_route_probe PRIVATE yume_abi Threads::Threads)
+                yume_apply_warnings(yume_abi_ytp1_route_probe)
+                add_test(NAME yume_abi_ytp1_route_integration
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_ytp1_route.py"
+                        --probe "$<TARGET_FILE:yume_abi_ytp1_route_probe>"
+                        --yumed "$<TARGET_FILE:yumed>"
+                        --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                set_tests_properties(yume_abi_ytp1_route_integration PROPERTIES
+                    TIMEOUT 150 LABELS "foundation;0.3;abi;integration;native-runtime")
+            endif()
+        endif()
+
+        if(YUME_INSTALL_EXPERIMENTAL_SDK)
+            set(_yume_test_installed_native_traffic OFF)
+            if(TARGET yume_embed_ytp1 AND TARGET yumed AND UNIX)
+                set(_yume_test_installed_native_traffic ON)
+            endif()
+            add_test(NAME yume_abi_installed_consumers
+                COMMAND "${CMAKE_COMMAND}"
+                    "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
+                    "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/sdk-consumers"
+                    "-DYUME_BUILD_CONFIG=$<CONFIG>"
+                    "-DYUME_CONSUMER_SANITIZER_FLAGS=${_yume_sanitize_flags}"
+                    "-DYUME_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+                    "-DYUME_PYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+                    "-DYUME_OPENSSL_PROGRAM=${YUME_NATIVE_TEST_OPENSSL}"
+                    "-DYUME_TEST_NATIVE_TRAFFIC=${_yume_test_installed_native_traffic}"
+                    -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_install.cmake")
+            set_tests_properties(yume_abi_installed_consumers PROPERTIES TIMEOUT 600 LABELS "abi;install")
         endif()
 
         set(_yume_abi_contract_tests
@@ -1317,9 +1630,8 @@ if(YUME_BUILD_TESTING)
         PROPERTIES LABELS "foundation;0.3")
 endif()
 
-# Transport v2 supplies the runnable development products. Replacement-only
-# work can disable this graph; retirement depends on qualifying the required
-# product capabilities, not reproducing every transport-v2 feature.
+# Transport v2 retains uninstalled reference programs and unresolved capability
+# owners. It is off by default; its retirement still requires capability ports.
 if(YUME_BUILD_TRANSPORT_V2)
 
 
@@ -1589,7 +1901,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # ------------------------------------------------------------------
     # Shared outbound/federation transport
     # ------------------------------------------------------------------
-    # Federation is a server feature, but it dials another yumed through the
+    # Federation is a server feature, but it dials another yumed-v2-reference through the
     # same authenticated transport primitives used by the client.  Keep that
     # deliberately small common slice separate from yume_client_lib: linking
     # the full client library into yume_server used to pull CLI/runtime/share
@@ -1644,7 +1956,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # ------------------------------------------------------------------
     # Server library
     # ------------------------------------------------------------------
-    # Extracted so both the yumed executable and the optional yume_facade
+    # Extracted so both the yumed-v2-reference executable and the optional yume_facade
     # library (consumed by yume-gui) can link a single source-of-truth
     # server implementation. The executable below contains only main().
     add_library(yume_server STATIC
@@ -1704,7 +2016,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
     endif()
 
-    add_executable(yumed
+    add_executable(yumed-v2-reference
         main_server.cpp
         server/cli/anonym.cpp
         server/cli/operator_proof_token.cpp
@@ -1720,14 +2032,14 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/cli/startup_checks.cpp
         server/cli/help.cpp
     )
-    target_link_libraries(yumed PRIVATE yume_server)
-    yume_apply_perf_opts(yumed)
+    target_link_libraries(yumed-v2-reference PRIVATE yume_server)
+    yume_apply_perf_opts(yumed-v2-reference)
     if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        target_link_options(yumed PRIVATE -static)
+        target_link_options(yumed-v2-reference PRIVATE -static)
     endif()
     if(WIN32)
-        target_link_libraries(yumed PRIVATE ws2_32 mswsock)
-        target_compile_definitions(yumed PRIVATE
+        target_link_libraries(yumed-v2-reference PRIVATE ws2_32 mswsock)
+        target_compile_definitions(yumed-v2-reference PRIVATE
             WIN32_LEAN_AND_MEAN
             NOMINMAX
             WINVER=0x0600
@@ -1839,11 +2151,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
     endif()
 
-    add_executable(yume
+    add_executable(yume-v2-reference
         main_client.cpp
     )
-    target_link_libraries(yume PRIVATE yume_client_lib)
-    yume_apply_perf_opts(yume)
+    target_link_libraries(yume-v2-reference PRIVATE yume_client_lib)
+    yume_apply_perf_opts(yume-v2-reference)
 
     if(YUME_BUILD_CHROME_TLS_HELPER)
         if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
@@ -1890,24 +2202,22 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         add_custom_target(yume_chrome_tls_helper ALL
             DEPENDS "${_yume_chrome_tls_helper}")
-        add_dependencies(yume yume_chrome_tls_helper)
+        add_dependencies(yume-v2-reference yume_chrome_tls_helper)
         target_compile_definitions(yume_client_lib PUBLIC
             YUME_HAS_CHROME_TLS_HELPER=1)
-        install(PROGRAMS "${_yume_chrome_tls_helper}"
-            DESTINATION "${CMAKE_INSTALL_BINDIR}"
-            COMPONENT yume_cli)
+
     else()
         target_compile_definitions(yume_client_lib PUBLIC
             YUME_HAS_CHROME_TLS_HELPER=0)
     endif()
     if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        target_link_options(yume PRIVATE -static)
+        target_link_options(yume-v2-reference PRIVATE -static)
     endif()
 
-    set(_yume_install_targets yume yumed)
+    set(_yume_install_targets yume-v2-reference yumed-v2-reference)
 
     if(YUME_BUILD_TOOLS)
-        # Read-only ASCII visualization of the local yumed federation topology.
+        # Read-only ASCII visualization of the local yumed-v2-reference federation topology.
         add_executable(yume-net-map
             tools/net_map.cpp
         )
@@ -1919,8 +2229,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         list(APPEND _yume_install_targets yume-net-map)
     endif()
     if(WIN32)
-        target_link_libraries(yume PRIVATE ws2_32 mswsock)
-        target_compile_definitions(yume PRIVATE
+        target_link_libraries(yume-v2-reference PRIVATE ws2_32 mswsock)
+        target_compile_definitions(yume-v2-reference PRIVATE
             WIN32_LEAN_AND_MEAN
             NOMINMAX
             WINVER=0x0600
@@ -1938,7 +2248,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         if(NOT YUME_FEATURE_LAN_BRIDGE)
             message(WARNING
                 "yume-selftest can be built, but routed loopback benchmarks require "
-                "-DYUME_FEATURE_LAN_BRIDGE=ON in the yume/yumed binaries under test")
+                "-DYUME_FEATURE_LAN_BRIDGE=ON in the yume-v2-reference/yumed-v2-reference binaries under test")
         endif()
         add_library(yume_selftest_lib STATIC
             tools/benchmark/v2_crypto_bench.cpp
@@ -1955,7 +2265,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_link_libraries(yume_selftest_lib PUBLIC yume_core OpenSSL::Crypto Threads::Threads)
         yume_apply_perf_opts(yume_selftest_lib)
         # The definition and the link must live on the same target. When the
-        # link was only on the `yume` executable, every other historical
+        # link was only on the `yume-v2-reference` executable, every other historical
         # consumer of yume_client_lib, including yume_facade and the retired
         # facade-backed ABI, compiled the call in client/cli/entry.cpp but had
         # nothing to resolve it against, so self-test builds failed to link with
@@ -1991,10 +2301,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
     endif()
 
-    install(TARGETS ${_yume_install_targets}
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-        COMPONENT yume_cli
-    )
+    # Reference executables preserve unresolved capability tests. They have no
+    # install rule and cannot become a second shipping runtime.
 
     # ------------------------------------------------------------------
     # Optional GUI components
@@ -2889,7 +3197,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # The only check that the ABI actually moves bytes. It provisions a real
     # server and client and drives a named service stream in both directions,
     # so it needs the transport backend linked and a Python interpreter.
-    if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi AND TARGET yumed
+    if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi AND TARGET yumed-v2-reference
        AND YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
         add_executable(yume_abi_stream_probe abi/stream_integration_probe.c)
         target_link_libraries(yume_abi_stream_probe
@@ -2901,7 +3209,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_stream.py"
                 --probe "$<TARGET_FILE:yume_abi_stream_probe>"
-                --yumed "$<TARGET_FILE:yumed>")
+                --yumed "$<TARGET_FILE:yumed-v2-reference>")
         set_tests_properties(yume_abi_stream_integration PROPERTIES
             TIMEOUT 180
             LABELS "0.3;abi;integration")
@@ -2911,10 +3219,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             "${CMAKE_SOURCE_DIR}/scripts/generate_transport_profiles.py"
             --registry "${YUME_TRANSPORT_PROFILE_REGISTRY}"
             --check
-    )
-    add_test(NAME yume_project_metadata_test
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py"
     )
     add_test(NAME yume_socket_autotuning_test
         COMMAND "${Python3_EXECUTABLE}"
@@ -2934,35 +3238,23 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_setup_transport_v2.py"
     )
-    add_test(NAME yume_setup_ytp1_test
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tests/test_yume_setup_ytp1.py"
-    )
-    add_test(NAME yume_doctor_ytp1_test
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor_ytp1.py"
-    )
     # The nDPI and direct-link scripts decide from these parsers whether a run
     # counts, so a misread report must fail here instead of passing silently.
     add_test(NAME yume_evaluation_reports_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_evaluation_reports.py"
     )
-    set_tests_properties(
-        yume_setup_transport_v2_test
-        yume_setup_ytp1_test
-        yume_doctor_ytp1_test
-        PROPERTIES TIMEOUT 300)
+    set_tests_properties(yume_setup_transport_v2_test PROPERTIES TIMEOUT 300)
     add_test(NAME yume_release_diagnostics_cost_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_release_diagnostics_cost.py"
     )
-    if(UNIX AND TARGET yume AND TARGET yumed)
+    if(UNIX AND TARGET yume-v2-reference AND TARGET yumed-v2-reference)
         add_test(NAME yume_federation_v2_integration_test
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/tests/test_yume_federation_v2.py"
-                --yume "$<TARGET_FILE:yume>"
-                --yumed "$<TARGET_FILE:yumed>"
+                --yume "$<TARGET_FILE:yume-v2-reference>"
+                --yumed "$<TARGET_FILE:yumed-v2-reference>"
         )
         set_tests_properties(yume_federation_v2_integration_test PROPERTIES
             TIMEOUT 90)
@@ -2971,8 +3263,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         add_test(NAME yume_federation_cluster_integration_test
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/tests/test_yume_federation_cluster.py"
-                --yume "$<TARGET_FILE:yume>"
-                --yumed "$<TARGET_FILE:yumed>"
+                --yume "$<TARGET_FILE:yume-v2-reference>"
+                --yumed "$<TARGET_FILE:yumed-v2-reference>"
         )
         set_tests_properties(yume_federation_cluster_integration_test PROPERTIES
             TIMEOUT 180)
@@ -3103,9 +3395,9 @@ if(NOT YUME_BUILD_TRANSPORT_V2)
             yume_transport_core
             yume_outbound_transport
             yume_server
-            yumed
+            yumed-v2-reference
             yume_client_lib
-            yume
+            yume-v2-reference
             yume_facade
             yume-gui
             yume_chrome_tls_helper)
@@ -3119,9 +3411,9 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Fuzz harnesses. Opt-in, Clang-only, never installed. Each target covers a
-# parser that consumes input from outside the trust boundary: the H2 carrier
-# probe decoder reached before authentication, and the two configuration
-# loaders. They are executables rather than CTest cases because a fuzz run is
+# parser that consumes input from outside the trust boundary. Native protocol,
+# AUTH and schema-1 configuration coverage is independent of the retained
+# transport-v2 parsers. They are executables rather than CTest cases because a fuzz run is
 # time-bounded by the operator, not by a pass/fail assertion.
 if(YUME_BUILD_FUZZERS)
     function(yume_add_fuzzer name source)
@@ -3133,10 +3425,15 @@ if(YUME_BUILD_FUZZERS)
         yume_apply_perf_opts(${name})
     endfunction()
 
-    yume_add_fuzzer(yume_fuzz_h2_probe_decoder fuzz_h2_probe_decoder.cpp yume_core)
-    if(TARGET yume_facade)
-        yume_add_fuzzer(yume_fuzz_client_config fuzz_client_config.cpp yume_facade)
-        yume_add_fuzzer(yume_fuzz_server_config fuzz_server_config.cpp yume_facade)
+    yume_add_fuzzer(yume_fuzz_ytp1_protocol fuzz_ytp1_protocol.cpp yume_ytp1)
+    yume_add_fuzzer(yume_fuzz_ytp1_auth fuzz_ytp1_auth.cpp yume_ytp1)
+    yume_add_fuzzer(yume_fuzz_config_v1 fuzz_config_v1.cpp yume_config_v1)
+    if(YUME_BUILD_TRANSPORT_V2)
+        yume_add_fuzzer(yume_fuzz_h2_probe_decoder fuzz_h2_probe_decoder.cpp yume_core)
+        if(TARGET yume_facade)
+            yume_add_fuzzer(yume_fuzz_client_config fuzz_client_config.cpp yume_facade)
+            yume_add_fuzzer(yume_fuzz_server_config fuzz_server_config.cpp yume_facade)
+        endif()
     endif()
 endif()
 

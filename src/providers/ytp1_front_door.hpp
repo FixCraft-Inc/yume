@@ -48,9 +48,7 @@ struct Ytp1FrontDoorConfig final {
 // The caller retains/runs that context through close, finish and final drain,
 // contains runner exceptions and resumes delivery. Repeated close/cancel and
 // destruction of an already closed handle enqueue no further control work.
-// This owner resolves no DNS;
-// a runtime adding outbound resolution must separately account for system
-// getaddrinfo outliving its user-facing deadline at final shutdown.
+// This owner resolves no DNS.
 //
 // Promoted carriers retain this context and use its reserved control mailbox.
 // Cover traffic is served even without an accept waiter. Missing/failed proof,

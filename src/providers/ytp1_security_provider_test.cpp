@@ -16,7 +16,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -27,6 +29,7 @@
 
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
+#include "providers/ytp1_crypto.hpp"
 
 namespace {
 
@@ -901,6 +904,230 @@ void test_crypto_backend_identity() {
           "crypto backend identity is not one stable value");
 }
 
+class CryptoVectors final {
+public:
+    CryptoVectors() {
+        std::ifstream input(YUME_YTP1_CRYPTO_VECTORS_FILE);
+        check(input.is_open(), "cannot open cryptographic vectors");
+        std::string line;
+        while (std::getline(input, line)) {
+            if (line.empty() || line.front() == '#') {
+                continue;
+            }
+            const auto separator = line.find('=');
+            check(separator != std::string::npos && separator != 0U,
+                  "invalid cryptographic vector entry");
+            const std::string name = line.substr(0U, separator);
+            const std::string_view encoded(line.data() + separator + 1U,
+                                            line.size() - separator - 1U);
+            check(encoded.size() % 2U == 0U && encoded.size() <= 65536U,
+                  "invalid cryptographic vector size");
+            std::vector<std::uint8_t> bytes;
+            bytes.reserve(encoded.size() / 2U);
+            for (std::size_t offset = 0U; offset < encoded.size(); offset += 2U) {
+                const auto nibble = [](char value) -> std::uint8_t {
+                    if (value >= '0' && value <= '9') {
+                        return static_cast<std::uint8_t>(value - '0');
+                    }
+                    check(value >= 'a' && value <= 'f',
+                          "invalid cryptographic vector hex");
+                    return static_cast<std::uint8_t>(value - 'a' + 10);
+                };
+                bytes.push_back(static_cast<std::uint8_t>(
+                    (nibble(encoded[offset]) << 4U) | nibble(encoded[offset + 1U])));
+            }
+            check(values_.emplace(name, std::move(bytes)).second,
+                  "duplicate cryptographic vector entry");
+        }
+        check(input.eof(), "cryptographic vector read failed");
+    }
+
+    const std::vector<std::uint8_t>& get(std::string_view name) const {
+        const auto found = values_.find(name);
+        check(found != values_.end(), "missing cryptographic vector entry");
+        return found->second;
+    }
+
+    void matches(std::string_view name,
+                 std::span<const std::uint8_t> actual) const {
+        const auto& expected = get(name);
+        check(std::equal(actual.begin(), actual.end(), expected.begin(),
+                         expected.end()),
+              std::string("cryptographic known-answer mismatch: ") +
+                  std::string(name));
+    }
+
+private:
+    std::map<std::string, std::vector<std::uint8_t>, std::less<>> values_;
+};
+
+void test_cryptographic_known_answers() {
+    namespace crypto = yume::providers::ytp1_crypto;
+    const CryptoVectors vectors;
+    const crypto::CryptoContext context;
+    const auto value = [&vectors](std::string_view name)
+        -> const std::vector<std::uint8_t>& { return vectors.get(name); };
+    const auto digest_matches = [&](std::string_view name,
+                                    std::span<const std::uint8_t> bytes) {
+        vectors.matches(name, crypto::sha256(context, {bytes}));
+    };
+    const auto challenge_context = crypto::challenge_context(
+        value("exporter"), value("server_identity"), value("ml_public"),
+        value("server_x_public"), value("server_capabilities"),
+        value("challenge_nonce"));
+    const auto challenge_digest = crypto::sha256(context, {challenge_context});
+    vectors.matches("challenge_context_sha256", challenge_digest);
+
+    yume::ytp1::AuthRecord challenge;
+    challenge.type = yume::ytp1::AuthMessageType::Challenge;
+    challenge.sender_role = yume::ytp1::EndpointRole::Server;
+    const auto add = [&](yume::ytp1::AuthFieldId id,
+                         std::span<const std::uint8_t> bytes) {
+        challenge.fields.push_back(
+            {static_cast<std::uint16_t>(id), true, {bytes.begin(), bytes.end()}});
+    };
+    add(yume::ytp1::AuthFieldId::TranscriptHash, challenge_digest);
+    add(yume::ytp1::AuthFieldId::Identity, value("server_identity"));
+    add(yume::ytp1::AuthFieldId::CompositeSignature,
+        value("challenge_signature_octets"));
+    add(yume::ytp1::AuthFieldId::MlKemPublicKey, value("ml_public"));
+    add(yume::ytp1::AuthFieldId::X25519PublicKey, value("server_x_public"));
+    add(yume::ytp1::AuthFieldId::CapabilityManifest, value("server_capabilities"));
+    add(yume::ytp1::AuthFieldId::Nonce, value("challenge_nonce"));
+    const auto encoded_challenge = yume::ytp1::EncodeAuthRecord(challenge);
+    check(encoded_challenge.ok(), "synthetic challenge encoding failed");
+    const auto& challenge_wire = *encoded_challenge.value;
+    digest_matches("challenge_wire_sha256", challenge_wire);
+    const auto response = crypto::response_context(
+        challenge_wire, value("client_identity"), value("ml_ciphertext"),
+        value("client_x_public"), value("client_capabilities"));
+    digest_matches("response_context_sha256", response);
+    const std::array<std::span<const std::uint8_t>, 2> messages{
+        challenge_wire, response};
+    const auto transcript = crypto::transcript_hash(
+        context, value("exporter"), messages);
+    vectors.matches("transcript", transcript);
+
+    const yume::ytp1::KeyScheduleInput input{
+        yume::ytp1::EndpointRole::Client, yume::ytp1::EndpointRole::Server,
+        transcript, value("exporter"), value("client_identity"),
+        value("server_identity"), value("client_capabilities"),
+        value("server_capabilities"), value("access_contribution"),
+        value("client_x_public"), value("server_x_public"),
+        value("x_shared_contribution"), value("ml_public"),
+        value("ml_ciphertext"), value("ml_shared_contribution"),
+    };
+    const auto schedule_size = yume::ytp1::KeyScheduleInputEncodedSize(input);
+    check(schedule_size.ok(), "known-answer schedule size failed");
+    crypto::SecretBytes schedule(*schedule_size.value);
+    std::size_t written = 0U;
+    check(yume::ytp1::EncodeKeyScheduleInput(input, schedule.mutable_span(),
+                                           written).ok() &&
+              written == schedule.size(),
+          "known-answer schedule encoding failed");
+    digest_matches("schedule_sha256", schedule.span());
+    auto roots = crypto::derive_initial_roots(
+        context, transcript, input.exporter, input.client_identity,
+        input.server_identity, input.client_capability_manifest,
+        input.server_capability_manifest, input.access_psk,
+        input.client_x25519_public_key, input.server_x25519_public_key,
+        input.x25519_shared_secret, input.mlkem_public_key,
+        input.mlkem_ciphertext, input.mlkem_shared_secret);
+    vectors.matches("master_root", roots.master.span());
+    vectors.matches("c2s_root", roots.client_to_server.span());
+    vectors.matches("s2c_root", roots.server_to_client.span());
+    const auto psk = crypto::hmac_sha256(
+        context, input.access_psk, crypto::psk_authenticator_input(
+            crypto::ConfirmationPurpose::Response, transcript));
+    vectors.matches("response_psk_authenticator", psk);
+    const auto response_confirmation = crypto::hmac_sha256(
+        context, roots.master.span(), crypto::key_confirmation_input(
+            crypto::ConfirmationPurpose::Response, transcript));
+    const auto accepted_confirmation = crypto::hmac_sha256(
+        context, roots.master.span(), crypto::key_confirmation_input(
+            crypto::ConfirmationPurpose::Accepted, transcript));
+    vectors.matches("response_confirmation", response_confirmation);
+    vectors.matches("accepted_confirmation", accepted_confirmation);
+    const std::array<std::span<const std::uint8_t>, 2> proof_fields{
+        psk, response_confirmation};
+    const auto proofs = crypto::canonical_tagged_input(
+        yume::ytp1::kAuthSignatureDomain, proof_fields);
+    digest_matches("challenge_signature_input_sha256", crypto::signature_input(
+        EndpointRole::Server, yume::ytp1::AuthMessageType::Challenge,
+        input.exporter, challenge_digest));
+    digest_matches("response_signature_input_sha256", crypto::signature_input(
+        EndpointRole::Client, yume::ytp1::AuthMessageType::Response,
+        input.exporter, transcript, proofs));
+    digest_matches("accepted_signature_input_sha256", crypto::signature_input(
+        EndpointRole::Server, yume::ytp1::AuthMessageType::Accepted,
+        input.exporter, transcript, accepted_confirmation));
+
+    const auto record = [&](const std::string& name, EndpointRole direction,
+                            std::span<const std::uint8_t> root,
+                            RecordKeyToken token,
+                            std::span<const std::uint8_t> plaintext) {
+        const auto aad = crypto::record_aad(direction, token);
+        vectors.matches(name + "_aad", aad);
+        auto material = crypto::derive_record_material(
+            context, root, direction, token, transcript);
+        vectors.matches(name + "_material", material.span());
+        const auto key = material.span().first(crypto::kAes256KeyBytes);
+        const auto nonce = material.span().subspan(crypto::kAes256KeyBytes);
+        const auto sealed = crypto::seal_aes_gcm(context, key, nonce, aad, plaintext);
+        vectors.matches(name + "_ciphertext", sealed);
+        const auto opened = crypto::open_aes_gcm(
+            context, key, nonce, aad, value(name + "_ciphertext"));
+        check(std::equal(opened.begin(), opened.end(), plaintext.begin(),
+                         plaintext.end()), "known-answer record open failed");
+    };
+    for (const auto direction : {EndpointRole::Client, EndpointRole::Server}) {
+        const std::string name = direction == EndpointRole::Client ? "c2s" : "s2c";
+        const auto old_root = direction == EndpointRole::Client
+            ? roots.client_to_server.span() : roots.server_to_client.span();
+        record(name + "_first", direction, old_root, {0U, 0U}, value("plaintext"));
+        record(name + "_wide", direction, old_root,
+               {0x01020304U, 0x0102030405060708ULL}, value("plaintext"));
+        record(name + "_empty", direction, old_root, {0U, 1U}, {});
+        const auto init_input = crypto::rekey_init_auth_input(
+            direction, 1U, transcript, value("rekey_ml_public"),
+            value("rekey_initiator_x_public"), value("rekey_nonce"));
+        digest_matches(name + "_rekey_init_input_sha256", init_input);
+        const auto init_auth = crypto::hmac_sha256(context, old_root, init_input);
+        vectors.matches(name + "_rekey_init_authenticator", init_auth);
+        const auto& init_context = value(name + "_rekey_init_context");
+        const auto ack_input = crypto::rekey_ack_auth_input(
+            direction, 1U, transcript, init_context, value("rekey_ml_ciphertext"),
+            value("rekey_responder_x_public"));
+        digest_matches(name + "_rekey_ack_input_sha256", ack_input);
+        auto new_root = crypto::derive_rekey_root(
+            context, old_root, direction, 1U, transcript, init_context,
+            value("rekey_ml_ciphertext"), value("rekey_responder_x_public"),
+            value("rekey_x_shared_contribution"),
+            value("rekey_ml_shared_contribution"));
+        vectors.matches(name + "_rekey_root", new_root.span());
+        const auto ack_auth = crypto::hmac_sha256(context, new_root.span(), ack_input);
+        vectors.matches(name + "_rekey_ack_authenticator", ack_auth);
+        std::vector<std::uint8_t> init = init_context;
+        init.insert(init.end(), init_auth.begin(), init_auth.end());
+        check(init.size() == yume::ytp1::kRekeyInitMessageBytes,
+              "known-answer INIT length mismatch");
+        digest_matches(name + "_rekey_init_sha256", init);
+        std::vector<std::uint8_t> ack{
+            1U, 2U, static_cast<std::uint8_t>(crypto::to_ytp_role(direction)), 0U};
+        crypto::append_u32(ack, 1U);
+        for (const auto part : {std::span<const std::uint8_t>(value("rekey_ml_ciphertext")),
+                                std::span<const std::uint8_t>(value("rekey_responder_x_public")),
+                                std::span<const std::uint8_t>(ack_auth)}) {
+            ack.insert(ack.end(), part.begin(), part.end());
+        }
+        check(ack.size() == yume::ytp1::kRekeyAckMessageBytes,
+              "known-answer ACK length mismatch");
+        digest_matches(name + "_rekey_ack_sha256", ack);
+        record(name + "_rekey_first", direction, new_root.span(),
+               {1U, 2U}, value("plaintext"));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -915,6 +1142,7 @@ int main() {
         test_component_mutation_and_stripping(fixture);
         test_factory_bounds_and_cancellation(fixture);
         test_crypto_backend_identity();
+        test_cryptographic_known_answers();
         std::cout << "YTP/1 OpenSSL security-provider tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -589,12 +589,8 @@ OptionResult parse_transport_option(ParseCursor& cursor, const std::string& arg)
             args.outbound_proxy_url = value;
             args.outbound_proxy_override = true;
         }
-    } else if (arg == "--no-proxy" || arg == "--tor") {
-        if (arg == "--tor") {
-            args.outbound_proxy_url = "socks5://127.0.0.1:9050";
-        } else {
-            args.outbound_proxy_url.clear();
-        }
+    } else if (arg == "--no-proxy") {
+        args.outbound_proxy_url.clear();
         args.outbound_proxy_override = true;
     } else if (arg == "--profile") {
         const char* value = cursor.take_value(arg);

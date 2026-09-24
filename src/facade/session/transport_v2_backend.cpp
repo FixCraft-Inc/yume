@@ -318,11 +318,32 @@ public:
         return BackendIo::Invalid;
     }
 
+    BackendIo open_packet(const std::string&,
+                          const std::optional<BackendDestination>&,
+                          std::uint32_t, std::unique_ptr<BackendPacket>& out,
+                          std::string& error) override {
+        out.reset();
+        error = "transport-v2 embedding does not compose packet channels";
+        return BackendIo::Unsupported;
+    }
+    BackendIo accept_packet(const std::string&, std::uint32_t,
+                            std::unique_ptr<BackendPacket>& out,
+                            std::string& error) override {
+        out.reset();
+        error = "transport-v2 embedding does not compose packet channels";
+        return BackendIo::Unsupported;
+    }
+
     BackendIo open_stream(const std::string& service,
+                          const std::optional<BackendDestination>& destination,
                           std::uint32_t timeout_ms,
                           std::unique_ptr<BackendStream>& out,
                           std::string& error) override {
         out.reset();
+        if (destination) {
+            error = "transport-v2 embedding supports named streams only";
+            return BackendIo::Unsupported;
+        }
         if (timeout_ms == 0U) {
             error = "stream OPEN would block; no OPEN was sent";
             return BackendIo::WouldBlock;
@@ -588,7 +609,24 @@ public:
         return backend_io_from(operation_status);
     }
 
+    BackendIo open_packet(const std::string&,
+                          const std::optional<BackendDestination>&,
+                          std::uint32_t, std::unique_ptr<BackendPacket>& out,
+                          std::string& error) override {
+        out.reset();
+        error = "transport-v2 embedding does not compose packet channels";
+        return BackendIo::Unsupported;
+    }
+    BackendIo accept_packet(const std::string&, std::uint32_t,
+                            std::unique_ptr<BackendPacket>& out,
+                            std::string& error) override {
+        out.reset();
+        error = "transport-v2 embedding does not compose packet channels";
+        return BackendIo::Unsupported;
+    }
+
     BackendIo open_stream(const std::string&,
+                          const std::optional<BackendDestination>&,
                           std::uint32_t,
                           std::unique_ptr<BackendStream>& out,
                           std::string& error) override {

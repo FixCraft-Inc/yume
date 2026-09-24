@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,7 @@ inline constexpr std::size_t kSessionExporterBytes = 32U;
 inline constexpr std::size_t kMaxSessionSecurityOverheadBytes = 4096U;
 inline constexpr std::size_t kMaxSessionRekeyPayloadBytes = 64U * 1024U;
 inline constexpr std::uint32_t kMaxSessionConcurrentRekeys = 64U;
+inline constexpr auto kMaxRekeyAckTimeout = std::chrono::seconds(30);
 
 enum class SessionState : std::uint8_t {
     Created,
@@ -66,6 +68,9 @@ struct SessionLimits final {
     std::uint32_t max_concurrent_rekeys{2U};
     std::size_t max_rekey_payload{kMaxSessionRekeyPayloadBytes};
     std::size_t max_security_overhead{256U};
+    // Local retention bound, measured from scheduling INIT, including provider
+    // work and carrier queueing. This does not change a wire/security domain.
+    std::chrono::milliseconds rekey_ack_timeout{kMaxRekeyAckTimeout};
 };
 
 // Validates the single runtime limit contract before opening transport resources.
@@ -150,6 +155,18 @@ public:
         EndpointRole local_role) = 0;
 };
 
+// Cumulative local counts for one session, for status displays. Payload
+// counts DATA and PACKET bytes. Record counts are carrier records including
+// AUTH, control frames and protection overhead. An outbound record counts
+// once it is queued for the carrier. Received payload counts after flow
+// credit admits it. Counts carry no content, keys or peer-chosen values.
+struct SessionTraffic final {
+    std::uint64_t payload_bytes_sent{0U};
+    std::uint64_t payload_bytes_received{0U};
+    std::uint64_t record_bytes_sent{0U};
+    std::uint64_t record_bytes_received{0U};
+};
+
 class SessionEngine final
     : public std::enable_shared_from_this<SessionEngine> {
 public:
@@ -170,6 +187,8 @@ public:
     ExecutorAffinity executor_affinity() const noexcept;
     SessionState state() const noexcept;
     Status terminal_status() const;
+    // Callable from any thread, including after termination.
+    SessionTraffic traffic() const noexcept;
 
     // Copy of the post-YTP peer evidence while the session is Active, so a
     // local opener can report who authenticated the stream without deriving
@@ -209,6 +228,13 @@ public:
     // Starts a rekey for the local outbound direction. At most the configured
     // number of directional rekey operations may be in flight.
     Status initiate_rekey();
+
+    // The owner must schedule expiry even when the peer sends nothing. Polling
+    // at intervals no longer than rekey_ack_timeout is sufficient if each poll
+    // also schedules an earlier pending deadline. ACK admission independently
+    // rejects expiration so a delayed timer cannot admit a late confirmation.
+    std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const noexcept;
+    bool expire_rekey(std::chrono::steady_clock::time_point now) noexcept;
 
     // Idempotent terminal teardown. Unknown/provider callbacks are never
     // invoked while the engine lock is held and callback exceptions are

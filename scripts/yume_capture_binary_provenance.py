@@ -71,7 +71,6 @@ def validate_capture_binaries(
             bundle,
             source_version(),
             commit,
-            helper_hash,
             transport_dependency(),
         )
     except (OSError, SystemExit, ValueError, tarfile.TarError) as exc:

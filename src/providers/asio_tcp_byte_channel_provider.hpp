@@ -18,6 +18,7 @@
 
 #include "engine/byte_channel.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "providers/system_resolver.hpp"
 
 namespace yume::providers {
 
@@ -48,6 +49,7 @@ struct AsioTcpChannelLimits {
 
 struct AsioTcpByteChannelLimits final : AsioTcpChannelLimits {
     std::size_t max_pending_creates{32U};
+    // The system resolver returns at most resolver_protocol::kMaxAddresses.
     std::size_t max_resolved_endpoints{32U};
     std::size_t max_connect_attempts{16U};
     std::chrono::milliseconds resolve_timeout{10'000};
@@ -102,12 +104,16 @@ using AsioTcpSocketProtector =
 
 class AsioTcpByteChannelProvider final : public engine::ByteChannelProvider {
 public:
+    // A numeric remote_host is dialed directly. A hostname needs a resolver
+    // on the same context, and creation refuses one without it. The provider
+    // cancels its lookups but does not close the shared resolver.
     static engine::Result<std::shared_ptr<AsioTcpByteChannelProvider>> create(
         std::shared_ptr<AsioExecutionContext> context,
         std::string remote_host,
         std::uint16_t remote_port,
         AsioTcpByteChannelLimits limits = {},
-        AsioTcpSocketProtector socket_protector = {});
+        AsioTcpSocketProtector socket_protector = {},
+        std::shared_ptr<SystemResolver> resolver = {});
 
     AsioTcpByteChannelProvider(const AsioTcpByteChannelProvider&) = delete;
     AsioTcpByteChannelProvider& operator=(

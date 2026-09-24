@@ -1,5 +1,5 @@
 <!-- Generated from docs/src/en_US/pages/byte_path.doc by scripts/yume_docs.py. Edit that file, not this one. -->
-# How a byte travels
+# How a byte travels in transport v2
 
 This page follows one byte of application traffic through transport v2, one
 layer at a time, and names the file or contract that owns each exact value.

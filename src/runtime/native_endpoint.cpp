@@ -60,19 +60,40 @@ void complete_noexcept(NativeEndpoint::Completion completion,
     try { completion(std::move(result)); } catch (...) {}
 }
 
+// The current credential policy, shared by every service wrapper so that a
+// credential reload reaches the next OPEN of sessions already established.
+class PolicyHolder final {
+public:
+    explicit PolicyHolder(std::shared_ptr<const NativeAuthorizationPolicy> policy) noexcept
+        : policy_(std::move(policy)) {}
+    std::shared_ptr<const NativeAuthorizationPolicy> get() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return policy_;
+    }
+    // The replaced policy is released after the lock.
+    void set(std::shared_ptr<const NativeAuthorizationPolicy> policy) noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        policy_.swap(policy);
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::shared_ptr<const NativeAuthorizationPolicy> policy_;
+};
+
 // Authentication chooses an identity; it never grants all advertised services.
-// Both the immutable credential policy and the application's policy must pass.
+// Both the current credential policy and the application's policy must pass.
 class AuthorizedHandler final : public StreamHandler {
 public:
     AuthorizedHandler(std::shared_ptr<StreamHandler> handler,
-                      std::shared_ptr<const NativeAuthorizationPolicy> policy)
+                      std::shared_ptr<const PolicyHolder> policy)
         : handler_(std::move(handler)), policy_(std::move(policy)) {}
     const ProviderDescriptor& descriptor() const noexcept override {
         return handler_->descriptor();
     }
     ServiceKind service_kind() const noexcept override { return handler_->service_kind(); }
     Status authorize(const StreamOpenContext& context) override {
-        auto status = policy_->authorize(context);
+        auto status = policy_->get()->authorize(context);
         return status.ok() ? handler_->authorize(context) : std::move(status);
     }
     void on_open(StreamOpenContext context,
@@ -93,7 +114,7 @@ public:
     }
 private:
     std::shared_ptr<StreamHandler> handler_;
-    std::shared_ptr<const NativeAuthorizationPolicy> policy_;
+    std::shared_ptr<const PolicyHolder> policy_;
 };
 
 ProviderRequirement requirement(ProviderKind kind, std::string_view id) {
@@ -147,12 +168,19 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     };
 
     struct Slot final {
-        explicit Slot(AsioExecutionContext::Executor executor) : timer(executor) {}
+        explicit Slot(AsioExecutionContext::Executor executor)
+            : timer(executor), rekey_timer(executor) {}
         Timer timer;
+        Timer rekey_timer;
         std::shared_ptr<SessionBootstrap> bootstrap;
         std::shared_ptr<SessionEngine> session;
         Completion completion;
         std::uint64_t generation{0U};
+        // Server sessions: the authenticated identity, the admission order and
+        // whether a newer session of that identity already replaced this one.
+        std::string peer_identity;
+        std::uint64_t admitted{0U};
+        bool evicted{false};
         bool starting{false};
         bool timed_out{false};
         bool deadline_armed{false};
@@ -194,11 +222,13 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         for (const auto& slot : slots) {
             boost::system::error_code ignored;
             slot->timer.cancel(ignored);
+            slot->rekey_timer.cancel(ignored);
             if (slot->bootstrap) slot->bootstrap->cancel();
             if (slot->session) slot->session->stop(Status(StatusCode::Closed));
         }
         if (tcp) tcp->cancel();
         if (owns_route_provider) options.route_provider->cancel();
+        if (owns_resolver) options.resolver->close();
     }
 
     void settled(std::size_t index, std::uint64_t generation,
@@ -227,8 +257,13 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         }
         if (result.ok()) {
             auto status = observe_session(index, result.value());
-            if (status.ok()) slot.session = result.value();
-            else {
+            if (status.ok()) {
+                slot.session = result.value();
+                status = arm_rekey_watchdog(index, generation);
+            }
+            if (status.ok()) status = admit_identity(index);
+            if (!status.ok()) {
+                slot.session.reset();
                 result.value()->stop(copy_status(status));
                 result = Result<std::shared_ptr<SessionEngine>>(std::move(status));
             }
@@ -238,6 +273,100 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             return;
         }
         complete_noexcept(std::move(completion), std::move(result));
+    }
+
+    // A new server session whose identity is at its configured max_sessions
+    // replaces that identity's oldest sessions. A client reconnecting after a
+    // network change thus replaces its own half-open session instead of being
+    // refused until the server notices it.
+    Status admit_identity(std::size_t index) noexcept {
+        auto& slot = *slots[index];
+        slot.admitted = ++admissions;
+        slot.evicted = false;
+        slot.peer_identity.clear();
+        if (role != EndpointRole::Server || !policy) return Status::success();
+        try {
+            const auto peer = slot.session->authenticated_peer();
+            if (!peer.ok()) return copy_status(peer.status());
+            slot.peer_identity = peer.value().identity();
+        } catch (const std::bad_alloc&) {
+            return Status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            return Status(StatusCode::Internal);
+        }
+        const auto current = policy->get();
+        // A session that authenticated against the previous graph while a
+        // reload removed its identity must not survive the reload.
+        if (!current->recognizes(slot.peer_identity))
+            return diagnostic(StatusCode::PermissionDenied, "credential was revoked");
+        evict_beyond_limit(slot.peer_identity, current->max_sessions(slot.peer_identity));
+        return Status::success();
+    }
+
+    // Ends the identity's oldest sessions until at most limit remain. Zero
+    // means no configured bound.
+    void evict_beyond_limit(const std::string& identity, std::size_t limit) noexcept {
+        if (limit == 0U) return;
+        for (;;) {
+            std::size_t count = 0U;
+            Slot* oldest = nullptr;
+            for (const auto& other : slots) {
+                if (!other->session || other->evicted || other->peer_identity != identity) continue;
+                ++count;
+                if (!oldest || other->admitted < oldest->admitted) oldest = other.get();
+            }
+            if (count <= limit || !oldest) return;
+            oldest->evicted = true;
+            oldest->session->stop(diagnostic(StatusCode::ResourceExhausted,
+                "a newer session for this identity replaced it"));
+        }
+    }
+
+    // Server only, on the context. Loads the credential stores again, builds a
+    // graph with the new security factory for later sessions, publishes the new
+    // policy to every established session's next OPEN, and ends sessions whose
+    // identity is gone or beyond a lowered max_sessions. The listener's TLS
+    // material stays loaded, and a changed admission key is refused because
+    // clients using the new key could not be admitted. On any failure the
+    // previous credentials remain in force.
+    Status reload() noexcept {
+        if (role != EndpointRole::Server || !reload_inputs)
+            return Status(StatusCode::FailedPrecondition, "only a server endpoint reloads credentials");
+        if (closing.load(std::memory_order_acquire)) return Status(StatusCode::Closed);
+        try {
+            auto& inputs = *reload_inputs;
+            auto credentials = require(load_native_credentials(inputs.config, inputs.base_directory, {}));
+            const auto next = credentials.admission_key.bytes();
+            const auto loaded = inputs.admission_key.bytes();
+            if (!std::equal(next.begin(), next.end(), loaded.begin()))
+                throw Status(StatusCode::FailedPrecondition,
+                    "the admission key changed; restart the daemon to apply it");
+            EngineBuilder builder(role, inputs.suite);
+            require(builder.register_session_security_provider_factory(credentials.security_factory));
+            if (options.route_provider) require(builder.register_route_provider(options.route_provider));
+            for (const auto& handler : inputs.handlers)
+                require(builder.register_stream_handler(handler.name, handler.handler));
+            auto rebuilt = require(builder.build());
+            graph = std::move(rebuilt);
+            policy->set(credentials.authorization);
+            const auto current = policy->get();
+            for (const auto& slot : slots) {
+                if (!slot->session || slot->evicted || current->recognizes(slot->peer_identity)) continue;
+                slot->evicted = true;
+                slot->session->stop(diagnostic(StatusCode::PermissionDenied, "credential was revoked"));
+            }
+            for (const auto& slot : slots) {
+                if (slot->session && !slot->evicted)
+                    evict_beyond_limit(slot->peer_identity, current->max_sessions(slot->peer_identity));
+            }
+            return Status::success();
+        } catch (const Status& status) {
+            return copy_status(status);
+        } catch (const std::bad_alloc&) {
+            return Status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            return Status(StatusCode::Internal);
+        }
     }
 
     Status observe_session(std::size_t index, const std::shared_ptr<SessionEngine>& session) noexcept {
@@ -257,9 +386,50 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     void ended(std::size_t index, std::uint64_t generation, Status reason) noexcept {
         auto& slot = *slots[index];
         if (slot.generation != generation || !slot.session) return;
+        boost::system::error_code ignored;
+        slot.rekey_timer.cancel(ignored);
         auto session = std::move(slot.session);
         if (options.session_ended) {
             try { options.session_ended(std::move(session), std::move(reason)); } catch (...) {}
+        }
+    }
+
+    Status arm_rekey_watchdog(std::size_t index, std::uint64_t generation) noexcept {
+        try {
+            auto& slot = *slots[index];
+            if (!slot.session || closing.load(std::memory_order_acquire))
+                return Status(StatusCode::Closed);
+            const auto now = Timer::clock_type::now();
+            auto next = now + session_bounds.rekey_ack_timeout;
+            if (const auto deadline = slot.session->rekey_deadline())
+                next = std::min(next, *deadline);
+            // A new INIT starts at or after this poll, so its deadline cannot
+            // precede now + timeout. An existing earlier deadline is selected
+            // above. Polling therefore adds no timeout interval to expiry.
+            slot.rekey_timer.expires_at(next);
+            const auto self = shared_from_this();
+            slot.rekey_timer.async_wait(
+                [self, index, generation](boost::system::error_code error) noexcept {
+                    auto& current = *self->slots[index];
+                    if (current.generation != generation || !current.session ||
+                        self->closing.load(std::memory_order_acquire)) return;
+                    auto session = current.session;
+                    if (error) {
+                        if (error != boost::asio::error::operation_aborted)
+                            session->stop(diagnostic(StatusCode::Internal,
+                                "native rekey watchdog failed"));
+                        return;
+                    }
+                    if (session->expire_rekey(Timer::clock_type::now()) ||
+                        session->state() != SessionState::Active) return;
+                    const auto armed = self->arm_rekey_watchdog(index, generation);
+                    if (!armed.ok()) session->stop(copy_status(armed));
+                });
+            return Status::success();
+        } catch (const std::bad_alloc&) {
+            return Status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            return Status(StatusCode::Internal);
         }
     }
 
@@ -432,6 +602,20 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     std::size_t pending_starts{0U};
     std::atomic<bool> closing{false};
     bool owns_route_provider{false}; // Acquired only after endpoint publication can succeed.
+    bool owns_resolver{false}; // Likewise.
+    // Current credential policy, shared with the service wrappers, and the
+    // admission counter that orders sessions for replacement.
+    std::shared_ptr<PolicyHolder> policy;
+    std::uint64_t admissions{0U};
+    // What a server reload rebuilds from. The admission key must not change.
+    struct ReloadInputs final {
+        config::v1::Config config;
+        std::filesystem::path base_directory;
+        TransportSuiteDescriptor suite;
+        std::vector<NativeServiceBinding> handlers;
+        NativeAdmissionKey admission_key;
+    };
+    std::optional<ReloadInputs> reload_inputs;
     ControlTask close_task;
 };
 
@@ -443,7 +627,9 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         options.max_pending_starts == 0U || options.max_pending_starts > 32U ||
         options.max_pending_starts > options.max_sessions ||
         options.start_timeout <= std::chrono::milliseconds::zero() ||
-        options.start_timeout > std::chrono::minutes(5))
+        options.start_timeout > std::chrono::minutes(5) ||
+        options.rekey_ack_timeout <= std::chrono::milliseconds::zero() ||
+        options.rekey_ack_timeout > kMaxRekeyAckTimeout)
         return Result<std::shared_ptr<NativeEndpoint>>(Status(StatusCode::InvalidArgument));
     context->require_context();
     if (services.size() > config.services().size())
@@ -456,15 +642,23 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 return std::holds_alternative<config::v1::Socks5Adapter>(adapter);
             }))
             throw Status(StatusCode::InvalidArgument, "no configured SOCKS5 adapter needs a caller");
+        if (options.caller_runs_packet_adapters &&
+            std::none_of(config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
+                return std::holds_alternative<config::v1::PacketAdapter>(adapter);
+            }))
+            throw Status(StatusCode::InvalidArgument, "no configured packet adapter needs a caller");
         for (const auto& adapter : config.adapters()) {
             const auto* tcp = std::get_if<config::v1::DirectTcpAdapter>(&adapter);
             const auto* udp = std::get_if<config::v1::DirectUdpAdapter>(&adapter);
             if (std::holds_alternative<config::v1::Socks5Adapter>(adapter) &&
                 options.caller_runs_socks5_adapters)
                 continue;
+            if (std::holds_alternative<config::v1::PacketAdapter>(adapter) &&
+                options.caller_runs_packet_adapters)
+                continue;
             if (!tcp && !udp)
                 throw Status(StatusCode::FailedPrecondition,
-                    "native packet/TUN adapters are not implemented, and SOCKS5 adapters need a caller that runs them");
+                    "SOCKS5 and packet adapters need a caller that runs them");
             if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
                     "direct adapters require an explicit route provider");
@@ -494,8 +688,13 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             services.push_back({name, require(DirectRouteHandler::create(
                 std::move(descriptor), kind, std::move(authorization)))});
         }
+        const bool has_direct_adapter = std::any_of(
+            config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
+                return std::holds_alternative<config::v1::DirectTcpAdapter>(adapter) ||
+                       std::holds_alternative<config::v1::DirectUdpAdapter>(adapter);
+            });
         if (services.size() != config.services().size() ||
-            (config.adapters().empty() && options.route_authorization))
+            (!has_direct_adapter && options.route_authorization))
             throw Status(StatusCode::InvalidArgument,
                 "service bindings or route policy do not match configured adapters");
         const auto role = config.role() == config::v1::Role::Client
@@ -503,12 +702,14 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         const std::string_view server_name = role == EndpointRole::Client
             ? std::get<config::v1::ClientEndpoint>(config.endpoint()).host() : std::string_view{};
         auto credentials = require(load_native_credentials(config, base_directory, server_name));
-        const auto limits = session_limits(config.limits());
+        auto limits = session_limits(config.limits());
+        limits.rekey_ack_timeout = options.rekey_ack_timeout;
         require(validate_session_limits(limits));
         if (limits.max_frame_payload < ytp1::kMaxAuthRecordSize)
             throw Status(StatusCode::InvalidArgument,
                 "native session frame limit must fit the complete YTP/1 AUTH envelope");
         state = std::make_shared<State>(context, role, std::move(options), limits);
+        state->policy = std::make_shared<PolicyHolder>(credentials.authorization);
         std::vector<ProviderRequirement> requirements;
         requirements.push_back(requirement(ProviderKind::ByteChannel, kAsioTcpByteChannelProviderId));
         requirements.push_back(requirement(ProviderKind::SecureChannel, kYtp1Tls13SecureChannelProviderId));
@@ -536,10 +737,13 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 descriptor.provider_id(), descriptor.api_version(), service.max_concurrent_streams(),
                 descriptor.capabilities())));
             handlers.push_back({service.name(), std::make_shared<AuthorizedHandler>(
-                std::move(match->handler), credentials.authorization)});
+                std::move(match->handler), state->policy)});
         }
         auto suite = require(TransportSuiteDescriptor::create(std::string(config.suite().id()),
             "YTP/1", std::move(requirements), std::move(service_requirements)));
+        if (role == EndpointRole::Server)
+            state->reload_inputs.emplace(State::ReloadInputs{config, base_directory, suite, handlers,
+                NativeAdmissionKey(credentials.admission_key.bytes())});
         EngineBuilder builder(role, std::move(suite));
         require(builder.register_session_security_provider_factory(credentials.security_factory));
         if (state->options.route_provider)
@@ -557,7 +761,8 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 ? state->options.connection_address
                 : configured_dial ? *configured_dial : endpoint.host();
             state->tcp = require(AsioTcpByteChannelProvider::create(context,
-                dial, endpoint.port(), {}, state->options.socket_protector));
+                dial, endpoint.port(), {}, state->options.socket_protector,
+                state->options.resolver));
             require(builder.register_byte_channel_provider(state->tcp));
             require(builder.register_secure_channel_provider(credentials.tls_provider));
             Ytp1H2Dispatch dispatch{
@@ -607,6 +812,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         }
         auto endpoint = std::shared_ptr<NativeEndpoint>(new NativeEndpoint(state));
         state->owns_route_provider = static_cast<bool>(state->options.route_provider);
+        state->owns_resolver = static_cast<bool>(state->options.resolver);
         return Result<std::shared_ptr<NativeEndpoint>>(std::move(endpoint));
     } catch (const Status& status) {
         if (state) state->request_close();
@@ -635,5 +841,9 @@ boost::asio::ip::tcp::endpoint NativeEndpoint::listener_endpoint(std::size_t ind
     return state_->listeners[index]->local_endpoint();
 }
 void NativeEndpoint::close() noexcept { state_->request_close(); }
+engine::Status NativeEndpoint::reload_credentials() {
+    state_->context->require_context();
+    return state_->reload();
+}
 
 }  // namespace yume::runtime

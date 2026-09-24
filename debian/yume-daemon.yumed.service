@@ -5,17 +5,25 @@ Documentation=file:/usr/share/doc/yume-daemon/README.Debian
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/yume/yumed.json
-ConditionPathExists=/etc/yume/server.crt
-ConditionPathExists=/etc/yume/server.key
-ConditionPathExists=/etc/yume/authorized_keys
-ConditionPathExists=/etc/yume/obfs.hex
-ConditionPathExists=/etc/yume/inner.hex
+ConditionPathExists=/etc/yume/credentials/server-composite.pem
+ConditionPathExists=/etc/yume/credentials/authorized-keys.json
+ConditionPathExists=/etc/yume/credentials/admin-keys.json
+ConditionPathExists=/etc/yume/credentials/server-tls.pem
+ConditionPathExists=/etc/yume/credentials/server-tls.key.pem
+ConditionPathExists=/etc/yume/credentials/admission.key
+ConditionPathExists=/etc/yume/credentials/server-mlkem.key.pem
+ConditionPathIsDirectory=/etc/yume/cover-site
 
 [Service]
 Type=simple
 User=yume
 Group=yume
+ExecStartPre=/usr/bin/yumed --config /etc/yume/yumed.json --validate
 ExecStart=/usr/bin/yumed --config /etc/yume/yumed.json
+# Reload re-reads the credential stores. Validate them first so a broken
+# edit is reported by systemctl instead of only in the daemon log.
+ExecReload=/usr/bin/yumed --config /etc/yume/yumed.json --validate
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 UMask=0077

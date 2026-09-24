@@ -1,15 +1,17 @@
 <!-- Generated from docs/src/en_US/pages/source_map.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME source map
 
-The default client and daemon use transport v2. YTP/1 is the experimental
-replacement described in [ARCHITECTURE.md](ARCHITECTURE.md). This map covers both.
+The default client and daemon compose native YTP/1. The transport-v2 reference
+graph remains opt-in while required capabilities are ported. The default switch
+is not a claim of completed migration; [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)
+owns the open gates. This map covers both graphs.
 
 ## Vocabulary
 
 | Term | Means |
 | --- | --- |
-| **YTP/1** | **YUME Transport Protocol 1.** The replacement wire protocol. Version 1 of a new protocol, not "YUME 1". Its kernel is `src/ytp/`, its contract is [protocol/YTP_1.md](protocol/YTP_1.md). |
-| **transport v2** | The protocol used by the default client and daemon, `0.2.0-dev6`. Independent of the product version. Contract in [protocol/YUME_2_0_WIRE.md](protocol/YUME_2_0_WIRE.md). |
+| **YTP/1** | **YUME Transport Protocol 1.** The wire protocol `yume` and `yumed` speak. Version 1 of a new protocol, not "YUME 1". Its kernel is `src/ytp/`, its contract is [protocol/YTP_1.md](protocol/YTP_1.md). |
+| **transport v2** | The retained reference protocol, `0.2.0-dev6`. Independent of the product version. Contract in [protocol/YUME_2_0_WIRE.md](protocol/YUME_2_0_WIRE.md). |
 | **AUTH v2** | The authentication and key-schedule layer of transport v2: composite Ed25519 + ML-DSA-87 identity, ML-KEM-1024 + X25519 + PSK establishment, then a directional AEAD ratchet. |
 | **schema 1** | The strict numeric configuration schema for YTP/1 (`src/config/v1/`). Unrelated to transport-v2 JSON config. |
 | **ABI v1** | The role-neutral C interface in `include/yume/yume.h`. Its version is independent of every wire and product version. |
@@ -27,12 +29,12 @@ Do not bump one to match another.
 
 ## Two stacks live here
 
-| | Default runtime | Replacement foundation |
+| | Transport-v2 reference | Native application |
 | --- | --- | --- |
 | Frame type | `protocol::Frame` (`core/protocol/protocol.hpp`) | `ytp1` codecs (`ytp/protocol.hpp`) |
 | Session | `server::Session` (`server/session/`) | `engine::SessionEngine` (`engine/session_engine.cpp`) |
-| Build options | `YUME_BUILD_TRANSPORT_V2=ON` | Engine and codecs build by default. Provider options `YUME_BUILD_EXPERIMENTAL_YTP1_*` are OFF. |
-| Status | runs, tested, carries traffic | native authenticated sessions behind an experimental schema-1 ABI backend, with CLI adapters unfinished |
+| Build options | `YUME_BUILD_TRANSPORT_V2=ON`, default OFF | `YUME_BUILD_NATIVE_APPLICATION=ON`, default ON, requires all native providers. Isolated component builds explicitly disable the application. |
+| Status | runs, tested, carries traffic | native CLI with SOCKS TCP/UDP and managed Linux TUN; experimental schema-1 ABI with named streams/packets and routed TCP/UDP |
 
 If you search for "Frame" or "how is a stream opened" you will land in one of
 the two depending on which file you started from. Check the directory first.
@@ -62,7 +64,7 @@ Implementation paths below are relative to `src/`. The candidate header in
 | --- | --- |
 | `abi/` | The opt-in C ABI translation unit: handles, input validation, diagnostics, callback rules, and backend leasing. It parses schema 1 through `config/v1` and reaches each runtime only through its embed backend. Without the native provider graph, schema-1 start is unsupported. |
 | `facade/session/` | The embedding seam `endpoint_backend.hpp` and its two backends. `transport_v2_backend.cpp` belongs to `yume_embed`. `ytp1_backend.cpp` is `yume_embed_ytp1`, which runs `NativeEndpoint` on its own execution thread and links no transport-v2 target or BaseFWX. |
-| `include/yume/` | The public candidate C header. It is build-tree-only and unfrozen. |
+| `include/yume/` | The public candidate C header. It is unfrozen; development SDK installation is opt-in. |
 | `common/` | Dependency-pure contracts shared across replacement layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, and the UDP datagram budget both SOCKS5 UDP relays use |
 
 ### Replacement foundation
@@ -71,8 +73,8 @@ Implementation paths below are relative to `src/`. The candidate header in
 | --- | --- |
 | `engine/` | Dependency-pure contracts: `ByteChannel`, `SecureChannel`, `Carrier`, `FrontDoor`, `SessionEngine` |
 | `ytp/` | YTP/1 protocol kernel and security domains. Protocol and AUTH/key-schedule codecs share internal big-endian operations in `ytp/detail/byte_order.hpp`; each codec owns its bounds checks and error order. May not include the engine |
-| `providers/` | Opt-in OpenSSL security, TLS channels, Asio TCP/UDP routes and client/accepted TCP channels, H2 carrier, native FrontDoor and configured static cover |
-| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the development `yumed-ytp1` and `yume-ytp1` processes |
+| `providers/` | Opt-in OpenSSL security, internal deterministic `ytp1_crypto` constructions, TLS channels, Asio TCP/UDP routes and client/accepted TCP channels, H2 carrier, native FrontDoor and configured static cover |
+| `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the development `yumed` and `yume` processes |
 | `admission/` | Shared path/authority parsing, private-context HMAC and bounded monotonic replay reservations; no protocol/runtime dependency |
 | `config/v1/` | Strict numeric schema 1 parser with RFC 6901 error pointers |
 
@@ -84,12 +86,12 @@ replacement merely because both builds pass. Follow actual target inputs:
 
 | Boundary | Current source evidence | Missing connection |
 | --- | --- | --- |
-| Server ingress | `providers/ytp1_front_door.*` implements native listening, configured static cover, exporter/replay admission and retained H2/TLS promotion | Composed through `runtime/native_endpoint.*` by the development `yumed-ytp1` and the schema-1 ABI backend. Qualification remains |
-| Client admission | `providers/ytp1_h2_carrier.*` owns a 32-byte key and emits a fresh exporter-bound proof through `ytp1_h2_admission.*` | Composed by `runtime/native_endpoint.*` and reached through the schema-1 ABI backend and `yume-ytp1` |
+| Server ingress | `providers/ytp1_front_door.*` implements native listening, configured static cover, exporter/replay admission and retained H2/TLS promotion | Composed through `runtime/native_endpoint.*` by the development `yumed` and the schema-1 ABI backend. Qualification remains |
+| Client admission | `providers/ytp1_h2_carrier.*` owns a 32-byte key and emits a fresh exporter-bound proof through `ytp1_h2_admission.*` | Composed by `runtime/native_endpoint.*` and reached through the schema-1 ABI backend and `yume` |
 | TLS profile | `providers/ytp1_tls13_secure_channel.cpp` applies `core/stealth/tls_client_profile.*`, shared with transport v2; a published YTP channel still requires TLS 1.3 and H2 | Qualify actual provider output and full-session behavior; native profile configuration alone does not establish circumvention |
-| Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | Named-service and packet adapters. `facade/session/ytp1_backend.cpp` drives named streams for the ABI but still rejects adapter declarations |
-| Embedding | `abi/yume_c.cpp` selects `make_transport_v2_backend` or `make_ytp1_backend` by dialect. The YTP/1 backend carries named byte streams | Packet bindings, destination-routed OPEN, and production qualification of the schema-1 backend |
-| Applications | The default client/daemon use the transport-v2 graph. Development `yumed-ytp1`/`yume-ytp1` run direct routes and SOCKS5 CONNECT and UDP ASSOCIATE over `NativeEndpoint` | Named-service and packet/TUN adapters, qualification and the coordinated primary switch |
+| Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | `facade/session/ytp1_backend.cpp` drives named streams/packets and routed client OPENs for the ABI; standalone application-service adapters remain open |
+| Embedding | `abi/yume_c.cpp` selects the compiled backend by configuration dialect. The YTP/1 backend carries named byte streams, named packets and destination-routed TCP/UDP OPENs | Supported-platform SDK and production qualification; transport-v2 packet/routed operations remain unsupported |
+| Applications | The default native `yumed`/`yume` run direct routes, SOCKS5 CONNECT/UDP ASSOCIATE and Linux managed TUN over `NativeEndpoint` | Application-service adapters, packaging, later GUI/Android integration and production qualification |
 
 `yume_h2_carrier` is the single build owner of the `core/stealth/` H2,
 WebSocket, wire-profile and observer sources. The native adapter
@@ -144,10 +146,19 @@ two Asio socket-provider targets link it independently. The shared
 allocation and adds no Asio dependency to H2 or the engine. See the
 [ByteChannel lifecycle](ARCHITECTURE.md#bytechannel) for initiation and drain
 requirements. The FrontDoor binds H2 dispatch to its context. Its caller must
-contain runner exceptions, close owners, call `finish()` and drain completions. Ingress performs no resolution;
-a runtime adding DNS must account for system resolution outliving its deadline
-at final shutdown. Qualification must exercise sustained allocation failure
-as well as ordinary cancellation.
+contain runner exceptions, close owners, call `finish()` and drain completions.
+Ingress performs no resolution. Qualification must exercise sustained
+allocation failure as well as ordinary cancellation.
+
+`providers/system_resolver.*` owns name lookup for both Asio network
+providers through a killable helper process, described in the
+[ByteChannel lifecycle](ARCHITECTURE.md#bytechannel).
+`providers/system_resolver_protocol.hpp` is the private message format and
+`providers/system_resolver_helper.*` the helper side, which links only libc
+and threads. The standalone `yume-resolver` program
+(`providers/system_resolver_main.cpp`) serves embedding hosts. `yume` and
+`yumed` dispatch to the same helper when started under that name. The test
+helper `yume_resolver_stall_helper` adds one name that never resolves.
 
 `EndpointBackend` has one endpoint interface, and its service operations are
 directional: a server registers and accepts, and a client opens. YTP's engine
@@ -161,8 +172,10 @@ protocol rule.
 
 The following path is composed by the source-level native endpoint. The
 schema-1 ABI backend supplies named byte streams to it, and the development SOCKS5
-adapter supplies CONNECT byte streams and UDP ASSOCIATE packets. A packet/TUN
-adapter must still supply IP packets to the engine.
+adapter supplies CONNECT byte streams and UDP ASSOCIATE packets.
+`runtime/native_packet_adapter.*` bridges a leased TUN through directional IP
+policy; `runtime/linux_tun_network.*` owns Linux addresses, routes and DNS,
+and `providers/linux_tun_packet_channel.*` owns asynchronous device I/O.
 
 | Stage | Data and operation | Source owner |
 | --- | --- | --- |
@@ -276,7 +289,7 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
   server paths, overridden boolean types, codec and pin rejection, default
   resets, cover activation, first-error ordering and failed publication.
   These bounded cases do not establish complete parser or startup parity.
-  [Operations](OPERATIONS.md#transport-v2-configuration-loading-and-saving)
+  [Transport-v2 operations](TRANSPORT_V2_OPERATIONS.md#transport-v2-configuration-loading-and-saving)
   describes the shared behavior and the remaining stage distinction.
 - **Filter archives have their own dependency boundary.**
   `server/filter/filter_archive.*` owns bounded liblzma decoding, libarchive

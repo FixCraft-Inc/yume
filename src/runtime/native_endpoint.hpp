@@ -18,6 +18,7 @@
 #include "engine/route_provider.hpp"
 #include "providers/asio_execution_context.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
+#include "providers/system_resolver.hpp"
 
 namespace yume::runtime {
 
@@ -33,6 +34,9 @@ struct NativeEndpointOptions final {
     // promotion, bounding session creation/AUTH without expiring idle accepts.
     // FrontDoor separately bounds pre-promotion connections and pending work.
     std::chrono::milliseconds start_timeout{30'000};
+    // Bound for an unanswered outbound rekey, including provider work and
+    // carrier queueing. Positive and at most 30 s; this is local resource policy.
+    std::chrono::milliseconds rekey_ack_timeout{engine::kMaxRekeyAckTimeout};
     // An explicit dial address may differ from the configured authenticated
     // DNS host. Empty selects the client's configured connect_address, or that
     // host and the system resolver. A different configured connect_address is
@@ -40,6 +44,11 @@ struct NativeEndpointOptions final {
     // TLS identity.
     std::string connection_address;
     providers::AsioTcpSocketProtector socket_protector;
+    // Resolves a client's dial host when it is a name. Without it such a
+    // client fails creation. Use this endpoint's context and share it with a
+    // route provider that resolves destination names. A successful endpoint
+    // closes it on close, which ends its helper process.
+    std::shared_ptr<providers::SystemResolver> resolver;
     // Explicitly composed destination routing, required by configured direct
     // adapters. Use this endpoint's execution context. The engine supplies this
     // provider to route handlers. The endpoint cannot see addresses the
@@ -57,6 +66,9 @@ struct NativeEndpointOptions final {
     // sessions. Without it a SOCKS5 declaration fails creation, and setting it
     // without one is refused.
     bool caller_runs_socks5_adapters{false};
+    // The caller owns every configured packet device and supplies the service
+    // bindings. Setting this without a packet adapter is also refused.
+    bool caller_runs_packet_adapters{false};
     // A successfully delivered session ended. Runs once on the endpoint
     // context after pending engine callbacks settle and the session slot is
     // released, so it may start a replacement. Startup failures use their
@@ -86,15 +98,15 @@ struct NativeAcceptOptions final {
 // their configured destinations through NativeEgressPolicy and use the route
 // provider above. Supply bindings only for the other services. Duplicate
 // binding/declaration ownership is refused. SOCKS5 and packet/TUN declarations
-// remain unsupported and fail creation.
+// require explicit caller ownership through the options above.
 //
 // create(), async_start_session(), start_accepting(), listener_endpoint() and
 // session operations require the supplied single-runner context. The caller
 // owns its runner and contains run() exceptions, resumes cleanup, then closes
 // this endpoint, calls finish() and drains before releasing the context.
 // close() and destruction may cross threads and use reserved control dispatch.
-// No thread is detached or joined here. System DNS may outlive its application
-// deadline at drain.
+// No thread is detached or joined here. Name lookups run in the resolver's
+// helper process, so a stalled system lookup does not hold the final drain.
 class NativeEndpoint final {
 public:
     using Completion = engine::SessionBootstrap::Completion;
@@ -137,6 +149,14 @@ public:
     engine::Status start_accepting(NativeAcceptOptions accept, AcceptFailure on_failure);
     std::size_t listener_count() const noexcept;
     boost::asio::ip::tcp::endpoint listener_endpoint(std::size_t index) const;
+    // Server, on the context: read the authorized and admin stores and the
+    // server's composite and ML-KEM keys again. Later sessions authenticate
+    // against them, established sessions' next OPEN uses the new grants, and
+    // sessions of removed identities or beyond a lowered max_sessions end.
+    // TLS material stays as loaded, and a changed admission key is refused.
+    // On failure the previous credentials stay in force. FailedPrecondition
+    // for a client, Closed while closing.
+    engine::Status reload_credentials();
     void close() noexcept;
 
 private:

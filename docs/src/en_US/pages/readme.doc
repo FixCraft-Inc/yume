@@ -2,60 +2,39 @@
 name:     readme
 kind:     page
 title:    YUME
-summary:  What YUME carries, what works today, and how to build it and connect a tunnel.
+summary:  What YUME carries, how to build it, and where to read next.
 markdown: README.md
 web:      no
 ---
-YUME carries TCP, UDP, and packet traffic over an authenticated, browser-shaped
-transport. It includes a client, daemon, optional desktop GUI, and an
-experimental C API for embedding.
+YUME carries TCP, UDP and IP packets from a client to a server over a
+connection that looks like a browser visiting an ordinary HTTPS site. The
+client is `yume` and the server is `yumed`. Both speak YTP/1, the YUME
+Transport Protocol.
 
-The product version is `0.3.0-dev1`. YUME is development software with no
-stable release. Linux x86-64 is the first qualification target.
+The product version is `0.3.0-dev1`. There is no stable release yet, and Linux
+x86-64 is the first target.
 
 - Website: <https://yume.fixcraft.jp>
 - Source: <https://github.com/FixCraft-Inc/yume>
 - Issues: <https://github.com/FixCraft-Inc/yume/issues>
 
-## What works today
+## What it does
 
-A local application connects to `yume` through SOCKS, a port forward, packet
-routing, or an embedded API. The client multiplexes those connections over one
-carrier to `yumed`. The daemon opens the requested destination sockets and
-returns the traffic on the same carrier.
+Applications reach `yume` through a local SOCKS5 listener (TCP CONNECT and UDP
+ASSOCIATE), or the whole Linux machine routes through a managed TUN device.
+`yume` carries every connection over one session to `yumed`, which opens the
+destination sockets allowed by its policy.
 
-The runnable transport currently uses:
+On the wire the session is TLS 1.3 with a pinned Chrome ClientHello, HTTP/2
+and WebSocket framing. A connection without a valid admission proof gets the
+server's cover website. Clients authenticate with composite Ed25519 and
+ML-DSA-87 identities. Session keys combine ML-KEM-1024, X25519, a pre-shared
+key and the TLS exporter, and every record uses a one-use AES-256-GCM key.
 
-- TLS 1.3, HTTP/2, and WebSocket framing for the outer carrier
-- keyed admission before client authentication
-- composite Ed25519 and ML-DSA-87 client identities
-- ML-KEM-1024, X25519, a random pre-shared key, and the TLS exporter for
-  session key establishment
-- one-use AES-256-GCM message keys with independent directional epochs
-
-The default build uses the transport-v2 wire `0.2.0-dev6`. Its profile follows
-a pinned browser and cover-server capture. ClientHello structure checks pass,
-but complete-session browser comparisons, classifiers, WAN tests, and soak
-qualification remain open. See [implementation status](docs/IMPLEMENTATION_STATUS.md).
-
-`yumed` terminates the tunnel and sees the authenticated client and requested
-destination. Use application TLS to protect content end to end. Federation
-connects directly trusted servers and is limited to one hop.
-
-## Experimental YTP/1 work
-
-YTP/1 (YUME Transport Protocol 1) is the replacement protocol under development.
-Its engine, codecs, schema-1 configuration, providers and a native endpoint
-composition exist. Development `yumed-ytp1` and `yume-ytp1` processes carry
-SOCKS5 CONNECT traffic over them, but they are not the default `yume` and
-`yumed` runtimes.
-Transport v2 remains the default
-until the replacement passes the [required capability gates](docs/IMPLEMENTATION_STATUS.md).
-
-The opt-in C ABI carries authenticated named byte streams through transport v2.
-When the native YTP/1 providers are also built, schema-1 documents carry them
-through an experimental YTP/1 backend. Packet channels remain unsupported.
-See the [C ABI reference](docs/ABI.md) and [YTP/1 development guide](docs/development/ytp1/README.md).
+`yumed` sees which client connected and which destinations it opens. Use TLS
+inside the tunnel when content must stay private from the server operator.
+[Implementation status](docs/IMPLEMENTATION_STATUS.md) lists what is tested
+and what still blocks a release.
 
 ## Build
 
@@ -65,22 +44,14 @@ cd yume
 ./ezbuild.sh
 @end
 
-The build creates `build/bin/yume` and `build/bin/yumed`. On a fresh clone,
-`ezbuild.sh` checks out the exact BaseFWX revision recorded in
-`config/dependencies.json`. It also prepares the checksum-pinned OpenSSL build
-required by the native Chrome-shaped TLS backend.
-
-An existing `basefwx/` developer checkout is left on its current branch and is
-not cleaned or detached. Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` only when
-you explicitly want the recorded dependency commit.
-
-Direct CMake builds must activate the same patched OpenSSL installation. See
-[the contributor guide](CONTRIBUTING.md) before using a direct build as release
-evidence.
+This produces `build/bin/yume` and `build/bin/yumed` and prepares the pinned,
+patched OpenSSL that the Chrome TLS profile needs. Direct CMake builds must use
+the same OpenSSL installation. See [the contributor guide](CONTRIBUTING.md).
 
 ## Set up a tunnel
 
-The `yume-setup` command generates a transport-v2 server and client kit:
+`yume-setup` writes a server and client kit: configuration, credentials and a
+cover site.
 
 @code bash
 sudo cmake --install build
@@ -88,44 +59,41 @@ yume-setup init \
   --output ~/yume-kit \
   --host yume.example.com \
   --port 443 \
-  --tls-name yume.example.com \
   --client-name laptop
 @end
 
-Follow the [quick start](docs/QUICKSTART.md) to configure cover traffic and
-operator trust, then connect the client. The setup helper creates private
-credential files. Distribute them through a trusted channel and keep the
-operator CA's private key off the server.
+The [quick start](docs/QUICKSTART.md) continues from here. The kit contains
+private keys. Move client files over a trusted channel and keep the operator
+CA key off the server.
 
-## Main components
+## Programs
 
 @table
-| Component | Purpose |
+| Program | Purpose |
 | --- | --- |
-| `yume` | Client, SOCKS endpoint, forwards, packet routing, and attached tools |
-| `yumed` | TLS/H2 endpoint, authentication, policy enforcement, and proxy exit |
-| `libyume` | Opt-in build-tree C ABI. Transport-v2 named streams work, schema-1 named streams work in builds with the native providers, and packets remain unsupported |
-| `yume-gui` | Optional Dear ImGui desktop client and server UI, still a preview |
-| `yume-setup` | Runnable transport-v2 server and client-kit provisioner |
-| `yume-setup-ytp1` / `yume-doctor-ytp1` | Experimental schema-1 generator and validator |
+| `yume` | Client: SOCKS5 TCP/UDP listener and Linux managed TUN |
+| `yumed` | Server: TLS/HTTP/2 front door, cover site, authentication, policy and exit |
+| `yume-setup` | Creates server and client kits, adds and removes clients |
+| `yume-doctor` | Checks configuration and credential files |
+| `libyume` | Optional C library for embedding the client or server in another program |
 @end
+
+The desktop GUI and some older features (relay, federation, local forwards,
+the JSON control API) still live in the transport-v2 reference build and are
+being moved to YTP/1. That build is off by default and not installed.
 
 ## Documentation
 
-Start with the [documentation map](docs/README.md). The main reader paths are:
+The [documentation map](docs/README.md) lists every page. Most readers need:
 
-- [YUME explained](docs/EXPLAINED.md) and [why YUME](docs/WHY_YUME.md) for the
-  product direction and trust boundary
-- [quick start](docs/QUICKSTART.md) and [operations](docs/OPERATIONS.md) for the
-  runnable transport
-- [YTP/1 foundation](docs/development/ytp1/README.md) for the schema-1
-  foundation
-- [implementation status](docs/IMPLEMENTATION_STATUS.md) for the current
-  support and release boundary
-- [threat model](docs/THREAT_MODEL.md) and [stealth transport](docs/STEALTH.md)
-  for security claims and known residuals
-- [architecture](docs/ARCHITECTURE.md), [C ABI](docs/ABI.md), and
-  [YTP/1](docs/protocol/YTP_1.md) for replacement integration work
+- [YUME explained](docs/EXPLAINED.md) for how a connection works and what
+  each party can see
+- [quick start](docs/QUICKSTART.md) and [operations](docs/OPERATIONS.md) to run
+  a server and clients
+- [threat model](docs/THREAT_MODEL.md) and [stealth](docs/STEALTH.md) for the
+  security claims and their limits
+- [architecture](docs/ARCHITECTURE.md), [C ABI](docs/ABI.md) and
+  [YTP/1](docs/protocol/YTP_1.md) to embed or change YUME
 
 ## License
 

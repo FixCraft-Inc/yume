@@ -207,7 +207,7 @@ class MetadataTests(unittest.TestCase):
         wire = re.search(
             r'kTransportVersion\s*=\s*"([^"]+)";', version_header
         ).group(1)
-        for relative in ("docs/man/yume.1", "docs/man/yumed.8",
+        for relative in ("docs/man/yume-v2-reference.1", "docs/man/yumed-v2-reference.8",
                          "docs/man/yume-gui.1"):
             lines = (ROOT / relative).read_text(encoding="utf-8").splitlines()
             first_line = next(line for line in lines if not line.startswith('.\\"'))
@@ -229,15 +229,15 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("kTransportProfile = kEvidenceProfile", version_header)
         self.assertIn('kYtpVersion = "YTP/1"', version_header)
         self.assertIn("kYtpVersionNumber = 1", version_header)
-        self.assertIn('kYtpMaturity = "experimental-unwired"', version_header)
+        self.assertIn('kYtpMaturity = "experimental"', version_header)
         self.assertIn("kConfigSchema = 1", version_header)
         self.assertIn("kAbiVersion = 1", version_header)
         self.assertIn('kTransportSuite = "ytp1-tls13-h2"', version_header)
         vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         self.assertEqual(vcpkg["version-string"], "0.3.0-dev1")
 
-        setup = runpy.run_path(str(ROOT / "tools/yume_setup_ytp1.py"))
-        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor_ytp1.py"))
+        setup = runpy.run_path(str(ROOT / "tools/yume_setup.py"))
+        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
         self.assertEqual(setup["PRODUCT_VERSION"], "0.3.0-dev1")
         for tool in (setup, doctor):
             self.assertEqual(tool["PROFILE"], "chrome151-node24-v1")
@@ -255,26 +255,28 @@ class MetadataTests(unittest.TestCase):
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertRegex(
             cmake,
-            r'option\(YUME_BUILD_TRANSPORT_V2[\s\S]*?\n\s*ON\)',
+            r'option\(YUME_BUILD_TRANSPORT_V2[^)]*\n\s*OFF\)',
         )
         self.assertRegex(
             cmake,
             r'option\(YUME_BUILD_SHARED_ABI[\s\S]*?\n\s*OFF\)',
         )
-        self.assertIn("tools/yume_setup_transport_v2.py", cmake)
-        self.assertIn("tools/yume_setup_ytp1.py", cmake)
-        self.assertIn("YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS", cmake)
+        self.assertNotIn("install(PROGRAMS tools/yume_setup_transport_v2.py", cmake)
+        self.assertIn("tools/yume_setup.py", cmake)
+        self.assertIn("RENAME yume-setup COMPONENT yume_cli", cmake)
+        self.assertIn("RENAME yume-doctor COMPONENT yume_cli", cmake)
         self.assertNotIn("YUME_BUILD_LEGACY_02", cmake)
 
         source_cmake = (ROOT / "src/CMakeLists.txt").read_text(
             encoding="utf-8")
         self.assertIn("if(YUME_BUILD_TRANSPORT_V2)", source_cmake)
-        # The build-tree-only candidate deliberately has no numbered SONAME,
+        # The development candidate deliberately has no numbered SONAME,
         # but it still needs the normal unversioned ELF SONAME so consumers do
         # not record a build-directory-relative DT_NEEDED entry.
         self.assertNotIn("NO_SONAME ON", source_cmake)
         self.assertNotIn("SOVERSION 1", source_cmake)
-        self.assertNotIn("install(TARGETS yume_abi", source_cmake)
+        self.assertIn("if(YUME_INSTALL_EXPERIMENTAL_SDK)", source_cmake)
+        self.assertIn("install(TARGETS yume_abi", source_cmake)
 
         control = (ROOT / "debian/control").read_text(encoding="utf-8")
         rules = (ROOT / "debian/rules").read_text(encoding="utf-8")
@@ -282,7 +284,9 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn("Package: libyume-dev", control)
         self.assertIn("Package: yume\n", control)
         self.assertIn("Package: yume-daemon\n", control)
-        self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", rules)
+        self.assertIn("-DYUME_BUILD_NATIVE_APPLICATION=ON", rules)
+        self.assertIn("-DYUME_BUILD_TRANSPORT_V2=OFF", rules)
+        self.assertNotIn("Package: yume-gui", control)
         self.assertIn("-DYUME_BUILD_SHARED_ABI=OFF", rules)
         self.assertIn("-DYUME_STATIC_OPENSSL=OFF", rules)
 
@@ -291,28 +295,39 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("deliberately fails against stock Debian", debian_readme)
         self.assertIn("patches/openssl/series", debian_readme)
 
+    def test_reference_ci_consumers_select_reference_graph(self) -> None:
+        for workflow in ("ci.yml", "release.yml", "codeql.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+            for command in re.findall(r"cmake -S \. -B [^\n]*(?:\n[^\n]+)*", text):
+                if any(flag in command for flag in (
+                        "-DYUME_BUILD_GUI=ON", "-DYUME_BUILD_CHROME_TLS_HELPER=ON")):
+                    self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", command, workflow)
+            if workflow == "codeql.yml":
+                self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", text)
+        gui = (ROOT / "src/gui/CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn('--yumed "$<TARGET_FILE:yumed-v2-reference>"', gui)
+        self.assertNotIn("install(TARGETS yume-gui", gui)
+
     def test_debian_daemon_bootstrap_contract_is_complete(self) -> None:
         config = json.loads(
             (ROOT / "debian/yumed.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["obfs_secret_file"], "/etc/yume/obfs.hex")
-        self.assertEqual(config["inner_psk_file"], "/etc/yume/inner.hex")
-        self.assertRegex(
-            config["real_backend"],
-            r"^loopback://(?:127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$",
-        )
-
+        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
+        role, _references, cover_root = doctor["_validate_config"](config)
+        self.assertEqual(role, "server")
+        self.assertEqual(config["schema"], 1)
+        self.assertEqual(cover_root, "cover-site")
         unit = (ROOT / "debian/yume-daemon.yumed.service").read_text(
             encoding="utf-8")
-        for path in (config["obfs_secret_file"], config["inner_psk_file"]):
-            self.assertIn(f"ConditionPathExists={path}", unit)
-
+        for reference in config["credentials"].values():
+            self.assertIn(
+                f"ConditionPathExists=/etc/yume/{reference['file']}", unit)
+        self.assertIn("--config /etc/yume/yumed.json --validate", unit)
+        rules = (ROOT / "debian/rules").read_text(encoding="utf-8")
+        self.assertIn("--no-enable --no-start", rules)
         readme = (ROOT / "debian/yume-daemon.README.Debian").read_text(
             encoding="utf-8")
-        for required in (
-                config["obfs_secret_file"], config["inner_psk_file"],
-                config["real_backend"], "exactly 64 lowercase hexadecimal",
-                "owned by yume, mode 0600"):
-            self.assertIn(required, readme)
+        self.assertIn("owned by yume with mode 0600", readme)
+        self.assertIn("yume-doctor --config /etc/yume/yumed.json", readme)
 
     def test_installed_documentation_keeps_authoritative_links(self) -> None:
         for document in (
@@ -371,7 +386,7 @@ class MetadataTests(unittest.TestCase):
             f"{sorted(parser_options - help_options)}",
         )
 
-        client_man = (ROOT / "docs/man/yume.1").read_text(encoding="utf-8")
+        client_man = (ROOT / "docs/man/yume-v2-reference.1").read_text(encoding="utf-8")
         for option in parser_options:
             self.assertRegex(
                 client_man,
@@ -381,7 +396,7 @@ class MetadataTests(unittest.TestCase):
 
         server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed-v2-reference.8").read_text(encoding="utf-8")
         self.assertIn("--admin-keys <path>", server_help)
         self.assertIn("--keys-admin", server_help)
         self.assertIn("--tls_cert <path>", server_help)
@@ -423,7 +438,7 @@ class MetadataTests(unittest.TestCase):
 
         server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed-v2-reference.8").read_text(encoding="utf-8")
         startup = (ROOT / "src/server/cli/startup_checks.cpp").read_text(
             encoding="utf-8")
         self.assertIn("Reserved relayed EXEC policy input", server_help)
@@ -442,16 +457,16 @@ class MetadataTests(unittest.TestCase):
             encoding="utf-8")
         server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed-v2-reference.8").read_text(encoding="utf-8")
         self.assertIn(
             '(arg == "completion" || arg == "--completion")',
             server_args,
         )
-        self.assertIn("yumed --completion bash", server_help)
+        self.assertIn("yumed-v2-reference --completion bash", server_help)
         self.assertIn("--completion <shell>", server_help)
         self.assertIn(".B --completion", server_man)
         self.assertIn('.BI "--completion " shell', server_man)
-        self.assertRegex(server_man, r"\.B yumed\s+\.B completion\s+\.B bash")
+        self.assertRegex(server_man, r"\.B yumed-v2-reference\s+\.B completion\s+\.B bash")
 
     def test_operator_proof_token_is_file_only(self) -> None:
         server_keys = (
@@ -464,7 +479,7 @@ class MetadataTests(unittest.TestCase):
             encoding="utf-8")
         server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed-v2-reference.8").read_text(encoding="utf-8")
         facade_io = (
             ROOT / "src/facade/config/server_config_io.cpp"
         ).read_text(encoding="utf-8")
@@ -506,7 +521,7 @@ class MetadataTests(unittest.TestCase):
 
         server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
             encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
+        server_man = (ROOT / "docs/man/yumed-v2-reference.8").read_text(encoding="utf-8")
         for claim in ("maximum 8 MiB", "4096 entries", "256 captures",
                       "64 MiB total"):
             self.assertIn(claim, server_help)
@@ -519,7 +534,7 @@ class MetadataTests(unittest.TestCase):
         self.assertRegex(
             cmake,
             r'option\(YUME_STATIC_OPENSSL[\s\S]*?runtime libssl dependency"'
-            r'\s+\$\{YUME_BUILD_TRANSPORT_V2\}\)',
+            r'\s+ON\)',
         )
         self.assertIn("SSL_OP_YUME_CHROME_CLIENT_HELLO", cmake)
         self.assertIn("SSL_CTRL_YUME_CHROME_CLIENT_HELLO", cmake)
@@ -527,7 +542,7 @@ class MetadataTests(unittest.TestCase):
         self.assertRegex(
             cmake,
             r'if\(\(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY\) OR'
-            r'\s+YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER\)'
+            r'\s+YUME_BUILD_YTP1_TLS13_PROVIDER\)'
             r'\s+include\(CheckCXXSourceCompiles\)',
         )
 
@@ -535,7 +550,8 @@ class MetadataTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"native_chrome_client_hello": True', package_script)
         self.assertIn('"patched_openssl_embedded": True', package_script)
-        self.assertIn('"required_at_runtime": False', package_script)
+        self.assertIn('"transport": "YTP/1"', package_script)
+        self.assertNotIn('"argon2": True', package_script)
         self.assertNotIn('"chrome_tls_helper": True,\n                "openssl_minimum"',
                          package_script)
 

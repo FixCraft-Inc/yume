@@ -11,8 +11,8 @@ catalog-home: Operating
 catalog-order: 100
 ---
 > **Transport-v2 surface:** this document records probe, cover, and diagnostic
-> behavior in the default client and daemon. Its evidence does not automatically
-> qualify the unwired YTP/1 front door.
+> behavior in the reference client and daemon. Its evidence does not automatically
+> qualify the native YTP/1 front door.
 
 ## Stealth boundary
 

@@ -122,7 +122,7 @@ jobs:
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config binutils xz-utils perl \
             zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev \
-            libnghttp2-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
+            libnghttp2-dev libsystemd-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
           source scripts/ensure-nghttp2.sh
@@ -152,6 +152,8 @@ jobs:
           openssl list -signature-algorithms | grep -F 'ML-DSA-87'
           cmake -S . -B build-helper-a -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_BUILD_NATIVE_APPLICATION=ON \
+            -DYUME_BUILD_TRANSPORT_V2=ON \
             -DYUME_USE_BASEFWX=ON \
             -DYUME_BUILD_CHROME_TLS_HELPER=ON \
             -DYUME_GO_EXECUTABLE="$(command -v go)" \
@@ -191,6 +193,8 @@ jobs:
           set -euo pipefail
           cmake -S . -B build-helper-b -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_BUILD_NATIVE_APPLICATION=ON \
+            -DYUME_BUILD_TRANSPORT_V2=ON \
             -DYUME_USE_BASEFWX=ON \
             -DYUME_BUILD_CHROME_TLS_HELPER=ON \
             -DYUME_GO_EXECUTABLE="$(command -v go)" \
@@ -226,8 +230,8 @@ jobs:
           python3 scripts/package_linux_release.py \
             --yume build-helper-a/bin/yume \
             --yumed build-helper-a/bin/yumed \
-            --helper build-helper-a/bin/yume-chrome-tls-helper \
-            --helper-rebuild build-helper-b/bin/yume-chrome-tls-helper \
+            --setup tools/yume_setup.py \
+            --doctor tools/yume_doctor.py \
             --license LICENSE \
             --notices docs/release/THIRD-PARTY-NOTICES.md \
             --quick-start docs/release/LINUX-QUICKSTART.md \

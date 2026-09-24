@@ -2,7 +2,7 @@
 # YUME - Yume Universal Multiprotocol Engine
 # Copyright (C) 2026 FixCraft Inc.
 # Licensed under the GNU Affero General Public License v3.0 or later.
-"""Shared helpers for real yume-ytp1 and yumed-ytp1 sessions.
+"""Shared helpers for real yume and yumed sessions.
 
 The native runtime test, the nDPI smoke observation and the Ethernet runner use
 these helpers so kit layout, SOCKS5 handling and process shutdown have one
@@ -26,7 +26,7 @@ import time
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
-SETUP_TOOL = ROOT / "tools" / "yume_setup_ytp1.py"
+SETUP_TOOL = ROOT / "tools" / "yume_setup.py"
 PATTERN = bytes(range(256))
 REPLY_SUCCEEDED = 0x00
 REPLY_NOT_ALLOWED = 0x02

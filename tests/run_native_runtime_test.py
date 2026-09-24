@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run yumed-ytp1 and yume-ytp1 as processes and move bytes through SOCKS5."""
+"""Run yumed and yume as processes and move bytes through SOCKS5."""
 
 from __future__ import annotations
 
@@ -270,9 +270,9 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
             check_payload(socks_port, "127.0.0.1", target_port)
             check_udp_associate(socks_port)
 
-            session.stop_process(client, "yume-ytp1")
+            session.stop_process(client, "yume")
             client = None
-            session.stop_process(server, "yumed-ytp1")
+            session.stop_process(server, "yumed")
         finally:
             for process in (client, server):
                 if process is not None and process.poll() is None:
@@ -286,7 +286,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
                 session.reject_secret_output(name, text)
                 sys.stdout.write(f"--- {name} log\n{text}")
         client_log = (root / "yume.log").read_text(encoding="utf-8")
-        if client_log.count("yume-ytp1: session authenticated\n") != 1 or "session ended" in client_log:
+        if client_log.count("yume: session authenticated\n") != 1 or "session ended" in client_log:
             raise session.SessionFailure("SOCKS requests replaced the authenticated session")
 
 

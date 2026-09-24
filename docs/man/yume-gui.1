@@ -9,26 +9,29 @@ yume-gui \- desktop UI for the YUME post-quantum stealth transport
 ]
 .SH DESCRIPTION
 .B yume-gui
-is an optional Dear ImGui desktop application.
+is an optional Dear ImGui desktop application in the explicit
+transport-v2 reference build.
 It embeds the same facade sessions used by automation and tests: a
-.BR yumed (8)
+.BR yumed-v2-reference (8)
 server controller and a linked, in-process
-.BR yume (1)
+.BR yume-v2-reference (1)
 client runtime.
 .PP
 The GUI does not reimplement the transport stack.
-JSON profiles written here are compatible with the CLI binaries.
+JSON profiles written here are compatible with the transport-v2
+reference CLI binaries.
+Native YTP/1 and schema-1 configuration integration remain unfinished.
 .SH WORKSPACES
 The sidebar switches between two workspaces:
 .TP
 .B Client
 Connect, security, logs, settings, and credits for the
-.BR yume (1)
+.BR yume-v2-reference (1)
 runtime.
 .TP
 .B Server
 Server control, authorized keys, logs, settings, and credits for
-.BR yumed (8).
+.BR yumed-v2-reference (8).
 .SH PAGES
 .TP
 .B Dashboard
@@ -120,17 +123,17 @@ If the icon is missing, run with
 .B --no-tray
 and keep the main window visible, or use the CLI binaries directly.
 .SH BUILD
-The GUI is optional:
+Build the GUI in a separate CMake reference tree with
+.BR YUME_BUILD_TRANSPORT_V2=ON ,
+.B YUME_BUILD_NATIVE_APPLICATION=OFF
+and
+.BR YUME_BUILD_GUI=ON .
+The reference graph remains uninstalled.
+See
+.B CONTRIBUTING.md
+for dependency setup.
 .PP
-.nf
-\&./ezbuild.sh --gui
-.fi
-.PP
-Requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake.
-Debian packaging skips the GUI when
-.B DEB_BUILD_PROFILES
-contains
-.BR nogui .
+The GUI requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake.
 .SH FILES
 .TP
 .I ~/.yume/client.json
@@ -150,8 +153,8 @@ File paths are derived from each record's ID and material type.
 .I ~/.yume/keys/
 Default key generation directory.
 .SH SEE ALSO
-.BR yume (1),
-.BR yumed (8),
+.BR yume-v2-reference (1),
+.BR yumed-v2-reference (8),
 .B docs/ARCHITECTURE.md
 .SH AUTHOR
 FixCraft Inc.

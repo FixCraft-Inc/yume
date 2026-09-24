@@ -4,6 +4,9 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
+#define YUME_TEST_ALIGNED_ALLOCATIONS 1
+#include "test_support/allocation_failure.hpp"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -41,6 +44,11 @@
 #include "engine/front_door.hpp"
 #include "engine/session_engine.hpp"
 #include "providers/asio_direct_route_provider.hpp"
+#include "providers/system_resolver.hpp"
+
+#ifndef YUME_TEST_RESOLVER_PROGRAM
+#error "YUME_TEST_RESOLVER_PROGRAM names the resolver helper"
+#endif
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
 
@@ -81,69 +89,12 @@ bool consume() noexcept {
 
 }  // namespace test_allocation_failure
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-
-void* operator new(std::size_t size) {
-    if (test_allocation_failure::consume()) {
-        throw std::bad_alloc();
-    }
-    if (void* allocation = std::malloc(size == 0U ? 1U : size)) {
-        return allocation;
-    }
-    throw std::bad_alloc();
+namespace {
+void check_test_allocation(std::size_t) {
+    if (test_allocation_failure::consume()) throw std::bad_alloc();
+}
 }
 
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* allocation) noexcept { std::free(allocation); }
-void operator delete[](void* allocation) noexcept { ::operator delete(allocation); }
-void operator delete(void* allocation, std::size_t) noexcept {
-    ::operator delete(allocation);
-}
-void operator delete[](void* allocation, std::size_t) noexcept {
-    ::operator delete[](allocation);
-}
-
-// Asio's aligned allocation path can bypass operator new. Interpose it as
-// well, so a passing cleanup test cannot accidentally depend on that escape.
-extern "C" void* aligned_alloc(std::size_t alignment, std::size_t size) noexcept {
-    if (test_allocation_failure::consume()) {
-        errno = ENOMEM;
-        return nullptr;
-    }
-    void* allocation = nullptr;
-    const int error = ::posix_memalign(&allocation, alignment, size == 0U ? 1U : size);
-    if (error != 0) errno = error;
-    return allocation;
-}
-
-void* operator new(std::size_t size, std::align_val_t alignment) {
-    if (void* allocation = ::aligned_alloc(static_cast<std::size_t>(alignment), size)) {
-        return allocation;
-    }
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size, std::align_val_t alignment) {
-    return ::operator new(size, alignment);
-}
-void operator delete(void* allocation, std::align_val_t) noexcept {
-    std::free(allocation);
-}
-void operator delete[](void* allocation, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-void operator delete(void* allocation, std::size_t, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-void operator delete[](void* allocation, std::size_t, std::align_val_t alignment) noexcept {
-    ::operator delete(allocation, alignment);
-}
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
 #endif
 
@@ -660,39 +611,34 @@ std::shared_ptr<const EngineGraph> request_graph(
 
 class RequestFactory final {
 public:
-    RequestFactory()
-        : stream_handler_(
-              std::make_shared<CaptureHandler>(ServiceKind::ByteStream)),
-          packet_handler_(
-              std::make_shared<CaptureHandler>(ServiceKind::PacketChannel)) {
+    AuthorizedRouteRequest make(ytp1::Destination destination) const {
+        // This fixture mints an authorized value, not a long-running peer.
+        // Each request gets an authenticated session so unrelated socket/DNS
+        // test delays cannot trigger a rekey the mock does not implement.
+        auto stream_handler = std::make_shared<CaptureHandler>(ServiceKind::ByteStream);
+        auto packet_handler = std::make_shared<CaptureHandler>(ServiceKind::PacketChannel);
         auto carrier_owner = std::make_unique<TestCarrier>();
-        carrier_ = carrier_owner.get();
-        session_ = require(SessionEngine::create(
-            request_graph(stream_handler_, packet_handler_),
-            std::move(carrier_owner)));
+        auto* const carrier = carrier_owner.get();
+        struct SessionOwner final {
+            std::shared_ptr<SessionEngine> session;
+            ~SessionOwner() noexcept { session->stop(); }
+        } owner{require(SessionEngine::create(
+            request_graph(stream_handler, packet_handler),
+            std::move(carrier_owner)))};
         int starts = 0;
-        session_->async_start([&](Status status) {
+        owner.session->async_start([&](Status status) {
             CHECK(status.ok());
             ++starts;
         });
-        CHECK(carrier_->sent.size() == 1U);
+        CHECK(carrier->sent.size() == 1U);
         Buffer response = auth_message(
             ytp1::AuthMessageType::Response, ytp1::EndpointRole::Client);
-        carrier_->deliver(frame(ytp1::RecordType::Auth, 0U,
-                                response.bytes()));
-        CHECK(carrier_->sent.size() == 4U);
-        carrier_->deliver(copy_bytes(carrier_->sent[2].bytes()));
+        carrier->deliver(frame(ytp1::RecordType::Auth, 0U,
+                               response.bytes()));
+        CHECK(carrier->sent.size() == 4U);
+        carrier->deliver(copy_bytes(carrier->sent[2].bytes()));
         CHECK(starts == 1);
-        CHECK(session_->state() == SessionState::Active);
-    }
-
-    ~RequestFactory() noexcept {
-        if (session_) {
-            session_->stop();
-        }
-    }
-
-    AuthorizedRouteRequest make(ytp1::Destination destination) {
+        CHECK(owner.session->state() == SessionState::Active);
         const bool tcp =
             destination.transport == ytp1::TransportProtocol::Tcp;
         const ytp1::OpenRequest open{
@@ -702,15 +648,13 @@ public:
             std::move(destination)};
         const auto encoded = ytp1::EncodeOpen(open);
         CHECK(encoded.ok());
-        const std::uint32_t stream_id = next_stream_id_;
-        next_stream_id_ += 2U;
-        carrier_->deliver(protected_wire(
-            next_sequence_++,
-            frame(ytp1::RecordType::Open, stream_id,
+        carrier->deliver(protected_wire(
+            1U,
+            frame(ytp1::RecordType::Open, 1U,
                   {reinterpret_cast<const std::byte*>(encoded.value->data()),
                    encoded.value->size()})));
 
-        auto& capture = tcp ? stream_handler_ : packet_handler_;
+        auto& capture = tcp ? stream_handler : packet_handler;
         CHECK(capture->request.has_value());
         AuthorizedRouteRequest result = std::move(*capture->request);
         capture->request.reset();
@@ -721,14 +665,6 @@ public:
         }
         return result;
     }
-
-private:
-    std::shared_ptr<CaptureHandler> stream_handler_;
-    std::shared_ptr<CaptureHandler> packet_handler_;
-    TestCarrier* carrier_{nullptr};
-    std::shared_ptr<SessionEngine> session_;
-    std::uint32_t next_stream_id_{1U};
-    std::uint64_t next_sequence_{1U};
 };
 
 ytp1::Destination ipv4_destination(ytp1::TransportProtocol protocol,
@@ -756,9 +692,29 @@ ytp1::Destination dns_destination(ytp1::TransportProtocol protocol,
     return destination;
 }
 
+void test_request_factory_across_epoch_lifetime(RequestFactory& requests) {
+    const auto first = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp, 9U));
+    std::this_thread::sleep_for(ytp1::kEpochSendLifetime + 50ms);
+    const auto second = requests.make(ipv4_destination(ytp1::TransportProtocol::Tcp, 10U));
+    const auto third = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp, 11U));
+    CHECK(first.destination().port() == 9U && first.destination().protocol() == NetworkProtocol::Udp);
+    CHECK(second.destination().port() == 10U && second.destination().protocol() == NetworkProtocol::Tcp);
+    CHECK(third.destination().port() == 11U && third.destination().protocol() == NetworkProtocol::Udp);
+    CHECK(first.peer_evidence().identity() == second.peer_evidence().identity());
+}
+
+std::shared_ptr<SystemResolver> make_resolver(
+    const std::shared_ptr<AsioExecutionContext>& context,
+    const char* program = YUME_TEST_RESOLVER_PROGRAM) {
+    SystemResolverOptions options;
+    options.program = program;
+    return require(SystemResolver::create(context, std::move(options)));
+}
+
 class IoRuntime final {
 public:
     IoRuntime() : context_(require(AsioExecutionContext::create(ExecutorAffinity(91U)))),
+        resolver_(make_resolver(context_)),
         thread_([this]() {
             for (;;) {
                 try { context_->run(); break; }
@@ -768,10 +724,12 @@ public:
     IoRuntime(const IoRuntime&) = delete;
     IoRuntime& operator=(const IoRuntime&) = delete;
     ~IoRuntime() noexcept {
+        resolver_->close();
         context_->finish();
         if (thread_.joinable()) thread_.join();
     }
     const std::shared_ptr<AsioExecutionContext>& context() const noexcept { return context_; }
+    const std::shared_ptr<SystemResolver>& resolver() const noexcept { return resolver_; }
 
     template <typename Function>
     auto invoke(Function function) {
@@ -792,6 +750,7 @@ public:
     }
 private:
     std::shared_ptr<AsioExecutionContext> context_;
+    std::shared_ptr<SystemResolver> resolver_;
     std::atomic<bool> runner_failed_{false};
     std::thread thread_;
 };
@@ -986,7 +945,7 @@ std::shared_ptr<AsioDirectRouteProvider> make_provider(
     SocketProtector protector = {}) {
     return require(AsioDirectRouteProvider::create(
         runtime.context(), loopback_policy, limits,
-        std::move(protector)));
+        std::move(protector), runtime.resolver()));
 }
 
 AsyncTicket<Result<Buffer>> start_read(IoRuntime& runtime, ByteChannel& channel,
@@ -1419,7 +1378,7 @@ void test_resolved_route_policy(RequestFactory& requests, bool tcp) {
         }, limits, [&](NativeSocket) {
             ++protector_calls;
             return Status::success();
-        }));
+        }, runtime.resolver()));
     for (unsigned form = 0U; form < 4U; ++form) {
         selected = ipv4_destination(protocol, 443U);
         if (form == 1U) selected = dns_destination(protocol, "localhost", 443U);
@@ -1464,7 +1423,7 @@ void test_dns_policy_before_any_connect(RequestFactory& requests, bool tcp) {
         }, {}, [&](NativeSocket) {
             ++protector_calls;
             return Status(StatusCode::FailedPrecondition);
-        }));
+        }, runtime.resolver()));
     auto request = requests.make(dns_destination(tcp ? ytp1::TransportProtocol::Tcp
         : ytp1::TransportProtocol::Udp, "localhost", 443U));
     auto result = open_route(runtime, provider, request);
@@ -1791,7 +1750,9 @@ void test_pending_dns_under_sustained_allocation_failure(RequestFactory& request
                                                          bool tcp, bool cancel) {
     auto context = require(AsioExecutionContext::create(ExecutorAffinity(101U)));
     std::weak_ptr<AsioExecutionContext> weak_context = context;
-    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy));
+    auto resolver = make_resolver(context);
+    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy, {}, {},
+                                                            resolver));
     auto request = requests.make(dns_destination(tcp ? ytp1::TransportProtocol::Tcp
                                                     : ytp1::TransportProtocol::Udp,
                                                  "localhost", 9U));
@@ -1800,60 +1761,69 @@ void test_pending_dns_under_sustained_allocation_failure(RequestFactory& request
         provider->async_open(request, {}, [&](Result<RouteConnection> result) noexcept {
             record.record(*context, result.status());
             provider.reset();
+            resolver->close();
         });
         test_allocation_failure::sustained.store(true, std::memory_order_release);
         if (cancel) provider->cancel();
     });
+    // The resolver's answer cannot be delivered while allocation fails. The
+    // open settles once, and nothing escapes the runner.
     {
         test_allocation_failure::SustainedScope reset_on_exit(false);
         context->finish();
-        for (;;) {
-            try { context->run(); break; }
-            catch (const std::bad_alloc&) {}
-        }
+        context->run();
     }
     CHECK(record.calls == 1U && record.on_context);
     CHECK(record.code == (cancel ? StatusCode::Cancelled : StatusCode::ResourceExhausted));
     CHECK(!provider);
+    resolver.reset();
     context.reset();
     CHECK(weak_context.expired());
 }
 
-void test_cancelled_dns_keeps_pending_reservation(RequestFactory& requests, bool tcp) {
+// A cancelled lookup keeps only its slot in the shared resolver, which bounds
+// abandoned DNS work itself. The open's reservation returns at once, so the
+// next open is admitted even though the helper has not answered.
+void test_cancelled_dns_releases_pending_reservation(RequestFactory& requests, bool tcp) {
     auto context = require(AsioExecutionContext::create(ExecutorAffinity(103U)));
     AsioDirectRouteLimits limits;
     limits.max_pending_opens = 1U;
     limits.max_active_connections = 1U;
-    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy, limits));
+    auto resolver = make_resolver(context, YUME_TEST_STALL_RESOLVER_PROGRAM);
+    auto provider = require(AsioDirectRouteProvider::create(context, loopback_policy, limits, {},
+                                                            resolver));
     auto dns_request = requests.make(dns_destination(tcp ? ytp1::TransportProtocol::Tcp
                                                         : ytp1::TransportProtocol::Udp,
-                                                     "localhost", 9U));
+                                                     "resolver-stall.invalid", 9U));
     auto literal_request = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp, 9U));
-    CompletionRecord cancelled, refused, reused;
+    CompletionRecord cancelled, reused;
+    std::optional<RouteConnection> connection;
+    std::chrono::steady_clock::time_point closed_at{};
     boost::asio::post(context->executor(), [&]() {
         provider->async_open(dns_request, {}, [&](Result<RouteConnection> result) noexcept {
             cancelled.record(*context, result.status());
             provider->async_open(literal_request, {}, [&](Result<RouteConnection> next) noexcept {
-                refused.record(*context, next.status());
+                reused.record(*context, next.status());
+                if (next.ok()) connection.emplace(std::move(next).take_value());
+                if (auto* channel = connection ? connection->packet_channel_if() : nullptr) {
+                    channel->close();
+                }
+                // The stalled lookup is still outstanding in the helper.
+                // Closing the resolver ends it, so final drain is bounded.
+                resolver->close();
+                closed_at = std::chrono::steady_clock::now();
+                context->finish();
             });
         });
         provider->cancel();
     });
-    const auto deadline = std::chrono::steady_clock::now() + 3s;
-    while (cancelled.calls == 0U && std::chrono::steady_clock::now() < deadline) context->poll();
-    CHECK(cancelled.calls == 1U && cancelled.code == StatusCode::Cancelled && cancelled.on_context);
-    CHECK(refused.calls == 1U && refused.code == StatusCode::ResourceExhausted && refused.on_context);
-    // Final drain retires the resolver handler. The same provider can then
-    // admit a new route; cancellation did not permanently consume its slot.
-    context->finish(); context->run();
-    boost::asio::post(context->executor(), [&]() {
-        provider->async_open(literal_request, {}, [&](Result<RouteConnection> result) noexcept {
-            reused.record(*context, result.status());
-        });
-    });
     context->run();
+    CHECK(std::chrono::steady_clock::now() - closed_at < 2s);
+    CHECK(cancelled.calls == 1U && cancelled.code == StatusCode::Cancelled && cancelled.on_context);
     CHECK(reused.calls == 1U && reused.code == StatusCode::Ok && reused.on_context);
-    provider.reset(); context->run();
+    connection.reset();
+    provider.reset();
+    context->run();
 }
 
 void test_open_allocation_failure_releases_capacity(RequestFactory& requests) {
@@ -1915,9 +1885,14 @@ void test_open_allocation_failure_releases_capacity(RequestFactory& requests) {
 }  // namespace yume::providers
 
 int main() {
+#if !defined(_WIN32)
+    yume::test::before_allocate_on_any_thread.store(check_test_allocation);
+#endif
+
     try {
         yume::providers::test_creation_and_limits();
         yume::providers::RequestFactory requests;
+        yume::providers::test_request_factory_across_epoch_lifetime(requests);
         yume::providers::test_tcp_round_trip_and_half_close(requests);
         yume::providers::test_udp_round_trip_and_truncation(requests);
         yume::providers::test_dns_and_connect_errors(requests);
@@ -1938,7 +1913,7 @@ int main() {
                     yume::providers::CleanupAction::CloseInCallback}) {
                 yume::providers::test_cleanup_under_sustained_allocation_failure(requests, tcp, action);
             }
-            yume::providers::test_cancelled_dns_keeps_pending_reservation(requests, tcp);
+            yume::providers::test_cancelled_dns_releases_pending_reservation(requests, tcp);
             yume::providers::test_pending_dns_under_sustained_allocation_failure(requests, tcp, true);
             yume::providers::test_pending_dns_under_sustained_allocation_failure(requests, tcp, false);
         }

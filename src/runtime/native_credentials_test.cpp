@@ -95,7 +95,7 @@ std::vector<unsigned char> public_der(EVP_PKEY* key) {
     return result;
 }
 
-// Independent fixture writer uses the same byte grammar as yume_setup_ytp1.py.
+// Independent fixture writer uses the same byte grammar as yume_setup.py.
 std::string fingerprint(EVP_PKEY* classical, EVP_PKEY* pq) {
     std::vector<unsigned char> bytes;
     constexpr std::string_view kDomain = "yume/ytp/1/composite-identity/v1";
@@ -400,6 +400,27 @@ void test_load_and_authenticate(Fixture& fixture) {
     fixture.restore_stores();
 }
 
+// max_sessions is optional per identity and reported by the policy. Absent,
+// the policy reports no bound.
+void test_session_limits(Fixture& fixture) {
+    auto unlimited = take(fixture.load_server());
+    check(unlimited.authorization->max_sessions(fixture.client.id) == 0U,
+          "absent max_sessions reported a bound");
+    auto candidate = fixture.authorized;
+    candidate["keys"][0]["max_sessions"] = 3;
+    fixture.write("credentials/authorized.json", candidate.dump());
+    auto limited = take(fixture.load_server());
+    check(limited.authorization->max_sessions(fixture.client.id) == 3U,
+          "configured max_sessions was not reported");
+    check(limited.authorization->max_sessions(fixture.admin.id) == 0U,
+          "an unrelated identity reported a bound");
+    candidate["keys"][0]["max_sessions"] = 1024;
+    fixture.write("credentials/authorized.json", candidate.dump());
+    check(take(fixture.load_server()).authorization->max_sessions(fixture.client.id) == 1024U,
+          "the largest max_sessions was refused");
+    fixture.restore_stores();
+}
+
 void test_invalid_stores(Fixture& fixture) {
     for (const auto& mutation : std::vector<std::function<void(Json&)>>{
              [](Json& value) { value["schema"] = 1.0; },
@@ -438,7 +459,13 @@ void test_invalid_stores(Fixture& fixture) {
                  duplicate["identity"] = {{"file", "authorized/admin.pub.pem"},
                                           {"sha256", fixture.admin.id}};
                  value["keys"].push_back(std::move(duplicate));
-             }}) {
+             },
+             [](Json& value) { value["keys"][0]["max_sessions"] = 0; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = 1025; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = -1; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = 2.0; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = "2"; },
+             [](Json& value) { value["keys"][0].erase("capabilities"); }}) {
         auto candidate = fixture.authorized;
         mutation(candidate);
         fixture.rejected_store(std::move(candidate));
@@ -559,6 +586,7 @@ int main() {
         Fixture fixture;
         test_load_and_authenticate(fixture);
         test_invalid_stores(fixture);
+        test_session_limits(fixture);
         test_file_boundaries(fixture);
         std::cout << "native credential tests passed\n";
         return EXIT_SUCCESS;

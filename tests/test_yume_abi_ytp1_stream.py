@@ -97,11 +97,12 @@ def configure(kit: Path) -> str:
     return str(store["keys"][0]["identity"]["sha256"])
 
 
-def run(probe: Path, openssl: Path) -> None:
+def run(probe: Path, openssl: Path, resolver: Path) -> None:
     probe = probe.resolve(strict=True)
     openssl = openssl.resolve(strict=True)
-    if not probe.is_file() or not openssl.is_file():
-        raise ValueError("probe and OpenSSL must be regular files")
+    resolver = resolver.resolve(strict=True)
+    if not probe.is_file() or not openssl.is_file() or not resolver.is_file():
+        raise ValueError("probe, OpenSSL and resolver helper must be regular files")
     environment = os.environ.copy()
     child_asan_options = environment.pop(CHILD_ASAN_OPTIONS_ENV, None)
     if child_asan_options is not None:
@@ -120,7 +121,7 @@ def run(probe: Path, openssl: Path) -> None:
         # The reservation closes before the native listener binds. A competing
         # bind fails this test instead of connecting to another peer.
         setup = subprocess.run(
-            [sys.executable, str(root / "tools/yume_setup_ytp1.py"), "init",
+            [sys.executable, str(root / "tools/yume_setup.py"), "init",
              "--host", "localhost", "--port", str(port), "--output", str(kit),
              "--client-name", "abi-client"],
             env=environment, capture_output=True, text=True, timeout=75,
@@ -141,7 +142,7 @@ def run(probe: Path, openssl: Path) -> None:
         )
         result = subprocess.run(
             [str(probe), str(kit / "server"), str(kit / "client"),
-             client_fingerprint, server_fingerprint],
+             client_fingerprint, server_fingerprint, str(resolver)],
             cwd=temporary, env=environment, timeout=150, check=False,
         )
         if result.returncode:
@@ -153,9 +154,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", type=Path, required=True)
     parser.add_argument("--openssl", type=Path, required=True)
+    parser.add_argument("--resolver", type=Path, required=True)
     args = parser.parse_args()
     try:
-        run(args.probe, args.openssl)
+        run(args.probe, args.openssl, args.resolver)
     except (OSError, ValueError, RuntimeError, KeyError,
             subprocess.TimeoutExpired) as error:
         print(f"schema-1 ABI stream gate: {error}", file=sys.stderr)

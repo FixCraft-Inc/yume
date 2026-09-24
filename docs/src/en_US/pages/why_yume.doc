@@ -2,7 +2,7 @@
 name:     why_yume
 kind:     page
 title:    Why YUME exists
-summary:  The transport's goals, security contract, and dependency choices.
+summary:  What YUME is for, the order of its priorities, and the security and dependency choices behind it.
 markdown: docs/WHY_YUME.md
 web:      yes
 catalog-title: Why YUME
@@ -10,72 +10,56 @@ catalog-group: Start here
 catalog-home: Start here
 catalog-order: 25
 ---
-YUME is an embeddable stealth universal transport: one authenticated,
-browser-shaped carrier that moves TCP, UDP, and packet traffic, plus a C ABI so
-applications can embed it. Its wire protocol and implementation are original
-to this project. Comparisons with other transports evaluate YUME's goals;
-they do not define its architecture or feature set.
+YUME is a transport you can run on its own or embed: one authenticated,
+browser-shaped connection that carries TCP, UDP and IP packets. Its protocol,
+YTP/1, and its implementation are written for this project. Other transports
+are useful for comparison, but they do not set YUME's design or feature list.
 
-The runnable transport-v2 client and daemon provide a hybrid tunnel. The
-YTP/1 replacement (YUME Transport Protocol 1) generalizes that transport into
-authenticated named byte streams and packet channels, with identity and
-destination policy checked before dispatch.
+When goals conflict, YUME picks stealth first, then security, then speed. It
+still has to be fast enough for everyday use, including HD video.
 
-The current build-tree C ABI carries named byte streams through transport v2.
-Its packet operations and a live YTP/1 endpoint remain unsupported. The
-[connection explanation](EXPLAINED.md) separates the runnable path from the
-replacement graph.
+## What a client gets
 
-SOCKS5, direct TCP/UDP routing, and the packet adapter share the same transport.
-YUME handles connection establishment, authentication, multiplexing, flow
-control, and routing. The [permission model](PERMISSIONS.md) defines access to
-destinations, services, and administration. Administrative access requires a
-distinct second identity from `admin_keys`.
+A client reaches the server through SOCKS5, a managed Linux TUN device, or the
+[C ABI](ABI.md) for named byte streams, packets and routed TCP/UDP. All of them
+share one session. The server checks each client's identity and destination
+policy before it opens anything. Administrative access needs a second, separate
+identity from the admin list. See [operations](OPERATIONS.md#client-identities-and-limits).
 
 ## Security contract
 
-The YTP/1 contract has one mandatory composition. Both Ed25519 and ML-DSA-87
-authenticate a client identity. X25519, ML-KEM-1024, a per-identity access PSK, and the TLS 1.3
-exporter contribute to establishment. The transcript binds the exact suite,
-roles, identities, authenticated capabilities, and fixed security parameters.
-Directional ratchets use one-use AEAD message keys and bounded rekey work. A
-missing component or provider mismatch is a hard failure; there is no suite
-fallback or cryptographic mode switch.
+YTP/1 has one fixed cryptographic composition. A client identity is signed by
+both Ed25519 and ML-DSA-87. Session keys combine X25519, ML-KEM-1024, a
+per-identity pre-shared key and the TLS 1.3 exporter. The handshake transcript
+binds the suite, roles, identities, capabilities and security parameters.
+Records use one-use AES-256-GCM keys from directional ratchets. A missing
+component or provider mismatch fails the connection. There is no fallback
+suite and no weaker mode.
 
-Independent protocol and cryptography review remains a release gate. See the
-[threat model](THREAT_MODEL.md) for the assumptions and limits of this design.
+No independent protocol or cryptography review has happened yet, and one is
+required before a release. The [threat model](THREAT_MODEL.md) states the
+assumptions and limits.
 
-## A genuine application front door
+## A real website at the front door
 
-The replacement's first provider will use TLS 1.3 and HTTP/2. Requests without valid cheap,
-replay-protected admission continue through a real website or configured
-reverse proxy. YTP records exist only after promotion to the authenticated
-carrier. Browser-shaped TLS/H2 geometry is a separately versioned evidence
-profile, not part of YTP semantics; recapturing a browser profile therefore
-does not revise the application wire protocol.
+`yumed` serves TLS 1.3 and HTTP/2. A request without a valid, replay-protected
+admission proof gets the configured static website. YTP records appear only
+after admission. The browser-shaped TLS and HTTP/2 geometry is a separately
+versioned profile, so recapturing a newer browser does not change YTP/1.
 
-Claims about a profile name the exact capture, implementation, environment,
-active-probe checks, and held-out classifier evidence. A short functional
-smoke, ALPN match, or fingerprint string is not whole-session evidence.
+A stealth claim must name the capture, the implementation, the environment,
+the active-probe checks and a held-out classifier result. A matching
+fingerprint string or a short smoke test does not show that a whole session
+blends in. [Stealth](STEALTH.md) lists what has been measured.
 
-## Independent implementation and reproducible dependencies
+## Pinned dependencies
 
-The repository pins source dependencies and records them in a deterministic
-SPDX 2.3 software bill of materials (SBOM):
+Source dependencies are pinned and listed in a deterministic SPDX 2.3 SBOM,
+[`docs/release/SBOM.spdx.json`](release/SBOM.spdx.json):
 
 @code bash
 SOURCE_DATE_EPOCH=0 python3 scripts/check_dependency_sbom.py --check
 @end
 
-The checked-in result is
-[`docs/release/SBOM.spdx.json`](release/SBOM.spdx.json). It records source and
-package-manager inputs. A release artifact must also publish its exact
-binary hashes, compiler/toolchain identity, linked-library inventory, and
-signature manifest.
-
-## Replacement boundary
-
-YTP/1 uses one security suite and source-linked providers. Its next integration
-step is a working client/server endpoint with cover traffic, routing, and
-embedding support. The current client and daemon remain the default build
-until that endpoint passes the [required capability gates](IMPLEMENTATION_STATUS.md).
+A release must also publish binary hashes, the toolchain, the linked-library
+inventory and a signed manifest.

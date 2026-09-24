@@ -398,30 +398,9 @@ if(YUME_GUI_PORTABLE)
     endif()
 endif()
 
-install(TARGETS yume-gui
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-        COMPONENT yume_gui
-    BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}"
-        COMPONENT yume_gui)
-
-# Country-by-IP DB. Installed next to the desktop entry so the lookup
-# code can find it via the prefix-relative candidate paths it walks at
-# runtime. Optional because nothing else hard-fails without it.
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/geoip/"
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/yume-gui/geoip"
-    COMPONENT yume_gui
-    FILES_MATCHING PATTERN "*.db" PATTERN "*.tsv")
-
-if(UNIX AND NOT APPLE)
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/yume-gui.desktop"
-        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications"
-        OPTIONAL
-        COMPONENT yume_gui)
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/yume-gui.png"
-        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/512x512/apps"
-        OPTIONAL
-        COMPONENT yume_gui)
-endif()
+# This desktop consumer still uses transport v2. Keep its build and lifecycle
+# qualification available without placing it beside the native installed tools.
+# Installation returns with the GUI's migration to the public native interface.
 
 # Headless exit-code contract. --headless is an acceptance gate, not a
 # courtesy smoke: it must return non-zero when nothing could be exercised and
@@ -442,12 +421,12 @@ if(YUME_BUILD_TESTING)
         # require the GUI's headless lifecycle to connect, stop, reconnect and
         # stop against it. This is the gate that proves the GUI's facade drives
         # real core rather than merely compiling and rendering.
-        if(TARGET yumed)
+        if(TARGET yumed-v2-reference)
             add_test(NAME yume_gui_live_contract
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tests/test_yume_gui_live.py"
                     --gui "$<TARGET_FILE:yume-gui>"
-                    --yumed "$<TARGET_FILE:yumed>")
+                    --yumed "$<TARGET_FILE:yumed-v2-reference>")
             set_tests_properties(yume_gui_live_contract PROPERTIES TIMEOUT 400)
         endif()
     endif()

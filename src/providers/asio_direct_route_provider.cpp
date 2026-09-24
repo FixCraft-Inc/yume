@@ -58,8 +58,7 @@ using Udp = boost::asio::ip::udp;
 using Executor = AsioExecutionContext::Executor;
 using TcpSocket = boost::asio::basic_stream_socket<Tcp, Executor>;
 using UdpSocket = boost::asio::basic_datagram_socket<Udp, Executor>;
-using TcpResolver = boost::asio::ip::basic_resolver<Tcp, Executor>;
-using UdpResolver = boost::asio::ip::basic_resolver<Udp, Executor>;
+using Addresses = std::vector<boost::asio::ip::address>;
 using Timer = boost::asio::basic_waitable_timer<std::chrono::steady_clock,
     boost::asio::wait_traits<std::chrono::steady_clock>, Executor>;
 
@@ -229,11 +228,13 @@ public:
                   ResolvedRoutePolicy resolved_policy,
                   AsioDirectRouteLimits limits,
                   SocketProtector protector,
+                  std::shared_ptr<SystemResolver> resolver,
                   ProviderDescriptor descriptor) noexcept
         : context_(std::move(context)),
           resolved_policy_(std::move(resolved_policy)),
           limits_(limits),
           protector_(std::move(protector)),
+          resolver_(std::move(resolver)),
           descriptor_(std::move(descriptor)) {}
 
     Result<std::pair<std::uint64_t, std::uint64_t>> reserve_open() {
@@ -341,6 +342,7 @@ public:
     const AsioDirectRouteLimits& limits() const noexcept { return limits_; }
     const SocketProtector& protector() const noexcept { return protector_; }
     const ResolvedRoutePolicy& resolved_policy() const noexcept { return resolved_policy_; }
+    const std::shared_ptr<SystemResolver>& resolver() const noexcept { return resolver_; }
     const ProviderDescriptor& descriptor() const noexcept {
         return descriptor_;
     }
@@ -350,6 +352,7 @@ private:
     ResolvedRoutePolicy resolved_policy_;
     AsioDirectRouteLimits limits_;
     SocketProtector protector_;
+    std::shared_ptr<SystemResolver> resolver_;
     ProviderDescriptor descriptor_;
 
     std::mutex mutex_;
@@ -1406,9 +1409,7 @@ public:
           reserved_epoch_(reserved_epoch),
           request_(std::move(request)),
           completion_(std::move(completion)),
-          tcp_resolver_(std::in_place, provider_->executor()),
           tcp_socket_(provider_->executor()),
-          udp_resolver_(std::in_place, provider_->executor()),
           udp_socket_(provider_->executor()),
           resolve_timer_(provider_->executor()),
           connect_timer_(provider_->executor()),
@@ -1418,8 +1419,6 @@ public:
 
     ~OpenOperation() noexcept override {
         boost::system::error_code ignored;
-        tcp_resolver_.reset();
-        udp_resolver_.reset();
         tcp_socket_.close(ignored);
         udp_socket_.close(ignored);
         resolve_timer_.cancel(ignored);
@@ -1443,51 +1442,10 @@ public:
     }
 
 private:
-    // Resolver delivery allocates before entering our callback. Destruction of
-    // its last handler without invocation must settle via reserved dispatch.
-    template <typename Protocol>
-    class ResolveCompletion final {
-    public:
-        explicit ResolveCompletion(std::shared_ptr<OpenOperation> owner) noexcept
-            : owner_(std::move(owner)) {
-            owner_->resolve_handler_owners_.fetch_add(1U, std::memory_order_relaxed);
-        }
-        ResolveCompletion(const ResolveCompletion& other) noexcept : owner_(other.owner_) {
-            if (owner_) owner_->resolve_handler_owners_.fetch_add(1U, std::memory_order_relaxed);
-        }
-        ResolveCompletion(ResolveCompletion&&) noexcept = default;
-        ~ResolveCompletion() noexcept {
-            if (owner_ && owner_->resolve_handler_owners_.fetch_sub(
-                    1U, std::memory_order_acq_rel) == 1U &&
-                !owner_->resolve_handler_invoked_.load(std::memory_order_acquire)) {
-                owner_->request_resolve_failure();
-            }
-        }
-        void operator()(const boost::system::error_code& error,
-                        typename Protocol::resolver::results_type results) noexcept {
-            owner_->resolve_handler_invoked_.store(true, std::memory_order_release);
-            if constexpr (std::is_same_v<Protocol, Tcp>)
-                owner_->complete_tcp_resolve(error, std::move(results));
-            else owner_->complete_udp_resolve(error, std::move(results));
-        }
-    private:
-        std::shared_ptr<OpenOperation> owner_;
-    };
-
-    void request_resolve_failure() noexcept {
-        std::lock_guard<std::mutex> lock(publication_mutex_);
-        if (finished_.load(std::memory_order_acquire)) return;
-        resolve_handler_lost_.store(true, std::memory_order_release);
-        provider_->context()->submit(control_, shared_from_this());
-    }
-
     void handle_control() noexcept {
         if (finished_.load(std::memory_order_acquire)) return;
         if (cancellation_requested_.load(std::memory_order_acquire)) {
             cancel_on_context();
-        } else if (resolve_handler_lost_.load(std::memory_order_acquire)) {
-            finish(Result<RouteConnection>(allocation_status(
-                "direct-route resolver completion allocation failed")));
         }
     }
 
@@ -1547,12 +1505,7 @@ private:
     void begin_tcp() {
         if (request_.destination().address_kind() ==
             RouteAddressKind::DnsName) {
-            arm_resolve_timeout(NetworkProtocol::Tcp);
-            tcp_resolver_->async_resolve(
-                std::string(request_.destination().dns_name()),
-                std::to_string(request_.destination().port()),
-                Tcp::resolver::numeric_service,
-                ResolveCompletion<Tcp>(shared_from_this()));
+            begin_resolve();
             return;
         }
         tcp_endpoints_.push_back(tcp_literal_endpoint());
@@ -1564,12 +1517,7 @@ private:
     void begin_udp() {
         if (request_.destination().address_kind() ==
             RouteAddressKind::DnsName) {
-            arm_resolve_timeout(NetworkProtocol::Udp);
-            udp_resolver_->async_resolve(
-                std::string(request_.destination().dns_name()),
-                std::to_string(request_.destination().port()),
-                Udp::resolver::numeric_service,
-                ResolveCompletion<Udp>(shared_from_this()));
+            begin_resolve();
             return;
         }
         udp_endpoints_.push_back(udp_literal_endpoint());
@@ -1633,13 +1581,48 @@ private:
         return false;
     }
 
-    void arm_resolve_timeout(NetworkProtocol protocol) {
+    // Names use the provider's system resolver. Without one, a name is
+    // refused before any lookup or socket.
+    void begin_resolve() {
+        const auto& resolver = provider_->resolver();
+        if (!resolver) {
+            finish(Result<RouteConnection>(safe_status(
+                StatusCode::FailedPrecondition,
+                "direct-route destination names are not resolved here")));
+            return;
+        }
         resolve_timer_.expires_after(provider_->limits().resolve_timeout);
         resolve_timer_.async_wait(
-            [self = shared_from_this(), protocol](
+            [self = shared_from_this()](
                 const boost::system::error_code& error) noexcept {
-                self->complete_resolve_timeout(protocol, error);
+                self->complete_resolve_timeout(error);
             });
+        auto lookup = resolver->resolve(
+            request_.destination().dns_name(),
+            provider_->limits().max_resolved_endpoints,
+            [self = shared_from_this()](Result<Addresses> addresses) noexcept {
+                self->complete_resolve(std::move(addresses));
+            });
+        if (!lookup.ok()) {
+            finish(Result<RouteConnection>(resolution_failure(lookup.status())));
+            return;
+        }
+        lookup_ = lookup.value();
+    }
+
+    Status resolution_failure(const Status& status) const noexcept {
+        if (status.code() == StatusCode::ResourceExhausted ||
+            status.code() == StatusCode::Cancelled) {
+            return safe_status(status.code(), status.message());
+        }
+        return safe_status(StatusCode::NotFound,
+                           request_.destination().protocol() == NetworkProtocol::Tcp
+                               ? "TCP destination resolution failed"
+                               : "UDP destination resolution failed");
+    }
+
+    void cancel_lookup() noexcept {
+        if (lookup_ != 0U) provider_->resolver()->cancel(std::exchange(lookup_, 0U));
     }
 
     void arm_connect_timeout(NetworkProtocol protocol) {
@@ -1651,17 +1634,11 @@ private:
             });
     }
 
-    void complete_resolve_timeout(
-        NetworkProtocol protocol,
-        const boost::system::error_code& error) noexcept {
+    void complete_resolve_timeout(const boost::system::error_code& error) noexcept {
         if (error || finished_) {
             return;
         }
-        if (protocol == NetworkProtocol::Tcp) {
-            tcp_resolver_.reset();
-        } else {
-            udp_resolver_.reset();
-        }
+        cancel_lookup();
         finish(Result<RouteConnection>(safe_status(
             StatusCode::NotFound,
             "direct-route destination resolution timed out")));
@@ -1718,89 +1695,54 @@ private:
             request_.destination().port());
     }
 
-    void complete_tcp_resolve(
-        const boost::system::error_code& error,
-        Tcp::resolver::results_type results) noexcept {
+    void complete_resolve(Result<Addresses> addresses) noexcept {
+        lookup_ = 0U;
+        const bool tcp = request_.destination().protocol() == NetworkProtocol::Tcp;
         try {
             if (finished_) {
                 return;
             }
             boost::system::error_code ignored;
             resolve_timer_.cancel(ignored);
-            if (error) {
-                finish(Result<RouteConnection>(
-                    cancellation_requested_.load(std::memory_order_acquire)
-                        ? cancelled_status()
-                        : safe_status(StatusCode::NotFound,
-                                      "TCP destination resolution failed")));
+            if (cancellation_requested_.load(std::memory_order_acquire)) {
+                finish(Result<RouteConnection>(cancelled_status()));
                 return;
             }
-            for (const auto& result : results) {
-                if (tcp_endpoints_.size() >=
-                    provider_->limits().max_resolved_endpoints) {
-                    break;
-                }
-                tcp_endpoints_.push_back(result.endpoint());
+            if (!addresses.ok()) {
+                finish(Result<RouteConnection>(resolution_failure(addresses.status())));
+                return;
             }
-            if (tcp_endpoints_.empty()) {
+            const std::size_t limit = provider_->limits().max_resolved_endpoints;
+            const std::uint16_t port = request_.destination().port();
+            for (const auto& address : addresses.value()) {
+                if (tcp && tcp_endpoints_.size() < limit) {
+                    tcp_endpoints_.emplace_back(address, port);
+                } else if (!tcp && udp_endpoints_.size() < limit) {
+                    udp_endpoints_.emplace_back(address, port);
+                }
+            }
+            if (tcp ? tcp_endpoints_.empty() : udp_endpoints_.empty()) {
                 finish(Result<RouteConnection>(safe_status(
                     StatusCode::NotFound,
-                    "TCP destination resolution returned no endpoints")));
+                    tcp ? "TCP destination resolution returned no endpoints"
+                        : "UDP destination resolution returned no endpoints")));
                 return;
             }
-            if (!authorize_endpoints(tcp_endpoints_)) return;
-            arm_connect_timeout(NetworkProtocol::Tcp);
-            connect_next_tcp();
+            if (tcp) {
+                if (!authorize_endpoints(tcp_endpoints_)) return;
+                arm_connect_timeout(NetworkProtocol::Tcp);
+                connect_next_tcp();
+            } else {
+                if (!authorize_endpoints(udp_endpoints_)) return;
+                arm_connect_timeout(NetworkProtocol::Udp);
+                connect_next_udp();
+            }
         } catch (const std::bad_alloc&) {
             finish(Result<RouteConnection>(allocation_status(
-                "TCP resolved-endpoint allocation failed")));
+                "resolved-endpoint allocation failed")));
         } catch (...) {
             finish(Result<RouteConnection>(safe_status(
-                StatusCode::Internal,
-                "TCP resolution completion failed")));
-        }
-    }
-
-    void complete_udp_resolve(
-        const boost::system::error_code& error,
-        Udp::resolver::results_type results) noexcept {
-        try {
-            if (finished_) {
-                return;
-            }
-            boost::system::error_code ignored;
-            resolve_timer_.cancel(ignored);
-            if (error) {
-                finish(Result<RouteConnection>(
-                    cancellation_requested_.load(std::memory_order_acquire)
-                        ? cancelled_status()
-                        : safe_status(StatusCode::NotFound,
-                                      "UDP destination resolution failed")));
-                return;
-            }
-            for (const auto& result : results) {
-                if (udp_endpoints_.size() >=
-                    provider_->limits().max_resolved_endpoints) {
-                    break;
-                }
-                udp_endpoints_.push_back(result.endpoint());
-            }
-            if (udp_endpoints_.empty()) {
-                finish(Result<RouteConnection>(safe_status(
-                    StatusCode::NotFound,
-                    "UDP destination resolution returned no endpoints")));
-                return;
-            }
-            if (!authorize_endpoints(udp_endpoints_)) return;
-            arm_connect_timeout(NetworkProtocol::Udp);
-            connect_next_udp();
-        } catch (const std::bad_alloc&) {
-            finish(Result<RouteConnection>(allocation_status(
-                "UDP resolved-endpoint allocation failed")));
-        } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::Internal,
-                "UDP resolution completion failed")));
+                StatusCode::Internal, "destination resolution completion failed")));
         }
     }
 
@@ -1999,8 +1941,7 @@ private:
         if (finished_) {
             return;
         }
-        tcp_resolver_.reset();
-        udp_resolver_.reset();
+        cancel_lookup();
         boost::system::error_code ignored;
         tcp_socket_.cancel(ignored);
         tcp_socket_.close(ignored);
@@ -2030,20 +1971,17 @@ private:
             finished_.store(true, std::memory_order_release);
         }
         cancellation_.unregister();
+        // A cancelled lookup keeps a slot in the shared resolver until the
+        // helper answers. That resolver bounds outstanding DNS work, so this
+        // open's reservation can be returned now.
+        cancel_lookup();
         boost::system::error_code ignored;
         resolve_timer_.cancel(ignored);
         connect_timer_.cancel(ignored);
-        tcp_resolver_.reset();
-        udp_resolver_.reset();
         if (!promoted_) {
             tcp_socket_.close(ignored);
             udp_socket_.close(ignored);
-            // Resetting a resolver cancels its token, not a blocked system
-            // lookup or a queued delivery. Keep its pending reservation until
-            // the retained handler/operation retires, so repeated timeouts
-            // cannot bypass the configured bound on outstanding DNS work.
-            if (resolve_handler_owners_.load(std::memory_order_acquire) == 0U)
-                provider_->release(target_id_);
+            provider_->release(target_id_);
         }
         completion_->complete(std::move(result));
     }
@@ -2053,11 +1991,9 @@ private:
     std::uint64_t reserved_epoch_{0U};
     AuthorizedRouteRequest request_;
     std::shared_ptr<OpenCompletion> completion_;
-    // Resolver::cancel() allocates. Destroying the terminal resolver cancels
-    // without replacing its token, including under sustained allocation failure.
-    std::optional<TcpResolver> tcp_resolver_;
+    // Nonzero while a system lookup is outstanding for this open.
+    std::uint64_t lookup_{0U};
     TcpSocket tcp_socket_;
-    std::optional<UdpResolver> udp_resolver_;
     UdpSocket udp_socket_;
     Timer resolve_timer_;
     Timer connect_timer_;
@@ -2069,9 +2005,6 @@ private:
     std::atomic<bool> cancellation_requested_{false};
     std::mutex publication_mutex_;
     std::atomic<bool> finished_{false};
-    std::atomic<unsigned> resolve_handler_owners_{0U};
-    std::atomic<bool> resolve_handler_invoked_{false};
-    std::atomic<bool> resolve_handler_lost_{false};
     bool promoted_{false};
     ControlTask control_;
 };
@@ -2091,11 +2024,13 @@ AsioDirectRouteProvider::create(
     std::shared_ptr<AsioExecutionContext> context,
     ResolvedRoutePolicy resolved_policy,
     AsioDirectRouteLimits limits,
-    SocketProtector socket_protector) {
-    if (!context || !resolved_policy || !valid_limits(limits)) {
+    SocketProtector socket_protector,
+    std::shared_ptr<SystemResolver> resolver) {
+    if (!context || !resolved_policy || !valid_limits(limits) ||
+        (resolver && resolver->executor_affinity() != context->affinity())) {
         return Result<std::shared_ptr<AsioDirectRouteProvider>>(Status(
             StatusCode::InvalidArgument,
-            "Asio route context, resolved policy or limits are invalid"));
+            "Asio route context, resolver, resolved policy or limits are invalid"));
     }
     try {
         auto descriptor = ProviderDescriptor::create(
@@ -2115,7 +2050,7 @@ AsioDirectRouteProvider::create(
         }
         auto state = std::make_shared<ProviderState>(
             std::move(context), std::move(resolved_policy), limits,
-            std::move(socket_protector),
+            std::move(socket_protector), std::move(resolver),
             std::move(descriptor).take_value());
         auto impl = std::make_shared<Impl>(std::move(state));
         auto provider = std::shared_ptr<AsioDirectRouteProvider>(

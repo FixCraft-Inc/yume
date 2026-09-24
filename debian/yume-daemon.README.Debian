@@ -1,53 +1,54 @@
 YUME daemon for Debian
 ======================
 
-The yume-daemon package installs yumed, /etc/yume/yumed.json, seed
-/etc/yume/authorized_keys and /etc/yume/auth_keys.meta files, and a hardened
-systemd unit named yumed.service.
+The yume-daemon package installs the native YTP/1 yumed, a schema-1 bootstrap
+configuration at /etc/yume/yumed.json, and a hardened yumed.service.
+The service is disabled and not started on package install. The bootstrap
+contains no credentials and cannot start a working endpoint.
 
-The service is intentionally disabled and not started on package install.
-Before enabling it, provide:
+Install yume for the matching yume-setup and yume-doctor tools. Provision a
+schema-1 kit using the matching QUICKSTART.md. Install only the kit's server/
+contents under /etc/yume, preserving its credentials/ and cover-site/ layout;
+keep the client kit on the client machine. The configuration references:
 
-  * /etc/yume/server.crt
-  * /etc/yume/server.key
-  * at least one client public key in /etc/yume/authorized_keys
-  * optional per-key permissions in /etc/yume/auth_keys.meta
-  * /etc/yume/obfs.hex, a protected 32-byte admission secret
-  * /etc/yume/inner.hex, a separate protected 32-byte inner PSK
-  * an ordinary HTTP service on the configured loopback real_backend
+  * credentials/server-composite.pem and its companion public key
+  * credentials/authorized-keys.json and the authorized client keys/PSKs
+  * credentials/admin-keys.json
+  * credentials/server-tls.pem
+  * credentials/server-tls.key.pem
+  * credentials/admission.key
+  * credentials/server-mlkem.key.pem and its companion public key
+  * cover-site/ with the matching profile assets
 
-The packaged configuration expects the cover backend at
-loopback://127.0.0.1:3000.
-Start that separately supervised service before yumed, or change real_backend
-to another loopback IP literal and port. yumed probes it at startup and fails
-closed when it is absent or unhealthy.
+The generated server configuration uses the same relative paths as the
+packaged bootstrap. Review endpoint addresses and direct TCP/UDP destination
+policy before replacing the bootstrap. Relative paths resolve beside the
+configuration file. The native cover site is served in-process; no external
+loopback HTTP backend is required.
 
-Create independent secret files as the account that will run yumed. Each file
-must be owned by yume, mode 0600, and contain exactly 64 lowercase hexadecimal
-characters with no newline. For example, as root:
+Make the credentials accessible to the locked yume account. Private files
+must be owned by yume with mode 0600, and the credentials directory should be
+mode 0700. Public keys and cover files need read access. Do not use the old
+transport-v2 authorized_keys, auth_keys.meta, obfs.hex or inner.hex formats.
 
-  umask 077
-  openssl rand -hex 32 | tr -d '\n' > /etc/yume/obfs.hex
-  openssl rand -hex 32 | tr -d '\n' > /etc/yume/inner.hex
-  chown yume:yume /etc/yume/obfs.hex /etc/yume/inner.hex
-  chmod 0600 /etc/yume/obfs.hex /etc/yume/inner.hex
+Validate the complete provisioned configuration as the service account:
 
-The daemon runs as the locked yume user. Keep private key material readable
-only by root and the yume group, for example:
+  runuser -u yume -- yume-doctor --config /etc/yume/yumed.json
+  runuser -u yume -- yumed --config /etc/yume/yumed.json --validate
 
-  chown root:yume /etc/yume/server.key
-  chmod 0640 /etc/yume/server.key
+Then explicitly start the service:
 
-An anonym CA or delegated private signing key has a stricter contract: when
-configured, it must be a regular non-symlink file owned by yume, mode 0600,
-and no larger than 64 KiB.
-
-Then check the installed binary and start the service:
-
-  yumed --version
   systemctl start yumed.service
 
-The unit grants CAP_NET_BIND_SERVICE so yumed can bind TCP port 443 without
-running as root. It reads /etc/yume but writes only its runtime, state, and log
-directories. Use TCP passthrough if a reverse proxy or load balancer sits in
-front of yumed; do not terminate TLS in HTTP mode.
+Enable it on boot only when the deployment is ready. After changing the
+authorized or admin key stores, "systemctl reload yumed" validates them and
+applies them without dropping other clients: sessions of removed identities
+end, and changed grants apply to the next stream. TLS certificate and
+admission key changes still need a restart. The unit grants only
+CAP_NET_BIND_SERVICE for TCP port 443 and repeats native validation before
+startup. It reads /etc/yume and cannot modify it. Use TCP passthrough if a
+proxy sits in front of yumed; do not terminate TLS in HTTP mode.
+
+The package remains experimental. Installed-service and distribution-specific
+qualification is required before publication; a successful build alone is
+not release qualification.

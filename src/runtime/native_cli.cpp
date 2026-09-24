@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,11 +24,15 @@
 #include "core/runtime/bounded_file.hpp"
 #include "core/version.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "providers/system_resolver_helper.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
+#include "runtime/native_run_loop.hpp"
 #include "runtime/native_server_runtime.hpp"
+#include "runtime/yume_help_text.hpp"
+#include "runtime/yumed_help_text.hpp"
 
 namespace yume::runtime {
 namespace {
@@ -38,6 +43,9 @@ using SignalSet = boost::asio::basic_signal_set<providers::AsioExecutionContext:
 constexpr int kExitStopped = 0;
 constexpr int kExitFailure = 1;
 constexpr int kExitUsage = 2;
+// These programs are their own resolver helper, so a single-file release
+// needs nothing installed beside it.
+constexpr std::string_view kSelfResolverProgram = "/proc/self/exe";
 
 struct Arguments final {
     std::optional<std::filesystem::path> config;
@@ -47,13 +55,22 @@ struct Arguments final {
 };
 
 std::string_view program(NativeCliRole role) noexcept {
-    return role == NativeCliRole::Server ? "yumed-ytp1" : "yume-ytp1";
+    return role == NativeCliRole::Server ? "yumed" : "yume";
 }
 
 void say(NativeCliRole role, std::string_view text) noexcept {
     const auto name = program(role);
     std::fprintf(stderr, "%.*s: %.*s\n", static_cast<int>(name.size()), name.data(),
                  static_cast<int>(text.size()), text.data());
+    std::fflush(stderr);
+}
+
+void say_stopped(NativeCliRole role, const Status& status) noexcept {
+    const auto name = program(role);
+    const auto& message = status.message();
+    std::fprintf(stderr, "%.*s: runtime stopped (status %d): %.*s\n",
+                 static_cast<int>(name.size()), name.data(), static_cast<int>(status.code()),
+                 static_cast<int>(message.size()), message.data());
     std::fflush(stderr);
 }
 
@@ -78,13 +95,7 @@ int exit_for(const Status& status) noexcept {
 }
 
 void usage(NativeCliRole role, std::FILE* out) noexcept {
-    const auto name = program(role);
-    std::fprintf(out,
-        "Usage: %.*s --config PATH [--validate]\n"
-        "       %.*s --version\n"
-        "Network and security policy come only from the schema-1 configuration.\n"
-        "This development runtime is not qualified for production use.\n",
-        static_cast<int>(name.size()), name.data(), static_cast<int>(name.size()), name.data());
+    std::fputs(role == NativeCliRole::Server ? yumed_cli::kHelpBody : yume_cli::kHelpBody, out);
 }
 
 std::optional<Arguments> parse(int argc, char** argv, std::string& error) {
@@ -142,8 +153,8 @@ std::optional<config::v1::Config> load(const std::filesystem::path& path, Native
         auto config = config::v1::ParseJson(text);
         const bool server = config.role() == config::v1::Role::Server;
         if (server != (role == NativeCliRole::Server)) {
-            error = server ? "a server configuration runs with yumed-ytp1"
-                           : "a client configuration runs with yume-ytp1";
+            error = server ? "a server configuration runs with yumed"
+                           : "a client configuration runs with yume";
             return std::nullopt;
         }
         return config;
@@ -181,13 +192,18 @@ int serve(NativeCliRole role, const config::v1::Config& config,
     }
     const auto context = std::move(created).take_value();
     SignalSet signals(context->executor(), SIGINT, SIGTERM);
+    // SIGHUP asks the daemon to reload its credential stores.
+    if (role == NativeCliRole::Server) signals.add(SIGHUP);
     std::shared_ptr<NativeServerRuntime> server;
     std::shared_ptr<NativeClientRuntime> client;
     int exit_code = kExitStopped;
     bool stopping = false;
 
     const auto stop = [&](int code) noexcept {
-        if (stopping) return;
+        if (stopping) {
+            if (code != kExitStopped) exit_code = code;
+            return;
+        }
         stopping = true;
         exit_code = code;
         boost::system::error_code ignored;
@@ -197,18 +213,37 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         context->finish();
     };
 
-    boost::asio::post(context->executor(), [&]() noexcept {
-        try {
-            signals.async_wait([&](const boost::system::error_code& error, int) noexcept {
-                if (error) return;
+    std::function<void()> wait_for_signal;
+    wait_for_signal = [&]() {
+        signals.async_wait([&](const boost::system::error_code& error, int number) noexcept {
+            if (error) return;
+            if (number != SIGHUP) {
                 say(role, "stopping");
                 stop(kExitStopped);
-            });
+                return;
+            }
+            try {
+                if (server) {
+                    const auto reloaded = server->reload();
+                    say(role, reloaded.ok() ? std::string("credentials reloaded")
+                                            : describe("credential reload refused", reloaded));
+                }
+                wait_for_signal();
+            } catch (...) {
+                say(role, "signal handling failed, stopping");
+                stop(kExitFailure);
+            }
+        });
+    };
+
+    boost::asio::post(context->executor(), [&]() noexcept {
+        try {
+            wait_for_signal();
             if (role == NativeCliRole::Server) {
-                auto runtime = NativeServerRuntime::create(context, config, base, [&](Status status) {
-                    say(role, describe("stopped accepting", status));
+                auto runtime = NativeServerRuntime::create(context, config, base, [&](Status status) noexcept {
+                    say_stopped(role, status);
                     stop(kExitFailure);
-                });
+                }, std::string(kSelfResolverProgram));
                 if (!runtime.ok()) {
                     say(role, describe("cannot start", runtime.status()));
                     stop(exit_for(runtime.status()));
@@ -227,8 +262,14 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                 }
                 return;
             }
+            NativeClientRuntimeOptions client_options;
+            client_options.resolver_program = std::string(kSelfResolverProgram);
             auto runtime = NativeClientRuntime::create(context, config, base,
-                [role](std::string_view text) { say(role, text); });
+                [role](std::string_view text) { say(role, text); }, std::move(client_options),
+                [&](Status status) noexcept {
+                    say_stopped(role, status);
+                    stop(kExitFailure);
+                });
             if (!runtime.ok()) {
                 say(role, describe("cannot start", runtime.status()));
                 stop(exit_for(runtime.status()));
@@ -237,7 +278,7 @@ int serve(NativeCliRole role, const config::v1::Config& config,
             client = std::move(runtime).take_value();
             const auto started = client->start();
             if (!started.ok()) {
-                say(role, describe("cannot open SOCKS5 listeners", started));
+                say(role, describe("cannot start client adapters", started));
                 stop(exit_for(started));
                 return;
             }
@@ -251,28 +292,20 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         }
     });
 
-    for (;;) {
-        try {
-            context->run();
-            break;
-        } catch (...) {
-            // A delivery exception cannot identify its owner. Stop everything
-            // and resume so accepted work still drains.
-            say(role, "runner exception, stopping");
-            try {
-                boost::asio::post(context->executor(), [&]() noexcept { stop(kExitFailure); });
-            } catch (...) {
-                exit_code = kExitFailure;
-                context->finish();
-            }
-        }
-    }
+    run_native_context(context, [&]() noexcept {
+        say(role, "runner exception, stopping");
+        stop(kExitFailure);
+    });
     return exit_code;
 }
 
 }  // namespace
 
 int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
+    // Name lookups re-execute this program as their helper process.
+    if (providers::is_system_resolver_helper(argc, argv)) {
+        return providers::run_system_resolver_helper();
+    }
     try {
         std::signal(SIGPIPE, SIG_IGN);
         std::string error;

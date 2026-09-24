@@ -4,6 +4,8 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
+#include "test_support/allocation_failure.hpp"
+
 #include "client/transfer/share_file.hpp"
 
 #include <algorithm>
@@ -128,59 +130,49 @@ void test_construction(bool move, std::size_t fail_at) {
 // Isolate allocation interception in this executable. Quarantine copied
 // buffers after checking them at delete entry: a regressed constructor's late
 // cleanup cannot make the observation pass by wiping already-released storage.
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-
-void* operator new(std::size_t size) {
+namespace {
+void check_test_allocation(std::size_t size) {
     auto* probe = active_probe;
-    const bool tracked = probe && probe->enabled && size > kSecretBytes;
-    if (tracked) {
-        ++probe->attempts;
-        if (probe->attempts == probe->fail_at) {
-            probe->enabled = false;
-            probe->failed = true;
-            throw std::bad_alloc();
-        }
+    if (!probe || !probe->enabled || size <= kSecretBytes) return;
+    ++probe->attempts;
+    if (probe->attempts == probe->fail_at) {
+        probe->enabled = false;
+        probe->failed = true;
+        throw std::bad_alloc();
     }
-    void* data = std::malloc(size == 0 ? 1 : size);
-    if (!data) throw std::bad_alloc();
-    if (tracked && probe->attempts <= probe->secrets.size()) {
+}
+
+void observe_allocation(void* data, std::size_t size) {
+    auto* probe = active_probe;
+    if (probe && probe->enabled && size > kSecretBytes &&
+        probe->attempts <= probe->secrets.size()) {
         probe->secrets[probe->attempts - 1U].data = data;
     }
-    return data;
 }
 
-void* operator new[](std::size_t size) { return ::operator new(size); }
-
-void operator delete(void* data) noexcept {
-    if (data && active_probe) {
-        for (auto& allocation : active_probe->secrets) {
-            if (allocation.data != data) continue;
-            if (allocation.released) {
-                active_probe->double_release = true;
-                return;
-            }
-            const auto* bytes = static_cast<const unsigned char*>(data);
-            allocation.wiped_before_release =
-                std::all_of(bytes, bytes + kSecretBytes, [](unsigned char c) { return c == 0; });
-            allocation.released = true;
-            return;
+bool quarantine_allocation(void* data) noexcept {
+    if (!data || !active_probe) return false;
+    for (auto& allocation : active_probe->secrets) {
+        if (allocation.data != data) continue;
+        if (allocation.released) {
+            active_probe->double_release = true;
+            return true;
         }
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        allocation.wiped_before_release =
+            std::all_of(bytes, bytes + kSecretBytes, [](unsigned char c) { return c == 0; });
+        allocation.released = true;
+        return true;
     }
-    std::free(data);
+    return false;
 }
+}  // namespace
 
-void operator delete[](void* data) noexcept { ::operator delete(data); }
-void operator delete(void* data, std::size_t) noexcept { ::operator delete(data); }
-void operator delete[](void* data, std::size_t) noexcept { ::operator delete(data); }
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 
 int main() {
+    yume::test::before_allocate = check_test_allocation;
+    yume::test::after_allocate = observe_allocation;
+    yume::test::retain_deallocation = quarantine_allocation;
     for (std::size_t fail_at = 0; fail_at <= 4; ++fail_at) {
         test_construction(false, fail_at);
         if (fail_at <= 3) test_construction(true, fail_at);

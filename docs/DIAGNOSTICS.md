@@ -1,9 +1,11 @@
 <!-- Generated from docs/src/en_US/pages/diagnostics.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Developer diagnostics
 
-> **Runnable transport-v2 path:** these diagnostics apply to the current
-> product. Replacement typed diagnostics and `yume-doctor-ytp1` are documented
-> in the [YTP/1 foundation page](development/ytp1/README.md#diagnostics-and-evidence).
+> **Transport-v2 reference:** these diagnostics were written for the
+> uninstalled transport-v2 reference programs. Native YTP/1 reuses the timing
+> and observer components. Its typed diagnostics, `--validate` and
+> `yume-doctor` are in [operations](OPERATIONS.md#troubleshooting) and the
+> [native guide](development/ytp1/README.md#diagnostics-and-evidence).
 
 YUME keeps precise in-process timing available for diagnosis without carrying
 it in production executables. The build configuration, not a runtime flag,

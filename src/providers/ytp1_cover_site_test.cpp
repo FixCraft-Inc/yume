@@ -4,6 +4,8 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
+#include "test_support/allocation_failure.hpp"
+
 #include "providers/ytp1_cover_site.hpp"
 
 #include <cstdlib>
@@ -23,27 +25,16 @@ thread_local int allocation_failure_after = -1;
 thread_local bool allocation_failed = false;
 }
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-void* operator new(std::size_t size) {
+namespace {
+void check_test_allocation(std::size_t) {
     if (allocation_failure_after == 0) {
         allocation_failed = true;
         throw std::bad_alloc();
     }
     if (allocation_failure_after > 0) --allocation_failure_after;
-    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
-    throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* storage) noexcept { std::free(storage); }
-void operator delete[](void* storage) noexcept { ::operator delete(storage); }
-void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
+}
+
 
 namespace {
 using namespace yume::providers;
@@ -335,6 +326,8 @@ void test_directory_snapshot_and_bounds() {
 }  // namespace
 
 int main() {
+    yume::test::before_allocate_on_any_thread.store(check_test_allocation);
+
     try {
 #if !defined(_WIN32)
         test_real_site_snapshot_and_head();

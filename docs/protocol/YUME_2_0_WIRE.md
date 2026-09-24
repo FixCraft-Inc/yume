@@ -1,7 +1,7 @@
 <!-- Generated from docs/src/en_US/pages/yume_2_0_wire.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME transport v2 wire contract
 
-> **Current transport-v2 contract:** this wire remains in the runnable default
+> **Transport-v2 reference contract:** this wire remains in the opt-in reference
 > product during the transition. It is incompatible with the experimental
 > [YTP/1 replacement](YTP_1.md); neither protocol silently downgrades to the
 > other.

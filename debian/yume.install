@@ -1,7 +1,6 @@
 usr/bin/yume
-usr/bin/yume-packet-quick
 usr/bin/yume-setup
+usr/bin/yume-doctor
 usr/share/doc/yume/*
 usr/share/man/man1/yume.1
-usr/share/yume/cover-node/*
 usr/share/yume/cover-profile/*

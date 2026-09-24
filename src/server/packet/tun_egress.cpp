@@ -24,6 +24,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/write.hpp>
 
+#include "common/ip_packet.hpp"
 #include "util.hpp"
 
 #if defined(__linux__)
@@ -45,11 +46,6 @@ std::uint32_t read_be32(const std::uint8_t* data) {
            (static_cast<std::uint32_t>(data[1]) << 16) |
            (static_cast<std::uint32_t>(data[2]) << 8) |
            static_cast<std::uint32_t>(data[3]);
-}
-
-std::uint16_t read_be16(const std::uint8_t* data) {
-    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[0]) << 8) |
-                                      static_cast<std::uint16_t>(data[1]));
 }
 
 std::string ipv4_to_string(std::uint32_t value) {
@@ -121,19 +117,8 @@ bool parse_ipv4_packet(const crypto::Bytes& packet,
                        std::uint32_t* source_be,
                        std::uint32_t* destination_be,
                        std::size_t* packet_len) {
-    if (packet.size() < 20) {
-        return false;
-    }
-    const std::uint8_t version = static_cast<std::uint8_t>(packet[0] >> 4);
-    if (version != 4) {
-        return false;
-    }
-    const std::size_t ihl = static_cast<std::size_t>(packet[0] & 0x0f) * 4;
-    if (ihl < 20 || ihl > packet.size()) {
-        return false;
-    }
-    const std::size_t total_len = read_be16(packet.data() + 2);
-    if (total_len < ihl || total_len > packet.size()) {
+    const auto info = common::inspect_ip_packet(std::as_bytes(std::span(packet)));
+    if (!info || info->version != common::IpPacketVersion::Ipv4) {
         return false;
     }
     if (source_be) {
@@ -143,7 +128,7 @@ bool parse_ipv4_packet(const crypto::Bytes& packet,
         *destination_be = read_be32(packet.data() + 16);
     }
     if (packet_len) {
-        *packet_len = total_len;
+        *packet_len = info->packet_size;
     }
     return true;
 }

@@ -1,9 +1,10 @@
 <!-- Generated from docs/src/en_US/pages/permissions.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME permission model
 
-> **Runnable transport-v2 path:** startup checks and the installed daemon
-> reference this permission model. The schema-1 design is preserved
-> separately in the [YTP/1 foundation page](development/ytp1/README.md#identity-and-authorization).
+> **Transport-v2 reference:** this permission model belongs to the uninstalled
+> transport-v2 reference daemon. Native `yumed` uses the schema-1 stores in the
+> [native guide](development/ytp1/README.md#identity-and-authorization) and
+> [operations](OPERATIONS.md#client-identities-and-limits).
 
 YUME authenticates composite identities and checks their permissions separately.
 Its three identity stores and two metadata files are:

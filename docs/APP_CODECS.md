@@ -1,7 +1,7 @@
 <!-- Generated from docs/src/en_US/pages/app_codecs.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME application codecs
 
-> **Transport-v2 surface:** this document describes codecs in the default
+> **Transport-v2 surface:** this document describes codecs in the reference
 > client and daemon. They are not built into YTP/1. A future application may
 > reintroduce a useful codec as an ordinary named service.
 

@@ -327,25 +327,39 @@ private:
     std::optional<std::string> udp_service_;
 };
 
+struct TunNetwork final {
+    std::vector<common::IpInterfaceAddress> addresses;
+    std::vector<common::IpNetwork> routes;
+    // Packet source and destination authorization, reversed on receive.
+    std::vector<common::IpNetwork> local_networks;
+    std::vector<common::IpNetwork> peer_networks;
+    std::vector<common::IpInterfaceAddress> dns_servers;
+    // Routing domains only. "." routes all DNS queries through this link.
+    std::vector<std::string> dns_domains;
+};
+
 class PacketAdapter final {
 public:
     PacketAdapter(std::string service,
                   std::string interface_name,
-                  std::uint16_t mtu)
+                  std::uint16_t mtu,
+                  TunNetwork network)
         : service_(std::move(service)),
           interface_name_(std::move(interface_name)),
-          mtu_(mtu) {}
+          mtu_(mtu), network_(std::move(network)) {}
 
     const std::string& service() const noexcept { return service_; }
     const std::string& interface_name() const noexcept {
         return interface_name_;
     }
     std::uint16_t mtu() const noexcept { return mtu_; }
+    const TunNetwork& network() const noexcept { return network_; }
 
 private:
     std::string service_;
     std::string interface_name_;
     std::uint16_t mtu_;
+    TunNetwork network_;
 };
 
 // Destinations a direct adapter may reach. Public addresses are globally

@@ -85,6 +85,14 @@ Json LimitsDocument() {
     };
 }
 
+Json TunNetworkDocument() {
+    return {{"addresses", Json::array({"10.71.0.1/32"})},
+            {"routes", Json::array({"10.71.0.2/32"})},
+            {"local_networks", Json::array({"10.71.0.1/32"})},
+            {"peer_networks", Json::array({"10.71.0.2/32"})},
+            {"dns", {{"servers", Json::array()}, {"domains", Json::array()}}}};
+}
+
 Json ClientDocument() {
     return {
         {"schema", 1},
@@ -287,7 +295,7 @@ void TestValidDocumentsAndTypedValues() {
         {{{"kind", "packet"},
           {"service", "packet"},
           {"interface_name", "yume0"},
-          {"mtu", 1420}}});
+          {"mtu", 1420}, {"network", TunNetworkDocument()}}});
     Check(std::holds_alternative<PacketAdapter>(
               Parse(packet).adapters().front()),
           "packet adapter was not typed");
@@ -714,7 +722,7 @@ void TestAdapterValidation() {
         {{{"kind", "packet"},
           {"service", "packet"},
           {"interface_name", "bad/interface"},
-          {"mtu", 1420}}});
+          {"mtu", 1420}, {"network", TunNetworkDocument()}}});
     ExpectError(document, "/adapters/0/interface_name");
     document["adapters"][0]["interface_name"] = "yume0";
     document["adapters"][0]["mtu"] = 575;
@@ -764,11 +772,11 @@ void TestAdapterValidation() {
         {{"kind", "packet"},
          {"service", "packet"},
          {"interface_name", "yume0"},
-         {"mtu", 1420}},
+         {"mtu", 1420}, {"network", TunNetworkDocument()}},
         {{"kind", "packet"},
          {"service", "packet"},
          {"interface_name", "yume0"},
-         {"mtu", 1420}},
+         {"mtu", 1420}, {"network", TunNetworkDocument()}},
     });
     ExpectError(document, "/adapters/1/interface_name", "duplicate");
 
@@ -853,11 +861,11 @@ void TestResourceLimits() {
         std::uint64_t maximum;
     };
     constexpr std::array<Bound, 8> bounds{{
-        {"max_frame_bytes", 1024, 1048576},
+        {"max_frame_bytes", 1676, 1048576},
         {"max_streams", 1, 65535},
         {"max_queued_bytes", 65536, 67108864},
         {"max_pending_opens", 1, 1024},
-        {"max_rekey_jobs", 1, 64},
+        {"max_rekey_jobs", 2, 64},
         {"max_control_messages", 8, 4096},
         {"max_packet_bytes", 576, 65535},
         {"max_packet_batch", 1, 256},
@@ -887,11 +895,11 @@ void TestResourceLimits() {
 
     Json minimum = ClientDocument();
     minimum["limits"] = {
-        {"max_frame_bytes", 1024},
+        {"max_frame_bytes", 1676},
         {"max_streams", 1},
         {"max_queued_bytes", 65536},
         {"max_pending_opens", 1},
-        {"max_rekey_jobs", 1},
+        {"max_rekey_jobs", 2},
         {"max_control_messages", 8},
         {"max_packet_bytes", 576},
         {"max_packet_batch", 1},
@@ -925,17 +933,58 @@ void TestResourceLimits() {
     document["limits"]["max_pending_opens"] = 11;
     ExpectError(document, "/limits/max_pending_opens", "max_streams");
     document = ClientDocument();
-    document["limits"]["max_frame_bytes"] = 1024;
-    document["limits"]["max_packet_bytes"] = 1025;
+    document["limits"]["max_frame_bytes"] = 1676;
+    document["limits"]["max_packet_bytes"] = 1677;
     ExpectError(document, "/limits/max_packet_bytes", "max_frame_bytes");
     document = ClientDocument();
     document["limits"] = Json::array();
     ExpectError(document, "/limits", "object");
 }
 
+void test_managed_tun_network() {
+    auto document = ClientDocument();
+    document["adapters"] = Json::array({{{"kind", "packet"}, {"service", "packet"},
+        {"interface_name", "yume0"}, {"mtu", 1420}, {"network", TunNetworkDocument()}}});
+    const auto baseline = document;
+    const auto valid = Parse(document);
+    const auto& network = std::get<PacketAdapter>(valid.adapters().front()).network();
+    Check(network.addresses.front().address[3] == 1U && network.routes.front().address[3] == 2U,
+          "TUN parser lost interface host address");
+    document["adapters"][0].erase("network");
+    ExpectError(document, "/adapters/0/network");
+    for (const char* field : {"addresses", "local_networks", "peer_networks"}) {
+        document = baseline;
+        document["adapters"][0]["network"][field] = Json::array();
+        ExpectError(document, std::string("/adapters/0/network/") + field);
+    }
+    for (const char* address : {"10.71.0.3/32", "127.0.0.1/32", "224.0.0.1/32", "0.0.0.0/32", "10.071.0.1/32"}) {
+        document = baseline;
+        document["adapters"][0]["network"]["addresses"][0] = address;
+        ExpectError(document, "/adapters/0/network/addresses/0");
+    }
+    document = baseline;
+    document["adapters"][0]["network"]["dns"] = {{"servers", Json::array({"10.71.0.2"})}, {"domains", Json::array({"."})}};
+    (void)Parse(document);
+    document["adapters"][0]["network"]["routes"] = Json::array();
+    ExpectError(document, "/adapters/0/network/dns/servers/0");
+    document = baseline;
+    document["adapters"][0]["network"]["local_networks"] = Json::array({"fd71::/64"});
+    document["adapters"][0]["network"]["addresses"] = Json::array({"fd71::1/64"});
+    (void)Parse(document);
+    document["adapters"][0]["mtu"] = 1200;
+    ExpectError(document, "/adapters/0/network");
+    document = baseline;
+    document["adapters"][0]["interface_name"] = "1234567890123456";
+    ExpectError(document, "/adapters/0/interface_name");
+}
+
 void TestTextBoundsAndSyntax() {
     ExpectJsonError("{", "", "invalid JSON syntax");
     ExpectJsonError("", "", "invalid JSON syntax");
+    for (const char* overflow : {"1e999", "-1e999", R"({"schema":1e999})",
+                                 R"({"endpoint":{"port":-1e999}})"}) {
+        ExpectJsonError(overflow, "", "number exceeds the supported range");
+    }
     ExpectJsonError(std::string(kMaxDocumentBytes + 1, ' '), "", "1 MiB");
     ExpectJsonError(R"({"schema":1,"schema":1})", "/schema", "duplicate");
     ExpectJsonError(
@@ -980,6 +1029,7 @@ int main(int argc, char** argv) {
         TestAdapterValidation();
     TestDirectAdapterDestinations();
         TestResourceLimits();
+        test_managed_tun_network();
         TestTextBoundsAndSyntax();
         if (argc == 2) {
             const std::string mode(argv[1]);

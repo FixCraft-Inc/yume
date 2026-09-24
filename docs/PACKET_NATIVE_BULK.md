@@ -1,9 +1,8 @@
 <!-- Generated from docs/src/en_US/pages/packet_native_bulk.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Packet-native bulk mode
 
-> **Runnable transport-v2 path:** this document describes the current packet
-> service. First-class YTP/1 packet channels are an unfinished replacement
-> contract documented in the
+> **Transport-v2 reference:** this document describes its packet-bulk
+> service. Native YTP/1 packet channels and managed Linux TUN are documented in the
 > [YTP/1 foundation page](development/ytp1/README.md#packet-channels).
 
 Packet-bulk mode carries batches of IP packets through one authenticated

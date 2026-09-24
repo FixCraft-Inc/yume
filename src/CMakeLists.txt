@@ -694,6 +694,18 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
         yume_apply_perf_opts(yume_native_egress_policy)
         yume_assert_exact_link_dependencies(yume_native_egress_policy yume_config_v1 yume_engine)
 
+        # Weighted egress pacing. The endpoint wraps each served stream in it
+        # when the server configuration sets limits.max_egress_mbps.
+        add_library(yume_egress_pacing STATIC
+            runtime/egress_limiter.cpp runtime/egress_limiter.hpp
+            runtime/paced_stream.cpp runtime/paced_stream.hpp)
+        target_include_directories(yume_egress_pacing PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_egress_pacing
+            PUBLIC yume_engine yume_asio_execution_context PRIVATE Boost::system)
+        yume_apply_perf_opts(yume_egress_pacing)
+        yume_assert_exact_link_dependencies(yume_egress_pacing
+            yume_engine yume_asio_execution_context Boost::system)
+
         add_library(yume_native_endpoint STATIC
             runtime/native_endpoint.cpp runtime/native_endpoint.hpp
             runtime/accept_scheduler.hpp)
@@ -702,13 +714,13 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
             PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
             PRIVATE yume_native_credentials yume_ytp1_front_door yume_ytp1_openssl_security
                 yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
-                yume_direct_route_handler yume_native_egress_policy Boost::system)
+                yume_direct_route_handler yume_native_egress_policy yume_egress_pacing Boost::system)
         yume_apply_perf_opts(yume_native_endpoint)
         yume_assert_exact_link_dependencies(yume_native_endpoint
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
             yume_native_credentials yume_ytp1_front_door yume_ytp1_openssl_security
             yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
-            yume_direct_route_handler yume_native_egress_policy Boost::system)
+            yume_direct_route_handler yume_native_egress_policy yume_egress_pacing Boost::system)
 
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET yume_asio_direct_route_provider)
             find_package(PkgConfig REQUIRED)
@@ -838,7 +850,7 @@ if(YUME_BUILD_SHARED_ABI)
         # including the whole native chain behind the schema-1 backend.
         foreach(_yume_absorbed IN ITEMS
                 yume_embed_ytp1 yume_native_endpoint yume_native_egress_policy yume_native_credentials
-                yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
+                yume_egress_pacing yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
                 yume_asio_execution_context yume_asio_tcp_byte_channel_provider yume_system_resolver
                 yume_ytp1_front_door yume_ytp1_cover_site yume_ytp1_h2_carrier
                 yume_ytp1_h2_admission yume_h2_admission
@@ -1342,6 +1354,22 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_native_credentials_test COMMAND yume_native_credentials_test)
         set_tests_properties(yume_native_credentials_test PROPERTIES
             TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
+    endif()
+    if(TARGET yume_egress_pacing)
+        add_executable(yume_egress_limiter_test runtime/egress_limiter_test.cpp)
+        target_link_libraries(yume_egress_limiter_test PRIVATE yume_egress_pacing)
+        yume_apply_perf_opts(yume_egress_limiter_test)
+        yume_assert_exact_link_dependencies(yume_egress_limiter_test yume_egress_pacing)
+        add_test(NAME yume_egress_limiter_test COMMAND yume_egress_limiter_test)
+        set_tests_properties(yume_egress_limiter_test PROPERTIES
+            TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_paced_stream_test runtime/paced_stream_test.cpp)
+        target_link_libraries(yume_paced_stream_test PRIVATE yume_egress_pacing Boost::system)
+        yume_apply_perf_opts(yume_paced_stream_test)
+        yume_assert_exact_link_dependencies(yume_paced_stream_test yume_egress_pacing Boost::system)
+        add_test(NAME yume_paced_stream_test COMMAND yume_paced_stream_test)
+        set_tests_properties(yume_paced_stream_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_native_egress_policy)
         add_executable(yume_native_egress_policy_test runtime/native_egress_policy_test.cpp)

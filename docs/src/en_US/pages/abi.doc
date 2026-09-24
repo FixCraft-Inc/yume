@@ -395,6 +395,9 @@ For schema 1, idle server accepts retain bounded queue slots without consuming
 an authentication deadline. Validated carrier promotion begins a separate
 30-second session-creation/AUTH budget. FrontDoor independently limits
 pre-promotion connections and work; idle waiting grants no peer authority.
+When the configuration sets `limits.max_egress_mbps`, the server paces the
+payload of every stream it serves as `yumed` does, sharing the rate between
+identities by their authorized-keys `weight`.
 
 A schema-1 server keeps up to four starts pending per listener, at most 32 in
 total, and retries a refused or immediately failed start after 100 ms. If a

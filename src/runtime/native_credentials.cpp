@@ -7,6 +7,7 @@
 #include "runtime/native_credentials.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <initializer_list>
@@ -27,6 +28,7 @@
 #include "core/security/secure_erase.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "providers/ytp1_tls13_secure_channel.hpp"
+#include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
 
 namespace yume::runtime {
@@ -556,9 +558,10 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     authorized.reserve(store.at("keys").size());
     std::vector<NativeAuthorizationPolicy::Grant> grants;
     std::vector<NativeAuthorizationPolicy::SessionLimit> session_limits;
+    std::vector<NativeAuthorizationPolicy::EgressWeight> egress_weights;
     for (const auto& entry : store.at("keys")) {
         closed_object(entry, {"name", "identity", "access_psk", "capabilities"},
-                      {"max_sessions"});
+                      {"max_sessions", "weight"});
         const auto& label = string_field(entry.at("name"), 63);
         validate_label(label);
         require(labels.insert(label).second,
@@ -593,6 +596,13 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
             session_limits.push_back(
                 {identity.fingerprint,
                  static_cast<std::size_t>(limit->get<std::uint64_t>())});
+        }
+        if (const auto weight = entry.find("weight"); weight != entry.end()) {
+            require(weight->is_number() && std::isfinite(weight->get<double>()) &&
+                        weight->get<double>() >= EgressLimiter::kMinWeight &&
+                        weight->get<double>() <= EgressLimiter::kMaxWeight,
+                    "credential weight must be a number from 0.1 to 100");
+            egress_weights.push_back({identity.fingerprint, weight->get<double>()});
         }
         authorized.push_back({std::move(identity), std::move(psk)});
     }
@@ -638,7 +648,7 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     return {std::move(factory).take_value(), std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
                 engine::EndpointRole::Client, std::move(grants),
-                std::move(session_limits)),
+                std::move(session_limits), std::move(egress_weights)),
             NativeAdmissionKey(
                 std::span<const std::byte, 32>(admission.bytes().data(), 32))};
 }
@@ -714,10 +724,12 @@ NativeAdmissionKey::~NativeAdmissionKey() {
 
 NativeAuthorizationPolicy::NativeAuthorizationPolicy(
     engine::EndpointRole peer_role, std::vector<Grant> grants,
-    std::vector<SessionLimit> session_limits) noexcept
+    std::vector<SessionLimit> session_limits,
+    std::vector<EgressWeight> egress_weights) noexcept
     : peer_role_(peer_role),
       grants_(std::move(grants)),
-      session_limits_(std::move(session_limits)) {}
+      session_limits_(std::move(session_limits)),
+      egress_weights_(std::move(egress_weights)) {}
 
 bool NativeAuthorizationPolicy::recognizes(
     std::string_view peer_identity) const noexcept {
@@ -732,6 +744,14 @@ std::size_t NativeAuthorizationPolicy::max_sessions(
         if (limit.peer_identity == peer_identity) return limit.max_sessions;
     }
     return 0U;
+}
+
+double NativeAuthorizationPolicy::egress_weight(
+    std::string_view peer_identity) const noexcept {
+    for (const auto& weight : egress_weights_) {
+        if (weight.peer_identity == peer_identity) return weight.weight;
+    }
+    return EgressLimiter::kDefaultWeight;
 }
 
 Status NativeAuthorizationPolicy::authorize(

@@ -854,6 +854,31 @@ void TestDirectAdapterDestinations() {
           "direct UDP destinations were not retained");
 }
 
+// The egress rate is optional and server-only.
+void TestEgressRate() {
+    Check(!Parse(ServerDocument()).limits().max_egress_mbps(),
+          "an absent egress rate was reported");
+    for (const std::uint32_t mbps : {1U, 250U, 1'000'000U}) {
+        Json document = ServerDocument();
+        document["limits"]["max_egress_mbps"] = mbps;
+        Check(Parse(document).limits().max_egress_mbps() == mbps,
+              "a valid egress rate was not retained");
+    }
+    for (const Json& value : {Json(0), Json(1'000'001), Json(-1)}) {
+        Json document = ServerDocument();
+        document["limits"]["max_egress_mbps"] = value;
+        ExpectError(document, "/limits/max_egress_mbps");
+    }
+    for (const Json& value : {Json(1.5), Json("100"), Json(true), Json(nullptr)}) {
+        Json document = ServerDocument();
+        document["limits"]["max_egress_mbps"] = value;
+        ExpectError(document, "/limits/max_egress_mbps", "integer");
+    }
+    Json client = ClientDocument();
+    client["limits"]["max_egress_mbps"] = 100;
+    ExpectError(client, "/limits/max_egress_mbps", "server-only");
+}
+
 void TestResourceLimits() {
     struct Bound {
         const char* key;
@@ -1029,6 +1054,7 @@ int main(int argc, char** argv) {
         TestAdapterValidation();
     TestDirectAdapterDestinations();
         TestResourceLimits();
+        TestEgressRate();
         test_managed_tun_network();
         TestTextBoundsAndSyntax();
         if (argc == 2) {

@@ -464,6 +464,45 @@ class YumeSetupTests(unittest.TestCase):
                 )
                 self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
 
+    def test_weight_and_egress_rate_reach_the_server(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            kit = base / "kit"
+            created = self.run_tool(
+                "init", "--host", "setup.example.test", "--output", str(kit),
+                "--client-name", "phone", "--weight", "2.5", "--max-egress-mbps", "100",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            server = kit / "server"
+            config = json.loads((server / "yumed.json").read_text())
+            self.assertEqual(config["limits"]["max_egress_mbps"], 100)
+            client = json.loads((kit / "client/yume.json").read_text())
+            self.assertNotIn("max_egress_mbps", client["limits"])
+            store_path = server / "credentials/authorized-keys.json"
+            self.assertEqual(json.loads(store_path.read_text())["keys"][0]["weight"], 2.5)
+            added = self.run_tool(
+                "add-client", "--server", str(server), "--host", "setup.example.test",
+                "--output", str(base / "tablet"), "--client-name", "tablet", "--weight", "0.5",
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            self.assertEqual(json.loads(store_path.read_text())["keys"][1]["weight"], 0.5)
+            doctor = ROOT / "tools" / "yume_doctor.py"
+            checked = subprocess.run(
+                [sys.executable, str(doctor), "--config", str(server / "yumed.json")],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            for extra, message in ((["--weight", "0"], "weight"),
+                                   (["--weight", "nan"], "weight"),
+                                   (["--max-egress-mbps", "0"], "max egress")):
+                refused = self.run_tool(
+                    "init", "--host", "setup.example.test", "--output", str(base / "refused"),
+                    *extra,
+                )
+                self.assertEqual(refused.returncode, 1, refused.stdout)
+                self.assertIn(message, refused.stderr.lower())
+                self.assertFalse((base / "refused").exists())
+
     def test_remove_client_reverses_add_client(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -498,6 +537,7 @@ class YumeSetupTests(unittest.TestCase):
             attempts = (
                 (["--client-name", "phone"], None, "already authorized"),
                 (["--client-name", "tablet", "--max-sessions", "0"], None, "max sessions"),
+                (["--client-name", "tablet", "--weight", "101"], None, "weight"),
                 (["--client-name=-bad"], None, "client name"),
                 (["--client-name", "tablet"], "/directory-that-does-not-exist", "openssl"),
             )

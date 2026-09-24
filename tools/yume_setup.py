@@ -9,6 +9,7 @@ import errno
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -55,6 +56,10 @@ STAGING_PREFIX = ".yume-setup-staging-"
 # its traffic store size.
 MAX_SESSIONS_PER_IDENTITY = 1024
 MAX_AUTHORIZED_IDENTITIES = 1024
+# Match the daemon's bounds for an entry's weight and limits.max_egress_mbps.
+MIN_WEIGHT = 0.1
+MAX_WEIGHT = 100.0
+MAX_EGRESS_MBPS = 1_000_000
 MAX_JSON_BYTES = 4 * 1024 * 1024
 IDENTITY_DOMAIN = b"yume/ytp/1/composite-identity/v1"
 
@@ -424,7 +429,10 @@ def _is_ip(value: str) -> bool:
         return False
 
 
-def _server_config(port: int) -> dict[str, object]:
+def _server_config(port: int, max_egress_mbps: int | None = None) -> dict[str, object]:
+    limits: dict[str, object] = dict(LIMITS)
+    if max_egress_mbps is not None:
+        limits["max_egress_mbps"] = max_egress_mbps
     return {
         "schema": 1,
         "role": "server",
@@ -455,7 +463,7 @@ def _server_config(port: int) -> dict[str, object]:
                 "destinations": _public_destinations(),
             },
         ],
-        "limits": dict(LIMITS),
+        "limits": limits,
     }
 
 
@@ -688,7 +696,7 @@ def _write_admin_keys(credentials: Path) -> None:
 
 
 def _authorized_entry(
-    client_name: str, fingerprint: str, max_sessions: int | None
+    client_name: str, fingerprint: str, max_sessions: int | None, weight: float | None
 ) -> dict[str, object]:
     entry: dict[str, object] = {
         "name": client_name,
@@ -704,6 +712,8 @@ def _authorized_entry(
     }
     if max_sessions is not None:
         entry["max_sessions"] = max_sessions
+    if weight is not None:
+        entry["weight"] = weight
     return entry
 
 
@@ -712,10 +722,14 @@ def _write_authorized_keys(
     client_name: str,
     fingerprint: str,
     max_sessions: int | None,
+    weight: float | None,
 ) -> None:
     _write_json(
         credentials / "authorized-keys.json",
-        {"schema": 1, "keys": [_authorized_entry(client_name, fingerprint, max_sessions)]},
+        {
+            "schema": 1,
+            "keys": [_authorized_entry(client_name, fingerprint, max_sessions, weight)],
+        },
     )
 
 
@@ -810,16 +824,32 @@ def _require_max_sessions(value: int | None) -> int | None:
     return value
 
 
+def _require_weight(value: float | None) -> float | None:
+    if value is not None and not (math.isfinite(value) and MIN_WEIGHT <= value <= MAX_WEIGHT):
+        raise SetupError(f"weight must be in {MIN_WEIGHT:g}..{MAX_WEIGHT:g}")
+    return value
+
+
+def _require_max_egress_mbps(value: int | None) -> int | None:
+    if value is not None and not 1 <= value <= MAX_EGRESS_MBPS:
+        raise SetupError(f"max egress Mbps must be in 1..{MAX_EGRESS_MBPS}")
+    return value
+
+
 def init_kit(
     host: str,
     output_path: Path,
     port: int,
     client_name: str,
     max_sessions: int | None = None,
+    weight: float | None = None,
+    max_egress_mbps: int | None = None,
 ) -> Path:
     host = _require_host(host)
     client_name = _require_client_name(client_name)
     max_sessions = _require_max_sessions(max_sessions)
+    weight = _require_weight(weight)
+    max_egress_mbps = _require_max_egress_mbps(max_egress_mbps)
     if not 1 <= port <= 65535:
         raise SetupError("port must be in 1..65535")
     output = _require_output_path(output_path)
@@ -876,11 +906,11 @@ def init_kit(
             authorized / f"{client_name}-composite.pub.pem",
         )
         _write_authorized_keys(
-            server_credentials, client_name, client_fingerprint, max_sessions
+            server_credentials, client_name, client_fingerprint, max_sessions, weight
         )
         _write_admin_keys(server_credentials)
 
-        _write_json(server / "yumed.json", _server_config(port))
+        _write_json(server / "yumed.json", _server_config(port, max_egress_mbps))
         _write_cover_site(server / "cover-site")
         _write_service_manifests(server)
         _write_server_launcher(server)
@@ -971,6 +1001,7 @@ def add_client(
     output_path: Path,
     client_name: str,
     max_sessions: int | None = None,
+    weight: float | None = None,
 ) -> Path:
     """Issue one client bundle for an existing server tree.
 
@@ -983,6 +1014,7 @@ def add_client(
     host = _require_host(host)
     client_name = _require_client_name(client_name)
     max_sessions = _require_max_sessions(max_sessions)
+    weight = _require_weight(weight)
     try:
         server = server_path.resolve(strict=True)
     except OSError as exc:
@@ -1062,7 +1094,9 @@ def add_client(
             _copy_stream(source, destination)
             created.append(destination)
         updated = dict(store)
-        updated["keys"] = [*keys, _authorized_entry(client_name, fingerprint, max_sessions)]
+        updated["keys"] = [
+            *keys, _authorized_entry(client_name, fingerprint, max_sessions, weight)
+        ]
         replacement = _write_replacement(store_path, updated)
         if os.geteuid() == 0:
             for path in (*created, replacement, *((authorized,) if new_directory else ())):
@@ -1169,6 +1203,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="sessions the client may hold at once; a newer one replaces the oldest",
     )
+    init.add_argument(
+        "--weight",
+        type=float,
+        help="the client's share of the egress rate against other busy clients, 0.1 to 100",
+    )
+    init.add_argument(
+        "--max-egress-mbps",
+        type=int,
+        help="the rate in Mbit/s that clients share by weight; unlimited when omitted",
+    )
     add = commands.add_parser(
         "add-client",
         help="issue another client bundle for an existing server directory",
@@ -1190,6 +1234,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-sessions",
         type=int,
         help="sessions the client may hold at once; a newer one replaces the oldest",
+    )
+    add.add_argument(
+        "--weight",
+        type=float,
+        help="the client's share of the egress rate against other busy clients, 0.1 to 100",
     )
     remove = commands.add_parser(
         "remove-client",
@@ -1221,6 +1270,7 @@ def main() -> int:
                 arguments.output,
                 arguments.client_name,
                 arguments.max_sessions,
+                arguments.weight,
             )
         else:
             output = init_kit(
@@ -1229,6 +1279,8 @@ def main() -> int:
                 arguments.port,
                 arguments.client_name,
                 arguments.max_sessions,
+                arguments.weight,
+                arguments.max_egress_mbps,
             )
     except (SetupError, OSError, ValueError) as exc:
         print(f"yume-setup: {exc}", file=sys.stderr)

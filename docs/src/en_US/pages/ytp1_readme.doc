@@ -347,7 +347,10 @@ Schema 1 is role tagged and contains these sections only:
   ASSOCIATE opens. Without it the adapter refuses UDP ASSOCIATE;
 - `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
   packets. Frames allow 1676–1048576 bytes so hybrid rekey INIT fits;
-  concurrent rekey jobs allow 2–64 so crossed rotation has both slots.
+  concurrent rekey jobs allow 2–64 so crossed rotation has both slots. A
+  server may also set `max_egress_mbps`, from 1 to 1000000: the rate in
+  megabits per second that stream payload shares between busy identities by
+  their `weight`.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
 and unsafe combinations. The development CLIs accept config selection,
@@ -377,8 +380,11 @@ for an existing server tree and appends its identity, and `remove-client`
 takes one out again. An entry's optional
 `max_sessions`, from 1 to 1024, bounds that identity's concurrent sessions: a
 newer session replaces the identity's oldest. Without it the daemon's session
-capacity is the only bound. SIGHUP reloads both stores and the server's own
+capacity is the only bound. An optional `weight`, from 0.1 to 100 and 1 by
+default, is the identity's share of `limits.max_egress_mbps` against the other
+busy identities. SIGHUP reloads both stores and the server's own
 keys: removed identities' sessions end, changed grants apply to the next OPEN,
+a changed weight applies to the next transfer,
 and an invalid store leaves the previous credentials in force. The independent admin store accepts 0 through 4096
 identities. Both stores reject duplicate names and composite identities;
 an admin identity must not appear in the traffic store.

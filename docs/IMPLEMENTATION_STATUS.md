@@ -199,6 +199,18 @@ identities and those beyond a lowered `max_sessions`, and refuses a store that
 fails validation or a changed admission key. The endpoint test covers grant
 changes, refusal of a malformed store and revocation of a live session.
 
+A server configuration may set `limits.max_egress_mbps`. The endpoint then
+paces the payload of every stream it serves, in both directions and for every
+service, through one limiter that splits the rate between busy identities by
+the `weight` in their authorized-keys entries. Each identity's clock runs at
+its share, and the shares of busy identities sum to the rate. Weights are read
+at each transfer, so a reload reaches open streams. A held transfer checks its
+stream every 250 ms and ends at once on close, so pacing cannot hold teardown
+or the final drain. Transfers already scheduled keep their share when another
+identity starts sending, so the total can briefly exceed the rate. Unit tests
+cover shares, weights, idle identities and every settlement path, and the
+endpoint test measures pacing on a live stream in both directions.
+
 Listener socket setup preserves OS permission refusal, address conflict,
 invalid-address and resource-exhaustion status through the runtime and embedding
 seams. Unknown socket failures remain generic I/O failures; an unexpected

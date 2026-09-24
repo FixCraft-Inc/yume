@@ -426,7 +426,8 @@ public:
                    std::uint32_t max_rekey_jobs,
                    std::uint32_t max_control_messages,
                    std::uint32_t max_packet_bytes,
-                   std::uint32_t max_packet_batch)
+                   std::uint32_t max_packet_batch,
+                   std::optional<std::uint32_t> max_egress_mbps = std::nullopt)
         : max_frame_bytes_(max_frame_bytes),
           max_streams_(max_streams),
           max_queued_bytes_(max_queued_bytes),
@@ -434,7 +435,8 @@ public:
           max_rekey_jobs_(max_rekey_jobs),
           max_control_messages_(max_control_messages),
           max_packet_bytes_(max_packet_bytes),
-          max_packet_batch_(max_packet_batch) {}
+          max_packet_batch_(max_packet_batch),
+          max_egress_mbps_(max_egress_mbps) {}
 
     std::uint32_t max_frame_bytes() const noexcept {
         return max_frame_bytes_;
@@ -458,6 +460,12 @@ public:
     std::uint32_t max_packet_batch() const noexcept {
         return max_packet_batch_;
     }
+    // Server only: the rate, in megabits per second, that stream payload
+    // shares across authenticated identities by weight. Absent means
+    // unlimited.
+    const std::optional<std::uint32_t>& max_egress_mbps() const noexcept {
+        return max_egress_mbps_;
+    }
 
 private:
     std::uint32_t max_frame_bytes_;
@@ -468,6 +476,7 @@ private:
     std::uint32_t max_control_messages_;
     std::uint32_t max_packet_bytes_;
     std::uint32_t max_packet_batch_;
+    std::optional<std::uint32_t> max_egress_mbps_;
 };
 
 class Config final {

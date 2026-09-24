@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -16,8 +17,10 @@
 #include <boost/asio/steady_timer.hpp>
 
 #include "runtime/accept_scheduler.hpp"
+#include "runtime/egress_limiter.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
+#include "runtime/paced_stream.hpp"
 #include "providers/ytp1_front_door.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
@@ -81,13 +84,31 @@ private:
     std::shared_ptr<const NativeAuthorizationPolicy> policy_;
 };
 
+// A server's configured egress rate. Every served stream shares it by the
+// weight of its authenticated identity.
+struct EgressPacing final {
+    std::shared_ptr<AsioExecutionContext> context;
+    std::shared_ptr<EgressLimiter> limiter;
+};
+
+void refuse(StreamHandler::AcceptanceCompletion& completion,
+            const std::shared_ptr<StreamResponder>& stream, StatusCode code) noexcept {
+    if (completion) {
+        try { completion(Status(code)); } catch (...) {}
+    }
+    if (stream) stream->close(Status(code));
+}
+
 // Authentication chooses an identity; it never grants all advertised services.
 // Both the current credential policy and the application's policy must pass.
+// With a configured egress rate, the handler receives the stream paced by the
+// identity's current weight.
 class AuthorizedHandler final : public StreamHandler {
 public:
     AuthorizedHandler(std::shared_ptr<StreamHandler> handler,
-                      std::shared_ptr<const PolicyHolder> policy)
-        : handler_(std::move(handler)), policy_(std::move(policy)) {}
+                      std::shared_ptr<const PolicyHolder> policy,
+                      std::optional<EgressPacing> pacing)
+        : handler_(std::move(handler)), policy_(std::move(policy)), pacing_(std::move(pacing)) {}
     const ProviderDescriptor& descriptor() const noexcept override {
         return handler_->descriptor();
     }
@@ -98,23 +119,54 @@ public:
     }
     void on_open(StreamOpenContext context,
                  std::shared_ptr<StreamResponder> stream) override {
-        handler_->on_open(std::move(context), std::move(stream));
+        auto paced = pace(context.peer_evidence().identity(), stream);
+        if (!paced.ok()) {
+            if (stream) stream->close(Status(paced.status().code()));
+            return;
+        }
+        handler_->on_open(std::move(context), std::move(paced).take_value());
     }
     void async_open(StreamOpenContext context,
                     std::shared_ptr<StreamResponder> stream,
                     AcceptanceCompletion completion) override {
-        handler_->async_open(std::move(context), std::move(stream), std::move(completion));
+        auto paced = pace(context.peer_evidence().identity(), stream);
+        if (!paced.ok()) {
+            refuse(completion, stream, paced.status().code());
+            return;
+        }
+        handler_->async_open(std::move(context), std::move(paced).take_value(),
+                             std::move(completion));
     }
     void async_route(AuthorizedRouteRequest request,
                      std::shared_ptr<RouteProvider> route_provider,
                      std::shared_ptr<StreamResponder> stream,
                      AcceptanceCompletion completion) override {
+        auto paced = pace(request.peer_evidence().identity(), stream);
+        if (!paced.ok()) {
+            refuse(completion, stream, paced.status().code());
+            return;
+        }
         handler_->async_route(std::move(request), std::move(route_provider),
-                              std::move(stream), std::move(completion));
+                              std::move(paced).take_value(), std::move(completion));
     }
 private:
+    Result<std::shared_ptr<StreamResponder>> pace(const std::string& identity,
+                                                  std::shared_ptr<StreamResponder> stream) {
+        if (!pacing_ || !stream) return Result<std::shared_ptr<StreamResponder>>(std::move(stream));
+        try {
+            return pace_stream(pacing_->context, pacing_->limiter, identity,
+                               [policy = policy_, identity] {
+                                   return policy->get()->egress_weight(identity);
+                               },
+                               std::move(stream));
+        } catch (const std::bad_alloc&) {
+            return Result<std::shared_ptr<StreamResponder>>(Status(StatusCode::ResourceExhausted));
+        }
+    }
+
     std::shared_ptr<StreamHandler> handler_;
     std::shared_ptr<const PolicyHolder> policy_;
+    std::optional<EgressPacing> pacing_;
 };
 
 ProviderRequirement requirement(ProviderKind kind, std::string_view id) {
@@ -710,6 +762,11 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 "native session frame limit must fit the complete YTP/1 AUTH envelope");
         state = std::make_shared<State>(context, role, std::move(options), limits);
         state->policy = std::make_shared<PolicyHolder>(credentials.authorization);
+        std::optional<EgressPacing> pacing;
+        if (const auto& mbps = config.limits().max_egress_mbps();
+            mbps && role == EndpointRole::Server)
+            pacing.emplace(EgressPacing{context, std::make_shared<EgressLimiter>(
+                static_cast<std::uint64_t>(*mbps) * 125'000U)});
         std::vector<ProviderRequirement> requirements;
         requirements.push_back(requirement(ProviderKind::ByteChannel, kAsioTcpByteChannelProviderId));
         requirements.push_back(requirement(ProviderKind::SecureChannel, kYtp1Tls13SecureChannelProviderId));
@@ -737,7 +794,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 descriptor.provider_id(), descriptor.api_version(), service.max_concurrent_streams(),
                 descriptor.capabilities())));
             handlers.push_back({service.name(), std::make_shared<AuthorizedHandler>(
-                std::move(match->handler), state->policy)});
+                std::move(match->handler), state->policy, pacing)});
         }
         auto suite = require(TransportSuiteDescriptor::create(std::string(config.suite().id()),
             "YTP/1", std::move(requirements), std::move(service_requirements)));

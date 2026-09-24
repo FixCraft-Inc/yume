@@ -421,6 +421,25 @@ void test_session_limits(Fixture& fixture) {
     fixture.restore_stores();
 }
 
+// weight is optional per identity. Absent, the policy reports the default.
+void test_egress_weights(Fixture& fixture) {
+    auto unweighted = take(fixture.load_server());
+    check(unweighted.authorization->egress_weight(fixture.client.id) == 1.0,
+          "an absent weight was not the default");
+    for (const auto& [value, expected] : std::vector<std::pair<Json, double>>{
+             {Json(0.1), 0.1}, {Json(1.5), 1.5}, {Json(3), 3.0}, {Json(100), 100.0}}) {
+        auto candidate = fixture.authorized;
+        candidate["keys"][0]["weight"] = value;
+        fixture.write("credentials/authorized.json", candidate.dump());
+        auto weighted = take(fixture.load_server());
+        check(weighted.authorization->egress_weight(fixture.client.id) == expected,
+              "a configured weight was not reported");
+        check(weighted.authorization->egress_weight(fixture.admin.id) == 1.0,
+              "an unrelated identity reported a weight");
+    }
+    fixture.restore_stores();
+}
+
 void test_invalid_stores(Fixture& fixture) {
     for (const auto& mutation : std::vector<std::function<void(Json&)>>{
              [](Json& value) { value["schema"] = 1.0; },
@@ -465,6 +484,13 @@ void test_invalid_stores(Fixture& fixture) {
              [](Json& value) { value["keys"][0]["max_sessions"] = -1; },
              [](Json& value) { value["keys"][0]["max_sessions"] = 2.0; },
              [](Json& value) { value["keys"][0]["max_sessions"] = "2"; },
+             [](Json& value) { value["keys"][0]["weight"] = 0; },
+             [](Json& value) { value["keys"][0]["weight"] = 0.09; },
+             [](Json& value) { value["keys"][0]["weight"] = 100.5; },
+             [](Json& value) { value["keys"][0]["weight"] = -1; },
+             [](Json& value) { value["keys"][0]["weight"] = "2"; },
+             [](Json& value) { value["keys"][0]["weight"] = true; },
+             [](Json& value) { value["keys"][0]["weight"] = nullptr; },
              [](Json& value) { value["keys"][0].erase("capabilities"); }}) {
         auto candidate = fixture.authorized;
         mutation(candidate);
@@ -587,6 +613,7 @@ int main() {
         test_load_and_authenticate(fixture);
         test_invalid_stores(fixture);
         test_session_limits(fixture);
+        test_egress_weights(fixture);
         test_file_boundaries(fixture);
         std::cout << "native credential tests passed\n";
         return EXIT_SUCCESS;

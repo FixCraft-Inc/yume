@@ -58,14 +58,25 @@ public:
         std::size_t max_sessions;
     };
 
+    // An optional share of the server's egress rate, relative to the other
+    // busy identities. See EgressLimiter.
+    struct EgressWeight final {
+        std::string peer_identity;
+        double weight;
+    };
+
     NativeAuthorizationPolicy(engine::EndpointRole peer_role,
                               std::vector<Grant> grants,
-                              std::vector<SessionLimit> session_limits = {}) noexcept;
+                              std::vector<SessionLimit> session_limits = {},
+                              std::vector<EgressWeight> egress_weights = {}) noexcept;
     engine::Status authorize(
         const engine::StreamOpenContext& context) const noexcept;
     // The configured bound for an authenticated identity, or zero when its
     // store entry sets none.
     std::size_t max_sessions(std::string_view peer_identity) const noexcept;
+    // The configured weight for an authenticated identity, or
+    // EgressLimiter::kDefaultWeight when its store entry sets none.
+    double egress_weight(std::string_view peer_identity) const noexcept;
     // Whether the policy grants this identity anything. A store entry always
     // grants at least one service, so this is store membership.
     bool recognizes(std::string_view peer_identity) const noexcept;
@@ -74,6 +85,7 @@ private:
     engine::EndpointRole peer_role_;
     std::vector<Grant> grants_;
     std::vector<SessionLimit> session_limits_;
+    std::vector<EgressWeight> egress_weights_;
 };
 
 // Upper bound for an authorized-keys entry's optional max_sessions. It matches

@@ -529,6 +529,66 @@ class YumeDoctorTests(unittest.TestCase):
         store_path.write_text(original)
         os.chmod(store_path, 0o600)
 
+    def test_egress_weight_matches_the_native_bounds(self) -> None:
+        # The optional weight is a number within the limiter's bounds.
+        source = (ROOT / "src/runtime/egress_limiter.hpp").read_text()
+        minimum = re.search(r"kMinWeight\s*=\s*([0-9.]+);", source)
+        maximum = re.search(r"kMaxWeight\s*=\s*([0-9.]+);", source)
+        self.assertIsNotNone(minimum)
+        self.assertIsNotNone(maximum)
+        doctor = runpy.run_path(str(DOCTOR))
+        self.assertEqual(doctor["MIN_WEIGHT"], float(minimum[1]))
+        self.assertEqual(doctor["MAX_WEIGHT"], float(maximum[1]))
+        store_path = self.case / "server/credentials/authorized-keys.json"
+        original = store_path.read_text()
+        for value, accepted in ((float(minimum[1]), True), (1, True), (2.5, True),
+                                (float(maximum[1]), True), (0, False), (0.05, False),
+                                (float(maximum[1]) + 0.5, False), ("2", False),
+                                (True, False), (None, False)):
+            store = json.loads(original)
+            store["keys"][0]["weight"] = value
+            store_path.write_text(json.dumps(store))
+            os.chmod(store_path, 0o600)
+            result = self.run_doctor(self.case / "server/yumed.json")
+            if accepted:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            else:
+                self.assertEqual(result.returncode, 1, value)
+                self.assertIn("/credentials/authorized_keys/keys/0/weight", result.stderr)
+        store_path.write_text(original)
+        os.chmod(store_path, 0o600)
+
+    def test_egress_rate_matches_the_native_bounds(self) -> None:
+        # limits.max_egress_mbps is optional, bounded and server-only.
+        source = (ROOT / "src/config/v1/config.cpp").read_text()
+        match = re.search(r"kMaxEgressMbps\s*=\s*([0-9']+);", source)
+        self.assertIsNotNone(match)
+        maximum = int(match[1].replace("'", ""))
+        doctor = runpy.run_path(str(DOCTOR))
+        self.assertEqual(doctor["MAX_EGRESS_MBPS"], maximum)
+        server_path = self.case / "server/yumed.json"
+        original = server_path.read_text()
+        for value, accepted in ((1, True), (maximum, True), (0, False),
+                                (maximum + 1, False), (1.5, False), ("8", False)):
+            config = json.loads(original)
+            config["limits"]["max_egress_mbps"] = value
+            server_path.write_text(json.dumps(config))
+            result = self.run_doctor(server_path)
+            if accepted:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            else:
+                self.assertEqual(result.returncode, 1, value)
+                self.assertIn("/limits/max_egress_mbps", result.stderr)
+        server_path.write_text(original)
+        client_path = self.case / "client/yume.json"
+        config = json.loads(client_path.read_text())
+        config["limits"]["max_egress_mbps"] = 8
+        client_path.write_text(json.dumps(config))
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/limits/max_egress_mbps", result.stderr)
+        self.assertIn("server-only", result.stderr)
+
     def test_authorized_identity_limit_matches_native_factory(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))
         source = (ROOT / "src/providers/ytp1_security_provider.hpp").read_text()

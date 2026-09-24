@@ -325,6 +325,48 @@ void test_identity_session_replacement(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+// A configured egress rate paces the stream a handler receives, in both
+// directions. At one byte per microsecond each 100'000-byte record after the
+// first waits about 100 ms, so four records need at least 300 ms each way.
+// Unpaced, they cross loopback in a few milliseconds.
+void test_egress_pacing(const std::filesystem::path& kit) {
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 1U;
+    server_options.max_pending_starts = 1U;
+    auto server = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "server/paced.json"), kit / "server", bindings(handler), server_options)); });
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "client/yume.json"), kit / "client", bindings(handler), client_options)); });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto accepted = take(await(accepting));
+    auto session = take(await(connecting));
+    auto served_promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+    auto served_future = served_promise->get_future();
+    runner.sync([&] { handler->accepted = served_promise; });
+    auto opened = open(runner, session, "echo");
+    auto served = await(served_future);
+    const std::string record(100'000U, 'y');
+    const auto started = std::chrono::steady_clock::now();
+    for (int index = 0; index < 4; ++index) transfer(runner, served, opened, record);
+    const auto sent = std::chrono::steady_clock::now();
+    CHECK(sent - started >= 300ms);
+    for (int index = 0; index < 4; ++index) transfer(runner, opened, served, record);
+    CHECK(std::chrono::steady_clock::now() - sent >= 300ms);
+    runner.sync([&] {
+        client->close();
+        server->close();
+        accepted.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
 // Reload applies new grants to an established session's next OPEN, refuses a
 // malformed store without changing anything, and ends a removed identity's
 // session while the endpoint keeps serving.
@@ -2329,6 +2371,7 @@ int main(int argc, char** argv) {
         test_start_deadline_and_final_drain(argv[1]);
         test_stalled_lookup_close(argv[1]);
         test_identity_session_replacement(argv[1]);
+        test_egress_pacing(argv[1]);
         test_credential_reload(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);
         test_unanswered_rekey_watchdog(argv[1]);

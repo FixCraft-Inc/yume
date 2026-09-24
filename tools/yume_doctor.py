@@ -47,6 +47,10 @@ MAX_SERVICE_NAME_BYTES = 128
 MAX_AUTHORIZED_IDENTITIES = 1024
 # The daemon bounds an authorized-keys entry's optional max_sessions here.
 MAX_SESSIONS_PER_IDENTITY = 1024
+# The daemon's bounds for an entry's weight and limits.max_egress_mbps.
+MIN_WEIGHT = 0.1
+MAX_WEIGHT = 100.0
+MAX_EGRESS_MBPS = 1_000_000
 MAX_ADMIN_IDENTITIES = 4096
 SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
 SERVICE_NAME = re.compile(
@@ -620,7 +624,7 @@ def _validate_adapters(
             )
 
 
-def _validate_limits(value: Any, adapters: list[Any]) -> None:
+def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
     bounds = {
         "max_frame_bytes": (1676, 1024 * 1024),
         "max_streams": (1, 65535),
@@ -631,11 +635,17 @@ def _validate_limits(value: Any, adapters: list[Any]) -> None:
         "max_packet_bytes": (576, 65535),
         "max_packet_batch": (1, 256),
     }
-    limits = _closed_object(value, "/limits", bounds.keys())
+    limits = _closed_object(
+        value, "/limits", [*bounds.keys(), "max_egress_mbps"], bounds.keys()
+    )
     parsed = {
         key: _integer(limits[key], f"/limits/{key}", minimum, maximum)
         for key, (minimum, maximum) in bounds.items()
     }
+    if "max_egress_mbps" in limits:
+        _integer(limits["max_egress_mbps"], "/limits/max_egress_mbps", 1, MAX_EGRESS_MBPS)
+        if role != "server":
+            _fail("/limits/max_egress_mbps", "is server-only")
     if parsed["max_frame_bytes"] > parsed["max_queued_bytes"]:
         _fail("/limits/max_frame_bytes", "must not exceed max_queued_bytes")
     if parsed["max_pending_opens"] > parsed["max_streams"]:
@@ -678,7 +688,7 @@ def _validate_config(document: Any) -> tuple[str, dict[str, str], str | None]:
     cover_root = _validate_cover(top["cover"], role)
     services = _validate_services(top["services"])
     _validate_adapters(top["adapters"], role, services)
-    _validate_limits(top["limits"], top["adapters"])
+    _validate_limits(top["limits"], top["adapters"], role)
     return role, credentials, cover_root
 
 
@@ -1097,13 +1107,18 @@ def _check_authorized_keys(
         entry = _closed_object(
             item,
             key_pointer,
-            {"name", "identity", "access_psk", "capabilities", "max_sessions"},
+            {"name", "identity", "access_psk", "capabilities", "max_sessions", "weight"},
             {"name", "identity", "access_psk", "capabilities"},
         )
         if "max_sessions" in entry:
             # A newer session of this identity replaces the oldest beyond it.
             _integer(entry["max_sessions"], f"{key_pointer}/max_sessions",
                      1, MAX_SESSIONS_PER_IDENTITY)
+        if "weight" in entry:
+            # The identity's share of limits.max_egress_mbps among busy clients.
+            weight = entry["weight"]
+            if type(weight) not in (int, float) or not MIN_WEIGHT <= weight <= MAX_WEIGHT:
+                _fail(f"{key_pointer}/weight", f"must be a number in {MIN_WEIGHT:g}..{MAX_WEIGHT:g}")
         name = _string(entry["name"], f"{key_pointer}/name", 63)
         if not _valid_identifier(name, 63):
             _fail(f"{key_pointer}/name", "invalid client name")

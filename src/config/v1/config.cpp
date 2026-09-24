@@ -46,6 +46,8 @@ constexpr std::uint32_t kMinPacketBytes = 576;
 constexpr std::uint32_t kMaxPacketBytes = 65535;
 constexpr std::uint32_t kMinPacketBatch = 1;
 constexpr std::uint32_t kMaxPacketBatch = 256;
+constexpr std::uint32_t kMinEgressMbps = 1;
+constexpr std::uint32_t kMaxEgressMbps = 1'000'000;
 
 std::string FormatValidationMessage(std::string_view pointer,
                                     std::string_view detail) {
@@ -969,7 +971,7 @@ ResourceLimits ParseLimits(const Json& limits) {
     CheckClosedObject(
         limits, "/limits",
         {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
-         keys[7]},
+         keys[7], "max_egress_mbps"},
         {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
          keys[7]});
 
@@ -1006,10 +1008,15 @@ ResourceLimits ParseLimits(const Json& limits) {
     if (max_packet_bytes > max_frame_bytes) {
         Fail("/limits/max_packet_bytes", "must not exceed max_frame_bytes");
     }
+    std::optional<std::uint32_t> max_egress_mbps;
+    if (limits.contains("max_egress_mbps")) {
+        max_egress_mbps =
+            read("max_egress_mbps", kMinEgressMbps, kMaxEgressMbps);
+    }
     return ResourceLimits(max_frame_bytes, max_streams, max_queued_bytes,
                           max_pending_opens, max_rekey_jobs,
                           max_control_messages, max_packet_bytes,
-                          max_packet_batch);
+                          max_packet_batch, max_egress_mbps);
 }
 
 void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,
@@ -1056,6 +1063,9 @@ Config Parse(const nlohmann::json& document) {
         ParseAdapters(document.at("adapters"), role, services);
     ResourceLimits limits = ParseLimits(document.at("limits"));
     CheckAdapterLimitCombinations(adapters, limits);
+    if (role == Role::Client && limits.max_egress_mbps()) {
+        Fail("/limits/max_egress_mbps", "is server-only");
+    }
 
     return Config(role, std::move(endpoint), std::move(suite),
                   std::move(credentials), std::move(cover),

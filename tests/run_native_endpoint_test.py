@@ -73,6 +73,9 @@ def run(binary: Path, openssl: Path) -> None:
                     "file": "credentials/authorized-single.json"
                 }))
                 path.with_name("single-session.json").write_text(json.dumps(single), encoding="utf-8")
+                # 8 Mbit/s: one byte per microsecond of stream payload.
+                paced = dict(config, limits=dict(config["limits"], max_egress_mbps=8))
+                path.with_name("paced.json").write_text(json.dumps(paced), encoding="utf-8")
             packets = dict(config, services=[
                 dict(service, kind="packet") for service in config["services"]
             ], adapters=([

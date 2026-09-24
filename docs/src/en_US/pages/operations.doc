@@ -49,7 +49,8 @@ store's `authorized/` directory, and a replacement `authorized-keys.json` that
 grants the kit's standard `tcp` and `udp` services. It changes nothing unless
 every step succeeds, and files it adds to the server tree keep the store's
 owner. `--host` must be the name the server certificate was issued for.
-`--max-sessions` is optional, and `init` accepts it too.
+`--max-sessions` and `--weight` are optional, and `init` accepts both, as well
+as `--max-egress-mbps` for the server.
 
 To revoke a device, remove it and reload. Its sessions end at once:
 
@@ -97,10 +98,22 @@ instead of being refused. Without the field an identity is bounded only by the
 daemon's 128-session capacity. `admin-keys.json` is a separate store of
 second-factor identities and grants no traffic.
 
+The server's `limits.max_egress_mbps`, from 1 to 1000000 megabits per second,
+caps the stream payload the daemon relays. Each byte counts once, in either
+direction and for every service. Protocol framing and control messages do not
+count. Clients share the rate by weight. A busy client gets its entry's
+`weight`, a number from 0.1 to 100 that defaults to 1, divided by the total
+weight of the clients sending at that moment, and a client that stops sending
+leaves its share to the others. When another client starts sending, transfers
+already scheduled keep their earlier share, so the total can exceed the rate
+until they have started. Without the field the daemon does not limit the rate
+and weights have no effect.
+
 SIGHUP, or `systemctl reload yumed` with the packaged unit, makes the daemon
 read both stores and its composite and ML-KEM keys again without dropping other
 clients. Later sessions authenticate against the new stores. Established
-sessions use the new grants for their next stream. Sessions of a removed
+sessions use the new grants for their next stream and a changed weight for
+their next transfer. Sessions of a removed
 identity, or beyond a lowered `max_sessions`, end at once. An invalid store is
 refused and the previous credentials stay in force. The daemon logs the outcome
 either way. TLS certificate and admission key changes still need a restart,

@@ -16,6 +16,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Per-client speed limits.** A server's `limits.max_egress_mbps` caps the
+  stream payload the daemon relays, and clients share it by the `weight` in
+  their authorized-keys entries. Every served stream is paced in both
+  directions, whatever its service. A reload changes a weight for open streams
+  at their next transfer. `yume-setup` sets both and `yume-doctor` checks them.
+  This replaces transport v2's `egress_mbps` limiter, which gave two busy
+  clients half the configured rate between them and ignored their weights.
 - **Bounded name-lookup shutdown.** Client hosts and destination names now
   resolve in a separate helper process instead of Boost.Asio's single
   in-process resolver thread. Cancellation settles immediately, one slow name no

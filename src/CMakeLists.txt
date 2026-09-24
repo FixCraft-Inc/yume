@@ -965,6 +965,21 @@ if(YUME_BUILD_TESTING)
             "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor.py")
     set_tests_properties(yume_setup_test yume_doctor_test PROPERTIES
         TIMEOUT 300 LABELS "native-runtime;provisioning")
+    if(YUME_BUILD_NATIVE_APPLICATION)
+        add_test(NAME yume_setup_installed_layout
+            COMMAND "${CMAKE_COMMAND}"
+                "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
+                "-DYUME_BUILD_CONFIG=$<CONFIG>"
+                "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/yume-cli-$<CONFIG>"
+                "-DYUME_PYTHON=${Python3_EXECUTABLE}"
+                "-DYUME_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
+                "-DYUME_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
+                "-DYUME_INSTALL_MANDIR=${CMAKE_INSTALL_MANDIR}"
+                "-DYUME_DEBIAN_DIR=${CMAKE_SOURCE_DIR}/debian"
+                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_setup_install.cmake")
+        set_tests_properties(yume_setup_installed_layout PROPERTIES
+            TIMEOUT 120 LABELS "native-runtime;packaging")
+    endif()
     add_test(NAME yume_project_metadata_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py")
@@ -1031,7 +1046,34 @@ if(YUME_BUILD_TESTING)
         yume_apply_perf_opts(yume_bounded_file_test)
         add_test(NAME yume_bounded_file_test COMMAND yume_bounded_file_test)
     endif()
-    foreach(_shared_test IN ITEMS yume_websocket_codec_test yume_bounded_file_test)
+    if(TARGET yume_cover_profile)
+        # The active profile must match its capture manifest byte for byte.
+        add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
+        target_link_libraries(yume_cover_profile_test
+            PRIVATE yume_cover_profile nlohmann_json::nlohmann_json)
+        target_compile_definitions(yume_cover_profile_test PRIVATE
+            YUME_COVER_MANIFEST="${YUME_ACTIVE_PROFILE_MANIFEST}"
+            YUME_COVER_HTTP2_PROFILE="${YUME_ACTIVE_PROFILE_HTTP2}")
+        yume_apply_perf_opts(yume_cover_profile_test)
+        add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
+
+        add_executable(yume_tls_fingerprint_test core/stealth/tls_fingerprint_test.cpp)
+        target_link_libraries(yume_tls_fingerprint_test PRIVATE yume_cover_profile)
+        yume_apply_perf_opts(yume_tls_fingerprint_test)
+        add_test(NAME yume_tls_fingerprint_test COMMAND yume_tls_fingerprint_test)
+    endif()
+    add_executable(yume_secret_file_test core/security/secret_file_test.cpp)
+    target_link_libraries(yume_secret_file_test PRIVATE yume_private_files)
+    yume_apply_perf_opts(yume_secret_file_test)
+    add_test(NAME yume_secret_file_test COMMAND yume_secret_file_test)
+
+    add_executable(yume_hex_test core/encoding/hex_test.cpp)
+    target_include_directories(yume_hex_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    yume_apply_perf_opts(yume_hex_test)
+    add_test(NAME yume_hex_test COMMAND yume_hex_test)
+    foreach(_shared_test IN ITEMS yume_websocket_codec_test yume_bounded_file_test
+            yume_cover_profile_test yume_tls_fingerprint_test yume_secret_file_test
+            yume_hex_test)
         if(TARGET ${_shared_test})
             if(MSVC)
                 target_compile_options(${_shared_test} PRIVATE /UNDEBUG)
@@ -2379,10 +2421,6 @@ else()
     add_compile_options(-UNDEBUG)
 endif()
 
-add_executable(yume_hex_test core/encoding/hex_test.cpp)
-target_link_libraries(yume_hex_test PRIVATE yume_core)
-yume_apply_perf_opts(yume_hex_test)
-add_test(NAME yume_hex_test COMMAND yume_hex_test)
 
 add_executable(yume_secure_materials_test
     facade/security/secure_materials_test.cpp
@@ -2790,11 +2828,6 @@ yume_link_atomic_if_needed(yume_terminal_test PRIVATE)
 yume_apply_perf_opts(yume_terminal_test)
 add_test(NAME yume_terminal_test COMMAND yume_terminal_test)
 
-add_executable(yume_tls_fingerprint_test core/stealth/tls_fingerprint_test.cpp)
-target_link_libraries(yume_tls_fingerprint_test PRIVATE yume_core)
-yume_link_atomic_if_needed(yume_tls_fingerprint_test PRIVATE)
-yume_apply_perf_opts(yume_tls_fingerprint_test)
-add_test(NAME yume_tls_fingerprint_test COMMAND yume_tls_fingerprint_test)
 
 add_executable(yume_identity_admission_test
     server/runtime/identity_admission_test.cpp
@@ -3144,12 +3177,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
-    add_executable(yume_secret_file_test core/security/secret_file_test.cpp)
-    target_link_libraries(yume_secret_file_test PRIVATE yume_core)
-    yume_link_atomic_if_needed(yume_secret_file_test PRIVATE)
-    yume_apply_perf_opts(yume_secret_file_test)
-    add_test(NAME yume_secret_file_test COMMAND yume_secret_file_test)
-
     add_executable(yume_h2_carrier_test core/stealth/h2_carrier_test.cpp)
     target_link_libraries(yume_h2_carrier_test PRIVATE yume_h2_carrier ${YUME_NGHTTP2_TARGET})
     target_compile_definitions(yume_h2_carrier_test PRIVATE
@@ -3178,14 +3205,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             COMMAND yume_outer_carrier_capture_test)
     endif()
 
-    add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
-    target_link_libraries(yume_cover_profile_test PRIVATE yume_core)
-    target_compile_definitions(yume_cover_profile_test PRIVATE
-        YUME_COVER_MANIFEST="${YUME_ACTIVE_PROFILE_MANIFEST}"
-        YUME_COVER_HTTP2_PROFILE="${YUME_ACTIVE_PROFILE_HTTP2}")
-    yume_link_atomic_if_needed(yume_cover_profile_test PRIVATE)
-    yume_apply_perf_opts(yume_cover_profile_test)
-    add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
+    add_executable(yume_http_profile_test core/stealth/http_profile_test.cpp)
+    target_link_libraries(yume_http_profile_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_http_profile_test PRIVATE)
+    yume_apply_perf_opts(yume_http_profile_test)
+    add_test(NAME yume_http_profile_test COMMAND yume_http_profile_test)
 
     add_executable(yume_h2_opening_probe core/stealth/h2_opening_probe.cpp)
     target_link_libraries(yume_h2_opening_probe PRIVATE yume_core)
@@ -3350,18 +3374,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             check-profile
             --profile "${YUME_ACTIVE_PROFILE_TLS_WIRE}"
             ${YUME_ACTIVE_PROFILE_TLS_CANDIDATE_ARGS}
-    )
-    add_test(NAME yume_setup_installed_layout
-        COMMAND "${CMAKE_COMMAND}"
-            "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
-            "-DYUME_BUILD_CONFIG=$<CONFIG>"
-            "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/yume-setup-$<CONFIG>"
-            "-DYUME_PYTHON=${Python3_EXECUTABLE}"
-            "-DYUME_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
-            "-DYUME_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
-            "-DYUME_DEBIAN_INSTALL_MANIFEST=${CMAKE_SOURCE_DIR}/debian/yume.install"
-            "-DYUME_COVER_MANIFEST=${YUME_ACTIVE_PROFILE_MANIFEST}"
-            -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_setup_install.cmake"
     )
 
     add_executable(yume_tls_verify_fetch_test

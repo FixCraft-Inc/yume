@@ -11,7 +11,6 @@
 #include <nlohmann/json.hpp>
 
 #include "core/stealth/cover_profile.hpp"
-#include "core/stealth/http_profile.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
 
 #if !defined(YUME_COVER_MANIFEST) || !defined(YUME_COVER_HTTP2_PROFILE)
@@ -71,13 +70,6 @@ int main() {
     assert(profile.tls_max_version == 0x0304);
     assert(profile.tls_required_version == 0x0304);
     assert(captured["tls_observation"]["version"] == "TLS 1.3");
-
-    const auto client = yume::http_profile::transport_client(
-        profile.registry_name);
-    assert(client.has_value());
-    assert(client->user_agent == profile.user_agent);
-    assert(client->tls_profile == profile.tls_profile);
-    assert(yume::http_profile::active_client_ua() == profile.user_agent);
 
     const auto tls =
         yume::tls_fingerprint::get_browser_profile_info(profile.tls_profile);

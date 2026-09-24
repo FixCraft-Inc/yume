@@ -30,6 +30,8 @@ inline constexpr std::size_t kMaxServices = 64;
 inline constexpr std::size_t kMaxAdapters = 16;
 inline constexpr std::size_t kMaxListenAddresses = 16;
 inline constexpr std::size_t kMaxDestinationNetworks = 64;
+// A UNIX socket path must fit sockaddr_un with its terminator.
+inline constexpr std::size_t kMaxUnixSocketPathBytes = 107;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -52,6 +54,7 @@ enum class AdapterKind {
     Packet,
     DirectTcp,
     DirectUdp,
+    Forward,
 };
 
 class ValidationError final : public std::runtime_error {
@@ -412,10 +415,55 @@ private:
     DestinationPolicy destinations_;
 };
 
+// Where a client forward listens: a loopback TCP address and port, or an
+// absolute UNIX socket path.
+struct LoopbackListener final {
+    std::string address;
+    std::uint16_t port;
+};
+
+struct UnixListener final {
+    std::string path;
+};
+
+using ForwardListener = std::variant<LoopbackListener, UnixListener>;
+
+// The TCP destination each of a forward's streams names. The server's
+// direct_tcp destinations decide whether it is reachable.
+struct ForwardDestination final {
+    std::string host;
+    std::uint16_t port;
+};
+
+// Every local connection becomes one byte-stream OPEN on the service. With a
+// destination the OPEN carries it. Without one, the server's handler for the
+// service decides where the stream goes.
+class ForwardAdapter final {
+public:
+    ForwardAdapter(std::string service,
+                   ForwardListener listener,
+                   std::optional<ForwardDestination> destination)
+        : service_(std::move(service)),
+          listener_(std::move(listener)),
+          destination_(std::move(destination)) {}
+
+    const std::string& service() const noexcept { return service_; }
+    const ForwardListener& listener() const noexcept { return listener_; }
+    const std::optional<ForwardDestination>& destination() const noexcept {
+        return destination_;
+    }
+
+private:
+    std::string service_;
+    ForwardListener listener_;
+    std::optional<ForwardDestination> destination_;
+};
+
 using Adapter = std::variant<Socks5Adapter,
                              PacketAdapter,
                              DirectTcpAdapter,
-                             DirectUdpAdapter>;
+                             DirectUdpAdapter,
+                             ForwardAdapter>;
 
 class ResourceLimits final {
 public:

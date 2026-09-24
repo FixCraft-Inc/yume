@@ -759,6 +759,9 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
                 runtime/native_cli.cpp runtime/native_cli.hpp
                 runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
                 runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
+                runtime/local_listener.cpp runtime/local_listener.hpp
+                runtime/native_forward.cpp runtime/native_forward.hpp
+                runtime/native_session_source.hpp
                 runtime/native_socks5.cpp runtime/native_socks5.hpp
                 runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
                 runtime/socks5_request.cpp runtime/socks5_request.hpp)
@@ -1418,6 +1421,13 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_native_run_loop_test COMMAND yume_native_run_loop_test)
         set_tests_properties(yume_native_run_loop_test PROPERTIES
             TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_native_local_listener_test runtime/local_listener_test.cpp)
+        target_link_libraries(yume_native_local_listener_test PRIVATE
+            yume_native_runtime yume_asio_tcp_byte_channel_provider Boost::system)
+        yume_apply_perf_opts(yume_native_local_listener_test)
+        add_test(NAME yume_native_local_listener_test COMMAND yume_native_local_listener_test)
+        set_tests_properties(yume_native_local_listener_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_socks5_request_test runtime/socks5_request_test.cpp)
         target_link_libraries(yume_native_socks5_request_test PRIVATE yume_native_runtime)
         yume_apply_perf_opts(yume_native_socks5_request_test)

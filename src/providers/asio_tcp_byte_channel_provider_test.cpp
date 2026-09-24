@@ -30,6 +30,7 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/local/connect_pair.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
@@ -592,6 +593,76 @@ void test_accepted_socket_traffic_half_close_cancel_and_close() {
     CHECK(!closed.status.ok());
     CHECK(closed.status.code() == StatusCode::Closed);
     channel.reset();
+}
+
+// UNIX stream sockets share the TCP channel implementation and the owner's
+// capacity: traffic, half-close in both directions, cancellation and release.
+void test_accepted_unix_socket_traffic_and_capacity() {
+    IoRuntime runtime;
+    AsioTcpChannelLimits limits;
+    limits.max_active_channels = 1U;
+    auto owner = make_accepted_owner(runtime, limits);
+
+    AsioUnixSocket closed(runtime.executor());
+    auto closed_result = runtime.sync([&]() { return owner->adopt(std::move(closed)); });
+    CHECK(closed_result.status().code() == StatusCode::InvalidArgument);
+    AsioUnixSocket unconnected(runtime.executor());
+    unconnected.open(boost::asio::local::stream_protocol());
+    auto unconnected_result =
+        runtime.sync([&]() { return owner->adopt(std::move(unconnected)); });
+    CHECK(unconnected_result.status().code() == StatusCode::InvalidArgument);
+
+    AsioUnixSocket local(runtime.executor());
+    AsioUnixSocket peer(runtime.executor());
+    boost::asio::local::connect_pair(local, peer);
+    auto channel = require(runtime.sync([&]() { return owner->adopt(std::move(local)); }));
+    CHECK(channel->executor_affinity() == ExecutorAffinity(93U));
+
+    AsioUnixSocket extra(runtime.executor());
+    AsioUnixSocket extra_peer(runtime.executor());
+    boost::asio::local::connect_pair(extra, extra_peer);
+    auto refused = runtime.sync([&]() { return owner->adopt(std::move(extra)); });
+    CHECK(refused.status().code() == StatusCode::ResourceExhausted);
+    auto tcp_pair = connected_pair(runtime.executor());
+    auto refused_tcp = runtime.sync([&]() { return owner->adopt(std::move(tcp_pair.first)); });
+    CHECK(refused_tcp.status().code() == StatusCode::ResourceExhausted);
+
+    auto written = start_write(runtime, *channel, make_buffer("unix"));
+    CHECK(runtime.sync([&]() { return channel->shutdown_write(); }).ok());
+    TransferResult sent = await(written);
+    CHECK(sent.status.ok() && sent.transferred == 4U);
+    std::array<char, 4> input{};
+    boost::system::error_code error;
+    CHECK(boost::asio::read(peer, boost::asio::buffer(input), error) == input.size());
+    CHECK(!error && std::string(input.data(), input.size()) == "unix");
+    std::array<char, 1> eof_probe{};
+    CHECK(peer.read_some(boost::asio::buffer(eof_probe), error) == 0U);
+    CHECK(error == boost::asio::error::eof);
+
+    auto cancelled_read = start_read(runtime, *channel, 1U);
+    owner->cancel();
+    CHECK(await(cancelled_read).status().code() == StatusCode::Cancelled);
+
+    boost::asio::write(peer, boost::asio::buffer("R", 1U), error);
+    CHECK(!error);
+    peer.shutdown(AsioUnixSocket::shutdown_send, error);
+    CHECK(!error);
+    auto received_read = start_read(runtime, *channel, 1U);
+    auto received = await(received_read);
+    CHECK(received.ok() && buffer_text(*received.value_if()) == "R");
+    auto eof_read = start_read(runtime, *channel, 1U);
+    auto eof = await(eof_read);
+    CHECK(eof.status().code() == StatusCode::Closed);
+
+    channel->close();
+    channel.reset();
+    run_barrier(runtime);
+    AsioUnixSocket reused(runtime.executor());
+    AsioUnixSocket reused_peer(runtime.executor());
+    boost::asio::local::connect_pair(reused, reused_peer);
+    auto replacement = require(runtime.sync([&]() { return owner->adopt(std::move(reused)); }));
+    replacement->close();
+    replacement.reset();
 }
 
 void test_accepted_socket_allocation_rollback() {
@@ -1411,6 +1482,7 @@ int main() {
         yume::providers::test_descriptor_and_validation();
         yume::providers::test_accepted_socket_validation_and_capacity_release();
         yume::providers::test_accepted_socket_traffic_half_close_cancel_and_close();
+        yume::providers::test_accepted_unix_socket_traffic_and_capacity();
         yume::providers::test_accepted_socket_allocation_rollback();
         yume::providers::test_accepted_socket_owner_lifetime_and_active_close();
         yume::providers::test_dns_round_trip_order_and_half_close();

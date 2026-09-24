@@ -68,11 +68,11 @@ Status safe_status(StatusCode code, std::string_view message) noexcept {
 
 Status cancelled_status() noexcept {
     return safe_status(StatusCode::Cancelled,
-                       "Asio TCP operation was cancelled");
+                       "Asio socket operation was cancelled");
 }
 
 Status closed_status() noexcept {
-    return safe_status(StatusCode::Closed, "Asio TCP channel is closed");
+    return safe_status(StatusCode::Closed, "Asio socket channel is closed");
 }
 
 Status allocation_status(std::string_view message) noexcept {
@@ -439,20 +439,23 @@ private:
 
 namespace {
 
-class TcpChannelState final : public CancelTarget,
-                              public std::enable_shared_from_this<TcpChannelState> {
+// Queueing, cancellation, half-close and cleanup for one connected stream
+// socket. TCP and UNIX stream sockets share it.
+template <typename Socket>
+class StreamChannelState final : public CancelTarget,
+                                 public std::enable_shared_from_this<StreamChannelState<Socket>> {
 public:
-    TcpChannelState(AsioTcpSocket socket,
+    StreamChannelState(Socket socket,
                     std::shared_ptr<ChannelRegistry> channels,
                     std::uint64_t target_id)
         : socket_(std::move(socket)),
           channels_(std::move(channels)),
           target_id_(target_id),
           control_([](void* owner) noexcept {
-              static_cast<TcpChannelState*>(owner)->handle_control();
+              static_cast<StreamChannelState*>(owner)->handle_control();
           }) {}
 
-    ~TcpChannelState() noexcept override {
+    ~StreamChannelState() noexcept override {
         boost::system::error_code ignored;
         socket_.close(ignored);
         unregister_once();
@@ -470,7 +473,7 @@ public:
                     CancellationToken cancellation,
                     ByteChannel::ReadCompletion completion) {
         channels_->context()->require_context();
-        const auto keep_alive = shared_from_this();
+        const auto keep_alive = this->shared_from_this();
         if (!completion) {
             return;
         }
@@ -482,17 +485,17 @@ public:
                 error = closed_status();
             } else if (max_bytes == 0U || max_bytes > max_read_size()) {
                 error = safe_status(StatusCode::InvalidArgument,
-                                    "TCP read exceeds the provider bound");
+                                    "stream read exceeds the provider bound");
             } else if (submitted_reads_ >=
                            channels_->limits().max_queued_read_operations ||
                        !add_fits(submitted_read_bytes_, max_bytes,
                                  channels_->limits().max_queued_read_bytes)) {
                 error = safe_status(StatusCode::ResourceExhausted,
-                                    "TCP read queue capacity exhausted");
+                                    "stream read queue capacity exhausted");
             } else if (next_operation_id_ ==
                        std::numeric_limits<std::uint64_t>::max()) {
                 error = safe_status(StatusCode::ResourceExhausted,
-                                    "TCP operation identifier exhausted");
+                                    "stream operation identifier exhausted");
             } else {
                 id = next_operation_id_++;
                 ++submitted_reads_;
@@ -511,7 +514,7 @@ public:
                      CancellationToken cancellation,
                      ByteChannel::WriteCompletion completion) {
         channels_->context()->require_context();
-        const auto keep_alive = shared_from_this();
+        const auto keep_alive = this->shared_from_this();
         if (!completion) {
             return;
         }
@@ -524,17 +527,17 @@ public:
                 error = closed_status();
             } else if (bytes > max_write_size()) {
                 error = safe_status(StatusCode::ResourceExhausted,
-                                    "TCP write exceeds the provider bound");
+                                    "stream write exceeds the provider bound");
             } else if (submitted_writes_ >=
                            channels_->limits().max_queued_write_operations ||
                        !add_fits(submitted_write_bytes_, bytes,
                                  channels_->limits().max_queued_write_bytes)) {
                 error = safe_status(StatusCode::ResourceExhausted,
-                                    "TCP write queue capacity exhausted");
+                                    "stream write queue capacity exhausted");
             } else if (next_operation_id_ ==
                        std::numeric_limits<std::uint64_t>::max()) {
                 error = safe_status(StatusCode::ResourceExhausted,
-                                    "TCP operation identifier exhausted");
+                                    "stream operation identifier exhausted");
             } else {
                 id = next_operation_id_++;
                 ++submitted_writes_;
@@ -552,9 +555,9 @@ public:
     Status shutdown_write() noexcept {
         if (!channels_->context()->running_in_this_thread()) {
             return safe_status(StatusCode::FailedPrecondition,
-                               "TCP shutdown must start on its execution context");
+                               "stream shutdown must start on its execution context");
         }
-        const auto keep_alive = shared_from_this();
+        const auto keep_alive = this->shared_from_this();
         {
             std::lock_guard<std::mutex> lock(submission_mutex_);
             if (close_requested_) return closed_status();
@@ -669,14 +672,14 @@ private:
                 operation ? std::move(operation->completion)
                           : std::move(completion),
                 allocation_status(
-                "TCP read queue allocation failed"));
+                "stream read queue allocation failed"));
         } catch (...) {
             release_read_reservation(max_bytes);
             complete_read(
                 operation ? std::move(operation->completion)
                           : std::move(completion),
                 safe_status(StatusCode::Internal,
-                            "TCP read queueing failed"));
+                            "stream read queueing failed"));
         }
     }
 
@@ -697,13 +700,13 @@ private:
             auto& selected_completion =
                 operation ? operation->completion : completion;
             invoke_noexcept(selected_completion, allocation_status(
-                "TCP write queue allocation failed"), 0U);
+                "stream write queue allocation failed"), 0U);
         } catch (...) {
             release_write_reservation(bytes);
             auto& selected_completion =
                 operation ? operation->completion : completion;
             invoke_noexcept(selected_completion, safe_status(
-                StatusCode::Internal, "TCP write queueing failed"), 0U);
+                StatusCode::Internal, "stream write queueing failed"), 0U);
         }
     }
 
@@ -738,7 +741,7 @@ private:
             try {
                 auto registration =
                     operation.cancellation_token.register_callback(
-                        [weak = weak_from_this()]() noexcept {
+                        [weak = this->weak_from_this()]() noexcept {
                             if (auto self = weak.lock()) {
                                 self->request_control();
                             }
@@ -775,7 +778,7 @@ private:
                     boost::asio::buffer(bytes.data(), bytes.size()),
                     boost::asio::bind_cancellation_slot(
                         operation.signal.slot(),
-                        [self = shared_from_this(), id = operation.id](
+                        [self = this->shared_from_this(), id = operation.id](
                             const boost::system::error_code& error,
                             std::size_t transferred) noexcept {
                             self->complete_socket_read(id, error, transferred);
@@ -783,10 +786,10 @@ private:
                 return;
             } catch (const std::bad_alloc&) {
                 settle_front_read(allocation_status(
-                    "TCP read-operation allocation failed"));
+                    "stream read-operation allocation failed"));
             } catch (...) {
                 settle_front_read(safe_status(
-                    StatusCode::Internal, "TCP read setup failed"));
+                    StatusCode::Internal, "stream read setup failed"));
             }
         }
     }
@@ -809,7 +812,7 @@ private:
             try {
                 auto registration =
                     operation.cancellation_token.register_callback(
-                        [weak = weak_from_this()]() noexcept {
+                        [weak = this->weak_from_this()]() noexcept {
                             if (auto self = weak.lock()) {
                                 self->request_control();
                             }
@@ -828,10 +831,10 @@ private:
                 if (start_write_some()) return;
             } catch (const std::bad_alloc&) {
                 settle_front_write(allocation_status(
-                    "TCP write-operation allocation failed"), 0U);
+                    "stream write-operation allocation failed"), 0U);
             } catch (...) {
                 settle_front_write(safe_status(
-                    StatusCode::Internal, "TCP write setup failed"), 0U);
+                    StatusCode::Internal, "stream write setup failed"), 0U);
             }
         }
         if (shutdown_after_writes_ && writes_.empty()) {
@@ -840,7 +843,7 @@ private:
     }
 
     void request_control() noexcept {
-        channels_->context()->submit(control_, shared_from_this());
+        channels_->context()->submit(control_, this->shared_from_this());
     }
 
     void handle_control() noexcept {
@@ -907,7 +910,7 @@ private:
                 boost::asio::buffer(bytes.data(), bytes.size()),
                 boost::asio::bind_cancellation_slot(
                     operation.signal.slot(),
-                    [self = shared_from_this(), id = operation.id](
+                    [self = this->shared_from_this(), id = operation.id](
                         const boost::system::error_code& error,
                         std::size_t transferred) noexcept {
                         self->complete_socket_write(id, error, transferred);
@@ -916,11 +919,11 @@ private:
         } catch (const std::bad_alloc&) {
             const auto transferred = operation.transferred;
             settle_front_write(allocation_status(
-                "TCP write-operation allocation failed"), transferred);
+                "stream write-operation allocation failed"), transferred);
         } catch (...) {
             const auto transferred = operation.transferred;
             settle_front_write(safe_status(StatusCode::Internal,
-                "TCP write setup failed"), transferred);
+                "stream write setup failed"), transferred);
         }
         return false;
     }
@@ -957,7 +960,7 @@ private:
         if (!operation.buffer || transferred > operation.buffer->size()) {
             settle_front_read(safe_status(
                 StatusCode::Internal,
-                "TCP read completion exceeded its buffer"));
+                "stream read completion exceeded its buffer"));
             start_next_read();
             return;
         }
@@ -984,7 +987,7 @@ private:
         PendingWrite& operation = *writes_.front();
         if (transferred > operation.buffer.size() - operation.transferred) {
             settle_front_write(safe_status(StatusCode::Internal,
-                "TCP write completion exceeded its buffer"), operation.transferred);
+                "stream write completion exceeded its buffer"), operation.transferred);
             start_next_write();
             return;
         }
@@ -1052,7 +1055,7 @@ private:
             return;
         }
         boost::system::error_code ignored;
-        socket_.shutdown(AsioTcpSocket::shutdown_send, ignored);
+        socket_.shutdown(Socket::shutdown_send, ignored);
         write_shutdown_ = true;
         shutdown_after_writes_ = false;
     }
@@ -1063,7 +1066,7 @@ private:
         }
         closed_ = true;
         boost::system::error_code ignored;
-        socket_.shutdown(AsioTcpSocket::shutdown_both, ignored);
+        socket_.shutdown(Socket::shutdown_both, ignored);
         socket_.close(ignored);
         // Asio still owns the active operations' buffer views until their
         // completion handlers run, including after socket.close(). Each active
@@ -1080,7 +1083,7 @@ private:
         }
     }
 
-    AsioTcpSocket socket_;
+    Socket socket_;
     std::shared_ptr<ChannelRegistry> channels_;
     std::uint64_t target_id_{0U};
     std::deque<std::unique_ptr<PendingRead>> reads_;
@@ -1105,13 +1108,14 @@ private:
     ControlTask control_;
 };
 
-class AsioTcpByteChannel final : public ByteChannel {
+template <typename Socket>
+class AsioStreamByteChannel final : public ByteChannel {
 public:
-    explicit AsioTcpByteChannel(
-        std::shared_ptr<TcpChannelState> state) noexcept
+    explicit AsioStreamByteChannel(
+        std::shared_ptr<StreamChannelState<Socket>> state) noexcept
         : state_(std::move(state)) {}
 
-    ~AsioTcpByteChannel() noexcept override { state_->request_close(); }
+    ~AsioStreamByteChannel() noexcept override { state_->request_close(); }
 
     ExecutorAffinity executor_affinity() const noexcept override {
         return state_->affinity();
@@ -1141,7 +1145,7 @@ public:
     void close() noexcept override { state_->request_close(); }
 
 private:
-    std::shared_ptr<TcpChannelState> state_;
+    std::shared_ptr<StreamChannelState<Socket>> state_;
 };
 
 class CreateOperation final : public CancelTarget,
@@ -1407,7 +1411,7 @@ private:
             boost::system::error_code ignored;
             connect_timer_.cancel(ignored);
             socket_.set_option(Tcp::no_delay(true), ignored);
-            auto state = std::make_shared<TcpChannelState>(
+            auto state = std::make_shared<StreamChannelState<AsioTcpSocket>>(
                 std::move(socket_), provider_->channels(), target_id_);
             if (cancellation_requested_.load(std::memory_order_acquire)) {
                 state->request_close();
@@ -1422,7 +1426,7 @@ private:
             }
             promoted_ = true;
             std::unique_ptr<ByteChannel> channel =
-                std::make_unique<AsioTcpByteChannel>(std::move(state));
+                std::make_unique<AsioStreamByteChannel<AsioTcpSocket>>(std::move(state));
             if (cancellation_requested_.load(std::memory_order_acquire)) {
                 channel->close();
                 finish(Result<std::unique_ptr<ByteChannel>>(cancelled_status()));
@@ -1686,13 +1690,17 @@ AsioTcpAcceptedChannelOwner::create(
     }
 }
 
-Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
-    AsioTcpSocket socket) {
-    const auto channels = impl_->channels();
+namespace {
+
+// Publishes one connected socket as a channel of the registry. Rejected
+// sockets are closed and never published.
+template <typename Socket>
+Result<std::unique_ptr<ByteChannel>> adopt_connected(
+    const std::shared_ptr<ChannelRegistry>& channels, Socket socket) {
     if (!socket.is_open()) {
         return Result<std::unique_ptr<ByteChannel>>(safe_status(
             StatusCode::InvalidArgument,
-            "accepted TCP socket is closed"));
+            "adopted socket is closed"));
     }
     boost::system::error_code endpoint_error;
     (void)socket.remote_endpoint(endpoint_error);
@@ -1701,14 +1709,14 @@ Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
         socket.close(ignored);
         return Result<std::unique_ptr<ByteChannel>>(safe_status(
             StatusCode::InvalidArgument,
-            "accepted TCP socket is not connected"));
+            "adopted socket is not connected"));
     }
     if (socket.get_executor() != channels->executor()) {
         boost::system::error_code ignored;
         socket.close(ignored);
         return Result<std::unique_ptr<ByteChannel>>(safe_status(
             StatusCode::ProviderMismatch,
-            "accepted TCP socket uses a different executor"));
+            "adopted socket uses a different executor"));
     }
     auto reservation = channels->reserve_active();
     if (!reservation.ok()) {
@@ -1720,12 +1728,12 @@ Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
     const auto [target_id, epoch] =
         std::move(reservation).take_value();
     try {
-        auto state = std::make_shared<TcpChannelState>(
+        auto state = std::make_shared<StreamChannelState<Socket>>(
             std::move(socket), channels, target_id);
         const bool cancelled_before_bind =
             channels->bind_target(target_id, epoch, state);
         std::unique_ptr<ByteChannel> channel =
-            std::make_unique<AsioTcpByteChannel>(state);
+            std::make_unique<AsioStreamByteChannel<Socket>>(state);
         if (cancelled_before_bind) {
             state->request_cancel();
         }
@@ -1733,13 +1741,25 @@ Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
     } catch (const std::bad_alloc&) {
         channels->release(target_id);
         return Result<std::unique_ptr<ByteChannel>>(
-            allocation_status("accepted TCP channel allocation failed"));
+            allocation_status("adopted channel allocation failed"));
     } catch (...) {
         channels->release(target_id);
         return Result<std::unique_ptr<ByteChannel>>(safe_status(
             StatusCode::Internal,
-            "accepted TCP channel construction failed"));
+            "adopted channel construction failed"));
     }
+}
+
+}  // namespace
+
+Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
+    AsioTcpSocket socket) {
+    return adopt_connected(impl_->channels(), std::move(socket));
+}
+
+Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
+    AsioUnixSocket socket) {
+    return adopt_connected(impl_->channels(), std::move(socket));
 }
 
 void AsioTcpAcceptedChannelOwner::cancel() noexcept {

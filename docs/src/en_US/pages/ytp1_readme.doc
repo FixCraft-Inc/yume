@@ -215,6 +215,20 @@ at once, closes a destination after 60 idle seconds, and drops datagrams to a
 refused or ended destination for one second before opening it again. Fragments
 and empty datagrams are dropped, because a YTP packet cannot be empty.
 
+A client `forward` adapter listens on a loopback TCP port or a UNIX socket
+path and turns every connection into an authenticated byte-stream OPEN on its
+service. An optional `destination` travels with each OPEN, and the server's
+`direct_tcp` destinations decide whether it is reachable. Without one, the
+server's handler for the service decides where the stream goes. Payload sent
+before the server accepts waits in the socket. A connection made while no
+session is active, or whose OPEN is refused or takes longer than 30 seconds,
+is closed. A UNIX socket's directory must belong to the client's user and be
+closed to writes by group and others. The socket file is mode 0600, a
+connection from another user is closed, and the file is removed on exit. A
+file left by an earlier run is replaced, while a live listener or any other
+file at the path stops startup. Like SOCKS5, forward TCP listeners accept only
+127.0.0.1 or ::1.
+
 `scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
 network namespace with Ethernet-sized frames and records what nDPI reports.
 `scripts/ensure-ndpi.sh` builds the pinned release, or newer sources such as
@@ -345,6 +359,10 @@ Schema 1 is role tagged and contains these sections only:
   inputs. A network that no destination could match is rejected;
 - `udp_service` on a client `socks5` adapter: the packet service that UDP
   ASSOCIATE opens. Without it the adapter refuses UDP ASSOCIATE;
+- a client `forward` adapter: a stream `service`, either `listen_address` (127.0.0.1
+  or ::1) with `listen_port` or an absolute, normalized `listen_path` of at most
+  107 bytes, and an optional `destination` with `host` and `port`. SOCKS5 and
+  forward listeners may not share an address and port;
 - `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
   packets. Frames allow 1676–1048576 bytes so hybrid rekey INIT fits;
   concurrent rekey jobs allow 2–64 so crossed rotation has both slots. A

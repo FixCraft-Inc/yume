@@ -315,6 +315,7 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
         boost::system::error_code ignored;
         timer.cancel(ignored);
         for (const auto& adapter : adapters) adapter->close();
+        for (const auto& forward : forward_adapters) forward->close();
         if (endpoint) endpoint->close();
         for (const auto& packet : packets) packet.second->close();
         session.reset();
@@ -337,6 +338,8 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
     std::shared_ptr<NativeEndpoint> endpoint;
     std::vector<config::v1::Socks5Adapter> socks5;
     std::vector<std::shared_ptr<NativeSocks5Adapter>> adapters;
+    std::vector<config::v1::ForwardAdapter> forwards;
+    std::vector<std::shared_ptr<NativeForwardAdapter>> forward_adapters;
     std::vector<std::pair<config::v1::PacketAdapter, std::shared_ptr<NativePacketAdapter>>> packets;
     std::optional<common::IpInterfaceAddress> transport_address;
     std::shared_ptr<engine::SessionEngine> session;
@@ -381,6 +384,8 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
         for (const auto& adapter : config.adapters()) {
             if (const auto* socks = std::get_if<config::v1::Socks5Adapter>(&adapter)) {
                 state->socks5.push_back(*socks);
+            } else if (const auto* forward = std::get_if<config::v1::ForwardAdapter>(&adapter)) {
+                state->forwards.push_back(*forward);
             } else if (const auto* packet = std::get_if<config::v1::PacketAdapter>(&adapter)) {
 #ifndef __linux__
                 (void)packet;
@@ -407,6 +412,7 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
         endpoint_options.max_pending_starts = 1U;
         endpoint_options.start_timeout = options.start_timeout;
         endpoint_options.caller_runs_socks5_adapters = !state->socks5.empty();
+        endpoint_options.caller_runs_forward_adapters = !state->forwards.empty();
         endpoint_options.caller_runs_packet_adapters = !state->packets.empty();
         if (!options.resolver_program.empty()) {
             providers::SystemResolverOptions resolver_options;
@@ -494,6 +500,23 @@ engine::Status NativeClientRuntime::start() {
             }
             state->adapters.push_back(std::move(created).take_value());
         }
+        for (const auto& adapter : state->forwards) {
+            auto created = NativeForwardAdapter::create(
+                state->context, adapter,
+                [weak = std::weak_ptr<State>(state)]() -> std::shared_ptr<engine::SessionEngine> {
+                    const auto self = weak.lock();
+                    return self ? self->active_session() : nullptr;
+                },
+                state->options.forward,
+                [weak = std::weak_ptr<State>(state)](Status status) noexcept {
+                    if (const auto self = weak.lock()) self->stop(std::move(status));
+                });
+            if (!created.ok()) {
+                state->close();
+                return created.status();
+            }
+            state->forward_adapters.push_back(std::move(created).take_value());
+        }
     } catch (const std::bad_alloc&) {
         state->close();
         return Status(StatusCode::ResourceExhausted);
@@ -508,6 +531,15 @@ engine::Status NativeClientRuntime::start() {
 std::vector<boost::asio::ip::tcp::endpoint> NativeClientRuntime::socks5_endpoints() const {
     std::vector<boost::asio::ip::tcp::endpoint> endpoints;
     for (const auto& adapter : state_->adapters) endpoints.push_back(adapter->local_endpoint());
+    return endpoints;
+}
+
+std::vector<boost::asio::ip::tcp::endpoint> NativeClientRuntime::forward_endpoints() const {
+    std::vector<boost::asio::ip::tcp::endpoint> endpoints;
+    for (const auto& forward : state_->forward_adapters) {
+        const auto endpoint = forward->local_endpoint();
+        if (endpoint.port() != 0U) endpoints.push_back(endpoint);
+    }
     return endpoints;
 }
 

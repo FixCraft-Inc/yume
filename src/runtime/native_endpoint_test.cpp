@@ -44,8 +44,10 @@
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
 #include "runtime/native_client_runtime.hpp"
+#include "runtime/native_forward.hpp"
 #include "runtime/native_server_runtime.hpp"
 #include "runtime/native_socks5.hpp"
+#include <boost/asio/local/stream_protocol.hpp>
 #define YUME_TEST_ALIGNED_ALLOCATIONS 1
 #include "test_support/allocation_failure.hpp"
 
@@ -1315,16 +1317,18 @@ public:
     void on_open(StreamOpenContext, std::shared_ptr<StreamResponder>) override {
         throw std::runtime_error("SOCKS CONNECT omitted its destination");
     }
-    void async_route(AuthorizedRouteRequest, std::shared_ptr<RouteProvider>,
+    void async_route(AuthorizedRouteRequest request, std::shared_ptr<RouteProvider>,
                      std::shared_ptr<StreamResponder> stream,
                      AcceptanceCompletion completion) override {
         CHECK(accepted && !acceptance);
+        last_port = request.destination().port();
         acceptance = std::move(completion);
         accepted->set_value(std::move(stream));
         accepted.reset();
     }
     std::shared_ptr<std::promise<std::shared_ptr<StreamResponder>>> accepted;
     AcceptanceCompletion acceptance;
+    std::uint16_t last_port{0U};
 private:
     ProviderDescriptor descriptor_;
 };
@@ -1360,6 +1364,28 @@ void check_socks_reply(boost::asio::ip::tcp::socket& socket, std::uint8_t code) 
 void check_socket_closed(boost::asio::ip::tcp::socket& socket) {
     std::array<std::uint8_t, 1> byte{};
     CHECK(read_socket(socket, byte) == 0U);
+}
+
+std::string read_record_text(Runner& runner, const std::shared_ptr<StreamResponder>& stream) {
+    auto promise = std::make_shared<std::promise<Result<ReceivedRecord>>>();
+    auto future = promise->get_future();
+    runner.sync([&] {
+        stream->async_read({}, [promise](auto result) { promise->set_value(std::move(result)); });
+    });
+    auto record = take(await(future));
+    return {reinterpret_cast<const char*>(record.payload().bytes().data()), record.payload().size()};
+}
+
+void write_record_text(Runner& runner, const std::shared_ptr<StreamResponder>& stream,
+                       std::string text) {
+    auto promise = std::make_shared<std::promise<Status>>();
+    auto future = promise->get_future();
+    runner.sync([&] {
+        stream->async_write(take(Buffer::copy_from(
+            {reinterpret_cast<const std::byte*>(text.data()), text.size()}, text.size())), {},
+            [promise](Status status, std::size_t) { promise->set_value(std::move(status)); });
+    });
+    CHECK(await(future).ok());
 }
 
 // A SOCKS5 UDP datagram for an IPv4 destination.
@@ -1615,6 +1641,22 @@ void test_client_reconnect(const std::filesystem::path& kit) {
     await(replacement_ready);
     CHECK(second != first);
     request("after reconnect");
+    // The configured UNIX forward opens on the replacement session too.
+    CHECK(runner.sync([&] { return client->forward_endpoints().empty(); }));
+    {
+        auto accepted = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto opened = accepted->get_future();
+        runner.sync([&] { handler->accepted = accepted; });
+        boost::asio::local::stream_protocol::socket local(local_io);
+        local.connect(boost::asio::local::stream_protocol::endpoint(
+            (kit / "client/forward.sock").string()));
+        boost::asio::write(local, boost::asio::buffer("forwarded", 9U));
+        auto stream = await(opened);
+        CHECK(runner.sync([&] { return handler->last_port; }) == 2222U);
+        runner.sync([&] { std::exchange(handler->acceptance, {})(Status::success()); });
+        CHECK(read_record_text(runner, stream) == "forwarded");
+        runner.sync([&] { stream->close(Status(StatusCode::Closed)); });
+    }
     const NativeClientStatus replaced = client->status();
     CHECK(replaced.state == NativeClientState::Connected && replaced.sessions == 2U);
     CHECK(replaced.server_identity == connected.server_identity);
@@ -1628,6 +1670,7 @@ void test_client_reconnect(const std::filesystem::path& kit) {
         server->close();
     });
     CHECK(client->status().state == NativeClientState::Closed);
+    CHECK(!std::filesystem::exists(kit / "client/forward.sock"));
     CHECK(client->status().traffic.payload_bytes_sent == replaced.traffic.payload_bytes_sent);
     CHECK(status_on_context);
     // Connecting, Connected, then after the server ends the first session a
@@ -1810,6 +1853,136 @@ void test_socks5_accept_retry(bool fail_retry, bool sustained) {
     CHECK(runner.exceptions.load() == 0U && runner.context->poll() == 0U);
 }
 #endif
+
+// A forward turns each local connection into an OPEN on its service with its
+// fixed destination, then joins the two. Bytes sent before the peer accepts
+// wait in the socket. A refused or expired OPEN, or no session, closes the
+// local connection. The same holds for a UNIX socket listener.
+void test_forward_adapter(const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    using Local = boost::asio::local::stream_protocol;
+    Runner runner;
+    auto handler = std::make_shared<DelayedRouteHandler>();
+    auto client_handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = options.max_pending_starts = 1U;
+    options.route_provider = runner.sync([&] {
+        return take(yume::providers::AsioDirectRouteProvider::create(runner.context,
+            [](const auto&, const auto&) { return Status(StatusCode::PermissionDenied); }));
+    });
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
+            kit / "server", {{"echo", handler}, {"denied", handler}}, options));
+    });
+    options.route_provider.reset();
+    options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "client/yume.json"),
+            kit / "client", bindings(client_handler), options));
+    });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto server_session = take(await(accepting));
+    auto client_session = take(await(connecting));
+    NativeForwardLimits limits;
+    limits.open_timeout = 500ms;
+    const auto create = [&](const v1::ForwardAdapter& adapter, NativeSessionSource sessions) {
+        return runner.sync([&] {
+            return take(NativeForwardAdapter::create(runner.context, adapter, sessions, limits));
+        });
+    };
+    const NativeSessionSource active = [client_session] { return client_session; };
+    const v1::ForwardDestination destination{"127.0.0.1", 2222U};
+    auto forward = create(v1::ForwardAdapter("echo", v1::LoopbackListener{"127.0.0.1", 0U},
+                                             destination), active);
+    const auto endpoint = runner.sync([&] { return forward->local_endpoint(); });
+    CHECK(endpoint.port() != 0U);
+
+    boost::asio::io_context local_io;
+    const auto arm = [&] {
+        auto promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto opened = promise->get_future();
+        runner.sync([&] { handler->accepted = promise; });
+        return opened;
+    };
+    const auto accept_held = [&](Status status) {
+        runner.sync([&] {
+            auto acceptance = std::move(handler->acceptance);
+            if (acceptance) acceptance(std::move(status));
+        });
+    };
+    {
+        auto opened = arm();
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(endpoint);
+        boost::asio::write(local, boost::asio::buffer("early", 5U));
+        auto served = await(opened);
+        CHECK(runner.sync([&] { return handler->last_port; }) == destination.port);
+        accept_held(Status::success());
+        CHECK(read_record_text(runner, served) == "early");
+        write_record_text(runner, served, "reply");
+        local.non_blocking(true);
+        std::array<std::uint8_t, 5> reply{};
+        for (std::size_t offset = 0; offset < reply.size();) {
+            const auto read = read_socket(local, std::span(reply).subspan(offset));
+            CHECK(read != 0U);
+            offset += read;
+        }
+        CHECK(std::string(reply.begin(), reply.end()) == "reply");
+    }
+    {
+        // Held acceptance: the OPEN expires and the connection closes.
+        auto opened = arm();
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(endpoint);
+        (void)await(opened);
+        local.non_blocking(true);
+        check_socket_closed(local);
+        accept_held(Status(StatusCode::Cancelled));
+    }
+    auto denied = create(v1::ForwardAdapter("denied", v1::LoopbackListener{"127.0.0.1", 0U},
+                                            destination), active);
+    {
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(runner.sync([&] { return denied->local_endpoint(); }));
+        local.non_blocking(true);
+        check_socket_closed(local);
+    }
+    auto idle = create(v1::ForwardAdapter("echo", v1::LoopbackListener{"127.0.0.1", 0U},
+                                          destination),
+                       [] { return std::shared_ptr<SessionEngine>{}; });
+    {
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(runner.sync([&] { return idle->local_endpoint(); }));
+        local.non_blocking(true);
+        check_socket_closed(local);
+    }
+    std::string directory = "/tmp/yume-forward-XXXXXX";
+    CHECK(::mkdtemp(directory.data()) != nullptr);
+    const auto path = std::filesystem::path(directory) / "forward.sock";
+    auto local_forward = create(v1::ForwardAdapter("echo", v1::UnixListener{path.string()},
+                                                   destination), active);
+    {
+        auto opened = arm();
+        Local::socket local(local_io);
+        local.connect(Local::endpoint(path.string()));
+        boost::asio::write(local, boost::asio::buffer("unix", 4U));
+        auto served = await(opened);
+        accept_held(Status::success());
+        CHECK(read_record_text(runner, served) == "unix");
+    }
+    runner.sync([&] {
+        for (const auto& adapter : {forward, denied, idle, local_forward}) adapter->close();
+        client->close();
+        server->close();
+        server_session.reset();
+        client_session.reset();
+    });
+    CHECK(!std::filesystem::exists(path));
+    std::filesystem::remove(directory);
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
 
 void test_socks5_deadlines(const std::filesystem::path& kit) {
     Runner runner;
@@ -2364,6 +2537,7 @@ int main(int argc, char** argv) {
         test_socks5_deadlines(argv[1]);
         test_socks5_udp_associate(argv[1]);
         test_socks5_udp_backlog(argv[1]);
+        test_forward_adapter(argv[1]);
         test_destination_route<boost::asio::ip::tcp>(argv[1], false);
         test_destination_route<boost::asio::ip::tcp>(argv[1], true);
         test_destination_route<boost::asio::ip::udp>(argv[1], true);

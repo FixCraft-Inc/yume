@@ -326,6 +326,19 @@ resolver and observes socket creation while running the production runtime.
 Refused sets open no sockets, return SOCKS5 reply 0x02, and leave the session
 usable. Asynchronous permission refusal uses the existing unauthorized CLOSE
 code instead of reporting a handler failure.
+A client `forward` adapter turns each connection to its loopback TCP port or
+UNIX socket into an authenticated byte-stream OPEN on its service, carrying its
+optional fixed destination, and joins them with the same route bridge. SOCKS5
+and forwards share `LocalListener`, which owns the accept retry and pause
+rules and the UNIX socket checks: a directory owned by the user and closed to
+others' writes, a 0600 socket file, peer credentials of the same user,
+replacement of a stale file and removal on close. The accepted-channel owner
+adopts UNIX stream sockets with the TCP channel implementation and capacity.
+The endpoint test checks an accepted forward in both directions with its
+destination and early payload, OPEN expiry, a refused service, no active
+session and a UNIX listener. The client runtime test forwards through a
+configured UNIX socket after a reconnect. Unit tests cover the UNIX path rules
+and channel adoption.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and

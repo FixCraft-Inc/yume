@@ -716,8 +716,9 @@ Implemented as separate opt-in provider candidates with focused tests:
   promotion seam for an already-admitted live H2 connection;
 - `yume_asio_tcp_byte_channel_provider` supplies bounded client DNS/connect,
   socket protection, ordered operations, cancellation, and TCP half-close.
-  `AsioTcpAcceptedChannelOwner` adopts connected server sockets through the
-  same bounded channel implementation; it does not own a listener; and
+  `AsioTcpAcceptedChannelOwner` adopts connected TCP or UNIX stream sockets
+  through the same bounded channel implementation; it does not own a
+  listener; and
 - `yume_asio_direct_route_provider` supplies bounded TCP and connected-UDP
   egress behind the dependency-pure route-handler contract, with mandatory
   numeric-destination policy before socket creation and using the same

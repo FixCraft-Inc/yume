@@ -19,9 +19,11 @@ man-manual:  YUME Manual
 
 **yume** is the native YUME Transport Protocol 1 client. It reads a schema-1
 client configuration, maintains an authenticated session to man:yumed(8),
-and runs the configured SOCKS5 listeners. SOCKS5 CONNECT carries TCP streams;
-UDP ASSOCIATE carries datagrams through a configured packet service. The
-server enforces each service's destination policy.
+and runs the configured SOCKS5 and forward listeners. SOCKS5 CONNECT carries TCP streams;
+UDP ASSOCIATE carries datagrams through a configured packet service. A forward
+turns each connection to its loopback port or UNIX socket into a stream on its
+service, optionally to a fixed destination. The server enforces each service's
+destination policy.
 
 A Linux packet adapter connects a named service to a managed IP/TUN
 interface and owns its addresses, routes and optional per-link DNS. The client
@@ -32,7 +34,7 @@ before deployment.
 
 ## EXAMPLES
 
-Validate an existing client kit, then start its configured SOCKS5 listeners:
+Validate an existing client kit, then start its configured listeners:
 
 @code bash
 yume --config /path/to/client.json --validate

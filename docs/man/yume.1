@@ -21,9 +21,11 @@ is the native YUME Transport Protocol 1 client.
 It reads a schema-1 client configuration, maintains an authenticated
 session to
 .BR yumed (8),
-and runs the configured SOCKS5 listeners.
+and runs the configured SOCKS5 and forward listeners.
 SOCKS5 CONNECT carries TCP streams; UDP ASSOCIATE carries datagrams
 through a configured packet service.
+A forward turns each connection to its loopback port or UNIX socket into
+a stream on its service, optionally to a fixed destination.
 The server enforces each service's destination policy.
 .PP
 A Linux packet adapter connects a named service to a managed IP/TUN
@@ -93,8 +95,7 @@ Diagnostics go to standard error; help and version output go to standard
 output.
 Argument errors also print usage on standard error.
 .SH EXAMPLES
-Validate an existing client kit, then start its configured SOCKS5
-listeners:
+Validate an existing client kit, then start its configured listeners:
 .PP
 .nf
 yume --config /path/to/client.json --validate

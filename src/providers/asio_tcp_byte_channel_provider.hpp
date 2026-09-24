@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/local/stream_protocol.hpp>
 
 #include "engine/byte_channel.hpp"
 #include "providers/asio_execution_context.hpp"
@@ -33,6 +34,8 @@ inline constexpr std::uint32_t kAsioTcpByteChannelProviderApiVersion = 1U;
 // dispatch. Keep the context running until channel and operation cleanup drains.
 using AsioTcpSocket = boost::asio::basic_stream_socket<
     boost::asio::ip::tcp, AsioExecutionContext::Executor>;
+using AsioUnixSocket = boost::asio::basic_stream_socket<
+    boost::asio::local::stream_protocol, AsioExecutionContext::Executor>;
 
 // Provider-local bounds apply even when this source-level provider is embedded
 // without the included runtime. Queue byte limits include every accepted
@@ -58,10 +61,11 @@ struct AsioTcpByteChannelLimits final : AsioTcpChannelLimits {
     std::chrono::milliseconds connect_timeout{10'000};
 };
 
-// Bounded ownership for connected sockets accepted by a server front door.
-// Adopted channels use the same queue, cancellation, half-close, and cleanup
-// implementation as client-created channels. The owner contains no listener,
-// remote-host, resolver, or connection policy.
+// Bounded ownership for connected TCP or UNIX stream sockets that a listener
+// accepted or a caller connected. Adopted channels use the same queue,
+// cancellation, half-close, and cleanup implementation as client-created
+// channels. The owner contains no listener, remote-host, resolver, or
+// connection policy.
 // Channels retain their own lifetime after owner destruction, which cancels
 // current operations without closing those channels.
 class AsioTcpAcceptedChannelOwner final {
@@ -81,6 +85,8 @@ public:
     // the execution context when the socket has no concurrent users.
     engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(
         AsioTcpSocket socket);
+    engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(
+        AsioUnixSocket socket);
 
     // Cancels current channel operations without closing the channels or
     // preventing later adoption.

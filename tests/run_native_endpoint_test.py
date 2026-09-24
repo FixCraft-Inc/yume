@@ -110,6 +110,11 @@ def run(binary: Path, openssl: Path) -> None:
                     socks_reservation.bind(("127.0.0.1", 0))
                     unsupported["adapters"][0]["listen_port"] = socks_reservation.getsockname()[1]
                 unsupported["endpoint"] = dict(config["endpoint"], connect_address="127.0.0.1")
+                # A UNIX forward needs no port reservation: the kit directory is private.
+                unsupported["adapters"].append({
+                    "kind": "forward", "service": "echo",
+                    "listen_path": str(path.with_name("forward.sock")),
+                    "destination": {"host": "127.0.0.1", "port": 2222}})
                 path.with_name("runtime-client.json").write_text(json.dumps(unsupported), encoding="utf-8")
             if config["role"] == "server":
                 config["limits"]["max_queued_bytes"] = 64 * 1024 * 1024

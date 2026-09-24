@@ -21,6 +21,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Local forwards.** A client `forward` adapter listens on a loopback TCP
+  port or a UNIX socket and turns each connection into a stream on its
+  service, optionally to a fixed destination that the server's `direct_tcp`
+  policy checks. This replaces transport v2's `-L` forwards. Their TCP
+  listeners were not limited to loopback, while native forwards are. A UNIX
+  socket only accepts the client's own user. UDP forwards are not ported yet.
 - **Per-client speed limits.** A server's `limits.max_egress_mbps` caps the
   stream payload the daemon relays, and clients share it by the `weight` in
   their authorized-keys entries. Every served stream is paced in both

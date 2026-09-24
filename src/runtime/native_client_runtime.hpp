@@ -21,6 +21,7 @@
 #include "engine/session_engine.hpp"
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "runtime/native_forward.hpp"
 #include "runtime/native_socks5.hpp"
 
 namespace yume::runtime {
@@ -61,6 +62,7 @@ struct NativeClientRuntimeOptions final {
     // and reconnects at once. A shorter session counts as a failed attempt.
     std::chrono::milliseconds reconnect_max{30'000};
     NativeSocks5Limits socks5;
+    NativeForwardLimits forward;
     // SystemResolver helper program for a transport host that is a name.
     // Empty leaves such a host unresolvable, so creation fails.
     std::filesystem::path resolver_program;
@@ -70,8 +72,8 @@ struct NativeClientRuntimeOptions final {
 };
 
 // Runs one schema-1 client configuration: one authenticated session, replaced
-// when the endpoint reports closure, and the configured SOCKS5 and managed TUN
-// adapters over it. Failed attempts and short sessions use exponential backoff.
+// when the endpoint reports closure, and the configured SOCKS5, forward and
+// managed TUN adapters over it. Failed attempts and short sessions use exponential backoff.
 // Server-initiated OPENs are refused. Each TUN opens one named packet stream;
 // its addresses/routes/DNS remain installed during reconnects and are removed
 // after packet I/O drains on final close. The transport dial address must be
@@ -79,7 +81,7 @@ struct NativeClientRuntimeOptions final {
 //
 // All calls run on the supplied single-runner context. The caller closes the
 // runtime, calls finish() and drains. Reports carry no secrets. on_stopped runs
-// once after an unrecoverable reconnect or SOCKS listener failure closes the
+// once after an unrecoverable reconnect or local listener failure closes the
 // runtime, or if managed network cleanup fails. Ordinary connection failures
 // retry; a successful explicit close does not notify.
 class NativeClientRuntime final {
@@ -99,9 +101,11 @@ public:
     NativeClientRuntime& operator=(const NativeClientRuntime&) = delete;
     ~NativeClientRuntime() noexcept;
 
-    // Creates managed TUNs and SOCKS5 listeners, then starts the first session.
+    // Creates managed TUNs and local listeners, then starts the first session.
     engine::Status start();
     std::vector<boost::asio::ip::tcp::endpoint> socks5_endpoints() const;
+    // TCP forward listeners' endpoints. UNIX forwards have none.
+    std::vector<boost::asio::ip::tcp::endpoint> forward_endpoints() const;
     // Callable from any thread, including after close.
     NativeClientStatus status() const;
     void close() noexcept;

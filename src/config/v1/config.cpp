@@ -663,14 +663,40 @@ const Service& RequireService(const std::vector<Service>& services,
     return *found;
 }
 
+// Absolute, without empty, "." or ".." components or a trailing slash, and
+// free of control bytes, so the path names exactly one socket file.
+bool IsNormalizedAbsolutePath(std::string_view path) {
+    if (path.size() < 2U || path.front() != '/' || path.back() == '/') {
+        return false;
+    }
+    if (std::any_of(path.begin(), path.end(), [](char ch) {
+            const auto byte = static_cast<unsigned char>(ch);
+            return byte < 0x20U || byte == 0x7fU;
+        })) {
+        return false;
+    }
+    std::size_t start = 1U;
+    for (;;) {
+        const std::size_t end = path.find('/', start);
+        const std::string_view component = path.substr(
+            start, (end == std::string_view::npos ? path.size() : end) - start);
+        if (component.empty() || component == "." || component == "..") {
+            return false;
+        }
+        if (end == std::string_view::npos) return true;
+        start = end + 1U;
+    }
+}
+
 AdapterKind ParseAdapterKind(const Json& value, const std::string& pointer) {
     const auto& kind = ReadString(value, pointer, 24);
     if (kind == "socks5") return AdapterKind::Socks5;
     if (kind == "packet") return AdapterKind::Packet;
     if (kind == "direct_tcp") return AdapterKind::DirectTcp;
     if (kind == "direct_udp") return AdapterKind::DirectUdp;
+    if (kind == "forward") return AdapterKind::Forward;
     Fail(pointer,
-         "must be 'socks5', 'packet', 'direct_tcp', or 'direct_udp'");
+         "must be 'socks5', 'packet', 'direct_tcp', 'direct_udp', or 'forward'");
 }
 
 std::string ParseInterfaceName(const Json& value, const std::string& pointer) {
@@ -846,7 +872,9 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
     }
     std::vector<Adapter> parsed;
     parsed.reserve(adapters.size());
-    std::set<std::pair<std::string, std::uint16_t>> socks_listeners;
+    // SOCKS5 and forward listeners share the local port space.
+    std::set<std::pair<std::string, std::uint16_t>> local_listeners;
+    std::set<std::string> unix_listeners;
     std::set<std::string> packet_interfaces;
     std::set<std::pair<AdapterKind, std::string>> direct_services;
     for (std::size_t index = 0; index < adapters.size(); ++index) {
@@ -887,8 +915,8 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
                 JoinPointer(pointer, "listen_port");
             const std::uint16_t port =
                 ParsePort(adapter.at("listen_port"), port_pointer);
-            if (!socks_listeners.emplace(listen, port).second) {
-                Fail(port_pointer, "duplicate SOCKS5 listen address and port");
+            if (!local_listeners.emplace(listen, port).second) {
+                Fail(port_pointer, "duplicate local listen address and port");
             }
             std::optional<std::string> udp_service;
             if (adapter.contains("udp_service")) {
@@ -901,6 +929,86 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             }
             parsed.emplace_back(
                 Socks5Adapter(service, listen, port, std::move(udp_service)));
+            continue;
+        }
+
+        if (kind == AdapterKind::Forward) {
+            CheckClosedObject(adapter, pointer,
+                              {"kind", "service", "listen_address", "listen_port",
+                               "listen_path", "destination"},
+                              {"kind", "service"});
+            if (role != Role::Client) {
+                Fail(kind_pointer, "forward adapter is client-only");
+            }
+            const std::string service_pointer = JoinPointer(pointer, "service");
+            const std::string service =
+                ParseServiceName(adapter.at("service"), service_pointer);
+            RequireService(services, service, ServiceKind::Stream,
+                           service_pointer);
+            const std::string address_pointer =
+                JoinPointer(pointer, "listen_address");
+            const std::string port_pointer = JoinPointer(pointer, "listen_port");
+            const std::string path_pointer = JoinPointer(pointer, "listen_path");
+            ForwardListener listener = UnixListener{};
+            if (adapter.contains("listen_path")) {
+                if (adapter.contains("listen_address")) {
+                    Fail(address_pointer, "must be absent with listen_path");
+                }
+                if (adapter.contains("listen_port")) {
+                    Fail(port_pointer, "must be absent with listen_path");
+                }
+                const auto& path = ReadString(adapter.at("listen_path"),
+                                              path_pointer,
+                                              kMaxUnixSocketPathBytes);
+                if (!IsNormalizedAbsolutePath(path)) {
+                    Fail(path_pointer, "must be a normalized absolute path");
+                }
+                if (!unix_listeners.insert(path).second) {
+                    Fail(path_pointer, "duplicate local listen path");
+                }
+                listener = UnixListener{path};
+            } else {
+                if (!adapter.contains("listen_address")) {
+                    Fail(address_pointer,
+                         "required key is missing without listen_path");
+                }
+                if (!adapter.contains("listen_port")) {
+                    Fail(port_pointer,
+                         "required key is missing without listen_path");
+                }
+                const auto& listen =
+                    ReadString(adapter.at("listen_address"), address_pointer, 64);
+                if (!IsLoopbackAddress(listen)) {
+                    Fail(address_pointer,
+                         "forward listener must be 127.0.0.1 or ::1");
+                }
+                const std::uint16_t port =
+                    ParsePort(adapter.at("listen_port"), port_pointer);
+                if (!local_listeners.emplace(listen, port).second) {
+                    Fail(port_pointer, "duplicate local listen address and port");
+                }
+                listener = LoopbackListener{listen, port};
+            }
+            std::optional<ForwardDestination> destination;
+            if (adapter.contains("destination")) {
+                const std::string destination_pointer =
+                    JoinPointer(pointer, "destination");
+                const auto& value = adapter.at("destination");
+                CheckClosedObject(value, destination_pointer, {"host", "port"},
+                                  {"host", "port"});
+                const std::string host_pointer =
+                    JoinPointer(destination_pointer, "host");
+                const auto& host =
+                    ReadString(value.at("host"), host_pointer, kMaxHostBytes);
+                if (!IsClientHost(host)) {
+                    Fail(host_pointer, "must be an IP literal or DNS host name");
+                }
+                destination = ForwardDestination{
+                    host, ParsePort(value.at("port"),
+                                    JoinPointer(destination_pointer, "port"))};
+            }
+            parsed.emplace_back(ForwardAdapter(service, std::move(listener),
+                                               std::move(destination)));
             continue;
         }
 

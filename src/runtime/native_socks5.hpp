@@ -17,6 +17,7 @@
 #include "engine/session_engine.hpp"
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "runtime/native_session_source.hpp"
 
 namespace yume::runtime {
 
@@ -41,9 +42,6 @@ struct NativeSocks5Limits final {
     // are dropped for this long before a new OPEN is tried.
     std::chrono::milliseconds udp_retry_delay{1'000};
 };
-
-// Returns the current active session, or null when none is available.
-using NativeSessionSource = std::function<std::shared_ptr<engine::SessionEngine>()>;
 
 // One loopback SOCKS5 listener offering only the no-authentication method.
 //

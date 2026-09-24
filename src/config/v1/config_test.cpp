@@ -854,6 +854,80 @@ void TestDirectAdapterDestinations() {
           "direct UDP destinations were not retained");
 }
 
+Json ForwardAdapterDocument(Json listener) {
+    Json adapter = {{"kind", "forward"}, {"service", "tcp"}};
+    adapter.update(listener);
+    return adapter;
+}
+
+// A client forward listens on loopback TCP or an absolute UNIX path and may
+// name a fixed TCP destination.
+void TestForwardAdapters() {
+    Json document = ClientDocument();
+    document["adapters"].push_back(ForwardAdapterDocument(
+        {{"listen_address", "::1"}, {"listen_port", 2222},
+         {"destination", {{"host", "git.example.net"}, {"port", 22}}}}));
+    document["adapters"].push_back(ForwardAdapterDocument(
+        {{"listen_path", "/run/user/1000/yume/chat.sock"}}));
+    const Config parsed = Parse(document);
+    const auto* tcp = std::get_if<ForwardAdapter>(&parsed.adapters()[1]);
+    Check(tcp != nullptr && tcp->service() == "tcp", "the TCP forward was not retained");
+    const auto* loopback = std::get_if<LoopbackListener>(&tcp->listener());
+    Check(loopback != nullptr && loopback->address == "::1" && loopback->port == 2222,
+          "the TCP forward listener changed");
+    Check(tcp->destination() && tcp->destination()->host == "git.example.net" &&
+              tcp->destination()->port == 22,
+          "the forward destination changed");
+    const auto* local = std::get_if<ForwardAdapter>(&parsed.adapters()[2]);
+    Check(local != nullptr && !local->destination(), "the UNIX forward was not retained");
+    const auto* path = std::get_if<UnixListener>(&local->listener());
+    Check(path != nullptr && path->path == "/run/user/1000/yume/chat.sock",
+          "the UNIX forward path changed");
+
+    const auto rejects = [](Json adapter, const std::string& suffix, std::string_view detail) {
+        Json candidate = ClientDocument();
+        candidate["adapters"].push_back(std::move(adapter));
+        ExpectError(candidate, "/adapters/1" + suffix, detail);
+    };
+    rejects(ForwardAdapterDocument(Json::object()), "/listen_address", "required key");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}}), "/listen_port",
+            "required key");
+    rejects(ForwardAdapterDocument({{"listen_address", "0.0.0.0"}, {"listen_port", 2222}}),
+            "/listen_address", "127.0.0.1 or ::1");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 1080}}),
+            "/listen_port", "duplicate local listen");
+    rejects(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}, {"listen_port", 22}}),
+            "/listen_port", "absent with listen_path");
+    for (const char* path : {"relative.sock", "/", "/run/", "/run//a.sock", "/run/./a.sock",
+                             "/run/../a.sock", "/run/a\nb.sock"}) {
+        rejects(ForwardAdapterDocument({{"listen_path", path}}), "/listen_path",
+                "normalized absolute path");
+    }
+    rejects(ForwardAdapterDocument({{"listen_path", "/" + std::string(107U, 'a')}}),
+            "/listen_path", "at most 107 bytes");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 2222},
+                                    {"destination", {{"host", "bad host"}, {"port", 22}}}}),
+            "/destination/host", "IP literal or DNS host name");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 2222},
+                                    {"destination", {{"host", "example.net"}}}}),
+            "/destination/port", "required key");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 2222},
+                                    {"fallback", true}}),
+            "/fallback", "unknown key");
+    Json packet_service = ForwardAdapterDocument({{"listen_path", "/run/a.sock"}});
+    packet_service["service"] = "packet";
+    rejects(packet_service, "/service", "");
+
+    Json twice = ClientDocument();
+    twice["adapters"].push_back(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}}));
+    twice["adapters"].push_back(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}}));
+    ExpectError(twice, "/adapters/2/listen_path", "duplicate local listen path");
+
+    Json server = ServerDocument();
+    server["adapters"].push_back(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}}));
+    ExpectError(server, "/adapters/2/kind", "client-only");
+}
+
 // The egress rate is optional and server-only.
 void TestEgressRate() {
     Check(!Parse(ServerDocument()).limits().max_egress_mbps(),
@@ -1054,6 +1128,7 @@ int main(int argc, char** argv) {
         TestAdapterValidation();
     TestDirectAdapterDestinations();
         TestResourceLimits();
+        TestForwardAdapters();
         TestEgressRate();
         test_managed_tun_network();
         TestTextBoundsAndSyntax();

@@ -286,6 +286,16 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                 say(role, "SOCKS5 on " + endpoint.address().to_string() + " port " +
                               std::to_string(endpoint.port()));
             }
+            for (const auto& endpoint : client->forward_endpoints()) {
+                say(role, "forward on " + endpoint.address().to_string() + " port " +
+                              std::to_string(endpoint.port()));
+            }
+            for (const auto& adapter : config.adapters()) {
+                const auto* forward = std::get_if<config::v1::ForwardAdapter>(&adapter);
+                const auto* local = forward
+                    ? std::get_if<config::v1::UnixListener>(&forward->listener()) : nullptr;
+                if (local) say(role, "forward on " + local->path);
+            }
         } catch (...) {
             say(role, "startup failed");
             stop(kExitFailure);

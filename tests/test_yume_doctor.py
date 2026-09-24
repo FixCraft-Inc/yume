@@ -343,9 +343,57 @@ class YumeDoctorTests(unittest.TestCase):
         result = self.run_doctor(config_path)
         self.assertEqual(result.returncode, 1)
         self.assertIn(
-            f"/adapters/{duplicate}/listen_port: duplicate SOCKS5 listen address and port",
+            f"/adapters/{duplicate}/listen_port: duplicate local listen address and port",
             result.stderr,
         )
+
+    def test_forward_adapters_match_the_native_parser(self) -> None:
+        config_path = self.case / "client/yume.json"
+        original = config_path.read_text()
+        socks = json.loads(original)["adapters"][0]
+        valid = (
+            {"kind": "forward", "service": "tcp", "listen_address": "::1",
+             "listen_port": 2222, "destination": {"host": "git.example.net", "port": 22}},
+            {"kind": "forward", "service": "tcp",
+             "listen_path": "/run/user/1000/yume/chat.sock"},
+        )
+        client = json.loads(original)
+        client["adapters"].extend(valid)
+        config_path.write_text(json.dumps(client))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        base = {"kind": "forward", "service": "tcp"}
+        invalid = (
+            ({}, "listen_address", "required key is missing"),
+            ({"listen_address": "0.0.0.0", "listen_port": 2222}, "listen_address", "loopback"),
+            ({"listen_address": socks["listen_address"], "listen_port": socks["listen_port"]},
+             "listen_port", "duplicate local listen address and port"),
+            ({"listen_path": "/run/a.sock", "listen_port": 22}, "listen_port",
+             "absent with listen_path"),
+            ({"listen_path": "/run/../a.sock"}, "listen_path", "normalized absolute path"),
+            ({"listen_path": "/" + "a" * 107}, "listen_path", ""),
+            ({"listen_path": "/run/a.sock", "destination": {"host": "bad host", "port": 22}},
+             "destination/host", "IP literal or DNS host name"),
+            ({"listen_path": "/run/a.sock", "destination": {"host": "example.net"}},
+             "destination/port", "required key is missing"),
+        )
+        for extra, key, message in invalid:
+            client = json.loads(original)
+            client["adapters"].append(dict(base, **extra))
+            config_path.write_text(json.dumps(client))
+            result = self.run_doctor(config_path)
+            self.assertEqual(result.returncode, 1, extra)
+            self.assertIn(f"/adapters/1/{key}", result.stderr)
+            self.assertIn(message, result.stderr)
+        config_path.write_text(original)
+        server_path = self.case / "server/yumed.json"
+        server = json.loads(server_path.read_text())
+        server["adapters"].append(dict(base, listen_path="/run/a.sock"))
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("client-only", result.stderr)
 
     def test_symlink_and_non_regular_credentials_are_rejected(self) -> None:
         credential = self.case / "client/credentials/client-access.psk"

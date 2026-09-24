@@ -52,6 +52,8 @@ MIN_WEIGHT = 0.1
 MAX_WEIGHT = 100.0
 MAX_EGRESS_MBPS = 1_000_000
 MAX_ADMIN_IDENTITIES = 4096
+# A UNIX socket path must fit sockaddr_un with its terminator.
+MAX_UNIX_SOCKET_PATH_BYTES = 107
 SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?\Z")
 SERVICE_NAME = re.compile(
     r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?"
@@ -514,6 +516,45 @@ def _validate_tun_network(value: Any, pointer: str, mtu: int) -> None:
         _fail(f"{pointer}/dns", "DNS servers and routing domains must both be empty or both supplied")
 
 
+def _normalized_absolute_path(path: str) -> bool:
+    if len(path) < 2 or not path.startswith("/") or path.endswith("/"):
+        return False
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path):
+        return False
+    return all(part not in {"", ".", ".."} for part in path[1:].split("/"))
+
+
+def _validate_forward_listener(
+    adapter: dict[str, Any],
+    pointer: str,
+    local_listeners: set[tuple[str, int]],
+    unix_listeners: set[str],
+) -> None:
+    if "listen_path" in adapter:
+        for key in ("listen_address", "listen_port"):
+            if key in adapter:
+                _fail(f"{pointer}/{key}", "must be absent with listen_path")
+        path = _string(
+            adapter["listen_path"], f"{pointer}/listen_path", MAX_UNIX_SOCKET_PATH_BYTES
+        )
+        if not _normalized_absolute_path(path):
+            _fail(f"{pointer}/listen_path", "must be a normalized absolute path")
+        if path in unix_listeners:
+            _fail(f"{pointer}/listen_path", "duplicate local listen path")
+        unix_listeners.add(path)
+        return
+    for key in ("listen_address", "listen_port"):
+        if key not in adapter:
+            _fail(f"{pointer}/{key}", "required key is missing without listen_path")
+    listen_address = _string(adapter["listen_address"], f"{pointer}/listen_address", 64)
+    if listen_address not in {"127.0.0.1", "::1"}:
+        _fail(f"{pointer}/listen_address", "must be a loopback address")
+    listen_port = _integer(adapter["listen_port"], f"{pointer}/listen_port", 1, 65535)
+    if (listen_address, listen_port) in local_listeners:
+        _fail(f"{pointer}/listen_port", "duplicate local listen address and port")
+    local_listeners.add((listen_address, listen_port))
+
+
 def _validate_adapters(
     value: Any, role: str, services: dict[tuple[str, str], int]
 ) -> None:
@@ -521,7 +562,9 @@ def _validate_adapters(
         _fail("/adapters", "must be an array")
     if len(value) > MAX_ADAPTERS:
         _fail("/adapters", f"must contain at most {MAX_ADAPTERS} adapters")
-    socks_listeners: set[tuple[str, int]] = set()
+    # SOCKS5 and forward listeners share the local port space.
+    local_listeners: set[tuple[str, int]] = set()
+    unix_listeners: set[str] = set()
     packet_interfaces: set[str] = set()
     direct_services: set[tuple[str, str]] = set()
     for index, item in enumerate(value):
@@ -531,7 +574,7 @@ def _validate_adapters(
         if "kind" not in item:
             _fail(f"{pointer}/kind", "required key is missing")
         kind = _string(item["kind"], f"{pointer}/kind", 24)
-        if kind not in {"socks5", "packet", "direct_tcp", "direct_udp"}:
+        if kind not in {"socks5", "packet", "direct_tcp", "direct_udp", "forward"}:
             _fail(f"{pointer}/kind", "unsupported adapter kind")
         if kind == "socks5":
             adapter = _closed_object(
@@ -550,12 +593,12 @@ def _validate_adapters(
             listen_port = _integer(
                 adapter["listen_port"], f"{pointer}/listen_port", 1, 65535
             )
-            if (listen_address, listen_port) in socks_listeners:
+            if (listen_address, listen_port) in local_listeners:
                 _fail(
                     f"{pointer}/listen_port",
-                    "duplicate SOCKS5 listen address and port",
+                    "duplicate local listen address and port",
                 )
-            socks_listeners.add((listen_address, listen_port))
+            local_listeners.add((listen_address, listen_port))
             if "udp_service" in adapter:
                 # UDP ASSOCIATE opens this packet service. Without it the
                 # adapter refuses UDP ASSOCIATE.
@@ -571,6 +614,29 @@ def _validate_adapters(
                     )
                 if (udp_service, "packet") not in services:
                     _fail(f"{pointer}/udp_service", "requires a packet service")
+            required_kind = "stream"
+        elif kind == "forward":
+            adapter = _closed_object(
+                item,
+                pointer,
+                {"kind", "service", "listen_address", "listen_port", "listen_path",
+                 "destination"},
+                {"kind", "service"},
+            )
+            if role != "client":
+                _fail(f"{pointer}/kind", "forward adapter is client-only")
+            _validate_forward_listener(adapter, pointer, local_listeners, unix_listeners)
+            if "destination" in adapter:
+                # Each stream names this TCP destination. The server's
+                # direct_tcp destinations decide whether it is reachable.
+                destination = _closed_object(
+                    adapter["destination"], f"{pointer}/destination", {"host", "port"}
+                )
+                host = _string(destination["host"], f"{pointer}/destination/host", 253)
+                if not _valid_host(host):
+                    _fail(f"{pointer}/destination/host",
+                          "must be an IP literal or DNS host name")
+                _integer(destination["port"], f"{pointer}/destination/port", 1, 65535)
             required_kind = "stream"
         elif kind == "packet":
             adapter = _closed_object(

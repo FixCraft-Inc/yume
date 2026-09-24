@@ -128,6 +128,28 @@ Keep `MemoryMax` above expected session, socket, TLS and library memory.
 Too tight a ceiling lets the kernel terminate the daemon instead of the daemon
 refusing work.
 
+## Forward a local port
+
+A client `forward` adapter gives a program without SOCKS5 support one fixed
+path through the tunnel. Add it to the client's `adapters`:
+
+```json
+{
+  "kind": "forward",
+  "service": "tcp",
+  "listen_address": "127.0.0.1",
+  "listen_port": 2222,
+  "destination": {"host": "git.example.net", "port": 22}
+}
+```
+
+Every connection to 127.0.0.1:2222 becomes a stream to git.example.net port
+22, which the server's `direct_tcp` destinations must permit. To keep the
+listener away from other local users, use `listen_path` with a socket path in
+a directory only this user can write, such as `$XDG_RUNTIME_DIR/yume/git.sock`,
+instead of an address and port. `yume-doctor` checks the adapter, and `yume`
+reports a directory with the wrong owner or mode at startup.
+
 ## Name resolution
 
 The client resolves a server host that is a name, and the daemon resolves the

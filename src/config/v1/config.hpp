@@ -83,14 +83,43 @@ private:
     std::string path_;
 };
 
+// A SOCKS5 proxy that the client reaches its server through. The proxy
+// resolves host, or connects to connect_address when that is set. TLS and
+// admission still authenticate host.
+class Socks5Proxy final {
+public:
+    Socks5Proxy(std::string address,
+                std::uint16_t port,
+                std::optional<FileReference> credentials)
+        : address_(std::move(address)),
+          port_(port),
+          credentials_(std::move(credentials)) {}
+
+    // An IP literal. The client never resolves the proxy's own name.
+    const std::string& address() const noexcept { return address_; }
+    std::uint16_t port() const noexcept { return port_; }
+    // A protected file: the username on the first line and the password on
+    // the second. Without it the client offers no authentication.
+    const std::optional<FileReference>& credentials() const noexcept {
+        return credentials_;
+    }
+
+private:
+    std::string address_;
+    std::uint16_t port_;
+    std::optional<FileReference> credentials_;
+};
+
 class ClientEndpoint final {
 public:
     ClientEndpoint(std::string host,
                    std::uint16_t port,
-                   std::optional<std::string> connect_address)
+                   std::optional<std::string> connect_address,
+                   std::optional<Socks5Proxy> socks5_proxy = std::nullopt)
         : host_(std::move(host)),
           port_(port),
-          connect_address_(std::move(connect_address)) {}
+          connect_address_(std::move(connect_address)),
+          socks5_proxy_(std::move(socks5_proxy)) {}
 
     const std::string& host() const noexcept { return host_; }
     std::uint16_t port() const noexcept { return port_; }
@@ -99,11 +128,22 @@ public:
     const std::optional<std::string>& connect_address() const noexcept {
         return connect_address_;
     }
+    const std::optional<Socks5Proxy>& socks5_proxy() const noexcept {
+        return socks5_proxy_;
+    }
+    // Where the client's own TCP connection goes: the proxy when one is set,
+    // else connect_address, else host. A managed TUN keeps it out of the
+    // tunnel.
+    const std::string& first_hop() const noexcept {
+        if (socks5_proxy_) return socks5_proxy_->address();
+        return connect_address_ ? *connect_address_ : host_;
+    }
 
 private:
     std::string host_;
     std::uint16_t port_;
     std::optional<std::string> connect_address_;
+    std::optional<Socks5Proxy> socks5_proxy_;
 };
 
 class ServerEndpoint final {

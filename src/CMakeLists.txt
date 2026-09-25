@@ -771,13 +771,15 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
             PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
             PRIVATE yume_native_credentials yume_ytp1_front_door yume_ytp1_openssl_security
                 yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
-                yume_direct_route_handler yume_native_egress_policy yume_egress_pacing Boost::system)
+                yume_direct_route_handler yume_native_egress_policy yume_egress_pacing
+                yume_socks5_upstream Boost::system)
         yume_apply_perf_opts(yume_native_endpoint)
         yume_assert_exact_link_dependencies(yume_native_endpoint
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context yume_asio_tcp_byte_channel_provider
             yume_native_credentials yume_ytp1_front_door yume_ytp1_openssl_security
             yume_ytp1_h2_carrier yume_ytp1_tls13_secure_channel yume_cover_profile
-            yume_direct_route_handler yume_native_egress_policy yume_egress_pacing Boost::system)
+            yume_direct_route_handler yume_native_egress_policy yume_egress_pacing
+            yume_socks5_upstream Boost::system)
 
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET yume_asio_direct_route_provider)
             find_package(PkgConfig REQUIRED)
@@ -1013,7 +1015,8 @@ if(YUME_BUILD_SHARED_ABI)
         # Every archive absorbed into libyume must be PIC, hidden and non-LTO,
         # including the whole native chain behind the schema-1 backend.
         foreach(_yume_absorbed IN ITEMS
-                yume_embed_ytp1 yume_native_endpoint yume_native_egress_policy yume_native_credentials
+                yume_embed_ytp1 yume_native_endpoint yume_native_egress_policy yume_egress_lists
+                yume_native_credentials yume_socks5_upstream
                 yume_egress_pacing yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
                 yume_asio_execution_context yume_asio_tcp_byte_channel_provider yume_system_resolver
                 yume_child_process

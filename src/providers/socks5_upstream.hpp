@@ -12,34 +12,12 @@
 #include <optional>
 #include <string>
 
+#include "common/socks5_credentials.hpp"
 #include "engine/byte_channel.hpp"
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
 
 namespace yume::providers {
-
-// RFC 1929 username and password, each 1 to 255 bytes. Moves and destruction
-// wipe the storage they leave behind.
-class Socks5Credentials final {
-public:
-    static engine::Result<Socks5Credentials> create(std::string username, std::string password);
-
-    Socks5Credentials(Socks5Credentials&& other) noexcept;
-    Socks5Credentials& operator=(Socks5Credentials&& other) noexcept;
-    Socks5Credentials(const Socks5Credentials&) = delete;
-    Socks5Credentials& operator=(const Socks5Credentials&) = delete;
-    ~Socks5Credentials();
-
-    const std::string& username() const noexcept { return username_; }
-    const std::string& password() const noexcept { return password_; }
-
-private:
-    Socks5Credentials(std::string username, std::string password) noexcept;
-    void wipe() noexcept;
-
-    std::string username_;
-    std::string password_;
-};
 
 struct Socks5UpstreamLimits final {
     // One deadline covers the proxy connection and the whole exchange.
@@ -62,7 +40,7 @@ public:
         std::shared_ptr<AsioExecutionContext> context,
         std::shared_ptr<engine::ByteChannelProvider> proxy,
         std::string target_host, std::uint16_t target_port,
-        std::optional<Socks5Credentials> credentials = std::nullopt,
+        std::optional<common::Socks5Credentials> credentials = std::nullopt,
         Socks5UpstreamLimits limits = {});
 
     Socks5UpstreamProvider(const Socks5UpstreamProvider&) = delete;

@@ -10,11 +10,13 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "common/socks5_credentials.hpp"
 #include "config/v1/config.hpp"
 #include "engine/stream_handler.hpp"
 
@@ -98,6 +100,8 @@ struct LoadedNativeCredentials final {
     std::shared_ptr<providers::Ytp1Tls13SecureChannelProvider> tls_provider;
     std::shared_ptr<const NativeAuthorizationPolicy> authorization;
     NativeAdmissionKey admission_key;
+    // A client's SOCKS5 proxy credentials, when its configuration names them.
+    std::optional<common::Socks5Credentials> socks5_credentials;
 };
 
 // References in config resolve against config_base_directory; references in

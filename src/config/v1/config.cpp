@@ -387,7 +387,7 @@ Role ParseRole(const Json& value) {
 Endpoint ParseEndpoint(const Json& endpoint, Role role) {
     if (role == Role::Client) {
         CheckClosedObject(endpoint, "/endpoint",
-                          {"host", "port", "connect_address"},
+                          {"host", "port", "connect_address", "socks5_proxy"},
                           {"host", "port"});
         const auto& host =
             ReadString(endpoint.at("host"), "/endpoint/host", kMaxHostBytes);
@@ -405,7 +405,27 @@ Endpoint ParseEndpoint(const Json& endpoint, Role role) {
             }
             connect_address = address;
         }
-        return ClientEndpoint(host, port, std::move(connect_address));
+        std::optional<Socks5Proxy> socks5_proxy;
+        if (endpoint.contains("socks5_proxy")) {
+            const std::string pointer = "/endpoint/socks5_proxy";
+            const auto& proxy = endpoint.at("socks5_proxy");
+            CheckClosedObject(proxy, pointer, {"address", "port", "credentials"},
+                              {"address", "port"});
+            const auto& address = ReadString(proxy.at("address"),
+                                             pointer + "/address", 64);
+            if (!IsIpLiteral(address)) {
+                Fail(pointer + "/address", "must be an IP literal");
+            }
+            const std::uint16_t proxy_port =
+                ParsePort(proxy.at("port"), pointer + "/port");
+            std::optional<FileReference> credentials;
+            if (proxy.contains("credentials")) {
+                credentials = ParseFileReference(proxy, pointer, "credentials");
+            }
+            socks5_proxy.emplace(address, proxy_port, std::move(credentials));
+        }
+        return ClientEndpoint(host, port, std::move(connect_address),
+                              std::move(socks5_proxy));
     }
 
     CheckClosedObject(endpoint, "/endpoint", {"listen_addresses", "port"},

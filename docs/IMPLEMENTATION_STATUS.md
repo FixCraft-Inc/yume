@@ -319,7 +319,10 @@ authenticate `host`. `socks5_upstream.*` can reach the server through a SOCKS5
 proxy instead: another byte-channel provider connects to the proxy, which is
 then asked to CONNECT to the server by name or address, with or without
 username and password authentication, reading no byte past the proxy's reply
-and bounded by one deadline. Client configuration does not use it yet.
+and bounded by one deadline. A client configuration's `endpoint.socks5_proxy`
+selects it, with credentials read like the other protected files, and a managed
+TUN then keeps the proxy's route outside the tunnel. The runtime test runs a
+second client through an authenticating proxy.
 `yume_native_runtime_test` provisions a kit, runs both
 processes, moves a payload through SOCKS5, checks refusal by configured
 destinations and by an unreachable route, and requires clean SIGTERM exits.

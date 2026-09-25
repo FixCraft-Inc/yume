@@ -345,7 +345,12 @@ Schema 1 is role tagged and contains these sections only:
 
 - `endpoint`: one client target or bounded server listeners. A client may add
   `connect_address`, a numeric address dialled instead of resolving `host`,
-  while TLS and admission still authenticate `host`;
+  while TLS and admission still authenticate `host`. A client may also add
+  `socks5_proxy` with a numeric `address`, a `port` and an optional protected
+  `credentials` file holding a username line and a password line of 1 to 255
+  bytes each. The client then reaches its server through that proxy, which
+  resolves `host` unless `connect_address` is set, and offers only
+  username and password authentication when credentials are given;
 - `suite`: the exact mandatory provider composition;
 - `credentials`: references to files, never inline private material;
 - `cover`: the qualified profile and server cover root;

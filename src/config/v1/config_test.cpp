@@ -468,6 +468,67 @@ void TestClientConnectAddress() {
     ExpectError(document, "/endpoint/connect_address", "unknown key");
 }
 
+// A client may reach its server through a SOCKS5 proxy at a numeric address,
+// with an optional protected credentials file.
+void TestClientSocks5Proxy() {
+    Json document = ClientDocument();
+    Check(!std::get<ClientEndpoint>(Parse(document).endpoint()).socks5_proxy(),
+          "a SOCKS5 proxy appeared without configuration");
+    document["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
+    const Config parsed = Parse(document);
+    const auto& plain = std::get<ClientEndpoint>(parsed.endpoint()).socks5_proxy();
+    Check(plain && plain->address() == "127.0.0.1" && plain->port() == 1080 &&
+              !plain->credentials(),
+          "a SOCKS5 proxy without credentials was not retained");
+    document["endpoint"]["socks5_proxy"]["address"] = "fd00::10";
+    document["endpoint"]["socks5_proxy"]["credentials"] = {{"file", "socks5-proxy"}};
+    const Config with_credentials = Parse(document);
+    const auto& secured = std::get<ClientEndpoint>(with_credentials.endpoint()).socks5_proxy();
+    Check(secured && secured->address() == "fd00::10" && secured->credentials() &&
+              secured->credentials()->path() == "socks5-proxy",
+          "SOCKS5 proxy credentials were not retained");
+    // The client's own connection goes to the proxy, then to connect_address,
+    // then to host.
+    Check(std::get<ClientEndpoint>(with_credentials.endpoint()).first_hop() == "fd00::10",
+          "the first hop is not the proxy");
+    Json direct = ClientDocument();
+    const Config by_host = Parse(direct);
+    Check(std::get<ClientEndpoint>(by_host.endpoint()).first_hop() ==
+              std::get<ClientEndpoint>(by_host.endpoint()).host(),
+          "the first hop is not the host");
+    direct["endpoint"]["connect_address"] = "10.77.77.1";
+    const Config by_address = Parse(direct);
+    Check(std::get<ClientEndpoint>(by_address.endpoint()).first_hop() == "10.77.77.1",
+          "the first hop is not connect_address");
+    direct["endpoint"]["socks5_proxy"] = {{"address", "192.0.2.5"}, {"port", 1080}};
+    const Config by_proxy = Parse(direct);
+    Check(std::get<ClientEndpoint>(by_proxy.endpoint()).first_hop() == "192.0.2.5",
+          "connect_address took the proxy's place as the first hop");
+
+    const auto with_proxy = [](Json proxy) {
+        Json changed = ClientDocument();
+        changed["endpoint"]["socks5_proxy"] = std::move(proxy);
+        return changed;
+    };
+    const std::string pointer = "/endpoint/socks5_proxy";
+    ExpectError(with_proxy("127.0.0.1:1080"), pointer, "object");
+    ExpectError(with_proxy({{"port", 1080}}), pointer + "/address", "required key");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}}), pointer + "/port", "required key");
+    ExpectError(with_proxy({{"address", "proxy.example.test"}, {"port", 1080}}), pointer + "/address",
+                "IP literal");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 0}}), pointer + "/port", "");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 1080}, {"user", "x"}}), pointer + "/user",
+                "unknown key");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 1080}, {"credentials", "socks5-proxy"}}),
+                pointer + "/credentials", "object");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 1080},
+                            {"credentials", {{"file", "../socks5-proxy"}}}}),
+                pointer + "/credentials/file", "parent traversal");
+    document = ServerDocument();
+    document["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
+    ExpectError(document, pointer, "unknown key");
+}
+
 void TestMandatorySuite() {
     constexpr std::array<std::pair<std::string_view, std::string_view>, 5>
         fields{{
@@ -1269,6 +1330,7 @@ int main(int argc, char** argv) {
         TestAliasesAreRejected();
         TestEndpointValidation();
     TestClientConnectAddress();
+    TestClientSocks5Proxy();
         TestMandatorySuite();
         TestCredentialReferences();
         TestCoverValidation();

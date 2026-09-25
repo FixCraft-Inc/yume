@@ -90,45 +90,9 @@ std::vector<std::uint8_t> connect_request(const std::string& host, std::uint16_t
 
 }  // namespace
 
-Result<Socks5Credentials> Socks5Credentials::create(std::string username, std::string password) {
-    if (username.empty() || username.size() > kMaxField || password.empty() ||
-        password.size() > kMaxField) {
-        security::secure_erase(username);
-        security::secure_erase(password);
-        return Result<Socks5Credentials>(
-            status_of(StatusCode::InvalidArgument, "SOCKS5 username and password need 1 to 255 bytes each"));
-    }
-    return Result<Socks5Credentials>(Socks5Credentials(std::move(username), std::move(password)));
-}
-
-Socks5Credentials::Socks5Credentials(std::string username, std::string password) noexcept
-    : username_(std::move(username)), password_(std::move(password)) {}
-
-Socks5Credentials::Socks5Credentials(Socks5Credentials&& other) noexcept
-    : username_(std::move(other.username_)), password_(std::move(other.password_)) {
-    other.wipe();
-}
-
-Socks5Credentials& Socks5Credentials::operator=(Socks5Credentials&& other) noexcept {
-    if (this != &other) {
-        wipe();
-        username_ = std::move(other.username_);
-        password_ = std::move(other.password_);
-        other.wipe();
-    }
-    return *this;
-}
-
-Socks5Credentials::~Socks5Credentials() { wipe(); }
-
-void Socks5Credentials::wipe() noexcept {
-    security::secure_erase(username_);
-    security::secure_erase(password_);
-}
-
 struct Socks5UpstreamProvider::Settings final {
     std::vector<std::uint8_t> connect;
-    std::optional<Socks5Credentials> credentials;
+    std::optional<common::Socks5Credentials> credentials;
     Socks5UpstreamLimits limits;
 };
 
@@ -337,7 +301,7 @@ Socks5UpstreamProvider::~Socks5UpstreamProvider() noexcept = default;
 
 Result<std::shared_ptr<Socks5UpstreamProvider>> Socks5UpstreamProvider::create(
     std::shared_ptr<AsioExecutionContext> context, std::shared_ptr<engine::ByteChannelProvider> proxy,
-    std::string target_host, std::uint16_t target_port, std::optional<Socks5Credentials> credentials,
+    std::string target_host, std::uint16_t target_port, std::optional<common::Socks5Credentials> credentials,
     Socks5UpstreamLimits limits) {
     using Created = Result<std::shared_ptr<Socks5UpstreamProvider>>;
     if (!context || !proxy) {

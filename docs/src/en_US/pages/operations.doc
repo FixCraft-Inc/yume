@@ -178,9 +178,11 @@ NSS modules, in a separate helper process. It appears as a `yume-resolver`
 child after the first lookup. The helper holds no connections, keeps no
 capabilities, and runs each lookup on its own thread. Stopping `yume` or
 `yumed` kills it, so a stalled DNS server or NSS module never delays shutdown.
-A numeric host or `endpoint.connect_address` needs no lookup. A client with a
-managed TUN adapter requires one, so that its own server route can be excluded
-before the tunnel changes routing. Every address a destination name resolves
+A numeric host or `endpoint.connect_address` needs no lookup. A client with
+`endpoint.socks5_proxy` looks nothing up either: it connects to the proxy's
+numeric address and the proxy resolves the server's name. A client with a
+managed TUN adapter needs a numeric first hop, the proxy or else the server,
+so that the route to it can be excluded before the tunnel changes routing. Every address a destination name resolves
 to must be permitted before the daemon connects.
 
 ## Release verification

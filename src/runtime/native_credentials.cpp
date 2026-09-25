@@ -247,6 +247,29 @@ SecretBytes read_psk(const std::filesystem::path& path) {
     return bytes;
 }
 
+// The username on the first line and the password on the second, each 1 to
+// 255 bytes, with at most one final newline and no carriage return or NUL.
+common::Socks5Credentials read_socks5_credentials(const std::filesystem::path& base,
+                                                  const config::v1::FileReference& reference) {
+    const auto bytes = read_file(base, reference, 2U * common::Socks5Credentials::kMaxFieldBytes + 2U);
+    std::string_view text = bytes.text();
+    require(text.find('\r') == std::string_view::npos &&
+                text.find('\0') == std::string_view::npos,
+            "SOCKS5 proxy credentials must not contain a carriage return or NUL");
+    const auto line_end = text.find('\n');
+    require(line_end != std::string_view::npos,
+            "SOCKS5 proxy credentials need a username line and a password line");
+    std::string_view password = text.substr(line_end + 1U);
+    if (!password.empty() && password.back() == '\n') password.remove_suffix(1U);
+    require(password.find('\n') == std::string_view::npos,
+            "SOCKS5 proxy credentials hold only a username line and a password line");
+    auto credentials = common::Socks5Credentials::create(std::string(text.substr(0U, line_end)),
+                                                         std::string(password));
+    require(credentials.has_value(),
+            "SOCKS5 proxy username and password need 1 to 255 bytes each");
+    return std::move(*credentials);
+}
+
 std::vector<std::string_view> pem_blocks(std::string_view text,
                                          bool private_key, std::size_t count) {
     const std::string_view begin = private_key ? "-----BEGIN PRIVATE KEY-----"
@@ -650,7 +673,8 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
                 engine::EndpointRole::Client, std::move(grants),
                 std::move(session_limits), std::move(egress_weights)),
             NativeAdmissionKey(
-                std::span<const std::byte, 32>(admission.bytes().data(), 32))};
+                std::span<const std::byte, 32>(admission.bytes().data(), 32)),
+            std::nullopt};
 }
 
 LoadedNativeCredentials load_client(const config::v1::Config& config,
@@ -689,11 +713,18 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
         grants.push_back(
             {remote.fingerprint, service.name(), service_kind(service.kind())});
     }
+    std::optional<common::Socks5Credentials> socks5;
+    const auto& proxy =
+        std::get<config::v1::ClientEndpoint>(config.endpoint()).socks5_proxy();
+    if (proxy && proxy->credentials()) {
+        socks5.emplace(read_socks5_credentials(base, *proxy->credentials()));
+    }
     return {std::move(factory).take_value(), std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
                 engine::EndpointRole::Server, std::move(grants)),
             NativeAdmissionKey(
-                std::span<const std::byte, 32>(admission.bytes().data(), 32))};
+                std::span<const std::byte, 32>(admission.bytes().data(), 32)),
+            std::move(socks5)};
 }
 
 }  // namespace

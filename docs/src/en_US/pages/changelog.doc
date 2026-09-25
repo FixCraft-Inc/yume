@@ -39,7 +39,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   through a SOCKS5 proxy over any byte-channel provider, as transport v2's
   client dialing did. It offers only the method its configuration implies,
   takes credentials that wipe themselves, and reads nothing past the proxy's
-  reply. Client configuration does not use it yet.
+  reply. A client configuration's `endpoint.socks5_proxy` names the proxy's
+  numeric address and port and an optional protected credentials file with a
+  username line and a password line, and a managed TUN excludes the proxy's
+  route from the tunnel.
 - **Loopback cover fetch.** `providers/loopback_http_fetch.*` fetches GET and
   HEAD from a loopback web server within fixed bounds, the base of a
   reverse-proxy cover. Unlike transport v2's client, it refuses a backend that

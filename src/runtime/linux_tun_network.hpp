@@ -17,8 +17,9 @@ namespace yume::runtime {
 
 // Owns an ephemeral TUN and its networking. Startup is transactional: addresses
 // and routes use exclusive netlink additions; DNS changes belong only to this
-// new link. The numeric transport host is excluded from these routes so its
-// existing route remains untouched. Default routing requires that address.
+// new link. The numeric transport host, the client's first hop, is excluded
+// from these routes so its existing route remains untouched. Default routing
+// requires that address.
 // IPv6 address generation is disabled before static addresses and link-up.
 // close reverts DNS, attempts link removal and closes the ephemeral TUN even
 // when cleanup fails. It reports the error and never retries a cached index

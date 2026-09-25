@@ -406,6 +406,78 @@ class YumeDoctorTests(unittest.TestCase):
             result.stderr,
         )
 
+    def test_socks5_proxy_matches_the_native_parser(self) -> None:
+        config_path = self.case / "client/yume.json"
+        original = json.loads(config_path.read_text())
+        pointer = "/endpoint/socks5_proxy"
+        cases = (
+            ("127.0.0.1:1080", f"{pointer}: must be an object"),
+            ({"port": 1080}, f"{pointer}/address: required key is missing"),
+            ({"address": "127.0.0.1"}, f"{pointer}/port: required key is missing"),
+            ({"address": "proxy.example.test", "port": 1080}, f"{pointer}/address: must be an IP literal"),
+            ({"address": "fe80::1%eth0", "port": 1080}, f"{pointer}/address: must be an IP literal"),
+            ({"address": "127.0.0.1", "port": 0}, f"{pointer}/port:"),
+            ({"address": "127.0.0.1", "port": 1080, "user": "x"}, f"{pointer}/user: unknown key"),
+            (
+                {"address": "127.0.0.1", "port": 1080, "credentials": "socks5-proxy"},
+                f"{pointer}/credentials: must be an object",
+            ),
+            (
+                {"address": "127.0.0.1", "port": 1080, "credentials": {"file": "../socks5-proxy"}},
+                f"{pointer}/credentials/file: file reference must not contain parent traversal",
+            ),
+        )
+        for proxy, expected in cases:
+            with self.subTest(expected=expected):
+                document = copy.deepcopy(original)
+                document["endpoint"]["socks5_proxy"] = proxy
+                config_path.write_text(json.dumps(document))
+                os.chmod(config_path, 0o600)
+                result = self.run_doctor(config_path)
+                self.assertEqual(result.returncode, 1, expected)
+                self.assertIn(expected, result.stderr)
+
+        document = copy.deepcopy(original)
+        document["endpoint"]["socks5_proxy"] = {"address": "::1", "port": 1080}
+        config_path.write_text(json.dumps(document))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        # The credentials file is protected and holds exactly two lines.
+        secret = self.case / "client/socks5-proxy"
+        document["endpoint"]["socks5_proxy"]["credentials"] = {"file": "socks5-proxy"}
+        config_path.write_text(json.dumps(document))
+        os.chmod(config_path, 0o600)
+        file_pointer = f"{pointer}/credentials/file"
+        contents = (
+            (b"user\nsecret\n", None),
+            (b"user\nsecret", None),
+            (b"user", "need a username line and a password line"),
+            (b"user\n", "need 1 to 255 bytes each"),
+            (b"\nsecret", "need 1 to 255 bytes each"),
+            (b"user\r\nsecret", "must not contain a carriage return or NUL"),
+            (b"user\nsecret\nextra", "hold only a username line and a password line"),
+            (b"user\n" + b"p" * 256, "need 1 to 255 bytes each"),
+        )
+        for payload, expected in contents:
+            with self.subTest(payload=payload):
+                secret.write_bytes(payload)
+                os.chmod(secret, 0o600)
+                result = self.run_doctor(config_path)
+                if expected is None:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 1, expected)
+                    self.assertIn(f"{file_pointer}: SOCKS5 proxy", result.stderr)
+                    self.assertIn(expected, result.stderr)
+                self.assertNotIn("secret", result.stderr)
+        secret.write_bytes(b"user\nsecret\n")
+        os.chmod(secret, 0o640)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{file_pointer}: group/world permissions are forbidden", result.stderr)
+
     def test_destination_network_vectors_match_native_parser(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))
         check, error_type = doctor["_destination_network"], doctor["DoctorError"]

@@ -606,6 +606,48 @@ void test_admission_ownership() {
 
 }  // namespace
 
+// A client's SOCKS5 proxy credentials come from a protected file with the
+// username on its first line and the password on its second.
+void test_socks5_credentials(Fixture& fixture) {
+    auto config = fixture.client_config;
+    const auto load = [&](const Json& document) {
+        return load_native_credentials(yume::config::v1::Parse(document),
+                                       fixture.directory.path(), "yume-lock-test");
+    };
+    config["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
+    check(!take(load(config)).socks5_credentials,
+          "SOCKS5 credentials appeared without a file");
+    config["endpoint"]["socks5_proxy"]["credentials"] =
+        reference("credentials/socks5-proxy");
+    for (const std::string text : {"user\nsecret\n", "user\nsecret"}) {
+        fixture.write("credentials/socks5-proxy", text);
+        const auto loaded = take(load(config));
+        check(loaded.socks5_credentials &&
+                  loaded.socks5_credentials->username() == "user" &&
+                  loaded.socks5_credentials->password() == "secret",
+              "SOCKS5 proxy credentials changed");
+    }
+    fixture.write("credentials/socks5-proxy", "name with space\npass phrase\n");
+    check(take(load(config)).socks5_credentials->password() == "pass phrase",
+          "a password with a space changed");
+    for (const std::string& text :
+         {std::string("user"), std::string("user\n"), std::string("\nsecret"),
+          std::string("user\n\n"), std::string("user\r\nsecret"),
+          std::string("user\nsecret\nextra"), std::string("user\n") + std::string(256U, 'p'),
+          std::string(256U, 'u') + "\nsecret", std::string("us\0er\nsecret", 12U), std::string()}) {
+        fixture.write("credentials/socks5-proxy", text);
+        check(!load(config).ok(), "malformed SOCKS5 proxy credentials accepted");
+    }
+    fixture.write("credentials/socks5-proxy", "user\nsecret\n");
+    const auto path = fixture.directory.path() / "credentials/socks5-proxy";
+    std::filesystem::permissions(path, std::filesystem::perms::group_read,
+                                 std::filesystem::perm_options::add);
+    check(!load(config).ok(), "group-readable SOCKS5 proxy credentials accepted");
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                           std::filesystem::perms::owner_write);
+    check(load(config).ok(), "SOCKS5 proxy credentials did not recover");
+}
+
 int main() {
     try {
         test_admission_ownership();
@@ -615,6 +657,7 @@ int main() {
         test_session_limits(fixture);
         test_egress_weights(fixture);
         test_file_boundaries(fixture);
+        test_socks5_credentials(fixture);
         std::cout << "native credential tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import hmac
 import ipaddress
@@ -322,28 +323,48 @@ def _file_reference(value: Any, pointer: str) -> str:
     return _validate_file_text(reference["file"], _join_pointer(pointer, "file"))
 
 
-def _validate_endpoint(value: Any, role: str) -> None:
+def _numeric_address(value: Any, pointer: str) -> str:
+    address = _string(value, pointer, 64)
+    try:
+        ipaddress.ip_address(address)
+        numeric = "%" not in address
+    except ValueError:
+        numeric = False
+    if not numeric:
+        _fail(pointer, "must be an IP literal")
+    return address
+
+
+def _validate_endpoint(value: Any, role: str) -> str | None:
+    """Returns a client's SOCKS5 proxy credentials reference, if any."""
     pointer = "/endpoint"
     if role == "client":
         endpoint = _closed_object(
-            value, pointer, {"host", "port", "connect_address"}, {"host", "port"}
+            value,
+            pointer,
+            {"host", "port", "connect_address", "socks5_proxy"},
+            {"host", "port"},
         )
         host = _string(endpoint["host"], "/endpoint/host", 253)
         if not _valid_host(host):
             _fail("/endpoint/host", "must be an IP literal or DNS host name")
         _integer(endpoint["port"], "/endpoint/port", 1, 65535)
         if "connect_address" in endpoint:
-            address = _string(
-                endpoint["connect_address"], "/endpoint/connect_address", 64
-            )
-            try:
-                ipaddress.ip_address(address)
-                numeric = "%" not in address
-            except ValueError:
-                numeric = False
-            if not numeric:
-                _fail("/endpoint/connect_address", "must be an IP literal")
-        return
+            _numeric_address(endpoint["connect_address"], "/endpoint/connect_address")
+        if "socks5_proxy" not in endpoint:
+            return None
+        proxy_pointer = "/endpoint/socks5_proxy"
+        proxy = _closed_object(
+            endpoint["socks5_proxy"],
+            proxy_pointer,
+            {"address", "port", "credentials"},
+            {"address", "port"},
+        )
+        _numeric_address(proxy["address"], f"{proxy_pointer}/address")
+        _integer(proxy["port"], f"{proxy_pointer}/port", 1, 65535)
+        if "credentials" not in proxy:
+            return None
+        return _file_reference(proxy["credentials"], f"{proxy_pointer}/credentials")
     endpoint = _closed_object(value, pointer, {"listen_addresses", "port"})
     addresses = endpoint["listen_addresses"]
     if type(addresses) is not list:
@@ -824,9 +845,19 @@ def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
                 )
 
 
-def _validate_config(
-    document: Any,
-) -> tuple[str, dict[str, str], str | None, list[tuple[str, str, int]]]:
+@dataclass(frozen=True)
+class CheckedConfig:
+    """What a valid configuration references, for the file checks."""
+
+    role: str
+    credentials: dict[str, str]
+    cover_root: str | None
+    # (pointer, reference, byte bound) for each egress list file.
+    list_files: list[tuple[str, str, int]]
+    socks5_credentials: str | None
+
+
+def _validate_config(document: Any) -> CheckedConfig:
     top = _closed_object(
         document,
         "",
@@ -846,14 +877,14 @@ def _validate_config(
     role = _string(top["role"], "/role", 16)
     if role not in {"client", "server"}:
         _fail("/role", "must be 'client' or 'server'")
-    _validate_endpoint(top["endpoint"], role)
+    socks5_credentials = _validate_endpoint(top["endpoint"], role)
     _validate_suite(top["suite"])
     credentials = _validate_credentials(top["credentials"], role)
     cover_root = _validate_cover(top["cover"], role)
     services = _validate_services(top["services"])
     list_files = _validate_adapters(top["adapters"], role, services)
     _validate_limits(top["limits"], top["adapters"], role)
-    return role, credentials, cover_root, list_files
+    return CheckedConfig(role, credentials, cover_root, list_files, socks5_credentials)
 
 
 def _checked_bytes(
@@ -927,6 +958,22 @@ def _checked_bytes(
             raise
     finally:
         os.close(descriptor)
+
+
+def _check_socks5_credentials(payload: bytearray, pointer: str) -> None:
+    """The username line and the password line, checked in place."""
+    if payload.find(b"\r") >= 0 or payload.find(b"\0") >= 0:
+        _fail(pointer, "SOCKS5 proxy credentials must not contain a carriage return or NUL")
+    line_end = payload.find(b"\n")
+    if line_end < 0:
+        _fail(pointer, "SOCKS5 proxy credentials need a username line and a password line")
+    end = len(payload)
+    if end > line_end + 1 and payload[end - 1] == 0x0A:
+        end -= 1
+    if payload.find(b"\n", line_end + 1, end) >= 0:
+        _fail(pointer, "SOCKS5 proxy credentials hold only a username line and a password line")
+    if not (1 <= line_end <= 255 and 1 <= end - line_end - 1 <= 255):
+        _fail(pointer, "SOCKS5 proxy username and password need 1 to 255 bytes each")
 
 
 def _check_list_file(path: Path, pointer: str, maximum: int) -> None:
@@ -1601,16 +1648,31 @@ def diagnose(config_path: Path) -> list[DoctorError]:
         try:
             config_payload = _checked_bytes(config_path, "/config")
             document = _load_json_payload(config_payload, "/config")
-            role, references, cover_root, list_files = _validate_config(document)
+            checked = _validate_config(document)
         except DoctorError as error:
             return [error]
+        role, references, cover_root = checked.role, checked.credentials, checked.cover_root
 
         base = config_path.parent
         # yumed parses list contents when it starts or validates. The doctor
         # checks that each file is one the loader would open.
-        for pointer, reference, maximum in list_files:
+        for pointer, reference, maximum in checked.list_files:
             try:
                 _check_list_file(_resolve_reference(base, reference), pointer, maximum)
+            except DoctorError as error:
+                diagnostics.append(error)
+        if checked.socks5_credentials is not None:
+            pointer = "/endpoint/socks5_proxy/credentials/file"
+            try:
+                payload = _checked_bytes(
+                    _resolve_reference(base, checked.socks5_credentials),
+                    pointer,
+                    maximum=2 * 255 + 2,
+                )
+                try:
+                    _check_socks5_credentials(payload, pointer)
+                finally:
+                    payload[:] = b"\0" * len(payload)
             except DoctorError as error:
                 diagnostics.append(error)
         paths = {

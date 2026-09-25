@@ -36,7 +36,7 @@ using yume::engine::Status;
 using yume::engine::StatusCode;
 using yume::providers::AsioExecutionContext;
 using yume::providers::AsioTcpByteChannelProvider;
-using yume::providers::Socks5Credentials;
+using yume::common::Socks5Credentials;
 using yume::providers::Socks5UpstreamLimits;
 using yume::providers::Socks5UpstreamProvider;
 using namespace std::chrono_literals;
@@ -270,7 +270,7 @@ void test_name_target_without_authentication() {
 void test_password_and_address_targets() {
     auto io = context();
     auto credentials = Socks5Credentials::create("user", "secret");
-    CHECK(credentials.ok());
+    CHECK(credentials.has_value());
     const std::string request = bytes({0x05, 0x01, 0x00, 0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0,
                                        0, 0, 0, 1}) + port_bytes(8443U);
     const std::string bound = bytes({0x05, 0x00, 0x00, 0x03, 11}) + "bnd.example" + port_bytes(1U);
@@ -279,8 +279,7 @@ void test_password_and_address_targets() {
         {13U, bytes({0x01, 0x00})},
         {request.size(), bound}});
     proxy->serve();
-    const auto provider = provider_for(io, proxy->port(), "2001:db8::1", 8443U,
-                                       std::move(credentials).take_value());
+    const auto provider = provider_for(io, proxy->port(), "2001:db8::1", 8443U, std::move(credentials));
     auto channel = channel_of(io, start(io, provider));
     CHECK(proxy->received == bytes({0x05, 0x01, 0x02}) + bytes({0x01, 4}) + "user" + bytes({6}) + "secret" +
                                  request);
@@ -307,9 +306,8 @@ void test_refusals() {
         proxy->serve();
         std::optional<Socks5Credentials> credentials;
         if (with_password) {
-            auto made = Socks5Credentials::create("user", "wrong");
-            CHECK(made.ok());
-            credentials.emplace(std::move(made).take_value());
+            credentials = Socks5Credentials::create("user", "wrong");
+            CHECK(credentials.has_value());
         }
         const auto provider = provider_for(io, proxy->port(), "host", 443U, std::move(credentials));
         expect_failure(io, start(io, provider), code, fragment);
@@ -395,17 +393,17 @@ void test_creation_rules() {
     CHECK(provider.ok());
     CHECK(&provider.value()->descriptor() == &proxy->descriptor());
 
-    CHECK(!Socks5Credentials::create("", "secret").ok());
-    CHECK(!Socks5Credentials::create("user", std::string(256U, 'p')).ok());
+    CHECK(!Socks5Credentials::create("", "secret"));
+    CHECK(!Socks5Credentials::create("user", std::string(256U, 'p')));
+    CHECK(Socks5Credentials::create(std::string(255U, 'u'), std::string(255U, 'p')));
     auto credentials = Socks5Credentials::create("user", "secret");
-    CHECK(credentials.ok());
-    auto source = std::move(credentials).take_value();
-    Socks5Credentials moved(std::move(source));
+    CHECK(credentials.has_value());
+    Socks5Credentials moved(std::move(*credentials));
     CHECK(moved.username() == "user" && moved.password() == "secret");
-    CHECK(source.username().empty() && source.password().empty());
+    CHECK(credentials->username().empty() && credentials->password().empty());
     auto other = Socks5Credentials::create("second", "value");
-    CHECK(other.ok());
-    moved = std::move(other).take_value();
+    CHECK(other.has_value());
+    moved = std::move(*other);
     CHECK(moved.username() == "second" && moved.password() == "value");
 }
 

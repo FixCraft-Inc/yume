@@ -19,6 +19,7 @@
 #include "runtime/accept_scheduler.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "runtime/native_credentials.hpp"
+#include "providers/socks5_upstream.hpp"
 #include "runtime/native_egress_policy.hpp"
 #include "runtime/paced_stream.hpp"
 #include "providers/ytp1_front_door.hpp"
@@ -835,10 +836,19 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             const std::string& dial = !state->options.connection_address.empty()
                 ? state->options.connection_address
                 : configured_dial ? *configured_dial : endpoint.host();
-            state->tcp = require(AsioTcpByteChannelProvider::create(context,
-                dial, endpoint.port(), {}, state->options.socket_protector,
-                state->options.resolver));
-            require(builder.register_byte_channel_provider(state->tcp));
+            if (const auto& proxy = endpoint.socks5_proxy()) {
+                // The proxy reaches the server, so only the proxy's own
+                // numeric address is dialed here and nothing is resolved.
+                state->tcp = require(AsioTcpByteChannelProvider::create(context,
+                    proxy->address(), proxy->port(), {}, state->options.socket_protector));
+                require(builder.register_byte_channel_provider(require(Socks5UpstreamProvider::create(
+                    context, state->tcp, dial, endpoint.port(), std::move(credentials.socks5_credentials)))));
+            } else {
+                state->tcp = require(AsioTcpByteChannelProvider::create(context,
+                    dial, endpoint.port(), {}, state->options.socket_protector,
+                    state->options.resolver));
+                require(builder.register_byte_channel_provider(state->tcp));
+            }
             require(builder.register_secure_channel_provider(credentials.tls_provider));
             Ytp1H2Dispatch dispatch{
                 [context](std::function<void()> task) { boost::asio::post(context->executor(), std::move(task)); },

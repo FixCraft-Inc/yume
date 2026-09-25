@@ -399,13 +399,14 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
             }
         }
         if (!state->packets.empty()) {
-            const auto& client = std::get<config::v1::ClientEndpoint>(config.endpoint());
-            const auto& address = client.connect_address() ? *client.connect_address() : client.host();
+            // The client's own connection must stay outside the tunnel.
+            const auto& address = std::get<config::v1::ClientEndpoint>(config.endpoint()).first_hop();
             state->transport_address = common::parse_canonical_ip_interface(
                 address + (address.find(':') == std::string::npos ? "/32" : "/128"));
             if (!state->transport_address)
                 return Created(Status(StatusCode::InvalidArgument,
-                    "packet adapters require a numeric transport host or endpoint.connect_address"));
+                    "packet adapters require a numeric transport host, endpoint.connect_address "
+                    "or SOCKS5 proxy"));
         }
         NativeEndpointOptions endpoint_options;
         endpoint_options.max_sessions = 1U;

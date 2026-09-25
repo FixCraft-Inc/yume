@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -293,6 +294,138 @@ def check_egress_list_validation(yumed: Path, kit: Path, environment: dict[str, 
             f"--validate accepted a missing egress list: {result.returncode} {result.stderr.strip()}")
 
 
+PROXY_USERNAME = b"proxy-user"
+PROXY_PASSWORD = b"proxy-secret-password"
+
+
+def _recv_exact(connection: socket.socket, count: int) -> bytes:
+    data = b""
+    while len(data) < count:
+        chunk = connection.recv(count - len(data))
+        if not chunk:
+            raise ConnectionError("SOCKS5 peer closed early")
+        data += chunk
+    return data
+
+
+class Socks5Relay:
+    """A SOCKS5 proxy that requires a username and password and relays CONNECT."""
+
+    def __init__(self) -> None:
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        self.requests: list[tuple[int, str, int]] = []
+        self.authenticated: list[bool] = []
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def close(self) -> None:
+        self.listener.close()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(connection,), daemon=True).start()
+
+    def _handle(self, connection: socket.socket) -> None:
+        with connection:
+            try:
+                connection.settimeout(10)
+                count = _recv_exact(connection, 2)[1]
+                if 2 not in _recv_exact(connection, count):
+                    connection.sendall(b"\x05\xff")
+                    return
+                connection.sendall(b"\x05\x02")
+                username = _recv_exact(connection, _recv_exact(connection, 2)[1])
+                password = _recv_exact(connection, _recv_exact(connection, 1)[0])
+                accepted = username == PROXY_USERNAME and password == PROXY_PASSWORD
+                self.authenticated.append(accepted)
+                connection.sendall(b"\x01\x00" if accepted else b"\x01\x01")
+                if not accepted:
+                    return
+                kind = _recv_exact(connection, 4)[3]
+                if kind == 1:
+                    host = socket.inet_ntop(socket.AF_INET, _recv_exact(connection, 4))
+                elif kind == 4:
+                    host = socket.inet_ntop(socket.AF_INET6, _recv_exact(connection, 16))
+                else:
+                    host = _recv_exact(connection, _recv_exact(connection, 1)[0]).decode("ascii")
+                port = int.from_bytes(_recv_exact(connection, 2), "big")
+                self.requests.append((kind, host, port))
+                upstream = socket.create_connection((host, port), timeout=10)
+            except (OSError, ConnectionError):
+                return
+            with upstream:
+                connection.sendall(b"\x05\x00\x00\x01" + bytes(6))
+                connection.settimeout(None)
+                upstream.settimeout(None)
+                pump = threading.Thread(target=_copy, args=(upstream, connection), daemon=True)
+                pump.start()
+                _copy(connection, upstream)
+                pump.join(timeout=10)
+
+
+def _copy(source: socket.socket, target: socket.socket) -> None:
+    try:
+        while True:
+            data = source.recv(65536)
+            if not data:
+                break
+            target.sendall(data)
+        target.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def check_socks5_upstream(yume: Path, kit: Path, environment: dict[str, str], root: Path,
+                          server_port: int, target_port: int) -> None:
+    # A second client reaches the same server through an authenticating
+    # SOCKS5 proxy. connect_address makes the proxy connect to that address.
+    relay = Socks5Relay()
+    try:
+        credentials = kit / "client/socks5-proxy"
+        credentials.write_bytes(PROXY_USERNAME + b"\n" + PROXY_PASSWORD + b"\n")
+        credentials.chmod(0o600)
+        config = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))
+        config["endpoint"]["socks5_proxy"] = {
+            "address": "127.0.0.1", "port": relay.port, "credentials": {"file": "socks5-proxy"}}
+        socks_port = session.free_port()
+        for adapter in config["adapters"]:
+            if adapter["kind"] == "socks5":
+                adapter["listen_port"] = socks_port
+        variant = kit / "client/through-proxy.json"
+        variant.write_text(json.dumps(config), encoding="utf-8")
+        validate(yume, variant, environment)
+        log_path = root / "yume-proxy.log"
+        with log_path.open("wb") as log:
+            client = subprocess.Popen([str(yume), "--config", str(variant)], env=environment,
+                                      stdout=log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 30
+                session.wait_for_port("127.0.0.1", socks_port, client, deadline)
+                length, digest, _ = session.get_through_socks(socks_port, "127.0.0.1", target_port,
+                                                              time.monotonic() + 30)
+                if length != PAYLOAD_BYTES or digest != session.payload_digest(PAYLOAD_BYTES):
+                    raise session.SessionFailure("payload through the SOCKS5 proxy differs")
+                session.stop_process(client, "yume")
+            finally:
+                if client.poll() is None:
+                    client.kill()
+                    client.wait(timeout=5)
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        session.reject_secret_output("yume", text)
+        if PROXY_PASSWORD.decode() in text:
+            raise session.SessionFailure("the client logged its SOCKS5 proxy password")
+        if relay.authenticated != [True] or relay.requests != [(1, "127.0.0.1", server_port)]:
+            raise session.SessionFailure(
+                f"SOCKS5 proxy saw {relay.authenticated} and {relay.requests}")
+    finally:
+        relay.close()
+    print("SOCKS5 upstream verified: the client reached yumed through an authenticating proxy")
+
+
 def check_module_validation(yumed: Path, kit: Path, program: Path,
                             environment: dict[str, str], root: Path) -> None:
     # --validate refuses a program that the daemon would refuse at start.
@@ -448,6 +581,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
 
             session.stop_process(client, "yume")
             client = None
+            check_socks5_upstream(yume, kit, environment, root, server_port, target_port)
             session.stop_process(server, "yumed")
             if module is not None and any(module_root.iterdir()):
                 raise session.SessionFailure("yumed left the module socket directory behind")

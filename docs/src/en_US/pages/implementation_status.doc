@@ -178,7 +178,11 @@ closes its listener when an accept reports an OS error such as descriptor
 exhaustion, so even a transient error of that kind stops an automatically
 accepting endpoint. Listener publication follows credential, mapped-limit and
 static-cover validation. Static directory snapshots include nested assets and
-require the browser profile's priming paths. Duplicate terminal cleanup does not
+require the browser profile's priming paths. `loopback_http_fetch.*` fetches one
+GET or HEAD from a loopback web server within fixed header, body and time
+bounds, with cancellation that settles once, and probes such a server at
+startup. It is the first part of a reverse-proxy cover. The FrontDoor does not
+use it yet, so `cover.reverse_proxy` still fails start. Duplicate terminal cleanup does not
 queue work after final executor drain. Explicit destination handlers may supply
 one endpoint-owned route provider, subject to exact suite validation and their
 application authorization policy. The native route provider shares the ingress

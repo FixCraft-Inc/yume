@@ -30,6 +30,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Application codec library.** The application codec core (the HTTP
   envelope, backend dialing rules and the Monero RPC descriptor) builds apart
   from transport v2 as `yume_module_codecs` for a planned codec module.
+- **Loopback cover fetch.** `providers/loopback_http_fetch.*` fetches GET and
+  HEAD from a loopback web server within fixed bounds, the base of a
+  reverse-proxy cover. Unlike transport v2's client, it refuses a backend that
+  closes before a complete response. `cover.reverse_proxy` still fails start
+  until the FrontDoor uses it.
 - **Egress lists.** Server `direct_tcp` and `direct_udp` destinations can add
   `lists` of JSON or VPN provider database files and a MaxMind
   `country_database`. The most specific entry decides and a deny wins a tie.

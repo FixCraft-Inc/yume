@@ -647,6 +647,18 @@ if(YUME_BUILD_YTP1_FRONT_DOOR)
     yume_apply_perf_opts(yume_ytp1_cover_site)
     yume_assert_exact_link_dependencies(yume_ytp1_cover_site yume_engine yume_bounded_files)
 
+    # Bounded GET/HEAD fetches from a loopback web server, for a cover site
+    # that a local backend provides.
+    add_library(yume_loopback_http_fetch STATIC
+        providers/loopback_http_fetch.cpp
+        providers/loopback_http_fetch.hpp)
+    target_include_directories(yume_loopback_http_fetch PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_loopback_http_fetch
+        PUBLIC yume_engine yume_asio_execution_context PRIVATE Boost::system)
+    yume_apply_perf_opts(yume_loopback_http_fetch)
+    yume_assert_exact_link_dependencies(yume_loopback_http_fetch
+        yume_engine yume_asio_execution_context Boost::system)
+
     add_library(yume_ytp1_front_door STATIC
         providers/ytp1_front_door.cpp
         providers/ytp1_front_door.hpp)
@@ -1589,6 +1601,16 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_paced_stream_test COMMAND yume_paced_stream_test)
         set_tests_properties(yume_paced_stream_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+    endif()
+    if(TARGET yume_loopback_http_fetch)
+        add_executable(yume_loopback_http_fetch_test providers/loopback_http_fetch_test.cpp)
+        target_link_libraries(yume_loopback_http_fetch_test PRIVATE yume_loopback_http_fetch Boost::system)
+        yume_apply_perf_opts(yume_loopback_http_fetch_test)
+        yume_assert_exact_link_dependencies(yume_loopback_http_fetch_test
+            yume_loopback_http_fetch Boost::system)
+        add_test(NAME yume_loopback_http_fetch_test COMMAND yume_loopback_http_fetch_test)
+        set_tests_properties(yume_loopback_http_fetch_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_egress_lists)
         add_executable(yume_egress_lists_test runtime/egress_lists_test.cpp)

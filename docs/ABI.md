@@ -22,15 +22,13 @@ document pass.
 When explicitly enabled for a development build, the `0.3.0-dev1` library
 implements build and compatibility metadata, strict schema-1 config parsing,
 runtime and endpoint construction, bounded diagnostics, callback containment,
-cancellation, and teardown. With the native YTP/1 provider graph built,
-including `YUME_BUILD_YTP1_FRONT_DOOR`, it starts a client or server through
+cancellation, and teardown. It starts a client or server through
 `NativeEndpoint` and carries authenticated named byte streams through open,
 accept, read, write, half-close, close, and destroy. Clients can also open TCP
 destinations through a native daemon's configured direct TCP service. Packet
 handles support named packet services and UDP destinations, with whole-packet
-batch I/O and endpoint cancellation. Without the native graph, start fails with
-`YUME_STATUS_UNSUPPORTED`. The backend is not qualified end to end, and the
-library remains experimental and unfrozen.
+batch I/O and endpoint cancellation. The backend is not qualified end to end,
+and the library remains experimental and unfrozen.
 
 The remaining sections state the candidate contract and the gates that still
 must pass before installation or ABI freeze.
@@ -182,8 +180,7 @@ lists every byte-stream service it opens.
 The complete working version of both sides, including peer-identity checks and
 teardown on every failure path, is
 [`src/abi/ytp1_stream_probe.c`](../src/abi/ytp1_stream_probe.c). It runs as
-`yume_abi_ytp1_stream_integration` in builds with the native provider graph.
-It provisions a kit with `yume-setup` and also checks refusals, deadlines,
+`yume_abi_ytp1_stream_integration`. It provisions a kit with `yume-setup` and also checks refusals, deadlines,
 restart, and stream handles that outlive their endpoint.
 
 ## Intended installed interface
@@ -531,16 +528,13 @@ as `YUME_STATUS_INTERNAL_ERROR` after local state is made safe.
 - product version;
 - YTP name and numeric version;
 - config schema and ABI version;
-- suite components and each concrete provider identity (an unwired component
-  is reported as `unwired`, never as a provider that merely exists in the
-  source tree);
+- suite components and each concrete provider identity;
 - cryptographic backend; and
 - evidence profile name/version.
 
-The session security provider is `openssl35.ytp1-security` only when the
-library links the native backend, and `unwired` otherwise. The cryptographic
-backend follows the same rule. A linked backend reports `openssl-` followed by
-the loaded OpenSSL version, such as `openssl-3.5.7`, in both the manifest and
+The session security provider is `openssl35.ytp1-security`, the provider the
+library links. The cryptographic backend is `openssl-` followed by the loaded
+OpenSSL version, such as `openssl-3.5.7`, in both the manifest and
 `yume_get_build_info`.
 
 Provider/suite mismatch is a hard `YUME_STATUS_INCOMPATIBLE`. YTP/1 never
@@ -563,11 +557,9 @@ must update:
 The build-tree gate checks the exact symbol set,
 header/map/Debian-symbol agreement, strict C/C++ header consumption, metadata,
 strict configuration and its refusals, lifecycle/callback containment,
-diagnostics, ownership, named-stream and packet traffic when the native provider
-graph is built, native client destination streams against a separate daemon,
-plus the intentional typed `UNSUPPORTED` boundaries for declared adapters and
-start without the native graph. The
-clean-prefix CMake and pkg-config fixtures are future acceptance material, not
+diagnostics, ownership, named-stream and packet traffic, native client
+destination streams against a separate daemon, and the intentional typed
+`UNSUPPORTED` boundary for declared adapters. The clean-prefix CMake and pkg-config fixtures are future acceptance material, not
 a claim that the candidate is currently installed.
 
 Before ABI v1 freezes, the clean-prefix matrix must link without private YUME

@@ -124,19 +124,11 @@ int main(int argc, char** argv) {
     require(std::string_view(compatibility.session_component) ==
                 "ytp1-hybrid",
             "compatibility manifest omitted the logical session component");
-#if defined(YUME_ABI_YTP1) && YUME_ABI_YTP1
     require(std::string_view(compatibility.session_security_provider) ==
                 "openssl35.ytp1-security",
             "linked YTP/1 backend did not report its security provider");
     require(std::string_view(build.crypto_backend).starts_with("openssl-3."),
             "linked YTP/1 backend did not report its OpenSSL release");
-#else
-    require(std::string_view(compatibility.session_security_provider) ==
-                "unwired",
-            "unwired YTP/1 backend claimed a concrete security provider");
-    require(std::string_view(build.crypto_backend) == "unwired",
-            "unwired YTP/1 backend claimed a cryptographic backend");
-#endif
 
     yume_build_info prefix{};
     auto* prefix_bytes = reinterpret_cast<unsigned char*>(&prefix);
@@ -415,17 +407,11 @@ int main(int argc, char** argv) {
             "endpoint start diagnostic query failed");
     require(diagnostic.status == YUME_STATUS_UNSUPPORTED,
             "endpoint start diagnostic had the wrong typed status");
-#if defined(YUME_ABI_YTP1) && YUME_ABI_YTP1
     // The example declares a SOCKS adapter. The embedding backend composes
     // named services only, and refuses instead of dropping the adapter.
     require(std::string(diagnostic.message).find("adapters") !=
                 std::string::npos,
             "schema-1 start diagnostic omitted the uncomposed adapters");
-#else
-    require(std::string(diagnostic.message).find("provider is not linked") !=
-                std::string::npos,
-            "endpoint start diagnostic omitted the unwired provider boundary");
-#endif
 
     yume_open_options open{};
     open.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE + 1U;
@@ -456,7 +442,7 @@ int main(int argc, char** argv) {
     require(yume_endpoint_open_stream(endpoint, &open, 0, &stream) ==
                 YUME_STATUS_INVALID_STATE &&
                 stream == nullptr,
-            "valid open options bypassed the unwired endpoint state");
+            "valid open options bypassed the failed endpoint state");
 
     constexpr char kUppercaseDns[] = "Origin.Example";
     open.destination.kind = YUME_DESTINATION_HOSTNAME;

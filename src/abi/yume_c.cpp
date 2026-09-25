@@ -37,35 +37,6 @@
 #include "common/service_name.hpp"
 #include "config/v1/config.hpp"
 
-#if !defined(YUME_ABI_YTP1) || !YUME_ABI_YTP1
-// Without the native provider graph a schema-1 document still parses and
-// registers services, but no endpoint can start. The typed outcome says so.
-namespace yume::embed {
-
-std::unique_ptr<EndpointBackend> make_ytp1_backend(
-    const config::v1::Config&,
-    std::string_view,
-    std::string_view,
-    std::vector<BackendService>,
-    SocketProtector,
-    BackendIo& outcome,
-    std::string& error) {
-    outcome = BackendIo::Unsupported;
-    error = "native ytp1-tls13-h2 endpoint provider is not linked";
-    return nullptr;
-}
-
-std::string_view ytp1_session_security_provider() noexcept {
-    return yume::kCompatibilityManifest.session_security_provider;
-}
-
-std::string_view ytp1_crypto_backend() noexcept {
-    return yume::kCompatibilityManifest.crypto_backend;
-}
-
-}  // namespace yume::embed
-#endif
-
 namespace {
 
 constexpr std::uint64_t kHandleMagic = UINT64_C(0x59554d4530334142);

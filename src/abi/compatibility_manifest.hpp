@@ -27,8 +27,6 @@ struct CompatibilityManifest {
     std::string_view front_door_provider;
     std::string_view carrier_provider;
     std::string_view session_component;
-    std::string_view session_security_provider;
-    std::string_view crypto_backend;
     std::string_view evidence_profile;
     std::uint32_t evidence_profile_version;
 };
@@ -44,8 +42,6 @@ inline constexpr CompatibilityManifest kCompatibilityManifest{
     kFrontDoorProvider,
     kCarrierProvider,
     kSessionComponent,
-    kSessionSecurityProvider,
-    kCryptoBackend,
     kEvidenceProfile,
     kEvidenceProfileVersion,
 };

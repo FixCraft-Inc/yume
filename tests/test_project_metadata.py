@@ -371,7 +371,7 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("Stock libssl is not accepted for native TLS", cmake)
         self.assertRegex(
             cmake,
-            r'if\(YUME_BUILD_YTP1_TLS13_PROVIDER\)'
+            r'if\(YUME_BUILD_NATIVE_PROVIDERS\)'
             r'\s+include\(CheckCXXSourceCompiles\)',
         )
 

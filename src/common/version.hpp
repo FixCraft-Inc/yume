@@ -37,26 +37,4 @@ inline constexpr std::string_view kFrontDoorProvider = "h2-web";
 inline constexpr std::string_view kCarrierProvider = "h2-duplex";
 inline constexpr std::string_view kSessionComponent = "ytp1-hybrid";
 
-// The suite component names the required behavior; this value identifies the
-// concrete key-holding implementation actually wired into the reporting
-// target. Development scaffolds must say "unwired" rather than borrowing the
-// identity of a provider that merely exists elsewhere in the build tree.
-#if defined(YUME_SESSION_SECURITY_PROVIDER)
-inline constexpr std::string_view kSessionSecurityProvider =
-    YUME_SESSION_SECURITY_PROVIDER;
-#else
-inline constexpr std::string_view kSessionSecurityProvider = "unwired";
-#endif
-
-// A target that links no key-holding YTP/1 provider reports "unwired". The C
-// ABI asks its linked schema-1 backend for the concrete library identity
-// instead, so a provider that merely exists in the build tree never lends its
-// name. A wired target must report the complete backend identity rather than
-// implying that configured algorithms are usable.
-#if defined(YUME_CRYPTO_BACKEND)
-inline constexpr std::string_view kCryptoBackend = YUME_CRYPTO_BACKEND;
-#else
-inline constexpr std::string_view kCryptoBackend = "unwired";
-#endif
-
 }  // namespace yume

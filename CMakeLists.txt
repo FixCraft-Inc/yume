@@ -162,37 +162,14 @@ option(YUME_INSTALL_EXPERIMENTAL_SDK
 if(YUME_INSTALL_EXPERIMENTAL_SDK AND NOT YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_INSTALL_EXPERIMENTAL_SDK requires YUME_BUILD_SHARED_ABI")
 endif()
-option(YUME_BUILD_YTP1_OPENSSL_PROVIDER
-    "Build the OpenSSL 3.5 YTP/1 session-security provider"
-    ${YUME_BUILD_NATIVE_APPLICATION})
-option(YUME_BUILD_YTP1_TLS13_PROVIDER
-    "Build the browser-shaped YTP/1 TLS 1.3 provider"
-    ${YUME_BUILD_NATIVE_APPLICATION})
-option(YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER
-    "Build the Boost.Asio YTP/1 direct TCP/UDP route provider"
-    ${YUME_BUILD_NATIVE_APPLICATION})
-option(YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER
-    "Build client and accepted TCP ByteChannel support for YTP/1"
-    ${YUME_BUILD_NATIVE_APPLICATION})
-option(YUME_BUILD_YTP1_H2_CARRIER
-    "Build the libnghttp2 YTP/1 duplex carrier provider"
-    ${YUME_BUILD_NATIVE_APPLICATION})
-option(YUME_BUILD_YTP1_FRONT_DOOR
-    "Build the TLS/HTTP cover and YTP/1 admission listener"
-    ${YUME_BUILD_NATIVE_APPLICATION})
-if(YUME_BUILD_YTP1_FRONT_DOOR AND
-   NOT (YUME_BUILD_YTP1_TLS13_PROVIDER AND
-        YUME_BUILD_YTP1_H2_CARRIER AND
-        YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER))
-    message(FATAL_ERROR "YTP/1 FrontDoor requires its TLS13, H2_CARRIER and ASIO_TCP_BYTE_CHANNEL providers")
-endif()
-if(YUME_BUILD_NATIVE_APPLICATION)
-    foreach(_provider IN ITEMS OPENSSL_PROVIDER TLS13_PROVIDER ASIO_ROUTE_PROVIDER
-            ASIO_TCP_BYTE_CHANNEL_PROVIDER H2_CARRIER FRONT_DOOR)
-        if(NOT YUME_BUILD_YTP1_${_provider})
-            message(FATAL_ERROR "Native application requires YUME_BUILD_YTP1_${_provider}=ON; use a fresh build directory or enable the provider")
-        endif()
-    endforeach()
+# The native providers and the runtime composed from them: session security,
+# the TLS 1.3 channel, the Asio TCP and route providers, the HTTP/2 carrier and
+# the FrontDoor. The programs and the shared C ABI both need all of them, so a
+# build with neither builds only the engine, YTP/1 and configuration libraries.
+if(YUME_BUILD_NATIVE_APPLICATION OR YUME_BUILD_SHARED_ABI)
+    set(YUME_BUILD_NATIVE_PROVIDERS ON)
+else()
+    set(YUME_BUILD_NATIVE_PROVIDERS OFF)
 endif()
 
 # Compile at least one consumer as C whenever the experimental ABI contract is
@@ -506,31 +483,24 @@ else()
     message(STATUS "YUME native CPU tuning: OFF (portable CPU baseline)")
 endif()
 
-# The TLS client consumes the browser-profile emitter. Session-security-only
-# builds still need just upstream OpenSSL primitives.
-if(YUME_BUILD_YTP1_TLS13_PROVIDER)
+# The TLS client consumes the browser-profile emitter of the pinned OpenSSL.
+if(YUME_BUILD_NATIVE_PROVIDERS)
     if(YUME_STATIC_OPENSSL)
         # The pinned CONFIG target carries Brotli/Zstd through static linkage.
         find_package(OpenSSL 3.5 REQUIRED CONFIG)
     else()
         find_package(OpenSSL 3.5 REQUIRED)
     endif()
-elseif(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
-       NOT TARGET OpenSSL::Crypto)
-    find_package(OpenSSL 3.5 REQUIRED)
 endif()
 
-if((YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER OR
-    YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER OR
-    YUME_BUILD_YTP1_H2_CARRIER) AND
-   NOT TARGET Boost::system)
+if(YUME_BUILD_NATIVE_PROVIDERS AND NOT TARGET Boost::system)
     find_package(Boost CONFIG QUIET COMPONENTS system)
     if(NOT Boost_FOUND)
         find_package(Boost REQUIRED COMPONENTS system)
     endif()
 endif()
 
-if(YUME_BUILD_YTP1_H2_CARRIER)
+if(YUME_BUILD_NATIVE_PROVIDERS)
     find_package(PkgConfig REQUIRED)
     if(YUME_STATIC)
         # FindPkgConfig's generated imported target resolves -lnghttp2 to the
@@ -570,7 +540,7 @@ if(YUME_BUILD_YTP1_H2_CARRIER)
     endif()
 endif()
 
-if(YUME_BUILD_YTP1_TLS13_PROVIDER)
+if(YUME_BUILD_NATIVE_PROVIDERS)
     include(CheckCXXSourceCompiles)
     set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
     set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL)

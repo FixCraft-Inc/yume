@@ -492,19 +492,13 @@ leave the service disabled after installation. Native release archives carry
 setup/doctor and enforce native executable identities; packaging regression
 checks do not qualify a distribution or an installed service.
 
-The C ABI attaches a runtime through one backend per dialect. When the ABI
-library and the transport-v2 reference graph are both enabled, the v2 backend
-starts the reference client or daemon through `yume_endpoint_start`. `yume_endpoint_register_service`,
-`yume_endpoint_open_stream`, and `yume_endpoint_accept_stream` carry
-authenticated named byte streams, and `yume_stream_read`/`write`/
-`shutdown_write`/`close` move real bytes with typed transport failures. A
-schema-1 endpoint uses the same calls through the native backend when the
-provider graph is built, and fails start with a typed unsupported status
-otherwise. Nothing silently
-reroutes one configuration dialect into another runtime. Native packet channels
-support named services and routed UDP with bounded whole-packet batches. The ordinary shared-ABI build links the native
-backend; adding the explicit reference graph can still add the v2 backend.
-Removing that second dialect is unfinished consumer migration.
+The C ABI attaches the native runtime through its one backend and accepts only
+schema-1 documents. `yume_endpoint_start` starts a client or server,
+`yume_endpoint_register_service`, `yume_endpoint_open_stream` and
+`yume_endpoint_accept_stream` carry authenticated named byte streams, and
+`yume_stream_read`, `write`, `shutdown_write` and `close` move real bytes with
+typed transport failures. Native packet channels support named services and
+routed UDP with bounded whole-packet batches.
 
 `IpPacketChannel` validates IPv4/IPv6 lengths, exact packet size, MTU and
 directional address policy before forwarding through the native route bridge.

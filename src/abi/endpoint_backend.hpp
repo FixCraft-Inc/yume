@@ -199,8 +199,6 @@ public:
 // service the configuration declares. Relative credential references resolve
 // against `base_dir`. `resolver_program` is the SystemResolver helper for a
 // transport host that is a name, and empty leaves such a host unresolvable.
-// A build without the native provider graph returns nullptr with `outcome`
-// set to Unsupported.
 std::unique_ptr<EndpointBackend> make_ytp1_backend(
     const config::v1::Config& config,
     std::string_view base_dir,
@@ -210,12 +208,11 @@ std::unique_ptr<EndpointBackend> make_ytp1_backend(
     BackendIo& outcome,
     std::string& error);
 
-// Identity of the key-holding YTP/1 session-security implementation composed
-// by this build, or "unwired" when no YTP/1 backend is linked.
+// Identity of the key-holding YTP/1 session-security implementation.
 std::string_view ytp1_session_security_provider() noexcept;
 
 // Identity of the cryptographic library that implementation runs on, such as
-// "openssl-3.5.7", or "unwired" when no YTP/1 backend is linked.
+// "openssl-3.5.7".
 std::string_view ytp1_crypto_backend() noexcept;
 
 }  // namespace yume::embed

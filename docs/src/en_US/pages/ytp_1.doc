@@ -402,9 +402,8 @@ shared secret; 1568-octet ML-KEM-1024 public key and ciphertext; at most 64
 prepared/in-flight ratchet epochs; mandatory one-use message keys; and a zero
 reserved octet. Every octet MUST match exactly.
 
-The build-tree-only provider `openssl35.ytp1-security` enforces this exact
-composition when explicitly enabled with
-`YUME_BUILD_YTP1_OPENSSL_PROVIDER=ON`. It creates a private
+The provider `openssl35.ytp1-security` enforces this exact composition. It
+creates a private
 OpenSSL library context, loads only the instance-local default provider,
 requires every named algorithm, and has no provider fallback or suite
 negotiation. This target is an experimental implementation, not a production

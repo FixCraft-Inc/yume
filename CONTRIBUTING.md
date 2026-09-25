@@ -28,12 +28,10 @@ YUME's source. This is a design requirement; the experimental ABI does not yet
 provide every required capability.
 
 The source graph is in [SOURCE_MAP.md](docs/SOURCE_MAP.md), and the
-contracts and rationale are in [ARCHITECTURE.md](docs/ARCHITECTURE.md). The
-default build is native YTP/1. Transport v2 stays as an opt-in reference and a
-source of reusable components. Moving a feature does not require finishing the
-reference runtime's audit backlog, tuning it, or porting every historical
-feature. Qualify the required behavior before retiring its only working
-implementation.
+contracts and rationale are in [ARCHITECTURE.md](docs/ARCHITECTURE.md). YUME
+builds native YTP/1. Transport v2, the protocol before it, has been removed,
+and commit `9070b0a` is the last that contains it. Read a planned feature's
+old implementation there before rebuilding it natively.
 
 ## Decision and review discipline
 
@@ -58,10 +56,8 @@ Review the final diff against the original purpose as well as the tests.
 
 For a disputed feature or interface, identify its behavior, actual callers,
 intended requirement and validation path. Then choose direct reuse, a tested
-port, temporary retention for a named development need, or removal. A code
-change on the older runtime needs a surviving component or requirement, or a
-concrete replacement blocker. Past effort alone justifies neither retaining
-an implementation nor rewriting it.
+port, temporary retention for a named development need, or removal. Past
+effort alone justifies neither retaining an implementation nor rewriting it.
 
 Distinguish dead-code removal from deliberate retirement. Prove unreachability
 through callers, guards, the signed baseline and relevant integration tests
@@ -84,10 +80,9 @@ addresses/routes and systemd-resolved's D-Bus API for per-link DNS. DNS-free
 TUN configurations do not require a running resolved service. The C ABI and
 engine do not link the Linux network manager.
 
-Linux transport-v2 server builds require liblzma and libarchive 3.6.0 or newer
-(`liblzma-dev` and `libarchive-dev` on Debian/Ubuntu). They are explicit YUME
-filter-archive dependencies. Static builds also need the transitive static
-libraries reported by `pkg-config --static --libs libarchive`.
+The module libraries (`YUME_BUILD_BASEFWX_MODULES=ON`) build the pinned
+BaseFWX checkout and need liboqs with ML-KEM-1024. `yume`, `yumed` and the C
+ABI never link them.
 
 The normal developer build is:
 
@@ -99,16 +94,14 @@ Tests are off by default; omit `--tests` only when you do not intend to run
 `ctest`.
 
 This prepares YUME's checksum-pinned, default-off patched OpenSSL build.
-The native application does not use BaseFWX; the explicit transport-v2 reference
-graph retains its independent BaseFWX pin. A normal full CMake configuration rejects
-stock OpenSSL because the default `openssl-chrome151` backend requires the
-additive capability. Minimal/transport-core-only configurations have their own
-documented dependency boundary.
+The native application does not use BaseFWX. Only the module libraries build
+on its pinned checkout. A normal full CMake configuration rejects stock OpenSSL
+because the default `openssl-chrome151` backend requires the additive
+capability.
 
-Do not delete or replace an existing `basefwx/` developer checkout. For reference
-qualification, use an isolated checkout at the exact pin. Native `ezbuild.sh`
-leaves BaseFWX untouched; GUI, selftest and topology tools still require explicit
-reference builds and are not native application capabilities.
+Do not delete or replace an existing `basefwx/` developer checkout. For module
+qualification, use an isolated checkout at the exact pin. `ezbuild.sh` leaves
+BaseFWX untouched.
 
 ## Test
 
@@ -121,8 +114,7 @@ git diff --check
 ```
 
 Use isolated build directories for the experimental shared ABI,
-transport-v2/client-only, YTP/1-foundation-only, sanitizer, static, or GUI
-configurations. Do not reuse evidence from an older source hash as if it
+foundation-only, module, sanitizer or static configurations. Do not reuse evidence from an older source hash as if it
 qualified the current candidate. Long remote matrices should run detached and
 write a final machine-readable summary; polling them repeatedly is not useful
 evidence.
@@ -157,13 +149,12 @@ clang-tidy -p <build-dir> src/path/to/file.cpp
   exceptions; none may escape. Use error-code overloads for cancellation/close
   paths that cannot report failure.
 - Validate externally supplied JSON roots and field types before dispatch.
-- Transport-v2 operation JSON uses `{ "ok": false, "error": "..." }`.
-  Replacement ABI, transport, and lifecycle failures use typed statuses; never
-  parse human error strings to recover a status.
-- Product version, transport v2, AUTH v2, relay v2, YTP/1, config schema 1,
-  the replacement ABI candidate, and helper IPC v1 are different identifiers.
-  Preserve existing versioned cryptographic domains and wire labels; add new
-  domains for intentional protocol migrations.
+- ABI, transport and lifecycle failures use typed statuses. Never parse
+  human error strings to recover a status.
+- The product version, YTP/1, config schema 1, the ABI, the evidence profile
+  and the relay channel protocol are different identifiers. Preserve existing
+  versioned cryptographic domains and wire labels, and add new domains for
+  intentional protocol migrations.
 
 The following predeployment rule applies while YUME has no deployed users.
 Before the first deployment to real users, replace this exception with an

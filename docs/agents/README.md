@@ -9,9 +9,9 @@ changing files, preserve unrelated work, and finish with `git diff --check`.
 
 ## Repository contracts
 
-The [source map](../SOURCE_MAP.md) covers both implementations. Native YTP/1 is
-the default client/daemon runtime; transport v2 remains an explicitly enabled,
-uninstalled reference graph. YTP/1, schema 1, and the C ABI are experimental.
+The [source map](../SOURCE_MAP.md) covers the native implementation. Transport
+v2 has been removed, and commit `9070b0a` is the last that contains it. YTP/1,
+schema 1, and the C ABI are experimental.
 Product and protocol versions are independent. Changing a product label does
 not change a wire constant, cryptographic domain, schema, or ABI.
 
@@ -20,8 +20,8 @@ not change a wire constant, cryptographic domain, schema, or ABI.
 before advancing its pin.
 
 `cmake/YumeLayering.cmake` checks exact link dependencies and include direction
-at configure time. Keep `yume_embed` independent of GUI-facing `yume_facade`.
-The C ABI links the embedding layer. Engine and YTP code stay independent of
+at configure time. `abi/` may not include `gui/` or `modules/`, and the C ABI
+links the embedding layer. Engine and YTP code stay independent of
 sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
 
 ## Checks and documentation

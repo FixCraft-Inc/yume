@@ -8,8 +8,8 @@ and server executable are separate artifacts:
   licensing documents, this quick start and `manifest.json`.
 - `yumed-amd64-linux` is the native server executable.
 
-The release manifest identifies the exact files and source. This lane does
-not ship the reference GUI or Chrome helper. Android, Windows, macOS, ARM,
+The release manifest identifies the exact files and source. Android,
+Windows, macOS, ARM,
 OpenWrt, fully static binaries and Debian packages require their own
 qualification. A generated archive alone is not a qualified release.
 
@@ -69,6 +69,6 @@ Once the server is running, connect from the client:
 ```
 
 The generated client exposes SOCKS5 on `127.0.0.1:1080`. The native CLI uses
-schema-1 configuration; transport-v2 flags and configuration are not accepted.
+schema-1 configuration.
 Read the matching implementation status and release notes before treating a
 build as qualified for a platform, classifier, network or long-running use.

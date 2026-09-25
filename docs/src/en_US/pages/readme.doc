@@ -78,9 +78,10 @@ CA key off the server.
 | `libyume` | Optional C library for embedding the client or server in another program |
 @end
 
-The desktop GUI and some older features (relay, federation, local forwards,
-the JSON control API) still live in the transport-v2 reference build and are
-being moved to YTP/1. That build is off by default and not installed.
+The desktop GUI in `src/gui` does not build yet: it waits for a native
+interface. Relay chat and file transfer exist as libraries for planned
+[modules](docs/MODULES.md). Transport v2, the protocol before YTP/1, has been
+removed.
 
 ## Documentation
 

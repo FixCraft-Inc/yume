@@ -29,10 +29,7 @@ bounded build job count. It does not prepare or change the separate BaseFWX
 checkout. Native Linux applications also need libsystemd development files;
 see [build requirements](../CONTRIBUTING.md#build).
 
-Use an isolated build directory for a sanitizer, shared SDK or reference build.
-The explicitly enabled transport-v2 graph is a development reference with
-separate executable names and configuration. Its command-line options do not
-apply to the native programs.
+Use an isolated build directory for a sanitizer or shared SDK build.
 
 ## Create a local kit
 

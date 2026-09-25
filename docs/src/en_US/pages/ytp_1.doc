@@ -92,8 +92,7 @@ never a peer-supplied field. Token comparison is constant time.
 Wall-clock buckets and browser evidence-profile IDs are absent. The exporter
 binds the proof to one TLS connection, avoiding a clock-synchronization
 requirement. Browser geometry remains independent of this admission encoding.
-Transport-v2 token fields and domains remain unchanged; neither protocol
-accepts the other's proof.
+It shares no field or domain with transport v2's admission token.
 
 A native front door MUST verify the proof and reserve its nonce atomically
 in one process-shared bounded replay cache before promotion. Cache expiry uses
@@ -786,12 +785,9 @@ Not implemented or not qualified as a production YTP/1 path:
 The native endpoint and its providers are internal C++ components. The native
 executables are installed by default; the experimental C SDK has a separate
 installation opt-in. Schema-1 ABI
-endpoint start uses them only in builds that include them, fails with a typed
-unsupported status otherwise, and never silently dispatches into transport v2. An explicitly selected
-transport-v2 configuration can use the same ABI symbols and carry named byte
-streams, but it is a separate backend and does not qualify YTP/1. The
-transport-v2 reference build is opt-in, and its presence does not make transport v2, AUTH v2, federation,
-relay, GUI, or other product-specific surfaces part of YTP/1.
+endpoint start uses them only in builds that include them and fails with a
+typed unsupported status otherwise. The relay module, the GUI and other
+product-specific surfaces are not part of YTP/1.
 
 `yume` and `yumed` run on this contract. Remaining adapters, independent peer
 interoperability and production qualification are open.

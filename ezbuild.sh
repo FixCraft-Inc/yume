@@ -66,7 +66,7 @@ Options:
   --clean                 Remove the build directory and exit
   --tests                 Build the test executables
   --dev                   Optimized developer build (RelWithDebInfo) with
-                          opt-in low-level timing diagnostics compiled in
+                          the low-level timing helpers compiled in
   --native                Tune for this host CPU (-march/-mtune=native),
                           fastest locally but not portable to older CPUs
   --deb, --package-deb    Build a Debian package with CPack
@@ -420,7 +420,7 @@ main() {
     # Keep the normal path unambiguously production-grade. Debug timing code is
     # selected by configuration and therefore cannot leak into Release.
     if [[ $DEV_BUILD -eq 1 ]]; then
-        info "Build mode: RelWithDebInfo (developer diagnostics available; runtime opt-in)."
+        info "Build mode: RelWithDebInfo (timing helpers compiled in, no runtime switch)."
         CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=RelWithDebInfo )
     else
         info "Build mode: Release (developer diagnostics compiled out)."

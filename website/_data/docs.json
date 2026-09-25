@@ -90,7 +90,7 @@
   },
   {
     "title": "Diagnostics",
-    "summary": "Current developer timing hooks, private evidence handling, and result limits.",
+    "summary": "Timing helpers, compiler warnings, sanitizers and fuzzing for native builds, and what each result can show.",
     "url": "/docs/DIAGNOSTICS/",
     "source": "docs/DIAGNOSTICS.md",
     "landing_group": "Operating",
@@ -108,7 +108,7 @@
   },
   {
     "title": "Source map",
-    "summary": "Runtime ownership, YTP/1 data and cryptographic paths, shared components, and missing integration.",
+    "summary": "Where each part of the native runtime lives, how data and keys move through it, and which checks enforce the layers.",
     "url": "/docs/SOURCE_MAP/",
     "source": "docs/SOURCE_MAP.md",
     "landing_group": "Reference and development",

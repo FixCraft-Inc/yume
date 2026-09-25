@@ -13,10 +13,10 @@ engine that owns its state explicitly and does not depend on sockets, TLS
 libraries, configuration parsing or application policy. Providers plug those
 in from outside.
 
-The native graph reuses transport-v2 components where their contracts fit,
-such as the HTTP/2 and WebSocket carrier code and the browser profile. Relay,
-federation, the control API and the GUI still exist only in the transport-v2
-reference build. Move each one with its tests before removing the old path.
+The HTTP/2 and WebSocket carrier code and the browser profile came from
+transport v2, the protocol before YTP/1, which has been removed. The relay
+channel, file transfer, codecs and the share container live on as module
+libraries, and the GUI waits as source for a native interface.
 A new protocol name proves neither better speed nor stronger security.
 [Implementation status](IMPLEMENTATION_STATUS.md) lists the open gates.
 
@@ -86,8 +86,9 @@ peer evidence to a byte channel. That evidence may be unauthenticated: in the
 normal server-authenticated TLS shape, the server has no TLS client credential.
 `SecureChannelPeerEvidence` records what the outer channel actually established
 and is never application identity or dispatcher authorization. The default
-provider is TLS 1.3. Its client uses the same browser-profile configuration as
-transport v2. The browser's offer can include TLS 1.2 and HTTP/1.1, but YTP
+provider is TLS 1.3. Its client applies the browser profile in
+`stealth/tls_client_profile.*`. The browser's offer can include TLS 1.2 and
+HTTP/1.1, but YTP
 accepts only negotiated TLS 1.3 and H2; profile application never relaxes that
 boundary. Both native emitters require the pinned patched OpenSSL.
 
@@ -140,8 +141,8 @@ carrier so its admitted application-protocol state remains intact. The first
 provider uses a duplex HTTP/2 exchange. HTTP/2 is not a session-engine
 dependency, and transport-profile geometry is not a YTP field.
 
-The experimental `h2-duplex` provider reuses the retained libnghttp2/RFC 8441
-state machine without changing the runnable transport-v2 path. It performs the
+The experimental `h2-duplex` provider uses the libnghttp2 and RFC 8441 state
+machine in `stealth/h2_carrier.*`. It performs the
 client's genuine priming and extended-CONNECT acceptance sequence, while the
 server construction seam accepts only an already-admitted live H2 carrier so
 SETTINGS, HPACK, stream, and flow-credit state are not reconstructed. Its
@@ -180,7 +181,7 @@ session bootstrap.
 `runtime::NativeEndpoint` composes schema-1 configuration, protected credential
 files, per-identity service policy, client TCP/TLS/H2 or server FrontDoor, and
 `SessionBootstrap` on one caller-owned `AsioExecutionContext`. Its two roles
-share the same session engine; no transport-v2 dependency supplies the runtime.
+share the same session engine.
 Credential parsing uses a private OpenSSL context and passes canonical DER to
 the independent security factory. Admission, traffic access and administrator
 authority remain separate. `yume_private_files` owns the protected-file reader
@@ -394,15 +395,15 @@ Native source is organized by dependency:
 | `src/providers/` | native session security, browser-shaped TLS, client/accepted TCP channels, native FrontDoor/static cover, H2 admission/carrier and direct routes |
 | `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy, and the `yume`/`yumed` runtimes with their SOCKS5 and TUN adapters |
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
-| `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. Each dialect reaches its runtime through its own embed backend |
+| `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. It accepts schema-1 documents only and reaches the runtime through the embedding seam |
 | `src/abi/native_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
+| `src/modules/` | module programs and the libraries planned modules build on: the relay channel with its stores, file transfer, application codecs and the share container. Only these libraries use BaseFWX |
 | `tools/` | provisioning and evidence tooling |
 
 The installed `yumed` and `yume` build from `src/runtime/` with every native
-provider. The GUI and the features not yet moved stay in the opt-in,
-uninstalled transport-v2 graph, which gets no separate stabilization work. The
-[source map](SOURCE_MAP.md#replacement-integration-gaps) lists the missing
-connections and the components already shared with YTP/1.
+provider. The GUI source in `src/gui` does not build until it has a native
+interface. The [source map](SOURCE_MAP.md#composition-and-open-gaps) lists
+what is composed and what is still open.
 
 The foundational CMake targets enforce the following dependency rule:
 
@@ -412,17 +413,19 @@ yume_session_bootstrap        filesystem, or GUI dependency
 yume_config_v1                nlohmann JSON only
 native providers              engine/YTP plus their explicit system libraries
 native runtime                config, bootstrap, providers, protected files
-yume_embed               native runtime, OpenSSL security provider and
-                              threads, no transport v2 or BaseFWX
-C ABI                         config_v1 plus embed backends, no private-header API
+yume_embed                    native endpoint, OpenSSL security provider and
+                              threads, no BaseFWX
+C ABI                         config_v1 plus the embed backend, no private-header API
+module libraries              BaseFWX, OpenSSL and JSON, never linked by the
+                              programs or the C ABI
 future adapters/executables   C ABI or explicit application layer
 ```
 
 YUME owns YTP authentication, domains, transcript construction, key schedules,
 ratchet semantics, admission and authorization. The concrete YTP/1 security
 provider calls OpenSSL 3.5 directly. BaseFWX supplies primitives and secret
-containers to the transport-v2 graph; it is a separate ignored checkout pinned
-by `config/dependencies.json`. The [source map](SOURCE_MAP.md#authentication-and-cryptographic-ownership)
+containers to the module libraries only. It is a separate ignored checkout
+pinned by `config/dependencies.json`. The [source map](SOURCE_MAP.md#authentication-and-cryptographic-ownership)
 connects each mechanism to its implementation and explains the data path.
 
 The intended primary transport does not require BaseFWX. Any retained BaseFWX
@@ -443,13 +446,11 @@ and has no JSON operation bus. A runtime owns callback delivery and coordinates
 child endpoints; execution resources belong to the selected backend. An
 immutable config owns validated values, an endpoint owns one backend selection,
 and stream/packet handles own their application I/O lifetimes. Native packet
-handles preserve record boundaries and credit. Transport-v2 packets remain
-unsupported. Development SDK installation is a separate opt-in, not an ABI freeze.
+handles preserve record boundaries and credit. Development SDK installation is
+a separate opt-in, not an ABI freeze.
 
-The ABI selects a backend by configuration dialect. Transport-v2 documents run
-the existing client and daemon runtimes. Schema-1 documents run the native
-endpoint through `yume_embed` when the provider graph is built, and fail
-closed otherwise. Neither dialect is an implicit provider for the other. The
+The ABI accepts schema-1 documents only. They run the native endpoint through
+`yume_embed` when the provider graph is built, and fail closed otherwise. The
 schema-1 backend owns one execution thread per started endpoint and performs
 every engine and provider call on it. Application threads hand requests over
 through allocation-free control tasks. Received records keep their receive
@@ -477,9 +478,8 @@ application -> local adapter -> YTP session -> yumed -> authorized target
 
 The server terminates YTP cryptography and is the explicit exit. It is not an
 onion relay. Federation, transit, directory, reverse administration, command
-execution, chat/file relay, and host-controller modes are outside the first
-YTP/1 path; their transport-v2 implementations remain separate during the
-transition.
+execution and host-controller modes are outside the first YTP/1 path. Chat and
+file relay are planned as modules on the relay channel library.
 
 See [YTP/1](protocol/YTP_1.md), [C ABI](ABI.md), and the
 [threat model](THREAT_MODEL.md) for the normative boundaries.

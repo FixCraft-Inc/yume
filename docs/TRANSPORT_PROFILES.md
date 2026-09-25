@@ -1,11 +1,14 @@
 <!-- Generated from docs/src/en_US/pages/transport_profiles.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Transport profile architecture
 
-YUME separates an authenticated transport identity from whatever browser is
+YUME separates its captured transport identity from whatever browser is
 currently installed on the host. Browser auto-updates must not silently change
-wire behavior: the profile ID participates in admission, AUTH, establishment,
-and protected-frame AAD, so changing its meaning in place would be a protocol
-and security regression.
+wire behavior. The profile ID is not a YTP/1 field and enters no key or
+admission proof, but it selects the exact TLS, HTTP/2 and cover geometry that
+`yume` and `yumed` present. Changing its meaning in place would change what
+observers see without a new capture behind it. The relay channel's ratchet
+binds the string `chrome151-node24-v1` as a fixed label, which does not follow
+the active profile.
 
 ## Sources of truth
 
@@ -26,7 +29,7 @@ equal `kEvidenceProfile` in `src/common/version.hpp`, then generates the C++
 registry consumed through `cover_profile::active()`. TLS/HTTP/H2 consumers
 contain no browser-version branches.
 
-Dev6's carrier implementation currently requires exactly two assets and the
+The H2 carrier currently requires exactly two assets and the
 captured stream sequence 1/3/5/7 (priming, CSS, JavaScript, extended CONNECT).
 The generator rejects any other geometry instead of admitting metadata that
 `H2Carrier` cannot execute. Generalizing that carrier is a separate reviewed
@@ -44,19 +47,19 @@ the installed production HTTP/1 cover backend. Changing it requires new
 matched captures and must not silently rewrite the existing
 `chrome151-node24-v1` evidence claim.
 
-The opt-in YUME `--outer-carrier-evidence` path is admitted only when this
-active profile, the native `openssl-chrome151` backend, and the frozen
-one-tunnel workload all match. The capture-only application transaction is 64
-ordered 16-KiB messages echoed byte-for-byte; ordinary endpoint benchmarks do
-not use that protocol. Its stable behavior summary is reconstructed from
-bounded live carrier events; the registry is used to validate and redact
-expected metadata, never to fabricate observed events. The application match
-does not hide YUME framing/ratchet overhead: the observer reports the actual
-outer WebSocket geometry and the classifier may correctly return `DRIFT`. The
-stable classifier projection also retains ordered request and WebSocket
-lifecycle. In particular, normal Chrome's stream-9 favicon request and
-PING-before-first-fragment relationship are compared even though the current
-production YUME carrier does not reproduce them.
+The capture script for the YUME arm, `tools/cover-node/capture_yume151_runs.sh`,
+still drives the transport-v2 client and its `--outer-carrier-evidence`
+option with a one-tunnel workload of 64 ordered 16-KiB messages echoed
+byte-for-byte. Native `yume` has no evidence option yet. The H2 carrier can
+record an `OuterCarrierTrace`, but no runtime passes it one, so the YUME arm
+cannot be captured until a native evidence path exists. The comparison rules
+stay the same for that path. The behavior summary comes from bounded live
+carrier events, and the registry only validates and redacts expected
+metadata, never fabricating observed events. The observer reports the actual
+outer WebSocket geometry, so the classifier may correctly return `DRIFT`. The
+stable classifier projection keeps ordered request and WebSocket lifecycle, and
+normal Chrome's stream-9 favicon request and its PING-before-first-fragment
+relationship are compared even though the YUME carrier does not reproduce them.
 
 The transport and dependency registries are source/build metadata and are not
 installed as runtime examples. The transport registry contains
@@ -71,7 +74,7 @@ flattened evidence files that installed diagnostics consume.
 2. Sanitize and review the fixture. Record exact binary hashes and preserve
    measured distributions instead of inventing stable timing constants.
 3. Add a new fixture directory and a new registry entry. Never rewrite the
-   evidence behind an existing authenticated profile ID.
+   evidence behind an existing profile ID.
 4. Fill in `openssl_selection` for the native backend. This lets the
    in-process OpenSSL path track the browser, and it is deliberately data
    rather than code so a new browser needs no C++ change:

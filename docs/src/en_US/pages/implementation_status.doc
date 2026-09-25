@@ -19,13 +19,12 @@ three terms deliberately:
   named platform and environment.
 
 YUME is development software at product version `0.3.0-dev1`, with no deployed
-users or stable interface. The default CMake graph composes native YTP/1 as
-`yume` and `yumed`, using schema-1 configuration. Transport v2 is off by default;
-its explicitly enabled, uninstalled reference programs retain unresolved
-capability implementations. This build switch does not complete application
-migration or authorize capability retirement. Neither implementation is
-production-qualified. Native manuals and package definitions follow schema 1;
-package/service qualification, GUI and other consumers retain separate gates.
+users or stable interface. The CMake graph composes native YTP/1 as `yume` and
+`yumed`, using schema-1 configuration. Transport v2 has been removed, and
+commit `9070b0a` is the last that contains it. Native YTP/1 is not
+production-qualified. Manuals and package definitions follow schema 1, and
+package and service qualification, the GUI and other consumers keep separate
+gates.
 
 ## Current 0.3 foundation
 
@@ -44,8 +43,8 @@ Implemented and covered by focused tests:
   genuine client priming plus extended-CONNECT acceptance, a typed live-state
   server-promotion seam, carrier-private record framing, move-owned outer
   credit, and flow-controlled send completion. Focused fake-channel tests and
-  the retained transport-v2 H2 regression pass; these do not establish a
-  complete YTP session runtime;
+  the H2 carrier regression (`yume_h2_carrier_test`) pass, and they do not
+  establish a complete YTP session runtime;
 - 31-bit YTP stream identifiers with stream zero reserved for control, odd
   client ownership, even server ownership, and exhaustion checks;
 - a dependency-pure YTP/1 protocol kernel with bounded canonical frame, OPEN,
@@ -105,12 +104,13 @@ Implemented and covered by focused tests:
 - the experimental role-neutral C ABI v1 candidate header, symbol allowlist,
   typed metadata and diagnostics, and exception-contained handle scaffolding;
 - an explicitly enabled unversioned `libyume.so` build-tree library with
-  build-tree C and C++ consumers that verify metadata, both configuration
-  dialects, handle lifecycle, registration ordering, and a real transport start
+  build-tree C and C++ consumers that verify metadata, schema-1
+  configuration, handle lifecycle, registration ordering, and a real transport start
   reaching the runtime rather than a stub, plus an integration probe that
   provisions a real server and client and moves bytes both directions over an
-  authenticated named service stream. Client socket protection is connected
-  to every outbound transport-v2 dial and fails closed. The candidate has no
+  authenticated named service stream. A client's socket protector sees its
+  TCP dial to the server, or to its SOCKS5 proxy, and a refusal fails the
+  dial. A server refuses a protector. The candidate has no
   frozen ABI package. `YUME_INSTALL_EXPERIMENTAL_SDK=ON` enables development
   installation of the unversioned library, C header, CMake package and pkg-config
   metadata. The clean-prefix consumer gate runs when installation and tests are enabled.
@@ -159,7 +159,7 @@ The lasting automated evidence includes warning-as-error builds, strict C and
 C++ ABI consumers, exact built/header/map/candidate-symbol agreement, schema
 examples and negative parser cases, real-key hybrid handshake/record/rekey
 tests, malformed canonical-codec cases, fake-channel TLS/H2 provider tests,
-real loopback TCP and connected-UDP route tests, the transport-v2 H2 regression,
+real loopback TCP and connected-UDP route tests, the H2 carrier regression,
 and the end-to-end ABI named-stream probe. Exact candidate run results belong
 to CI or private qualification artifacts rather than this current-behavior
 document. Passing focused tests does not qualify the replacement end to end.
@@ -248,7 +248,7 @@ reserved queue capacity, peer overshoot refusal, deferred publication and ACK
 deadline expiry. The native endpoint also tests its unanswered-ACK watchdog.
 Competing-stream tests cover credit changes, stalled readers, callback reentry
 and release after rekey. These cases do not establish sustained real-carrier
-fairness, high-RTT behavior or security equivalence to transport-v2 Extreme.
+fairness or high-RTT behavior.
 Automatic rotation remains an open security-preservation gate despite the
 changed build default.
 Deterministic pacing tests cover accept refusal, unschedulable retries,
@@ -379,7 +379,10 @@ end-to-end channel apart from transport v2: the composite-identity handshake
 with ML-KEM-1024, X25519 and an optional PSK, the sealed record format and the
 hybrid ratchet with its rekey records. Its tests check known answers produced
 by the transport-v2 code for epoch roots, ciphertexts and whole records, so
-the copy keeps every label and wire value. The same library holds the stores a
+the copy keeps every label and wire value. A known-answer test also checks
+every handshake and ratchet label on the
+[relay channel page](protocol/RELAY_CHANNEL.md) against an independent Python
+reference. The same library holds the stores a
 relay user keeps: chat history encrypted at rest, the relay secret derived
 from a password with PBKDF2, and peer trust with first-use and pinned
 fingerprints. Peer fingerprints are now YTP/1 identity fingerprints, the value
@@ -460,7 +463,6 @@ must not be advertised as working:
   and can read its credential files, so modules are trusted programs until each
   runs as a user of its own;
 - production qualification of module adapters and managed TUN;
-- transport-v2 public-ABI packets, which remain explicitly unsupported;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native
   `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;
@@ -468,11 +470,10 @@ must not be advertised as working:
   security-review gates.
 
 Native CTest registration includes the schema-1 setup and doctor negative
-cases, project metadata and Linux release-archive checks without enabling v2.
+cases, project metadata and Linux release-archive checks.
 The Clang fuzz profile instruments the YTP frame/OPEN/capability codecs, AUTH
 TLVs and schema-1 parser, including their source libraries. Numeric overflow
-in JSON is a typed validation failure. Reference parsers remain separately
-available when the reference graph is enabled.
+in JSON is a typed validation failure.
 
 With Linux namespace tests enabled, `YUME_TEST_NATIVE_STRESS=ON` adds a delayed
 carrier workload with an unread destination, competing transfers, ordered
@@ -484,9 +485,8 @@ without raising the 256 MiB RSS growth guard. Other sanitizer tests keep their
 existing options. This finite workload does not measure live queue ownership,
 prove a memory plateau or observe automatic rekeys.
 
-GUI, helper and CodeQL configurations explicitly select the reference graph
-when their targets require it. The GUI uses the reference daemon in its live
-fixture and remains uninstalled until consumer migration. Debian definitions
+The GUI in `src/gui` does not build until it has a native interface. CodeQL
+analyzes the native programs, `libyume` and the module libraries. Debian definitions
 use the native config-only daemon, validate configuration before startup and
 leave the service disabled after installation. Native release archives carry
 setup/doctor and enforce native executable identities; packaging regression

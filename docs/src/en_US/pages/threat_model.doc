@@ -164,10 +164,12 @@ indistinguishability, or anonymity.
 
 ## Replacement scope
 
-The first YTP/1 endpoint targets direct routing, named services, and packet
-adapters. Federation, relay applications, host-controller modes, the GUI, and
-reserved EXEC policy remain on the transport-v2 track. Their integration or
-retirement requires a separate decision. See [implementation status](IMPLEMENTATION_STATUS.md).
+The first YTP/1 endpoint targets direct routing, forwards, named services,
+modules and packet adapters. Federation and host-controller modes left with
+transport v2, and native YTP/1 has no command execution. Chat and file relay
+are planned as modules on the relay channel library, and the GUI waits for a
+native interface. Each needs its own design before it ships. See
+[implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Evidence required for release
 

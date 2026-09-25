@@ -2,9 +2,7 @@
 # YUME documentation
 
 YUME `0.3.0-dev1` is development software. The installed `yume` and `yumed`
-speak YTP/1. Transport v2 (wire `0.2.0-dev6`) survives only as an uninstalled
-reference build that holds features still being moved to YTP/1. Its pages are
-listed separately at the end.
+speak YTP/1. Transport v2, the protocol before it, has been removed.
 
 ## Run YUME
 
@@ -41,16 +39,11 @@ listed separately at the end.
   writing one.
 - [YTP/1 development guide](development/ytp1/README.md): build options, setup
   tools, embedding and verification gates.
+- [Developer diagnostics](DIAGNOSTICS.md): timing helpers, warnings,
+  sanitizers and fuzzing.
 - [Development notes](release/CHANGELOG.md), [SBOM](release/SBOM.spdx.json)
   and [automation guidance](agents/README.md).
 
 Source and tests win when prose disagrees. Generated pages come from `.doc`
 sources under [docs/src](src/README.md). Edit the source named in the banner,
 then run the sync described there.
-
-## Transport-v2 reference
-
-These pages describe the transport-v2 reference build, which has been removed.
-Each stays until it is rewritten for YTP/1 or deleted.
-
-- [Diagnostics](DIAGNOSTICS.md).

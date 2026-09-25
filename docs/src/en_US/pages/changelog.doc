@@ -12,11 +12,10 @@ withdrawn version plans and test builds. They are not support contracts. See
 
 ## [Unreleased 0.3.0-dev1]
 
-The product version moved to `0.3.0-dev1`. The default `yume` and `yumed`
-binaries now compose native YTP/1 with schema-1 configuration. The explicit,
-uninstalled transport-v2 reference retains its wire `0.2.0-dev6`; the wire,
-AUTH, relay, YTP/1, schema, ABI, and evidence-profile
-versions are independent axes. `docs/IMPLEMENTATION_STATUS.md` is the current
+The product version moved to `0.3.0-dev1`. `yume` and `yumed` compose native
+YTP/1 with schema-1 configuration, and transport v2 has been removed. The
+YTP/1, relay channel, schema, ABI and evidence-profile versions are
+independent axes. `docs/IMPLEMENTATION_STATUS.md` is the current
 boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
@@ -25,7 +24,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   (handshake, sealed records and hybrid ratchet) builds apart from transport
   v2 as `yume_module_relay` when `YUME_BUILD_BASEFWX_MODULES` is on. Its labels
   and wire format are unchanged, which tests check against known answers from
-  the transport-v2 code. It also holds the encrypted chat history, the relay
+  the transport-v2 code and against an independent Python reference that pins
+  every handshake and ratchet label. It also holds the encrypted chat history, the relay
   secret, peer trust, and the invite and directory records with their
   policies. Peer fingerprints changed from the transport-v2
   identity domain to the YTP/1 one, so a peer's fingerprint is the one
@@ -706,6 +706,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Removed
 
+- **Transport v2.** Its wire, AUTH v2, security modes, client and daemon, GUI
+  facade and control API, federation, host controller, the Go Chrome TLS
+  helper, the v2 benchmark and self-test drivers, the multi-target and Windows
+  build scripts, and their documents and manuals are gone. Commit `9070b0a` is
+  the last that contains all of it. What YUME still needed moved first: the
+  relay channel, file transfer, codecs, the share container, egress lists,
+  per-client speed limits, forwards, the SOCKS5 upstream and the loopback
+  fetch are native, and `config/yume.json` and `config/yumed.json` are now the
+  schema-1 examples. The GUI source stays for the GUI phase and does not
+  build.
 - **Inline `real_secret` and the `--real-secret` flag.** The cover-backend
   secret could be passed in argv, where the process table exposes it, or
   written into the configuration file. Both server loaders now refuse the key

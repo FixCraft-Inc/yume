@@ -32,7 +32,7 @@ together.
 | PSK | Pre-shared key: a secret both sides hold before they connect. |
 | Ratchet | Keys that only move forward. Each one is derived, used, and erased. |
 | SNI | The site name a client sends at the start of TLS. Observers can read it. |
-| Transport v2 | The previous protocol, kept in the uninstalled reference programs while its remaining features move to YTP/1. |
+| Transport v2 | The protocol before YTP/1. It has been removed, and commit `9070b0a` is the last that contains it. |
 | YTP/1 | YUME Transport Protocol 1, which `yume` and `yumed` speak. |
 @end
 

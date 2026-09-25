@@ -16,9 +16,9 @@ should start with the [quick start](../../QUICKSTART.md) and
 lists what is tested and what is still open. The manuals are
 [`yume.1`](../../man/yume.1) and [`yumed.8`](../../man/yumed.8).
 
-Schema-1 kits and transport-v2 configuration are separate formats, and
-nothing converts between them. Do not give a reference configuration to the
-native programs.
+Schema 1 is the only configuration format. The parser requires
+`"schema": 1` and a closed set of keys, so an older configuration file does
+not load, and nothing converts one.
 
 ## Build options
 
@@ -82,9 +82,7 @@ The build tree contains an unversioned `src/libyume.so` and its contract
 tests. The install contains `yume`, `yumed`, `yume-setup` and `yume-doctor`.
 SDK files install only with `YUME_INSTALL_EXPERIMENTAL_SDK=ON` (see
 [ABI installation](../../ABI.md)). The schema-1 ABI backend needs every native
-provider and returns `YUME_STATUS_UNSUPPORTED` without them. A build with the
-transport-v2 reference graph also carries named streams over v2, but not
-packets or routed traffic.
+provider and returns `YUME_STATUS_UNSUPPORTED` without them.
 
 ## Provision a kit and validate it
 
@@ -437,9 +435,8 @@ capability bytes, the registered service kind and policy, destination policy
 for the built-in TCP/UDP encodings, and stream, pending-open, queue, packet,
 and route limits. A `RouteProvider` receives only an `AuthorizedRouteRequest`
 built after those checks. Federation, directory, relay applications, reverse
-administration, the reserved, disabled transport-v2 EXEC relay-policy
-surface, host-controller modes, product codecs, and dynamic plugins are outside
-the first YTP/1 path and have no schema-1 aliases.
+administration, command execution, host-controller modes, product codecs, and
+dynamic plugins are outside the first YTP/1 path and have no schema-1 aliases.
 
 ## Packet channels
 
@@ -505,8 +502,8 @@ role, transcript, identities, parameters, and both capability manifests being
 bound; component stripping, mutation, role confusion, replay, and exporter
 mismatch; and directional one-use keys, nonce uniqueness, bounded pending
 epochs, rekey races, and secure cancellation. Known-answer vectors use only
-`yume/ytp/1/...` domains; transport-v2 vectors are never renamed into YTP/1
-vectors.
+`yume/ytp/1/...` domains. The transport-v2 labels the relay channel keeps
+never enter them.
 
 Before the tunnel can be described as usable, tests must exercise the real
 TLS 1.3 front door, genuine HTTP/2 cover behavior, replay-protected admission,
@@ -521,8 +518,8 @@ batches, rekey pressure, cancellation, and teardown at every asynchronous
 boundary, with ASan, UBSan, TSan, soak, failure-injection, and fuzz suites
 run detached on the private build host.
 
-Performance claims against transport v2 need matched runs of the reference
-build: throughput, p50/p99 latency, CPU
+Performance claims against transport v2 need matched runs of a build from
+commit `9070b0a`, the last that contains it: throughput, p50/p99 latency, CPU
 per byte, allocations, peak memory, and fairness at 1, 32, and 256 streams
 over at least five runs, with environment, raw runs, summary method, and
 uncertainty reported. Ingress claims must name the exact qualified profile

@@ -251,7 +251,10 @@ explicit provider, enforces each direct adapter's schema-1 destinations before
 an optional application policy, refuses duplicate binding ownership, and
 preserves the caller's provider on failed creation. `NativeEgressPolicy` tests
 cover public and explicit networks, never-permitted addresses, IPv4-mapped IPv6
-and per-protocol rules. The canonical network grammar shares test vectors with
+and per-protocol rules. `egress_lists.*` reads egress lists (JSON lists, the
+binary VPN provider database and MaxMind country databases) into disjoint
+address ranges, where the most specific range decides and Deny wins a tie.
+Configuration does not use it yet. The canonical network grammar shares test vectors with
 `yume-doctor`. Engine dispatch supplies the selected provider to the handler; it
 cannot accidentally validate one instance while the built-in handler uses
 another. The public ABI backend still rejects adapter declarations.

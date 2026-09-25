@@ -266,6 +266,41 @@ inline std::optional<IpNetwork> parse_canonical_ip_network(std::string_view text
     return network;
 }
 
+// Accepts an address, or an address and a prefix length, with zero host bits.
+// Unlike parse_canonical_ip_network it takes any form the address parsers
+// accept, including IPv6 hex digits in upper case, so lists written by other
+// tools need not use canonical text. An address without a prefix length is a
+// single-address network.
+inline std::optional<IpNetwork> parse_ip_network(std::string_view text) noexcept {
+    if (text.empty() || text.size() > kMaxIpNetworkTextBytes) return std::nullopt;
+    std::array<char, kMaxIpNetworkTextBytes> folded{};
+    for (std::size_t index = 0U; index < text.size(); ++index) {
+        const char ch = text[index];
+        folded[index] = ch >= 'A' && ch <= 'F' ? static_cast<char>(ch - 'A' + 'a') : ch;
+    }
+    const std::string_view lower(folded.data(), text.size());
+    const std::size_t slash = lower.find('/');
+    const std::string_view address = lower.substr(0U, slash);
+    IpNetwork network;
+    unsigned maximum = 32U;
+    if (address.find(':') != std::string_view::npos) {
+        network.family = IpFamily::V6;
+        maximum = 128U;
+        if (!detail::parse_ipv6(address, network.address)) return std::nullopt;
+    } else if (!detail::parse_ipv4(address, network.address)) {
+        return std::nullopt;
+    }
+    if (slash == std::string_view::npos) {
+        network.prefix_length = static_cast<std::uint8_t>(maximum);
+    } else {
+        const auto prefix = detail::parse_ip_decimal(lower.substr(slash + 1U), maximum);
+        if (!prefix) return std::nullopt;
+        network.prefix_length = static_cast<std::uint8_t>(*prefix);
+    }
+    if (!detail::ip_host_bits_zero(network)) return std::nullopt;
+    return network;
+}
+
 inline bool ip_network_contains(const IpNetwork& network,
                                 IpFamily family,
                                 std::span<const std::uint8_t> address) noexcept {

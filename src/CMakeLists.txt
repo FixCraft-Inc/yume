@@ -712,6 +712,17 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
         yume_apply_perf_opts(yume_native_egress_policy)
         yume_assert_exact_link_dependencies(yume_native_egress_policy yume_config_v1 yume_engine)
 
+        # Operator egress lists: JSON lists, the VPN provider database and
+        # MaxMind country databases, swept into disjoint ranges at load.
+        add_library(yume_egress_lists STATIC
+            runtime/egress_lists.cpp runtime/egress_lists.hpp)
+        target_include_directories(yume_egress_lists PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_egress_lists
+            PUBLIC yume_engine PRIVATE nlohmann_json::nlohmann_json)
+        yume_apply_perf_opts(yume_egress_lists)
+        yume_assert_exact_link_dependencies(yume_egress_lists
+            yume_engine nlohmann_json::nlohmann_json)
+
         # Weighted egress pacing. The endpoint wraps each served stream in it
         # when the server configuration sets limits.max_egress_mbps.
         add_library(yume_egress_pacing STATIC
@@ -1574,6 +1585,15 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_paced_stream_test COMMAND yume_paced_stream_test)
         set_tests_properties(yume_paced_stream_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+    endif()
+    if(TARGET yume_egress_lists)
+        add_executable(yume_egress_lists_test runtime/egress_lists_test.cpp)
+        target_link_libraries(yume_egress_lists_test PRIVATE yume_egress_lists)
+        yume_apply_perf_opts(yume_egress_lists_test)
+        yume_assert_exact_link_dependencies(yume_egress_lists_test yume_egress_lists)
+        add_test(NAME yume_egress_lists_test COMMAND yume_egress_lists_test)
+        set_tests_properties(yume_egress_lists_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_native_egress_policy)
         add_executable(yume_native_egress_policy_test runtime/native_egress_policy_test.cpp)

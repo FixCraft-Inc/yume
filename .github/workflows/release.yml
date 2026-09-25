@@ -42,7 +42,7 @@ env:
 
 jobs:
   preflight:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -75,7 +75,7 @@ jobs:
 
   build-linux:
     needs: [preflight]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Checkout
@@ -171,7 +171,7 @@ jobs:
   publish-release:
     needs: [preflight, build-linux]
     if: ${{ inputs.publish && inputs.independent_security_review && inputs.rc_gates_approved }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write

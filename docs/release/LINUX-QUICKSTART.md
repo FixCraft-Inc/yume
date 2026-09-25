@@ -1,8 +1,10 @@
 <!-- Generated from docs/src/en_US/pages/linux_quickstart.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME Linux x86-64 release quick start
 
-The release lane targets glibc Linux on x86-64. The native client archive
-and server executable are separate artifacts:
+The release lane targets glibc Linux on x86-64. It builds on Ubuntu 24.04,
+and its binaries need glibc 2.38 or newer, so Ubuntu 22.04 and Debian 12
+cannot run them. The native client archive and server executable are separate
+artifacts:
 
 - `yume-amd64-linux.tar.xz` contains `yume`, `yume-setup`, `yume-doctor`,
   licensing documents, this quick start and `manifest.json`.

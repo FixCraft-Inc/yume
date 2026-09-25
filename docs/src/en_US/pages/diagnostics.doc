@@ -97,8 +97,8 @@ or third-party header, where an in-source pragma does not apply:
 @end
 
 Neither is permission to ignore the warning elsewhere. The release toolchain
-is GCC 11 because `release.yml` builds on `ubuntu-22.04`, so a real overread
-on that compiler still appears in the log.
+is GCC 13 on `ubuntu-24.04`, and a source build with GCC 11 still prints a real
+overread in its log.
 
 ## Sanitizers
 

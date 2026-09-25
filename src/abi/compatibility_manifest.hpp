@@ -13,13 +13,11 @@
 
 namespace yume {
 
-// One immutable view is used by the ABI, CLIs, setup/doctor output, and
-// release tooling. Keeping the composition fields separate makes provider
-// substitution visible instead of hiding it behind a product version.
+// The version view the C ABI reports. Keeping the composition fields separate
+// makes provider substitution visible instead of hiding it behind a product
+// version.
 struct CompatibilityManifest {
     std::string_view product_version;
-    std::string_view runtime_transport;
-    std::string_view runtime_transport_wire_version;
     std::string_view ytp_version;
     std::string_view ytp_maturity;
     std::uint32_t config_schema;
@@ -37,8 +35,6 @@ struct CompatibilityManifest {
 
 inline constexpr CompatibilityManifest kCompatibilityManifest{
     kVersion,
-    kRuntimeTransport,
-    kTransportVersion,
     kYtpVersion,
     kYtpMaturity,
     kConfigSchema,

@@ -16,8 +16,8 @@ namespace yume::cover_profile {
 
 #include "stealth/transport_profiles.inc"
 
-static_assert(generated_profiles::kActiveProfileId == yume::kTransportProfile,
-              "generated active profile must match authenticated profile");
+static_assert(generated_profiles::kActiveProfileId == yume::kEvidenceProfile,
+              "generated active profile must match kEvidenceProfile");
 
 Headers Profile::render_headers(const RequestTemplate& request,
                                 std::string_view authority,
@@ -87,7 +87,7 @@ const Profile* find_by_registry_name(std::string_view name) {
 }
 
 const Profile& active() {
-    const Profile* profile = find_by_id(yume::kTransportProfile);
+    const Profile* profile = find_by_id(yume::kEvidenceProfile);
     if (profile == nullptr) {
         throw std::logic_error(
             "authenticated transport profile is absent from the build registry");

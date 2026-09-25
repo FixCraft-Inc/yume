@@ -59,9 +59,8 @@ using engine::Status;
 using engine::StatusCode;
 using Clock = std::chrono::steady_clock;
 
-// Matches the transport-v2 service stream, so one ABI write bound serves both
-// configuration dialects. A write is split into records no larger than the
-// session allows and is still admitted all or none.
+// The public write bound yume.h documents. A write is split into records no
+// larger than the session allows and is still admitted all or none.
 constexpr std::size_t kMaxWriteBytes = 256U * 1024U;
 constexpr std::chrono::milliseconds kDefaultClientStart{30'000};
 constexpr std::chrono::milliseconds kMaxStartDeadline{5 * 60 * 1'000};
@@ -1776,8 +1775,6 @@ public:
     BackendIo start(std::uint32_t timeout_ms, std::string& error) override;
     void stop() noexcept override;
     bool running() const noexcept override;
-    BackendIo register_service(const std::string& service,
-                               std::string& error) override;
     BackendIo open_stream(const std::string& service,
                           const std::optional<BackendDestination>& destination,
                           std::uint32_t timeout_ms,
@@ -1953,11 +1950,6 @@ bool Ytp1Backend::running() const noexcept {
     if (!run || !run->running()) return false;
     return run->server || (run->session &&
                            run->session->state() == engine::SessionState::Active);
-}
-
-BackendIo Ytp1Backend::register_service(const std::string&, std::string& error) {
-    describe(error, "schema-1 services are registered before start");
-    return BackendIo::Invalid;
 }
 
 BackendIo Ytp1Backend::open_stream(const std::string& service,

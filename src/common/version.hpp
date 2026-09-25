@@ -14,21 +14,15 @@ namespace yume {
 // Product maturity is independent of the wire and embedding versions.
 inline constexpr char kVersion[] = "0.3.0-dev1";
 
-// AUTH v2 and admission authenticate this value. A product version change
-// must not change the wire identity.
-inline constexpr std::string_view kRuntimeTransport = "transport-v2";
-inline constexpr std::string_view kTransportVersion = "0.2.0-dev6";
-
-// Profile geometry is evidence-backed and shared by today's transport-v2
-// runtime and the YTP/1 development suite, but it is not a YTP wire version.
+// The captured evidence profile the outer TLS and HTTP/2 layers follow. It is
+// evidence-backed geometry, not a YTP wire version.
 inline constexpr std::string_view kEvidenceProfile =
     "chrome151-node24-v1";
-inline constexpr std::string_view kTransportProfile = kEvidenceProfile;
 inline constexpr std::uint32_t kEvidenceProfileVersion = 1;
 
 // YTP/1, schema 1, and the role-neutral ABI are development contracts. Native
-// endpoints carry traffic; the build-tree ABI and remaining application
-// migration have not passed the complete replacement/release gates.
+// endpoints carry traffic, and the build-tree ABI and remaining application
+// migration have not passed the complete replacement and release gates.
 inline constexpr std::string_view kYtpVersion = "YTP/1";
 inline constexpr std::uint32_t kYtpVersionNumber = 1;
 inline constexpr std::string_view kYtpMaturity = "experimental";

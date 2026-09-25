@@ -223,8 +223,8 @@ int main(int argc, char** argv) {
                 runtime_diagnostic.message[0] != '\0',
             "config parse failure did not record a typed diagnostic");
 
-    // Dialect selection happens before either parser runs, so every document
-    // must name its role and may not claim an unknown schema.
+    // The header check runs before the strict parser, so every document must
+    // name its role and may not claim an unknown schema.
     require(yume_config_parse_json(first, "{\"schema\":1}", 12,
                                    &rejected_config) ==
                 YUME_STATUS_PARSE_ERROR &&
@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
                 std::string_view(runtime_diagnostic.json_pointer) == "/schema",
             "unknown schema did not report /schema");
 
-    // The document must classify as schema 1 so the long unknown key reaches
+    // The document must pass the header check so the long unknown key reaches
     // the strict parser and produces a pointer long enough to be truncated.
     const std::string long_key(YUME_MAX_JSON_POINTER + 32U, 'a');
     const std::string long_pointer_config =
@@ -393,8 +393,8 @@ int main(int argc, char** argv) {
     yume_endpoint_destroy(dual_kind_endpoint);
     yume_config_destroy(dual_kind_config);
 
-    // Server start has no caller-bounded deadline in either dialect. The
-    // refusal happens before the endpoint leaves CREATED.
+    // Server start has no caller-bounded deadline. The refusal happens before
+    // the endpoint leaves CREATED.
     require(yume_endpoint_start(server_endpoint, 1U) ==
                 YUME_STATUS_UNSUPPORTED &&
                 yume_endpoint_state(server_endpoint) == YUME_ENDPOINT_CREATED,
@@ -544,10 +544,8 @@ int main(int argc, char** argv) {
     yume_endpoint_destroy(reentry.endpoint);
     yume_runtime_destroy(reentry.runtime);
 
-    // The transport-v2 dialect must reach a real runtime, not a stub. This
-    // config is valid enough to parse and start, and deliberately incomplete
-    // enough that the transport itself rejects it, so a typed transport
-    // failure here is the proof the backend is genuinely wired.
+    // Schema 1 is the only configuration. A document without "schema" is
+    // refused by that member before the strict parser sees its other keys.
     {
         yume_runtime_options options{};
         options.struct_size = sizeof(options);
@@ -555,81 +553,27 @@ int main(int argc, char** argv) {
         options.config_base_dir = ".";
         yume_runtime* runtime = nullptr;
         require(yume_runtime_create(&options, &runtime) == YUME_STATUS_OK,
-                "transport dialect runtime creation failed");
+                "schema-less document runtime creation failed");
 
-        const char kClient[] =
+        const char kSchemaless[] =
             "{\"role\":\"client\",\"server\":\"127.0.0.1\",\"port\":1}";
-        yume_config* transport_config = nullptr;
-        const yume_status parsed = yume_config_parse_json(
-            runtime, kClient, sizeof(kClient) - 1U, &transport_config);
-
-#if defined(YUME_ABI_TRANSPORT_V2) && YUME_ABI_TRANSPORT_V2
-        require(parsed == YUME_STATUS_OK && transport_config != nullptr,
-                "transport-v2 dialect was not accepted");
-        require(yume_config_role(transport_config) == YUME_ROLE_CLIENT,
-                "transport-v2 client config reported the wrong role");
-
-        yume_endpoint* transport_endpoint = nullptr;
-        require(yume_endpoint_create(runtime, transport_config,
-                                     &transport_endpoint) == YUME_STATUS_OK,
-                "transport-v2 endpoint creation failed");
-        require(yume_endpoint_state(transport_endpoint) ==
-                    YUME_ENDPOINT_CREATED,
-                "transport-v2 endpoint did not start in CREATED");
-
-        // A transport-v2 service is registered with the running runtime, so
-        // registering before start must be refused rather than queued.
-        yume_service_descriptor service{};
-        service.struct_size = sizeof(service);
-        service.abi_version = YUME_ABI_VERSION;
-        service.name = yume_string_view{"tcp", 3};
-        service.kind = YUME_SERVICE_BYTE_STREAM;
-        require(yume_endpoint_register_service(transport_endpoint, &service) ==
-                    YUME_STATUS_INVALID_STATE,
-                "service registration before start was not refused");
-
-        // Packet channels are not implemented on either backend yet, and a
-        // stream open before start must fail on state rather than on kind.
-        yume_open_options packet_open{};
-        packet_open.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE;
-        packet_open.abi_version = YUME_ABI_VERSION;
-        packet_open.service = yume_string_view{"tcp", 3};
-        packet_open.kind = YUME_SERVICE_PACKET;
-        yume_packet* refused_packet = nullptr;
-        require(yume_endpoint_open_packet(transport_endpoint, &packet_open, 0,
-                                          &refused_packet) !=
+        yume_config* schemaless = nullptr;
+        require(yume_config_parse_json(runtime, kSchemaless,
+                                       sizeof(kSchemaless) - 1U,
+                                       &schemaless) ==
+                    YUME_STATUS_PARSE_ERROR &&
+                    schemaless == nullptr,
+                "a document without a schema was accepted");
+        yume_diagnostic schema_diagnostic{};
+        schema_diagnostic.struct_size = sizeof(schema_diagnostic);
+        schema_diagnostic.abi_version = YUME_ABI_VERSION;
+        require(yume_handle_get_diagnostic(runtime, &schema_diagnostic,
+                                           sizeof(schema_diagnostic)) ==
                     YUME_STATUS_OK &&
-                refused_packet == nullptr,
-                "packet open unexpectedly succeeded");
-
-        const yume_status started = yume_endpoint_start(transport_endpoint, 5000);
-        require(started != YUME_STATUS_UNSUPPORTED,
-                "transport-v2 start still reports an unlinked provider");
-        require(started != YUME_STATUS_OK,
-                "an incomplete transport config started successfully");
-        yume_diagnostic transport_diagnostic{};
-        transport_diagnostic.struct_size = sizeof(transport_diagnostic);
-        transport_diagnostic.abi_version = YUME_ABI_VERSION;
-        require(yume_handle_get_diagnostic(transport_endpoint,
-                                           &transport_diagnostic,
-                                           sizeof(transport_diagnostic)) ==
-                    YUME_STATUS_OK &&
-                    transport_diagnostic.message[0] != '\0',
-                "failed transport start recorded no diagnostic");
-        require(yume_endpoint_state(transport_endpoint) == YUME_ENDPOINT_FAILED,
-                "failed transport start did not reach FAILED");
-        require(yume_endpoint_stop(transport_endpoint, 0) == YUME_STATUS_OK,
-                "transport endpoint stop failed");
-        require(yume_endpoint_state(transport_endpoint) ==
-                    YUME_ENDPOINT_STOPPED,
-                "stopped transport endpoint did not reach STOPPED");
-        yume_endpoint_destroy(transport_endpoint);
-        yume_config_destroy(transport_config);
-#else
-        require(parsed == YUME_STATUS_UNSUPPORTED &&
-                    transport_config == nullptr,
-                "a runtime-free ABI accepted the transport-v2 dialect");
-#endif
+                    schema_diagnostic.status == YUME_STATUS_PARSE_ERROR &&
+                    std::string_view(schema_diagnostic.json_pointer) ==
+                        "/schema",
+                "a document without a schema did not report /schema");
         yume_runtime_destroy(runtime);
     }
 

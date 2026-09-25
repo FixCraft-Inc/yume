@@ -24,7 +24,7 @@ and release logic does not depend on Chrome-specific filenames.
 `scripts/generate_transport_profiles.py` validates bounded schemas, fixture and
 artifact path containment, unique profile/alias/helper identities, required
 evidence fields, and header geometry. It requires the registry's active ID to
-equal the authenticated `kTransportProfile`, then generates both the C++
+equal `kEvidenceProfile` in `src/common/version.hpp`, then generates both the C++
 registry consumed through `cover_profile::active()` and the Go helper registry.
 TLS/HTTP/H2 consumers contain no browser-version branches.
 

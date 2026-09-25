@@ -207,8 +207,8 @@ typedef struct yume_runtime_options {
      * selects the process working directory, which is rarely what an embedded
      * host wants: pass an explicit directory, or use absolute paths. */
     const char* config_base_dir;
-    /* Absolute path of a resolver helper program, which schema-1 client
-     * endpoints start to look up a server host that is a name. The yume-resolver
+    /* Absolute path of a resolver helper program, which client endpoints
+     * start to look up a server host that is a name. The yume-resolver
      * program installed with the SDK serves this role, and pkg-config and CMake
      * package metadata name its location. The file must be owned by root or
      * the effective user and must not be writable by group or others. NULL
@@ -313,16 +313,14 @@ YUME_API void yume_runtime_destroy(yume_runtime* runtime) YUME_NOEXCEPT;
  * inline private material, provider mismatch, and unsafe combinations fail
  * with a diagnostic.
  *
- * The transport-v2 client accepts tls_pin_sha256 because the Android config
- * writer emits it. Native writers use tls_pin, which takes precedence when
- * both are present. The schema-1 dialect has no aliases.
+ * The document is configuration schema 1. It must state "role" and
+ * "schema": 1, and it has no key aliases.
  *
- * Both dialects report an RFC 6901 JSON pointer for a failure attributable to
- * one member, and an empty pointer when the failure belongs to no single
- * member, such as malformed JSON or a document-wide validation failure. A
- * document that is not well formed for its dialect is YUME_STATUS_PARSE_ERROR.
- * A document that parses but does not describe a usable endpoint is
- * YUME_STATUS_INVALID_ARGUMENT.
+ * A refused document reports YUME_STATUS_PARSE_ERROR with an RFC 6901 JSON
+ * pointer for a failure attributable to one member, and an empty pointer when
+ * the failure belongs to no single member, such as malformed JSON or a
+ * document-wide validation failure. Input over 1 MiB reports
+ * YUME_STATUS_RESOURCE_EXHAUSTED.
  */
 YUME_API yume_status yume_config_parse_json(yume_runtime* runtime,
                                             const void* json,
@@ -347,14 +345,13 @@ YUME_API yume_status yume_endpoint_register_service(
  * Client start accepts a finite millisecond deadline, and zero selects its
  * 30 s default. Server start, endpoint stop, and stream/packet close accept
  * only zero because they have no caller-bounded deadline.
- * Only server endpoints register services. A successful transport-v2 stop
- * discards its runtime registrations, so register them again after restart.
- * Schema-1 registrations are made while stopped, must match the immutable
- * configuration, and remain attached across stop and restart.
+ * Only server endpoints register services. Registrations are made while
+ * stopped, must match the immutable configuration, and remain attached across
+ * stop and restart.
  * Start is accepted only from CREATED or STOPPED. After a start failure leaves
  * FAILED, call stop(endpoint, 0) to reach STOPPED before retrying. Clearing the
  * external cause alone does not permit a restart from FAILED.
- * Schema-1 listener setup returns PERMISSION_DENIED for OS permission refusal,
+ * Listener setup returns PERMISSION_DENIED for OS permission refusal,
  * INVALID_STATE for an occupied address, INVALID_ARGUMENT for an unavailable
  * local address, RESOURCE_EXHAUSTED for socket resource exhaustion, and
  * IO_ERROR for an otherwise unclassified socket failure. */
@@ -365,11 +362,10 @@ YUME_API yume_status yume_endpoint_stop(yume_endpoint* endpoint,
 YUME_API uint32_t yume_endpoint_state(const yume_endpoint* endpoint)
     YUME_NOEXCEPT;
 
-/* Schema-1 clients open a named byte service, optionally with a TCP hostname,
+/* Clients open a named byte service, optionally with a TCP hostname,
  * IPv4 or IPv6 destination. The server must expose that service through its
  * direct TCP adapter; it resolves hostnames and authorizes every result.
  * Application-accepted named services refuse destination-routed OPENs.
- * Transport-v2 embedding supports named streams without a destination only.
  * Destination and service bytes are copied during the call, including when
  * timeout or cancellation leaves an OPEN settling on the endpoint runner. */
 YUME_API yume_status yume_endpoint_open_stream(
@@ -406,7 +402,7 @@ YUME_API void yume_endpoint_destroy(yume_endpoint* endpoint) YUME_NOEXCEPT;
  * For open, accept, read, write, and write-side shutdown, zero polls without
  * waiting and a positive value is a finite relative deadline in milliseconds.
  * A zero-timeout client OPEN returns WOULD_BLOCK without sending OPEN.
- * Once schema-1 write shutdown is queued, WOULD_BLOCK/TIMEOUT may leave it
+ * Once write shutdown is queued, WOULD_BLOCK/TIMEOUT may leave it
  * pending. Retry shutdown to observe completion; later writes are refused.
  */
 YUME_API yume_status yume_stream_get_peer_identity(
@@ -431,9 +427,9 @@ YUME_API yume_status yume_stream_close(yume_stream* stream,
 YUME_API void yume_stream_destroy(yume_stream* stream) YUME_NOEXCEPT;
 
 /*
- * Schema-1 packet channels support named services and destination-routed UDP.
+ * Packet channels support named services and destination-routed UDP.
  * Only clients open and only servers accept; a server registers a named packet
- * service before start. Transport-v2 embedding returns UNSUPPORTED.
+ * service before start.
  *
  * A channel permits one reader and one writer concurrently; close cancels
  * both directions without waiting for either application's deadline. Callers

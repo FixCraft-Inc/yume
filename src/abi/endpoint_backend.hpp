@@ -22,25 +22,16 @@ class Config;
 
 // The embedding seam. A consumer of YUME, whether the C ABI or another
 // binding, drives a transport through these interfaces and never through the
-// client, server, core, provider or runtime headers directly.
+// provider or runtime headers directly.
 //
-// Reaching a tunnel, a runtime controller or a native session is the
-// embedding layer's job. Keeping it here leaves the ABI shell free of any
-// runtime and gives a future non-C binding the same entry point.
+// Composing the native endpoint is the embedding layer's job. Keeping it here
+// leaves the ABI shell free of any runtime and gives a future non-C binding
+// the same entry point.
 //
-// Two backends implement it. The transport-v2 backend lives in yume_embed.
-// The YTP/1 backend lives in yume_embed_ytp1 and composes the native
-// endpoint without the transport-v2 graph or BaseFWX. The seam and the public
-// ABI candidate are unfrozen and change together with their callers and tests.
+// The YTP/1 backend in yume_embed_ytp1 implements it by composing the native
+// endpoint, without BaseFWX. The seam and the public ABI candidate are
+// unfrozen and change together with their callers and tests.
 namespace yume::embed {
-
-// A parsed, role-tagged transport configuration. The concrete type stays in
-// the backend translation unit so no transport-v2 header reaches the shell.
-class BackendConfig {
-public:
-    virtual ~BackendConfig() = default;
-    virtual bool is_server() const noexcept = 0;
-};
 
 // Transport outcomes, kept independent of the public status enum so the seam
 // stays a runtime boundary rather than a second copy of the C header.
@@ -179,10 +170,6 @@ public:
 
     virtual bool running() const noexcept = 0;
 
-    // Advertises a service the peer may open. Server roles only.
-    virtual BackendIo register_service(const std::string& service,
-                                       std::string& error) = 0;
-
     // Client roles open, server roles accept. A backend that cannot perform
     // the direction asked of it returns Invalid rather than blocking.
     virtual BackendIo open_stream(const std::string& service,
@@ -206,48 +193,6 @@ public:
                                     std::unique_ptr<BackendPacket>& out,
                                     std::string& error) = 0;
 };
-
-// Why a configuration document was refused. Malformed bytes and a document
-// that parses but does not describe a usable endpoint are different answers,
-// and an embedder must not have to read the message to tell them apart.
-enum class BackendConfigOutcome {
-    Ok,
-    // The bytes are not a well-formed document of this dialect: bad JSON, a
-    // non-object root, an unknown or retired key, or a member of the wrong
-    // type.
-    Malformed,
-    // The document parsed, but the values do not form a usable endpoint.
-    Invalid,
-    // This build has no transport runtime linked.
-    Unsupported,
-    // Parsing itself failed for a reason that is not the document's fault.
-    Failed,
-};
-
-struct BackendConfigDiagnostic {
-    // Pessimistic by default: a parser that returns nullptr without setting
-    // an outcome must not read as success or as the caller's fault.
-    BackendConfigOutcome outcome{BackendConfigOutcome::Failed};
-    // RFC 6901 pointer to the offending member, empty when the failure is not
-    // attributable to one. Machine-readable; never derived from `message`.
-    std::string json_pointer;
-    std::string message;
-};
-
-// Parses the transport-v2 configuration dialect. Returns nullptr with
-// `diagnostic` populated when the document is not valid for the requested
-// role. Relative credential paths resolve against `base_dir`.
-std::unique_ptr<BackendConfig> parse_transport_v2_config(
-    std::string_view json,
-    bool is_server,
-    std::string_view base_dir,
-    BackendConfigDiagnostic& diagnostic);
-
-// Creates an unstarted backend for an already-parsed configuration.
-std::unique_ptr<EndpointBackend> make_transport_v2_backend(
-    const BackendConfig& config,
-    SocketProtector socket_protector,
-    std::string& error);
 
 // Creates an unstarted YTP/1 backend for a parsed schema-1 configuration.
 // Only a server registers services, and each registration must name a

@@ -164,17 +164,13 @@ class MetadataTests(unittest.TestCase):
         self.assertGreaterEqual(len(profile["tls_wire_candidates"]), 1)
 
     def test_reader_facing_docs_state_the_product_version(self) -> None:
-        """The website and vcpkg had drift checks; the human-facing docs did
-        not, so all three front-door documents drifted into calling the
-        transport-v2 wire version the product version and labelling the
-        binaries with it. The product version is derived here rather than
-        hardcoded so a version bump forces these documents forward."""
+        """The website and vcpkg had drift checks and the front-door documents
+        did not, so they drifted into labelling the binaries with a wire
+        version. The product version is derived here rather than hardcoded
+        so a version bump forces these documents forward."""
         version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         product = re.search(
             r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
-        ).group(1)
-        wire = re.search(
-            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
         ).group(1)
 
         for relative in ("README.md", "docs/README.md",
@@ -185,31 +181,19 @@ class MetadataTests(unittest.TestCase):
             self.assertTrue(
                 product in text,
                 f"{relative} must state the product version {product}")
-            # The wire version may appear, but only where the prose says it is
-            # the transport-v2 wire. Otherwise it reads as the product version.
-            for paragraph in text.split("\n\n"):
-                if wire not in paragraph:
-                    continue
-                self.assertRegex(
-                    paragraph.replace("\n", " "),
-                    r"transport-v2 wire|wire `?" + re.escape(wire),
-                    f"{relative} mentions {wire} without saying it is the "
-                    "transport-v2 wire version")
 
     def test_manual_pages_state_the_product_version(self) -> None:
-        """The roff header names the product a page belongs to. It carried
-        the transport-v2 wire version until the front-door documents were
-        corrected, so pin it to the product version as well."""
+        """The roff header names the product a page belongs to. It once
+        carried a wire version, so pin it to the product version."""
         version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         product = re.search(
             r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
         ).group(1)
-        wire = re.search(
-            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
-        ).group(1)
-        for relative in ("docs/man/yume-v2-reference.1", "docs/man/yumed-v2-reference.8",
-                         "docs/man/yume-gui.1"):
-            lines = (ROOT / relative).read_text(encoding="utf-8").splitlines()
+        pages = sorted((ROOT / "docs/man").glob("*.[18]"))
+        self.assertTrue(pages)
+        for page in pages:
+            relative = page.relative_to(ROOT).as_posix()
+            lines = page.read_text(encoding="utf-8").splitlines()
             first_line = next(line for line in lines if not line.startswith('.\\"'))
             self.assertTrue(
                 first_line.startswith(".TH "),
@@ -217,16 +201,10 @@ class MetadataTests(unittest.TestCase):
             self.assertIn(
                 f'"YUME {product}"', first_line,
                 f"{relative} header must name product version {product}")
-            self.assertNotIn(
-                wire, first_line,
-                f"{relative} header must not carry wire version {wire}")
 
     def test_product_and_transport_versions_are_coherent(self) -> None:
         version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         self.assertIn('kVersion[] = "0.3.0-dev1"', version_header)
-        self.assertIn('kRuntimeTransport = "transport-v2"', version_header)
-        self.assertIn('kTransportVersion = "0.2.0-dev6"', version_header)
-        self.assertIn("kTransportProfile = kEvidenceProfile", version_header)
         self.assertIn('kYtpVersion = "YTP/1"', version_header)
         self.assertIn("kYtpVersionNumber = 1", version_header)
         self.assertIn('kYtpMaturity = "experimental"', version_header)

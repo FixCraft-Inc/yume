@@ -17,8 +17,10 @@ production-readiness, cryptographic-proof, or interoperability claim.
 
 The authority for this contract is `src/ytp/`,
 `src/engine/session_engine.*`, `src/runtime/native_endpoint.*`, and the
-`src/providers/ytp1_*` and Asio provider
-sources, together with their focused tests and the checked-in kernel vectors.
+provider sources `openssl_security_provider.*`, `ytp1_crypto.*`,
+`tls13_secure_channel.*`, `h2_duplex_carrier.*`, `h2_web_front_door.*`,
+`ytp1_h2_admission.*`, `cover_site.*` and `asio_*` under `src/providers/`,
+together with their focused tests and the checked-in kernel vectors.
 Source and executable tests outrank this document if they disagree.
 
 This contract remains narrower than a complete transport product. The kernel

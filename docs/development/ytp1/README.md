@@ -359,7 +359,19 @@ Schema 1 is role tagged and contains these sections only:
   loopback, link-local, documentation, benchmarking, 6to4, Teredo and NAT64
   prefixes. Unspecified, multicast and reserved addresses are always refused,
   IPv4-mapped IPv6 is evaluated as IPv4, and ports and hostnames are not policy
-  inputs. A network that no destination could match is rejected;
+  inputs. A network that no destination could match is rejected. Optional
+  `lists` hold up to 16 egress lists, each `{"action": "deny" or "allow",
+  "format": "json" or "vpdb", "file": path}`. They only narrow what `public`
+  and `networks` permit: the most specific entry decides and a deny wins a
+  tie, so an allow entry exempts an address from a broader deny and nothing
+  more. A JSON list holds `ips`, addresses or networks with zero host bits,
+  and `countries`, two-letter codes. A `vpdb` file is the binary VPN provider
+  database, format 1. Lists that name countries need `country_database`, a
+  MaxMind DB file such as GeoLite2-Country, and a country entry loses to any
+  address entry. List files resolve like credential references, must not be
+  symbolic links and are read when `yumed` starts or validates. A JSON list may
+  hold 16 MiB, the other files 128 MiB, and all lists together
+  2,097,152 ranges;
 - `udp_service` on a client `socks5` adapter: the packet service that UDP
   ASSOCIATE opens. Without it the adapter refuses UDP ASSOCIATE;
 - a client `forward` adapter: a stream `service`, either `listen_address` (127.0.0.1

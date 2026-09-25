@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -312,6 +313,98 @@ class YumeDoctorTests(unittest.TestCase):
         os.chmod(config_path, 0o600)
         result = self.run_doctor(config_path)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_egress_lists_match_the_native_parser(self) -> None:
+        config_path = self.case / "server/yumed.json"
+        original = json.loads(config_path.read_text())
+        self.assertEqual(original["adapters"][0]["kind"], "direct_tcp")
+        deny = {"action": "deny", "format": "vpdb", "file": "lists/vpn_db.bin"}
+        item = "/adapters/0/destinations/lists/0"
+
+        def with_item(**changes: Any) -> dict[str, Any]:
+            entry = dict(deny, **changes)
+            return {"lists": [{key: value for key, value in entry.items() if value is not None}]}
+
+        cases = (
+            ({"lists": True}, "/adapters/0/destinations/lists: must be an array"),
+            ({"lists": ["lists/vpn_db.bin"]}, f"{item}: must be an object"),
+            (with_item(action="block"), f"{item}/action: must be 'allow' or 'deny'"),
+            (with_item(action="Deny"), f"{item}/action: must be 'allow' or 'deny'"),
+            (with_item(format="tar.xz"), f"{item}/format: must be 'json' or 'vpdb'"),
+            (with_item(format=None), f"{item}/format: required key is missing"),
+            (with_item(path="x"), f"{item}/path: unknown key"),
+            (with_item(file=7), f"{item}/file: must be a string"),
+            (with_item(file="../vpn_db.bin"), f"{item}/file: file reference must not contain parent traversal"),
+            ({"lists": [deny, deny]}, "/adapters/0/destinations/lists/1/file: duplicate list file"),
+            (
+                {"lists": [dict(deny, file=f"lists/{index}.bin") for index in range(17)]},
+                "/adapters/0/destinations/lists: must contain at most 16 lists",
+            ),
+            (
+                {"country_database": {"file": "GeoLite2-Country.mmdb"}},
+                "/adapters/0/destinations/country_database: needs a list that names countries",
+            ),
+            (
+                {"lists": [], "country_database": {"file": "GeoLite2-Country.mmdb"}},
+                "/adapters/0/destinations/country_database: needs a list that names countries",
+            ),
+            (
+                {"lists": [deny], "country_database": {"path": "x"}},
+                "/adapters/0/destinations/country_database/path: unknown key",
+            ),
+        )
+        for changes, expected in cases:
+            with self.subTest(expected=expected):
+                document = copy.deepcopy(original)
+                document["adapters"][0]["destinations"].update(changes)
+                config_path.write_text(json.dumps(document))
+                os.chmod(config_path, 0o600)
+                result = self.run_doctor(config_path)
+                self.assertEqual(result.returncode, 1, expected)
+                self.assertIn(expected, result.stderr)
+
+        # The doctor checks the files the loader will open, not their contents.
+        lists_dir = self.case / "server/lists"
+        lists_dir.mkdir()
+        (lists_dir / "vpn_db.bin").write_bytes(b"VPDB")
+        (lists_dir / "allow.json").write_text('{"ips": ["8.8.8.8"]}')
+        (lists_dir / "empty.json").write_text("")
+        (lists_dir / "link.json").symlink_to(lists_dir / "allow.json")
+        allow = {"action": "allow", "format": "json", "file": "lists/allow.json"}
+        document = copy.deepcopy(original)
+        document["adapters"][0]["destinations"]["lists"] = [deny, allow]
+        config_path.write_text(json.dumps(document))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        file_cases = (
+            (dict(allow, file="lists/missing.json"), "referenced file is missing or inaccessible"),
+            (dict(allow, file="lists/link.json"), "symlink files are forbidden"),
+            (dict(allow, file="lists/empty.json"), "file must not be empty"),
+            (dict(allow, file="lists"), "must reference a regular file"),
+        )
+        for entry, expected in file_cases:
+            with self.subTest(expected=expected):
+                document = copy.deepcopy(original)
+                document["adapters"][0]["destinations"]["lists"] = [deny, entry]
+                config_path.write_text(json.dumps(document))
+                os.chmod(config_path, 0o600)
+                result = self.run_doctor(config_path)
+                self.assertEqual(result.returncode, 1, expected)
+                self.assertIn(f"/adapters/0/destinations/lists/1/file: {expected}", result.stderr)
+
+        document = copy.deepcopy(original)
+        document["adapters"][0]["destinations"]["lists"] = [deny]
+        document["adapters"][0]["destinations"]["country_database"] = {"file": "GeoLite2-Country.mmdb"}
+        config_path.write_text(json.dumps(document))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "/adapters/0/destinations/country_database/file: referenced file is missing or inaccessible",
+            result.stderr,
+        )
 
     def test_destination_network_vectors_match_native_parser(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))

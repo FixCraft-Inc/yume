@@ -142,8 +142,8 @@ changed
 .B weight
 to their next transfer.
 An invalid store is refused and the previous credentials stay in force.
-TLS material and the admission key are read only at startup, and a
-changed admission key is refused.
+TLS material, the admission key and egress lists are read only at
+startup, and a changed admission key is refused.
 .SH EXAMPLES
 Validate an existing server kit, then start its configured listeners:
 .PP

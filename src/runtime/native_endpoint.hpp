@@ -22,6 +22,8 @@
 
 namespace yume::runtime {
 
+class NativeEgressPolicy;
+
 struct NativeServiceBinding final {
     std::string name;
     std::shared_ptr<engine::StreamHandler> handler;
@@ -52,10 +54,15 @@ struct NativeEndpointOptions final {
     // Explicitly composed destination routing, required by configured direct
     // adapters. Use this endpoint's execution context. The engine supplies this
     // provider to route handlers. The endpoint cannot see addresses the
-    // provider resolves, so build it with NativeEgressPolicy::authorize_resolved
-    // for this same configuration. A successful endpoint owns cancellation of
-    // this instance, which must not be shared with another live endpoint.
+    // provider resolves, so build it with egress_policy's authorize_resolved.
+    // A successful endpoint owns cancellation of this instance, which must not
+    // be shared with another live endpoint.
     std::shared_ptr<engine::RouteProvider> route_provider;
+    // The destination policy of this configuration's direct adapters, required
+    // with them and refused without them. Build it once with
+    // NativeEgressPolicy::create and give the route provider the same
+    // instance, so the request and resolved stages see the same egress lists.
+    std::shared_ptr<const NativeEgressPolicy> egress_policy;
     // Optional further restriction for configured direct_tcp/direct_udp
     // adapters. Their schema-1 destinations are always enforced first, after
     // credential service authorization and before DNS or socket creation. This

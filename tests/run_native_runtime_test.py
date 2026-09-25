@@ -253,6 +253,46 @@ def add_module(kit: Path, program: Path) -> tuple[Path, str]:
     return forward, keys["keys"][0]["identity"]["sha256"]
 
 
+def add_egress_lists(kit: Path) -> None:
+    """Moves part of the direct adapters' policy into egress lists.
+
+    The adapters permit 127.0.0.0/16, a deny list takes that range back and an
+    allow list exempts 127.0.0.1. The adapter alone would permit 127.0.0.2, so
+    a refusal there shows that the list decided.
+    """
+    lists = kit / "server/lists"
+    lists.mkdir()
+    (lists / "deny.json").write_text(json.dumps({"ips": ["127.0.0.0/16"]}), encoding="utf-8")
+    (lists / "allow.json").write_text(json.dumps({"ips": ["127.0.0.1"]}), encoding="utf-8")
+    server_path = kit / "server/yumed.json"
+    server = json.loads(server_path.read_text(encoding="utf-8"))
+    for adapter in server["adapters"]:
+        if adapter["kind"] in {"direct_tcp", "direct_udp"}:
+            adapter["destinations"] = {
+                "public": False,
+                "networks": ["127.0.0.0/16"],
+                "lists": [
+                    {"action": "deny", "format": "json", "file": "lists/deny.json"},
+                    {"action": "allow", "format": "json", "file": "lists/allow.json"},
+                ],
+            }
+    server_path.write_text(json.dumps(server, indent=2), encoding="utf-8")
+
+
+def check_egress_list_validation(yumed: Path, kit: Path, environment: dict[str, str]) -> None:
+    # --validate reads the lists and names the entry whose file it cannot read.
+    config = json.loads((kit / "server/yumed.json").read_text(encoding="utf-8"))
+    config["adapters"][0]["destinations"]["lists"][1]["file"] = "lists/missing.json"
+    variant = kit / "server/missing-list.json"
+    variant.write_text(json.dumps(config), encoding="utf-8")
+    result = subprocess.run([str(yumed), "--config", str(variant), "--validate"],
+                            env=environment, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 2 or \
+            "destinations are invalid: /adapters/0/destinations/lists/1:" not in result.stderr:
+        raise session.SessionFailure(
+            f"--validate accepted a missing egress list: {result.returncode} {result.stderr.strip()}")
+
+
 def check_module_validation(yumed: Path, kit: Path, program: Path,
                             environment: dict[str, str], root: Path) -> None:
     # --validate refuses a program that the daemon would refuse at start.
@@ -347,6 +387,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
         session.provision_kit(kit, "localhost", server_port, environment)
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],
                               connect_address="127.0.0.1", socks_port=socks_port)
+        add_egress_lists(kit)
         if module is not None:
             forward, identity = add_module(kit, module.resolve(strict=True))
             # Module sockets live in a private directory below TMPDIR. A
@@ -356,6 +397,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             environment = dict(environment, TMPDIR=str(module_root))
         validate(yumed, kit / "server/yumed.json", environment)
         validate(yume, kit / "client/yume.json", environment)
+        check_egress_list_validation(yumed, kit, environment)
         if module is not None:
             check_module_validation(yumed, kit, module.resolve(strict=True), environment, root)
 
@@ -376,8 +418,14 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             if length != PAYLOAD_BYTES or digest != session.payload_digest(PAYLOAD_BYTES):
                 raise session.SessionFailure(f"tunnelled payload differs: {length} of {PAYLOAD_BYTES} bytes")
 
-            # Outside 127.0.0.1/32: configured destinations refuse it.
+            # Inside the adapter's 127.0.0.0/16, but the deny list refuses it.
+            # Without the list the route would fail as unreachable instead.
             code, connection = session.socks_connect(socks_port, "127.0.0.2", target_port)
+            connection.close()
+            if code != session.REPLY_NOT_ALLOWED:
+                raise session.SessionFailure(f"listed destination returned SOCKS reply {code}")
+            # Outside the adapter's networks: its destinations refuse it.
+            code, connection = session.socks_connect(socks_port, "127.1.0.1", target_port)
             connection.close()
             if code != session.REPLY_NOT_ALLOWED:
                 raise session.SessionFailure(f"refused destination returned SOCKS reply {code}")

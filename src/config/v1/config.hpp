@@ -30,6 +30,7 @@ inline constexpr std::size_t kMaxServices = 64;
 inline constexpr std::size_t kMaxAdapters = 16;
 inline constexpr std::size_t kMaxListenAddresses = 16;
 inline constexpr std::size_t kMaxDestinationNetworks = 64;
+inline constexpr std::size_t kMaxDestinationLists = 16;
 // A UNIX socket path must fit sockaddr_un with its terminator.
 inline constexpr std::size_t kMaxUnixSocketPathBytes = 107;
 inline constexpr std::size_t kMaxModuleArguments = 32;
@@ -368,24 +369,67 @@ private:
     TunNetwork network_;
 };
 
+enum class DestinationListAction : std::uint8_t {
+    Allow,
+    Deny,
+};
+
+enum class DestinationListFormat : std::uint8_t {
+    // {"ips": [...], "countries": [...]}
+    Json,
+    // The binary VPN provider database, format 1.
+    Vpdb,
+};
+
+// An egress list file. The runtime reads it when the policy is built.
+class DestinationList final {
+public:
+    DestinationList(DestinationListAction action,
+                    DestinationListFormat format,
+                    FileReference file)
+        : action_(action), format_(format), file_(std::move(file)) {}
+
+    DestinationListAction action() const noexcept { return action_; }
+    DestinationListFormat format() const noexcept { return format_; }
+    const FileReference& file() const noexcept { return file_; }
+
+private:
+    DestinationListAction action_;
+    DestinationListFormat format_;
+    FileReference file_;
+};
+
 // Destinations a direct adapter may reach. Public addresses are globally
 // reachable unicast addresses. Each network also permits its explicit prefix,
 // including private or loopback space. Unspecified, multicast and reserved
 // addresses are never reachable. A policy permits at least one destination.
+// Egress lists only narrow that: a destination their most specific entry
+// denies is refused. Countries in lists need a MaxMind country database.
 class DestinationPolicy final {
 public:
     DestinationPolicy(bool public_addresses,
-                      std::vector<common::IpNetwork> networks)
-        : public_addresses_(public_addresses), networks_(std::move(networks)) {}
+                      std::vector<common::IpNetwork> networks,
+                      std::vector<DestinationList> lists = {},
+                      std::optional<FileReference> country_database = std::nullopt)
+        : public_addresses_(public_addresses),
+          networks_(std::move(networks)),
+          lists_(std::move(lists)),
+          country_database_(std::move(country_database)) {}
 
     bool public_addresses() const noexcept { return public_addresses_; }
     const std::vector<common::IpNetwork>& networks() const noexcept {
         return networks_;
     }
+    const std::vector<DestinationList>& lists() const noexcept { return lists_; }
+    const std::optional<FileReference>& country_database() const noexcept {
+        return country_database_;
+    }
 
 private:
     bool public_addresses_;
     std::vector<common::IpNetwork> networks_;
+    std::vector<DestinationList> lists_;
+    std::optional<FileReference> country_database_;
 };
 
 class DirectTcpAdapter final {

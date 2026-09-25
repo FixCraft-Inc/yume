@@ -202,8 +202,8 @@ policy claim that clients cannot verify remotely.
 
 ## Troubleshooting
 
-`--validate` checks configuration, credentials, destination policy and module
-programs without opening a network connection. `yume-doctor` also checks the cover site and TLS
+`--validate` checks configuration, credentials, destination policy with its
+egress lists, and module programs without opening a network connection. `yume-doctor` also checks the cover site and TLS
 material. Both programs exit with `0` after a requested stop, `1` for a runtime
 failure, and `2` for a usage or configuration error.
 
@@ -222,5 +222,7 @@ If a client cannot connect:
 If a session connects but a destination fails, the SOCKS5 reply reports a
 refusal or route failure without its detail. Check that the destination, and
 every address its name resolves to on the daemon host, lies inside the direct
-adapter's configured networks, and that the client's identity is granted that
-service. The daemon does not log individual opens.
+adapter's configured networks and outside its deny lists, and that the
+client's identity is granted that service. The daemon does not log individual
+opens. It reads egress lists only when it starts, so restart it after a list
+file changes.

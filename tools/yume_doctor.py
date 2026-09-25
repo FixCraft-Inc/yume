@@ -35,6 +35,11 @@ MAX_FILE_REFERENCE_BYTES = 4096
 MAX_SERVICES = 64
 MAX_ADAPTERS = 16
 MAX_DESTINATION_NETWORKS = 64
+MAX_DESTINATION_LISTS = 16
+# The native loader's bounds on each egress list file.
+MAX_JSON_LIST_BYTES = 16 * 1024 * 1024
+MAX_VPDB_BYTES = 128 * 1024 * 1024
+MAX_COUNTRY_DATABASE_BYTES = 128 * 1024 * 1024
 MAX_NETWORK_TEXT_BYTES = 43
 # Networks no destination can match. IPv4-mapped IPv6 is evaluated as IPv4.
 NEVER_ALLOWED_NETWORKS = tuple(
@@ -201,8 +206,14 @@ def _destination_network(
     return network
 
 
-def _validate_destinations(value: Any, pointer: str) -> None:
-    policy = _closed_object(value, pointer, {"public", "networks"})
+def _validate_destinations(value: Any, pointer: str) -> list[tuple[str, str, int]]:
+    """Returns (pointer, reference, byte bound) for each list file."""
+    policy = _closed_object(
+        value,
+        pointer,
+        {"public", "networks", "lists", "country_database"},
+        {"public", "networks"},
+    )
     public = _boolean(policy["public"], f"{pointer}/public")
     networks = policy["networks"]
     if type(networks) is not list:
@@ -221,6 +232,36 @@ def _validate_destinations(value: Any, pointer: str) -> None:
         seen.add(network)
     if not public and not networks:
         _fail(pointer, "must permit public addresses or at least one network")
+    files: list[tuple[str, str, int]] = []
+    if "lists" in policy:
+        lists_pointer = f"{pointer}/lists"
+        lists = policy["lists"]
+        if type(lists) is not list:
+            _fail(lists_pointer, "must be an array")
+        if len(lists) > MAX_DESTINATION_LISTS:
+            _fail(lists_pointer, f"must contain at most {MAX_DESTINATION_LISTS} lists")
+        seen_files: set[str] = set()
+        for index, item in enumerate(lists):
+            item_pointer = f"{lists_pointer}/{index}"
+            entry = _closed_object(item, item_pointer, {"action", "format", "file"})
+            if _string(entry["action"], f"{item_pointer}/action", 8) not in {"allow", "deny"}:
+                _fail(f"{item_pointer}/action", "must be 'allow' or 'deny'")
+            list_format = _string(entry["format"], f"{item_pointer}/format", 8)
+            if list_format not in {"json", "vpdb"}:
+                _fail(f"{item_pointer}/format", "must be 'json' or 'vpdb'")
+            path = _validate_file_text(entry["file"], f"{item_pointer}/file")
+            if path in seen_files:
+                _fail(f"{item_pointer}/file", "duplicate list file")
+            seen_files.add(path)
+            maximum = MAX_JSON_LIST_BYTES if list_format == "json" else MAX_VPDB_BYTES
+            files.append((f"{item_pointer}/file", path, maximum))
+    if "country_database" in policy:
+        database_pointer = f"{pointer}/country_database"
+        if not files:
+            _fail(database_pointer, "needs a list that names countries")
+        path = _file_reference(policy["country_database"], database_pointer)
+        files.append((f"{database_pointer}/file", path, MAX_COUNTRY_DATABASE_BYTES))
+    return files
 
 
 def _valid_identifier(value: str, maximum: int = 64) -> bool:
@@ -588,7 +629,9 @@ def _validate_forward_listener(
 
 def _validate_adapters(
     value: Any, role: str, services: dict[tuple[str, str], int]
-) -> None:
+) -> list[tuple[str, str, int]]:
+    """Returns the egress list files that direct adapters reference."""
+    list_files: list[tuple[str, str, int]] = []
     if type(value) is not list:
         _fail("/adapters", "must be an array")
     if len(value) > MAX_ADAPTERS:
@@ -735,9 +778,12 @@ def _validate_adapters(
             _claim_stream_service(stream_handlers, service, pointer)
             _validate_module(adapter, pointer)
         if kind in {"direct_tcp", "direct_udp"}:
-            _validate_destinations(
-                adapter["destinations"], f"{pointer}/destinations"
+            list_files.extend(
+                _validate_destinations(
+                    adapter["destinations"], f"{pointer}/destinations"
+                )
             )
+    return list_files
 
 
 def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
@@ -778,7 +824,9 @@ def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
                 )
 
 
-def _validate_config(document: Any) -> tuple[str, dict[str, str], str | None]:
+def _validate_config(
+    document: Any,
+) -> tuple[str, dict[str, str], str | None, list[tuple[str, str, int]]]:
     top = _closed_object(
         document,
         "",
@@ -803,9 +851,9 @@ def _validate_config(document: Any) -> tuple[str, dict[str, str], str | None]:
     credentials = _validate_credentials(top["credentials"], role)
     cover_root = _validate_cover(top["cover"], role)
     services = _validate_services(top["services"])
-    _validate_adapters(top["adapters"], role, services)
+    list_files = _validate_adapters(top["adapters"], role, services)
     _validate_limits(top["limits"], top["adapters"], role)
-    return role, credentials, cover_root
+    return role, credentials, cover_root, list_files
 
 
 def _checked_bytes(
@@ -879,6 +927,21 @@ def _checked_bytes(
             raise
     finally:
         os.close(descriptor)
+
+
+def _check_list_file(path: Path, pointer: str, maximum: int) -> None:
+    try:
+        status = path.lstat()
+    except OSError:
+        _fail(pointer, "referenced file is missing or inaccessible")
+    if stat.S_ISLNK(status.st_mode):
+        _fail(pointer, "symlink files are forbidden")
+    if not stat.S_ISREG(status.st_mode):
+        _fail(pointer, "must reference a regular file")
+    if status.st_size <= 0:
+        _fail(pointer, "file must not be empty")
+    if status.st_size > maximum:
+        _fail(pointer, f"file exceeds the {maximum}-byte limit")
 
 
 def _resolve_reference(base: Path, reference: str) -> Path:
@@ -1538,11 +1601,18 @@ def diagnose(config_path: Path) -> list[DoctorError]:
         try:
             config_payload = _checked_bytes(config_path, "/config")
             document = _load_json_payload(config_payload, "/config")
-            role, references, cover_root = _validate_config(document)
+            role, references, cover_root, list_files = _validate_config(document)
         except DoctorError as error:
             return [error]
 
         base = config_path.parent
+        # yumed parses list contents when it starts or validates. The doctor
+        # checks that each file is one the loader would open.
+        for pointer, reference, maximum in list_files:
+            try:
+                _check_list_file(_resolve_reference(base, reference), pointer, maximum)
+            except DoctorError as error:
+                diagnostics.append(error)
         paths = {
             name: _resolve_reference(base, reference)
             for name, reference in references.items()

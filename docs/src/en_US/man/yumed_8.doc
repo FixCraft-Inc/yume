@@ -60,9 +60,9 @@ composite and ML-KEM keys without dropping other clients. Sessions of removed
 identities, or beyond a lowered per-identity **max_sessions**, end. Established
 sessions apply changed grants to their next stream and a changed **weight** to
 their next transfer. An invalid store is
-refused and the previous credentials stay in force. TLS material and the
-admission key are read only at startup, and a changed admission key is
-refused.
+refused and the previous credentials stay in force. TLS material, the
+admission key and egress lists are read only at startup, and a changed
+admission key is refused.
 
 ## EXAMPLES
 

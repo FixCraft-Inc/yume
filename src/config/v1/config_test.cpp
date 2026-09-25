@@ -854,6 +854,87 @@ void TestDirectAdapterDestinations() {
           "direct UDP destinations were not retained");
 }
 
+// Egress list files and the country database are references. The runtime
+// reads them, so the parser checks only their shape.
+void TestDestinationLists() {
+    const Json deny = {{"action", "deny"}, {"format", "vpdb"}, {"file", "lists/vpn_db.bin"}};
+    const auto with_lists = [](Json lists) {
+        Json document = ServerDocument();
+        document["adapters"][0]["destinations"]["lists"] = std::move(lists);
+        return document;
+    };
+    const auto with_item = [&](const std::function<void(Json&)>& change) {
+        Json item = deny;
+        change(item);
+        return with_lists(Json::array({item}));
+    };
+    const std::string item = "/adapters/0/destinations/lists/0";
+    ExpectError(with_lists(true), "/adapters/0/destinations/lists", "array");
+    ExpectError(with_lists(Json::array({"lists/vpn_db.bin"})), item, "object");
+    ExpectError(with_item([](Json& entry) { entry["action"] = "block"; }), item + "/action",
+                "'allow' or 'deny'");
+    ExpectError(with_item([](Json& entry) { entry["action"] = "Deny"; }), item + "/action",
+                "'allow' or 'deny'");
+    ExpectError(with_item([](Json& entry) { entry["format"] = "tar.xz"; }), item + "/format",
+                "'json' or 'vpdb'");
+    ExpectError(with_item([](Json& entry) { entry.erase("format"); }), item + "/format",
+                "required key");
+    ExpectError(with_item([](Json& entry) { entry["path"] = "x"; }), item + "/path", "unknown key");
+    ExpectError(with_item([](Json& entry) { entry["file"] = 7; }), item + "/file", "string");
+    ExpectError(with_item([](Json& entry) { entry["file"] = "../vpn_db.bin"; }), item + "/file",
+                "parent traversal");
+    ExpectError(with_item([](Json& entry) { entry["file"] = "https://example.net/list.json"; }),
+                item + "/file", "URI");
+    ExpectError(with_lists(Json::array({deny, deny})), "/adapters/0/destinations/lists/1/file",
+                "duplicate list file");
+    Json many = Json::array();
+    for (std::size_t index = 0; index <= kMaxDestinationLists; ++index) {
+        Json entry = deny;
+        entry["file"] = "lists/" + std::to_string(index) + ".bin";
+        many.push_back(entry);
+    }
+    ExpectError(with_lists(many), "/adapters/0/destinations/lists", "16");
+
+    const Json database = {{"file", "GeoLite2-Country.mmdb"}};
+    Json document = ServerDocument();
+    document["adapters"][0]["destinations"]["country_database"] = database;
+    ExpectError(document, "/adapters/0/destinations/country_database", "needs a list");
+    document = with_lists(Json::array());
+    document["adapters"][0]["destinations"]["country_database"] = database;
+    ExpectError(document, "/adapters/0/destinations/country_database", "needs a list");
+    document = with_lists(Json::array({deny}));
+    document["adapters"][0]["destinations"]["country_database"] = {{"path", "x"}};
+    ExpectError(document, "/adapters/0/destinations/country_database/path", "unknown key");
+    document = with_lists(Json::array({deny}));
+    document["adapters"][0]["destinations"]["country_database"] = "GeoLite2-Country.mmdb";
+    ExpectError(document, "/adapters/0/destinations/country_database", "object");
+
+    document = with_lists(Json::array(
+        {deny, {{"action", "allow"}, {"format", "json"}, {"file", "/etc/yume/allow.json"}}}));
+    document["adapters"][0]["destinations"]["country_database"] = database;
+    const Config parsed = Parse(document);
+    const auto* tcp = std::get_if<DirectTcpAdapter>(&parsed.adapters()[0]);
+    Check(tcp != nullptr && tcp->destinations().lists().size() == 2,
+          "egress lists were not retained");
+    const auto& lists = tcp->destinations().lists();
+    Check(lists[0].action() == DestinationListAction::Deny &&
+              lists[0].format() == DestinationListFormat::Vpdb &&
+              lists[0].file().path() == "lists/vpn_db.bin",
+          "the first egress list changed");
+    Check(lists[1].action() == DestinationListAction::Allow &&
+              lists[1].format() == DestinationListFormat::Json &&
+              lists[1].file().path() == "/etc/yume/allow.json",
+          "the second egress list changed");
+    Check(tcp->destinations().country_database() &&
+              tcp->destinations().country_database()->path() == "GeoLite2-Country.mmdb",
+          "the country database reference was not retained");
+    const Config plain = Parse(ServerDocument());
+    const auto* bare = std::get_if<DirectTcpAdapter>(&plain.adapters()[0]);
+    Check(bare != nullptr && bare->destinations().lists().empty() &&
+              !bare->destinations().country_database(),
+          "a policy without lists gained some");
+}
+
 Json ForwardAdapterDocument(Json listener) {
     Json adapter = {{"kind", "forward"}, {"service", "tcp"}};
     adapter.update(listener);
@@ -1194,6 +1275,7 @@ int main(int argc, char** argv) {
         TestServiceValidation();
         TestAdapterValidation();
     TestDirectAdapterDestinations();
+    TestDestinationLists();
         TestResourceLimits();
         TestForwardAdapters();
         TestModuleAdapters();

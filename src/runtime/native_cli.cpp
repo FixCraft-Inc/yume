@@ -176,7 +176,7 @@ int validate(NativeCliRole role, const config::v1::Config& config,
         say(role, describe("credentials are invalid", credentials.status()));
         return exit_for(credentials.status());
     }
-    const auto egress = NativeEgressPolicy::create(config.adapters());
+    const auto egress = NativeEgressPolicy::create(config.adapters(), base);
     if (!egress.ok()) {
         say(role, describe("destinations are invalid", egress.status()));
         return exit_for(egress.status());

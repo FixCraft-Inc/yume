@@ -312,8 +312,9 @@ class MetadataTests(unittest.TestCase):
         config = json.loads(
             (ROOT / "debian/yumed.json").read_text(encoding="utf-8"))
         doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
-        role, _references, cover_root = doctor["_validate_config"](config)
+        role, _references, cover_root, list_files = doctor["_validate_config"](config)
         self.assertEqual(role, "server")
+        self.assertEqual(list_files, [])
         self.assertEqual(config["schema"], 1)
         self.assertEqual(cover_root, "cover-site")
         unit = (ROOT / "debian/yume-daemon.yumed.service").read_text(

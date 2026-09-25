@@ -5,6 +5,7 @@
  */
 #include "runtime/native_endpoint.hpp"
 #include "runtime/native_credentials.hpp"
+#include "runtime/native_egress_policy.hpp"
 #include "core/runtime/bounded_file.hpp"
 #include "providers/ytp1_h2_carrier.hpp"
 #include "providers/ytp1_tls13_secure_channel.hpp"
@@ -1126,6 +1127,24 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
         CHECK(!missing.ok() && missing.status().code() == StatusCode::FailedPrecondition);
     });
     server_options.route_provider = routes;
+    if (declared) {
+        // Direct adapters also need the one policy their route provider checks.
+        runner.sync([&] {
+            auto unpaired = NativeEndpoint::create(runner.context, server_config, kit / "server",
+                server_bindings, server_options);
+            CHECK(!unpaired.ok() && unpaired.status().code() == StatusCode::FailedPrecondition);
+        });
+        server_options.egress_policy =
+            take(yume::runtime::NativeEgressPolicy::create(server_config.adapters(), kit / "server"));
+    } else {
+        runner.sync([&] {
+            auto stray = server_options;
+            stray.egress_policy = take(yume::runtime::NativeEgressPolicy::create({}, {}));
+            auto refused = NativeEndpoint::create(runner.context, server_config, kit / "server",
+                server_bindings, std::move(stray));
+            CHECK(!refused.ok() && refused.status().code() == StatusCode::InvalidArgument);
+        });
+    }
     if (declared) {
         runner.sync([&] {
             // Configured destinations are the request authority. The application

@@ -709,9 +709,54 @@ std::string ParseInterfaceName(const Json& value, const std::string& pointer) {
     return name;
 }
 
+std::vector<DestinationList> ParseDestinationLists(const Json& value,
+                                                   const std::string& pointer) {
+    if (!value.is_array()) {
+        Fail(pointer, "must be an array");
+    }
+    if (value.size() > kMaxDestinationLists) {
+        Fail(pointer, "must contain at most " +
+                          std::to_string(kMaxDestinationLists) + " lists");
+    }
+    std::vector<DestinationList> lists;
+    lists.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const std::string item_pointer = IndexPointer(pointer, index);
+        const auto& item = value.at(index);
+        CheckClosedObject(item, item_pointer, {"action", "format", "file"},
+                          {"action", "format", "file"});
+        const std::string action_pointer = JoinPointer(item_pointer, "action");
+        const auto& action = ReadString(item.at("action"), action_pointer, 8);
+        if (action != "allow" && action != "deny") {
+            Fail(action_pointer, "must be 'allow' or 'deny'");
+        }
+        const std::string format_pointer = JoinPointer(item_pointer, "format");
+        const auto& format = ReadString(item.at("format"), format_pointer, 8);
+        if (format != "json" && format != "vpdb") {
+            Fail(format_pointer, "must be 'json' or 'vpdb'");
+        }
+        const std::string file_pointer = JoinPointer(item_pointer, "file");
+        const auto& path = ReadString(item.at("file"), file_pointer,
+                                      kMaxFileReferenceBytes);
+        ValidateFileReference(path, file_pointer);
+        if (std::any_of(lists.begin(), lists.end(), [&](const DestinationList& list) {
+                return list.file().path() == path;
+            })) {
+            Fail(file_pointer, "duplicate list file");
+        }
+        lists.emplace_back(action == "allow" ? DestinationListAction::Allow
+                                             : DestinationListAction::Deny,
+                           format == "json" ? DestinationListFormat::Json
+                                            : DestinationListFormat::Vpdb,
+                           FileReference(path));
+    }
+    return lists;
+}
+
 DestinationPolicy ParseDestinations(const Json& value,
                                     const std::string& pointer) {
-    CheckClosedObject(value, pointer, {"public", "networks"},
+    CheckClosedObject(value, pointer,
+                      {"public", "networks", "lists", "country_database"},
                       {"public", "networks"});
     const bool public_addresses =
         ReadBoolean(value.at("public"), JoinPointer(pointer, "public"));
@@ -750,7 +795,21 @@ DestinationPolicy ParseDestinations(const Json& value,
     if (!public_addresses && parsed.empty()) {
         Fail(pointer, "must permit public addresses or at least one network");
     }
-    return DestinationPolicy(public_addresses, std::move(parsed));
+    std::vector<DestinationList> lists;
+    if (value.contains("lists")) {
+        lists = ParseDestinationLists(value.at("lists"),
+                                      JoinPointer(pointer, "lists"));
+    }
+    std::optional<FileReference> country_database;
+    if (value.contains("country_database")) {
+        if (lists.empty()) {
+            Fail(JoinPointer(pointer, "country_database"),
+                 "needs a list that names countries");
+        }
+        country_database = ParseFileReference(value, pointer, "country_database");
+    }
+    return DestinationPolicy(public_addresses, std::move(parsed), std::move(lists),
+                             std::move(country_database));
 }
 
 std::vector<common::IpNetwork> parse_tun_prefixes(const Json& value,

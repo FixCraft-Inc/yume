@@ -688,7 +688,6 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         return Result<std::shared_ptr<NativeEndpoint>>(Status(StatusCode::InvalidArgument));
     std::shared_ptr<State> state;
     try {
-        const auto egress = require(NativeEgressPolicy::create(config.adapters()));
         if (options.caller_runs_socks5_adapters &&
             std::none_of(config.adapters().begin(), config.adapters().end(), [](const auto& adapter) {
                 return std::holds_alternative<config::v1::Socks5Adapter>(adapter);
@@ -730,6 +729,9 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             if (!options.route_provider)
                 throw Status(StatusCode::FailedPrecondition,
                     "direct adapters require an explicit route provider");
+            if (!options.egress_policy)
+                throw Status(StatusCode::FailedPrecondition,
+                    "direct adapters require the egress policy their route provider checks");
             const auto& name = tcp ? tcp->service() : udp->service();
             const auto kind = tcp ? ServiceKind::ByteStream : ServiceKind::PacketChannel;
             if (std::any_of(services.begin(), services.end(), [&](const auto& binding) {
@@ -747,7 +749,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             // Configured destinations decide first. The application callback
             // can only refuse more.
             DirectRouteHandler::AuthorizationPolicy authorization =
-                [egress, application = options.route_authorization](
+                [egress = options.egress_policy, application = options.route_authorization](
                     const StreamOpenContext& context) -> Status {
                     auto status = egress->authorize_request(context);
                     if (!status.ok() || !application) return status;
@@ -762,7 +764,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                        std::holds_alternative<config::v1::DirectUdpAdapter>(adapter);
             });
         if (services.size() != config.services().size() ||
-            (!has_direct_adapter && options.route_authorization))
+            (!has_direct_adapter && (options.route_authorization || options.egress_policy)))
             throw Status(StatusCode::InvalidArgument,
                 "service bindings or route policy do not match configured adapters");
         const auto role = config.role() == config::v1::Role::Client

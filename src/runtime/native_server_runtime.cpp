@@ -168,8 +168,9 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
         options.caller_runs_packet_adapters = !state->packets.empty();
         options.caller_runs_module_adapters = !state->modules.empty();
         if (has_direct) {
-            auto egress = NativeEgressPolicy::create(config.adapters());
+            auto egress = NativeEgressPolicy::create(config.adapters(), config_base_directory);
             if (!egress.ok()) return Created(egress.status());
+            options.egress_policy = std::move(egress).take_value();
             if (!runtime_options.resolver_program.empty()) {
                 providers::SystemResolverOptions resolver_options;
                 resolver_options.program = std::move(runtime_options.resolver_program);
@@ -179,7 +180,7 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
             }
             auto provider = providers::AsioDirectRouteProvider::create(
                 context,
-                [policy = std::move(egress).take_value()](
+                [policy = options.egress_policy](
                     const engine::AuthorizedRouteRequest& request,
                     const engine::RouteDestination& resolved) {
                     return policy->authorize_resolved(request, resolved);

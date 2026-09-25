@@ -702,16 +702,6 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
         yume_ytp1_tls13_secure_channel OpenSSL::Crypto)
 
     if(YUME_BUILD_YTP1_FRONT_DOOR)
-        # Destination authority from schema-1 direct adapters. The endpoint and
-        # standalone route providers share this one evaluator.
-        add_library(yume_native_egress_policy STATIC
-            runtime/native_egress_policy.cpp runtime/native_egress_policy.hpp
-            common/egress_address.hpp common/ip_network.hpp)
-        target_include_directories(yume_native_egress_policy PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-        target_link_libraries(yume_native_egress_policy PUBLIC yume_config_v1 yume_engine)
-        yume_apply_perf_opts(yume_native_egress_policy)
-        yume_assert_exact_link_dependencies(yume_native_egress_policy yume_config_v1 yume_engine)
-
         # Operator egress lists: JSON lists, the VPN provider database and
         # MaxMind country databases, swept into disjoint ranges at load.
         add_library(yume_egress_lists STATIC
@@ -722,6 +712,20 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
         yume_apply_perf_opts(yume_egress_lists)
         yume_assert_exact_link_dependencies(yume_egress_lists
             yume_engine nlohmann_json::nlohmann_json)
+
+        # Destination authority from schema-1 direct adapters, narrowed by
+        # their egress lists. The endpoint and standalone route providers share
+        # one instance of this evaluator.
+        add_library(yume_native_egress_policy STATIC
+            runtime/native_egress_policy.cpp runtime/native_egress_policy.hpp
+            common/egress_address.hpp common/ip_network.hpp)
+        target_include_directories(yume_native_egress_policy PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_native_egress_policy
+            PUBLIC yume_config_v1 yume_engine
+            PRIVATE yume_egress_lists yume_bounded_files)
+        yume_apply_perf_opts(yume_native_egress_policy)
+        yume_assert_exact_link_dependencies(yume_native_egress_policy
+            yume_config_v1 yume_engine yume_egress_lists yume_bounded_files)
 
         # Weighted egress pacing. The endpoint wraps each served stream in it
         # when the server configuration sets limits.max_egress_mbps.
@@ -1617,7 +1621,8 @@ if(YUME_BUILD_TESTING)
         add_dependencies(yume_native_endpoint_test yume-resolver yume_resolver_stall_helper)
         if(TARGET yume_asio_direct_route_provider)
             target_link_libraries(yume_native_endpoint_test PRIVATE
-                yume_asio_direct_route_provider yume_direct_route_handler yume_native_runtime)
+                yume_asio_direct_route_provider yume_direct_route_handler yume_native_runtime
+                yume_native_egress_policy)
             target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_NATIVE_TEST_ROUTES=1
                 YUME_TEST_MODULE_LAUNCHER="$<TARGET_FILE:yume-module-launcher>"
                 YUME_TEST_ECHO_MODULE="$<TARGET_FILE:yume-echo-module>")

@@ -35,6 +35,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Application codec library.** The application codec core (the HTTP
   envelope, backend dialing rules and the Monero RPC descriptor) builds apart
   from transport v2 as `yume_module_codecs` for a planned codec module.
+- **Egress lists.** Server `direct_tcp` and `direct_udp` destinations can add
+  `lists` of JSON or VPN provider database files and a MaxMind
+  `country_database`. The most specific entry decides and a deny wins a tie.
+  Lists refuse more but never permit more than `public` and `networks`. This
+  brings transport v2's egress filter to the native daemon without archive
+  unpacking or the compact country format, and it fixes v2's reading of
+  28-bit MaxMind records.
 - **Share container library.** `yume_module_share` holds the password-sealed
   `.yss` container from transport v2 for a planned kit import format. It keeps
   the file layout and always derives the key with Argon2id. Passwords that

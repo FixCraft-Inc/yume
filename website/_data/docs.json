@@ -62,15 +62,6 @@
     "home_group": "Start here"
   },
   {
-    "title": "Transport-v2 security modes",
-    "summary": "Transport-v2 rekey modes. YTP/1 has one fixed policy and does not use them.",
-    "url": "/docs/SECURITY_MODES/",
-    "source": "docs/SECURITY_MODES.md",
-    "landing_group": "Security and transport",
-    "order": 50,
-    "home_group": "Start here"
-  },
-  {
     "title": "Operations",
     "summary": "Provisioning, service deployment, client identities, limits, release verification and troubleshooting for native yume and yumed.",
     "url": "/docs/OPERATIONS/",
@@ -158,6 +149,15 @@
     "source": "docs/protocol/YTP_1.md",
     "landing_group": "Security and transport",
     "order": 150,
+    "home_group": "Internals and status"
+  },
+  {
+    "title": "Relay channel",
+    "summary": "The end-to-end channel two YUME users run through a relaying server: handshake, records, ratchet and rekey.",
+    "url": "/docs/protocol/RELAY_CHANNEL/",
+    "source": "docs/protocol/RELAY_CHANNEL.md",
+    "landing_group": "Security and transport",
+    "order": 155,
     "home_group": "Internals and status"
   },
   {

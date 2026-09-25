@@ -11,7 +11,7 @@ owns the open gates. This map covers both graphs.
 | Term | Means |
 | --- | --- |
 | **YTP/1** | **YUME Transport Protocol 1.** The wire protocol `yume` and `yumed` speak. Version 1 of a new protocol, not "YUME 1". Its kernel is `src/ytp/`, its contract is [protocol/YTP_1.md](protocol/YTP_1.md). |
-| **transport v2** | The retained reference protocol, `0.2.0-dev6`. Independent of the product version. Contract in [protocol/YUME_2_0_WIRE.md](protocol/YUME_2_0_WIRE.md). |
+| **transport v2** | The protocol before YTP/1, deleted from this tree. Commit `9070b0a` is the last to contain it. The relay channel keeps its ratchet labels, see [protocol/RELAY_CHANNEL.md](protocol/RELAY_CHANNEL.md). |
 | **AUTH v2** | The authentication and key-schedule layer of transport v2: composite Ed25519 + ML-DSA-87 identity, ML-KEM-1024 + X25519 + PSK establishment, then a directional AEAD ratchet. |
 | **schema 1** | The strict numeric configuration schema for YTP/1 (`src/config/v1/`). Unrelated to transport-v2 JSON config. |
 | **ABI v1** | The role-neutral C interface in `include/yume/yume.h`. Its version is independent of every wire and product version. |

@@ -34,7 +34,7 @@ sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
 @table
 | Changed surface | Contract and checks |
 | --- | --- |
-| Transport, AUTH, ratchet | [YTP/1](../protocol/YTP_1.md) and its construction vectors for the native protocol; [transport-v2 wire](../protocol/YUME_2_0_WIRE.md) and [security modes](../SECURITY_MODES.md) for the reference graph; focused protocol/security tests |
+| Transport, AUTH, ratchet | [YTP/1](../protocol/YTP_1.md) and its construction vectors, the [relay channel](../protocol/RELAY_CHANNEL.md) for the relay module, focused protocol and security tests |
 | C ABI and endpoint backend | [ABI](../ABI.md), header, symbol map, candidate Debian symbols, C/C++ and stream integration tests |
 | Config parsers | Both roles' readers, writers, validation and startup consumers, paired rejection/rollback tests, CLI help and manuals |
 | Server policy and cover | [Operations](../OPERATIONS.md), [YTP/1 development guide](../development/ytp1/README.md), daemon manual |

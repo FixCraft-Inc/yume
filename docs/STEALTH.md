@@ -199,8 +199,8 @@ process memory have different consequences. Recovery requires fresh
 uncompromised contributions. It is not correct to say that every key becomes
 useless after a fixed number of milliseconds.
 
-The [transport-v2 wire contract](protocol/YUME_2_0_WIRE.md)
-records the reference build's record and ratchet formulas. The
+The [relay channel contract](protocol/RELAY_CHANNEL.md) records the relay
+module's handshake and ratchet formulas. The
 [YTP/1 kernel contract](protocol/YTP_1.md) records YTP/1's canonical
 encodings, fixed security constants, and exact unfinished cryptographic/runtime
 boundary. The [implementation status](IMPLEMENTATION_STATUS.md) records the

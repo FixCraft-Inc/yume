@@ -33,6 +33,8 @@ listed separately at the end.
 - [Architecture](ARCHITECTURE.md): component ownership and dependency
   direction.
 - [YTP/1](protocol/YTP_1.md): the wire and security contract.
+- [Relay channel](protocol/RELAY_CHANNEL.md): the end-to-end channel the relay
+  module keeps for the planned chat and file modules.
 - [C ABI](ABI.md): embedding the client or server. The ABI is experimental and
   its install contract is not frozen.
 - [Modules](MODULES.md): running a program behind a stream service, and
@@ -51,6 +53,4 @@ then run the sync described there.
 These pages describe the transport-v2 reference build, which has been removed.
 Each stays until it is rewritten for YTP/1 or deleted.
 
-- [Wire contract](protocol/YUME_2_0_WIRE.md) and
-  [security modes](SECURITY_MODES.md).
 - [Diagnostics](DIAGNOSTICS.md).

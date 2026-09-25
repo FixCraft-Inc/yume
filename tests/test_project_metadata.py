@@ -754,6 +754,8 @@ exec "${REAL_LN}" "$@"
         self.assertIn(r"\.private", options)
         self.assertIn(r"\.secrets", options)
         self.assertIn(r"website/docs/.*\.md", options)
+        # The diagram tool and the website sync write Jekyll's SVG copies here.
+        self.assertIn(r"_site|_includes/diagrams)(/|$)", options)
         self.assertIn(r"(^|/)\.DS_Store$", options)
         self.assertIn(r"^(AGENTS\.md|AI_NOTES\.md|opencode\.json)$", options)
 
@@ -764,6 +766,7 @@ exec "${REAL_LN}" "$@"
         self.assertIn("\n .secrets\n", copyright_text)
         self.assertIn("\n .DS_Store\n", copyright_text)
         self.assertIn("\n website/_site\n", copyright_text)
+        self.assertIn("\n website/_includes/diagrams\n", copyright_text)
 
 
 if __name__ == "__main__":

@@ -381,8 +381,6 @@ class MetadataTests(unittest.TestCase):
         self.assertIn('"patched_openssl_embedded": True', package_script)
         self.assertIn('"transport": "YTP/1"', package_script)
         self.assertNotIn('"argon2": True', package_script)
-        self.assertNotIn('"chrome_tls_helper": True,\n                "openssl_minimum"',
-                         package_script)
 
     def test_dependency_revision_must_be_immutable(self) -> None:
         document = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -455,17 +453,6 @@ class MetadataTests(unittest.TestCase):
             path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
             with self.assertRaises(ProfileError):
                 generate(path, evidence_profile_id="different-profile-v1")
-
-    def test_helper_build_ids_must_be_unique(self) -> None:
-        document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
-        duplicate = copy.deepcopy(document["profiles"][0])
-        duplicate["id"] = "second-profile-v1"
-        duplicate["client_alias"] = "second"
-        document["profiles"].append(duplicate)
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
-            with self.assertRaisesRegex(ProfileError, "duplicate helper build ID"):
-                generate(path)
 
     def test_current_carrier_geometry_is_exact(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))

@@ -179,8 +179,7 @@ if(YUME_BUILD_SHARED_ABI)
     enable_language(C)
 endif()
 
-# Developer build accelerators. Both default OFF on purpose: this project has a
-# reproducibility gate (two clean helper builds must be byte-identical) and an
+# Developer build accelerators. Both default OFF on purpose: this project has an
 # exact-artifact provenance discipline, so nothing that can perturb the emitted
 # object may be on by default. CI, sanitizer, shared-ABI, and exact-artifact
 # lanes configure CMake directly and leave them disabled. Developer trees may

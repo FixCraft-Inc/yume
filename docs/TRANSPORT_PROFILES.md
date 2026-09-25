@@ -16,22 +16,15 @@ and security regression.
 | Registry-selected HTTP/2 profile | Capture-derived HTTP/2, HTTP, WebSocket, and shaping values |
 | Registry-selected TLS profile and candidates | Normalized ordered TLS first-flight acceptance profile and samples |
 | `src/stealth/transport_profiles.inc` | Generated immutable C++ registry; never edit manually |
-| `helper/chrome_tls/transport_profiles_generated.go` | Generated helper build-ID to provider registry; never edit manually |
-| `helper/chrome_tls/profile.go` | Audited TLS-emitter provider implementations |
 
 Each entry names its own artifact files; shared generator, CMake, test, install,
 and release logic does not depend on Chrome-specific filenames.
 `scripts/generate_transport_profiles.py` validates bounded schemas, fixture and
-artifact path containment, unique profile/alias/helper identities, required
+artifact path containment, unique profile and alias identities, required
 evidence fields, and header geometry. It requires the registry's active ID to
-equal `kEvidenceProfile` in `src/common/version.hpp`, then generates both the C++
-registry consumed through `cover_profile::active()` and the Go helper registry.
-TLS/HTTP/H2 consumers contain no browser-version branches.
-
-The registry's `tls_backend: chrome151` field names the explicit helper/evidence
-provider associated with the historical fixture; it is not the client default.
-Normal client configuration and capture select the in-process
-`openssl-chrome151` backend.
+equal `kEvidenceProfile` in `src/common/version.hpp`, then generates the C++
+registry consumed through `cover_profile::active()`. TLS/HTTP/H2 consumers
+contain no browser-version branches.
 
 Dev6's carrier implementation currently requires exactly two assets and the
 captured stream sequence 1/3/5/7 (priming, CSS, JavaScript, extended CONNECT).
@@ -79,14 +72,9 @@ flattened evidence files that installed diagnostics consume.
    measured distributions instead of inventing stable timing constants.
 3. Add a new fixture directory and a new registry entry. Never rewrite the
    evidence behind an existing authenticated profile ID.
-4. Add or select a TLS-emitter provider in `helper/chrome_tls/profile.go` and
-   name that reviewed provider in the registry. A
-   browser name or uTLS preset is not proof of parity; the provider must pass
-   the ordered wire comparator, certificate/pin/ALPN/exporter failures, and
-   lifecycle tests.
-5. Fill in `openssl_selection` for the native backend. This is what lets the
-   in-process OpenSSL path track the same browser without a helper, and it is
-   deliberately data rather than code so a new browser needs no C++ change:
+4. Fill in `openssl_selection` for the native backend. This lets the
+   in-process OpenSSL path track the browser, and it is deliberately data
+   rather than code so a new browser needs no C++ change:
 
    | Key | Meaning |
    | --- | --- |
@@ -124,7 +112,7 @@ flattened evidence files that installed diagnostics consume.
    context, plus exact capture-selected fields and JA4. This is a ClientHello
    structure gate, not a six-test-method count or a whole-session parity claim.
 
-6. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
+5. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
    `scripts/generate_transport_profiles.py` compares the four declared
    *set* fields against the capture, and `tests/test_yume_native_tls_wire.py`
    re-derives those plus the `ec_point_formats` and `key_share` geometry from
@@ -132,7 +120,7 @@ flattened evidence files that installed diagnostics consume.
    fails to match. Both fail if the gap widens, so a divergence cannot be
    introduced silently. Closing all four set fields buys an
    exact JA4 and nothing wider, because sets are all JA4 hashes.
-7. Regenerate and validate:
+6. Regenerate and validate:
 
    ```sh
    python3 scripts/generate_transport_profiles.py
@@ -140,7 +128,7 @@ flattened evidence files that installed diagnostics consume.
    python3 tests/test_project_metadata.py
    ```
 
-8. Bind the new ID only in a deliberate development protocol revision, update
+7. Bind the new ID only in a deliberate development protocol revision, update
    KATs and wire documentation, then run same-session capture, matched
    performance, sanitizer, classifier/active-probe, soak, packaging, and
    independent-review gates.

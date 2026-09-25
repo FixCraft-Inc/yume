@@ -18,9 +18,6 @@
           "helper_tls_wire_run_5.json"
         ]
       },
-      "helper_provider": "chrome151",
-      "helper_build_id": "yume-chrome151-utls-v1.8.2-ipc-v1",
-      "tls_backend": "chrome151",
       "openssl_profile": "chrome151",
       "evidence_status": "qualified-local",
       "openssl_selection": {

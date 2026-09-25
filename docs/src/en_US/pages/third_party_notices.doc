@@ -29,10 +29,6 @@ the following projects under their respective licenses:
 - liboqs: MIT License.
 - spdlog: MIT License.
 - nlohmann/json: MIT License.
-- uTLS and Go module dependencies used by `yume-chrome-tls-helper`: BSD,
-  MIT, and Apache-2.0 terms recorded by the corresponding pinned modules in
-  `helper/chrome_tls/go.mod` and `helper/chrome_tls/go.sum`.
-- The Go toolchain/runtime: BSD 3-Clause License.
 
 The matching source release and dependency repositories contain the complete
 license texts and copyright notices. This summary does not replace those

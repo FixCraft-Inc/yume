@@ -55,17 +55,12 @@ def _sha256(path: pathlib.Path) -> str:
 def validate_capture_binaries(
     bundle: pathlib.Path,
     yume: pathlib.Path,
-    helper: pathlib.Path | None,
     commit: str,
-) -> tuple[str, str | None]:
+) -> str:
     if not COMMIT_RE.fullmatch(commit):
         raise ProvenanceError("source commit must be exact lowercase 40-hex")
     _regular_executable(yume, "YUME binary")
     yume_hash = _sha256(yume)
-    helper_hash: str | None = None
-    if helper is not None:
-        _regular_executable(helper, "YUME helper")
-        helper_hash = _sha256(helper)
     try:
         manifest = validate_bundle(
             bundle,
@@ -95,40 +90,24 @@ def validate_capture_binaries(
             entry["sha256"]
         ):
             raise ProvenanceError(f"{description} bundle hash is malformed")
-    if helper is not None:
-        helper_entry = by_name.get("yume-chrome-tls-helper")
-        if not isinstance(helper_entry, dict):
-            raise ProvenanceError("release bundle helper entry is missing")
-        if helper_entry.get("sha256") != helper_hash:
-            raise ProvenanceError("YUME helper differs from the exact release bundle")
-        if helper_entry.get("size") != helper.stat().st_size:
-            raise ProvenanceError("YUME helper size differs from the release bundle")
-        if not isinstance(helper_entry.get("sha256"), str) or not SHA256_RE.fullmatch(
-            helper_entry["sha256"]
-        ):
-            raise ProvenanceError("YUME helper bundle hash is malformed")
-    return yume_hash, helper_hash
+    return yume_hash
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, type=pathlib.Path)
     parser.add_argument("--yume", required=True, type=pathlib.Path)
-    parser.add_argument(
-        "--helper", type=pathlib.Path,
-        help="optional helper path for an explicitly helper-backed capture")
     parser.add_argument("--source-commit", required=True)
     args = parser.parse_args()
     try:
-        yume_hash, helper_hash = validate_capture_binaries(
-            args.bundle, args.yume, args.helper, args.source_commit
+        yume_hash = validate_capture_binaries(
+            args.bundle, args.yume, args.source_commit
         )
     except ProvenanceError as exc:
         print(f"capture binary provenance rejected: {exc}", file=sys.stderr)
         return 1
-    helper_text = f" helper={helper_hash}" if helper_hash is not None else ""
     print(f"Capture binary provenance OK: source={args.source_commit} "
-          f"yume={yume_hash}{helper_text}")
+          f"yume={yume_hash}")
     return 0
 
 

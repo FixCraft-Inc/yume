@@ -77,12 +77,10 @@ struct AssetTemplate {
 };
 
 struct Profile {
-    // Authenticated wire identity and implementation routing metadata. The
-    // profile ID is security-sensitive; aliases are presentation-only.
+    // The profile ID names the evidence profile the outer layers follow. The
+    // registry name is a presentation-only alias.
     std::string_view id;
     std::string_view registry_name;
-    std::string_view tls_backend;
-    std::string_view helper_build_id;
     std::string_view browser_name;
     std::string_view browser_version;
     std::string_view operating_system;

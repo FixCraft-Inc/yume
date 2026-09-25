@@ -141,8 +141,6 @@ constexpr std::array<std::string_view, 2> kProfile0TlsAlpn{
 const Profile kProfile0Value{
     "chrome151-node24-v1",
     "chrome",
-    "chrome151",
-    "yume-chrome151-utls-v1.8.2-ipc-v1",
     "Google Chrome",
     "151.0.7922.71",
     "Debian GNU/Linux 13 (trixie)",

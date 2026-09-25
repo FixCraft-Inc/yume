@@ -277,19 +277,10 @@ def finalize_capture(root: Path) -> dict[str, Any]:
                 value = environment.get(field)
                 if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
                     raise FinalizeError(f"{field} must be lowercase SHA-256")
-            tls_backend = environment.get("tls_backend")
-            if tls_backend not in {"openssl-chrome151", "chrome151"}:
+            if environment.get("tls_backend") != "openssl-chrome151":
                 raise FinalizeError("YUME arm TLS backend is missing or invalid")
-            helper_hash = environment.get("yume_helper_sha256")
-            if tls_backend == "chrome151":
-                if not isinstance(helper_hash, str) or not SHA256_RE.fullmatch(
-                    helper_hash
-                ):
-                    raise FinalizeError(
-                        "helper-backed YUME arm requires yume_helper_sha256")
-            elif helper_hash is not None:
-                raise FinalizeError(
-                    "native YUME arm must not declare yume_helper_sha256")
+            if "yume_helper_sha256" in environment:
+                raise FinalizeError("YUME arm must not declare yume_helper_sha256")
 
         top_raw = reader.bytes(Path("SHA256SUMS"))
         top_entries = parse_checksum_manifest(top_raw)

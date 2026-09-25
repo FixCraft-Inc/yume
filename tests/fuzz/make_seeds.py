@@ -70,7 +70,7 @@ def write_config_v1_seeds(out: pathlib.Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     root = pathlib.Path(__file__).resolve().parents[2]
     for role, filename in (("client", "yume.json"), ("server", "yumed.json")):
-        source = root / "config/ytp1" / filename
+        source = root / "config" / filename
         document = json.loads(source.read_text())
         (out / role).write_bytes(source.read_bytes())
         packet = copy.deepcopy(document)

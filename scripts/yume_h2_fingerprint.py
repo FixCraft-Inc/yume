@@ -58,9 +58,9 @@ class H2Opening:
 
 
 # --- Authoritative browser opening -------------------------------------------
-# Dev6 supports one coherent identity sourced from the committed five-run
-# Chrome capture. Unverified cross-browser comparison leads are intentionally
-# absent from the YUME 2.0 path.
+# The carrier follows one coherent identity sourced from the committed
+# five-run Chrome capture. Unverified cross-browser comparison leads are
+# intentionally absent.
 _fixture_path = (
     pathlib.Path(__file__).resolve().parents[1]
     / "tests/fixtures/chrome151-node24/chrome_h2_profile.json"

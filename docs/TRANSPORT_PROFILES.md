@@ -159,9 +159,7 @@ exact revision, and minimum compatible version now live once in
 preflight read that manifest through `scripts/yume_dependencies.py`; they must
 not copy those values into another workflow.
 
-Pinned build modes and `fullau.sh` overrides accept only an exact lowercase
-40-hex commit. Developer worktree mode remains explicit and never rewrites an
-existing BaseFWX checkout.
+The manifest accepts only an exact lowercase 40-hex commit for each dependency.
 
 This removes update choreography without weakening reproducibility: updating
 BaseFWX is one reviewed manifest change followed by its own compatibility,

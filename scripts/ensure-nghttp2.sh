@@ -3,7 +3,7 @@
 # Copyright (C) 2020-2026  FixCraft Inc.
 # Licensed under the GNU Affero General Public License v3.0 or later.
 
-# Ensure that the host has the nghttp2 API level required by YUME 2.0.
+# Ensure that the host has the nghttp2 API level the HTTP/2 carrier needs.
 # This file is intentionally sourceable: ezbuild needs PKG_CONFIG_PATH to
 # remain set after a cached/source-built fallback is selected.
 

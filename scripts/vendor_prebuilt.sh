@@ -6,9 +6,8 @@
 # Single implementation of "obtain the prebuilt vendor archive, and refuse it
 # unless it is exactly the archive this checkout expects".
 #
-# This used to exist three times (ezbuild.sh, fullau.sh, and an unverified
-# `tar -xJf` in three CI workflows). Three copies of a trust decision is three
-# chances to weaken one of them, so they all route through here now.
+# Every caller routes through this one implementation, because each copy of
+# a trust decision is another chance to weaken it.
 #
 # Two independent checks, BOTH required:
 #
@@ -149,7 +148,7 @@ yume_vendor_verify() {
     fi
     if ! _yume_vendor_have gpg; then
         _yume_vendor_err "gpg unavailable; cannot verify the release signature. Refusing."
-        _yume_vendor_err "  Install gnupg, or build from source without --use-vendor."
+        _yume_vendor_err "  Install gnupg, or build liboqs and Argon2 from source."
         return 1
     fi
 

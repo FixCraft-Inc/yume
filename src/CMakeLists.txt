@@ -1713,7 +1713,7 @@ if(YUME_BUILD_TESTING)
             yume_native_endpoint yume_openssl_security_provider Threads::Threads)
         yume_apply_perf_opts(yume_native_backend_test)
         add_test(NAME yume_native_backend_test COMMAND yume_native_backend_test
-            "${CMAKE_SOURCE_DIR}/config/ytp1/yumed.json")
+            "${CMAKE_SOURCE_DIR}/config/yumed.json")
         set_tests_properties(yume_native_backend_test PROPERTIES
             TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
     endif()
@@ -1728,13 +1728,13 @@ if(YUME_BUILD_TESTING)
         COMMAND "${CMAKE_COMMAND}"
             "-DYUME_PROGRAM=$<TARGET_FILE:yume_config_v1_test>"
             "-DYUME_ARGUMENT=--stdin-client"
-            "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/ytp1/yume.json"
+            "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/yume.json"
             -P "${CMAKE_SOURCE_DIR}/cmake/run_with_stdin.cmake")
     add_test(NAME yume_config_v1_server_example
         COMMAND "${CMAKE_COMMAND}"
             "-DYUME_PROGRAM=$<TARGET_FILE:yume_config_v1_test>"
             "-DYUME_ARGUMENT=--stdin-server"
-            "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/ytp1/yumed.json"
+            "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/yumed.json"
             -P "${CMAKE_SOURCE_DIR}/cmake/run_with_stdin.cmake")
 
     if(YUME_BUILD_SHARED_ABI)
@@ -1746,8 +1746,8 @@ if(YUME_BUILD_TESTING)
             yume_c_abi_contract_test yume_abi)
         add_test(NAME yume_c_abi_contract_test
             COMMAND yume_c_abi_contract_test
-                "${CMAKE_SOURCE_DIR}/config/ytp1/yume.json"
-                "${CMAKE_SOURCE_DIR}/config/ytp1/yumed.json")
+                "${CMAKE_SOURCE_DIR}/config/yume.json"
+                "${CMAKE_SOURCE_DIR}/config/yumed.json")
 
         # The C boundary is the whole point of a C ABI: compiling the public
         # header as strict C is the only check that a C++-only declaration has

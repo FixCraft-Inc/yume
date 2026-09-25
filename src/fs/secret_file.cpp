@@ -625,7 +625,7 @@ bool WriteFileExclusive0600(const std::filesystem::path& path,
 Secret32 LoadSecretFile32(const std::filesystem::path& path) {
 #if defined(_WIN32)
     (void)path;
-    throw std::runtime_error("YUME 2.0 protected secret files are currently Linux/POSIX only");
+    throw std::runtime_error("YUME protected secret files are currently Linux/POSIX only");
 #else
     if (path.empty() || path.native().find('\0') != std::string::npos) {
         throw std::runtime_error("protected secret file path is invalid");

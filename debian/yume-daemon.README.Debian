@@ -28,8 +28,7 @@ loopback HTTP backend is required.
 
 Make the credentials accessible to the locked yume account. Private files
 must be owned by yume with mode 0600, and the credentials directory should be
-mode 0700. Public keys and cover files need read access. Do not use the old
-transport-v2 authorized_keys, auth_keys.meta, obfs.hex or inner.hex formats.
+mode 0700. Public keys and cover files need read access.
 
 Validate the complete provisioned configuration as the service account:
 

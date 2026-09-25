@@ -40,7 +40,7 @@ Description: native YTP/1 stealth transport command-line client
  directional key epochs. The native client supports SOCKS5 TCP and UDP.
  .
  This experimental package includes schema-1 setup and validation tools.
- It does not provide the transport-v2 desktop consumer or a frozen C ABI.
+ It does not provide a desktop application or a frozen C ABI.
 
 Package: yume-daemon
 Architecture: any

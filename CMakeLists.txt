@@ -663,8 +663,8 @@ if(YUME_BUILD_NATIVE_APPLICATION)
     )
 
     install(FILES
-        config/ytp1/yume.json
-        config/ytp1/yumed.json
+        config/yume.json
+        config/yumed.json
         DESTINATION "${YUME_DOC_INSTALL_DIR}/examples"
         COMPONENT yume_cli
     )

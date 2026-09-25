@@ -14,8 +14,6 @@ matching schema-1 kit, validate it and use the config-only native interface:
   yume --config /path/to/client/yume.json
 
 For a server, follow /usr/share/doc/yume-daemon/README.Debian. Keep client
-credentials off the server. The transport-v2 CLI, GUI, provisioning formats
-and helper are retained only in explicit development reference builds and
-are not installed by these packages.
+credentials off the server.
 
 These development packages are not a frozen ABI or a qualified release.

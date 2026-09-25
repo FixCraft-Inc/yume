@@ -8,8 +8,8 @@ download dependencies. Use scripts/make_debian_orig.sh to create the matching
 0.3.0-dev1 maps to 1:0.3.0~dev1; the Debian-only epoch preserves package
 ordering and is omitted from source filenames and YUME's reported version.
 
-The Debian build selects the native YTP/1 application, disables transport-v2,
-BaseFWX, GUI and the experimental SDK, and uses system JSON, nghttp2,
+The Debian build selects the native YTP/1 application, leaves out the BaseFWX
+modules, the GUI and the experimental SDK, and uses system JSON, nghttp2,
 libsystemd and dynamically linked OpenSSL. It emits yume and yume-daemon.
 The schema-1 setup/doctor scripts are installed with the client. The daemon
 ships an unprovisioned schema-1 bootstrap and a disabled service. No private
@@ -24,8 +24,9 @@ debian/rules never downloads or builds OpenSSL. Dynamic linking lets
 dpkg-shlibdeps record its runtime edge; debian/control also states the 3.5
 floor because provider-based ML-DSA lookup has no 3.5-only ELF symbol.
 
-The reference GUI and BaseFWX remain available for explicit development
-builds, outside this package payload. Neither libyume1 nor libyume-dev is
+The BaseFWX modules remain available for explicit development builds,
+outside this package payload, and the GUI source does not build until it is
+ported to the native runtime. Neither libyume1 nor libyume-dev is
 emitted before ABI freeze and release qualification; debian/libyume1.symbols
 is candidate review metadata only. Full Debian build, install, upgrade and
 service tests still have to pass in the intended distribution environment.

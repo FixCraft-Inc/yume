@@ -10,10 +10,6 @@ YUME is distributed under the GNU Affero General Public License version 3 or
 later; see `LICENSE` in the bundle. The Linux binaries also use or incorporate
 the following projects under their respective licenses:
 
-- BaseFWX: LGPL-3.0-or-later for the core library, public API, and runtime,
-  which is what YUME links. Its standalone CLIs, tools, and release scripts are
-  GPL-3.0-or-later. The pinned source revision is recorded in the `basefwx`
-  entry in `config/dependencies.json` in the matching YUME source release.
 - Boost: Boost Software License 1.0.
 - OpenSSL: Apache License 2.0.
 - YUME's downstream OpenSSL patch overlay: AGPL-3.0-or-later. The underlying
@@ -21,13 +17,8 @@ the following projects under their respective licenses:
 - Brotli: MIT License.
 - nghttp2: MIT License.
 - zlib: zlib License.
-- libarchive: BSD licenses and other component terms listed in upstream
-  COPYING.
-- XZ Utils/liblzma: public domain and LGPL components as documented upstream.
 - Zstandard: BSD 3-Clause License and GPLv2 dual license.
-- Argon2 reference implementation: CC0 1.0 or Apache License 2.0.
-- liboqs: MIT License.
-- spdlog: MIT License.
+- systemd (libsystemd): LGPL-2.1-or-later.
 - nlohmann/json: MIT License.
 
 The matching source release and dependency repositories contain the complete

@@ -269,18 +269,29 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("deliberately fails against stock Debian", debian_readme)
         self.assertIn("patches/openssl/series", debian_readme)
 
-    def test_reference_ci_consumers_select_reference_graph(self) -> None:
-        for workflow in ("ci.yml", "release.yml", "codeql.yml"):
-            text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
-            for command in re.findall(r"cmake -S \. -B [^\n]*(?:\n[^\n]+)*", text):
-                if any(flag in command for flag in (
-                        "-DYUME_BUILD_GUI=ON", "-DYUME_BUILD_CHROME_TLS_HELPER=ON")):
-                    self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", command, workflow)
-            if workflow == "codeql.yml":
-                self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", text)
-        gui = (ROOT / "src/gui/CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertIn('--yumed "$<TARGET_FILE:yumed-v2-reference>"', gui)
-        self.assertNotIn("install(TARGETS yume-gui", gui)
+    def test_build_scripts_pass_only_defined_cmake_variables(self) -> None:
+        """A removed option passed on a command line is silently ignored, so
+        every YUME variable a workflow or Debian configure sets must be one
+        the build still defines."""
+        defined: set[str] = set()
+        for source in (ROOT / "CMakeLists.txt", ROOT / "src/CMakeLists.txt",
+                       *sorted((ROOT / "cmake").glob("*.cmake"))):
+            text = source.read_text(encoding="utf-8")
+            defined.update(re.findall(r"option\((YUME_[A-Z0-9_]+)", text))
+            defined.update(re.findall(r"set\((YUME_[A-Z0-9_]+)\s[^)]*CACHE", text))
+        self.assertIn("YUME_BUILD_NATIVE_APPLICATION", defined)
+        commands: list[tuple[str, str]] = []
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = workflow.read_text(encoding="utf-8")
+            commands.extend(
+                (workflow.name, command) for command in
+                re.findall(r"cmake -S \. -B [^\n]*(?:\n[^\n]+)*", text))
+        commands.append(("debian/rules",
+                         (ROOT / "debian/rules").read_text(encoding="utf-8")))
+        self.assertGreaterEqual(len(commands), 5)
+        for origin, command in commands:
+            for name in re.findall(r"-D(YUME_[A-Z0-9_]+)=", command):
+                self.assertIn(name, defined, f"{origin} sets undefined {name}")
 
     def test_debian_daemon_bootstrap_contract_is_complete(self) -> None:
         config = json.loads(

@@ -161,24 +161,13 @@ def validate_workflow_guards() -> None:
     required_release = (
         "linux-desktop-0.3.0",
         "libbrotli-dev",
-        'go-version: "1.26.5"',
-        "check-latest: false",
         "-DYUME_BUILD_NATIVE_APPLICATION=ON",
-        "-DYUME_BUILD_TRANSPORT_V2=ON",
-        "-DYUME_BUILD_CHROME_TLS_HELPER=ON",
-        "-DYUME_BUILD_GUI=OFF",
+        "-DYUME_BUILD_SHARED_ABI=OFF",
+        "-DYUME_BUILD_BASEFWX_MODULES=OFF",
         "-DYUME_STATIC=OFF",
         "-DYUME_STATIC_OPENSSL=ON",
         "-DYUME_WARNINGS_AS_ERRORS=ON",
         "-DCMAKE_SKIP_BUILD_RPATH=ON",
-        "-DBASEFWX_REQUIRE_ARGON2=ON",
-        "-DBASEFWX_REQUIRE_OQS=ON",
-        "-DBASEFWX_OQS_STATIC=ON",
-        "-DOQS_LIBRARY=\"${YUME_LIBOQS_PREFIX}/lib/liboqs.a\"",
-        "LIBOQS_PREFIX_OVERRIDE=\"${YUME_LIBOQS_PREFIX}\"",
-        "LIBOQS_VERSION=0.16.0",
-        "-DBASEFWX_REQUIRE_LZMA=ON",
-        "GOPROXY=off",
         "package_linux_release.py",
         BUNDLE_NAME,
         SERVER_NAME,
@@ -204,8 +193,8 @@ def validate_workflow_guards() -> None:
     # Derive the lane count so a new lane must carry the same guarantees.
     cmake_lanes = ci_yml.count("cmake -S . -B ")
     require(cmake_lanes >= 3,
-            "ci.yml must keep at least the release, sanitizer and GUI build lanes; "
-            f"found {cmake_lanes} lanes that configure CMake")
+            "ci.yml must keep at least the release, sanitizer and thread-sanitizer "
+            f"build lanes; found {cmake_lanes} lanes that configure CMake")
     require(ci_yml.count(dependency_setup) == cmake_lanes,
             "every CI build lane must preserve the combined OpenSSL/nghttp2 "
             f"environment: {cmake_lanes} lanes configure CMake but "
@@ -221,6 +210,7 @@ def validate_workflow_guards() -> None:
     for needle in (
         'YUME_OPENSSL_FORCE_PINNED: "1"',
         "-DYUME_STATIC_OPENSSL=ON",
+        "-DYUME_BUILD_BASEFWX_MODULES=ON",
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
         "-DBASEFWX_REQUIRE_LZMA=ON",
@@ -269,8 +259,8 @@ def validate_workflow_guards() -> None:
     require("branches: [main, DEV]" in ci_yml, "ci.yml must cover main and DEV")
     require("scripts/check_dependency_sbom.py --check" in ci_yml,
             "CI preflight must reject stale declared-dependency SBOM metadata")
-    require(release_yml.count("-B build-helper-") >= 2,
-            "release.yml must configure two clean helper build directories")
+    require(release_yml.count("cmake -S . -B build-release") == 1,
+            "release.yml must configure exactly one release build directory")
     forbidden = (
         "build-macos", "openwrt", "windows-x86_64", "armv7", "armv8",
         "busybox", "yume-gui", "yume-amd64-linux-static", "debian archive",
@@ -291,40 +281,17 @@ def validate_cmake_cache(path: pathlib.Path) -> None:
     cache = path.read_text(encoding="utf-8", errors="replace")
     required = {
         "YUME_BUILD_NATIVE_APPLICATION": "ON",
-        "YUME_BUILD_TRANSPORT_V2": "ON",
-        "YUME_USE_BASEFWX": "ON",
-        "YUME_BUILD_CHROME_TLS_HELPER": "ON",
+        "YUME_BUILD_SHARED_ABI": "OFF",
+        "YUME_BUILD_BASEFWX_MODULES": "OFF",
         "YUME_STATIC_OPENSSL": "ON",
-        "YUME_BUILD_GUI": "OFF",
         "YUME_STATIC": "OFF",
         "YUME_WARNINGS_AS_ERRORS": "ON",
         "CMAKE_SKIP_BUILD_RPATH": "ON",
-        "BASEFWX_REQUIRE_ARGON2": "ON",
-        "BASEFWX_REQUIRE_OQS": "ON",
-        "BASEFWX_OQS_STATIC": "ON",
-        "BASEFWX_REQUIRE_LZMA": "ON",
     }
     for name, expected in required.items():
         actual = cache_value(cache, name)
         require(actual == expected,
                 f"Release CMake cache requires {name}={expected}, found {actual}")
-    oqs_library = cache_value(cache, "OQS_LIBRARY")
-    oqs_library_static = cache_value(cache, "OQS_LIBRARY_STATIC")
-    require(oqs_library is not None and oqs_library.endswith("/lib/liboqs.a"),
-            f"Release CMake cache requires an explicit static OQS_LIBRARY, found {oqs_library}")
-    require(oqs_library_static == oqs_library,
-            "Release CMake cache OQS_LIBRARY_STATIC must match OQS_LIBRARY")
-
-
-def validate_helper_rebuilds(first: pathlib.Path, second: pathlib.Path) -> str:
-    for path in (first, second):
-        require(path.is_file() and not path.is_symlink(),
-                f"Missing regular Chrome TLS helper rebuild: {path}")
-    first_hash = sha256_file(first)
-    second_hash = sha256_file(second)
-    require(first_hash == second_hash,
-            "Chrome TLS helper clean rebuild SHA-256 mismatch")
-    return first_hash
 
 
 def require_elf_amd64(data: bytes, description: str) -> None:
@@ -428,7 +395,7 @@ def require_no_runtime_search_path(data: bytes, description: str) -> None:
         require(b"/" not in library,
                 f"{description} contains an unsafe DT_NEEDED path")
         require(not library.startswith(b"liboqs.so"),
-                f"{description} dynamically links liboqs; release binaries must use the pinned static archive")
+                f"{description} loads liboqs, which no release binary links")
         require(not library.startswith((b"libssl", b"libcrypto")),
                 f"{description} dynamically links OpenSSL; the native Chrome TLS "
                 "patch must be embedded in the release binary")
@@ -559,8 +526,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tag")
     parser.add_argument("--skip-ref-fetch", action="store_true")
     parser.add_argument("--cmake-cache", type=pathlib.Path)
-    parser.add_argument("--helper-build-a", type=pathlib.Path)
-    parser.add_argument("--helper-build-b", type=pathlib.Path)
     parser.add_argument("--artifacts", type=pathlib.Path)
     return parser.parse_args()
 
@@ -580,11 +545,6 @@ def main() -> None:
     validate_workflow_guards()
     if args.cmake_cache is not None:
         validate_cmake_cache(args.cmake_cache)
-    require((args.helper_build_a is None) == (args.helper_build_b is None),
-            "Both helper rebuild paths are required together")
-    if args.helper_build_a is not None:
-        validate_helper_rebuilds(
-            args.helper_build_a, args.helper_build_b)
     if args.artifacts is not None:
         validate_artifacts(args.artifacts, version, commit, transport)
     print(f"Preflight OK: profile={PROFILE} version={version} "

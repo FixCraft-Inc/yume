@@ -324,7 +324,12 @@ CONNECT stays unread in the socket until that bridge takes ownership. Only the
 no-authentication method, CONNECT and UDP ASSOCIATE are offered, and a request
 without an active session is refused rather than queued. A client may set
 `connect_address` to dial a numeric address while TLS and admission still
-authenticate `host`. `yume_native_runtime_test` provisions a kit, runs both
+authenticate `host`. `socks5_upstream.*` can reach the server through a SOCKS5
+proxy instead: another byte-channel provider connects to the proxy, which is
+then asked to CONNECT to the server by name or address, with or without
+username and password authentication, reading no byte past the proxy's reply
+and bounded by one deadline. Client configuration does not use it yet.
+`yume_native_runtime_test` provisions a kit, runs both
 processes, moves a payload through SOCKS5, checks refusal by configured
 destinations and by an unreachable route, and requires clean SIGTERM exits.
 It also checks early binary payload with CONNECT or greeting+CONNECT, split

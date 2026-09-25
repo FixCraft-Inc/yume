@@ -492,6 +492,18 @@ if(YUME_BUILD_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER)
     target_link_libraries(yume_asio_tcp_byte_channel_provider
         PUBLIC yume_engine yume_asio_execution_context yume_system_resolver Boost::system)
     yume_apply_perf_opts(yume_asio_tcp_byte_channel_provider)
+
+    # A server reached through a SOCKS5 proxy. Any byte channel provider
+    # reaches the proxy, and this one asks it to CONNECT to the target.
+    add_library(yume_socks5_upstream STATIC
+        providers/socks5_upstream.cpp
+        providers/socks5_upstream.hpp)
+    target_include_directories(yume_socks5_upstream PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_socks5_upstream
+        PUBLIC yume_engine yume_asio_execution_context PRIVATE Boost::system)
+    yume_apply_perf_opts(yume_socks5_upstream)
+    yume_assert_exact_link_dependencies(yume_socks5_upstream
+        yume_engine yume_asio_execution_context Boost::system)
 endif()
 
 # Profile data and fingerprint interpretation are shared by TLS and H2. Keep
@@ -1601,6 +1613,17 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_paced_stream_test COMMAND yume_paced_stream_test)
         set_tests_properties(yume_paced_stream_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+    endif()
+    if(TARGET yume_socks5_upstream)
+        add_executable(yume_socks5_upstream_test providers/socks5_upstream_test.cpp)
+        target_link_libraries(yume_socks5_upstream_test PRIVATE
+            yume_socks5_upstream yume_asio_tcp_byte_channel_provider Boost::system)
+        yume_apply_perf_opts(yume_socks5_upstream_test)
+        yume_assert_exact_link_dependencies(yume_socks5_upstream_test
+            yume_socks5_upstream yume_asio_tcp_byte_channel_provider Boost::system)
+        add_test(NAME yume_socks5_upstream_test COMMAND yume_socks5_upstream_test)
+        set_tests_properties(yume_socks5_upstream_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_loopback_http_fetch)
         add_executable(yume_loopback_http_fetch_test providers/loopback_http_fetch_test.cpp)

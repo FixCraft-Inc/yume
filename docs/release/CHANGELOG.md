@@ -30,6 +30,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Application codec library.** The application codec core (the HTTP
   envelope, backend dialing rules and the Monero RPC descriptor) builds apart
   from transport v2 as `yume_module_codecs` for a planned codec module.
+- **SOCKS5 upstream provider.** `providers/socks5_upstream.*` reaches a server
+  through a SOCKS5 proxy over any byte-channel provider, as transport v2's
+  client dialing did. It offers only the method its configuration implies,
+  takes credentials that wipe themselves, and reads nothing past the proxy's
+  reply. Client configuration does not use it yet.
 - **Loopback cover fetch.** `providers/loopback_http_fetch.*` fetches GET and
   HEAD from a loopback web server within fixed bounds, the base of a
   reverse-proxy cover. Unlike transport v2's client, it refuses a backend that

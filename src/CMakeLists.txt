@@ -832,6 +832,7 @@ if(YUME_BUILD_BASEFWX_MODULES)
         modules/relay/directory_policy.cpp modules/relay/directory_policy.hpp
         modules/relay/frame.hpp
         modules/relay/handshake.cpp modules/relay/handshake.hpp
+        modules/relay/handshake_detail.hpp
         modules/relay/history.cpp modules/relay/history.hpp
         modules/relay/identity.cpp modules/relay/identity.hpp
         modules/relay/json_policy.hpp
@@ -1045,7 +1046,7 @@ if(YUME_BUILD_TESTING)
 
     if(TARGET yume_module_relay)
         foreach(_yume_relay_test IN ITEMS ratchet rekey_record session_ratchet record handshake
-                identity persistence peer_trust relay_policy directory_policy)
+                identity persistence peer_trust relay_policy directory_policy vectors)
             set(_yume_relay_target yume_module_relay_${_yume_relay_test}_test)
             add_executable(${_yume_relay_target} modules/relay/${_yume_relay_test}_test.cpp)
             target_link_libraries(${_yume_relay_target} PRIVATE yume_module_relay)
@@ -1062,6 +1063,8 @@ if(YUME_BUILD_TESTING)
         endforeach()
         target_compile_definitions(yume_module_relay_identity_test PRIVATE
             YUME_RELAY_TESTDATA="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata")
+        target_compile_definitions(yume_module_relay_vectors_test PRIVATE
+            YUME_RELAY_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/modules/relay/testdata/relay_vectors.txt")
     endif()
     if(TARGET yume_module_codecs)
         add_executable(yume_module_codecs_codec_test modules/codecs/codec_test.cpp)

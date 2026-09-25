@@ -253,7 +253,20 @@ ratchet.
 
 ## Tests
 
+`yume_module_relay_vectors_test` checks known answers for every label on this
+page, the nonce, associated data and envelope layouts, and the DATA record
+header. Its fixture, `src/modules/relay/testdata/relay_vectors.txt`, comes
+from `generate_relay_vectors.py` beside it, which implements these formulas
+without YUME code. Before it writes anything, the generator reproduces the
+answers the transport-v2 ratchet computed, which `ratchet_test.cpp` also
+keeps. Check the fixture with:
+
+```bash
+python3 src/modules/relay/testdata/generate_relay_vectors.py \
+  --check src/modules/relay/testdata/relay_vectors.txt
+```
+
 `yume_module_relay_handshake_test`, `yume_module_relay_record_test`,
 `yume_module_relay_rekey_record_test`, `yume_module_relay_ratchet_test` and
-`yume_module_relay_session_ratchet_test` cover this contract. They run in
-builds with `YUME_BUILD_BASEFWX_MODULES=ON`.
+`yume_module_relay_session_ratchet_test` cover parsing, bounds, ordering and
+failure paths. All of them run in builds with `YUME_BUILD_BASEFWX_MODULES=ON`.

@@ -5,6 +5,7 @@
  */
 
 #include "modules/relay/handshake.hpp"
+#include "modules/relay/handshake_detail.hpp"
 
 #include <algorithm>
 #include <array>
@@ -570,34 +571,6 @@ void AppendLengthPrefixed(Bytes& out, const Bytes& value) {
     out.insert(out.end(), value.begin(), value.end());
 }
 
-SecureBytes BuildRequestSignatureInput(const Bytes& unsigned_request) {
-    SecureBytes guarded;
-    Bytes& out = guarded.bytes();
-    out.reserve(kRequestSignatureDomain.size() + 4U +
-                unsigned_request.size());
-    out.insert(out.end(), kRequestSignatureDomain.begin(),
-               kRequestSignatureDomain.end());
-    AppendLengthPrefixed(out, unsigned_request);
-    return guarded;
-}
-
-SecureBytes BuildResponseSignatureInput(const Bytes& request,
-                                        const Bytes& unsigned_response) {
-    if (request.size() > kMaxRecordBytes ||
-        unsigned_response.size() > kMaxRecordBytes) {
-        throw Error("relay-v2 signature transcript exceeds the size cap");
-    }
-    SecureBytes guarded;
-    Bytes& out = guarded.bytes();
-    out.reserve(kResponseSignatureDomain.size() + 8U + request.size() +
-                unsigned_response.size());
-    out.insert(out.end(), kResponseSignatureDomain.begin(),
-               kResponseSignatureDomain.end());
-    AppendLengthPrefixed(out, request);
-    AppendLengthPrefixed(out, unsigned_response);
-    return guarded;
-}
-
 SecureBytes Sha256Secret(std::string_view domain,
                          const Bytes& first,
                          const Bytes* second) {
@@ -640,16 +613,54 @@ SecureBytes Sha256Secret(std::string_view domain,
     }
 }
 
+void RequireRequestMatches(const ParsedRequest& request,
+                           const HandshakeContext& context,
+                           const Bytes& initiator_identity,
+                           const Bytes& responder_identity) {
+    if (!(request.context == context) ||
+        request.initiator_identity != initiator_identity ||
+        request.responder_identity != responder_identity) {
+        throw Error("relay-v2 request context or peer identity mismatch");
+    }
+}
+
+}  // namespace
+
+namespace detail {
+
+SecureBytes BuildRequestSignatureInput(const Bytes& unsigned_request) {
+    SecureBytes guarded;
+    Bytes& out = guarded.bytes();
+    out.reserve(kRequestSignatureDomain.size() + 4U +
+                unsigned_request.size());
+    out.insert(out.end(), kRequestSignatureDomain.begin(),
+               kRequestSignatureDomain.end());
+    AppendLengthPrefixed(out, unsigned_request);
+    return guarded;
+}
+
+SecureBytes BuildResponseSignatureInput(const Bytes& request,
+                                        const Bytes& unsigned_response) {
+    if (request.size() > kMaxRecordBytes ||
+        unsigned_response.size() > kMaxRecordBytes) {
+        throw Error("relay-v2 signature transcript exceeds the size cap");
+    }
+    SecureBytes guarded;
+    Bytes& out = guarded.bytes();
+    out.reserve(kResponseSignatureDomain.size() + 8U + request.size() +
+                unsigned_response.size());
+    out.insert(out.end(), kResponseSignatureDomain.begin(),
+               kResponseSignatureDomain.end());
+    AppendLengthPrefixed(out, request);
+    AppendLengthPrefixed(out, unsigned_response);
+    return guarded;
+}
+
 Bytes RequestDigest(const Bytes& request) {
     SecureBytes guarded = Sha256Secret(
         "yume/relay/v2/request-digest/v1", request, nullptr);
     return guarded.Release();
 }
-
-struct DerivedPair {
-    SecureBytes initial_root;
-    SecureBytes epoch_psk;
-};
 
 DerivedPair DeriveSecrets(const Bytes& request,
                           const Bytes& response,
@@ -684,19 +695,7 @@ DerivedPair DeriveSecrets(const Bytes& request,
     return {std::move(initial_root), std::move(epoch_psk)};
 }
 
-
-void RequireRequestMatches(const ParsedRequest& request,
-                           const HandshakeContext& context,
-                           const Bytes& initiator_identity,
-                           const Bytes& responder_identity) {
-    if (!(request.context == context) ||
-        request.initiator_identity != initiator_identity ||
-        request.responder_identity != responder_identity) {
-        throw Error("relay-v2 request context or peer identity mismatch");
-    }
-}
-
-}  // namespace
+}  // namespace detail
 
 struct SessionSecrets::Impl {
     Impl(SecureBytes root, SecureBytes psk) noexcept
@@ -817,7 +816,7 @@ InitiatorRequest BeginInitiator(
         context, initiator_encoded, responder_identity, mlkem.public_key,
         x25519.public_key);
     SecureBytes signature_input =
-        BuildRequestSignatureInput(unsigned_request);
+        detail::BuildRequestSignatureInput(unsigned_request);
     const Bytes signature = identity::sign_composite(
         initiator_identity, signature_input.bytes());
     Bytes request = EncodeRequest(
@@ -855,7 +854,7 @@ ResponderResult Respond(
         parsed.initiator_mlkem_public_key,
         parsed.initiator_x25519_public_key);
     SecureBytes request_signature_input =
-        BuildRequestSignatureInput(unsigned_request);
+        detail::BuildRequestSignatureInput(unsigned_request);
     if (!identity::verify_composite(
             parsed.initiator_public_key.classical.get(),
             parsed.initiator_public_key.pq.get(),
@@ -872,14 +871,14 @@ ResponderResult Respond(
     SecureBytes x25519_shared{
         basefwx::x25519::DeriveSharedSecret(
             x25519.private_key, parsed.initiator_x25519_public_key)};
-    const Bytes request_digest = RequestDigest(request);
+    const Bytes request_digest = detail::RequestDigest(request);
     const Bytes unsigned_response = EncodeUnsignedResponse(
         parsed.context, parsed.initiator_identity, responder_encoded,
         parsed.initiator_mlkem_public_key,
         parsed.initiator_x25519_public_key, kem.ciphertext,
         x25519.public_key, request_digest);
     SecureBytes response_signature_input =
-        BuildResponseSignatureInput(request, unsigned_response);
+        detail::BuildResponseSignatureInput(request, unsigned_response);
     const Bytes signature = identity::sign_composite(
         responder_identity, response_signature_input.bytes());
     Bytes response = EncodeResponse(
@@ -888,7 +887,7 @@ ResponderResult Respond(
         parsed.initiator_x25519_public_key, kem.ciphertext,
         x25519.public_key, request_digest, signature);
 
-    DerivedPair derived = DeriveSecrets(
+    detail::DerivedPair derived = detail::DeriveSecrets(
         request, response, kem_shared.bytes(), x25519_shared.bytes(),
         guarded_psk.bytes());
     auto secrets_impl = std::make_unique<SessionSecrets::Impl>(
@@ -913,7 +912,7 @@ SessionSecrets CompleteInitiator(InitiatorState state,
             request.initiator_x25519_public_key) {
         throw Error("relay-v2 response context, identity, or KEX echo mismatch");
     }
-    const Bytes expected_request_digest = RequestDigest(state.impl_->request);
+    const Bytes expected_request_digest = detail::RequestDigest(state.impl_->request);
     if (!EqualBytes(parsed.request_digest, expected_request_digest)) {
         throw Error("relay-v2 response is bound to a different request");
     }
@@ -924,7 +923,7 @@ SessionSecrets CompleteInitiator(InitiatorState state,
         parsed.initiator_x25519_public_key,
         parsed.responder_mlkem_ciphertext,
         parsed.responder_x25519_public_key, parsed.request_digest);
-    SecureBytes signature_input = BuildResponseSignatureInput(
+    SecureBytes signature_input = detail::BuildResponseSignatureInput(
         state.impl_->request, unsigned_response);
     if (!identity::verify_composite(
             parsed.responder_public_key.classical.get(),
@@ -942,7 +941,7 @@ SessionSecrets CompleteInitiator(InitiatorState state,
         basefwx::x25519::DeriveSharedSecret(
             state.impl_->x25519.private_key,
             parsed.responder_x25519_public_key)};
-    DerivedPair derived = DeriveSecrets(
+    detail::DerivedPair derived = detail::DeriveSecrets(
         state.impl_->request, response, kem_shared.bytes(),
         x25519_shared.bytes(), state.impl_->relay_psk.bytes());
     auto secrets_impl = std::make_unique<SessionSecrets::Impl>(

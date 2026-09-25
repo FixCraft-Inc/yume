@@ -77,9 +77,32 @@ def _arrow_tips(markup: str) -> list[tuple[float, float]]:
     ]
 
 
+GROUPED = {
+    "name": "grouped",
+    "type": "route",
+    "title": "Grouped route",
+    "summary": "Two adjacent servers share one enclosure between two clients.",
+    "targets": {"web": True},
+    "nodes": [
+        {"id": "client_a", "kind": "client", "title": "CLIENT A", "sub": "first end"},
+        {"id": "server_a", "kind": "server", "title": "SERVER A",
+         "sub": "first member", "group": "CLUSTER"},
+        {"id": "server_b", "kind": "server", "title": "SERVER B",
+         "sub": "second member", "group": "CLUSTER"},
+        {"id": "client_b", "kind": "client", "title": "CLIENT B", "sub": "second end"},
+    ],
+    "edges": [
+        {"from": "client_a", "to": "server_a", "label": "first hop"},
+        {"from": "server_a", "to": "server_b", "label": "member link"},
+        {"from": "server_b", "to": "client_b", "label": "last hop"},
+    ],
+}
+
+
 def _grouped_spec() -> yume_diagram_spec.Spec:
-    """A shipped specification whose group lifts nodes onto a plateau."""
-    return yume_diagram_spec.load("federation")
+    """A specification whose group lifts nodes onto a plateau."""
+    with tempfile.TemporaryDirectory() as directory:
+        return yume_diagram_spec.parse(write_spec(Path(directory), GROUPED, "grouped"))
 
 
 def _cards(markup: str) -> list[tuple[float, float]]:
@@ -505,7 +528,7 @@ class SvgRendering(unittest.TestCase):
         # drawing at half the speed of its across-the-page drawing, which said
         # something about the layout rather than about the route.
         rates = []
-        for spec in yume_diagram_spec.load_all():
+        for spec in [*yume_diagram_spec.load_all(), _grouped_spec()]:
             # A layers figure has no packet. Its rings light in wrapping order.
             if not spec.web or spec.type == "layers":
                 continue

@@ -193,8 +193,7 @@ of:
 6. `docs/ABI.md`.
 
 Record ownership and behavioral breaks explicitly even while compatibility is
-unfrozen. The transport-v2 JSON control API remains a separate current-runtime
-contract in `docs/CONTROL_API.md`; do not route it through the replacement ABI.
+unfrozen.
 
 ## Documentation and review
 

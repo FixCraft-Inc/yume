@@ -5,9 +5,6 @@ This page covers running `yume` and `yumed` after a first local connection
 from the [quick start](QUICKSTART.md). Neither is qualified for production
 yet. Read [implementation status](IMPLEMENTATION_STATUS.md) before exposing a
 server.
-The explicitly enabled transport-v2 reference programs have their own
-[reference operations](TRANSPORT_V2_OPERATIONS.md). Their flags, key files and
-configuration do not apply here.
 
 ## Provision a kit
 

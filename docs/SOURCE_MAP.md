@@ -291,8 +291,6 @@ include in `stealth/`, stops the build rather than being noticed later.
   server paths, overridden boolean types, codec and pin rejection, default
   resets, cover activation, first-error ordering and failed publication.
   These bounded cases do not establish complete parser or startup parity.
-  [Transport-v2 operations](TRANSPORT_V2_OPERATIONS.md#transport-v2-configuration-loading-and-saving)
-  describes the shared behavior and the remaining stage distinction.
 - **Filter archives have their own dependency boundary.**
   `server/filter/filter_archive.*` owns bounded liblzma decoding, libarchive
   metadata interpretation, and confined exclusive writes. `IpFilter` owns

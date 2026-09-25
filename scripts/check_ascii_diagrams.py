@@ -35,7 +35,6 @@ DEFAULT_PATHS = (
     "docs/EXPLAINED.md",
     "docs/man/yume.1",
     "docs/man/yumed.8",
-    "docs/man/yume-gui.1",
     "basefwx/docs/EXPLAINED.md",
     "basefwx/docs/man/basefwx.1",
     "basefwx/docs/man/basefwx.7",

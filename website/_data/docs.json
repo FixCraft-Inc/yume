@@ -71,15 +71,6 @@
     "home_group": "Start here"
   },
   {
-    "title": "Transport-v2 permissions",
-    "summary": "Key stores, per-key metadata and privileged-feature checks in the transport-v2 reference daemon.",
-    "url": "/docs/PERMISSIONS/",
-    "source": "docs/PERMISSIONS.md",
-    "landing_group": "Security and transport",
-    "order": 60,
-    "home_group": "Start here"
-  },
-  {
     "title": "Operations",
     "summary": "Provisioning, service deployment, client identities, limits, release verification and troubleshooting for native yume and yumed.",
     "url": "/docs/OPERATIONS/",
@@ -104,15 +95,6 @@
     "source": "docs/LEAK_TIGHT.md",
     "landing_group": "Operating",
     "order": 90,
-    "home_group": "Operating"
-  },
-  {
-    "title": "Transport-v2 filtering and cover",
-    "summary": "Current public-listener, active-probe, cover, and self-DPI behavior.",
-    "url": "/docs/FILTERING_SELF_DPI/",
-    "source": "docs/FILTERING_SELF_DPI.md",
-    "landing_group": "Security and transport",
-    "order": 100,
     "home_group": "Operating"
   },
   {
@@ -170,33 +152,6 @@
     "home_group": "Internals and status"
   },
   {
-    "title": "Transport-v2 control API",
-    "summary": "JSON operations used by transport-v2 runtime IPC and the optional GUI.",
-    "url": "/docs/CONTROL_API/",
-    "source": "docs/CONTROL_API.md",
-    "landing_group": "Reference and development",
-    "order": 145,
-    "home_group": "Internals and status"
-  },
-  {
-    "title": "Transport-v2 operations",
-    "summary": "Deployment, key, limit and release notes for the uninstalled transport-v2 reference programs.",
-    "url": "/docs/TRANSPORT_V2_OPERATIONS/",
-    "source": "docs/TRANSPORT_V2_OPERATIONS.md",
-    "landing_group": "Reference and development",
-    "order": 146,
-    "home_group": "Internals and status"
-  },
-  {
-    "title": "Transport-v2 byte path",
-    "summary": "One byte through the transport-v2 reference stack, layer by layer, and how to review a change to each layer.",
-    "url": "/docs/BYTE_PATH/",
-    "source": "docs/BYTE_PATH.md",
-    "landing_group": "Reference and development",
-    "order": 148,
-    "home_group": "Internals and status"
-  },
-  {
     "title": "YTP/1 protocol",
     "summary": "The bounded canonical transport kernel and its still-open provider and runtime boundaries.",
     "url": "/docs/protocol/YTP_1/",
@@ -212,15 +167,6 @@
     "source": "docs/IMPLEMENTATION_STATUS.md",
     "landing_group": "Start here",
     "order": 160,
-    "home_group": "Internals and status"
-  },
-  {
-    "title": "Tests and benchmarks",
-    "summary": "Current transport benchmarks, focused checks, and what each result can establish.",
-    "url": "/docs/SELFTEST/",
-    "source": "docs/SELFTEST.md",
-    "landing_group": "Reference and development",
-    "order": 170,
     "home_group": "Internals and status"
   },
   {

@@ -183,6 +183,12 @@ ctest --test-dir build-dev --output-on-failure
 ./build-dev/bin/yume --timing --help
 ```
 
+Native test executables keep their checks in optimized builds. Most define
+their own `CHECK` macro, which `NDEBUG` does not remove, and a test that calls
+`assert()` is compiled with `-UNDEBUG`. Keep it that way: a Release or
+RelWithDebInfo test run must not pass because CMake defined `NDEBUG` and
+compiled the checks away.
+
 Benchmark comparisons must state whether timing was enabled. Do not compare an
 instrumented run with an uninstrumented one as if they were identical builds.
 Sanitized builds are never valid benchmark subjects.

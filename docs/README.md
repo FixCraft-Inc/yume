@@ -51,17 +51,6 @@ then run the sync described there.
 These pages describe the transport-v2 reference build, which has been removed.
 Each stays until it is rewritten for YTP/1 or deleted.
 
-- [How a byte travels](BYTE_PATH.md).
-- [Reference operations](TRANSPORT_V2_OPERATIONS.md) and
-  [permissions](PERMISSIONS.md).
 - [Wire contract](protocol/YUME_2_0_WIRE.md) and
   [security modes](SECURITY_MODES.md).
-- [Probe and cover behavior](FILTERING_SELF_DPI.md).
-- [Control API](CONTROL_API.md), [application codecs](APP_CODECS.md) and
-  [host controller](HOST_CONTROLLER.md).
-- [Packet bulk mode](PACKET_NATIVE_BULK.md), [diagnostics](DIAGNOSTICS.md) and
-  [benchmarks](SELFTEST.md).
-- [Federation transit proposal](protocol/YUME_2_0_FEDERATION_TRANSIT.md)
-  (design only, not implemented).
-- Manuals: [yume-v2-reference](man/yume-v2-reference.1),
-  [yumed-v2-reference](man/yumed-v2-reference.8) and [yume-gui](man/yume-gui.1).
+- [Diagnostics](DIAGNOSTICS.md).

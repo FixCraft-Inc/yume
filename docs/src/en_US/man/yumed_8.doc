@@ -77,16 +77,9 @@ The separately installed **yume-setup** and **yume-doctor** tools
 provision and inspect schema-1 kits. Their **--help** output describes their
 arguments.
 
-## REFERENCE RUNTIME
-
-An explicit transport-v2 build provides **yumed-v2-reference**, whose options
-and configuration belong to man:yumed-v2-reference(8). That reference runtime
-remains available for capability migration and is not installed by default.
-Its configuration cannot be used with this native daemon.
-
 ## SEE ALSO
 
-man:yume(1), man:yumed-v2-reference(8)
+man:yume(1)
 
 Source-tree setup guidance is in **docs/QUICKSTART.md** and
 **docs/development/ytp1/README.md**.

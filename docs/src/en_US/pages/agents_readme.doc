@@ -37,7 +37,7 @@ sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
 | Transport, AUTH, ratchet | [YTP/1](../protocol/YTP_1.md) and its construction vectors for the native protocol; [transport-v2 wire](../protocol/YUME_2_0_WIRE.md) and [security modes](../SECURITY_MODES.md) for the reference graph; focused protocol/security tests |
 | C ABI and endpoint backend | [ABI](../ABI.md), header, symbol map, candidate Debian symbols, C/C++ and stream integration tests |
 | Config parsers | Both roles' readers, writers, validation and startup consumers, paired rejection/rollback tests, CLI help and manuals |
-| Server policy and cover | [Permissions](../PERMISSIONS.md), [operations](../OPERATIONS.md), [cover behavior](../FILTERING_SELF_DPI.md), daemon manual |
+| Server policy and cover | [Operations](../OPERATIONS.md), [YTP/1 development guide](../development/ytp1/README.md), daemon manual |
 | YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](../development/ytp1/README.md), provider tests |
 | Product version or packaging | Version header, package metadata, README, [status](../IMPLEMENTATION_STATUS.md), [packaging](../PACKAGING.md), metadata tests |
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |

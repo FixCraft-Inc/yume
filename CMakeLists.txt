@@ -633,14 +633,11 @@ if(YUME_BUILD_NATIVE_APPLICATION)
         docs/ARCHITECTURE.md
         docs/OPERATIONS.md
         docs/PACKAGING.md
-        docs/PERMISSIONS.md
         docs/QUICKSTART.md
         docs/STEALTH.md
         docs/THREAT_MODEL.md
         docs/IMPLEMENTATION_STATUS.md
-        docs/SELFTEST.md
         docs/LEAK_TIGHT.md
-        docs/PACKET_NATIVE_BULK.md
         docs/release/CHANGELOG.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
         COMPONENT yume_cli

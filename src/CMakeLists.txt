@@ -525,9 +525,8 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     yume_apply_perf_opts(yume_h2_duplex_carrier)
 endif()
 
-# The first concrete YTP/1 security-provider candidate is deliberately an
-# opt-in, build-tree-only target. It uses upstream OpenSSL 3.5 primitives but
-# is not part of the runnable transport-v2 graph and is not release-qualified.
+# The YTP/1 session-security provider. It uses upstream OpenSSL 3.5 primitives
+# through its own library context and is not release-qualified.
 if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_openssl_security_provider STATIC
         providers/ytp1_crypto.cpp
@@ -742,7 +741,6 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     yume_assert_exact_link_dependencies(yume_module_launcher yume_process_privileges)
 
     # One application composition owns the normal client and daemon.
-    # Reference transport-v2 programs below are never installed.
     if(TARGET yume_asio_direct_route_provider)
         add_library(yume_native_runtime STATIC
             runtime/native_cli.cpp runtime/native_cli.hpp
@@ -792,8 +790,8 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     endif()
 
     # The YTP/1 embedding backend adapts the native endpoint to the
-    # blocking seam behind the C ABI. The exact list keeps the
-    # transport-v2 graph and BaseFWX out of it.
+    # blocking seam behind the C ABI. The exact list keeps BaseFWX and the
+    # module libraries out of it.
     find_package(Threads REQUIRED)
     add_library(yume_embed STATIC
         abi/native_backend.cpp abi/endpoint_backend.hpp)
@@ -1032,8 +1030,8 @@ endif()
 yume_check_03_source_layering("${CMAKE_SOURCE_DIR}")
 
 if(YUME_BUILD_TESTING)
-    # Schema-1 provisioning is part of the native application contract. Keep
-    # these tests outside the optional transport-v2 reference graph.
+    # Schema-1 provisioning is part of the native application contract, so
+    # these tests run in every testing build.
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME yume_setup_test
         COMMAND "${Python3_EXECUTABLE}"

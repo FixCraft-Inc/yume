@@ -360,6 +360,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Unqualified cover profiles are refused.** A schema-1 document that names a
+  cover profile other than the one the build qualifies now fails to load, in
+  `yume`, `yumed` and the C ABI alike. Before, the programs accepted such a
+  document and ran with the built-in profile anyway, while `yume-doctor`
+  already refused it.
 - **Session closure and reconnect.** The native client reconnects from an
   endpoint notification instead of checking session state every second.
   Teardown settles pending engine callbacks before the endpoint frees the

@@ -8,6 +8,7 @@
 
 #include "common/egress_address.hpp"
 #include "common/service_name.hpp"
+#include "common/version.hpp"
 
 #include <algorithm>
 #include <array>
@@ -542,6 +543,12 @@ std::string ParseProfile(const Json& value, const std::string& pointer) {
     if (!IsSafeIdentifier(profile, kMaxProfileBytes, true)) {
         Fail(pointer,
              "must be a bounded profile identifier using letters, digits, '.', '_', or '-'");
+    }
+    // The build qualifies exactly one profile and always presents it, so a
+    // document naming another one would load and silently run with the
+    // built-in geometry. yume-doctor refuses the same input with this text.
+    if (profile != kEvidenceProfile) {
+        Fail(pointer, "profile is not qualified by this build");
     }
     return profile;
 }

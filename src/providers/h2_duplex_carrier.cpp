@@ -1542,8 +1542,8 @@ Result<std::unique_ptr<Carrier>> make_admitted_h2_duplex_server_carrier(
                 "server H2 state is not a live admitted carrier"));
         }
         // YTP application records may exceed HTTP/2's 65,535-byte initial
-        // per-stream window. Promotion expands the already-admitted carrier to the
-        // transport-v2 provider's fixed 8-MiB receive window; otherwise a record
+        // per-stream window. Promotion expands the already-admitted carrier to a
+        // fixed 8-MiB receive window, the value transport v2 used. Otherwise a record
         // larger than the initial window could never reach ReceivedRecord and its
         // move-owned credit could never be released.
         if (!admitted_h2->EnableAdmittedReceiveWindow()) {

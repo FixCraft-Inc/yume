@@ -641,6 +641,12 @@ void TestCoverValidation() {
     ExpectError(document, "/cover/profile", "profile identifier");
     document["cover"]["profile"] = 1;
     ExpectError(document, "/cover/profile", "string");
+    document = ClientDocument();
+    document["cover"]["profile"] = "firefox-unqualified-v1";
+    ExpectError(document, "/cover/profile", "not qualified by this build");
+    document = ServerDocument();
+    document["cover"]["profile"] = "firefox-unqualified-v1";
+    ExpectError(document, "/cover/profile", "not qualified by this build");
 
     document = ServerDocument();
     document["cover"].erase("root");

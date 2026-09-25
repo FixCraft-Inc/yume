@@ -16,8 +16,8 @@ namespace yume::common {
 
 // UDP has no delivery guarantee to preserve when a local consumer or an OPEN
 // handshake falls behind. Keep each backlog small and deterministic instead
-// of allowing a datagram burst to consume unbounded process memory. The
-// transport-v2 UDP proxies and the native SOCKS5 UDP relay share these caps.
+// of allowing a datagram burst to consume unbounded process memory. The native
+// SOCKS5 UDP relay applies these caps to its pending and reply queues.
 inline constexpr std::size_t kMaxUdpQueuedDatagrams = 64U;
 inline constexpr std::size_t kMaxUdpQueuedBytes = 1U * 1024U * 1024U;
 

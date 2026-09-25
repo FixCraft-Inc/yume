@@ -348,7 +348,8 @@ Schema 1 is role tagged and contains these sections only:
   username and password authentication when credentials are given;
 - `suite`: the exact mandatory provider composition;
 - `credentials`: references to files, never inline private material;
-- `cover`: the qualified profile and server cover root;
+- `cover`: the profile this build qualifies, the only one it accepts, and the
+  server cover root;
 - `services` and `adapters`: explicit named-service exposure, unique by
   `(name, kind)`. Several adapters of one kind are valid when their concrete
   resources differ; exact resource collisions are rejected;

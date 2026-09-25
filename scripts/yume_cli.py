@@ -13,7 +13,8 @@ what order the help prints them in and under which headings, because the help
 groups options by task while the manual groups them by subject.
 
 The native CLI uses a static help string without an output-stream dependency.
-The transport-v2 reference CLI uses stream writers for help and Bash completion.
+Stream writers with runtime interpolation and Bash completion stay available
+for a CLI that needs them, and no current layout uses them.
 The generated headers are tracked so a clone builds without Python. `check`
 fails when a tracked header no longer matches its source.
 

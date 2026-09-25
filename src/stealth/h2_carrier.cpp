@@ -57,7 +57,7 @@ constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
 // peer stalls at this bounded window instead of filling application queues.
 // Increasing it would still enlarge retained protocol/parser state and change
 // WINDOW_UPDATE timing; that belongs with separate WAN and classifier evidence.
-// See docs/IMPLEMENTATION_STATUS.md, "Performance and network qualification".
+// See docs/IMPLEMENTATION_STATUS.md, "Performance boundary".
 constexpr std::int32_t kAdmittedReceiveWindow =
     static_cast<std::int32_t>(kAdmittedH2ReceiveWindowBytes);
 

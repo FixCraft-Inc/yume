@@ -1948,6 +1948,7 @@ if(YUME_BUILD_TESTING)
             "yume_socket_autotuning_test;tests/test_socket_autotuning.py"
             "yume_evaluation_reports_test;tests/test_yume_evaluation_reports.py"
             "yume_browser_sandbox_test;scripts/test_yume_browser_sandbox.py"
+            "yume_bench_resources_test;scripts/test_yume_bench_resources.py"
             "yume_classifier_evidence_test;scripts/test_yume_classifier_evidence.py"
             "yume_classifier_gate_test;scripts/test_yume_classifier_gate.py"
             "yume_constrained_host_test;scripts/test_yume_constrained_host.py"

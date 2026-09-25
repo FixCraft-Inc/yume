@@ -26,7 +26,10 @@ Options:
 
 The output for each ABI is <out>/<abi>/libyume.so plus the public header at
 <out>/include/yume/yume.h. Native dependencies are statically linked into the
-single shared ABI library; libc++_shared.so remains supplied by the Android app.
+single shared ABI library, and libc++_shared.so remains supplied by the Android
+app. The native TLS provider needs the pinned patched OpenSSL, which vcpkg does
+not build, so configuration fails closed until an Android build of that
+OpenSSL is available to CMake.
 EOF
 }
 
@@ -127,13 +130,8 @@ for ABI in "${ABIS[@]}"; do
             -DANDROID_STL=c++_shared \
             -DCMAKE_BUILD_TYPE=Release \
             -DYUME_BUILD_SHARED_ABI=ON \
-            -DYUME_ABI_CLIENT_ONLY=ON \
-            -DYUME_BUILD_GUI=OFF \
-            -DYUME_BUILD_SELFTEST=OFF \
-            -DYUME_BUILD_TESTING=OFF \
-            -DYUME_BUILD_TOOLS=OFF \
-            -DYUME_USE_SPDLOG=OFF \
-            -DYUME_USE_BASEFWX=ON; then
+            -DYUME_BUILD_NATIVE_APPLICATION=OFF \
+            -DYUME_BUILD_TESTING=OFF; then
         manifest_log="${BUILD_DIR}/vcpkg-manifest-install.log"
         if [[ -f "${manifest_log}" ]]; then
             printf '\nLast vcpkg configure output (%s):\n' "${manifest_log}" >&2

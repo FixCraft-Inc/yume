@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared provisioning and process helpers for YUME 2.0 benchmarks."""
+"""Shared process, sandbox and pinned-runtime helpers for YUME benchmarks and captures."""
 
 from __future__ import annotations
 
@@ -36,26 +36,11 @@ PINNED_NODE_BINARY_SHA256 = _COVER_PROFILE["server"]["binary_sha256"]
 _PINNED_CHROME_RE = re.compile(
     rf"\b(?:Chrome|Chromium)\s+{re.escape(PINNED_CHROME_VERSION)}\b"
 )
-RATE_RE = re.compile(
-    r"^(TOTAL|UP|DOWN)\s+([0-9.]+) MiB\s+([0-9.]+) s\s+"
-    r"([0-9.]+) MiB/s /\s+([0-9.]+) Mbit/s$",
-    re.MULTILINE,
-)
 
 
 def is_pinned_chrome_version(version_output: str) -> bool:
     """Return whether browser --version output matches the evidence fixture."""
     return _PINNED_CHROME_RE.search(version_output) is not None
-
-
-@dataclass(frozen=True)
-class BenchKeyset:
-    server_cert: Path
-    server_key: Path
-    client_identity: Path
-    authorized_keys: Path
-    admission_secret: Path
-    inner_psk: Path
 
 
 @dataclass(frozen=True)
@@ -106,36 +91,13 @@ class ManagedProcess:
         return self.resource_sampler.summary() if self.resource_sampler else None
 
 
-def relay_chunk_kib(environment: dict[str, str] | None = None) -> int:
-    source = os.environ if environment is None else environment
-    try:
-        value = int(source.get("YUME_RELAY_READ_BUF", "64"))
-    except ValueError:
-        return 64
-    return value if 4 <= value <= 256 else 64
-
-
-def endpoint_contract(
-    requested_chunk_kib: int | None,
-    production_chunk_kib: int,
-) -> dict[str, object]:
-    """Describe exactly what the synthetic endpoint rate does and does not measure."""
+def wall_throughput(payload_mib: int, wall_seconds: float) -> dict[str, float]:
+    mib_per_second = payload_mib / max(wall_seconds, 1e-9)
     return {
-        "adapter": "authenticated-stream-core",
-        "frame_profile": (
-            "production-stream"
-            if requested_chunk_kib in (None, production_chunk_kib)
-            else "explicit-chunk"
-        ),
-        "includes": ["DATA", "ratchet", "H2", "WebSocket", "TLS"],
-        "excludes": ["local SOCKS socket", "target TCP socket", "packet ABI"],
-        "security": {
-            "ml_kem_1024_x25519_psk_ratchet": True,
-            "aes_256_gcm": True,
-            "legacy_hop": False,
-            "padding": False,
-            "jitter": False,
-        },
+        "payload_mib": payload_mib,
+        "wall_seconds": round(wall_seconds, 3),
+        "mib_per_second": round(mib_per_second, 3),
+        "mbit_per_second": round(mib_per_second * 8.388608, 3),
     }
 
 
@@ -321,79 +283,6 @@ def run_streamed_command(
         process.stdout.close()
         if sampler:
             sampler.stop()
-
-
-def _write_secret(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(path.parent, 0o700)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        secret = os.urandom(32).hex().encode("ascii")
-        view = memoryview(secret)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-    finally:
-        os.close(fd)
-
-
-def generate_keyset(
-    directory: Path,
-    yumed: Path,
-    *,
-    tls_name: str,
-    server_ip: str,
-) -> BenchKeyset:
-    directory.mkdir(parents=True, exist_ok=False, mode=0o700)
-    keyset = BenchKeyset(
-        server_cert=directory / "server.crt",
-        server_key=directory / "server.key",
-        client_identity=directory / "client.key",
-        authorized_keys=directory / "authorized_keys",
-        admission_secret=directory / "secrets" / "admission.hex",
-        inner_psk=directory / "secrets" / "inner.hex",
-    )
-
-    run_checked([
-        "openssl", "req", "-x509", "-newkey", "rsa:2048",
-        "-keyout", str(keyset.server_key),
-        "-out", str(keyset.server_cert),
-        "-days", "1", "-nodes", "-sha256",
-        "-subj", f"/CN={tls_name}",
-        "-addext", f"subjectAltName=DNS:{tls_name},IP:{server_ip}",
-    ])
-    os.chmod(keyset.server_key, 0o600)
-
-    prefix = directory / "client"
-    run_checked([str(yumed), "--keys-gen", str(prefix)])
-    public_key = directory / "client.pub"
-    if not keyset.client_identity.is_file() or not public_key.is_file():
-        raise RuntimeError("yumed --keys-gen did not create the client key pair")
-    shutil.copyfile(public_key, keyset.authorized_keys)
-    os.chmod(keyset.authorized_keys, 0o600)
-
-    der = subprocess.run(
-        ["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER"],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    ).stdout
-    fingerprint = hashlib.sha256(der).hexdigest()
-    metadata = {
-        fingerprint: {
-            "alias": "benchmark",
-            "key_type": "bulk",
-            "max_sessions": 128,
-            "permissions": {},
-        }
-    }
-    metadata_path = Path(f"{keyset.authorized_keys}.json")
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-    os.chmod(metadata_path, 0o600)
-
-    _write_secret(keyset.admission_secret)
-    _write_secret(keyset.inner_psk)
-    return keyset
 
 
 def wait_for_tcp(
@@ -626,15 +515,3 @@ def resolve_pinned_node(
             if resolved_version.startswith(expected_prefix):
                 return candidate.resolve(), resolved_version, True
     raise RuntimeError("npx completed but did not return a usable Node executable")
-
-
-def parse_rates(output: str) -> dict[str, dict[str, float]]:
-    rates: dict[str, dict[str, float]] = {}
-    for row, mib, seconds, mib_s, mbit_s in RATE_RE.findall(output):
-        rates[row.lower()] = {
-            "mib": float(mib),
-            "seconds": float(seconds),
-            "mib_per_second": float(mib_s),
-            "mbit_per_second": float(mbit_s),
-        }
-    return rates

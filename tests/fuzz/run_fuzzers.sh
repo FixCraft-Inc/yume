@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Run the YUME fuzz harnesses for a bounded time and fail on any finding.
 #
-# Usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR] [--with-reference]
+# Usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]
 #
 #   BIN_DIR   directory holding the built yume_fuzz_* executables
 #   SECONDS   wall-clock budget per harness
 #   OUT_DIR   working directory for seeds, corpora, logs and artifacts
-#   --with-reference also require and run the retained transport-v2 harnesses
 #
 # A libFuzzer finding is written under OUT_DIR/artifacts and this script exits
 # nonzero, so the same invocation works as a CI gate and as a local run. Longer
@@ -17,13 +16,12 @@ set -euo pipefail
 BIN_DIR=${1:?usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]}
 SECONDS_PER_TARGET=${2:?usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]}
 OUT_DIR=${3:-fuzz-out}
-REFERENCE_MODE=${4:-}
 if [[ ! "$SECONDS_PER_TARGET" =~ ^[1-9][0-9]*$ ]]; then
     echo "SECONDS must be a positive integer" >&2
     exit 2
 fi
-if [[ $# -gt 4 || ( -n "$REFERENCE_MODE" && "$REFERENCE_MODE" != --with-reference ) ]]; then
-    echo "usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR] [--with-reference]" >&2
+if [[ $# -gt 3 ]]; then
+    echo "usage: run_fuzzers.sh BIN_DIR SECONDS [OUT_DIR]" >&2
     exit 2
 fi
 
@@ -38,13 +36,6 @@ TARGETS=(
     "yume_fuzz_ytp1_auth:ytp1_auth:65537"
     "yume_fuzz_config_v1:config_v1:1048577"
 )
-if [[ "$REFERENCE_MODE" == --with-reference ]]; then
-    TARGETS+=(
-        "yume_fuzz_h2_probe_decoder:h2:1048576"
-        "yume_fuzz_client_config:client:1048577"
-        "yume_fuzz_server_config:server:1048577"
-    )
-fi
 
 status=0
 for entry in "${TARGETS[@]}"; do

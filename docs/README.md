@@ -48,11 +48,10 @@ then run the sync described there.
 
 ## Transport-v2 reference
 
-These pages describe the reference build (`YUME_BUILD_TRANSPORT_V2=ON`, not
-installed). They stay until each feature is moved to YTP/1 or dropped.
+These pages describe the transport-v2 reference build, which has been removed.
+Each stays until it is rewritten for YTP/1 or deleted.
 
-- [Transport v2 explained](TRANSPORT_V2_EXPLAINED.md) and
-  [how a byte travels](BYTE_PATH.md).
+- [How a byte travels](BYTE_PATH.md).
 - [Reference operations](TRANSPORT_V2_OPERATIONS.md) and
   [permissions](PERMISSIONS.md).
 - [Wire contract](protocol/YUME_2_0_WIRE.md) and

@@ -27,9 +27,6 @@ file(MAKE_DIRECTORY
     "${YUME_TEST_ROOT}/src/ytp"
     "${YUME_TEST_ROOT}/src/config/v1"
     "${YUME_TEST_ROOT}/src/core"
-    "${YUME_TEST_ROOT}/src/outbound"
-    "${YUME_TEST_ROOT}/src/client"
-    "${YUME_TEST_ROOT}/src/server"
     "${YUME_TEST_ROOT}/src/facade"
     "${YUME_TEST_ROOT}/src/runtime"
     "${YUME_TEST_ROOT}/src/providers"
@@ -106,48 +103,37 @@ file(WRITE "${YUME_TEST_ROOT}/src/config/v1/forbidden.hpp"
 run_layering_check(FALSE "config-v1 public header")
 file(REMOVE "${YUME_TEST_ROOT}/src/config/v1/forbidden.hpp")
 
-# Directional rules for the transport-v2 stack. Each of these was verified by
-# hand once; pinning them here is what keeps them true. Both include spellings
-# must be caught, because a quoted include is the common form and an angled one
-# is what someone reaches for when the quoted form is rejected.
+# Directional rules. Both include spellings must be caught, because a quoted
+# include is the common form and an angled one is what someone reaches for
+# when the quoted form is rejected.
 file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.hpp"
-    "#include \"server/config/config.hpp\"\n")
-run_layering_check(FALSE "forbidden.hpp includes server/")
+    "#include \"facade/session/endpoint_backend.hpp\"\n")
+run_layering_check(FALSE "forbidden.hpp includes facade/")
 file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.hpp")
 
 file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.hpp"
-    "#include <client/cli/entry.hpp>\n")
-run_layering_check(FALSE "forbidden.hpp includes client/")
+    "#include <abi/yume_c.hpp>\n")
+run_layering_check(FALSE "forbidden.hpp includes abi/")
 file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.hpp")
-
-file(WRITE "${YUME_TEST_ROOT}/src/client/forbidden.cpp"
-    "#include \"server/session/session.hpp\"\n")
-run_layering_check(FALSE "forbidden.cpp includes server/")
-file(REMOVE "${YUME_TEST_ROOT}/src/client/forbidden.cpp")
-
-file(WRITE "${YUME_TEST_ROOT}/src/server/forbidden.cpp"
-    "#include \"client/cli/entry.hpp\"\n")
-run_layering_check(FALSE "forbidden.cpp includes client/")
-file(REMOVE "${YUME_TEST_ROOT}/src/server/forbidden.cpp")
 
 file(WRITE "${YUME_TEST_ROOT}/src/facade/forbidden.cpp"
     "#include \"gui/app.hpp\"\n")
 run_layering_check(FALSE "forbidden.cpp includes gui/")
 file(REMOVE "${YUME_TEST_ROOT}/src/facade/forbidden.cpp")
 
-file(WRITE "${YUME_TEST_ROOT}/src/outbound/forbidden.cpp"
-    "#include \"abi/yume_c.hpp\"\n")
-run_layering_check(FALSE "forbidden.cpp includes abi/")
-file(REMOVE "${YUME_TEST_ROOT}/src/outbound/forbidden.cpp")
+file(WRITE "${YUME_TEST_ROOT}/src/runtime/forbidden.cpp"
+    "#include \"facade/session/endpoint_backend.hpp\"\n")
+run_layering_check(FALSE "forbidden.cpp includes facade/")
+file(REMOVE "${YUME_TEST_ROOT}/src/runtime/forbidden.cpp")
 
 # A C source under a guarded layer must be checked too. The glob previously
 # covered only .cpp and .hpp, so a .c file slipped past the rule entirely.
 file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.c"
-    "#include \"server/config/config.hpp\"\n")
-run_layering_check(FALSE "forbidden.c includes server/")
+    "#include \"abi/yume_c.hpp\"\n")
+run_layering_check(FALSE "forbidden.c includes abi/")
 file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.c")
 
-foreach(_forbidden IN ITEMS core/security/crypto.hpp providers/ytp1_h2_admission.hpp)
+foreach(_forbidden IN ITEMS core/security/secret_file.hpp providers/ytp1_h2_admission.hpp)
     file(WRITE "${YUME_TEST_ROOT}/src/admission/forbidden.hpp"
         "#include \"${_forbidden}\"\n")
     run_layering_check(FALSE "Layering violation: src/admission/")

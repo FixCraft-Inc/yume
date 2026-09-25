@@ -10,7 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <string>
 
 #ifndef YUME_ENABLE_DEV_DIAGNOSTICS
 #define YUME_ENABLE_DEV_DIAGNOSTICS 0
@@ -18,50 +17,10 @@
 
 namespace yume::diagnostics {
 
+// Hot-path timing that exists only in Debug and RelWithDebInfo builds. In
+// Release every helper here is empty and reads no clock.
 inline constexpr bool kTimingCompiledIn =
     YUME_ENABLE_DEV_DIAGNOSTICS != 0;
-
-#if YUME_ENABLE_DEV_DIAGNOSTICS
-void set_timing_enabled(bool enabled) noexcept;
-bool timing_enabled() noexcept;
-void log_timing(const std::string& component,
-                const std::string& event,
-                const std::string& details = {});
-#else
-inline constexpr void set_timing_enabled(bool) noexcept {}
-inline constexpr bool timing_enabled() noexcept { return false; }
-#endif
-
-// Wall-clock stamps for stream-lifecycle diagnostics.
-//
-// These exist so a Release binary reads no clock for telemetry it will never
-// emit. `YUME_TIMING_LOG` compiles away in Release, but a bare
-// `util::now_ms()` feeding it does not -- the call still happens and the
-// result is discarded. Route every diagnostics-only stamp through these two
-// helpers instead: in Release they are `constexpr` zero, and in a diagnostics
-// build they still read nothing until `--timing` / `YUME_TIMING` turns
-// collection on.
-//
-// A stamp of 0 means "never taken", which is what `elapsed_ms_since` reports
-// as an elapsed value of 0. Never use these for timeouts, expiry, protocol
-// fields, or anything a user can observe -- they legitimately return 0. Real
-// functional timestamps keep using `util::now_ms()`.
-#if YUME_ENABLE_DEV_DIAGNOSTICS
-std::int64_t timing_now_ms() noexcept;
-#else
-inline constexpr std::int64_t timing_now_ms() noexcept { return 0; }
-#endif
-
-inline std::int64_t elapsed_ms_since(std::int64_t started_ms) noexcept {
-#if YUME_ENABLE_DEV_DIAGNOSTICS
-    if (started_ms <= 0) return 0;
-    const std::int64_t now = timing_now_ms();
-    return now > started_ms ? now - started_ms : 0;
-#else
-    (void)started_ms;
-    return 0;
-#endif
-}
 
 class Stopwatch {
 public:
@@ -216,14 +175,6 @@ private:
 }  // namespace yume::diagnostics
 
 #if YUME_ENABLE_DEV_DIAGNOSTICS
-#define YUME_TIMING_ENABLED() (::yume::diagnostics::timing_enabled())
-#define YUME_TIMING_LOG(component, event, details)                         \
-    do {                                                                  \
-        if (::yume::diagnostics::timing_enabled()) {                      \
-            ::yume::diagnostics::log_timing((component), (event),         \
-                                             (details));                   \
-        }                                                                 \
-    } while (false)
 #define YUME_TIMING_SINK(sink, component, event, details)                 \
     do {                                                                  \
         if (sink) {                                                       \
@@ -231,7 +182,5 @@ private:
         }                                                                 \
     } while (false)
 #else
-#define YUME_TIMING_ENABLED() false
-#define YUME_TIMING_LOG(component, event, details) do { } while (false)
 #define YUME_TIMING_SINK(sink, component, event, details) do { } while (false)
 #endif

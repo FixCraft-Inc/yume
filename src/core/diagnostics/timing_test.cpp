@@ -17,10 +17,6 @@ int main() {
 
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     static_assert(yume::diagnostics::kTimingCompiledIn);
-    yume::diagnostics::set_timing_enabled(false);
-    assert(!yume::diagnostics::timing_enabled());
-    yume::diagnostics::set_timing_enabled(true);
-    assert(yume::diagnostics::timing_enabled());
 
     SampleAccumulator samples(true);
     Stopwatch stopwatch(true);
@@ -29,6 +25,11 @@ int main() {
     const auto sample = samples.take_if(1);
     assert(sample.has_value());
     assert(sample->count == 1);
+
+    SampleAccumulator inactive;
+    inactive.record(stopwatch);
+    assert(!inactive.take_if(1, true).has_value());
+    assert(!Stopwatch(false).active());
 
     IntervalTimer interval;
     const auto start = IntervalTimer::Clock::time_point{} + 1s;
@@ -39,10 +40,9 @@ int main() {
     assert(!interval.finish_us(start + 250us).has_value());
 #else
     static_assert(!yume::diagnostics::kTimingCompiledIn);
-    yume::diagnostics::set_timing_enabled(true);
-    assert(!yume::diagnostics::timing_enabled());
     SampleAccumulator samples(true);
     Stopwatch stopwatch(true);
+    assert(!stopwatch.active());
     samples.record(stopwatch);
     assert(!samples.take_if(1, true).has_value());
     IntervalTimer interval;

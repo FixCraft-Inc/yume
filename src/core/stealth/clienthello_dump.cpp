@@ -7,8 +7,9 @@
 // Renders the ClientHello emitted by either native OpenSSL backend and writes
 // raw bytes to files, so the wire gates can compare
 // emitted bytes against the committed browser capture instead of comparing
-// config to config. Nothing here constructs a ClientHello by hand: it drives
-// the real StealthContext and captures what OpenSSL puts on the wire.
+// config to config. Nothing here constructs a ClientHello by hand: it sets up
+// an SSL_CTX the way the YTP/1 TLS client provider does, applies the same
+// browser profile and captures what OpenSSL puts on the wire.
 //
 // The handshake is run against a memory BIO with no peer, so no network
 // traffic is generated and no server is required -- OpenSSL writes the
@@ -21,11 +22,12 @@
 #include <cstdlib>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "core/stealth/cover_profile.hpp"
-#include "core/stealth/tls_stealth.hpp"
+#include "core/stealth/tls_client_profile.hpp"
 
 namespace {
 
@@ -134,13 +136,19 @@ int main(int argc, char** argv) {
     }
 
     try {
-        yume::tls_stealth::StealthConfig config;
-        config.enabled = true;
-        config.native_chrome_client_hello = backend == "openssl-chrome151";
-        config.target_profile = yume::cover_profile::active().tls_profile;
-        yume::tls_stealth::StealthContext context(config);
-
-        SSL_CTX* ctx = context.get_context().native_handle();
+        const std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(
+            SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
+        if (!context) {
+            std::fprintf(stderr, "SSL_CTX_new failed\n");
+            return 1;
+        }
+        // Diagnostic mode reports where OpenSSL cannot follow the profile.
+        for (const auto& divergence : yume::tls_stealth::configure_client_profile(
+                 context.get(), yume::cover_profile::active().tls_profile,
+                 backend == "openssl-chrome151")) {
+            std::fprintf(stderr, "profile divergence: %s\n", divergence.c_str());
+        }
+        SSL_CTX* ctx = context.get();
         for (unsigned index = 0; index < count; ++index) {
             std::vector<unsigned char> bytes;
             const std::string path = count == 1

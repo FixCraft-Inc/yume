@@ -16,8 +16,6 @@ headers have to stay current, which is the same comparison the CI gate runs.
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -338,36 +336,16 @@ class Tracked(unittest.TestCase):
     def setUp(self) -> None:
         self.layouts = yume_cli.load_layouts()
 
-    def test_native_and_reference_binaries_have_separate_layouts(self) -> None:
-        self.assertEqual(sorted(item.binary for item in self.layouts),
-                         ["yume", "yume-v2-reference", "yumed", "yumed-v2-reference"])
+    def test_each_native_binary_has_one_layout(self) -> None:
+        self.assertEqual(sorted(item.binary for item in self.layouts), ["yume", "yumed"])
 
     def test_native_help_has_exactly_the_parser_options(self) -> None:
         for layout in self.layouts:
-            if layout.binary not in ("yume", "yumed"):
-                continue
             with self.subTest(binary=layout.binary):
                 ordered, _ = yume_cli.resolve(layout)
                 self.assertEqual({flag for entry in ordered for flag in entry.flags},
                                  {"--config", "--validate", "--version", "--help", "-h"})
                 self.assertEqual(layout.output_kind, "static-help")
-
-    @unittest.skipUnless(shutil.which("bash"), "Bash is unavailable")
-    def test_reference_completion_registers_only_its_binary(self) -> None:
-        for layout in self.layouts:
-            if not layout.binary.endswith("-v2-reference"):
-                continue
-            with self.subTest(binary=layout.binary):
-                _, completed = yume_cli.resolve(layout)
-                script = "\n".join(yume_cli.render_completion(layout, completed))
-                result = subprocess.run(
-                    ["bash", "--noprofile", "--norc"],
-                    input=script + "\ncomplete -p\n", text=True, capture_output=True,
-                    check=False, timeout=5,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.strip(),
-                                 f"complete -F _{layout.binary}_complete {layout.binary}")
 
     def test_every_generated_header_is_current(self) -> None:
         # The same comparison `scripts/yume_cli.py check` runs in CI.

@@ -188,15 +188,6 @@
     "home_group": "Internals and status"
   },
   {
-    "title": "Transport v2 explained",
-    "summary": "How the uninstalled transport-v2 reference client and daemon work, from carrier to keys, threads and features.",
-    "url": "/docs/TRANSPORT_V2_EXPLAINED/",
-    "source": "docs/TRANSPORT_V2_EXPLAINED.md",
-    "landing_group": "Reference and development",
-    "order": 147,
-    "home_group": "Internals and status"
-  },
-  {
     "title": "Transport-v2 byte path",
     "summary": "One byte through the transport-v2 reference stack, layer by layer, and how to review a change to each layer.",
     "url": "/docs/BYTE_PATH/",

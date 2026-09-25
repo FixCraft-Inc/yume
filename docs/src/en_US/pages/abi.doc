@@ -226,10 +226,7 @@ service it opens.
 
 The complete working version of both sides, including peer-identity checks and
 teardown on every failure path, is
-[`src/abi/stream_integration_probe.c`](../src/abi/stream_integration_probe.c).
-It runs in CI as `yume_abi_stream_integration` against a real provisioned
-transport-v2 server. The schema-1 counterpart,
-[`src/abi/ytp1_stream_probe.c`](../src/abi/ytp1_stream_probe.c), runs as
+[`src/abi/ytp1_stream_probe.c`](../src/abi/ytp1_stream_probe.c). It runs as
 `yume_abi_ytp1_stream_integration` in builds with the native provider graph.
 It provisions a kit with `yume-setup` and also checks refusals, deadlines,
 restart, and stream handles that outlive their endpoint.

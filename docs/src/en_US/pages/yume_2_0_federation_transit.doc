@@ -23,16 +23,14 @@ the multi-hop protocol described here.
 
 ## Current evidence boundary
 
-The executable fixtures describe only current one-hop behavior:
-
-- [`tests/test_yume_federation_v2.py`](../../tests/test_yume_federation_v2.py)
-  launches two directly peered daemons and two clients, then exercises one
-  federated relay-v2 DATA/CLOSE transfer.
-- [`tests/test_yume_federation_cluster.py`](../../tests/test_yume_federation_cluster.py)
-  forms a three-node line and requires each end to neither learn nor address an
-  endpoint two links away while transit is off.
-- [`src/core/protocol/directory_policy_test.cpp`](../../src/core/protocol/directory_policy_test.cpp)
-  pins the existing raw and one-prefix directory grammar.
+The one-hop federation fixtures were removed with the transport-v2 runtime.
+`tests/test_yume_federation_v2.py` exercised one federated relay-v2 DATA/CLOSE
+transfer between two directly peered daemons, and
+`tests/test_yume_federation_cluster.py` required each end of a three-node line
+to neither learn nor address an endpoint two links away. Both remain in Git
+history.
+[`src/modules/relay/directory_policy_test.cpp`](../../src/modules/relay/directory_policy_test.cpp)
+still pins the raw and one-prefix directory grammar.
 
 Those artifacts are direct-federation regressions. They do not demonstrate a
 transit forwarder, chained route authentication, intermediate-node payload

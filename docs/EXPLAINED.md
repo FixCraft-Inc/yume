@@ -109,6 +109,3 @@ undetectable. The [threat model](THREAT_MODEL.md) and
 | How does the TLS look like Chrome? | `src/providers/ytp1_tls13_secure_channel.cpp`, [transport profiles](TRANSPORT_PROFILES.md) |
 | Which folder owns what? | [Source map](SOURCE_MAP.md) |
 | What works today? | [Implementation status](IMPLEMENTATION_STATUS.md) |
-
-The uninstalled transport-v2 reference programs work differently. They are
-described in [transport v2 explained](TRANSPORT_V2_EXPLAINED.md).

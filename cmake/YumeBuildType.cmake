@@ -6,12 +6,7 @@ function(yume_configure_default_build_type)
         return()
     endif()
 
-    if(YUME_BUILD_SELFTEST)
-        set(_yume_default_build_type RelWithDebInfo)
-    else()
-        set(_yume_default_build_type Release)
-    endif()
-    set(CMAKE_BUILD_TYPE "${_yume_default_build_type}" CACHE STRING
+    set(CMAKE_BUILD_TYPE Release CACHE STRING
         "Build type for single-config YUME builds" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
         Debug Release RelWithDebInfo MinSizeRel)

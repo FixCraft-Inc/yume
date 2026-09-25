@@ -16,16 +16,7 @@ if(POLICY CMP0167)
     # BoostConfig.cmake, so keep CMake's FindBoost module path available.
     cmake_policy(SET CMP0167 OLD)
 endif()
-# CMP0091: MSVC runtime library selection via CMAKE_MSVC_RUNTIME_LIBRARY
-# and the equivalent per-target property. Required for YUME_GUI_PORTABLE
-# to switch the GUI to /MT(d) without affecting other targets.
-if(POLICY CMP0091)
-    cmake_policy(SET CMP0091 NEW)
-endif()
 
-option(YUME_BUILD_TRANSPORT_V2
-    "Build uninstalled transport-v2 reference components for capability migration"
-    OFF)
 option(YUME_BUILD_NATIVE_APPLICATION
     "Build the native YTP/1 yume client and yumed daemon" ON)
 # Module libraries built on BaseFWX, such as the end-to-end relay channel.
@@ -34,7 +25,6 @@ option(YUME_BUILD_NATIVE_APPLICATION
 option(YUME_BUILD_BASEFWX_MODULES
     "Build module libraries that use BaseFWX, such as the end-to-end relay channel"
     OFF)
-option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
 set(YUME_DEPENDENCY_MANIFEST
     "${CMAKE_CURRENT_SOURCE_DIR}/config/dependencies.json")
@@ -150,9 +140,7 @@ foreach(_yume_tls_candidate IN LISTS _yume_active_profile_tls_candidates)
     list(APPEND YUME_ACTIVE_PROFILE_TLS_CANDIDATE_ARGS
         --candidate "${_yume_tls_candidate_path}")
 endforeach()
-option(YUME_USE_SPDLOG "Enable spdlog logging backend" ${YUME_BUILD_TRANSPORT_V2})
 option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
-option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
 option(YUME_STATIC "Attempt static build (requires static deps)" OFF)
 option(YUME_STATIC_OPENSSL
     "Link the pinned OpenSSL into YUME binaries so native Chrome TLS has no runtime libssl dependency"
@@ -160,15 +148,12 @@ option(YUME_STATIC_OPENSSL
 option(YUME_NATIVE_OPT "Enable host-specific -march/-mtune=native CPU tuning; disables portable binaries" OFF)
 option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
-option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OFF)
 option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
-option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool for desktop developers" OFF)
 option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
 option(YUME_TEST_LINUX_NAMESPACES "Run native TUN tests in unprivileged Linux network namespaces" OFF)
 # libFuzzer harnesses for the parsers an untrusted peer or file reaches.
 # Clang-only and never installed; the corpora live outside the tree.
 option(YUME_BUILD_FUZZERS "Build libFuzzer harnesses (requires Clang)" OFF)
-option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI
     "Build the experimental ABI v1 candidate and contract tests"
     OFF)
@@ -209,9 +194,6 @@ if(YUME_BUILD_NATIVE_APPLICATION)
         endif()
     endforeach()
 endif()
-option(YUME_ABI_CLIENT_ONLY
-    "Trim the current transport-v2 graph to its client-only sources"
-    OFF)
 
 # Compile at least one consumer as C whenever the experimental ABI contract is
 # enabled. Keeping C conditional avoids imposing a second compiler on normal
@@ -258,20 +240,8 @@ set_property(CACHE YUME_SANITIZE PROPERTY STRINGS
 
 # Fine-grained timing diagnostics are compiled only for explicit developer
 # configurations. Release and MinSizeRel binaries contain no diagnostic
-# counters, handlers, event strings, or environment-variable activation path.
-#
-# This now includes clocks. The stream-lifecycle sites that used to call
-# util::now_ms() unconditionally - feeding a YUME_TIMING_LOG that compiled away,
-# so the read happened and the result was discarded - go through
-# diagnostics::timing_now_ms() / diagnostics::elapsed_ms_since(), which are
-# constexpr 0 when YUME_ENABLE_DEV_DIAGNOSTICS is 0 and read no clock even in a
-# diagnostics build until collection is switched on. Verified by symbol: no
-# Release session or proxy object references yume::util::now_ms().
-# tests/test_release_diagnostics_cost.py guards it.
-#
-# Two gates, deliberately: this build-time switch decides whether the code
-# exists at all, and --timing / YUME_TIMING decides whether an instrumented
-# build collects. Neither costs a normal user anything.
+# counters or clock reads. The H2 carrier's timing is also off until a caller
+# asks it to collect, so an instrumented build costs nothing by default.
 set(YUME_DEV_DIAGNOSTICS_EXPRESSION
     "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>,1,0>")
 
@@ -301,40 +271,10 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/YumeAbiSymbols.cmake")
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     yume_configure_default_build_type()
 endif()
-if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND CMAKE_BUILD_TYPE MATCHES "^[Dd]ebug$")
-    message(WARNING "YUME_BUILD_SELFTEST=ON with CMAKE_BUILD_TYPE=Debug will produce misleading throughput numbers")
-endif()
 
-# Dangerous-feature and reserved-policy build gates. Each gate must be
-# explicitly turned ON at configure time. The runtime CLI flag and the per-key
-# meta entry are the second and third locks. YUME_FEATURE_EXEC only activates
-# reserved relayed-EXEC policy evaluation: direct EXEC is denied and current
-# clients neither advertise nor accept inbound EXEC, so it does not enable a
-# command backend. Stock builds ship with all three gates OFF; the corresponding
-# flags are still recognised but warn and stay disabled.
-option(YUME_FEATURE_EXEC "Compile in reserved relayed EXEC policy handling" OFF)
-option(YUME_FEATURE_LAN_BRIDGE "Compile in LAN/private-IP bridging path" OFF)
-option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
-
-# Optional GUI build (Dear ImGui + GLFW + ImPlot). Disabled by default so
-# stock builds and minimal/embedded builds remain unaffected.
-option(YUME_BUILD_GUI "Build the optional Dear ImGui-based yume-gui desktop app" OFF)
-
-# Optional Linux desktop comparison helper. Normal runtime uses the in-process
-# openssl-chrome151 backend and does not discover or require this executable.
-# Enabling the comparison backend requires the exact reviewed Go toolchain
-# rather than silently using another compiler or downloading one through Go's
-# toolchain selection.
-option(YUME_BUILD_CHROME_TLS_HELPER
-    "Build the pinned Chrome 151 uTLS helper with Go 1.26.5" OFF)
-
-# Portable static GUI: link libgcc/libstdc++ statically on g++/clang, and
-# the static MSVC runtime on Windows so the binary runs without a
-# matching redistributable. Does NOT, on its own, make every transitive
-# dep static — that still needs the underlying packages (OpenSSL, Boost,
-# liboqs) to be present in static form on the host (use the vcpkg
-# x64-windows-static triplet, or build static OpenSSL on Linux).
-option(YUME_GUI_PORTABLE "Statically link the C/C++ runtime into yume-gui" OFF)
+# The desktop GUI in src/gui was built on the transport-v2 client runtime,
+# which YUME no longer contains. Its source waits for a native facade.
+option(YUME_BUILD_GUI "Build the yume-gui desktop app" OFF)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/version.hpp" _yume_version_line
     REGEX "kVersion\\[\\][ \\t]*=[ \\t]*\"")
@@ -404,17 +344,10 @@ endif()
 if(YUME_STATIC AND YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_BUILD_SHARED_ABI requires a dynamic build; disable YUME_STATIC")
 endif()
-if(YUME_ABI_CLIENT_ONLY AND NOT YUME_BUILD_TRANSPORT_V2)
+if(YUME_BUILD_GUI)
     message(FATAL_ERROR
-        "YUME_ABI_CLIENT_ONLY is available only with YUME_BUILD_TRANSPORT_V2=ON")
-endif()
-if(NOT YUME_BUILD_TRANSPORT_V2 AND
-   (YUME_TRANSPORT_CORE_ONLY OR YUME_BUILD_GUI OR
-    YUME_BUILD_CHROME_TLS_HELPER OR YUME_BUILD_SELFTEST OR YUME_BUILD_TOOLS))
-    message(FATAL_ERROR
-        "A transport-v2 build option was enabled while "
-        "YUME_BUILD_TRANSPORT_V2=OFF. GUI, helper, and v2 benchmark migration "
-        "remains open; use a separate uninstalled reference build for their tests.")
+        "YUME_BUILD_GUI is not available: the GUI in src/gui needs a native "
+        "YTP/1 facade before it builds again")
 endif()
 
 # A static library absorbed into libyume must be PIC, hidden, and an ordinary
@@ -573,10 +506,9 @@ else()
     message(STATUS "YUME native CPU tuning: OFF (portable CPU baseline)")
 endif()
 
-# Both native TLS implementations consume the same browser-profile emitter.
-# Session-security-only builds still need just upstream OpenSSL primitives.
-if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_YTP1_TLS13_PROVIDER)
+# The TLS client consumes the browser-profile emitter. Session-security-only
+# builds still need just upstream OpenSSL primitives.
+if(YUME_BUILD_YTP1_TLS13_PROVIDER)
     if(YUME_STATIC_OPENSSL)
         # The pinned CONFIG target carries Brotli/Zstd through static linkage.
         find_package(OpenSSL 3.5 REQUIRED CONFIG)
@@ -599,44 +531,6 @@ if((YUME_BUILD_YTP1_ASIO_ROUTE_PROVIDER OR
 endif()
 
 if(YUME_BUILD_YTP1_H2_CARRIER)
-    find_package(PkgConfig REQUIRED)
-    if(NOT TARGET PkgConfig::NGHTTP2)
-        pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
-    endif()
-    set(YUME_NGHTTP2_TARGET PkgConfig::NGHTTP2)
-    if(NOT TARGET OpenSSL::Crypto)
-        find_package(OpenSSL 3.5 REQUIRED)
-    endif()
-endif()
-
-if((YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY) OR
-   YUME_BUILD_YTP1_TLS13_PROVIDER)
-    include(CheckCXXSourceCompiles)
-    set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
-    set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL)
-    unset(YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH CACHE)
-    check_cxx_source_compiles([=[
-        #include <openssl/ssl.h>
-        #ifndef SSL_OP_YUME_CHROME_CLIENT_HELLO
-        # error "YUME OpenSSL ClientHello patch is missing"
-        #endif
-        #ifndef SSL_CTRL_YUME_CHROME_CLIENT_HELLO
-        # error "YUME OpenSSL ClientHello control is missing"
-        #endif
-        int main() { return SSL_CTRL_YUME_CHROME_CLIENT_HELLO == 0; }
-    ]=] YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH)
-    set(CMAKE_REQUIRED_LIBRARIES "${_yume_saved_required_libraries}")
-    unset(_yume_saved_required_libraries)
-    if(NOT YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH)
-        message(FATAL_ERROR
-            "YUME's default openssl-chrome151 backend requires the pinned "
-            "default-off OpenSSL patch. Run ezbuild.sh, or source "
-            "scripts/ensure-openssl.sh and call yume_openssl_ensure before "
-            "configuring CMake. Stock libssl is not accepted for native TLS.")
-    endif()
-endif()
-
-if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
     find_package(PkgConfig REQUIRED)
     if(YUME_STATIC)
         # FindPkgConfig's generated imported target resolves -lnghttp2 to the
@@ -666,228 +560,47 @@ if(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY)
         )
         set(YUME_NGHTTP2_TARGET yume_nghttp2_static)
     else()
-        pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
+        if(NOT TARGET PkgConfig::NGHTTP2)
+            pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
+        endif()
         set(YUME_NGHTTP2_TARGET PkgConfig::NGHTTP2)
     endif()
-    find_package(Boost CONFIG QUIET COMPONENTS system)
-    if(NOT Boost_FOUND)
-        find_package(Boost REQUIRED COMPONENTS system)
+    if(NOT TARGET OpenSSL::Crypto)
+        find_package(OpenSSL 3.5 REQUIRED)
     endif()
-    find_package(Threads REQUIRED)
 endif()
 
-if(YUME_BUILD_TRANSPORT_V2 AND YUME_MINIMAL)
-    set(YUME_USE_BASEFWX ON CACHE BOOL "Enable BaseFWX for minimal builds" FORCE)
-    set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for minimal builds" FORCE)
-endif()
-
-
-# ----------------------------------------------------------------------
-# liboqs — YUME's own dependency edge
-# ----------------------------------------------------------------------
-# src/core/security/inner_crypto.cpp calls OQS_KEM_new/OQS_KEM_keypair
-# directly and src/core/release/version_report.cpp reads OQS_VERSION_TEXT.
-# That is YUME's own code implementing a YUME protocol decision, so it must
-# not be gated on BaseFWX's BASEFWX_HAS_OQS build macro nor reach the headers
-# only through basefwxcpp's PUBLIC link interface. Both projects may link
-# liboqs; neither is hostage to the other's configuration, and the liboqs row
-# in config/dependencies.json now has build meaning on this side too.
-#
-# Discovery deliberately honours the same cache variables the existing build
-# scripts already pass to BaseFWX (ezbuild.sh, fullau.sh, the vcpkg and
-# vendored cross prefixes), so no build script changes to keep working:
-#   1. YUME_OQS_ROOT                (explicit prefix, YUME-owned)
-#   2. OQS_INCLUDE_DIR/OQS_LIBRARY  (explicit paths; what ezbuild.sh passes)
-#   3. BASEFWX_VENDOR_DIR           (vendored cross prefixes)
-#   4. vcpkg installed triplet
-#   5. liboqs CMake config package
-#   6. pkg-config liboqs
-#   7. plain find_path/find_library
-if(YUME_BUILD_TRANSPORT_V2)
-    option(YUME_REQUIRE_OQS
-        "Fail configuration when liboqs is not found for YUME's ML-KEM code"
-        OFF)
-    set(YUME_OQS_ROOT "" CACHE PATH
-        "Prefix holding include/oqs/oqs.h and lib/liboqs.{a,so,dylib,dll.a}")
-
-    set(_yume_oqs_include "")
-    set(_yume_oqs_libraries "")
-
-    # A fully static link must not be handed a .so; resolve the archive first
-    # so a static request either configures truthfully or falls through.
-    if(YUME_STATIC)
-        set(_yume_oqs_libnames liboqs.a liboqs.dll.a liboqs.so liboqs.dylib)
-    else()
-        set(_yume_oqs_libnames liboqs.so liboqs.dylib liboqs.a liboqs.dll.a)
-    endif()
-    set(_yume_oqs_libdirs
-        "lib"
-        "lib/${CMAKE_LIBRARY_ARCHITECTURE}"
-        "lib64"
-    )
-
-    # (2) Explicit paths win over every search. These are the variables the
-    # cross/vcpkg branches of ezbuild.sh and fullau.sh already set.
-    if(OQS_INCLUDE_DIR AND OQS_LIBRARY AND
-       EXISTS "${OQS_INCLUDE_DIR}/oqs/oqs.h" AND EXISTS "${OQS_LIBRARY}")
-        set(_yume_oqs_include "${OQS_INCLUDE_DIR}")
-        set(_yume_oqs_libraries "${OQS_LIBRARY}")
-    endif()
-
-    # (1), (3), (4): prefix-shaped installs.
-    if(NOT _yume_oqs_include)
-        set(_yume_oqs_prefixes "")
-        if(YUME_OQS_ROOT)
-            list(APPEND _yume_oqs_prefixes "${YUME_OQS_ROOT}")
-        endif()
-        if(BASEFWX_VENDOR_DIR)
-            list(APPEND _yume_oqs_prefixes "${BASEFWX_VENDOR_DIR}")
-        endif()
-        if(VCPKG_INSTALLED_DIR AND VCPKG_TARGET_TRIPLET)
-            list(APPEND _yume_oqs_prefixes
-                "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
-        endif()
-        foreach(_yume_oqs_prefix IN LISTS _yume_oqs_prefixes)
-            if(_yume_oqs_include)
-                break()
-            endif()
-            if(NOT EXISTS "${_yume_oqs_prefix}/include/oqs/oqs.h")
-                continue()
-            endif()
-            foreach(_yume_oqs_libdir IN LISTS _yume_oqs_libdirs)
-                foreach(_yume_oqs_libname IN LISTS _yume_oqs_libnames)
-                    set(_yume_oqs_candidate
-                        "${_yume_oqs_prefix}/${_yume_oqs_libdir}/${_yume_oqs_libname}")
-                    if(NOT _yume_oqs_libraries AND EXISTS "${_yume_oqs_candidate}")
-                        set(_yume_oqs_include "${_yume_oqs_prefix}/include")
-                        set(_yume_oqs_libraries "${_yume_oqs_candidate}")
-                    endif()
-                endforeach()
-            endforeach()
-        endforeach()
-    endif()
-
-    # (5) Upstream liboqs installs a CMake config package exporting OQS::oqs.
-    if(NOT _yume_oqs_include)
-        find_package(liboqs CONFIG QUIET)
-        if(liboqs_FOUND AND TARGET OQS::oqs)
-            set(_yume_oqs_libraries OQS::oqs)
-            set(_yume_oqs_include "")
-            set(_yume_oqs_via_config ON)
-        endif()
-    endif()
-
-    # (6) pkg-config, then (7) the plain search. Neither is meaningful when
-    # cross-compiling, where an explicit prefix is mandatory.
-    if(NOT _yume_oqs_libraries AND NOT CMAKE_CROSSCOMPILING)
-        find_package(PkgConfig QUIET)
-        if(PKG_CONFIG_FOUND)
-            pkg_check_modules(YUME_OQS_PC QUIET liboqs)
-        endif()
-        if(YUME_OQS_PC_FOUND)
-            set(_yume_oqs_include "${YUME_OQS_PC_INCLUDE_DIRS}")
-            # -loqs with a bare -L is not usable on a static link and not
-            # reliable when several prefixes are installed; resolve it.
-            set(_yume_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
-            if(YUME_STATIC)
-                set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
-            endif()
-            find_library(YUME_OQS_LIBRARY
-                NAMES oqs
-                HINTS ${YUME_OQS_PC_LIBRARY_DIRS}
-            )
-            set(CMAKE_FIND_LIBRARY_SUFFIXES "${_yume_saved_suffixes}")
-            unset(_yume_saved_suffixes)
-            if(YUME_OQS_LIBRARY)
-                set(_yume_oqs_libraries "${YUME_OQS_LIBRARY}")
-            else()
-                set(_yume_oqs_include "")
-            endif()
-        endif()
-    endif()
-
-    if(NOT _yume_oqs_libraries AND NOT CMAKE_CROSSCOMPILING)
-        set(_yume_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
-        if(YUME_STATIC)
-            set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
-        endif()
-        find_path(YUME_OQS_INCLUDE_DIR NAMES oqs/oqs.h)
-        find_library(YUME_OQS_LIBRARY NAMES oqs)
-        set(CMAKE_FIND_LIBRARY_SUFFIXES "${_yume_saved_suffixes}")
-        unset(_yume_saved_suffixes)
-        if(YUME_OQS_INCLUDE_DIR AND YUME_OQS_LIBRARY)
-            set(_yume_oqs_include "${YUME_OQS_INCLUDE_DIR}")
-            set(_yume_oqs_libraries "${YUME_OQS_LIBRARY}")
-        endif()
-    endif()
-
-    # A prefix that merely has the header is not enough: YUME's inner crypto
-    # needs the ML-KEM-768 identifier. Compile-only so cross builds can be
-    # validated without running the target.
-    if(_yume_oqs_libraries)
-        include(CheckCXXSourceCompiles)
-        set(_yume_saved_required_includes "${CMAKE_REQUIRED_INCLUDES}")
-        set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
-        if(_yume_oqs_include)
-            set(CMAKE_REQUIRED_INCLUDES "${_yume_oqs_include}")
-        endif()
-        if(_yume_oqs_via_config)
-            set(CMAKE_REQUIRED_LIBRARIES OQS::oqs)
-        endif()
-        unset(YUME_OQS_HAS_ML_KEM_768 CACHE)
-        check_cxx_source_compiles([=[
-            #include <oqs/oqs.h>
-            int main() {
-                const char* name = OQS_KEM_alg_ml_kem_768;
-                return name == nullptr;
-            }
-        ]=] YUME_OQS_HAS_ML_KEM_768)
-        set(CMAKE_REQUIRED_INCLUDES "${_yume_saved_required_includes}")
-        set(CMAKE_REQUIRED_LIBRARIES "${_yume_saved_required_libraries}")
-        unset(_yume_saved_required_includes)
-        unset(_yume_saved_required_libraries)
-        if(NOT YUME_OQS_HAS_ML_KEM_768)
-            message(STATUS
-                "YUME: liboqs found but it does not expose ML-KEM-768; "
-                "treating PQ keypair generation as unavailable")
-            set(_yume_oqs_libraries "")
-            set(_yume_oqs_include "")
-        endif()
-    endif()
-
-    if(_yume_oqs_libraries)
-        add_library(yume_liboqs INTERFACE)
-        if(_yume_oqs_include)
-            target_include_directories(yume_liboqs INTERFACE "${_yume_oqs_include}")
-        endif()
-        target_link_libraries(yume_liboqs INTERFACE ${_yume_oqs_libraries})
-        message(STATUS "YUME: liboqs -> ${_yume_oqs_libraries}")
-    elseif(YUME_REQUIRE_OQS)
+if(YUME_BUILD_YTP1_TLS13_PROVIDER)
+    include(CheckCXXSourceCompiles)
+    set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+    set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL)
+    unset(YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH CACHE)
+    check_cxx_source_compiles([=[
+        #include <openssl/ssl.h>
+        #ifndef SSL_OP_YUME_CHROME_CLIENT_HELLO
+        # error "YUME OpenSSL ClientHello patch is missing"
+        #endif
+        #ifndef SSL_CTRL_YUME_CHROME_CLIENT_HELLO
+        # error "YUME OpenSSL ClientHello control is missing"
+        #endif
+        int main() { return SSL_CTRL_YUME_CHROME_CLIENT_HELLO == 0; }
+    ]=] YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH)
+    set(CMAKE_REQUIRED_LIBRARIES "${_yume_saved_required_libraries}")
+    unset(_yume_saved_required_libraries)
+    if(NOT YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH)
         message(FATAL_ERROR
-            "YUME_REQUIRE_OQS is ON but liboqs was not found. Pass "
-            "-DYUME_OQS_ROOT=<prefix>, or -DOQS_INCLUDE_DIR=/-DOQS_LIBRARY=, "
-            "or install liboqs >= 0.16.0 (see config/dependencies.json).")
-    else()
-        message(STATUS
-            "YUME: liboqs not found; ML-KEM keypair generation will report "
-            "itself unavailable at runtime")
+            "YUME's default openssl-chrome151 backend requires the pinned "
+            "default-off OpenSSL patch. Run ezbuild.sh, or source "
+            "scripts/ensure-openssl.sh and call yume_openssl_ensure before "
+            "configuring CMake. Stock libssl is not accepted for native TLS.")
     endif()
-
-    unset(_yume_oqs_include)
-    unset(_yume_oqs_libraries)
-    unset(_yume_oqs_libnames)
-    unset(_yume_oqs_libdirs)
-    unset(_yume_oqs_prefixes)
-    unset(_yume_oqs_via_config)
 endif()
 
-if((YUME_BUILD_TRANSPORT_V2 AND YUME_USE_BASEFWX) OR YUME_BUILD_BASEFWX_MODULES)
-    if(YUME_BUILD_BASEFWX_MODULES)
-        # The relay channel's ML-KEM-1024 comes from BaseFWX's liboqs support.
-        # Without this BaseFWX would build without it and fail only at run time.
-        set(BASEFWX_REQUIRE_OQS ON CACHE BOOL
-            "Require liboqs with ML-KEM-768 and ML-KEM-1024 support" FORCE)
-    endif()
+if(YUME_BUILD_BASEFWX_MODULES)
+    # The relay channel's ML-KEM-1024 comes from BaseFWX's liboqs support.
+    # Without this BaseFWX would build without it and fail only at run time.
+    set(BASEFWX_REQUIRE_OQS ON CACHE BOOL
+        "Require liboqs with ML-KEM-768 and ML-KEM-1024 support" FORCE)
     if(NOT CMAKE_CROSSCOMPILING)
         set(BASEFWX_NATIVE_OPT ${YUME_NATIVE_OPT} CACHE BOOL "Enable -march/-mtune native optimizations" FORCE)
     endif()

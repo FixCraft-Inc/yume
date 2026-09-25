@@ -21,7 +21,7 @@ env:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +97,7 @@ jobs:
         if: matrix.language == 'c-cpp'
         run: |
           cmake --build build-codeql \
-            --target yume yumed yume-resolver yume-module-launcher yume_abi \
+            --target yume yumed yume-resolver yume_abi \
               yume_module_relay yume_module_files yume_module_share \
               yume_module_codecs \
             --parallel "${CODEQL_BUILD_JOBS}"

@@ -493,9 +493,12 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
 endif()
 
 if(YUME_BUILD_NATIVE_PROVIDERS AND NOT TARGET Boost::system)
-    find_package(Boost CONFIG QUIET COMPONENTS system)
+    # The providers use Asio's bind_allocator and recycling_allocator, which
+    # Boost 1.79 added, and its per-operation cancellation slots. Refuse an
+    # older Boost here rather than halfway through the build.
+    find_package(Boost 1.79 CONFIG QUIET COMPONENTS system)
     if(NOT Boost_FOUND)
-        find_package(Boost REQUIRED COMPONENTS system)
+        find_package(Boost 1.79 REQUIRED COMPONENTS system)
     endif()
 endif()
 

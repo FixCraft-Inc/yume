@@ -158,6 +158,13 @@ jobs:
         run: |
           cmake --build build-ci --parallel "${CI_RELEASE_BUILD_JOBS}"
 
+      # ubuntu-24.04's AppArmor refuses unprivileged user namespaces, and the
+      # TUN integration test creates one with unshare --map-root-user. The
+      # runner is disposable, so lift the restriction instead of losing the
+      # namespace coverage.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # The unit suite is fast (well under a minute) and was previously built
       # but never executed by CI. yume_abi_exports also runs here, which is the
       # only automated guard on the symbol surface the Android client links to.
@@ -256,6 +263,10 @@ jobs:
       - name: Build
         run: |
           cmake --build build-asan --parallel "${CI_SANITIZER_BUILD_JOBS}"
+
+      # Same AppArmor restriction as in build-and-smoke.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Run unit tests under sanitizers
         env:

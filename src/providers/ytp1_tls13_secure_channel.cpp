@@ -5,8 +5,8 @@
  */
 
 #include "providers/ytp1_tls13_secure_channel.hpp"
-#include "core/stealth/cover_profile.hpp"
-#include "core/stealth/tls_client_profile.hpp"
+#include "stealth/cover_profile.hpp"
+#include "stealth/tls_client_profile.hpp"
 
 #include <algorithm>
 #include <array>

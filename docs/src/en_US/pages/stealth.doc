@@ -30,7 +30,7 @@ or guarantee that a classifier cannot distinguish it.
 ## One captured profile
 
 The active client and cover identity comes from the immutable registry in
-`config/transport_profiles.json` and `src/core/stealth/cover_profile.*`. The
+`config/transport_profiles.json` and `src/stealth/cover_profile.*`. The
 registry selects a committed browser and cover-server fixture under
 `tests/fixtures/`. It owns the TLS choice, request headers, HTTP/2 settings and
 priorities, asset order, WebSocket behavior, and cover-server identity.

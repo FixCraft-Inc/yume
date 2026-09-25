@@ -14,9 +14,9 @@
 #include <string>
 #include <string_view>
 
-#include "core/stealth/h2_carrier.hpp"
 #include "engine/carrier.hpp"
 #include "providers/control_task.hpp"
+#include "stealth/h2_carrier.hpp"
 
 namespace yume::providers {
 

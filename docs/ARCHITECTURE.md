@@ -395,7 +395,7 @@ Native source is organized by dependency:
 | `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy, and the `yume`/`yumed` runtimes with their SOCKS5 and TUN adapters |
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
 | `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. Each dialect reaches its runtime through its own embed backend |
-| `src/facade/session/ytp1_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
+| `src/abi/ytp1_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
 | `tools/` | provisioning and evidence tooling |
 
 The installed `yumed` and `yume` build from `src/runtime/` with every native

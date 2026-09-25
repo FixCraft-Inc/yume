@@ -20,7 +20,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
 #include "modules/relay/base64.hpp"
 #include "modules/relay/identity.hpp"
 #include "modules/relay/secret.hpp"

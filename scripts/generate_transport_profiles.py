@@ -13,9 +13,9 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_REGISTRY = ROOT / "config" / "transport_profiles.json"
-DEFAULT_OUTPUT = ROOT / "src" / "core" / "stealth" / "transport_profiles.inc"
+DEFAULT_OUTPUT = ROOT / "src" / "stealth" / "transport_profiles.inc"
 DEFAULT_GO_OUTPUT = ROOT / "helper" / "chrome_tls" / "transport_profiles_generated.go"
-DEFAULT_VERSION_HEADER = ROOT / "src" / "core" / "version.hpp"
+DEFAULT_VERSION_HEADER = ROOT / "src" / "common" / "version.hpp"
 MAX_JSON_BYTES = 4 * 1024 * 1024
 PROFILE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 ALIAS_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")

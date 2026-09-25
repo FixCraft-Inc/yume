@@ -14,7 +14,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
 
 namespace yume::relay::identity {
 namespace {

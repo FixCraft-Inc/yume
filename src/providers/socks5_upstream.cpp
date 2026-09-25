@@ -16,7 +16,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/steady_timer.hpp>
 
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
 
 namespace yume::providers {
 namespace {

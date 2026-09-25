@@ -25,7 +25,7 @@ and security regression.
 | Registry-selected fixture manifest | Exact browser, OS, cover runtime, binaries, hashes, and evidence provenance |
 | Registry-selected HTTP/2 profile | Capture-derived HTTP/2, HTTP, WebSocket, and shaping values |
 | Registry-selected TLS profile and candidates | Normalized ordered TLS first-flight acceptance profile and samples |
-| `src/core/stealth/transport_profiles.inc` | Generated immutable C++ registry; never edit manually |
+| `src/stealth/transport_profiles.inc` | Generated immutable C++ registry; never edit manually |
 | `helper/chrome_tls/transport_profiles_generated.go` | Generated helper build-ID to provider registry; never edit manually |
 | `helper/chrome_tls/profile.go` | Audited TLS-emitter provider implementations |
 @end
@@ -159,7 +159,7 @@ flattened evidence files that installed diagnostics consume.
    independent-review gates.
 
 The registry can hold several immutable profiles, but the current transport
-activates exactly the profile named by `src/core/version.hpp`. Runtime
+activates exactly the profile named by `src/common/version.hpp`. Runtime
 negotiation or accepting a
 second ID is not a cosmetic configuration change and is not introduced by this
 registry refactor.

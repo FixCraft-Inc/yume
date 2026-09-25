@@ -12,7 +12,7 @@ def fail(message: str) -> None:
     raise ValueError(message)
 
 def validate_product_version() -> None:
-    source_text = (REPO_ROOT / "src" / "core" / "version.hpp").read_text(encoding="utf-8")
+    source_text = (REPO_ROOT / "src" / "common" / "version.hpp").read_text(encoding="utf-8")
     source_match = re.search(
         r'(?:inline\s+)?constexpr(?:\s+const)?\s+char\s+kVersion\[\]\s*=\s*"([^"]+)";',
         source_text,
@@ -23,7 +23,7 @@ def validate_product_version() -> None:
         fail("cannot read the product version from source and website config")
     if source_match.group(1) != config_match.group(1):
         fail(
-            "website product_version does not match src/core/version.hpp: "
+            "website product_version does not match src/common/version.hpp: "
             f"{config_match.group(1)} != {source_match.group(1)}"
         )
 

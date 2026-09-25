@@ -13,7 +13,7 @@
 #include <variant>
 
 #include "common/egress_address.hpp"
-#include "core/runtime/bounded_file.hpp"
+#include "fs/bounded_file.hpp"
 #include "runtime/egress_lists.hpp"
 
 namespace yume::runtime {

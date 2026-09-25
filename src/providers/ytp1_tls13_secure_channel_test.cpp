@@ -5,9 +5,9 @@
  */
 
 #include "providers/ytp1_tls13_secure_channel.hpp"
-#include "core/stealth/cover_profile.hpp"
-#include "core/stealth/tls_client_profile.hpp"
-#include "core/stealth/tls_fingerprint.hpp"
+#include "stealth/cover_profile.hpp"
+#include "stealth/tls_client_profile.hpp"
+#include "stealth/tls_fingerprint.hpp"
 #include "test_support/allocation_failure.hpp"
 
 #include <algorithm>

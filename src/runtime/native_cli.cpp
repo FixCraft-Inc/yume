@@ -20,9 +20,9 @@
 #include <boost/asio/basic_signal_set.hpp>
 #include <boost/asio/post.hpp>
 
+#include "common/version.hpp"
 #include "config/v1/config.hpp"
-#include "core/runtime/bounded_file.hpp"
-#include "core/version.hpp"
+#include "fs/bounded_file.hpp"
 #include "providers/asio_execution_context.hpp"
 #include "providers/child_process.hpp"
 #include "providers/system_resolver_helper.hpp"

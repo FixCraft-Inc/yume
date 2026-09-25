@@ -27,7 +27,7 @@
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
 #include "ytp/security.hpp"
-#include "core/stealth/cover_profile.hpp"
+#include "stealth/cover_profile.hpp"
 
 namespace yume::runtime {
 namespace {

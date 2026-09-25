@@ -32,10 +32,10 @@
 
 #include <nlohmann/json.hpp>
 
-#include "facade/session/endpoint_backend.hpp"
+#include "abi/compatibility_manifest.hpp"
+#include "abi/endpoint_backend.hpp"
 #include "common/service_name.hpp"
 #include "config/v1/config.hpp"
-#include "core/compatibility_manifest.hpp"
 
 #if !defined(YUME_ABI_TRANSPORT_V2) || !YUME_ABI_TRANSPORT_V2
 // A build without a transport runtime still exports the identical surface.

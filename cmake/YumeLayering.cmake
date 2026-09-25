@@ -20,13 +20,13 @@ function(yume_check_03_source_layering source_dir)
         message(FATAL_ERROR "Invalid YUME source directory: ${source_dir}")
     endif()
 
-    set(_engine_forbidden
+    # The engine and YTP/1 include common/, so it stays as clean as they are.
+    set(_dependency_clean_patterns
         [=[(^|[/<"])(boost|openssl|nghttp2|nlohmann|filesystem)([/\.>"]|$)]=]
         [=[(^|[/<"])(asio|json\.hpp|json_fwd\.hpp)([/>"]|$)]=]
         [=[(^|[/<"])(sys/socket\.h|winsock2\.h)([>"]|$)]=])
-    set(_ytp_forbidden ${_engine_forbidden})
 
-    foreach(_layer IN ITEMS engine ytp)
+    foreach(_layer IN ITEMS engine ytp common)
         file(GLOB_RECURSE _sources
             "${source_dir}/src/${_layer}/*.cpp"
             "${source_dir}/src/${_layer}/*.hpp"
@@ -36,7 +36,7 @@ function(yume_check_03_source_layering source_dir)
         foreach(_source IN LISTS _sources)
             file(READ "${_source}" _contents)
             string(TOLOWER "${_contents}" _lower_contents)
-            foreach(_pattern IN LISTS _${_layer}_forbidden)
+            foreach(_pattern IN LISTS _dependency_clean_patterns)
                 if(_lower_contents MATCHES "${_pattern}")
                     file(RELATIVE_PATH _relative "${source_dir}" "${_source}")
                     message(FATAL_ERROR
@@ -73,17 +73,23 @@ function(yume_check_03_source_layering source_dir)
     # Directional check. Exact link assertions cannot cover every target, but
     # the direction a layer may include in does not change with build options.
     # Each entry is "layer" followed by the directories it must never include.
-    set(_core_forbidden      facade gui abi)
-    set(_facade_forbidden    gui abi)
-    # Admission mechanics sit below the protocol, the providers and the shared
-    # core helpers, so none of them may become their owner.
-    set(_admission_forbidden core engine ytp providers config facade gui abi basefwx)
+    # common/ holds std-only helpers every layer may use, so it includes no
+    # other layer. fs/ and stealth/ build only on it.
+    set(_common_forbidden    admission engine ytp stealth fs providers runtime config abi gui modules basefwx)
+    set(_fs_forbidden        admission engine ytp stealth providers runtime config abi gui modules basefwx)
+    set(_stealth_forbidden   admission engine ytp fs providers runtime config abi gui modules basefwx)
+    # Admission mechanics sit below the protocol and the providers, so neither
+    # may become their owner.
+    set(_admission_forbidden engine ytp stealth fs providers runtime config abi gui modules basefwx)
     # Native runtime composition owns policy and configuration above the
-    # providers and stays independent of the embedding layers and BaseFWX.
-    set(_runtime_forbidden facade gui abi basefwx)
-    set(_providers_forbidden runtime config facade gui abi basefwx)
+    # providers and stays independent of the embedding layer, modules and
+    # BaseFWX.
+    set(_runtime_forbidden abi gui modules basefwx)
+    set(_providers_forbidden runtime config abi gui modules basefwx)
+    # The C ABI must not acquire the desktop application's dependencies.
+    set(_abi_forbidden gui modules basefwx)
 
-    foreach(_layer IN ITEMS core facade admission runtime providers)
+    foreach(_layer IN ITEMS common fs stealth admission runtime providers abi)
         file(GLOB_RECURSE _layer_sources
             "${source_dir}/src/${_layer}/*.cpp"
             "${source_dir}/src/${_layer}/*.hpp"

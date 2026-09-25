@@ -276,7 +276,7 @@ endif()
 # which YUME no longer contains. Its source waits for a native facade.
 option(YUME_BUILD_GUI "Build the yume-gui desktop app" OFF)
 
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/version.hpp" _yume_version_line
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.hpp" _yume_version_line
     REGEX "kVersion\\[\\][ \\t]*=[ \\t]*\"")
 string(REGEX MATCH "\"([^\"]+)\"" _yume_version_match "${_yume_version_line}")
 if(CMAKE_MATCH_1)

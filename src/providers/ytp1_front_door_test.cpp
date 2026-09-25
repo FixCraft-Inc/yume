@@ -6,7 +6,7 @@
 
 #include "providers/ytp1_front_door.hpp"
 #include "providers/ytp1_h2_admission.hpp"
-#include "core/stealth/cover_profile.hpp"
+#include "stealth/cover_profile.hpp"
 
 #include <algorithm>
 #include <array>

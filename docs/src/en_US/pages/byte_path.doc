@@ -123,7 +123,7 @@ their frames and servers not to. Masking adds no security, and an unmasked
 client frame would violate the protocol. The codec also accepts fragmented
 messages and interleaved control frames.
 
-Owners: `src/core/stealth/websocket_codec.hpp`, `src/core/stealth/h2_carrier.cpp`.
+Owners: `src/stealth/websocket_codec.hpp`, `src/stealth/h2_carrier.cpp`.
 
 ### 4. HTTP/2
 
@@ -143,7 +143,7 @@ only as many bytes as it has been granted. YUME holds a tunnel byte's credit
 until the destination consumes it. A queue overrun is fixed with admission and
 backpressure. A larger queue only delays the failure.
 
-Owners: `src/core/stealth/h2_carrier.cpp`, the captured settings in
+Owners: `src/stealth/h2_carrier.cpp`, the captured settings in
 `tests/fixtures/chrome151-node24/`, and [stealth transport](STEALTH.md).
 
 ### 5. TLS 1.3 and the ClientHello
@@ -166,7 +166,7 @@ TLS 1.3 authenticates the server with a signature over the handshake
 transcript, and both sides derive the session key by key agreement. YUME's own
 identities also sign, with two algorithms at once.
 
-Owners: `patches/`, `src/core/stealth/tls_client_profile.cpp` for GREASE
+Owners: `patches/`, `src/stealth/tls_client_profile.cpp` for GREASE
 selection, [transport profiles](TRANSPORT_PROFILES.md), and
 [stealth transport](STEALTH.md) for what may be claimed.
 

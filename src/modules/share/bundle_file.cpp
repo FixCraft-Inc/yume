@@ -13,9 +13,9 @@
 #include <basefwx/crypto.hpp>
 #include <basefwx/fwxaes.hpp>
 
-#include "core/runtime/bounded_file.hpp"
-#include "core/security/secret_file.hpp"
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
+#include "fs/bounded_file.hpp"
+#include "fs/secret_file.hpp"
 
 namespace yume::share {
 namespace {

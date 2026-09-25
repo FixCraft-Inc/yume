@@ -6,7 +6,7 @@
 #include "runtime/native_endpoint.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
-#include "core/runtime/bounded_file.hpp"
+#include "fs/bounded_file.hpp"
 #include "providers/ytp1_h2_carrier.hpp"
 #include "providers/ytp1_tls13_secure_channel.hpp"
 #include "providers/system_resolver.hpp"

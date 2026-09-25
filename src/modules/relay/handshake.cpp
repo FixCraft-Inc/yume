@@ -15,7 +15,7 @@
 
 #include <openssl/crypto.h>
 
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
 
 #include <basefwx/crypto.hpp>
 #include <basefwx/pq.hpp>

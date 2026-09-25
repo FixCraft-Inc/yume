@@ -29,7 +29,7 @@ ignores `YUME_TIMING`.
 
 ## One implementation, bounded hook points
 
-The shared API is `src/core/diagnostics/timing.hpp`. It provides:
+The shared API is `src/common/timing.hpp`. It provides:
 
 - `Stopwatch` for one synchronous operation;
 - `SampleAccumulator` for batched hot-path counts and nanoseconds;

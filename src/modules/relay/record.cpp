@@ -12,7 +12,7 @@
 #include <utility>
 
 #include "modules/relay/handshake.hpp"
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
 
 namespace yume::relay::record {
 namespace {

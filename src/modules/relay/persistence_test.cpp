@@ -19,8 +19,8 @@
 #include <thread>
 #include <vector>
 
-#include "core/security/secure_erase.hpp"
-#include "core/security/secret_file.hpp"
+#include "common/secure_erase.hpp"
+#include "fs/secret_file.hpp"
 #include "modules/relay/base64.hpp"
 #include "modules/relay/storage_crypto.hpp"
 

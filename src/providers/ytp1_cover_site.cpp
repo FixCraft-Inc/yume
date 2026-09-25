@@ -10,7 +10,7 @@
 #include <new>
 #include <optional>
 
-#include "core/runtime/bounded_file.hpp"
+#include "fs/bounded_file.hpp"
 
 namespace yume::providers {
 namespace {

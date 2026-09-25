@@ -24,8 +24,8 @@
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 
-#include "core/security/secret_file.hpp"
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
+#include "fs/secret_file.hpp"
 #include "providers/ytp1_security_provider.hpp"
 #include "providers/ytp1_tls13_secure_channel.hpp"
 #include "runtime/egress_limiter.hpp"

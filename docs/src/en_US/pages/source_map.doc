@@ -62,11 +62,9 @@ Implementation paths below are relative to `src/`. The candidate header in
 @table
 | Path | Owns |
 | --- | --- |
-| `core/` | Framing, crypto, AUTH v2 ratchet, stealth (TLS/H2/WebSocket), runtime primitives, app codecs |
 | `outbound/` | The client's `TransportCore`: frame dispatch, write scheduling, credit. Also server-side egress forwarding in `forward.cpp` |
 | `client/` | CLI, SOCKS, forwards, packet/TUN, relay, transfer |
 | `server/` | `yumed`: sessions, auth, host controller, federation, filters |
-| `facade/` | `yume_embed` (config marshalling, in-process client, log ring, and the transport-v2 backend behind `session/endpoint_backend.hpp`) and `yume_facade` (desktop session objects, traffic meter, key management) |
 | `gui/` | Optional desktop app. Links `yume_facade` only |
 | `platform/` | Platform-neutral executable-location interface plus the one configure-selected Linux/POSIX, macOS, or Windows implementation |
 | `tools/` | Optional operational and qualification executables: the read-only federation map, self-test harness, and focused transport/cryptography benchmarks |
@@ -78,10 +76,9 @@ Implementation paths below are relative to `src/`. The candidate header in
 @table
 | Path | Owns |
 | --- | --- |
-| `abi/` | The opt-in C ABI translation unit: handles, input validation, diagnostics, callback rules, and backend leasing. It parses schema 1 through `config/v1` and reaches each runtime only through its embed backend. Without the native provider graph, schema-1 start is unsupported. |
-| `facade/session/` | The embedding seam `endpoint_backend.hpp` and its two backends. `transport_v2_backend.cpp` belongs to `yume_embed`. `ytp1_backend.cpp` is `yume_embed_ytp1`, which runs `NativeEndpoint` on its own execution thread and links no transport-v2 target or BaseFWX. |
+| `abi/` | The opt-in C ABI. `yume_c.cpp` owns handles, input validation, diagnostics, callback rules and backend leasing. It parses schema 1 through `config/v1` and reaches the runtime only through the embedding seam `endpoint_backend.hpp`. `ytp1_backend.cpp` is `yume_embed_ytp1`, which runs `NativeEndpoint` on its own execution thread and links no BaseFWX. Without the native provider graph, schema-1 start is unsupported. `compatibility_manifest.hpp` is the version view the ABI reports. |
 | `include/yume/` | The public candidate C header. It is unfrozen; development SDK installation is opt-in. |
-| `common/` | Dependency-pure contracts shared across replacement layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, and the UDP datagram budget both SOCKS5 UDP relays use |
+| `common/` | Dependency-pure contracts shared across replacement layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, the UDP datagram budget both SOCKS5 UDP relays use, hex encoding, best-effort secret erasure, the development timing helpers, and the product and protocol version constants |
 @end
 
 ### Replacement foundation
@@ -95,6 +92,8 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `runtime/` | `native_credentials.*` loads protected schema-1 files and per-identity service policy; `native_endpoint.*` owns native provider/bootstrap/session composition and optional automatic server accepts, paced by the dependency-pure `accept_scheduler.hpp`. `native_egress_policy.*` evaluates configured direct-adapter destinations and their egress lists, which `egress_lists.*` reads, with MaxMind country databases, into sorted address ranges. `local_listener.*` owns the loopback TCP and private UNIX socket accept loop that `native_socks5.*` and `native_forward.*` share. `egress_limiter.*` shares a server's configured egress rate between identities by weight, and `paced_stream.*` applies it to each stream the endpoint serves. `module_supervisor.*` runs each configured module program, restarts it and hands it its service's streams over a private UNIX socket, and `module_launcher.*` is the `yume-module` entry that drops privileges before running the program. `native_server_runtime.*`, `native_client_runtime.*`, `native_socks5.*`, `native_socks5_udp.*` and `native_cli.cpp` build the development `yumed` and `yume` processes |
 | `modules/` | Module programs, which link no YUME library, and the libraries they build on. `echo/` is the example module that the tests run. `relay/` is the relay v2 end-to-end channel between two users (handshake, records and hybrid ratchet), the stores its users keep (encrypted chat history, the password-derived relay secret and peer trust), and the invite and directory records with the policies that check them, built with `YUME_BUILD_BASEFWX_MODULES` for the planned chat and file modules. `files/` holds relay file transfer on top of it: an outbound source pinned to one opened file and a confined receiver that publishes only a verified file. `codecs/` is the application codec core for a planned codec module: the HTTP request and response envelope, backend dialing rules and the Monero RPC descriptor. `share/` is the password-sealed `.yss` container for a planned kit import format |
 | `admission/` | Shared path/authority parsing, private-context HMAC and bounded monotonic replay reservations; no protocol/runtime dependency |
+| `stealth/` | The browser-shaped outer layers: the Chrome TLS client profile applied to OpenSSL, the active cover profile with its generated registry, TLS fingerprints, and the HTTP/2 and WebSocket carrier with its wire profile and outer observer. `clienthello_dump.cpp` and `h2_opening_probe.cpp` are evidence probes that the tests run |
+| `fs/` | Bounded regular-file reads, and reading and writing owner-only secret files. Reads open nonblocking and refuse special files before reading |
 | `config/v1/` | Strict numeric schema 1 parser with RFC 6901 error pointers |
 @end
 
@@ -109,15 +108,15 @@ replacement merely because both builds pass. Follow actual target inputs:
 | --- | --- | --- |
 | Server ingress | `providers/ytp1_front_door.*` implements native listening, configured static cover, exporter/replay admission and retained H2/TLS promotion | Composed through `runtime/native_endpoint.*` by the development `yumed` and the schema-1 ABI backend. Qualification remains |
 | Client admission | `providers/ytp1_h2_carrier.*` owns a 32-byte key and emits a fresh exporter-bound proof through `ytp1_h2_admission.*` | Composed by `runtime/native_endpoint.*` and reached through the schema-1 ABI backend and `yume` |
-| TLS profile | `providers/ytp1_tls13_secure_channel.cpp` applies `core/stealth/tls_client_profile.*`, shared with transport v2; a published YTP channel still requires TLS 1.3 and H2 | Qualify actual provider output and full-session behavior; native profile configuration alone does not establish circumvention |
-| Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | `facade/session/ytp1_backend.cpp` drives named streams/packets and routed client OPENs for the ABI; standalone application-service adapters remain open |
+| TLS profile | `providers/ytp1_tls13_secure_channel.cpp` applies `stealth/tls_client_profile.*`, shared with transport v2; a published YTP channel still requires TLS 1.3 and H2 | Qualify actual provider output and full-session behavior; native profile configuration alone does not establish circumvention |
+| Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | `abi/ytp1_backend.cpp` drives named streams/packets and routed client OPENs for the ABI; standalone application-service adapters remain open |
 | Embedding | `abi/yume_c.cpp` selects the compiled backend by configuration dialect. The YTP/1 backend carries named byte streams, named packets and destination-routed TCP/UDP OPENs | Supported-platform SDK and production qualification; transport-v2 packet/routed operations remain unsupported |
 | Applications | The default native `yumed`/`yume` run direct routes, SOCKS5 CONNECT/UDP ASSOCIATE and Linux managed TUN over `NativeEndpoint` | Application-service adapters, packaging, later GUI/Android integration and production qualification |
 @end
 
-`yume_h2_carrier` is the single build owner of the `core/stealth/` H2,
+`yume_h2_carrier` is the single build owner of the `stealth/` H2,
 WebSocket, wire-profile and observer sources. The native adapter
-`yume_ytp1_h2_carrier` and the remaining transport-v2 `yume_core` link it.
+`yume_ytp1_h2_carrier` links it.
 It propagates the diagnostics setting to callers because public declarations
 depend on it; Release and MinSizeRel compile those diagnostics out.
 `yume_cover_profile` owns profile data and fingerprint interpretation;
@@ -205,7 +204,7 @@ and `providers/linux_tun_packet_channel.*` owns asynchronous device I/O.
 | --- | --- | --- |
 | Application to session | A named service opens a byte stream or packet channel. Writes consume stream and connection credit, then become canonical DATA or PACKET frames. | `engine/session_engine.cpp`, `ytp/protocol.cpp` |
 | Record protection | The security provider seals the canonical frame with AES-256-GCM. A directional epoch and sequence identify a one-use key/nonce pair. The engine prefixes the ciphertext with that token. | `engine/session_engine.cpp::protect_frame`, `providers/ytp1_security_provider.cpp` |
-| H2 carrier | A 12-byte length envelope preserves each record across partial reads. The shared H2/WebSocket implementation carries it through RFC 8441 extended CONNECT and accounts for receive credit. | `providers/ytp1_h2_carrier.cpp`, `core/stealth/h2_carrier.cpp`, `core/stealth/websocket_codec.cpp` |
+| H2 carrier | A 12-byte length envelope preserves each record across partial reads. The shared H2/WebSocket implementation carries it through RFC 8441 extended CONNECT and accounts for receive credit. | `providers/ytp1_h2_carrier.cpp`, `stealth/h2_carrier.cpp`, `stealth/websocket_codec.cpp` |
 | Outer connection | OpenSSL TLS 1.3 encrypts H2 bytes. Memory BIOs exchange encrypted bytes with a ByteChannel. The Asio client provider reads and writes the TCP socket. | `providers/ytp1_tls13_secure_channel.cpp`, `providers/asio_tcp_byte_channel_provider.cpp` |
 | Peer delivery | The reverse path removes TLS and carrier framing, verifies the record token/tag, decodes the canonical frame and dispatches its stream ID. Invalid protection or framing terminates the session. | TLS/H2 providers, `engine/session_engine.cpp` |
 | Destination access | OPEN authorization produces an `AuthorizedRouteRequest`. The Asio provider checks every selected numeric address through an explicit policy before socket creation. The direct-route handler bridges the stream to a TCP or UDP route, retains credit until delivery and closes both sides on terminal failure. | `engine/session_engine.cpp::process_open`, `providers/direct_route_handler.cpp`, `providers/asio_direct_route_provider.cpp` |
@@ -217,7 +216,7 @@ its separate browser-to-origin TLS protection. Direct UDP routing does not
 establish native IP/TUN support. Reply traffic uses the opposite directional
 record keys and independent credit accounting.
 
-`yume_private_files` is the shared owner of `core/security/secret_file.cpp`.
+`yume_private_files` is the shared owner of `fs/secret_file.cpp`.
 Both the native credential loader and transport-v2 secure core link that target;
 extracting protected-file reads does not bring BaseFWX into YTP.
 
@@ -264,12 +263,13 @@ the first-party transport-v2 targets whose dependencies do not vary with build
 options.
 
 `yume_check_03_source_layering` reads sources and rejects forbidden includes.
-`engine/` and `ytp/` may not touch boost, OpenSSL, nghttp2, JSON, or sockets.
-`core/` may not include `client/`, `server/`, `facade/`, `gui/`, or `abi/`.
-`client/` may not include `server/`, and so on down the table in that file.
+`engine/`, `ytp/` and `common/` may not touch boost, OpenSSL, nghttp2, JSON,
+`<filesystem>`, or sockets. `common/` includes no other layer, `fs/` and
+`stealth/` build only on it, `abi/` may not include `gui/` or `modules/`, and
+so on down the table in that file.
 
-Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
-`server/` include to `core/`, stops the build rather than being noticed later.
+Both fail at configure time. A `gui/` include in `abi/`, or a `providers/`
+include in `stealth/`, stops the build rather than being noticed later.
 
 ## Where to look
 
@@ -278,12 +278,12 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
 | --- | --- |
 | Wire format, frame flags | `core/protocol/protocol.hpp` |
 | Handshake, ratchet, rekey | `core/security/auth_v2.hpp`, `core/security/session_ratchet.cpp` |
-| Browser-shaped TLS/H2 | `core/stealth/` |
+| Browser-shaped TLS/H2 | `stealth/` |
 | Client connect path | `client/cli/entry.cpp` (see the caution below) |
 | Server frame handling | `server/session/session.cpp`, then the sibling `.cpp` files |
 | Egress and SSRF policy | `server/session/net.cpp` |
 | Embedding YUME | `include/yume/yume.h`, [ABI.md](ABI.md), `abi/stream_integration_probe.c`, `abi/ytp1_stream_probe.c` |
-| Adding a transport backend | `facade/session/endpoint_backend.hpp` |
+| Adding a transport backend | `abi/endpoint_backend.hpp` |
 | Config keys | `config/client_document_keys.hpp` and `config/server_document_keys.hpp` are the closed transport-v2 key sets both parsers of each role check, over the shared `config/document_keys.hpp` predicate; `facade/config/keys.hpp` holds the spellings, `config/v1/config.hpp` is schema 1 |
 @end
 
@@ -330,7 +330,7 @@ Both fail at configure time. Adding a GUI dependency to `yume_embed`, or a
 - **Authorization parsing is shared; publication belongs to the caller.**
   `server/auth/authorized_identity_store.*` owns the identity grammar used by
   CLI/facade key management and daemon startup/reload. They use
-  `core/runtime/bounded_file.*` for bounded regular-file reads. The daemon's
+  `fs/bounded_file.*` for bounded regular-file reads. The daemon's
   `server/auth/auth.cpp` still owns policy assembly within the Manager's
   grouped snapshot transaction; parser reuse does not replace that lock.
 - **Control and directory JSON share field predicates.**

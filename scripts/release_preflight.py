@@ -105,7 +105,7 @@ def validate_ref(ref: str, repository: str) -> None:
 
 
 def source_version() -> str:
-    text = (ROOT / "src" / "core" / "version.hpp").read_text(encoding="utf-8")
+    text = (ROOT / "src" / "common" / "version.hpp").read_text(encoding="utf-8")
     match = re.search(r'kVersion\[\]\s*=\s*"([^"]+)"', text)
     require(match is not None, "Cannot read YUME source version")
     return match.group(1)

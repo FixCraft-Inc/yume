@@ -44,7 +44,7 @@ class MetadataTests(unittest.TestCase):
 
     def make_source_archive_fixture(self, root: pathlib.Path) -> None:
         (root / "scripts").mkdir(parents=True)
-        (root / "src/core").mkdir(parents=True)
+        (root / "src/common").mkdir(parents=True)
         (root / ".agents").mkdir()
         (root / ".private").mkdir()
         (root / ".secrets").mkdir()
@@ -57,7 +57,7 @@ class MetadataTests(unittest.TestCase):
                         root / "scripts/make_debian_orig.sh")
         shutil.copyfile(ROOT / "scripts/check_source_archive_listing.py",
                         root / "scripts/check_source_archive_listing.py")
-        (root / "src/core/version.hpp").write_text(
+        (root / "src/common/version.hpp").write_text(
             'inline constexpr char kVersion[] = "0.3.0-dev1";\n',
             encoding="utf-8")
         (root / "README.md").write_text("public\n", encoding="utf-8")
@@ -169,7 +169,7 @@ class MetadataTests(unittest.TestCase):
         transport-v2 wire version the product version and labelling the
         binaries with it. The product version is derived here rather than
         hardcoded so a version bump forces these documents forward."""
-        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         product = re.search(
             r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
         ).group(1)
@@ -200,7 +200,7 @@ class MetadataTests(unittest.TestCase):
         """The roff header names the product a page belongs to. It carried
         the transport-v2 wire version until the front-door documents were
         corrected, so pin it to the product version as well."""
-        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         product = re.search(
             r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
         ).group(1)
@@ -222,7 +222,7 @@ class MetadataTests(unittest.TestCase):
                 f"{relative} header must not carry wire version {wire}")
 
     def test_product_and_transport_versions_are_coherent(self) -> None:
-        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         self.assertIn('kVersion[] = "0.3.0-dev1"', version_header)
         self.assertIn('kRuntimeTransport = "transport-v2"', version_header)
         self.assertIn('kTransportVersion = "0.2.0-dev6"', version_header)

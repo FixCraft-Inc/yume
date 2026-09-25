@@ -441,11 +441,11 @@ endif()
 # the SSL_CTX emitter separate so the H2 carrier never acquires a TLS edge.
 if(YUME_BUILD_YTP1_H2_CARRIER OR YUME_BUILD_YTP1_TLS13_PROVIDER)
     add_library(yume_cover_profile STATIC
-        core/stealth/cover_profile.cpp
-        core/stealth/cover_profile.hpp
-        core/stealth/tls_fingerprint.cpp
-        core/stealth/tls_fingerprint.hpp
-        core/stealth/transport_profiles.inc)
+        stealth/cover_profile.cpp
+        stealth/cover_profile.hpp
+        stealth/tls_fingerprint.cpp
+        stealth/tls_fingerprint.hpp
+        stealth/transport_profiles.inc)
     target_include_directories(yume_cover_profile PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_cover_profile PRIVATE OpenSSL::Crypto)
     yume_apply_perf_opts(yume_cover_profile)
@@ -454,8 +454,8 @@ endif()
 
 if(YUME_BUILD_YTP1_TLS13_PROVIDER)
     add_library(yume_tls_client_profile STATIC
-        core/stealth/tls_client_profile.cpp
-        core/stealth/tls_client_profile.hpp)
+        stealth/tls_client_profile.cpp
+        stealth/tls_client_profile.hpp)
     target_include_directories(yume_tls_client_profile PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_tls_client_profile
         PUBLIC yume_cover_profile PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -493,14 +493,14 @@ endif()
 if(YUME_BUILD_YTP1_H2_CARRIER)
     find_package(Threads REQUIRED)
     add_library(yume_h2_carrier STATIC
-        core/stealth/h2_carrier.cpp
-        core/stealth/h2_carrier.hpp
-        core/stealth/h2_wire_profile.cpp
-        core/stealth/h2_wire_profile.hpp
-        core/stealth/outer_carrier_observer.cpp
-        core/stealth/outer_carrier_observer.hpp
-        core/stealth/websocket_codec.cpp
-        core/stealth/websocket_codec.hpp)
+        stealth/h2_carrier.cpp
+        stealth/h2_carrier.hpp
+        stealth/h2_wire_profile.cpp
+        stealth/h2_wire_profile.hpp
+        stealth/outer_carrier_observer.cpp
+        stealth/outer_carrier_observer.hpp
+        stealth/websocket_codec.cpp
+        stealth/websocket_codec.hpp)
     target_include_directories(yume_h2_carrier PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_h2_carrier
         PUBLIC yume_cover_profile
@@ -567,8 +567,8 @@ endif()
 # module. Keep their handle ownership independent of any runtime.
 if(YUME_BUILD_YTP1_FRONT_DOOR OR YUME_BUILD_BASEFWX_MODULES)
     add_library(yume_bounded_files STATIC
-        core/runtime/bounded_file.cpp
-        core/runtime/bounded_file.hpp)
+        fs/bounded_file.cpp
+        fs/bounded_file.hpp)
     target_include_directories(yume_bounded_files PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     yume_prepare_static_for_shared_abi(yume_bounded_files)
     yume_apply_perf_opts(yume_bounded_files)
@@ -624,7 +624,7 @@ target_link_libraries(yume_config_v1 PUBLIC nlohmann_json::nlohmann_json)
 yume_prepare_static_for_shared_abi(yume_config_v1)
 yume_apply_perf_opts(yume_config_v1)
 
-add_library(yume_private_files STATIC core/security/secret_file.cpp)
+add_library(yume_private_files STATIC fs/secret_file.cpp)
 target_include_directories(yume_private_files PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 if(WIN32)
     target_link_libraries(yume_private_files PRIVATE advapi32)
@@ -801,7 +801,7 @@ if(YUME_BUILD_YTP1_OPENSSL_PROVIDER AND
         # transport-v2 graph and BaseFWX out of it.
         find_package(Threads REQUIRED)
         add_library(yume_embed_ytp1 STATIC
-            facade/session/ytp1_backend.cpp facade/session/endpoint_backend.hpp)
+            abi/ytp1_backend.cpp abi/endpoint_backend.hpp)
         target_include_directories(yume_embed_ytp1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         # The backend reports the security provider's identity and OpenSSL
         # release, so it names that provider rather than reaching it through
@@ -1198,21 +1198,21 @@ if(YUME_BUILD_TESTING)
     set_tests_properties(yume_ip_packet_channel_test PROPERTIES
         TIMEOUT 15 LABELS "foundation;packet")
     if(TARGET yume_h2_carrier)
-        add_executable(yume_websocket_codec_test core/stealth/websocket_codec_test.cpp)
+        add_executable(yume_websocket_codec_test stealth/websocket_codec_test.cpp)
         target_link_libraries(yume_websocket_codec_test PRIVATE yume_h2_carrier)
         yume_link_atomic_if_needed(yume_websocket_codec_test PRIVATE)
         yume_apply_perf_opts(yume_websocket_codec_test)
         add_test(NAME yume_websocket_codec_test COMMAND yume_websocket_codec_test)
     endif()
     if(TARGET yume_bounded_files)
-        add_executable(yume_bounded_file_test core/runtime/bounded_file_test.cpp)
+        add_executable(yume_bounded_file_test fs/bounded_file_test.cpp)
         target_link_libraries(yume_bounded_file_test PRIVATE yume_bounded_files)
         yume_apply_perf_opts(yume_bounded_file_test)
         add_test(NAME yume_bounded_file_test COMMAND yume_bounded_file_test)
     endif()
     if(TARGET yume_cover_profile)
         # The active profile must match its capture manifest byte for byte.
-        add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
+        add_executable(yume_cover_profile_test stealth/cover_profile_test.cpp)
         target_link_libraries(yume_cover_profile_test
             PRIVATE yume_cover_profile nlohmann_json::nlohmann_json)
         target_compile_definitions(yume_cover_profile_test PRIVATE
@@ -1221,22 +1221,22 @@ if(YUME_BUILD_TESTING)
         yume_apply_perf_opts(yume_cover_profile_test)
         add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
 
-        add_executable(yume_tls_fingerprint_test core/stealth/tls_fingerprint_test.cpp)
+        add_executable(yume_tls_fingerprint_test stealth/tls_fingerprint_test.cpp)
         target_link_libraries(yume_tls_fingerprint_test PRIVATE yume_cover_profile)
         yume_apply_perf_opts(yume_tls_fingerprint_test)
         add_test(NAME yume_tls_fingerprint_test COMMAND yume_tls_fingerprint_test)
     endif()
-    add_executable(yume_secret_file_test core/security/secret_file_test.cpp)
+    add_executable(yume_secret_file_test fs/secret_file_test.cpp)
     target_link_libraries(yume_secret_file_test PRIVATE yume_private_files)
     yume_apply_perf_opts(yume_secret_file_test)
     add_test(NAME yume_secret_file_test COMMAND yume_secret_file_test)
 
-    add_executable(yume_hex_test core/encoding/hex_test.cpp)
+    add_executable(yume_hex_test common/hex_test.cpp)
     target_include_directories(yume_hex_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     yume_apply_perf_opts(yume_hex_test)
     add_test(NAME yume_hex_test COMMAND yume_hex_test)
 
-    add_executable(yume_timing_test core/diagnostics/timing_test.cpp)
+    add_executable(yume_timing_test common/timing_test.cpp)
     target_include_directories(yume_timing_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     yume_apply_dev_diagnostics(yume_timing_test PRIVATE)
     yume_apply_perf_opts(yume_timing_test)
@@ -1422,7 +1422,7 @@ if(YUME_BUILD_TESTING)
 
         # The H2/WebSocket state machine's own contract, beside the adapter's.
         add_executable(yume_h2_carrier_test
-            core/stealth/h2_carrier_test.cpp)
+            stealth/h2_carrier_test.cpp)
         target_link_libraries(yume_h2_carrier_test
             PRIVATE yume_h2_carrier ${YUME_NGHTTP2_TARGET})
         target_compile_definitions(yume_h2_carrier_test PRIVATE
@@ -1723,7 +1723,7 @@ if(YUME_BUILD_TESTING)
     endif()
 
     if(TARGET yume_embed_ytp1)
-        add_executable(yume_ytp1_backend_test facade/session/ytp1_backend_test.cpp)
+        add_executable(yume_ytp1_backend_test abi/ytp1_backend_test.cpp)
         # The test compiles the private backend implementation with paused
         # execution; linking its archive too would duplicate the definitions.
         target_link_libraries(yume_ytp1_backend_test PRIVATE
@@ -1790,7 +1790,7 @@ if(YUME_BUILD_TESTING)
         # or a late ACK can alias a later stream on the same transport. This
         # header is dependency-free, so the check needs no runtime.
         add_executable(yume_abi_stream_open_transaction_test
-            facade/session/service_open_transaction_test.cpp)
+            abi/service_open_transaction_test.cpp)
         target_include_directories(yume_abi_stream_open_transaction_test
             PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
         yume_apply_warnings(yume_abi_stream_open_transaction_test)
@@ -1940,7 +1940,7 @@ if(YUME_BUILD_TESTING)
     if(TARGET yume_h2_carrier)
         # The HTTP/2 connection opening the carrier emits, checked against
         # the browser's.
-        add_executable(yume_h2_opening_probe core/stealth/h2_opening_probe.cpp)
+        add_executable(yume_h2_opening_probe stealth/h2_opening_probe.cpp)
         target_link_libraries(yume_h2_opening_probe PRIVATE yume_h2_carrier)
         yume_apply_perf_opts(yume_h2_opening_probe)
         add_test(NAME yume_h2_fingerprint_check
@@ -1952,7 +1952,7 @@ if(YUME_BUILD_TESTING)
     if(TARGET yume_tls_client_profile)
         # Compares the ClientHello the TLS client emits against the committed
         # browser capture, rather than comparing config to config.
-        add_executable(yume_tls_clienthello_dump core/stealth/clienthello_dump.cpp)
+        add_executable(yume_tls_clienthello_dump stealth/clienthello_dump.cpp)
         target_link_libraries(yume_tls_clienthello_dump PRIVATE
             yume_tls_client_profile yume_cover_profile OpenSSL::SSL)
         yume_apply_perf_opts(yume_tls_clienthello_dump)

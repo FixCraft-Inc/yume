@@ -18,8 +18,8 @@
 #include <basefwx/crypto.hpp>
 #include <nlohmann/json.hpp>
 
-#include "core/security/secret_file.hpp"
-#include "core/security/secure_erase.hpp"
+#include "common/secure_erase.hpp"
+#include "fs/secret_file.hpp"
 #include "modules/relay/base64.hpp"
 
 namespace yume::relay {

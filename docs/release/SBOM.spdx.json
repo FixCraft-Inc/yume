@@ -10,7 +10,7 @@
   "documentDescribes": [
     "SPDXRef-Package-YUME"
   ],
-  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/b0bf01d191e5dcf0414231f3965d1fa13d1e4e28eb315f93af7d5e5aef59da89",
+  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/d055fed3e12c86c897673023428ad6ae9e2aa3f3d44328ebe44dae6a8128df0c",
   "name": "YUME source dependency SBOM",
   "packages": [
     {
@@ -72,30 +72,12 @@
       "versionInfo": "3.5.7"
     },
     {
-      "SPDXID": "SPDXRef-Package-vcpkg-argon2",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "name": "argon2",
-      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
-    },
-    {
       "SPDXID": "SPDXRef-Package-vcpkg-boost-asio",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
       "name": "boost-asio",
-      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-vcpkg-boost-date-time",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "name": "boost-date-time",
       "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
     },
     {
@@ -114,24 +96,6 @@
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
       "name": "boost-system",
-      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-vcpkg-liblzma",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "name": "liblzma",
-      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-vcpkg-liboqs",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "name": "liboqs",
       "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
     },
     {
@@ -188,17 +152,7 @@
       "spdxElementId": "SPDXRef-Package-YUME"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-vcpkg-argon2",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-YUME"
-    },
-    {
       "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-asio",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-YUME"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-date-time",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-YUME"
     },
@@ -209,16 +163,6 @@
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-system",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-YUME"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-vcpkg-liblzma",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-YUME"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-vcpkg-liboqs",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-YUME"
     },

@@ -38,7 +38,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.26.5"
   YUME_OPENSSL_FORCE_PINNED: "1"
 
 jobs:
@@ -84,13 +83,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up exact Go toolchain
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-          check-latest: false
-          cache-dependency-path: helper/chrome_tls/go.sum
-
       - name: Verify host lane
         shell: bash
         run: |
@@ -98,21 +90,6 @@ jobs:
           test "$(uname -s)" = Linux
           test "$(uname -m)" = x86_64
           ldd --version 2>&1 | head -1 | grep -Eq 'GNU libc|GLIBC'
-          test "$(go env GOVERSION)" = "go${GO_VERSION}"
-
-      - name: Ensure exact BaseFWX source
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
-          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
-          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            rm -rf basefwx
-            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
-          fi
-          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
-          git -C basefwx checkout --detach FETCH_HEAD
-          test "$(git -C basefwx rev-parse HEAD)" = "${BASEFWX_REF}"
 
       - name: Install Linux x86-64 build dependencies
         shell: bash
@@ -121,113 +98,51 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config binutils xz-utils perl \
-            zlib1g-dev libbrotli-dev liblzma-dev libarchive-dev libzstd-dev libargon2-dev \
-            libnghttp2-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
+            zlib1g-dev libbrotli-dev libzstd-dev \
+            libnghttp2-dev libsystemd-dev libboost-all-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
           source scripts/ensure-nghttp2.sh
           yume_nghttp2_ensure
-          YUME_LIBOQS_PREFIX="${RUNNER_TEMP}/liboqs-host-prefix"
-          LIBOQS_TARGET=host \
-            LIBOQS_VERSION=0.16.0 \
-            LIBOQS_BUILD_DIR="${RUNNER_TEMP}/liboqs-host" \
-            LIBOQS_PREFIX_OVERRIDE="${YUME_LIBOQS_PREFIX}" \
-            bash scripts/build-liboqs-target.sh
-          printf 'YUME_LIBOQS_PREFIX=%s\n' "${YUME_LIBOQS_PREFIX}" >> "${GITHUB_ENV}"
 
-      - name: Prime pinned modules, then test offline
-        working-directory: helper/chrome_tls
-        shell: bash
-        run: |
-          set -euo pipefail
-          GOTOOLCHAIN=local go mod download
-          GOTOOLCHAIN=local GOPROXY=off go test -mod=readonly -count=1 ./...
-          GOTOOLCHAIN=local GOPROXY=off go test -mod=readonly -count=1 -race ./...
-
-      - name: Configure first clean Linux build
+      - name: Configure the Linux build
         shell: bash
         run: |
           set -euo pipefail
           test "$(pkg-config --modversion openssl)" = "3.5.7"
           openssl list -signature-algorithms | grep -F 'ML-DSA-87'
-          cmake -S . -B build-helper-a -G Ninja \
+          cmake -S . -B build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DYUME_USE_BASEFWX=ON \
-            -DYUME_BUILD_CHROME_TLS_HELPER=ON \
-            -DYUME_GO_EXECUTABLE="$(command -v go)" \
-            -DYUME_BUILD_GUI=OFF \
-            -DYUME_BUILD_TOOLS=OFF \
+            -DYUME_BUILD_NATIVE_APPLICATION=ON \
             -DYUME_BUILD_SHARED_ABI=OFF \
-            -DYUME_BUILD_SELFTEST=OFF \
+            -DYUME_BUILD_BASEFWX_MODULES=OFF \
             -DYUME_BUILD_TESTING=ON \
             -DYUME_STATIC=OFF \
             -DYUME_STATIC_OPENSSL=ON \
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
             -DYUME_WARNINGS_AS_ERRORS=ON \
-            -DCMAKE_SKIP_BUILD_RPATH=ON \
-            -DBASEFWX_REQUIRE_ARGON2=ON \
-            -DBASEFWX_REQUIRE_OQS=ON \
-            -DBASEFWX_OQS_STATIC=ON \
-            -DOQS_INCLUDE_DIR="${YUME_LIBOQS_PREFIX}/include" \
-            -DOQS_LIBRARY="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
-            -DOQS_LIBRARY_STATIC="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
-            -DBASEFWX_REQUIRE_LZMA=ON
+            -DCMAKE_SKIP_BUILD_RPATH=ON
 
-      - name: Build and test first clean Linux build
+      - name: Build and test the Linux build
         shell: bash
         run: |
           set -euo pipefail
-          GOTOOLCHAIN=local GOPROXY=off \
-            cmake --build build-helper-a --parallel 2
-          ctest --test-dir build-helper-a --output-on-failure --parallel 2
-          build-helper-a/bin/yume --version
-          build-helper-a/bin/yumed --version
-          build-helper-a/bin/yume-chrome-tls-helper --version
-
-      - name: Configure and build helper a second time
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . -B build-helper-b -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DYUME_USE_BASEFWX=ON \
-            -DYUME_BUILD_CHROME_TLS_HELPER=ON \
-            -DYUME_GO_EXECUTABLE="$(command -v go)" \
-            -DYUME_BUILD_GUI=OFF \
-            -DYUME_BUILD_TOOLS=OFF \
-            -DYUME_BUILD_SHARED_ABI=OFF \
-            -DYUME_BUILD_SELFTEST=OFF \
-            -DYUME_BUILD_TESTING=OFF \
-            -DYUME_STATIC=OFF \
-            -DYUME_STATIC_OPENSSL=ON \
-            -DYUME_NATIVE_OPT=OFF \
-            -DYUME_FAST_MATH=OFF \
-            -DYUME_WARNINGS_AS_ERRORS=ON \
-            -DCMAKE_SKIP_BUILD_RPATH=ON \
-            -DBASEFWX_REQUIRE_ARGON2=ON \
-            -DBASEFWX_REQUIRE_OQS=ON \
-            -DBASEFWX_OQS_STATIC=ON \
-            -DOQS_INCLUDE_DIR="${YUME_LIBOQS_PREFIX}/include" \
-            -DOQS_LIBRARY="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
-            -DOQS_LIBRARY_STATIC="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
-            -DBASEFWX_REQUIRE_LZMA=ON
-          GOTOOLCHAIN=local GOPROXY=off \
-            cmake --build build-helper-b \
-              --target yume_chrome_tls_helper --parallel 2
-          test "$(sha256sum build-helper-a/bin/yume-chrome-tls-helper | cut -d' ' -f1)" = \
-               "$(sha256sum build-helper-b/bin/yume-chrome-tls-helper | cut -d' ' -f1)"
+          cmake --build build-release --parallel 2
+          ctest --test-dir build-release --output-on-failure --parallel 2
+          build-release/bin/yume --version
+          build-release/bin/yumed --version
 
       - name: Package exact Linux release surface
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' src/core/version.hpp | head -1)"
+          VERSION="$(sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' src/common/version.hpp | head -1)"
           python3 scripts/package_linux_release.py \
-            --yume build-helper-a/bin/yume \
-            --yumed build-helper-a/bin/yumed \
-            --helper build-helper-a/bin/yume-chrome-tls-helper \
-            --helper-rebuild build-helper-b/bin/yume-chrome-tls-helper \
+            --yume build-release/bin/yume \
+            --yumed build-release/bin/yumed \
+            --setup tools/yume_setup.py \
+            --doctor tools/yume_doctor.py \
             --license LICENSE \
             --notices docs/release/THIRD-PARTY-NOTICES.md \
             --quick-start docs/release/LINUX-QUICKSTART.md \
@@ -238,9 +153,7 @@ jobs:
             --profile "${{ inputs.release_profile }}" \
             --tag "${{ inputs.tag_name }}" \
             --skip-ref-fetch \
-            --cmake-cache build-helper-a/CMakeCache.txt \
-            --helper-build-a build-helper-a/bin/yume-chrome-tls-helper \
-            --helper-build-b build-helper-b/bin/yume-chrome-tls-helper \
+            --cmake-cache build-release/CMakeCache.txt \
             --artifacts dist
           mkdir -p transfer
           tar --format=posix --sort=name --owner=0 --group=0 --numeric-owner \

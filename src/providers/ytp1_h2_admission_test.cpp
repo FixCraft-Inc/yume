@@ -4,6 +4,8 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
+#include "test_support/allocation_failure.hpp"
+
 #include "providers/ytp1_h2_admission.hpp"
 
 #include <array>
@@ -15,24 +17,13 @@ namespace {
 thread_local int fail_after = -1;
 }
 
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
-#endif
-void* operator new(std::size_t size) {
+namespace {
+void check_test_allocation(std::size_t) {
     if (fail_after == 0) throw std::bad_alloc();
     if (fail_after > 0) --fail_after;
-    if (void* storage = std::malloc(size == 0U ? 1U : size)) return storage;
-    throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* storage) noexcept { std::free(storage); }
-void operator delete[](void* storage) noexcept { ::operator delete(storage); }
-void operator delete(void* storage, std::size_t) noexcept { ::operator delete(storage); }
-void operator delete[](void* storage, std::size_t) noexcept { ::operator delete(storage); }
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
+}
+
 
 namespace {
 using namespace yume;
@@ -189,6 +180,8 @@ void test_allocation_failure_is_refusal() {
 }  // namespace
 
 int main() {
+    yume::test::before_allocate_on_any_thread.store(check_test_allocation);
+
     test_canonical_vector();
     test_binding_mutations();
     test_input_and_authority_boundaries();

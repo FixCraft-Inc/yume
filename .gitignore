@@ -83,7 +83,7 @@ vendor/
 *.dsc
 *.tar.xz
 # The prebuilt vendor archive is deliberately NOT committed. It is published at
-# https://deb.fixcraft.jp/yume/ and fetched only when --use-vendor is passed,
+# https://deb.fixcraft.jp/yume/ and fetched only by scripts/vendor_prebuilt.sh,
 # verified against the SHA-256 and detached signature that DO live in
 # third_party/prebuilt/. It was purged from history on 2026-07-24 (79 MB across
 # 7 versions) because compiled objects embed builder paths that text

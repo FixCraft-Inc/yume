@@ -1,264 +1,167 @@
 #!/usr/bin/env python3
-"""Provision a real stack and drive named streams through the public C ABI v1."""
+"""Drive schema-1 named streams through the public C ABI with real credentials."""
 
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
-import re
-import secrets
-import shutil
 import socket
 import subprocess
+import sys
 import tempfile
-import threading
-from collections.abc import Iterator
 
 
-SERVICE = "abi-stream-v1"
 CHILD_ASAN_OPTIONS_ENV = "YUME_TEST_CHILD_ASAN_OPTIONS"
+IDENTITY_DOMAIN = b"yume/ytp/1/composite-identity/v1"
+STREAM_SERVICES = ("echo", "unregistered", "denied")
+# The client identity may open echo and unregistered. The server application
+# registers echo and denied, so unregistered is refused by registration and
+# denied by the credential grant.
+GRANTED_SERVICES = ("echo", "unregistered")
 
 
-class CoverHandler(BaseHTTPRequestHandler):
-    """Small deterministic origin for the H2 priming requests."""
-
-    protocol_version = "HTTP/1.1"
-
-    def _respond(self, *, head_only: bool) -> None:
-        body = b"<!doctype html><title>Yume ABI test cover</title>\n"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if not head_only:
-            self.wfile.write(body)
-
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self._respond(head_only=False)
-
-    def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self._respond(head_only=True)
-
-    def log_message(self, format: str, *args: object) -> None:
-        del format, args
-
-
-@contextmanager
-def cover_backend() -> Iterator[int]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), CoverHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield int(server.server_address[1])
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--probe", type=Path, required=True)
-    parser.add_argument("--yumed", type=Path, required=True)
-    return parser.parse_args()
-
-
-def run_checked(argv: list[str], cwd: Path, env: dict[str, str]) -> str:
+def run_openssl(openssl: Path, arguments: list[str], data: bytes) -> bytes:
     result = subprocess.run(
-        argv,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        [str(openssl), *arguments],
+        input=data,
+        capture_output=True,
+        timeout=30,
         check=False,
-        timeout=60,
     )
-    output = result.stdout.decode(errors="replace")
-    if result.returncode != 0:
+    if result.returncode:
         raise RuntimeError(
-            f"command failed ({result.returncode}): {' '.join(argv)}\n{output}"
+            "openssl failed: " + result.stderr.decode(errors="replace").strip()
         )
-    return output
+    return result.stdout
 
 
-def pick_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
+def public_key_blocks(text: str) -> list[str]:
+    begin = "-----BEGIN PUBLIC KEY-----"
+    end = "-----END PUBLIC KEY-----"
+    blocks: list[str] = []
+    position = 0
+    while True:
+        start = text.find(begin, position)
+        if start < 0:
+            break
+        stop = text.find(end, start)
+        if stop < 0:
+            raise ValueError("truncated public key block")
+        stop += len(end)
+        blocks.append(text[start:stop] + "\n")
+        position = stop
+    if len(blocks) != 2:
+        raise ValueError("a composite public identity holds exactly two keys")
+    return blocks
 
 
-def write_secret(path: Path) -> None:
-    path.write_text(secrets.token_bytes(32).hex())
-    path.chmod(0o600)
+def composite_fingerprint(openssl: Path, public_identity: Path) -> str:
+    """Hash the identity the way the setup and doctor tools do."""
+    digest = hashlib.sha256()
+    digest.update(IDENTITY_DOMAIN)
+    for block in public_key_blocks(public_identity.read_text(encoding="ascii")):
+        der = run_openssl(
+            openssl, ["pkey", "-pubin", "-outform", "DER"], block.encode()
+        )
+        digest.update(len(der).to_bytes(4, "big"))
+        digest.update(der)
+    return digest.hexdigest()
+
+
+def configure(kit: Path) -> str:
+    services = [
+        {"name": name, "kind": "stream", "max_concurrent_streams": 8}
+        for name in STREAM_SERVICES
+    ]
+    for relative in ("server/yumed.json", "client/yume.json"):
+        path = kit / relative
+        config = json.loads(path.read_text(encoding="utf-8"))
+        config["services"] = services
+        # The embedding backend composes named services only. Declared
+        # adapters would make start fail explicitly.
+        config["adapters"] = []
+        if config["role"] == "server":
+            config["endpoint"]["listen_addresses"] = ["127.0.0.1"]
+        path.write_text(json.dumps(config), encoding="utf-8")
+    authorization = kit / "server/credentials/authorized-keys.json"
+    store = json.loads(authorization.read_text(encoding="utf-8"))
+    if len(store["keys"]) != 1:
+        raise RuntimeError("the generated kit must authorize one client")
+    store["keys"][0]["capabilities"] = [
+        {"service": name, "kind": "stream"} for name in GRANTED_SERVICES
+    ]
+    authorization.write_text(json.dumps(store), encoding="utf-8")
+    return str(store["keys"][0]["identity"]["sha256"])
+
+
+def run(probe: Path, openssl: Path, resolver: Path) -> None:
+    probe = probe.resolve(strict=True)
+    openssl = openssl.resolve(strict=True)
+    resolver = resolver.resolve(strict=True)
+    if not probe.is_file() or not openssl.is_file() or not resolver.is_file():
+        raise ValueError("probe, OpenSSL and resolver helper must be regular files")
+    environment = os.environ.copy()
+    child_asan_options = environment.pop(CHILD_ASAN_OPTIONS_ENV, None)
+    if child_asan_options is not None:
+        # The ASan-preloaded Python host disables only leak detection. The
+        # instrumented probe keeps the strict leak policy.
+        environment["ASAN_OPTIONS"] = child_asan_options
+    # Setup selects openssl by PATH. Generation must use the selected library,
+    # and unsupported post-quantum algorithms fail rather than skip this gate.
+    environment["PATH"] = str(openssl.parent) + os.pathsep + environment.get("PATH", "")
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix="yume-abi-ytp1-") as temporary:
+        kit = Path(temporary) / "kit"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        # The reservation closes before the native listener binds. A competing
+        # bind fails this test instead of connecting to another peer.
+        setup = subprocess.run(
+            [sys.executable, str(root / "tools/yume_setup.py"), "init",
+             "--host", "localhost", "--port", str(port), "--output", str(kit),
+             "--client-name", "abi-client"],
+            env=environment, capture_output=True, text=True, timeout=75,
+            check=False,
+        )
+        if setup.returncode:
+            raise RuntimeError(
+                "schema-1 credential provisioning failed: " + setup.stderr.strip()
+            )
+        client_fingerprint = configure(kit)
+        derived = composite_fingerprint(
+            openssl, kit / "client/credentials/client-composite.pub.pem"
+        )
+        if derived != client_fingerprint:
+            raise RuntimeError("fingerprint derivation disagrees with the kit")
+        server_fingerprint = composite_fingerprint(
+            openssl, kit / "server/credentials/server-composite.pub.pem"
+        )
+        result = subprocess.run(
+            [str(probe), str(kit / "server"), str(kit / "client"),
+             client_fingerprint, server_fingerprint, str(resolver)],
+            cwd=temporary, env=environment, timeout=150, check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(f"schema-1 ABI probe failed with exit {result.returncode}")
 
 
 def main() -> int:
-    args = parse_args()
-    with (
-        tempfile.TemporaryDirectory(prefix="yume-abi-stream-") as temporary,
-        cover_backend() as cover_port,
-    ):
-        root = Path(temporary)
-        home = root / "home"
-        runtime = root / "runtime"
-        home.mkdir(mode=0o700)
-        runtime.mkdir(mode=0o700)
-        environment = os.environ.copy()
-        child_asan_options = environment.pop(CHILD_ASAN_OPTIONS_ENV, None)
-        if child_asan_options is not None:
-            # The ASan-preloaded Python host disables only leak detection to
-            # avoid reporting CPython's process-lifetime allocations. Each
-            # spawned instrumented executable must retain the strict CI leak
-            # policy.
-            environment["ASAN_OPTIONS"] = child_asan_options
-        environment.update(
-            {
-                "HOME": str(home),
-                "XDG_RUNTIME_DIR": str(runtime),
-            }
-        )
-
-        cert = root / "server.crt"
-        tls_key = root / "server.key"
-        run_checked(
-            [
-                "openssl",
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                str(tls_key),
-                "-out",
-                str(cert),
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                "/CN=localhost",
-                "-addext",
-                "subjectAltName=DNS:localhost,IP:127.0.0.1",
-            ],
-            root,
-            environment,
-        )
-
-        client_prefix = root / "client"
-        run_checked(
-            [str(args.yumed), "--keys-gen", str(client_prefix)],
-            root,
-            environment,
-        )
-        client_key = client_prefix.with_suffix(".key")
-        client_public = client_prefix.with_suffix(".pub")
-        authorized_keys = root / "authorized_keys"
-        shutil.copyfile(client_public, authorized_keys)
-        listing = run_checked(
-            [
-                str(args.yumed),
-                "--auth-keys",
-                str(client_public),
-                "--keys-list",
-            ],
-            root,
-            environment,
-        )
-        fingerprints = re.findall(r"(?m)^[0-9a-f]{64}$", listing)
-        if len(fingerprints) != 1:
-            raise RuntimeError(
-                f"expected one composite fingerprint, got {fingerprints}\n{listing}"
-            )
-
-        auth_meta = root / "auth_keys.meta"
-        auth_meta.write_text(
-            json.dumps(
-                {
-                    fingerprints[0]: {
-                        "permissions": {"allow_services": [SERVICE]},
-                    }
-                },
-                indent=2,
-            )
-        )
-        obfs_secret = root / "obfs.hex"
-        inner_psk = root / "inner-psk.hex"
-        write_secret(obfs_secret)
-        write_secret(inner_psk)
-        # yumed refuses to start without a cover source: with none, the
-        # HTTP/2 decoy would serve a page identical on every deployment.
-        cover_index = root / "cover-index.html"
-        cover_index.write_text(
-            "<!doctype html><title>example</title><p>It works.</p>\n",
-            encoding="utf-8",
-        )
-
-        port = pick_port()
-        server_config = root / "server.json"
-        server_config.write_text(
-            json.dumps(
-                {
-                    "role": "server",
-                    "listen_address": "127.0.0.1",
-                    "listen_port": port,
-                    "tls_cert": str(cert),
-                    "tls_key": str(tls_key),
-                    "auth_keys": str(authorized_keys),
-                    "auth_keys_meta": str(auth_meta),
-                    "threads": 2,
-                    "obfuscation": True,
-                    "obfs_secret_file": str(obfs_secret),
-                    "inner_psk_file": str(inner_psk),
-                    "inner_crypto": True,
-                    "real_backend": f"loopback://127.0.0.1:{cover_port}",
-                    "real_index_path": str(cover_index),
-                    "allow_services": [SERVICE],
-                    "ipc_enable": False,
-                    "boring": True,
-                },
-                indent=2,
-            )
-        )
-        client_config = root / "client.json"
-        client_config.write_text(
-            json.dumps(
-                {
-                    # Carrier admission intentionally requires the HTTP/2
-                    # authority and TLS SNI to name the same host.
-                    "role": "client",
-                    "server": "localhost",
-                    "port": port,
-                    "identity": str(client_key),
-                    "socks_port": 0,
-                    "tunnels": 1,
-                    "service_streams_only": True,
-                    "tls_ca_cert": str(cert),
-                    "tls_server_name": "localhost",
-                    "accept_monitoring": True,
-                    "auto_attach_local": False,
-                    "obfuscation": True,
-                    "obfs_secret_file": str(obfs_secret),
-                    "inner_psk_file": str(inner_psk),
-                    "inner_crypto": True,
-                    "tls_backend": "openssl-diagnostic",
-                    "non_interactive": True,
-                    "boring": True,
-                },
-                indent=2,
-            )
-        )
-
-        output = run_checked(
-            [str(args.probe), str(server_config), str(client_config)],
-            root,
-            environment,
-        )
-        if output:
-            print(output, end="")
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--probe", type=Path, required=True)
+    parser.add_argument("--openssl", type=Path, required=True)
+    parser.add_argument("--resolver", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        run(args.probe, args.openssl, args.resolver)
+    except (OSError, ValueError, RuntimeError, KeyError,
+            subprocess.TimeoutExpired) as error:
+        print(f"schema-1 ABI stream gate: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

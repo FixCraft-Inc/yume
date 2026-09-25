@@ -8,8 +8,10 @@ production-readiness, cryptographic-proof, or interoperability claim.
 
 The authority for this contract is `src/ytp/`,
 `src/engine/session_engine.*`, `src/runtime/native_endpoint.*`, and the
-`src/providers/ytp1_*` and Asio provider
-sources, together with their focused tests and the checked-in kernel vectors.
+provider sources `openssl_security_provider.*`, `ytp1_crypto.*`,
+`tls13_secure_channel.*`, `h2_duplex_carrier.*`, `h2_web_front_door.*`,
+`ytp1_h2_admission.*`, `cover_site.*` and `asio_*` under `src/providers/`,
+together with their focused tests and the checked-in kernel vectors.
 Source and executable tests outrank this document if they disagree.
 
 This contract remains narrower than a complete transport product. The kernel
@@ -26,7 +28,7 @@ session ownership and shutdown drain.
 It also composes configured direct TCP/UDP adapters whose schema-1
 destinations are authorized before resolution and for every resolved address. An experimental schema-1 C ABI backend carries
 named byte streams over it, but does not compose destination adapters.
-Development `yumed-ytp1` and `yume-ytp1` processes compose it with direct
+Development `yumed` and `yume` processes compose it with direct
 routes and a SOCKS5 adapter with CONNECT and UDP ASSOCIATE. Packet/TUN adapters and the remaining
 qualification gates are unfinished, as listed below.
 
@@ -52,7 +54,7 @@ server starts YTP AUTH. It does not authenticate a transport identity or grant
 a service. `providers/ytp1_h2_admission.*` owns this construction;
 `admission/h2_admission.*` owns the shared path parser, HMAC primitive and
 bounded replay cache. The client carrier builds the proof from its active
-TLS channel. `providers/ytp1_front_door.*` verifies admission on the actual
+TLS channel. `providers/h2_web_front_door.*` verifies admission on the actual
 accepted TLS connection before transferring it to the H2 carrier.
 
 The proof path is `/` followed by 64 lowercase hexadecimal token characters,
@@ -83,8 +85,7 @@ never a peer-supplied field. Token comparison is constant time.
 Wall-clock buckets and browser evidence-profile IDs are absent. The exporter
 binds the proof to one TLS connection, avoiding a clock-synchronization
 requirement. Browser geometry remains independent of this admission encoding.
-Transport-v2 token fields and domains remain unchanged; neither protocol
-accepts the other's proof.
+It shares no field or domain with transport v2's admission token.
 
 A native front door MUST verify the proof and reserve its nonce atomically
 in one process-shared bounded replay cache before promotion. Cache expiry uses
@@ -389,9 +390,8 @@ shared secret; 1568-octet ML-KEM-1024 public key and ciphertext; at most 64
 prepared/in-flight ratchet epochs; mandatory one-use message keys; and a zero
 reserved octet. Every octet MUST match exactly.
 
-The build-tree-only provider `openssl35.ytp1-security` enforces this exact
-composition when explicitly enabled with
-`YUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER=ON`. It creates a private
+The provider `openssl35.ytp1-security` enforces this exact composition. It
+creates a private
 OpenSSL library context, loads only the instance-local default provider,
 requires every named algorithm, and has no provider fallback or suite
 negotiation. This target is an experimental implementation, not a production
@@ -608,6 +608,20 @@ a protected ACK, a bare non-ACK post-AUTH frame, component mutation, or
 post-failure reuse terminates the session. This design supports crossed
 opposite-direction rekeys without retaining old directional roots.
 
+The native engine rotates its outbound root before accepting protected payload
+past 1 MiB or 512 records in an epoch, and checks the 500 ms age threshold on
+the next protected send. INIT does not count toward these application thresholds.
+These limits do not promise autonomous root expiry while idle.
+
+A pending outbound rekey has a separate local ACK deadline. The default is
+30 seconds; callers may select a positive duration up to 30 seconds. The deadline
+starts before provider work and INIT queueing. Late traffic or ACK verification
+fails the session, clears deferred records, and wipes provider state. An engine
+owner services `rekey_deadline()` and `expire_rekey(now)`; `NativeEndpoint` does
+so with its session timer. Expiry delivery depends on the execution context
+running. This policy neither changes the wire format nor establishes a high-RTT
+or delivery-time guarantee.
+
 ## Canonical vectors
 
 `src/ytp/testdata/ytp1_vectors.txt` contains public synthetic encoding
@@ -626,6 +640,23 @@ test checks:
 
 FNV-1a is used only as an encoding-regression checksum and makes no
 cryptographic claim.
+
+`src/ytp/testdata/ytp1_crypto_vectors.txt` records deterministic cryptographic
+construction vectors. Its independent Python generator uses `hashlib`, `hmac`
+and `cryptography` AESGCM, with primitive known-answer self-checks. The native
+security-provider test compares transcript and signature-input hashes, the
+canonical key schedule, directional roots, PSK and confirmation proofs,
+record AAD/key/nonce/ciphertext, and both directions of rekey INIT, ACK and
+new-root derivation. Record cases cover empty plaintext, wide counters and
+the next epoch with a continuing sequence.
+
+All contributions are public synthetic octet strings. The corpus does not
+contain provisionable identities or exercise deterministic asymmetric key
+generation, signatures or encapsulation. Those primitives retain real-key
+handshake and mutation tests; complete independent peer interoperability and
+security review remain acceptance gates. The internal
+`providers/ytp1_crypto.*` module owns the tested deterministic constructions;
+the security provider owns authentication state, key lifetimes and ratchets.
 
 ## Implemented and unfinished boundary
 
@@ -652,8 +683,8 @@ Implemented in the dependency-pure session engine and its in-memory tests:
 - crossed and sequential directional rekey lifecycle, cancellation, teardown,
   half-close, backpressure, and allocation-failure contracts.
 
-Implemented in the opt-in `yume_ytp1_openssl_security` target and exercised by
-`yume_ytp1_openssl_security_test` with freshly generated real keys:
+Implemented in the opt-in `yume_openssl_security_provider` target and exercised by
+`yume_openssl_security_provider_test` with freshly generated real keys:
 
 - private OpenSSL context and exact Ed25519, ML-DSA-87, X25519,
   ML-KEM-1024, SHA-256, HMAC, HKDF, and AES-256-GCM algorithm requirements;
@@ -672,27 +703,28 @@ Implemented in the opt-in `yume_ytp1_openssl_security` target and exercised by
 
 Implemented as separate opt-in provider candidates with focused tests:
 
-- `yume_ytp1_tls13_secure_channel` wraps an engine ByteChannel with OpenSSL
+- `yume_tls13_secure_channel` wraps an engine ByteChannel with OpenSSL
   memory BIOs, enforces TLS 1.3 and ALPN `h2`, verifies client-side trust and
   hostname, bounds peer evidence, and exports channel binding. Its client
   applies the shared browser TLS profile and refuses negotiated TLS 1.2 or
   HTTP/1.1 before publishing a channel. Its separate server-cover entry keeps
   ordinary TLS 1.2/HTTP/1.1 traffic in a ByteChannel and promotes only a settled
   TLS 1.3/H2 connection to the strict SecureChannel type;
-- `yume_ytp1_h2_carrier` implements client priming and exporter-bound admission
+- `yume_h2_duplex_carrier` implements client priming and exporter-bound admission
   in extended CONNECT, bounded private record framing, flow-credit ownership,
   and a typed server
   promotion seam for an already-admitted live H2 connection;
 - `yume_asio_tcp_byte_channel_provider` supplies bounded client DNS/connect,
   socket protection, ordered operations, cancellation, and TCP half-close.
-  `AsioTcpAcceptedChannelOwner` adopts connected server sockets through the
-  same bounded channel implementation; it does not own a listener; and
+  `AsioTcpAcceptedChannelOwner` adopts connected TCP or UNIX stream sockets
+  through the same bounded channel implementation; it does not own a
+  listener; and
 - `yume_asio_direct_route_provider` supplies bounded TCP and connected-UDP
   egress behind the dependency-pure route-handler contract, with mandatory
   numeric-destination policy before socket creation and using the same
   single-runner execution context and reserved controls as native ingress.
 
-Implemented in the opt-in `yume_ytp1_front_door` target: a native listener using
+Implemented in the opt-in `yume_h2_web_front_door` target: a native listener using
 the accepted-channel owner, a configured static site loaded through confined
 `FileRoot` reads, received-SNI/exporter verification, shared replay reservations,
 bounded admission capacity and one promotion per TLS lifetime. Promotion
@@ -708,8 +740,9 @@ Their required `destinations` are enforced before DNS or socket creation, an
 optional application callback can only refuse more, and resolved-address policy
 remains mandatory before socket creation. The engine supplies its selected provider to each routed
 OPEN, and only successful endpoint creation adopts provider cancellation.
-Other services require explicit bindings. SOCKS5 declarations need a caller
-that runs them, and packet/TUN declarations remain unsupported. The schema-1 ABI backend still refuses all adapter
+Other services require explicit bindings. The standalone runtimes compose
+SOCKS5 and managed Linux packet/TUN declarations. The schema-1 ABI backend
+exposes named stream/packet and routed TCP/UDP operations, while refusing all adapter
 declarations. Focused integration exercises configured authenticated TCP/UDP
 routes, packet boundaries, policy refusal and retained credit after drain, plus
 real TCP/TLS/H2, AUTH, OPEN refusal followed by acceptance, data, rekey,
@@ -718,29 +751,27 @@ tests do not establish a complete runnable tunnel or production qualification.
 
 Not implemented or not qualified as a production YTP/1 path:
 
-- qualification of the development standalone runtimes and the experimental
-  ABI backend;
-- named-service and packet/TUN adapters, plus a schema-1 ABI packet data
-  path;
-- deterministic cryptographic known-answer vectors and published rekey
-  vectors; the provider test currently uses generated keys rather than a
-  reproducible interoperability corpus;
+- production qualification of `yume`, `yumed` and the experimental ABI
+  backend;
+- application-service ports beyond the native SOCKS, managed TUN and ABI
+  stream/packet paths;
+- complete deterministic asymmetric AUTH/rekey interoperability with an
+  independent peer; published construction vectors cover the deterministic
+  transcript, schedule, record and rekey calculations;
 - production resource-exhaustion and complete adapter lifecycle qualification;
   and
 - production runtime, interoperability, fuzz, soak, sanitizer, active-probe,
   performance, or independent security-review qualification.
 
-The native endpoint and its providers remain build-tree-only. Schema-1 ABI
-endpoint start uses them only in builds that include them, fails with a typed
-unsupported status otherwise, and never silently dispatches into transport v2. An explicitly selected
-transport-v2 configuration can use the same ABI symbols and carry named byte
-streams, but it is a separate backend and does not qualify YTP/1. The runnable
-transport-v2 product remains a separate default-build lane during the
-transition; its presence does not make transport v2, AUTH v2, federation,
-relay, GUI, or other product-specific surfaces part of YTP/1.
+The native endpoint and its providers are internal C++ components. The native
+executables are installed by default; the experimental C SDK has a separate
+installation opt-in. Schema-1 ABI
+endpoint start uses them only in builds that include them and fails with a
+typed unsupported status otherwise. The relay module, the GUI and other
+product-specific surfaces are not part of YTP/1.
 
-The development runtime is wired, while the remaining adapters, deterministic
-cryptographic known-answer vectors and production qualification gates are open.
+`yume` and `yumed` run on this contract. Remaining adapters, independent peer
+interoperability and production qualification are open.
 The fixed composition is an experimental candidate, not a production security
 claim. It is not an
 independent security proof, audit, post-quantum-security certification,

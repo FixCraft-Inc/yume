@@ -312,8 +312,6 @@ class ClassifierEvidenceTest(unittest.TestCase):
             environment["node_sha256"] = PINNED_NODE_BINARY_SHA256
             environment["yume_binary_sha256"] = "c" * 64
             environment["tls_backend"] = tls_backend
-            if tls_backend == "chrome151":
-                environment["yume_helper_sha256"] = "d" * 64
             environment["release_bundle_sha256"] = "f" * 64
             environment["client_config_sha256"] = "0" * 64
             environment["tls_leaf_sha256"] = "e" * 64
@@ -466,16 +464,14 @@ class ClassifierEvidenceTest(unittest.TestCase):
                     include_behavior=False,
                 )
 
-    def test_helper_backed_yume_arm_accepts_bound_helper_hash(self) -> None:
+    def test_helper_backed_yume_arm_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            yume = self._make_arm(
-                root, "yume", normal=False, certificate=b"cert",
-                tls_backend="chrome151",
-            )
-            evidence = load_arm(yume, normal=False)
-        self.assertEqual(evidence.environment["tls_backend"], "chrome151")
-        self.assertEqual(evidence.environment["yume_helper_sha256"], "d" * 64)
+            with self.assertRaisesRegex(FinalizeError, "TLS backend"):
+                self._make_arm(
+                    root, "yume", normal=False, certificate=b"cert",
+                    tls_backend="chrome151",
+                )
 
     def test_arm_relabeling_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

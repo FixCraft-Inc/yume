@@ -12,16 +12,137 @@ withdrawn version plans and test builds. They are not support contracts. See
 
 ## [Unreleased 0.3.0-dev1]
 
-The product version moved to `0.3.0-dev1`. The runnable `yume` and `yumed`
-binaries keep speaking the transport-v2 wire `0.2.0-dev6` recorded in the next
-section; the wire, AUTH, relay, YTP/1, schema, ABI, and evidence-profile
-versions are independent axes. `docs/IMPLEMENTATION_STATUS.md` is the current
+The product version moved to `0.3.0-dev1`. `yume` and `yumed` compose native
+YTP/1 with schema-1 configuration, and transport v2 has been removed. The
+YTP/1, relay channel, schema, ABI and evidence-profile versions are
+independent axes. `docs/IMPLEMENTATION_STATUS.md` is the current
 boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Relay channel library.** The relay v2 end-to-end channel between two users
+  (handshake, sealed records and hybrid ratchet) builds apart from transport
+  v2 as `yume_module_relay` when `YUME_BUILD_BASEFWX_MODULES` is on. Its labels
+  and wire format are unchanged, which tests check against known answers from
+  the transport-v2 code and against an independent Python reference that pins
+  every handshake and ratchet label. It also holds the encrypted chat history, the relay
+  secret, peer trust, and the invite and directory records with their
+  policies. Peer fingerprints changed from the transport-v2
+  identity domain to the YTP/1 one, so a peer's fingerprint is the one
+  `yume-setup` prints for its key. `yume_module_files` adds the relay file
+  transfer source and receiver. They are the base of the planned chat and file
+  modules.
+- **Application codec library.** The application codec core (the HTTP
+  envelope, backend dialing rules and the Monero RPC descriptor) builds apart
+  from transport v2 as `yume_module_codecs` for a planned codec module.
+- **SOCKS5 upstream provider.** `providers/socks5_upstream.*` reaches a server
+  through a SOCKS5 proxy over any byte-channel provider, as transport v2's
+  client dialing did. It offers only the method its configuration implies,
+  takes credentials that wipe themselves, and reads nothing past the proxy's
+  reply. A client configuration's `endpoint.socks5_proxy` names the proxy's
+  numeric address and port and an optional protected credentials file with a
+  username line and a password line, and a managed TUN excludes the proxy's
+  route from the tunnel.
+- **Loopback cover fetch.** `providers/loopback_http_fetch.*` fetches GET and
+  HEAD from a loopback web server within fixed bounds, the base of a
+  reverse-proxy cover. Unlike transport v2's client, it refuses a backend that
+  closes before a complete response. `cover.reverse_proxy` still fails start
+  until the FrontDoor uses it.
+- **Egress lists.** Server `direct_tcp` and `direct_udp` destinations can add
+  `lists` of JSON or VPN provider database files and a MaxMind
+  `country_database`. The most specific entry decides and a deny wins a tie.
+  Lists refuse more but never permit more than `public` and `networks`. This
+  brings transport v2's egress filter to the native daemon without archive
+  unpacking or the compact country format, and it fixes v2's reading of
+  28-bit MaxMind records.
+- **Share container library.** `yume_module_share` holds the password-sealed
+  `.yss` container from transport v2 for a planned kit import format. It keeps
+  the file layout and always derives the key with Argon2id. Passwords that
+  start with `file://` or `password://` are now refused, where transport v2
+  let BaseFWX read the first from a file.
+- **Modules.** A server `module` adapter runs a program for one stream
+  service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
+  authorized stream as a connection that starts with the client's identity,
+  and restarts the program with backoff when it exits. The program runs
+  without capabilities under no_new_privs, and the kernel kills it if the
+  daemon dies. It still runs as the daemon's user and can read the daemon's
+  files, so only trusted programs belong there. `yume-doctor` checks the
+  adapter, and `yume-echo-module` is an example. See
+  [modules](../MODULES.md).
+- **Local forwards.** A client `forward` adapter listens on a loopback TCP
+  port or a UNIX socket and turns each connection into a stream on its
+  service, optionally to a fixed destination that the server's `direct_tcp`
+  policy checks. This replaces transport v2's `-L` forwards. Their TCP
+  listeners were not limited to loopback, while native forwards are. A UNIX
+  socket only accepts the client's own user. UDP forwards are not ported yet.
+- **Per-client speed limits.** A server's `limits.max_egress_mbps` caps the
+  stream payload the daemon relays, and clients share it by the `weight` in
+  their authorized-keys entries. Every served stream is paced in both
+  directions, whatever its service. A reload changes a weight for open streams
+  at their next transfer. `yume-setup` sets both and `yume-doctor` checks them.
+  This replaces transport v2's `egress_mbps` limiter, which gave two busy
+  clients half the configured rate between them and ignored their weights.
+- **Bounded name-lookup shutdown.** Client hosts and destination names now
+  resolve in a separate helper process instead of Boost.Asio's single
+  in-process resolver thread. Cancellation settles immediately, one slow name no
+  longer delays other lookups, and closing a runtime kills and reaps the helper,
+  so SIGTERM or SDK stop no longer waits for a stalled `getaddrinfo`. The helper
+  holds no inherited connections and drops every capability. `yume` and `yumed`
+  serve as their own helper. The SDK installs `yume-resolver`, which embedding
+  hosts pass as `yume_runtime_options.resolver_program`. Without it, a client
+  that dials a name fails closed at start.
+- **Per-identity session limits.** An authorized-keys entry may set
+  `max_sessions`. A new session beyond it replaces that identity's oldest
+  session, so a reconnecting client displaces its own half-open session
+  instead of being refused. Without the field the daemon's capacity is the
+  only bound, as before. Doctor validates the field against the daemon's bound.
+- **Credential reload.** `yumed` reloads its key stores and server keys on
+  SIGHUP, and the Debian unit wires `systemctl reload`, validating first.
+  Removed identities lose their sessions at once, established sessions apply
+  changed grants to their next stream, and an invalid store keeps the previous
+  credentials. TLS and admission key changes still need a restart.
+- **More client bundles.** `yume-setup add-client` issues another client for an
+  existing server tree and extends its authorized-keys store in one
+  all-or-nothing step that keeps the store's file owner. `remove-client`
+  revokes one, and a reload ends its sessions.
+- **Client status for embedding.** `NativeClientRuntime::status()` reports the
+  connection state, last failure, verified server fingerprint, attempt counts
+  and cumulative traffic from any thread, with an optional state-change
+  callback. `SessionEngine::traffic()` supplies per-session byte counts.
+- **Native operations guide.** `docs/OPERATIONS.md` now covers the native
+  programs. The transport-v2 operator material moved to
+  `docs/TRANSPORT_V2_OPERATIONS.md` under its reference program names.
+  Release verification, which describes the native release, stays on the
+  native page. The duplicate website build notes were dropped in favor of the
+  documentation source guide.
+- **Native acceptance tooling.** Native-only builds register setup, doctor and
+  packaging regressions. Bounded libFuzzer targets cover YTP framing, AUTH and
+  schema-1 configuration; numeric JSON overflow now reports a typed validation
+  error. Optional isolated network tests exercise the actual systemd-resolved
+  service and competing streams under kernel-induced latency and backpressure.
+- **Cryptographic construction vectors.** A public synthetic corpus and an
+  independent generator cover transcripts, key schedules, record protection
+  and directional rekey calculations. The internal crypto module exposes those
+  deterministic constructions to tests without exposing them through the SDK.
+- **Native packaging migration.** Release archives and Debian definitions use
+  schema-1 tools and configuration. GUI and helper build lanes explicitly select
+  the retained reference graph. The Debian service waits for operator-provided
+  credentials and validates configuration before starting; package installation
+  does not enable or start it. Release qualification remains open.
+- **Native terminal failure cleanup.** The CLI reserves its runner-exception
+  stop task before execution. Client reconnect and SOCKS accept retry failures
+  that cannot recover close the runtime and report a typed terminal status,
+  allowing the process to drain and exit. Ordinary failures keep backoff.
+- **TCP allocation-failure completion.** Pending read/write construction keeps
+  callback ownership with the caller until storage exists. Allocation refusal
+  settles each callback once and returns queue capacity for subsequent traffic.
+- **Shared allocation test hooks.** The remaining ten private new/delete
+  replacements use the shared out-of-line helper, including optional aligned
+  provider allocation interception and secret-buffer quarantine. Fault policies
+  and wipe-before-release observations remain owned by their tests.
+
 - **Development standalone runtimes.** With every native provider enabled the
-  build produces `yumed-ytp1` and `yume-ytp1`. The daemon serves configured
+  default build installs `yumed` and `yume`. The daemon serves configured
   direct TCP/UDP adapters within their destinations. The client keeps one
   authenticated session with bounded reconnect and runs loopback SOCKS5
   listeners. CONNECT streams join the existing direct-route bridge.
@@ -30,8 +151,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   An OPEN deadline returns SOCKS5 0x06 (TTL expired); other cancellation keeps
   its existing status, and late acceptance cannot revive an expired request.
   `yume_native_runtime_test` carries a payload through SOCKS5, checks refusals
-  and requires clean SIGTERM exits. Named-service and packet/TUN adapters
-  remain unfinished, and the programs are not installed.
+  and requires clean SIGTERM exits. Managed Linux packet/TUN adapters and
+  experimental SDK streams, packets and routes are also implemented;
+  arbitrary standalone named-service handlers remain unfinished.
 - **SOCKS5 UDP ASSOCIATE.** A client `socks5` adapter that names a packet
   `udp_service` relays UDP through a loopback socket tied to the client's TCP
   connection. Each destination opens its own authenticated packet stream, so
@@ -41,9 +163,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   idle and wait before a refused OPEN is repeated. The schema-1 parser, doctor
   and setup kit carry the new key. Endpoint and process tests cover traffic,
   refusals, source locking, the budget and relay closure.
-- **Runnable development kit.** `yume-setup-ytp1` no longer declares the
-  unimplemented packet/TUN service, adapters and grant, so its kit starts
-  `yumed-ytp1` and `yume-ytp1` without edits. Its launchers name those programs.
+- **Runnable development kit.** Installed `yume-setup` and `yume-doctor` use
+  schema 1. The generated kit starts native `yumed` and `yume` with SOCKS
+  TCP/UDP. Managed TUN addresses, routes and DNS are explicit operator choices.
 - **Client dial address.** Schema-1 clients may set `endpoint.connect_address`
   to dial a numeric address while TLS and admission still authenticate `host`.
 - **Evaluation tooling.** `scripts/ensure-ndpi.sh` builds pinned nDPI 6.0, or
@@ -243,6 +365,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Unqualified cover profiles are refused.** A schema-1 document that names a
+  cover profile other than the one the build qualifies now fails to load, in
+  `yume`, `yumed` and the C ABI alike. Before, the programs accepted such a
+  document and ran with the built-in profile anyway, while `yume-doctor`
+  already refused it.
 - **Session closure and reconnect.** The native client reconnects from an
   endpoint notification instead of checking session state every second.
   Teardown settles pending engine callbacks before the endpoint frees the
@@ -584,6 +711,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Removed
 
+- **Transport v2.** Its wire, AUTH v2, security modes, client and daemon, GUI
+  facade and control API, federation, host controller, the Go Chrome TLS
+  helper, the v2 benchmark and self-test drivers, the multi-target and Windows
+  build scripts, and their documents and manuals are gone. Commit `9070b0a` is
+  the last that contains all of it. What YUME still needed moved first: the
+  relay channel, file transfer, codecs, the share container, egress lists,
+  per-client speed limits, forwards, the SOCKS5 upstream and the loopback
+  fetch are native, and `config/yume.json` and `config/yumed.json` are now the
+  schema-1 examples. The GUI source stays for the GUI phase and does not
+  build.
 - **Inline `real_secret` and the `--real-secret` flag.** The cover-backend
   secret could be passed in argv, where the process table exposes it, or
   written into the configuration file. Both server loaders now refuse the key

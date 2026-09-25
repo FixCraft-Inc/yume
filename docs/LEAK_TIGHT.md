@@ -19,7 +19,7 @@ through the SOCKS proxy:
 ```bash
 chromium \
   --user-data-dir=/tmp/chromium-yume-profile \
-  --proxy-server="socks5://127.0.0.1:1088" \
+  --proxy-server="socks5://127.0.0.1:1080" \
   --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" \
   --disable-quic \
   --webrtc-ip-handling-policy=disable_non_proxied_udp \
@@ -40,7 +40,7 @@ deployment. The relevant preferences include:
 ```text
 network.proxy.type = 1
 network.proxy.socks = 127.0.0.1
-network.proxy.socks_port = 1088
+network.proxy.socks_port = 1080
 network.proxy.socks_version = 5
 network.proxy.socks_remote_dns = true
 network.http.http3.enabled = false
@@ -60,7 +60,7 @@ First confirm that a request explicitly sent through SOCKS exits from the YUME
 server's address:
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1088 https://ipinfo.io/ip
+curl --socks5-hostname 127.0.0.1:1080 https://ipinfo.io/ip
 ```
 
 Then observe the client host while loading pages. Replace the example server
@@ -90,9 +90,10 @@ recovery paths differ. Resolve those inputs first, apply the rules through a
 recoverable console, and test that stopping YUME blocks the protected workload
 without locking out administration.
 
-YUME does not currently publish a qualified full-system routing or kill-switch
-configuration. The packet and TUN paths are separate features with their own
-platform and release gates.
+On Linux, a client `packet` adapter routes the whole device through a managed
+TUN instead of relying on applications to use SOCKS. It is not yet qualified as
+a kill switch, and YUME publishes no qualified full-system firewall
+configuration.
 
 ## Android boundary
 

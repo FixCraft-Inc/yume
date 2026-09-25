@@ -29,7 +29,7 @@
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 #include "test_support/tls_identity.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
@@ -95,7 +95,7 @@ std::vector<unsigned char> public_der(EVP_PKEY* key) {
     return result;
 }
 
-// Independent fixture writer uses the same byte grammar as yume_setup_ytp1.py.
+// Independent fixture writer uses the same byte grammar as yume_setup.py.
 std::string fingerprint(EVP_PKEY* classical, EVP_PKEY* pq) {
     std::vector<unsigned char> bytes;
     constexpr std::string_view kDomain = "yume/ytp/1/composite-identity/v1";
@@ -400,6 +400,46 @@ void test_load_and_authenticate(Fixture& fixture) {
     fixture.restore_stores();
 }
 
+// max_sessions is optional per identity and reported by the policy. Absent,
+// the policy reports no bound.
+void test_session_limits(Fixture& fixture) {
+    auto unlimited = take(fixture.load_server());
+    check(unlimited.authorization->max_sessions(fixture.client.id) == 0U,
+          "absent max_sessions reported a bound");
+    auto candidate = fixture.authorized;
+    candidate["keys"][0]["max_sessions"] = 3;
+    fixture.write("credentials/authorized.json", candidate.dump());
+    auto limited = take(fixture.load_server());
+    check(limited.authorization->max_sessions(fixture.client.id) == 3U,
+          "configured max_sessions was not reported");
+    check(limited.authorization->max_sessions(fixture.admin.id) == 0U,
+          "an unrelated identity reported a bound");
+    candidate["keys"][0]["max_sessions"] = 1024;
+    fixture.write("credentials/authorized.json", candidate.dump());
+    check(take(fixture.load_server()).authorization->max_sessions(fixture.client.id) == 1024U,
+          "the largest max_sessions was refused");
+    fixture.restore_stores();
+}
+
+// weight is optional per identity. Absent, the policy reports the default.
+void test_egress_weights(Fixture& fixture) {
+    auto unweighted = take(fixture.load_server());
+    check(unweighted.authorization->egress_weight(fixture.client.id) == 1.0,
+          "an absent weight was not the default");
+    for (const auto& [value, expected] : std::vector<std::pair<Json, double>>{
+             {Json(0.1), 0.1}, {Json(1.5), 1.5}, {Json(3), 3.0}, {Json(100), 100.0}}) {
+        auto candidate = fixture.authorized;
+        candidate["keys"][0]["weight"] = value;
+        fixture.write("credentials/authorized.json", candidate.dump());
+        auto weighted = take(fixture.load_server());
+        check(weighted.authorization->egress_weight(fixture.client.id) == expected,
+              "a configured weight was not reported");
+        check(weighted.authorization->egress_weight(fixture.admin.id) == 1.0,
+              "an unrelated identity reported a weight");
+    }
+    fixture.restore_stores();
+}
+
 void test_invalid_stores(Fixture& fixture) {
     for (const auto& mutation : std::vector<std::function<void(Json&)>>{
              [](Json& value) { value["schema"] = 1.0; },
@@ -438,7 +478,20 @@ void test_invalid_stores(Fixture& fixture) {
                  duplicate["identity"] = {{"file", "authorized/admin.pub.pem"},
                                           {"sha256", fixture.admin.id}};
                  value["keys"].push_back(std::move(duplicate));
-             }}) {
+             },
+             [](Json& value) { value["keys"][0]["max_sessions"] = 0; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = 1025; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = -1; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = 2.0; },
+             [](Json& value) { value["keys"][0]["max_sessions"] = "2"; },
+             [](Json& value) { value["keys"][0]["weight"] = 0; },
+             [](Json& value) { value["keys"][0]["weight"] = 0.09; },
+             [](Json& value) { value["keys"][0]["weight"] = 100.5; },
+             [](Json& value) { value["keys"][0]["weight"] = -1; },
+             [](Json& value) { value["keys"][0]["weight"] = "2"; },
+             [](Json& value) { value["keys"][0]["weight"] = true; },
+             [](Json& value) { value["keys"][0]["weight"] = nullptr; },
+             [](Json& value) { value["keys"][0].erase("capabilities"); }}) {
         auto candidate = fixture.authorized;
         mutation(candidate);
         fixture.rejected_store(std::move(candidate));
@@ -553,13 +606,58 @@ void test_admission_ownership() {
 
 }  // namespace
 
+// A client's SOCKS5 proxy credentials come from a protected file with the
+// username on its first line and the password on its second.
+void test_socks5_credentials(Fixture& fixture) {
+    auto config = fixture.client_config;
+    const auto load = [&](const Json& document) {
+        return load_native_credentials(yume::config::v1::Parse(document),
+                                       fixture.directory.path(), "yume-lock-test");
+    };
+    config["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
+    check(!take(load(config)).socks5_credentials,
+          "SOCKS5 credentials appeared without a file");
+    config["endpoint"]["socks5_proxy"]["credentials"] =
+        reference("credentials/socks5-proxy");
+    for (const std::string text : {"user\nsecret\n", "user\nsecret"}) {
+        fixture.write("credentials/socks5-proxy", text);
+        const auto loaded = take(load(config));
+        check(loaded.socks5_credentials &&
+                  loaded.socks5_credentials->username() == "user" &&
+                  loaded.socks5_credentials->password() == "secret",
+              "SOCKS5 proxy credentials changed");
+    }
+    fixture.write("credentials/socks5-proxy", "name with space\npass phrase\n");
+    check(take(load(config)).socks5_credentials->password() == "pass phrase",
+          "a password with a space changed");
+    for (const std::string& text :
+         {std::string("user"), std::string("user\n"), std::string("\nsecret"),
+          std::string("user\n\n"), std::string("user\r\nsecret"),
+          std::string("user\nsecret\nextra"), std::string("user\n") + std::string(256U, 'p'),
+          std::string(256U, 'u') + "\nsecret", std::string("us\0er\nsecret", 12U), std::string()}) {
+        fixture.write("credentials/socks5-proxy", text);
+        check(!load(config).ok(), "malformed SOCKS5 proxy credentials accepted");
+    }
+    fixture.write("credentials/socks5-proxy", "user\nsecret\n");
+    const auto path = fixture.directory.path() / "credentials/socks5-proxy";
+    std::filesystem::permissions(path, std::filesystem::perms::group_read,
+                                 std::filesystem::perm_options::add);
+    check(!load(config).ok(), "group-readable SOCKS5 proxy credentials accepted");
+    std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                           std::filesystem::perms::owner_write);
+    check(load(config).ok(), "SOCKS5 proxy credentials did not recover");
+}
+
 int main() {
     try {
         test_admission_ownership();
         Fixture fixture;
         test_load_and_authenticate(fixture);
         test_invalid_stores(fixture);
+        test_session_limits(fixture);
+        test_egress_weights(fixture);
         test_file_boundaries(fixture);
+        test_socks5_credentials(fixture);
         std::cout << "native credential tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

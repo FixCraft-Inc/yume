@@ -30,6 +30,11 @@ inline constexpr std::size_t kMaxServices = 64;
 inline constexpr std::size_t kMaxAdapters = 16;
 inline constexpr std::size_t kMaxListenAddresses = 16;
 inline constexpr std::size_t kMaxDestinationNetworks = 64;
+inline constexpr std::size_t kMaxDestinationLists = 16;
+// A UNIX socket path must fit sockaddr_un with its terminator.
+inline constexpr std::size_t kMaxUnixSocketPathBytes = 107;
+inline constexpr std::size_t kMaxModuleArguments = 32;
+inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -52,6 +57,8 @@ enum class AdapterKind {
     Packet,
     DirectTcp,
     DirectUdp,
+    Forward,
+    Module,
 };
 
 class ValidationError final : public std::runtime_error {
@@ -76,14 +83,43 @@ private:
     std::string path_;
 };
 
+// A SOCKS5 proxy that the client reaches its server through. The proxy
+// resolves host, or connects to connect_address when that is set. TLS and
+// admission still authenticate host.
+class Socks5Proxy final {
+public:
+    Socks5Proxy(std::string address,
+                std::uint16_t port,
+                std::optional<FileReference> credentials)
+        : address_(std::move(address)),
+          port_(port),
+          credentials_(std::move(credentials)) {}
+
+    // An IP literal. The client never resolves the proxy's own name.
+    const std::string& address() const noexcept { return address_; }
+    std::uint16_t port() const noexcept { return port_; }
+    // A protected file: the username on the first line and the password on
+    // the second. Without it the client offers no authentication.
+    const std::optional<FileReference>& credentials() const noexcept {
+        return credentials_;
+    }
+
+private:
+    std::string address_;
+    std::uint16_t port_;
+    std::optional<FileReference> credentials_;
+};
+
 class ClientEndpoint final {
 public:
     ClientEndpoint(std::string host,
                    std::uint16_t port,
-                   std::optional<std::string> connect_address)
+                   std::optional<std::string> connect_address,
+                   std::optional<Socks5Proxy> socks5_proxy = std::nullopt)
         : host_(std::move(host)),
           port_(port),
-          connect_address_(std::move(connect_address)) {}
+          connect_address_(std::move(connect_address)),
+          socks5_proxy_(std::move(socks5_proxy)) {}
 
     const std::string& host() const noexcept { return host_; }
     std::uint16_t port() const noexcept { return port_; }
@@ -92,11 +128,22 @@ public:
     const std::optional<std::string>& connect_address() const noexcept {
         return connect_address_;
     }
+    const std::optional<Socks5Proxy>& socks5_proxy() const noexcept {
+        return socks5_proxy_;
+    }
+    // Where the client's own TCP connection goes: the proxy when one is set,
+    // else connect_address, else host. A managed TUN keeps it out of the
+    // tunnel.
+    const std::string& first_hop() const noexcept {
+        if (socks5_proxy_) return socks5_proxy_->address();
+        return connect_address_ ? *connect_address_ : host_;
+    }
 
 private:
     std::string host_;
     std::uint16_t port_;
     std::optional<std::string> connect_address_;
+    std::optional<Socks5Proxy> socks5_proxy_;
 };
 
 class ServerEndpoint final {
@@ -327,45 +374,102 @@ private:
     std::optional<std::string> udp_service_;
 };
 
+struct TunNetwork final {
+    std::vector<common::IpInterfaceAddress> addresses;
+    std::vector<common::IpNetwork> routes;
+    // Packet source and destination authorization, reversed on receive.
+    std::vector<common::IpNetwork> local_networks;
+    std::vector<common::IpNetwork> peer_networks;
+    std::vector<common::IpInterfaceAddress> dns_servers;
+    // Routing domains only. "." routes all DNS queries through this link.
+    std::vector<std::string> dns_domains;
+};
+
 class PacketAdapter final {
 public:
     PacketAdapter(std::string service,
                   std::string interface_name,
-                  std::uint16_t mtu)
+                  std::uint16_t mtu,
+                  TunNetwork network)
         : service_(std::move(service)),
           interface_name_(std::move(interface_name)),
-          mtu_(mtu) {}
+          mtu_(mtu), network_(std::move(network)) {}
 
     const std::string& service() const noexcept { return service_; }
     const std::string& interface_name() const noexcept {
         return interface_name_;
     }
     std::uint16_t mtu() const noexcept { return mtu_; }
+    const TunNetwork& network() const noexcept { return network_; }
 
 private:
     std::string service_;
     std::string interface_name_;
     std::uint16_t mtu_;
+    TunNetwork network_;
+};
+
+enum class DestinationListAction : std::uint8_t {
+    Allow,
+    Deny,
+};
+
+enum class DestinationListFormat : std::uint8_t {
+    // {"ips": [...], "countries": [...]}
+    Json,
+    // The binary VPN provider database, format 1.
+    Vpdb,
+};
+
+// An egress list file. The runtime reads it when the policy is built.
+class DestinationList final {
+public:
+    DestinationList(DestinationListAction action,
+                    DestinationListFormat format,
+                    FileReference file)
+        : action_(action), format_(format), file_(std::move(file)) {}
+
+    DestinationListAction action() const noexcept { return action_; }
+    DestinationListFormat format() const noexcept { return format_; }
+    const FileReference& file() const noexcept { return file_; }
+
+private:
+    DestinationListAction action_;
+    DestinationListFormat format_;
+    FileReference file_;
 };
 
 // Destinations a direct adapter may reach. Public addresses are globally
 // reachable unicast addresses. Each network also permits its explicit prefix,
 // including private or loopback space. Unspecified, multicast and reserved
 // addresses are never reachable. A policy permits at least one destination.
+// Egress lists only narrow that: a destination their most specific entry
+// denies is refused. Countries in lists need a MaxMind country database.
 class DestinationPolicy final {
 public:
     DestinationPolicy(bool public_addresses,
-                      std::vector<common::IpNetwork> networks)
-        : public_addresses_(public_addresses), networks_(std::move(networks)) {}
+                      std::vector<common::IpNetwork> networks,
+                      std::vector<DestinationList> lists = {},
+                      std::optional<FileReference> country_database = std::nullopt)
+        : public_addresses_(public_addresses),
+          networks_(std::move(networks)),
+          lists_(std::move(lists)),
+          country_database_(std::move(country_database)) {}
 
     bool public_addresses() const noexcept { return public_addresses_; }
     const std::vector<common::IpNetwork>& networks() const noexcept {
         return networks_;
     }
+    const std::vector<DestinationList>& lists() const noexcept { return lists_; }
+    const std::optional<FileReference>& country_database() const noexcept {
+        return country_database_;
+    }
 
 private:
     bool public_addresses_;
     std::vector<common::IpNetwork> networks_;
+    std::vector<DestinationList> lists_;
+    std::optional<FileReference> country_database_;
 };
 
 class DirectTcpAdapter final {
@@ -398,10 +502,81 @@ private:
     DestinationPolicy destinations_;
 };
 
+// Where a client forward listens: a loopback TCP address and port, or an
+// absolute UNIX socket path.
+struct LoopbackListener final {
+    std::string address;
+    std::uint16_t port;
+};
+
+struct UnixListener final {
+    std::string path;
+};
+
+using ForwardListener = std::variant<LoopbackListener, UnixListener>;
+
+// The TCP destination each of a forward's streams names. The server's
+// direct_tcp destinations decide whether it is reachable.
+struct ForwardDestination final {
+    std::string host;
+    std::uint16_t port;
+};
+
+// Every local connection becomes one byte-stream OPEN on the service. With a
+// destination the OPEN carries it. Without one, the server's handler for the
+// service decides where the stream goes.
+class ForwardAdapter final {
+public:
+    ForwardAdapter(std::string service,
+                   ForwardListener listener,
+                   std::optional<ForwardDestination> destination)
+        : service_(std::move(service)),
+          listener_(std::move(listener)),
+          destination_(std::move(destination)) {}
+
+    const std::string& service() const noexcept { return service_; }
+    const ForwardListener& listener() const noexcept { return listener_; }
+    const std::optional<ForwardDestination>& destination() const noexcept {
+        return destination_;
+    }
+
+private:
+    std::string service_;
+    ForwardListener listener_;
+    std::optional<ForwardDestination> destination_;
+};
+
+// A server module: a program that serves one stream service. The daemon
+// starts it, restarts it after it exits and hands it each authorized stream
+// of the service as a connection on a private UNIX socket.
+class ModuleAdapter final {
+public:
+    ModuleAdapter(std::string service,
+                  std::string program,
+                  std::vector<std::string> arguments)
+        : service_(std::move(service)),
+          program_(std::move(program)),
+          arguments_(std::move(arguments)) {}
+
+    const std::string& service() const noexcept { return service_; }
+    // An absolute path. The daemon runs it with arguments after its own name.
+    const std::string& program() const noexcept { return program_; }
+    const std::vector<std::string>& arguments() const noexcept {
+        return arguments_;
+    }
+
+private:
+    std::string service_;
+    std::string program_;
+    std::vector<std::string> arguments_;
+};
+
 using Adapter = std::variant<Socks5Adapter,
                              PacketAdapter,
                              DirectTcpAdapter,
-                             DirectUdpAdapter>;
+                             DirectUdpAdapter,
+                             ForwardAdapter,
+                             ModuleAdapter>;
 
 class ResourceLimits final {
 public:
@@ -412,7 +587,8 @@ public:
                    std::uint32_t max_rekey_jobs,
                    std::uint32_t max_control_messages,
                    std::uint32_t max_packet_bytes,
-                   std::uint32_t max_packet_batch)
+                   std::uint32_t max_packet_batch,
+                   std::optional<std::uint32_t> max_egress_mbps = std::nullopt)
         : max_frame_bytes_(max_frame_bytes),
           max_streams_(max_streams),
           max_queued_bytes_(max_queued_bytes),
@@ -420,7 +596,8 @@ public:
           max_rekey_jobs_(max_rekey_jobs),
           max_control_messages_(max_control_messages),
           max_packet_bytes_(max_packet_bytes),
-          max_packet_batch_(max_packet_batch) {}
+          max_packet_batch_(max_packet_batch),
+          max_egress_mbps_(max_egress_mbps) {}
 
     std::uint32_t max_frame_bytes() const noexcept {
         return max_frame_bytes_;
@@ -444,6 +621,12 @@ public:
     std::uint32_t max_packet_batch() const noexcept {
         return max_packet_batch_;
     }
+    // Server only: the rate, in megabits per second, that stream payload
+    // shares across authenticated identities by weight. Absent means
+    // unlimited.
+    const std::optional<std::uint32_t>& max_egress_mbps() const noexcept {
+        return max_egress_mbps_;
+    }
 
 private:
     std::uint32_t max_frame_bytes_;
@@ -454,6 +637,7 @@ private:
     std::uint32_t max_control_messages_;
     std::uint32_t max_packet_bytes_;
     std::uint32_t max_packet_batch_;
+    std::optional<std::uint32_t> max_egress_mbps_;
 };
 
 class Config final {

@@ -1,168 +1,24 @@
 #!yume-cli 1
 binary:    yume
 manual:    yume_1
-output:    src/client/cli/display/help_text.hpp
-namespace: yume::client::cli
+output:    src/runtime/yume_help_text.hpp
+namespace: yume::runtime::yume_cli
+output-kind: static-help
 ---
 @usage
-yume --server <host> -i <id_ed25519> [mode] [options]
-yume completion bash
-yume --help
+yume --config <path> [--validate]
 yume --version
-yume --credits
+yume --help
 @end
 
-@section Connection
---server
---cluster
---hide-in-the-crowd
+@section Options
 --config
---save-server
--i
---secondary-auth
---admin-auth
-
-@section Modes
---socks
---packet-tun
---monero-rpc
---monero-rpc-listen
---codec
---codec-listen
---quick-bench
---full-bench
---configs
---list-configs
---duration-sec
---latency-iters
---bulk-mib
---streams
---client-threads
---server-threads
---cooldown-ms
---repeat
---one-way
---json
---json-stdout
---keep-workdir
---dev
---no-color
---color
---bench
---bench-full
---bench-mib
---bench-chunk-kib
---bench-streams
---bench-direction
---outer-carrier-evidence
--L
---lport
--R
---run
---proxycmd
---exec
---allow-exec
---control
---id
---list-controlled
---directory
---chat
---send-file
---send-bytes
---admin-attach
---attach-local
---service-streams-only
-
-@section Relay
---name
---client-id
---relay-mode
---relay-trust-mode
---relay-trust-dir
---relay-peer-pin
---allow-inbound-admin
---allow-outbound-admin
---allow-chat
---allow-file
---allow-bytes
-
-@section Runtime
---threads
---tunnels
---rekey-window
---instance
---history-dir
---relay-receive-dir
---relay-key-file
---no-history
---udp
---tcp
---allow-local-ip
---accept-server-control
---accept-server-control-min-port
---accept-server-control-max-port
---run-ipv4
---root
---non-interactive
---live-status
---timing
---boring
---
-
-@section Security
---obfs-secret-file
---inner-psk-file
-@note
-  The inner suite and per-frame keys are mandatory. JSON security_mode
-  selects extreme (default), normal, soft, or bounded ultimate epoch
-  limits; see docs/SECURITY_MODES.md. There is no 1.x downgrade.
-@end
---require-operator-identity
---operator-ca-cert
---accept-monitoring
-@note
-  This proof identifies the CA-authorized operator; it cannot prove that
-  the operator does not inspect or log traffic.
-@end
---tls-ca
---tls-pin
-
-@section Proxy
---proxy
---tor
---no-proxy
-
-@section TLS
---tls-name
---profile
---transport-profile
---tls-backend
---tls-helper
---tls-fingerprint-log
---tls-fingerprint-log-path
---tls-fingerprint-verify
---tls-fingerprint-test-endpoint
---self-dpi
---no-self-dpi
-
-@section Console
-@note
-  help, status, directory, invites, chat, send, send-file, send-bytes,
-  accept, reject, history, history-delete, admin attach, admin status,
-  admin sessions, admin stop, whoami, quit
-@end
-
-@section Share files (server backup / device migration)
-export
-import
-@gap
---password-stdin
-
-@section Other
-@note
-  completion bash
-@end
---completion
--h
+--validate
 --version
---credits
+-h
+
+@gap
+@note
+Network and security policy come only from the schema-1 configuration.
+This development runtime is not qualified for production use.
+@end

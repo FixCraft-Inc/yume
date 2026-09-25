@@ -85,7 +85,6 @@ class CaptureManifestTest(unittest.TestCase):
             "node_binary_sha256": PINNED_NODE_BINARY_SHA256,
             "display": ":99",
             "yume_binary_sha256": "",
-            "yume_helper_sha256": "",
             "tls_backend": "",
             "release_bundle_sha256": "",
             "client_config_sha256": "",
@@ -168,16 +167,15 @@ class CaptureManifestTest(unittest.TestCase):
                 client_config_sha256=digest,
                 tls_leaf_sha256="BAD",
             ))
-        helper_environment = build_environment(self.args(
-            arm="yume",
-            yume_binary_sha256=digest,
-            yume_helper_sha256=digest,
-            tls_backend="chrome151",
-            release_bundle_sha256=digest,
-            client_config_sha256=digest,
-            tls_leaf_sha256=digest,
-        ))
-        self.assertEqual(helper_environment["yume_helper_sha256"], digest)
+        with self.assertRaisesRegex(ManifestError, "Chrome TLS backend"):
+            build_environment(self.args(
+                arm="yume",
+                yume_binary_sha256=digest,
+                tls_backend="chrome151",
+                release_bundle_sha256=digest,
+                client_config_sha256=digest,
+                tls_leaf_sha256=digest,
+            ))
         with self.assertRaisesRegex(ManifestError, "normal arm"):
             build_environment(self.args(tls_leaf_sha256=digest))
 

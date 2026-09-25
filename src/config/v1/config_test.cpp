@@ -85,6 +85,14 @@ Json LimitsDocument() {
     };
 }
 
+Json TunNetworkDocument() {
+    return {{"addresses", Json::array({"10.71.0.1/32"})},
+            {"routes", Json::array({"10.71.0.2/32"})},
+            {"local_networks", Json::array({"10.71.0.1/32"})},
+            {"peer_networks", Json::array({"10.71.0.2/32"})},
+            {"dns", {{"servers", Json::array()}, {"domains", Json::array()}}}};
+}
+
 Json ClientDocument() {
     return {
         {"schema", 1},
@@ -287,7 +295,7 @@ void TestValidDocumentsAndTypedValues() {
         {{{"kind", "packet"},
           {"service", "packet"},
           {"interface_name", "yume0"},
-          {"mtu", 1420}}});
+          {"mtu", 1420}, {"network", TunNetworkDocument()}}});
     Check(std::holds_alternative<PacketAdapter>(
               Parse(packet).adapters().front()),
           "packet adapter was not typed");
@@ -460,6 +468,67 @@ void TestClientConnectAddress() {
     ExpectError(document, "/endpoint/connect_address", "unknown key");
 }
 
+// A client may reach its server through a SOCKS5 proxy at a numeric address,
+// with an optional protected credentials file.
+void TestClientSocks5Proxy() {
+    Json document = ClientDocument();
+    Check(!std::get<ClientEndpoint>(Parse(document).endpoint()).socks5_proxy(),
+          "a SOCKS5 proxy appeared without configuration");
+    document["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
+    const Config parsed = Parse(document);
+    const auto& plain = std::get<ClientEndpoint>(parsed.endpoint()).socks5_proxy();
+    Check(plain && plain->address() == "127.0.0.1" && plain->port() == 1080 &&
+              !plain->credentials(),
+          "a SOCKS5 proxy without credentials was not retained");
+    document["endpoint"]["socks5_proxy"]["address"] = "fd00::10";
+    document["endpoint"]["socks5_proxy"]["credentials"] = {{"file", "socks5-proxy"}};
+    const Config with_credentials = Parse(document);
+    const auto& secured = std::get<ClientEndpoint>(with_credentials.endpoint()).socks5_proxy();
+    Check(secured && secured->address() == "fd00::10" && secured->credentials() &&
+              secured->credentials()->path() == "socks5-proxy",
+          "SOCKS5 proxy credentials were not retained");
+    // The client's own connection goes to the proxy, then to connect_address,
+    // then to host.
+    Check(std::get<ClientEndpoint>(with_credentials.endpoint()).first_hop() == "fd00::10",
+          "the first hop is not the proxy");
+    Json direct = ClientDocument();
+    const Config by_host = Parse(direct);
+    Check(std::get<ClientEndpoint>(by_host.endpoint()).first_hop() ==
+              std::get<ClientEndpoint>(by_host.endpoint()).host(),
+          "the first hop is not the host");
+    direct["endpoint"]["connect_address"] = "10.77.77.1";
+    const Config by_address = Parse(direct);
+    Check(std::get<ClientEndpoint>(by_address.endpoint()).first_hop() == "10.77.77.1",
+          "the first hop is not connect_address");
+    direct["endpoint"]["socks5_proxy"] = {{"address", "192.0.2.5"}, {"port", 1080}};
+    const Config by_proxy = Parse(direct);
+    Check(std::get<ClientEndpoint>(by_proxy.endpoint()).first_hop() == "192.0.2.5",
+          "connect_address took the proxy's place as the first hop");
+
+    const auto with_proxy = [](Json proxy) {
+        Json changed = ClientDocument();
+        changed["endpoint"]["socks5_proxy"] = std::move(proxy);
+        return changed;
+    };
+    const std::string pointer = "/endpoint/socks5_proxy";
+    ExpectError(with_proxy("127.0.0.1:1080"), pointer, "object");
+    ExpectError(with_proxy({{"port", 1080}}), pointer + "/address", "required key");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}}), pointer + "/port", "required key");
+    ExpectError(with_proxy({{"address", "proxy.example.test"}, {"port", 1080}}), pointer + "/address",
+                "IP literal");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 0}}), pointer + "/port", "");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 1080}, {"user", "x"}}), pointer + "/user",
+                "unknown key");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 1080}, {"credentials", "socks5-proxy"}}),
+                pointer + "/credentials", "object");
+    ExpectError(with_proxy({{"address", "127.0.0.1"}, {"port", 1080},
+                            {"credentials", {{"file", "../socks5-proxy"}}}}),
+                pointer + "/credentials/file", "parent traversal");
+    document = ServerDocument();
+    document["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
+    ExpectError(document, pointer, "unknown key");
+}
+
 void TestMandatorySuite() {
     constexpr std::array<std::pair<std::string_view, std::string_view>, 5>
         fields{{
@@ -572,6 +641,12 @@ void TestCoverValidation() {
     ExpectError(document, "/cover/profile", "profile identifier");
     document["cover"]["profile"] = 1;
     ExpectError(document, "/cover/profile", "string");
+    document = ClientDocument();
+    document["cover"]["profile"] = "firefox-unqualified-v1";
+    ExpectError(document, "/cover/profile", "not qualified by this build");
+    document = ServerDocument();
+    document["cover"]["profile"] = "firefox-unqualified-v1";
+    ExpectError(document, "/cover/profile", "not qualified by this build");
 
     document = ServerDocument();
     document["cover"].erase("root");
@@ -714,7 +789,7 @@ void TestAdapterValidation() {
         {{{"kind", "packet"},
           {"service", "packet"},
           {"interface_name", "bad/interface"},
-          {"mtu", 1420}}});
+          {"mtu", 1420}, {"network", TunNetworkDocument()}}});
     ExpectError(document, "/adapters/0/interface_name");
     document["adapters"][0]["interface_name"] = "yume0";
     document["adapters"][0]["mtu"] = 575;
@@ -764,11 +839,11 @@ void TestAdapterValidation() {
         {{"kind", "packet"},
          {"service", "packet"},
          {"interface_name", "yume0"},
-         {"mtu", 1420}},
+         {"mtu", 1420}, {"network", TunNetworkDocument()}},
         {{"kind", "packet"},
          {"service", "packet"},
          {"interface_name", "yume0"},
-         {"mtu", 1420}},
+         {"mtu", 1420}, {"network", TunNetworkDocument()}},
     });
     ExpectError(document, "/adapters/1/interface_name", "duplicate");
 
@@ -846,6 +921,253 @@ void TestDirectAdapterDestinations() {
           "direct UDP destinations were not retained");
 }
 
+// Egress list files and the country database are references. The runtime
+// reads them, so the parser checks only their shape.
+void TestDestinationLists() {
+    const Json deny = {{"action", "deny"}, {"format", "vpdb"}, {"file", "lists/vpn_db.bin"}};
+    const auto with_lists = [](Json lists) {
+        Json document = ServerDocument();
+        document["adapters"][0]["destinations"]["lists"] = std::move(lists);
+        return document;
+    };
+    const auto with_item = [&](const std::function<void(Json&)>& change) {
+        Json item = deny;
+        change(item);
+        return with_lists(Json::array({item}));
+    };
+    const std::string item = "/adapters/0/destinations/lists/0";
+    ExpectError(with_lists(true), "/adapters/0/destinations/lists", "array");
+    ExpectError(with_lists(Json::array({"lists/vpn_db.bin"})), item, "object");
+    ExpectError(with_item([](Json& entry) { entry["action"] = "block"; }), item + "/action",
+                "'allow' or 'deny'");
+    ExpectError(with_item([](Json& entry) { entry["action"] = "Deny"; }), item + "/action",
+                "'allow' or 'deny'");
+    ExpectError(with_item([](Json& entry) { entry["format"] = "tar.xz"; }), item + "/format",
+                "'json' or 'vpdb'");
+    ExpectError(with_item([](Json& entry) { entry.erase("format"); }), item + "/format",
+                "required key");
+    ExpectError(with_item([](Json& entry) { entry["path"] = "x"; }), item + "/path", "unknown key");
+    ExpectError(with_item([](Json& entry) { entry["file"] = 7; }), item + "/file", "string");
+    ExpectError(with_item([](Json& entry) { entry["file"] = "../vpn_db.bin"; }), item + "/file",
+                "parent traversal");
+    ExpectError(with_item([](Json& entry) { entry["file"] = "https://example.net/list.json"; }),
+                item + "/file", "URI");
+    ExpectError(with_lists(Json::array({deny, deny})), "/adapters/0/destinations/lists/1/file",
+                "duplicate list file");
+    Json many = Json::array();
+    for (std::size_t index = 0; index <= kMaxDestinationLists; ++index) {
+        Json entry = deny;
+        entry["file"] = "lists/" + std::to_string(index) + ".bin";
+        many.push_back(entry);
+    }
+    ExpectError(with_lists(many), "/adapters/0/destinations/lists", "16");
+
+    const Json database = {{"file", "GeoLite2-Country.mmdb"}};
+    Json document = ServerDocument();
+    document["adapters"][0]["destinations"]["country_database"] = database;
+    ExpectError(document, "/adapters/0/destinations/country_database", "needs a list");
+    document = with_lists(Json::array());
+    document["adapters"][0]["destinations"]["country_database"] = database;
+    ExpectError(document, "/adapters/0/destinations/country_database", "needs a list");
+    document = with_lists(Json::array({deny}));
+    document["adapters"][0]["destinations"]["country_database"] = {{"path", "x"}};
+    ExpectError(document, "/adapters/0/destinations/country_database/path", "unknown key");
+    document = with_lists(Json::array({deny}));
+    document["adapters"][0]["destinations"]["country_database"] = "GeoLite2-Country.mmdb";
+    ExpectError(document, "/adapters/0/destinations/country_database", "object");
+
+    document = with_lists(Json::array(
+        {deny, {{"action", "allow"}, {"format", "json"}, {"file", "/etc/yume/allow.json"}}}));
+    document["adapters"][0]["destinations"]["country_database"] = database;
+    const Config parsed = Parse(document);
+    const auto* tcp = std::get_if<DirectTcpAdapter>(&parsed.adapters()[0]);
+    Check(tcp != nullptr && tcp->destinations().lists().size() == 2,
+          "egress lists were not retained");
+    const auto& lists = tcp->destinations().lists();
+    Check(lists[0].action() == DestinationListAction::Deny &&
+              lists[0].format() == DestinationListFormat::Vpdb &&
+              lists[0].file().path() == "lists/vpn_db.bin",
+          "the first egress list changed");
+    Check(lists[1].action() == DestinationListAction::Allow &&
+              lists[1].format() == DestinationListFormat::Json &&
+              lists[1].file().path() == "/etc/yume/allow.json",
+          "the second egress list changed");
+    Check(tcp->destinations().country_database() &&
+              tcp->destinations().country_database()->path() == "GeoLite2-Country.mmdb",
+          "the country database reference was not retained");
+    const Config plain = Parse(ServerDocument());
+    const auto* bare = std::get_if<DirectTcpAdapter>(&plain.adapters()[0]);
+    Check(bare != nullptr && bare->destinations().lists().empty() &&
+              !bare->destinations().country_database(),
+          "a policy without lists gained some");
+}
+
+Json ForwardAdapterDocument(Json listener) {
+    Json adapter = {{"kind", "forward"}, {"service", "tcp"}};
+    adapter.update(listener);
+    return adapter;
+}
+
+// A client forward listens on loopback TCP or an absolute UNIX path and may
+// name a fixed TCP destination.
+void TestForwardAdapters() {
+    Json document = ClientDocument();
+    document["adapters"].push_back(ForwardAdapterDocument(
+        {{"listen_address", "::1"}, {"listen_port", 2222},
+         {"destination", {{"host", "git.example.net"}, {"port", 22}}}}));
+    document["adapters"].push_back(ForwardAdapterDocument(
+        {{"listen_path", "/run/user/1000/yume/chat.sock"}}));
+    const Config parsed = Parse(document);
+    const auto* tcp = std::get_if<ForwardAdapter>(&parsed.adapters()[1]);
+    Check(tcp != nullptr && tcp->service() == "tcp", "the TCP forward was not retained");
+    const auto* loopback = std::get_if<LoopbackListener>(&tcp->listener());
+    Check(loopback != nullptr && loopback->address == "::1" && loopback->port == 2222,
+          "the TCP forward listener changed");
+    Check(tcp->destination() && tcp->destination()->host == "git.example.net" &&
+              tcp->destination()->port == 22,
+          "the forward destination changed");
+    const auto* local = std::get_if<ForwardAdapter>(&parsed.adapters()[2]);
+    Check(local != nullptr && !local->destination(), "the UNIX forward was not retained");
+    const auto* path = std::get_if<UnixListener>(&local->listener());
+    Check(path != nullptr && path->path == "/run/user/1000/yume/chat.sock",
+          "the UNIX forward path changed");
+
+    const auto rejects = [](Json adapter, const std::string& suffix, std::string_view detail) {
+        Json candidate = ClientDocument();
+        candidate["adapters"].push_back(std::move(adapter));
+        ExpectError(candidate, "/adapters/1" + suffix, detail);
+    };
+    rejects(ForwardAdapterDocument(Json::object()), "/listen_address", "required key");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}}), "/listen_port",
+            "required key");
+    rejects(ForwardAdapterDocument({{"listen_address", "0.0.0.0"}, {"listen_port", 2222}}),
+            "/listen_address", "127.0.0.1 or ::1");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 1080}}),
+            "/listen_port", "duplicate local listen");
+    rejects(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}, {"listen_port", 22}}),
+            "/listen_port", "absent with listen_path");
+    for (const char* path : {"relative.sock", "/", "/run/", "/run//a.sock", "/run/./a.sock",
+                             "/run/../a.sock", "/run/a\nb.sock"}) {
+        rejects(ForwardAdapterDocument({{"listen_path", path}}), "/listen_path",
+                "normalized absolute path");
+    }
+    rejects(ForwardAdapterDocument({{"listen_path", "/" + std::string(107U, 'a')}}),
+            "/listen_path", "at most 107 bytes");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 2222},
+                                    {"destination", {{"host", "bad host"}, {"port", 22}}}}),
+            "/destination/host", "IP literal or DNS host name");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 2222},
+                                    {"destination", {{"host", "example.net"}}}}),
+            "/destination/port", "required key");
+    rejects(ForwardAdapterDocument({{"listen_address", "127.0.0.1"}, {"listen_port", 2222},
+                                    {"fallback", true}}),
+            "/fallback", "unknown key");
+    Json packet_service = ForwardAdapterDocument({{"listen_path", "/run/a.sock"}});
+    packet_service["service"] = "packet";
+    rejects(packet_service, "/service", "");
+
+    Json twice = ClientDocument();
+    twice["adapters"].push_back(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}}));
+    twice["adapters"].push_back(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}}));
+    ExpectError(twice, "/adapters/2/listen_path", "duplicate local listen path");
+
+    Json server = ServerDocument();
+    server["adapters"].push_back(ForwardAdapterDocument({{"listen_path", "/run/a.sock"}}));
+    ExpectError(server, "/adapters/2/kind", "client-only");
+}
+
+// A server module runs one program for a stream service, with optional
+// arguments, and no other adapter may serve that service.
+void TestModuleAdapters() {
+    Json document = ServerDocument();
+    document["services"].push_back(
+        {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+    document["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
+        {"program", "/usr/libexec/yume/yume-chat"}, {"arguments", {"--history", "7"}}});
+    const Config parsed = Parse(document);
+    const auto* module = std::get_if<ModuleAdapter>(&parsed.adapters().back());
+    Check(module != nullptr && module->service() == "chat" &&
+              module->program() == "/usr/libexec/yume/yume-chat" &&
+              module->arguments() == std::vector<std::string>{"--history", "7"},
+          "the module adapter was not retained");
+
+    const auto rejects = [](const std::function<void(Json&)>& change, const std::string& pointer,
+                            std::string_view detail) {
+        Json candidate = ServerDocument();
+        candidate["services"].push_back(
+            {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+        candidate["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
+                                         {"program", "/usr/libexec/yume/yume-chat"}});
+        change(candidate);
+        ExpectError(candidate, pointer, detail);
+    };
+    Check(Parse([] {
+              Json candidate = ServerDocument();
+              candidate["services"].push_back(
+                  {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+              candidate["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
+                                               {"program", "/usr/libexec/yume/yume-chat"}});
+              return candidate;
+          }()).adapters().size() == 3,
+          "a module without arguments was refused");
+    rejects([](Json& value) { value["adapters"][2]["program"] = "yume-chat"; },
+            "/adapters/2/program", "normalized absolute path");
+    rejects([](Json& value) { value["adapters"][2]["program"] = "/usr/../bin/sh"; },
+            "/adapters/2/program", "normalized absolute path");
+    rejects([](Json& value) { value["adapters"][2]["arguments"] = Json::array({1}); },
+            "/adapters/2/arguments/0", "string");
+    rejects([](Json& value) {
+                value["adapters"][2]["arguments"] = Json::array();
+                for (int count = 0; count < 33; ++count) value["adapters"][2]["arguments"].push_back("x");
+            },
+            "/adapters/2/arguments", "at most 32");
+    rejects([](Json& value) { value["adapters"][2]["arguments"] = {std::string(1025U, 'a')}; },
+            "/adapters/2/arguments/0", "at most 1024 bytes");
+    rejects([](Json& value) { value["adapters"][2]["arguments"] = {std::string("a\0b", 3U)}; },
+            "/adapters/2/arguments/0", "NUL");
+    rejects([](Json& value) { value["adapters"][2]["service"] = "udp"; },
+            "/adapters/2/service", "");
+    rejects([](Json& value) { value["adapters"][2]["fallback"] = true; },
+            "/adapters/2/fallback", "unknown key");
+    rejects([](Json& value) { value["adapters"][2]["service"] = "tcp"; },
+            "/adapters/2/service", "already has an adapter");
+    rejects([](Json& value) {
+                value["adapters"].push_back({{"kind", "direct_tcp"}, {"service", "chat"},
+                                             {"destinations", PublicDestinations()}});
+            },
+            "/adapters/3/service", "already has an adapter");
+
+    Json client = ClientDocument();
+    client["adapters"].push_back({{"kind", "module"}, {"service", "tcp"},
+                                  {"program", "/usr/libexec/yume/yume-chat"}});
+    ExpectError(client, "/adapters/1/kind", "server-only");
+}
+
+// The egress rate is optional and server-only.
+void TestEgressRate() {
+    Check(!Parse(ServerDocument()).limits().max_egress_mbps(),
+          "an absent egress rate was reported");
+    for (const std::uint32_t mbps : {1U, 250U, 1'000'000U}) {
+        Json document = ServerDocument();
+        document["limits"]["max_egress_mbps"] = mbps;
+        Check(Parse(document).limits().max_egress_mbps() == mbps,
+              "a valid egress rate was not retained");
+    }
+    for (const Json& value : {Json(0), Json(1'000'001), Json(-1)}) {
+        Json document = ServerDocument();
+        document["limits"]["max_egress_mbps"] = value;
+        ExpectError(document, "/limits/max_egress_mbps");
+    }
+    for (const Json& value : {Json(1.5), Json("100"), Json(true), Json(nullptr)}) {
+        Json document = ServerDocument();
+        document["limits"]["max_egress_mbps"] = value;
+        ExpectError(document, "/limits/max_egress_mbps", "integer");
+    }
+    Json client = ClientDocument();
+    client["limits"]["max_egress_mbps"] = 100;
+    ExpectError(client, "/limits/max_egress_mbps", "server-only");
+}
+
 void TestResourceLimits() {
     struct Bound {
         const char* key;
@@ -853,11 +1175,11 @@ void TestResourceLimits() {
         std::uint64_t maximum;
     };
     constexpr std::array<Bound, 8> bounds{{
-        {"max_frame_bytes", 1024, 1048576},
+        {"max_frame_bytes", 1676, 1048576},
         {"max_streams", 1, 65535},
         {"max_queued_bytes", 65536, 67108864},
         {"max_pending_opens", 1, 1024},
-        {"max_rekey_jobs", 1, 64},
+        {"max_rekey_jobs", 2, 64},
         {"max_control_messages", 8, 4096},
         {"max_packet_bytes", 576, 65535},
         {"max_packet_batch", 1, 256},
@@ -887,11 +1209,11 @@ void TestResourceLimits() {
 
     Json minimum = ClientDocument();
     minimum["limits"] = {
-        {"max_frame_bytes", 1024},
+        {"max_frame_bytes", 1676},
         {"max_streams", 1},
         {"max_queued_bytes", 65536},
         {"max_pending_opens", 1},
-        {"max_rekey_jobs", 1},
+        {"max_rekey_jobs", 2},
         {"max_control_messages", 8},
         {"max_packet_bytes", 576},
         {"max_packet_batch", 1},
@@ -925,17 +1247,58 @@ void TestResourceLimits() {
     document["limits"]["max_pending_opens"] = 11;
     ExpectError(document, "/limits/max_pending_opens", "max_streams");
     document = ClientDocument();
-    document["limits"]["max_frame_bytes"] = 1024;
-    document["limits"]["max_packet_bytes"] = 1025;
+    document["limits"]["max_frame_bytes"] = 1676;
+    document["limits"]["max_packet_bytes"] = 1677;
     ExpectError(document, "/limits/max_packet_bytes", "max_frame_bytes");
     document = ClientDocument();
     document["limits"] = Json::array();
     ExpectError(document, "/limits", "object");
 }
 
+void test_managed_tun_network() {
+    auto document = ClientDocument();
+    document["adapters"] = Json::array({{{"kind", "packet"}, {"service", "packet"},
+        {"interface_name", "yume0"}, {"mtu", 1420}, {"network", TunNetworkDocument()}}});
+    const auto baseline = document;
+    const auto valid = Parse(document);
+    const auto& network = std::get<PacketAdapter>(valid.adapters().front()).network();
+    Check(network.addresses.front().address[3] == 1U && network.routes.front().address[3] == 2U,
+          "TUN parser lost interface host address");
+    document["adapters"][0].erase("network");
+    ExpectError(document, "/adapters/0/network");
+    for (const char* field : {"addresses", "local_networks", "peer_networks"}) {
+        document = baseline;
+        document["adapters"][0]["network"][field] = Json::array();
+        ExpectError(document, std::string("/adapters/0/network/") + field);
+    }
+    for (const char* address : {"10.71.0.3/32", "127.0.0.1/32", "224.0.0.1/32", "0.0.0.0/32", "10.071.0.1/32"}) {
+        document = baseline;
+        document["adapters"][0]["network"]["addresses"][0] = address;
+        ExpectError(document, "/adapters/0/network/addresses/0");
+    }
+    document = baseline;
+    document["adapters"][0]["network"]["dns"] = {{"servers", Json::array({"10.71.0.2"})}, {"domains", Json::array({"."})}};
+    (void)Parse(document);
+    document["adapters"][0]["network"]["routes"] = Json::array();
+    ExpectError(document, "/adapters/0/network/dns/servers/0");
+    document = baseline;
+    document["adapters"][0]["network"]["local_networks"] = Json::array({"fd71::/64"});
+    document["adapters"][0]["network"]["addresses"] = Json::array({"fd71::1/64"});
+    (void)Parse(document);
+    document["adapters"][0]["mtu"] = 1200;
+    ExpectError(document, "/adapters/0/network");
+    document = baseline;
+    document["adapters"][0]["interface_name"] = "1234567890123456";
+    ExpectError(document, "/adapters/0/interface_name");
+}
+
 void TestTextBoundsAndSyntax() {
     ExpectJsonError("{", "", "invalid JSON syntax");
     ExpectJsonError("", "", "invalid JSON syntax");
+    for (const char* overflow : {"1e999", "-1e999", R"({"schema":1e999})",
+                                 R"({"endpoint":{"port":-1e999}})"}) {
+        ExpectJsonError(overflow, "", "number exceeds the supported range");
+    }
     ExpectJsonError(std::string(kMaxDocumentBytes + 1, ' '), "", "1 MiB");
     ExpectJsonError(R"({"schema":1,"schema":1})", "/schema", "duplicate");
     ExpectJsonError(
@@ -973,13 +1336,19 @@ int main(int argc, char** argv) {
         TestAliasesAreRejected();
         TestEndpointValidation();
     TestClientConnectAddress();
+    TestClientSocks5Proxy();
         TestMandatorySuite();
         TestCredentialReferences();
         TestCoverValidation();
         TestServiceValidation();
         TestAdapterValidation();
     TestDirectAdapterDestinations();
+    TestDestinationLists();
         TestResourceLimits();
+        TestForwardAdapters();
+        TestModuleAdapters();
+        TestEgressRate();
+        test_managed_tun_network();
         TestTextBoundsAndSyntax();
         if (argc == 2) {
             const std::string mode(argv[1]);

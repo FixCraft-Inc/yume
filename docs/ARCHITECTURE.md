@@ -1,41 +1,28 @@
 <!-- Generated from docs/src/en_US/pages/architecture.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME architecture
 
-This document defines the experimental YTP/1 replacement. The
-[source map](SOURCE_MAP.md) covers the default transport-v2 runtime and shows
-where both implementations live.
+This page describes how native YUME is put together: which component owns
+what, which way dependencies point, and where the runtime boundaries are. The
+[source map](SOURCE_MAP.md) says where each piece lives in the tree.
 
-## Why there is a replacement
+## Why YTP/1
 
-YUME must be usable by standalone tools and unrelated applications through
-transport interfaces. That requirement does not inherently demand a new wire
-protocol. YTP/1 is the chosen implementation direction: a session engine with
-explicit ownership and no dependency on sockets, TLS libraries, configuration
-parsing or application policy. Its name means YUME Transport Protocol 1; the
-product remains YUME.
+YUME has to work as a standalone client and server and inside other
+applications. YTP/1 (YUME Transport Protocol 1) meets that with a session
+engine that owns its state explicitly and does not depend on sockets, TLS
+libraries, configuration parsing or application policy. Providers plug those
+in from outside.
 
-The replacement already has protocol, engine and provider implementations.
-The H2 carrier directly reuses transport-v2 H2/WebSocket and profile sources.
-The transport-v2 embedding path provides real named streams. The replacement
-now composes native ingress, credentials and sessions through `NativeEndpoint`,
-and an experimental schema-1 ABI backend carries named streams over it.
-Development `yumed-ytp1` and `yume-ytp1` processes run direct routes and a
-SOCKS5 adapter with CONNECT and UDP ASSOCIATE over the same endpoint, while
-named-service and packet adapters remain unfinished. These are useful
-components and development paths, not evidence that the replacement is complete.
-
-Complete and qualify the required connections and application capabilities
-before retiring their only working implementation. Reuse components whose
-contracts fit, port required behavior with its tests, and remove superseded
-paths with their controlled callers. Do not require historical feature parity
-or another v2-only tuning campaign. A new protocol name proves neither better
-performance nor stronger security; [implementation status](IMPLEMENTATION_STATUS.md)
-owns the remaining gates.
+The HTTP/2 and WebSocket carrier code and the browser profile came from
+transport v2, the protocol before YTP/1, which has been removed. The relay
+channel, file transfer, codecs and the share container live on as module
+libraries, and the GUI waits as source for a native interface.
+A new protocol name proves neither better speed nor stronger security.
+[Implementation status](IMPLEMENTATION_STATUS.md) lists the open gates.
 
 ## Composition
 
-The modular YTP/1 replacement has downward-only client and server
-compositions:
+Client and server compositions depend only downward:
 
 ```text
 client: ByteChannel -> SecureChannel -> Carrier ---------+
@@ -73,11 +60,24 @@ the runtime calls `finish()` and keeps running until all completions drain.
 `stop()` interrupts execution and does not establish successful cleanup.
 Like Asio, `run()` and `poll()` can propagate delivery exceptions; the runtime
 must contain them at its runner boundary and resume to drain reserved failure
-tasks. The TCP resolver tracks a handler lost before invocation, so resuming
-settles that create with a typed error. This concrete lifecycle is separate
-from the platform-independent engine contract. Native DNS resolution already
-running inside the system resolver cannot be interrupted: the create deadline
-bounds user completion, not system resolver shutdown or final thread drain.
+tasks. This concrete lifecycle is separate from the platform-independent
+engine contract.
+
+Name lookup does not run in the process that holds session keys.
+`SystemResolver` sends each lookup over a private socketpair to a helper
+process. The helper calls the system resolver with its unchanged NSS and DNS
+configuration, one thread per lookup, so a slow name does not delay others.
+`getaddrinfo` cannot be interrupted. Cancellation therefore settles a lookup
+at once, and closing the resolver kills and reaps the helper, so final drain
+never waits for a stalled system call. A cancelled lookup keeps its slot until
+the helper answers. When every slot is taken and some belong to abandoned
+lookups, the helper is replaced and its live lookups fail. The helper holds
+only its standard streams and the socketpair. It drops every capability and
+sets no-new-privileges before serving, which keeps system DNS and NSS parsing
+away from key material. `yume` and `yumed` re-execute their own image as the
+helper. Embedding hosts name the installed `yume-resolver` program. A numeric
+host never starts the helper. A name without a configured helper fails closed,
+and there is no in-process fallback.
 
 ### SecureChannel
 
@@ -86,8 +86,9 @@ peer evidence to a byte channel. That evidence may be unauthenticated: in the
 normal server-authenticated TLS shape, the server has no TLS client credential.
 `SecureChannelPeerEvidence` records what the outer channel actually established
 and is never application identity or dispatcher authorization. The default
-provider is TLS 1.3. Its client uses the same browser-profile configuration as
-transport v2. The browser's offer can include TLS 1.2 and HTTP/1.1, but YTP
+provider is TLS 1.3. Its client applies the browser profile in
+`stealth/tls_client_profile.*`. The browser's offer can include TLS 1.2 and
+HTTP/1.1, but YTP
 accepts only negotiated TLS 1.3 and H2; profile application never relaxes that
 boundary. Both native emitters require the pinned patched OpenSSL.
 
@@ -108,7 +109,7 @@ cover fetches and H2 output to settle before transfer. At most one promotion
 is allowed per TLS connection. The [admission contract](protocol/YTP_1.md#h2-admission-v1)
 defines the exporter-bound proof and replay rules.
 
-The opt-in `Ytp1FrontDoor` implements this boundary with a native TCP listener
+The native `H2WebFrontDoor` implements this boundary with a native TCP listener
 and `AsioTcpAcceptedChannelOwner`. Its configured immutable static site loads
 through `runtime::FileRoot`, requires an index and explicit not-found file,
 and serves ordinary and rejected-admission requests from the same content.
@@ -129,9 +130,7 @@ compose it through `NativeEndpoint`.
 The caller supplies the single-runner `AsioExecutionContext`. The front door
 binds promoted carriers to that context's ordinary and reserved control
 dispatch. The runtime contains runner exceptions and resumes execution, closes owners, calls `finish()` and
-drains completions. This ingress performs no DNS resolution. A wider runtime
-using system DNS must account for a resolver call outliving its application
-deadline during final shutdown.
+drains completions. This ingress performs no DNS resolution.
 
 ### Carrier
 
@@ -142,8 +141,8 @@ carrier so its admitted application-protocol state remains intact. The first
 provider uses a duplex HTTP/2 exchange. HTTP/2 is not a session-engine
 dependency, and transport-profile geometry is not a YTP field.
 
-The experimental `h2-duplex` provider reuses the retained libnghttp2/RFC 8441
-state machine without changing the runnable transport-v2 path. It performs the
+The experimental `h2-duplex` provider uses the libnghttp2 and RFC 8441 state
+machine in `stealth/h2_carrier.*`. It performs the
 client's genuine priming and extended-CONNECT acceptance sequence, while the
 server construction seam accepts only an already-admitted live H2 carrier so
 SETTINGS, HPACK, stream, and flow-credit state are not reconstructed. Its
@@ -152,7 +151,7 @@ arbitrary WebSocket and secure-channel fragmentation. Send completion means
 the complete record has drained through H2 flow control and the secure-channel
 write queue, not merely that it entered an internal queue.
 
-The source-level `Ytp1H2Dispatch` separates ordinary operation submission from
+The source-level `H2Dispatch` separates ordinary operation submission from
 reserved control delivery. Ordinary submission may reject before accepting an
 operation. Close, cancellation and move-owned credit return use an embedded,
 coalesced task whose submission must not allocate or invoke inline. Both paths
@@ -182,7 +181,7 @@ session bootstrap.
 `runtime::NativeEndpoint` composes schema-1 configuration, protected credential
 files, per-identity service policy, client TCP/TLS/H2 or server FrontDoor, and
 `SessionBootstrap` on one caller-owned `AsioExecutionContext`. Its two roles
-share the same session engine; no transport-v2 dependency supplies the runtime.
+share the same session engine.
 Credential parsing uses a private OpenSSL context and passes canonical DER to
 the independent security factory. Admission, traffic access and administrator
 authority remain separate. `yume_private_files` owns the protected-file reader
@@ -212,9 +211,14 @@ IPv4-mapped IPv6 is evaluated as IPv4. An optional `route_authorization`
 callback runs only after the configured destinations permit an OPEN and can
 only refuse more. No destination authority exists without configuration or an
 explicit handler. Explicit service bindings cannot also own a declared direct
-adapter, and an unused route callback is refused. Other services still require explicit bindings. SOCKS5, packet/TUN
-declarations and reverse-proxy cover fail explicitly here. The C ABI backend
-does not yet compose these destination adapters.
+adapter, and an unused route callback is refused. Other services still require
+explicit bindings. SOCKS5 declarations require a caller that explicitly owns
+those adapters; `NativeClientRuntime` supplies that ownership. Packet declarations
+require the caller to supply the matching packet binding and retain its adapter.
+The native runtimes own Linux TUN addresses, routes and optional per-link DNS.
+Reverse-proxy cover remains unsupported. The C ABI composes named channels and
+routed client OPENs; standalone SOCKS5/TUN adapter declarations remain outside
+its application-owned interface.
 
 The endpoint bounds active sessions and pending starts and retains their engines.
 When a session ends, the engine settles its pending callbacks and queues, then
@@ -240,7 +244,8 @@ releasing their slots. Close uses reserved
 control dispatch; repeated close and destruction after final drain are inert.
 The caller contains runner exceptions, closes the endpoint, calls `finish()`
 and drains. An explicit dial address can differ from the authenticated DNS
-name. System resolver calls may still delay final shutdown.
+name. A dial name uses the endpoint's `SystemResolver`, which endpoint close
+also closes.
 
 ### SessionEngine and StreamDispatcher
 
@@ -255,6 +260,19 @@ contains callback exceptions. Callers dispatch onto their own executor when
 needed. The native client uses the endpoint notification to reconnect when its
 session ends. Failed attempts, and sessions shorter than the longest backoff,
 wait for exponential backoff.
+
+A server `NativeEndpoint` can reload its credentials on its context. The
+engine graph is immutable, so reload builds a new one with the new session
+security factory and the same handlers and route provider, and later sessions
+use it. Service wrappers read the authorization policy through a shared holder
+instead of capturing it, which lets established sessions see new grants. A
+session that finishes AUTH against the previous graph after its identity was
+removed is refused at admission.
+
+`traffic()` returns cumulative payload and carrier-record byte counts from
+relaxed atomics, readable from any thread after termination too. They carry no
+content or key material. The native client runtime folds them into its
+thread-safe `status()` snapshot for status displays.
 
 Only a successful complete YTP authentication creates `PeerEvidence`. That
 post-YTP evidence represents the authenticated application peer and is the
@@ -300,7 +318,7 @@ If asynchronous acceptance returns `PermissionDenied`, the engine sends an
 unauthorized CLOSE. This preserves policy refusals that can be decided only
 after DNS resolution. Other acceptance failures send a handler-failure CLOSE.
 
-The opt-in `AsioDirectRouteProvider` is the first concrete egress
+The native `AsioDirectRouteProvider` is the first concrete egress
 implementation. Its factory requires an explicit resolved-address policy in
 addition to the handler's service/name authorization. Before opening any socket,
 it passes every selected numeric destination and the original authenticated
@@ -315,11 +333,12 @@ connect-time bounds, and exposes TCP as `ByteChannel` and connected UDP as
 `PacketChannel`. It shares the concrete single-runner `AsioExecutionContext`
 with ingress. Initiation stays on that context; cross-thread cancellation and
 close use reserved control tasks. Channel adoption can report allocation
-failure, and final closed-handle release schedules no new cleanup. The provider
-retains canceled DNS capacity until the underlying resolver handler retires;
-an application timeout does not make a blocked system lookup disappear. This
+failure, and final closed-handle release schedules no new cleanup. Destination
+names use the shared `SystemResolver`. A canceled lookup returns the open's
+reservation at once, while its resolver slot stays taken until the helper
+answers or is replaced, so abandoned DNS work stays bounded. This
 build-tree-only provider can be explicitly composed into `NativeEndpoint`.
-The development `yumed-ytp1` composes it with `NativeEgressPolicy`, and the
+The development `yumed` composes it with `NativeEgressPolicy`, and the
 schema-1 ABI backend composes no route provider.
 
 ## Provider composition
@@ -366,27 +385,25 @@ explicit negotiation design.
 
 ## Source and target boundaries
 
-The implemented replacement foundation is organized by dependency:
+Native source is organized by dependency:
 
 | Path | Ownership |
 | --- | --- |
 | `src/engine/` | dependency-pure channels, providers, builder, bootstrap, dispatcher, and session state |
 | `src/ytp/` | dependency-pure YTP/1 codecs, domains, and canonical vectors |
 | `src/config/v1/` | strict immutable schema-1 parsing; no secret loading |
-| `src/providers/` | opt-in session security, browser-shaped TLS, client/accepted TCP channels, native FrontDoor/static cover, H2 admission/carrier and direct routes |
-| `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy and the development standalone runtimes with their SOCKS5 adapter |
+| `src/providers/` | native session security, browser-shaped TLS, client/accepted TCP channels, native FrontDoor/static cover, H2 admission/carrier and direct routes |
+| `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy, and the `yume`/`yumed` runtimes with their SOCKS5 and TUN adapters |
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
-| `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. Each dialect reaches its runtime through its own embed backend |
-| `src/facade/session/ytp1_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
+| `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. It accepts schema-1 documents only and reaches the runtime through the embedding seam |
+| `src/abi/native_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
+| `src/modules/` | module programs and the libraries planned modules build on: the relay channel with its stores, file transfer, application codecs and the share container. Only these libraries use BaseFWX |
 | `tools/` | provisioning and evidence tooling |
 
-The development replacement programs `yumed-ytp1` and `yume-ytp1` build from
-`src/runtime/` with the native providers and are not installed. The runnable
-transport-v2 executables and optional GUI remain in their existing source graph
-while those replacement layers are built. This does not freeze their interfaces
-or require a separate transport-v2 stabilization campaign. The
-[source map](SOURCE_MAP.md#replacement-integration-gaps) identifies the concrete
-missing connections and the components already shared with YTP/1.
+The installed `yumed` and `yume` build from `src/runtime/` with every native
+provider. The GUI source in `src/gui` does not build until it has a native
+interface. The [source map](SOURCE_MAP.md#composition-and-open-gaps) lists
+what is composed and what is still open.
 
 The foundational CMake targets enforce the following dependency rule:
 
@@ -396,17 +413,19 @@ yume_session_bootstrap        filesystem, or GUI dependency
 yume_config_v1                nlohmann JSON only
 native providers              engine/YTP plus their explicit system libraries
 native runtime                config, bootstrap, providers, protected files
-yume_embed_ytp1               native runtime, OpenSSL security provider and
-                              threads, no transport v2 or BaseFWX
-replacement ABI candidate     config_v1 plus embed backends, no private-header API
-future adapters/executables   candidate ABI or explicit application layer
+yume_embed                    native endpoint, OpenSSL security provider and
+                              threads, no BaseFWX
+C ABI                         config_v1 plus the embed backend, no private-header API
+module libraries              BaseFWX, OpenSSL and JSON, never linked by the
+                              programs or the C ABI
+future adapters/executables   C ABI or explicit application layer
 ```
 
 YUME owns YTP authentication, domains, transcript construction, key schedules,
 ratchet semantics, admission and authorization. The concrete YTP/1 security
 provider calls OpenSSL 3.5 directly. BaseFWX supplies primitives and secret
-containers to the transport-v2 graph; it is a separate ignored checkout pinned
-by `config/dependencies.json`. The [source map](SOURCE_MAP.md#authentication-and-cryptographic-ownership)
+containers to the module libraries only. It is a separate ignored checkout
+pinned by `config/dependencies.json`. The [source map](SOURCE_MAP.md#authentication-and-cryptographic-ownership)
 connects each mechanism to its implementation and explains the data path.
 
 The intended primary transport does not require BaseFWX. Any retained BaseFWX
@@ -420,19 +439,18 @@ the relay/hop migration.
 
 ## Public ABI boundary
 
-The explicitly enabled candidate builds as unversioned, build-tree-only
+The explicitly enabled candidate builds as unversioned
 `libyume.so`. It exposes opaque runtime, config, endpoint, stream, and packet
 types but is not a frozen installed product ABI. The surface is role-neutral
 and has no JSON operation bus. A runtime owns callback delivery and coordinates
 child endpoints; execution resources belong to the selected backend. An
 immutable config owns validated values, an endpoint owns one backend selection,
-and a stream handle owns its application I/O lifetime. Packet handle creation
-remains unsupported.
+and stream/packet handles own their application I/O lifetimes. Native packet
+handles preserve record boundaries and credit. Development SDK installation is
+a separate opt-in, not an ABI freeze.
 
-The ABI selects a backend by configuration dialect. Transport-v2 documents run
-the existing client and daemon runtimes. Schema-1 documents run the native
-endpoint through `yume_embed_ytp1` when the provider graph is built, and fail
-closed otherwise. Neither dialect is an implicit provider for the other. The
+The ABI accepts schema-1 documents only. They run the native endpoint through
+`yume_embed` when the provider graph is built, and fail closed otherwise. The
 schema-1 backend owns one execution thread per started endpoint and performs
 every engine and provider call on it. Application threads hand requests over
 through allocation-free control tasks. Received records keep their receive
@@ -460,9 +478,8 @@ application -> local adapter -> YTP session -> yumed -> authorized target
 
 The server terminates YTP cryptography and is the explicit exit. It is not an
 onion relay. Federation, transit, directory, reverse administration, command
-execution, chat/file relay, and host-controller modes are outside the first
-YTP/1 path; their transport-v2 implementations remain separate during the
-transition.
+execution and host-controller modes are outside the first YTP/1 path. Chat and
+file relay are planned as modules on the relay channel library.
 
 See [YTP/1](protocol/YTP_1.md), [C ABI](ABI.md), and the
 [threat model](THREAT_MODEL.md) for the normative boundaries.

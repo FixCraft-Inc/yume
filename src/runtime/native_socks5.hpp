@@ -17,6 +17,7 @@
 #include "engine/session_engine.hpp"
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "runtime/native_session_source.hpp"
 
 namespace yume::runtime {
 
@@ -42,9 +43,6 @@ struct NativeSocks5Limits final {
     std::chrono::milliseconds udp_retry_delay{1'000};
 };
 
-// Returns the current active session, or null when none is available.
-using NativeSessionSource = std::function<std::shared_ptr<engine::SessionEngine>()>;
-
 // One loopback SOCKS5 listener offering only the no-authentication method.
 //
 // CONNECT becomes an authenticated byte-stream OPEN on the adapter's service.
@@ -57,14 +55,19 @@ using NativeSessionSource = std::function<std::shared_ptr<engine::SessionEngine>
 //
 // Creation, close and every callback run on the supplied single-runner
 // context. The caller closes the adapter, calls finish() and drains. Bridged
-// streams end with their session or either socket.
+// streams end with their session or either socket. on_stopped runs once after
+// a listener failure that cannot be retried closes the adapter. Synchronous
+// creation failure uses the returned status; explicit close does not notify.
 class NativeSocks5Adapter final {
 public:
+    using Stopped = std::function<void(engine::Status)>;
+
     static engine::Result<std::shared_ptr<NativeSocks5Adapter>> create(
         std::shared_ptr<providers::AsioExecutionContext> context,
         const config::v1::Socks5Adapter& adapter,
         NativeSessionSource sessions,
-        NativeSocks5Limits limits = {});
+        NativeSocks5Limits limits = {},
+        Stopped on_stopped = {});
 
     NativeSocks5Adapter(const NativeSocks5Adapter&) = delete;
     NativeSocks5Adapter& operator=(const NativeSocks5Adapter&) = delete;

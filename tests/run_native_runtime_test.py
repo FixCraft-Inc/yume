@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Run yumed-ytp1 and yume-ytp1 as processes and move bytes through SOCKS5."""
+"""Run yumed and yume as processes and move bytes through SOCKS5."""
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 from pathlib import Path
+import re
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -222,7 +226,292 @@ def check_udp_associate(socks_port: int) -> None:
     print("UDP ASSOCIATE verified: datagrams both ways, destination refusal, relay closed with its TCP connection")
 
 
-def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) -> None:
+def add_module(kit: Path, program: Path) -> tuple[Path, str]:
+    """Serves stream service "echo" with the module and forwards to it.
+
+    Returns the client's forward socket and the identity the module should see.
+    """
+    service = {"name": "echo", "kind": "stream", "max_concurrent_streams": 8}
+    server_path = kit / "server/yumed.json"
+    server = json.loads(server_path.read_text(encoding="utf-8"))
+    server["services"].append(service)
+    server["adapters"].append({"kind": "module", "service": "echo", "program": str(program)})
+    server_path.write_text(json.dumps(server, indent=2), encoding="utf-8")
+
+    forward = kit / "client/echo.sock"
+    client_path = kit / "client/yume.json"
+    client = json.loads(client_path.read_text(encoding="utf-8"))
+    client["services"].append(service)
+    client["adapters"].append({"kind": "forward", "service": "echo", "listen_path": str(forward)})
+    client_path.write_text(json.dumps(client, indent=2), encoding="utf-8")
+
+    keys_path = kit / "server/credentials/authorized-keys.json"
+    keys = json.loads(keys_path.read_text(encoding="utf-8"))
+    if len(keys["keys"]) != 1:
+        raise session.SessionFailure("the kit must authorize exactly one client")
+    keys["keys"][0]["capabilities"].append({"service": "echo", "kind": "stream"})
+    keys_path.write_text(json.dumps(keys, indent=2), encoding="utf-8")
+    return forward, keys["keys"][0]["identity"]["sha256"]
+
+
+def add_egress_lists(kit: Path) -> None:
+    """Moves part of the direct adapters' policy into egress lists.
+
+    The adapters permit 127.0.0.0/16, a deny list takes that range back and an
+    allow list exempts 127.0.0.1. The adapter alone would permit 127.0.0.2, so
+    a refusal there shows that the list decided.
+    """
+    lists = kit / "server/lists"
+    lists.mkdir()
+    (lists / "deny.json").write_text(json.dumps({"ips": ["127.0.0.0/16"]}), encoding="utf-8")
+    (lists / "allow.json").write_text(json.dumps({"ips": ["127.0.0.1"]}), encoding="utf-8")
+    server_path = kit / "server/yumed.json"
+    server = json.loads(server_path.read_text(encoding="utf-8"))
+    for adapter in server["adapters"]:
+        if adapter["kind"] in {"direct_tcp", "direct_udp"}:
+            adapter["destinations"] = {
+                "public": False,
+                "networks": ["127.0.0.0/16"],
+                "lists": [
+                    {"action": "deny", "format": "json", "file": "lists/deny.json"},
+                    {"action": "allow", "format": "json", "file": "lists/allow.json"},
+                ],
+            }
+    server_path.write_text(json.dumps(server, indent=2), encoding="utf-8")
+
+
+def check_egress_list_validation(yumed: Path, kit: Path, environment: dict[str, str]) -> None:
+    # --validate reads the lists and names the entry whose file it cannot read.
+    config = json.loads((kit / "server/yumed.json").read_text(encoding="utf-8"))
+    config["adapters"][0]["destinations"]["lists"][1]["file"] = "lists/missing.json"
+    variant = kit / "server/missing-list.json"
+    variant.write_text(json.dumps(config), encoding="utf-8")
+    result = subprocess.run([str(yumed), "--config", str(variant), "--validate"],
+                            env=environment, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 2 or \
+            "destinations are invalid: /adapters/0/destinations/lists/1:" not in result.stderr:
+        raise session.SessionFailure(
+            f"--validate accepted a missing egress list: {result.returncode} {result.stderr.strip()}")
+
+
+PROXY_USERNAME = b"proxy-user"
+PROXY_PASSWORD = b"proxy-secret-password"
+
+
+def _recv_exact(connection: socket.socket, count: int) -> bytes:
+    data = b""
+    while len(data) < count:
+        chunk = connection.recv(count - len(data))
+        if not chunk:
+            raise ConnectionError("SOCKS5 peer closed early")
+        data += chunk
+    return data
+
+
+class Socks5Relay:
+    """A SOCKS5 proxy that requires a username and password and relays CONNECT."""
+
+    def __init__(self) -> None:
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        self.requests: list[tuple[int, str, int]] = []
+        self.authenticated: list[bool] = []
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def close(self) -> None:
+        self.listener.close()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(connection,), daemon=True).start()
+
+    def _handle(self, connection: socket.socket) -> None:
+        with connection:
+            try:
+                connection.settimeout(10)
+                count = _recv_exact(connection, 2)[1]
+                if 2 not in _recv_exact(connection, count):
+                    connection.sendall(b"\x05\xff")
+                    return
+                connection.sendall(b"\x05\x02")
+                username = _recv_exact(connection, _recv_exact(connection, 2)[1])
+                password = _recv_exact(connection, _recv_exact(connection, 1)[0])
+                accepted = username == PROXY_USERNAME and password == PROXY_PASSWORD
+                self.authenticated.append(accepted)
+                connection.sendall(b"\x01\x00" if accepted else b"\x01\x01")
+                if not accepted:
+                    return
+                kind = _recv_exact(connection, 4)[3]
+                if kind == 1:
+                    host = socket.inet_ntop(socket.AF_INET, _recv_exact(connection, 4))
+                elif kind == 4:
+                    host = socket.inet_ntop(socket.AF_INET6, _recv_exact(connection, 16))
+                else:
+                    host = _recv_exact(connection, _recv_exact(connection, 1)[0]).decode("ascii")
+                port = int.from_bytes(_recv_exact(connection, 2), "big")
+                self.requests.append((kind, host, port))
+                upstream = socket.create_connection((host, port), timeout=10)
+            except (OSError, ConnectionError):
+                return
+            with upstream:
+                connection.sendall(b"\x05\x00\x00\x01" + bytes(6))
+                connection.settimeout(None)
+                upstream.settimeout(None)
+                pump = threading.Thread(target=_copy, args=(upstream, connection), daemon=True)
+                pump.start()
+                _copy(connection, upstream)
+                pump.join(timeout=10)
+
+
+def _copy(source: socket.socket, target: socket.socket) -> None:
+    try:
+        while True:
+            data = source.recv(65536)
+            if not data:
+                break
+            target.sendall(data)
+        target.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def check_socks5_upstream(yume: Path, kit: Path, environment: dict[str, str], root: Path,
+                          server_port: int, target_port: int) -> None:
+    # A second client reaches the same server through an authenticating
+    # SOCKS5 proxy. connect_address makes the proxy connect to that address.
+    relay = Socks5Relay()
+    try:
+        credentials = kit / "client/socks5-proxy"
+        credentials.write_bytes(PROXY_USERNAME + b"\n" + PROXY_PASSWORD + b"\n")
+        credentials.chmod(0o600)
+        config = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))
+        config["endpoint"]["socks5_proxy"] = {
+            "address": "127.0.0.1", "port": relay.port, "credentials": {"file": "socks5-proxy"}}
+        socks_port = session.free_port()
+        for adapter in config["adapters"]:
+            if adapter["kind"] == "socks5":
+                adapter["listen_port"] = socks_port
+        variant = kit / "client/through-proxy.json"
+        variant.write_text(json.dumps(config), encoding="utf-8")
+        validate(yume, variant, environment)
+        log_path = root / "yume-proxy.log"
+        with log_path.open("wb") as log:
+            client = subprocess.Popen([str(yume), "--config", str(variant)], env=environment,
+                                      stdout=log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 30
+                session.wait_for_port("127.0.0.1", socks_port, client, deadline)
+                length, digest, _ = session.get_through_socks(socks_port, "127.0.0.1", target_port,
+                                                              time.monotonic() + 30)
+                if length != PAYLOAD_BYTES or digest != session.payload_digest(PAYLOAD_BYTES):
+                    raise session.SessionFailure("payload through the SOCKS5 proxy differs")
+                session.stop_process(client, "yume")
+            finally:
+                if client.poll() is None:
+                    client.kill()
+                    client.wait(timeout=5)
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        session.reject_secret_output("yume", text)
+        if PROXY_PASSWORD.decode() in text:
+            raise session.SessionFailure("the client logged its SOCKS5 proxy password")
+        if relay.authenticated != [True] or relay.requests != [(1, "127.0.0.1", server_port)]:
+            raise session.SessionFailure(
+                f"SOCKS5 proxy saw {relay.authenticated} and {relay.requests}")
+    finally:
+        relay.close()
+    print("SOCKS5 upstream verified: the client reached yumed through an authenticating proxy")
+
+
+def check_module_validation(yumed: Path, kit: Path, program: Path,
+                            environment: dict[str, str], root: Path) -> None:
+    # --validate refuses a program that the daemon would refuse at start.
+    unsafe = root / "unsafe-module"
+    shutil.copyfile(program, unsafe)
+    unsafe.chmod(0o775)
+    config = json.loads((kit / "server/yumed.json").read_text(encoding="utf-8"))
+    for adapter in config["adapters"]:
+        if adapter["kind"] == "module":
+            adapter["program"] = str(unsafe)
+    variant = kit / "server/unsafe-module.json"
+    variant.write_text(json.dumps(config), encoding="utf-8")
+    result = subprocess.run([str(yumed), "--config", str(variant), "--validate"],
+                            env=environment, capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 2 or \
+            "module 'echo' is invalid: module program must be owned" not in result.stderr:
+        raise session.SessionFailure(
+            f"--validate accepted an unsafe module program: {result.returncode} {result.stderr.strip()}")
+
+
+def check_module(forward: Path, identity: str) -> None:
+    # The echo module greets with the identity from its header line, so the
+    # greeting proves that yumed ran it and passed the authenticated client.
+    greeting = f"hello {identity}\n".encode()
+    payload = bytes(range(256)) * 64
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(10)
+        connection.connect(str(forward))
+        if session.recv_exact(connection, len(greeting)) != greeting:
+            raise session.SessionFailure("the module greeting differs")
+        connection.sendall(payload)
+        connection.shutdown(socket.SHUT_WR)
+        received = bytearray()
+        while block := connection.recv(65536):
+            received.extend(block)
+            if len(received) > len(payload):
+                raise session.SessionFailure("the module echoed extra bytes")
+        if received != payload:
+            raise session.SessionFailure("the module echo differs")
+
+
+def process_gone(pid: int) -> bool:
+    # A dead child of init can stay a zombie briefly until it is reaped. A
+    # process that exits between opening and reading its stat file makes the
+    # read fail with ESRCH, which also means it is gone.
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        return True
+    return state == "Z"
+
+
+def check_module_dies_with_daemon(yumed: Path, config: Path, environment: dict[str, str],
+                                  log_path: Path) -> None:
+    # SIGKILL gives yumed no chance to stop its module. The module must end anyway.
+    with log_path.open("wb") as log:
+        server = subprocess.Popen([str(yumed), "--config", str(config)], env=environment,
+                                  stdout=log, stderr=subprocess.STDOUT)
+    try:
+        deadline = time.monotonic() + 30
+        while not (started := re.search(r"module echo: started as process (\d+)\n",
+                                        log_path.read_text(encoding="utf-8"))):
+            if server.poll() is not None or time.monotonic() > deadline:
+                raise session.SessionFailure("the restarted yumed did not start its module")
+            time.sleep(0.05)
+        module = int(started.group(1))
+        server.kill()
+        server.wait(timeout=5)
+        deadline = time.monotonic() + 10
+        while not process_gone(module):
+            if time.monotonic() > deadline:
+                try:
+                    os.kill(module, 9)
+                except ProcessLookupError:
+                    pass
+                raise session.SessionFailure("the module outlived a killed yumed")
+            time.sleep(0.05)
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait(timeout=5)
+    session.reject_secret_output("yumed", log_path.read_text(encoding="utf-8", errors="replace"))
+
+
+def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
+        module: Path | None = None) -> None:
     environment = session.openssl_environment(openssl)
     with tempfile.TemporaryDirectory(prefix="yume-native-runtime-") as temporary:
         root = Path(temporary)
@@ -231,8 +520,19 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
         session.provision_kit(kit, "localhost", server_port, environment)
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],
                               connect_address="127.0.0.1", socks_port=socks_port)
+        add_egress_lists(kit)
+        if module is not None:
+            forward, identity = add_module(kit, module.resolve(strict=True))
+            # Module sockets live in a private directory below TMPDIR. A
+            # directory of the test's own shows that yumed removes it.
+            module_root = root / "module-tmp"
+            module_root.mkdir(mode=0o700)
+            environment = dict(environment, TMPDIR=str(module_root))
         validate(yumed, kit / "server/yumed.json", environment)
         validate(yume, kit / "client/yume.json", environment)
+        check_egress_list_validation(yumed, kit, environment)
+        if module is not None:
+            check_module_validation(yumed, kit, module.resolve(strict=True), environment, root)
 
         target = session.serve_payload("127.0.0.1", target_port, PAYLOAD_BYTES)
         logs = {name: (root / f"{name}.log").open("wb") for name in ("yumed", "yume")}
@@ -251,8 +551,14 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
             if length != PAYLOAD_BYTES or digest != session.payload_digest(PAYLOAD_BYTES):
                 raise session.SessionFailure(f"tunnelled payload differs: {length} of {PAYLOAD_BYTES} bytes")
 
-            # Outside 127.0.0.1/32: configured destinations refuse it.
+            # Inside the adapter's 127.0.0.0/16, but the deny list refuses it.
+            # Without the list the route would fail as unreachable instead.
             code, connection = session.socks_connect(socks_port, "127.0.0.2", target_port)
+            connection.close()
+            if code != session.REPLY_NOT_ALLOWED:
+                raise session.SessionFailure(f"listed destination returned SOCKS reply {code}")
+            # Outside the adapter's networks: its destinations refuse it.
+            code, connection = session.socks_connect(socks_port, "127.1.0.1", target_port)
             connection.close()
             if code != session.REPLY_NOT_ALLOWED:
                 raise session.SessionFailure(f"refused destination returned SOCKS reply {code}")
@@ -269,10 +575,16 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
             check_optimistic_refusal(socks_port)
             check_payload(socks_port, "127.0.0.1", target_port)
             check_udp_associate(socks_port)
+            if module is not None:
+                check_module(forward, identity)
+                print("module verified: yumed ran it with the client identity and echoed its stream")
 
-            session.stop_process(client, "yume-ytp1")
+            session.stop_process(client, "yume")
             client = None
-            session.stop_process(server, "yumed-ytp1")
+            check_socks5_upstream(yume, kit, environment, root, server_port, target_port)
+            session.stop_process(server, "yumed")
+            if module is not None and any(module_root.iterdir()):
+                raise session.SessionFailure("yumed left the module socket directory behind")
         finally:
             for process in (client, server):
                 if process is not None and process.poll() is None:
@@ -286,8 +598,16 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False) ->
                 session.reject_secret_output(name, text)
                 sys.stdout.write(f"--- {name} log\n{text}")
         client_log = (root / "yume.log").read_text(encoding="utf-8")
-        if client_log.count("yume-ytp1: session authenticated\n") != 1 or "session ended" in client_log:
+        if client_log.count("yume: session authenticated\n") != 1 or "session ended" in client_log:
             raise session.SessionFailure("SOCKS requests replaced the authenticated session")
+        server_log = (root / "yumed.log").read_text(encoding="utf-8")
+        if module is not None and (server_log.count("module echo: started as process") != 1 or
+                                   "module echo: exited" in server_log):
+            raise session.SessionFailure("the module did not run once without exiting")
+        if module is not None:
+            check_module_dies_with_daemon(yumed, kit / "server/yumed.json", environment,
+                                          root / "yumed-killed.log")
+            print("module verified: it ended with a killed yumed")
 
 
 def main() -> int:
@@ -298,9 +618,12 @@ def main() -> int:
     parser.add_argument("--openssl", type=Path, required=True)
     parser.add_argument("--dns-fixture", action="store_true",
                         help="exercise the resolver-wrapped test daemon")
+    parser.add_argument("--module", type=Path,
+                        help="the echo module, served by yumed and reached through a forward")
     arguments = parser.parse_args()
     try:
-        run(arguments.yumed, arguments.yume, arguments.openssl, dns_fixture=arguments.dns_fixture)
+        run(arguments.yumed, arguments.yume, arguments.openssl, dns_fixture=arguments.dns_fixture,
+            module=arguments.module)
     except (session.SessionFailure, OSError, subprocess.SubprocessError) as error:
         print(f"native runtime test: {error}", file=sys.stderr)
         return 1

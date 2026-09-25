@@ -1064,8 +1064,8 @@ void test_factory_allocation_failures_are_typed() {
         std::size_t failures = 0U;
         bool reached_success = false;
         for (std::size_t nth = 1U; nth <= 32U; ++nth) {
-            Result<std::shared_ptr<SessionBootstrap>> result(
-                Status(StatusCode::Internal));
+            Result<std::shared_ptr<SessionBootstrap>> result{
+                Status(StatusCode::Internal)};
             bool fired = false;
             {
                 AllocationFailureScope allocation_failure(nth);

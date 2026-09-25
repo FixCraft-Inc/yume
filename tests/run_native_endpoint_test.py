@@ -33,12 +33,22 @@ def run(binary: Path, openssl: Path) -> None:
         # Closing the reservation is unavoidable before the native listener
         # binds; a competing bind fails this test instead of selecting a peer.
         setup = subprocess.run(
-            [sys.executable, str(root / "tools/yume_setup_ytp1.py"), "init",
+            [sys.executable, str(root / "tools/yume_setup.py"), "init",
              "--host", "localhost", "--port", str(port), "--output", str(kit)],
             env=environment, capture_output=True, text=True, timeout=75, check=False,
         )
         if setup.returncode:
             raise RuntimeError("native test credential provisioning failed: " + setup.stderr.strip())
+        # A second identity lets the reload test remove the first one, since the
+        # traffic store may not become empty.
+        second = subprocess.run(
+            [sys.executable, str(root / "tools/yume_setup.py"), "add-client",
+             "--server", str(kit / "server"), "--host", "localhost",
+             "--output", str(kit / "second-client"), "--client-name", "second"],
+            env=environment, capture_output=True, text=True, timeout=75, check=False,
+        )
+        if second.returncode:
+            raise RuntimeError("second client provisioning failed: " + second.stderr.strip())
         for relative in ("server/yumed.json", "client/yume.json"):
             path = kit / relative
             config = json.loads(path.read_text(encoding="utf-8"))
@@ -59,6 +69,13 @@ def run(binary: Path, openssl: Path) -> None:
                 listeners = dict(config, endpoint=dict(
                     config["endpoint"], listen_addresses=["127.0.0.1", "127.0.0.2"]))
                 path.with_name("two-listeners.json").write_text(json.dumps(listeners), encoding="utf-8")
+                single = dict(config, credentials=dict(config["credentials"], authorized_keys={
+                    "file": "credentials/authorized-single.json"
+                }))
+                path.with_name("single-session.json").write_text(json.dumps(single), encoding="utf-8")
+                # 8 Mbit/s: one byte per microsecond of stream payload.
+                paced = dict(config, limits=dict(config["limits"], max_egress_mbps=8))
+                path.with_name("paced.json").write_text(json.dumps(paced), encoding="utf-8")
             packets = dict(config, services=[
                 dict(service, kind="packet") for service in config["services"]
             ], adapters=([
@@ -78,7 +95,10 @@ def run(binary: Path, openssl: Path) -> None:
                 path.with_name("packet-services.json").write_text(json.dumps(held), encoding="utf-8")
             if config["role"] == "server":
                 unsupported = dict(packets, adapters=[
-                    {"kind": "packet", "service": "echo", "interface_name": "ytptest0", "mtu": 1400}
+                    {"kind": "packet", "service": "echo", "interface_name": "ytptest0", "mtu": 1400,
+                     "network": {"addresses": ["10.71.0.1/32"], "routes": ["10.71.0.2/32"],
+                                 "local_networks": ["10.71.0.1/32"], "peer_networks": ["10.71.0.2/32"],
+                                 "dns": {"servers": [], "domains": []}}}
                 ])
             else:
                 unsupported = dict(config, adapters=[
@@ -90,6 +110,11 @@ def run(binary: Path, openssl: Path) -> None:
                     socks_reservation.bind(("127.0.0.1", 0))
                     unsupported["adapters"][0]["listen_port"] = socks_reservation.getsockname()[1]
                 unsupported["endpoint"] = dict(config["endpoint"], connect_address="127.0.0.1")
+                # A UNIX forward needs no port reservation: the kit directory is private.
+                unsupported["adapters"].append({
+                    "kind": "forward", "service": "echo",
+                    "listen_path": str(path.with_name("forward.sock")),
+                    "destination": {"host": "127.0.0.1", "port": 2222}})
                 path.with_name("runtime-client.json").write_text(json.dumps(unsupported), encoding="utf-8")
             if config["role"] == "server":
                 config["limits"]["max_queued_bytes"] = 64 * 1024 * 1024
@@ -104,6 +129,10 @@ def run(binary: Path, openssl: Path) -> None:
         for entry in store["keys"]:
             entry["capabilities"] = [{"service": "echo", "kind": "stream"}]
         authorization.write_text(json.dumps(store), encoding="utf-8")
+        single = json.loads(json.dumps(store))
+        for entry in single["keys"]:
+            entry["max_sessions"] = 1
+        authorization.with_name("authorized-single.json").write_text(json.dumps(single), encoding="utf-8")
         for entry in store["keys"]:
             entry["capabilities"] = [{"service": "echo", "kind": "packet"}]
         authorization.with_name("authorized-packets.json").write_text(json.dumps(store), encoding="utf-8")

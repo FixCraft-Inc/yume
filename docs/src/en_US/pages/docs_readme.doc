@@ -2,91 +2,56 @@
 name:     docs_readme
 kind:     page
 title:    YUME documentation
-summary:  Optional features, protocol documents, and contributor references.
+summary:  Every YUME document, grouped by what you want to do.
 markdown: docs/README.md
 web:      yes
 catalog-title: Full documentation map
 catalog-group: Reference and development
 catalog-order: 180
 ---
-YUME `0.3.0-dev1` is development software. The default `yume` and `yumed`
-binaries use the transport-v2 wire `0.2.0-dev6`. YTP/1 is an experimental
-replacement. Its native endpoint carries authenticated named streams through
-the opt-in C ABI, but no standalone `yume` or `yumed` runtime uses it yet.
+YUME `0.3.0-dev1` is development software. The installed `yume` and `yumed`
+speak YTP/1. Transport v2, the protocol before it, has been removed.
 
 ## Run YUME
 
-- [Quick start](QUICKSTART.md): build, generate credentials, and connect.
-- [Operations](OPERATIONS.md): configuration, services, keys, and release verification.
-- [Permissions](PERMISSIONS.md): identities, destination access, and administration.
-- [Client manual](man/yume.1), [daemon manual](man/yumed.8), and [GUI manual](man/yume-gui.1).
-- [Packet mode](PACKET_NATIVE_BULK.md) and [preventing SOCKS bypass](LEAK_TIGHT.md).
-- [Diagnostics](DIAGNOSTICS.md) and [self-test tools](SELFTEST.md).
+- [Quick start](QUICKSTART.md): build, create a kit, and connect.
+- [Operations](OPERATIONS.md): server deployment, client identities, limits,
+  reloads and troubleshooting.
+- [Preventing SOCKS bypass](LEAK_TIGHT.md): browser settings and route checks.
+- [Client manual](man/yume.1) and [daemon manual](man/yumed.8).
+- [Packaging](PACKAGING.md): install layout and Debian packages.
 
-## Understand the transport
+## Understand YUME
 
-- [YUME explained](EXPLAINED.md): how the client, server, keys and scheduling fit together.
-- [How a byte travels](BYTE_PATH.md): each transport-v2 layer and how to review a change to it.
-- [Glossary](GLOSSARY.md): plain definitions of the terms these pages use.
-- [Why YUME](WHY_YUME.md): the transport's goals and dependencies.
-- [Implementation status](IMPLEMENTATION_STATUS.md): supported paths and open release gates.
-- [Transport-v2 wire](protocol/YUME_2_0_WIRE.md), [security modes](SECURITY_MODES.md),
-  and [probe and cover behavior](FILTERING_SELF_DPI.md).
-- [Stealth](STEALTH.md) and [transport profiles](TRANSPORT_PROFILES.md): capture
-  requirements and measured limits.
-- [Control API](CONTROL_API.md), [application codecs](APP_CODECS.md), and
-  [host controller](HOST_CONTROLLER.md).
+- [YUME explained](EXPLAINED.md): how a connection opens, the keys, and what
+  each party can see.
+- [Why YUME](WHY_YUME.md): goals, priorities and dependency choices.
+- [Threat model](THREAT_MODEL.md): attackers, operators and metadata limits.
+- [Stealth](STEALTH.md) and [transport profiles](TRANSPORT_PROFILES.md): the
+  browser-shaped carrier and what captures show.
+- [Implementation status](IMPLEMENTATION_STATUS.md): what is tested and what
+  still blocks a release.
+- [Glossary](GLOSSARY.md).
 
-## Develop and embed YUME
+## Develop and embed
 
-Start with the [source map](SOURCE_MAP.md) and [contributor guide](../CONTRIBUTING.md).
-The [C ABI](ABI.md) is an opt-in build-tree library. Its transport-v2 backend
-supports named streams, and builds with every native YTP/1 provider also start
-schema-1 endpoints. Packet channels remain unsupported, and the install
-contract is unfrozen.
+- [Source map](SOURCE_MAP.md) and [contributor guide](../CONTRIBUTING.md).
+- [Architecture](ARCHITECTURE.md): component ownership and dependency
+  direction.
+- [YTP/1](protocol/YTP_1.md): the wire and security contract.
+- [Relay channel](protocol/RELAY_CHANNEL.md): the end-to-end channel the relay
+  module keeps for the planned chat and file modules.
+- [C ABI](ABI.md): embedding the client or server. The ABI is experimental and
+  its install contract is not frozen.
+- [Modules](MODULES.md): running a program behind a stream service, and
+  writing one.
+- [YTP/1 development guide](development/ytp1/README.md): build options, setup
+  tools, embedding and verification gates.
+- [Developer diagnostics](DIAGNOSTICS.md): timing helpers, warnings,
+  sanitizers and fuzzing.
+- [Development notes](release/CHANGELOG.md), [SBOM](release/SBOM.spdx.json)
+  and [automation guidance](agents/README.md).
 
-The replacement has its own references:
-
-- [YTP/1 development guide](development/ytp1/README.md): build options,
-  schema-1 setup tools, and integration work.
-- [Architecture](ARCHITECTURE.md) and [YTP/1 protocol](protocol/YTP_1.md).
-- [Threat model](THREAT_MODEL.md).
-
-The [federation transit proposal](protocol/YUME_2_0_FEDERATION_TRANSIT.md) is
-design-only. Current federation is single-hop.
-
-## Reference ownership
-
-Source and executable tests take precedence when prose disagrees. Update the
-relevant contract with each behavior change. A discovered bug does not cancel
-an intended requirement: fix it or explicitly resolve the design conflict.
-
-@table
-| Question | Owner |
-| --- | --- |
-| Where is it implemented and connected? | [Source map](SOURCE_MAP.md) |
-| What is the intended composition and why? | [Architecture](ARCHITECTURE.md) |
-| What bytes, fields and trust checks define a protocol? | Its [protocol reference](protocol/) |
-| What works and what still needs qualification? | [Implementation status](IMPLEMENTATION_STATUS.md) |
-| How do I configure and operate the runnable tools? | [Operations](OPERATIONS.md), [quick start](QUICKSTART.md) and manuals |
-| How do I embed or change YUME? | [ABI](ABI.md) and [contributor guide](../CONTRIBUTING.md) |
-@end
-
-Keep the full explanation at its owner and link from other topics. Split a
-document when its readers or contract differ; a line-count target alone does
-not justify a split. Do not copy status inventories into architecture, API and
-workflow guides, or describe proposed functionality as implemented.
-
-Product documents are generated from `.doc` owners under
-[docs/src](src/README.md). The unified sync renders their Markdown, manuals,
-website pages and catalog, enabled diagrams, and YUME CLI help/completion.
-Edit the source named by the generated banner. The source guide identifies
-directly edited instructions, tooling references, and website layouts.
-
-Keep product, wire, configuration, ABI, provider, and evidence-profile
-versions independent.
-
-[Packaging](PACKAGING.md) defines installation and package contents.
-[Development notes](release/CHANGELOG.md) record changes, and
-[SBOM.spdx.json](release/SBOM.spdx.json) lists declared dependencies.
-[Automation guidance](agents/README.md) covers repository-specific checks.
+Source and tests win when prose disagrees. Generated pages come from `.doc`
+sources under [docs/src](src/README.md). Edit the source named in the banner,
+then run the sync described there.

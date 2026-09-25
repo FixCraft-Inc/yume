@@ -8,6 +8,7 @@
 
 #include "common/egress_address.hpp"
 #include "common/service_name.hpp"
+#include "common/version.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,9 +29,9 @@ using Json = nlohmann::json;
 
 constexpr std::size_t kMaxHostBytes = 253;
 constexpr std::size_t kMaxProfileBytes = 128;
-constexpr std::size_t kMaxInterfaceNameBytes = 32;
+constexpr std::size_t kMaxInterfaceNameBytes = 15;
 
-constexpr std::uint32_t kMinFrameBytes = 1024;
+constexpr std::uint32_t kMinFrameBytes = 1676;
 constexpr std::uint32_t kMaxFrameBytes = 1024U * 1024U;
 constexpr std::uint32_t kMinStreams = 1;
 constexpr std::uint32_t kMaxStreams = 65535;
@@ -38,7 +39,7 @@ constexpr std::uint32_t kMinQueuedBytes = 64U * 1024U;
 constexpr std::uint32_t kMaxQueuedBytes = 64U * 1024U * 1024U;
 constexpr std::uint32_t kMinPendingOpens = 1;
 constexpr std::uint32_t kMaxPendingOpens = 1024;
-constexpr std::uint32_t kMinRekeyJobs = 1;
+constexpr std::uint32_t kMinRekeyJobs = 2;
 constexpr std::uint32_t kMaxRekeyJobs = 64;
 constexpr std::uint32_t kMinControlMessages = 8;
 constexpr std::uint32_t kMaxControlMessages = 4096;
@@ -46,6 +47,8 @@ constexpr std::uint32_t kMinPacketBytes = 576;
 constexpr std::uint32_t kMaxPacketBytes = 65535;
 constexpr std::uint32_t kMinPacketBatch = 1;
 constexpr std::uint32_t kMaxPacketBatch = 256;
+constexpr std::uint32_t kMinEgressMbps = 1;
+constexpr std::uint32_t kMaxEgressMbps = 1'000'000;
 
 std::string FormatValidationMessage(std::string_view pointer,
                                     std::string_view detail) {
@@ -385,7 +388,7 @@ Role ParseRole(const Json& value) {
 Endpoint ParseEndpoint(const Json& endpoint, Role role) {
     if (role == Role::Client) {
         CheckClosedObject(endpoint, "/endpoint",
-                          {"host", "port", "connect_address"},
+                          {"host", "port", "connect_address", "socks5_proxy"},
                           {"host", "port"});
         const auto& host =
             ReadString(endpoint.at("host"), "/endpoint/host", kMaxHostBytes);
@@ -403,7 +406,27 @@ Endpoint ParseEndpoint(const Json& endpoint, Role role) {
             }
             connect_address = address;
         }
-        return ClientEndpoint(host, port, std::move(connect_address));
+        std::optional<Socks5Proxy> socks5_proxy;
+        if (endpoint.contains("socks5_proxy")) {
+            const std::string pointer = "/endpoint/socks5_proxy";
+            const auto& proxy = endpoint.at("socks5_proxy");
+            CheckClosedObject(proxy, pointer, {"address", "port", "credentials"},
+                              {"address", "port"});
+            const auto& address = ReadString(proxy.at("address"),
+                                             pointer + "/address", 64);
+            if (!IsIpLiteral(address)) {
+                Fail(pointer + "/address", "must be an IP literal");
+            }
+            const std::uint16_t proxy_port =
+                ParsePort(proxy.at("port"), pointer + "/port");
+            std::optional<FileReference> credentials;
+            if (proxy.contains("credentials")) {
+                credentials = ParseFileReference(proxy, pointer, "credentials");
+            }
+            socks5_proxy.emplace(address, proxy_port, std::move(credentials));
+        }
+        return ClientEndpoint(host, port, std::move(connect_address),
+                              std::move(socks5_proxy));
     }
 
     CheckClosedObject(endpoint, "/endpoint", {"listen_addresses", "port"},
@@ -520,6 +543,12 @@ std::string ParseProfile(const Json& value, const std::string& pointer) {
     if (!IsSafeIdentifier(profile, kMaxProfileBytes, true)) {
         Fail(pointer,
              "must be a bounded profile identifier using letters, digits, '.', '_', or '-'");
+    }
+    // The build qualifies exactly one profile and always presents it, so a
+    // document naming another one would load and silently run with the
+    // built-in geometry. yume-doctor refuses the same input with this text.
+    if (profile != kEvidenceProfile) {
+        Fail(pointer, "profile is not qualified by this build");
     }
     return profile;
 }
@@ -661,14 +690,41 @@ const Service& RequireService(const std::vector<Service>& services,
     return *found;
 }
 
+// Absolute, without empty, "." or ".." components or a trailing slash, and
+// free of control bytes, so the path names exactly one socket file.
+bool IsNormalizedAbsolutePath(std::string_view path) {
+    if (path.size() < 2U || path.front() != '/' || path.back() == '/') {
+        return false;
+    }
+    if (std::any_of(path.begin(), path.end(), [](char ch) {
+            const auto byte = static_cast<unsigned char>(ch);
+            return byte < 0x20U || byte == 0x7fU;
+        })) {
+        return false;
+    }
+    std::size_t start = 1U;
+    for (;;) {
+        const std::size_t end = path.find('/', start);
+        const std::string_view component = path.substr(
+            start, (end == std::string_view::npos ? path.size() : end) - start);
+        if (component.empty() || component == "." || component == "..") {
+            return false;
+        }
+        if (end == std::string_view::npos) return true;
+        start = end + 1U;
+    }
+}
+
 AdapterKind ParseAdapterKind(const Json& value, const std::string& pointer) {
     const auto& kind = ReadString(value, pointer, 24);
     if (kind == "socks5") return AdapterKind::Socks5;
     if (kind == "packet") return AdapterKind::Packet;
     if (kind == "direct_tcp") return AdapterKind::DirectTcp;
     if (kind == "direct_udp") return AdapterKind::DirectUdp;
+    if (kind == "forward") return AdapterKind::Forward;
+    if (kind == "module") return AdapterKind::Module;
     Fail(pointer,
-         "must be 'socks5', 'packet', 'direct_tcp', or 'direct_udp'");
+         "must be 'socks5', 'packet', 'direct_tcp', 'direct_udp', 'forward', or 'module'");
 }
 
 std::string ParseInterfaceName(const Json& value, const std::string& pointer) {
@@ -680,9 +736,54 @@ std::string ParseInterfaceName(const Json& value, const std::string& pointer) {
     return name;
 }
 
+std::vector<DestinationList> ParseDestinationLists(const Json& value,
+                                                   const std::string& pointer) {
+    if (!value.is_array()) {
+        Fail(pointer, "must be an array");
+    }
+    if (value.size() > kMaxDestinationLists) {
+        Fail(pointer, "must contain at most " +
+                          std::to_string(kMaxDestinationLists) + " lists");
+    }
+    std::vector<DestinationList> lists;
+    lists.reserve(value.size());
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        const std::string item_pointer = IndexPointer(pointer, index);
+        const auto& item = value.at(index);
+        CheckClosedObject(item, item_pointer, {"action", "format", "file"},
+                          {"action", "format", "file"});
+        const std::string action_pointer = JoinPointer(item_pointer, "action");
+        const auto& action = ReadString(item.at("action"), action_pointer, 8);
+        if (action != "allow" && action != "deny") {
+            Fail(action_pointer, "must be 'allow' or 'deny'");
+        }
+        const std::string format_pointer = JoinPointer(item_pointer, "format");
+        const auto& format = ReadString(item.at("format"), format_pointer, 8);
+        if (format != "json" && format != "vpdb") {
+            Fail(format_pointer, "must be 'json' or 'vpdb'");
+        }
+        const std::string file_pointer = JoinPointer(item_pointer, "file");
+        const auto& path = ReadString(item.at("file"), file_pointer,
+                                      kMaxFileReferenceBytes);
+        ValidateFileReference(path, file_pointer);
+        if (std::any_of(lists.begin(), lists.end(), [&](const DestinationList& list) {
+                return list.file().path() == path;
+            })) {
+            Fail(file_pointer, "duplicate list file");
+        }
+        lists.emplace_back(action == "allow" ? DestinationListAction::Allow
+                                             : DestinationListAction::Deny,
+                           format == "json" ? DestinationListFormat::Json
+                                            : DestinationListFormat::Vpdb,
+                           FileReference(path));
+    }
+    return lists;
+}
+
 DestinationPolicy ParseDestinations(const Json& value,
                                     const std::string& pointer) {
-    CheckClosedObject(value, pointer, {"public", "networks"},
+    CheckClosedObject(value, pointer,
+                      {"public", "networks", "lists", "country_database"},
                       {"public", "networks"});
     const bool public_addresses =
         ReadBoolean(value.at("public"), JoinPointer(pointer, "public"));
@@ -721,7 +822,128 @@ DestinationPolicy ParseDestinations(const Json& value,
     if (!public_addresses && parsed.empty()) {
         Fail(pointer, "must permit public addresses or at least one network");
     }
-    return DestinationPolicy(public_addresses, std::move(parsed));
+    std::vector<DestinationList> lists;
+    if (value.contains("lists")) {
+        lists = ParseDestinationLists(value.at("lists"),
+                                      JoinPointer(pointer, "lists"));
+    }
+    std::optional<FileReference> country_database;
+    if (value.contains("country_database")) {
+        if (lists.empty()) {
+            Fail(JoinPointer(pointer, "country_database"),
+                 "needs a list that names countries");
+        }
+        country_database = ParseFileReference(value, pointer, "country_database");
+    }
+    return DestinationPolicy(public_addresses, std::move(parsed), std::move(lists),
+                             std::move(country_database));
+}
+
+std::vector<common::IpNetwork> parse_tun_prefixes(const Json& value,
+                                                   const std::string& pointer,
+                                                   bool required) {
+    if (!value.is_array() || value.size() > 64U || (required && value.empty()))
+        Fail(pointer, "must be an array of " + std::string(required ? "1" : "0") + " to 64 prefixes");
+    std::vector<common::IpNetwork> result;
+    result.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        const auto item = IndexPointer(pointer, i);
+        const auto text = ReadString(value.at(i), item, common::kMaxIpNetworkTextBytes);
+        const auto prefix = common::parse_canonical_ip_network(text);
+        if (!prefix || common::ip_network_never_allowed(*prefix))
+            Fail(item, "must be a canonical unicast IPv4 or IPv6 network with zero host bits");
+        if (std::find(result.begin(), result.end(), *prefix) != result.end())
+            Fail(item, "duplicate prefix");
+        result.push_back(*prefix);
+    }
+    return result;
+}
+
+bool tun_contains(const std::vector<common::IpNetwork>& networks,
+                  const common::IpInterfaceAddress& address) {
+    return std::any_of(networks.begin(), networks.end(), [&](const auto& network) {
+        return common::ip_network_contains(network, address.family,
+            std::span<const std::uint8_t>(address.address).first(
+                common::detail::ip_address_bytes(address.family)));
+    });
+}
+
+TunNetwork parse_tun_network(const Json& value, const std::string& pointer, std::uint16_t mtu) {
+    CheckClosedObject(value, pointer,
+        {"addresses", "routes", "local_networks", "peer_networks", "dns"},
+        {"addresses", "routes", "local_networks", "peer_networks", "dns"});
+    TunNetwork result;
+    result.routes = parse_tun_prefixes(value.at("routes"), JoinPointer(pointer, "routes"), false);
+    result.local_networks = parse_tun_prefixes(value.at("local_networks"), JoinPointer(pointer, "local_networks"), true);
+    result.peer_networks = parse_tun_prefixes(value.at("peer_networks"), JoinPointer(pointer, "peer_networks"), true);
+    for (const auto* networks : {&result.routes, &result.local_networks, &result.peer_networks}) {
+        if (mtu < 1280U && std::any_of(networks->begin(), networks->end(), [](const auto& prefix) {
+                return prefix.family == common::IpFamily::V6;
+            })) Fail(pointer, "IPv6 requires an MTU of at least 1280");
+    }
+    for (std::size_t i = 0; i < result.routes.size(); ++i) {
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto& a = result.routes[i];
+            const auto& b = result.routes[j];
+            const auto& outer = a.prefix_length < b.prefix_length ? a : b;
+            const auto& inner = a.prefix_length < b.prefix_length ? b : a;
+            if (common::ip_network_contains(outer, inner.family,
+                    std::span<const std::uint8_t>(inner.address).first(common::detail::ip_address_bytes(inner.family))))
+                Fail(IndexPointer(JoinPointer(pointer, "routes"), i), "managed routes must not overlap");
+        }
+    }
+    const auto parse_addresses = [&](const Json& list, const std::string& path, bool dns) {
+        if (!list.is_array() || list.size() > 16U || (!dns && list.empty()))
+            Fail(path, "must be an array of " + std::string(dns ? "0" : "1") + " to 16 addresses");
+        std::vector<common::IpInterfaceAddress> parsed;
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const auto item = IndexPointer(path, i);
+            const auto text = ReadString(list.at(i), item, common::kMaxIpNetworkTextBytes);
+            if (dns && text.find('/') != std::string::npos) Fail(item, "DNS server must be an address without prefix");
+            const auto address = common::parse_canonical_ip_interface(dns ?
+                text + (text.find(':') == std::string::npos ? "/32" : "/128") : text);
+            if (!address) Fail(item, "must be a canonical IPv4 or IPv6 address" + std::string(dns ? "" : " with prefix"));
+            const auto bytes = std::span<const std::uint8_t>(address->address).first(common::detail::ip_address_bytes(address->family));
+            const auto egress = common::EgressAddress::from_bytes(address->family, bytes);
+            if (!egress || egress->family() != address->family ||
+                common::classify_egress_address(*egress) == common::EgressAddressClass::NeverAllowed ||
+                (address->family == common::IpFamily::V4 && address->address[0] == 127U) ||
+                (address->family == common::IpFamily::V6 &&
+                 common::ip_network_contains(*common::parse_canonical_ip_network("::1/128"), address->family, bytes)))
+                Fail(item, "unspecified, loopback, multicast, mapped and reserved addresses are refused");
+            if (address->family == common::IpFamily::V6 && mtu < 1280U)
+                Fail(item, "IPv6 requires an MTU of at least 1280");
+            if (!tun_contains(dns ? result.peer_networks : result.local_networks, *address))
+                Fail(item, dns ? "DNS server must be within peer_networks" : "interface address must be within local_networks");
+            if (dns && !tun_contains(result.routes, *address)) Fail(item, "DNS server needs a managed route");
+            if (std::any_of(parsed.begin(), parsed.end(), [&](const auto& other) {
+                    return other.family == address->family && other.address == address->address;
+                })) Fail(item, "duplicate address");
+            parsed.push_back(*address);
+        }
+        return parsed;
+    };
+    result.addresses = parse_addresses(value.at("addresses"), JoinPointer(pointer, "addresses"), false);
+    const auto dns_pointer = JoinPointer(pointer, "dns");
+    const auto& dns = value.at("dns");
+    CheckClosedObject(dns, dns_pointer, {"servers", "domains"}, {"servers", "domains"});
+    result.dns_servers = parse_addresses(dns.at("servers"), JoinPointer(dns_pointer, "servers"), true);
+    const auto& domains = dns.at("domains");
+    if (!domains.is_array() || domains.size() > 16U)
+        Fail(JoinPointer(dns_pointer, "domains"), "must be an array of 0 to 16 routing domains");
+    for (std::size_t i = 0; i < domains.size(); ++i) {
+        const auto item = IndexPointer(JoinPointer(dns_pointer, "domains"), i);
+        auto text = ReadString(domains.at(i), item, kMaxHostBytes);
+        if (text != "." && (!IsDnsName(text) || text.back() == '.' ||
+            std::any_of(text.begin(), text.end(), [](char ch) { return ch >= 'A' && ch <= 'Z'; })))
+            Fail(item, "must be a lowercase DNS routing domain or '.'");
+        if (std::find(result.dns_domains.begin(), result.dns_domains.end(), text) != result.dns_domains.end())
+            Fail(item, "duplicate routing domain");
+        result.dns_domains.push_back(std::move(text));
+    }
+    if (result.dns_servers.empty() != result.dns_domains.empty())
+        Fail(dns_pointer, "DNS servers and routing domains must both be empty or both supplied");
+    return result;
 }
 
 std::vector<Adapter> ParseAdapters(const Json& adapters,
@@ -737,9 +959,13 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
     }
     std::vector<Adapter> parsed;
     parsed.reserve(adapters.size());
-    std::set<std::pair<std::string, std::uint16_t>> socks_listeners;
+    // SOCKS5 and forward listeners share the local port space.
+    std::set<std::pair<std::string, std::uint16_t>> local_listeners;
+    std::set<std::string> unix_listeners;
     std::set<std::string> packet_interfaces;
     std::set<std::pair<AdapterKind, std::string>> direct_services;
+    // One server adapter handles each stream service.
+    std::set<std::string> stream_handlers;
     for (std::size_t index = 0; index < adapters.size(); ++index) {
         const std::string pointer = IndexPointer("/adapters", index);
         const auto& adapter = adapters.at(index);
@@ -778,8 +1004,8 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
                 JoinPointer(pointer, "listen_port");
             const std::uint16_t port =
                 ParsePort(adapter.at("listen_port"), port_pointer);
-            if (!socks_listeners.emplace(listen, port).second) {
-                Fail(port_pointer, "duplicate SOCKS5 listen address and port");
+            if (!local_listeners.emplace(listen, port).second) {
+                Fail(port_pointer, "duplicate local listen address and port");
             }
             std::optional<std::string> udp_service;
             if (adapter.contains("udp_service")) {
@@ -795,10 +1021,135 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             continue;
         }
 
+        if (kind == AdapterKind::Forward) {
+            CheckClosedObject(adapter, pointer,
+                              {"kind", "service", "listen_address", "listen_port",
+                               "listen_path", "destination"},
+                              {"kind", "service"});
+            if (role != Role::Client) {
+                Fail(kind_pointer, "forward adapter is client-only");
+            }
+            const std::string service_pointer = JoinPointer(pointer, "service");
+            const std::string service =
+                ParseServiceName(adapter.at("service"), service_pointer);
+            RequireService(services, service, ServiceKind::Stream,
+                           service_pointer);
+            const std::string address_pointer =
+                JoinPointer(pointer, "listen_address");
+            const std::string port_pointer = JoinPointer(pointer, "listen_port");
+            const std::string path_pointer = JoinPointer(pointer, "listen_path");
+            ForwardListener listener = UnixListener{};
+            if (adapter.contains("listen_path")) {
+                if (adapter.contains("listen_address")) {
+                    Fail(address_pointer, "must be absent with listen_path");
+                }
+                if (adapter.contains("listen_port")) {
+                    Fail(port_pointer, "must be absent with listen_path");
+                }
+                const auto& path = ReadString(adapter.at("listen_path"),
+                                              path_pointer,
+                                              kMaxUnixSocketPathBytes);
+                if (!IsNormalizedAbsolutePath(path)) {
+                    Fail(path_pointer, "must be a normalized absolute path");
+                }
+                if (!unix_listeners.insert(path).second) {
+                    Fail(path_pointer, "duplicate local listen path");
+                }
+                listener = UnixListener{path};
+            } else {
+                if (!adapter.contains("listen_address")) {
+                    Fail(address_pointer,
+                         "required key is missing without listen_path");
+                }
+                if (!adapter.contains("listen_port")) {
+                    Fail(port_pointer,
+                         "required key is missing without listen_path");
+                }
+                const auto& listen =
+                    ReadString(adapter.at("listen_address"), address_pointer, 64);
+                if (!IsLoopbackAddress(listen)) {
+                    Fail(address_pointer,
+                         "forward listener must be 127.0.0.1 or ::1");
+                }
+                const std::uint16_t port =
+                    ParsePort(adapter.at("listen_port"), port_pointer);
+                if (!local_listeners.emplace(listen, port).second) {
+                    Fail(port_pointer, "duplicate local listen address and port");
+                }
+                listener = LoopbackListener{listen, port};
+            }
+            std::optional<ForwardDestination> destination;
+            if (adapter.contains("destination")) {
+                const std::string destination_pointer =
+                    JoinPointer(pointer, "destination");
+                const auto& value = adapter.at("destination");
+                CheckClosedObject(value, destination_pointer, {"host", "port"},
+                                  {"host", "port"});
+                const std::string host_pointer =
+                    JoinPointer(destination_pointer, "host");
+                const auto& host =
+                    ReadString(value.at("host"), host_pointer, kMaxHostBytes);
+                if (!IsClientHost(host)) {
+                    Fail(host_pointer, "must be an IP literal or DNS host name");
+                }
+                destination = ForwardDestination{
+                    host, ParsePort(value.at("port"),
+                                    JoinPointer(destination_pointer, "port"))};
+            }
+            parsed.emplace_back(ForwardAdapter(service, std::move(listener),
+                                               std::move(destination)));
+            continue;
+        }
+
+        if (kind == AdapterKind::Module) {
+            CheckClosedObject(adapter, pointer,
+                              {"kind", "service", "program", "arguments"},
+                              {"kind", "service", "program"});
+            if (role != Role::Server) {
+                Fail(kind_pointer, "module adapter is server-only");
+            }
+            const std::string service_pointer = JoinPointer(pointer, "service");
+            const std::string service =
+                ParseServiceName(adapter.at("service"), service_pointer);
+            RequireService(services, service, ServiceKind::Stream,
+                           service_pointer);
+            if (!stream_handlers.insert(service).second) {
+                Fail(service_pointer, "stream service already has an adapter");
+            }
+            const std::string program_pointer = JoinPointer(pointer, "program");
+            const auto& program = ReadString(adapter.at("program"), program_pointer,
+                                             kMaxFileReferenceBytes);
+            if (!IsNormalizedAbsolutePath(program)) {
+                Fail(program_pointer, "must be a normalized absolute path");
+            }
+            std::vector<std::string> arguments;
+            if (adapter.contains("arguments")) {
+                const std::string arguments_pointer =
+                    JoinPointer(pointer, "arguments");
+                const auto& values = adapter.at("arguments");
+                if (!values.is_array() || values.size() > kMaxModuleArguments) {
+                    Fail(arguments_pointer,
+                         "must be an array of at most " +
+                             std::to_string(kMaxModuleArguments) + " strings");
+                }
+                for (std::size_t item = 0; item < values.size(); ++item) {
+                    const std::string item_pointer = IndexPointer(arguments_pointer, item);
+                    const auto& argument = ReadString(values.at(item), item_pointer,
+                                                      kMaxModuleArgumentBytes);
+                    if (argument.find('\0') != std::string::npos) {
+                        Fail(item_pointer, "must not contain NUL");
+                    }
+                    arguments.push_back(argument);
+                }
+            }
+            parsed.emplace_back(ModuleAdapter(service, program, std::move(arguments)));
+            continue;
+        }
+
         if (kind == AdapterKind::Packet) {
             CheckClosedObject(adapter, pointer,
-                              {"kind", "service", "interface_name", "mtu"},
-                              {"kind", "service", "interface_name", "mtu"});
+                              {"kind", "service", "interface_name", "mtu", "network"},
+                              {"kind", "service", "interface_name", "mtu", "network"});
             const std::string service_pointer = JoinPointer(pointer, "service");
             const std::string service =
                 ParseServiceName(adapter.at("service"), service_pointer);
@@ -811,11 +1162,10 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             if (!packet_interfaces.insert(interface_name).second) {
                 Fail(interface_pointer, "duplicate packet interface name");
             }
-            parsed.emplace_back(PacketAdapter(
-                service, interface_name,
-                static_cast<std::uint16_t>(ReadBoundedUnsigned(
-                    adapter.at("mtu"), JoinPointer(pointer, "mtu"), 576,
-                    65535))));
+            const auto mtu = static_cast<std::uint16_t>(ReadBoundedUnsigned(
+                adapter.at("mtu"), JoinPointer(pointer, "mtu"), 576, 65535));
+            parsed.emplace_back(PacketAdapter(service, interface_name, mtu,
+                parse_tun_network(adapter.at("network"), JoinPointer(pointer, "network"), mtu)));
             continue;
         }
 
@@ -829,6 +1179,9 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             ParseServiceName(adapter.at("service"), service_pointer);
         if (!direct_services.emplace(kind, service).second) {
             Fail(service_pointer, "duplicate direct adapter service and kind");
+        }
+        if (kind == AdapterKind::DirectTcp && !stream_handlers.insert(service).second) {
+            Fail(service_pointer, "stream service already has an adapter");
         }
         const std::string destinations_pointer =
             JoinPointer(pointer, "destinations");
@@ -863,7 +1216,7 @@ ResourceLimits ParseLimits(const Json& limits) {
     CheckClosedObject(
         limits, "/limits",
         {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
-         keys[7]},
+         keys[7], "max_egress_mbps"},
         {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
          keys[7]});
 
@@ -900,10 +1253,15 @@ ResourceLimits ParseLimits(const Json& limits) {
     if (max_packet_bytes > max_frame_bytes) {
         Fail("/limits/max_packet_bytes", "must not exceed max_frame_bytes");
     }
+    std::optional<std::uint32_t> max_egress_mbps;
+    if (limits.contains("max_egress_mbps")) {
+        max_egress_mbps =
+            read("max_egress_mbps", kMinEgressMbps, kMaxEgressMbps);
+    }
     return ResourceLimits(max_frame_bytes, max_streams, max_queued_bytes,
                           max_pending_opens, max_rekey_jobs,
                           max_control_messages, max_packet_bytes,
-                          max_packet_batch);
+                          max_packet_batch, max_egress_mbps);
 }
 
 void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,
@@ -950,6 +1308,9 @@ Config Parse(const nlohmann::json& document) {
         ParseAdapters(document.at("adapters"), role, services);
     ResourceLimits limits = ParseLimits(document.at("limits"));
     CheckAdapterLimitCombinations(adapters, limits);
+    if (role == Role::Client && limits.max_egress_mbps()) {
+        Fail("/limits/max_egress_mbps", "is server-only");
+    }
 
     return Config(role, std::move(endpoint), std::move(suite),
                   std::move(credentials), std::move(cover),
@@ -960,6 +1321,7 @@ Config ParseJson(std::string_view text) {
     if (text.size() > kMaxDocumentBytes) {
         Fail("", "document exceeds the 1 MiB limit");
     }
+    Json document;
     try {
         struct ParseScope {
             std::string pointer;
@@ -1017,13 +1379,20 @@ Config ParseJson(std::string_view text) {
                 }
                 return true;
             };
-        return Parse(Json::parse(text.begin(), text.end(), structure_guard,
-                                true, false));
+        document = Json::parse(text.begin(), text.end(), structure_guard,
+                               true, false);
     } catch (const ValidationError&) {
         throw;
     } catch (const Json::parse_error& error) {
         Fail("", "invalid JSON syntax at byte " + std::to_string(error.byte));
+    } catch (const Json::out_of_range& error) {
+        // nlohmann reports a syntactically valid but unrepresentable number
+        // as 406 rather than parse_error. Keep untrusted text on the typed
+        // rejection path without hiding errors in the schema parser below.
+        if (error.id != 406) throw;
+        Fail("", "JSON number exceeds the supported range");
     }
+    return Parse(document);
 }
 
 }  // namespace yume::config::v1

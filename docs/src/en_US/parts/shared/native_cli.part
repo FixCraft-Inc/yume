@@ -1,0 +1,58 @@
+## OPTIONS
+
+@options
+@opt **--config** *path*
+@cli file: yes
+@cli spell: --config <path>
+@cli help: Read a schema-1 configuration
+
+Read exactly one schema-1 JSON configuration. Its role must match the
+program: client for **yume**, server for **yumed**. Required unless
+**--help** or **--version** is requested. Network and security policy have
+no command-line overrides.
+@opt **--validate**
+@cli spell: --validate
+@cli help: Check local configuration and credentials, then exit
+
+Check schema, role, referenced credentials, direct-adapter destination
+policy and the daemon's module programs, then exit without opening a listener
+or network connection. This
+checks local inputs; it does not test connectivity or complete runtime startup,
+including loading the cover site, matching services to runtime adapters,
+TUN privileges or DNS authorization.
+@opt **--version**
+@cli spell: --version
+@cli help: Print local versions and provider information
+
+Print the product version, transport version, configuration schema, suite,
+session-security provider, crypto backend and evidence profile. This operation
+uses local information and does not read a configuration or contact a server.
+@opt **-h, --help**
+@cli spell: -h, --help
+@cli help: Print this help and exit
+
+Print the supported options and exit. Unknown arguments still fail parsing
+when combined with **--help** or **--version**.
+@end
+
+## CONFIGURATION
+
+The configuration owns endpoint addresses, exact suite, credential file
+references, cover profile, services, adapters and resource limits. The schema
+rejects unknown fields, wrong types and unsupported values. Credential paths
+are relative to the configuration file's directory unless absolute. Credential
+loading rejects unsafe file types and permissions; inline secrets are forbidden.
+
+## SIGNALS
+
+**SIGINT** and **SIGTERM** request shutdown of listeners and sessions, followed
+by removal of owned TUN networking.
+**SIGPIPE** is ignored.
+
+## EXIT STATUS
+
+Zero indicates successful help, version or validation output, or shutdown
+requested by a handled signal with successful cleanup. Exit status 1 indicates a runtime or internal
+failure. Exit status 2 indicates invalid arguments, configuration or startup
+prerequisites. Diagnostics go to standard error; help and version output go
+to standard output. Argument errors also print usage on standard error.

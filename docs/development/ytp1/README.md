@@ -1,125 +1,68 @@
 <!-- Generated from docs/src/en_US/pages/ytp1_readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
-# YTP/1 foundation: setup, contracts, and gates
+# YTP/1 development guide
 
-YUME 0.3 is being rebuilt around an experimental C ABI and YTP/1. This page
-is the one development reference for that replacement: what the schema-1
-tools do today, the contracts the runtime must meet, and the gates that
-separate a passing foundation test from a usable tunnel. It is a design
-input, not an installed contract and not evidence that the product runtime is
-qualified.
-[IMPLEMENTATION_STATUS.md](../../IMPLEMENTATION_STATUS.md) is the
-authoritative boundary; the runnable transport-v2 product keeps its own
-[quick start](../../QUICKSTART.md), [operations](../../OPERATIONS.md),
-[permissions](../../PERMISSIONS.md), [diagnostics](../../DIAGNOSTICS.md),
-[packet mode](../../PACKET_NATIVE_BULK.md), and
-[benchmarks](../../SELFTEST.md) pages. The intended narrow client and
-front-door daemon manuals are sketched in [`man/`](man/) and are not
-installed.
+This guide is for people who build, embed or change native YUME. Operators
+should start with the [quick start](../../QUICKSTART.md) and
+[operations](../../OPERATIONS.md). [Implementation status](../../IMPLEMENTATION_STATUS.md)
+lists what is tested and what is still open. The manuals are
+[`yume.1`](../../man/yume.1) and [`yumed.8`](../../man/yumed.8).
 
-## What exists and what does not
+Schema 1 is the only configuration format. The parser requires
+`"schema": 1` and a closed set of keys, so an older configuration file does
+not load, and nothing converts one.
 
-Implemented: the schema-1 provisioning and validation tools, the strict
-numeric config parser, the dependency-pure engine and YTP/1 codecs, and the
-opt-in TLS 1.3, HTTP/2 duplex carrier, hybrid session-security, TCP
-byte-channel, and direct-route provider candidates, each with focused tests.
-The client carrier generates exporter-bound admission proofs. The native
-FrontDoor combines accepted TCP ownership, actual TLS SNI/exporter verification,
-shared replay protection and genuine configured static cover, then transfers
-the live connection into the H2 carrier once per TLS lifetime. Ordinary cover
-accepts TLS 1.2/1.3 and HTTP/1.1/H2; YTP promotion requires TLS 1.3 and H2.
+## Build options
 
-The source-level `runtime::NativeEndpoint` now composes schema-1 credentials,
-the native provider graph, per-identity named-service authorization and bounded
-bootstrap/session lifetimes on a caller-owned execution context. Configured
-direct TCP/UDP adapters enforce their schema-1 destinations before resolution,
-and a route provider built with the same policy checks every resolved address.
-The native integration test uses generated setup credentials and real loopback
-TLS/H2.
-When the shared ABI is built with the same providers, an experimental schema-1
-backend drives that endpoint behind the C ABI and carries named byte streams.
-
-Not implemented: the final `yume` and `yumed` runtimes, public ABI packet
-handles, TUN adapters, and production qualification of the complete endpoint. The development processes are described under running the
-development runtimes below.
-A schema-1 kit is not valid
-input for the runnable transport-v2 binaries, and nothing converts between
-the two dialects. A generated kit declares adapters, which the ABI backend
-refuses instead of dropping. An embedding application removes them and lists
-the named services it uses.
-
-The opt-in native TLS client uses the same browser-profile emitter as the
-runnable transport. Prepare the pinned patched OpenSSL through `ezbuild.sh`
-or the [documented direct-CMake setup](../../CONTRIBUTING.md#build).
-Stock OpenSSL remains sufficient for the isolated session-security provider;
-it is not sufficient for the native TLS provider. The profile's broader TLS
-and ALPN offer never permits a YTP channel below TLS 1.3 or without H2.
-
-### Build the native ingress candidate
-
-The source-level listener target `yume::ytp1_front_door` is enabled with all
-four options below; CMake rejects the FrontDoor option without its providers:
+The native providers and the runtime on top of them build whenever the
+programs (`YUME_BUILD_NATIVE_APPLICATION`, on by default) or the shared C ABI
+(`YUME_BUILD_SHARED_ABI`) are on. The providers need the patched OpenSSL. With
+both switches off, only the engine, YTP/1 and configuration libraries build.
+To build one component, name its target:
 
 ```bash
-cmake -S . -B build-ingress -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DYUME_BUILD_TRANSPORT_V2=OFF -DYUME_BUILD_TESTING=ON \
-  -DYUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER=ON \
-  -DYUME_BUILD_EXPERIMENTAL_YTP1_H2_CARRIER=ON \
-  -DYUME_BUILD_EXPERIMENTAL_YTP1_ASIO_TCP_BYTE_CHANNEL_PROVIDER=ON \
-  -DYUME_BUILD_EXPERIMENTAL_YTP1_FRONT_DOOR=ON \
-  -DYUME_WARNINGS_AS_ERRORS=ON
-cmake --build build-ingress --target yume_ytp1_front_door -j2
+cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DYUME_BUILD_TESTING=ON -DYUME_WARNINGS_AS_ERRORS=ON
+cmake --build build --target yume_h2_web_front_door -j2
 ```
 
-Use the pinned patched OpenSSL installation described above and libnghttp2.
-This builds a provider library, not a standalone daemon or public C ABI backend.
-The caller loads credentials and an immutable `Ytp1CoverSite` from an operator
-site root with an index and explicit not-found file. The site uses confined
-`FileRoot` reads at load time; requests perform no file access or resolution.
-There is no built-in fallback site or reverse-proxy implementation here.
+Set `YUME_NATIVE_TEST_OPENSSL` to the pinned installation's `bin/openssl` when
+configuring tests. `yume_native_credentials_test` and `yume_native_endpoint_test`
+provision temporary kits and run real loopback TLS/HTTP/2 sessions.
 
-Add `-DYUME_BUILD_EXPERIMENTAL_YTP1_OPENSSL_PROVIDER=ON` to compose
-`yume_native_endpoint`. With tests enabled, `yume_native_credentials_test` and
-`yume_native_endpoint_test` exercise protected loading and native session traffic
-on POSIX. The endpoint test provisions temporary named-service kits; enabling
-the route provider also exercises configured direct adapters. These tests do not
-establish that the generated SOCKS/packet kit can run in the CLI.
-Set `YUME_NATIVE_TEST_OPENSSL` to the pinned
-installation's `bin/openssl` when configuring tests. Native startup requires a
-frame budget of at least 64 KiB for the AUTH envelope and applies the engine's
-queue bounds before opening listeners. Enabling
-`YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER` also tests authenticated TCP
-and connected-UDP destinations through the native endpoint, including packet
-boundaries and refusal before socket creation. The caller supplies
-`NativeEndpointOptions::route_provider`. Configured `direct_tcp`/`direct_udp`
-declarations enforce their `destinations` through `NativeEgressPolicy` after
-credential service authorization and before DNS or socket work. An optional
-`route_authorization` callback can only refuse more. The engine supplies the
-selected provider to handlers, and an Asio provider built with the same policy
-checks every selected numeric address before connecting. Explicit
-policy-bearing handlers remain available for other services. The ABI backend
-still refuses adapter declarations, and packet/TUN adapters are not
-implemented.
+`YUME_BUILD_BASEFWX_MODULES=ON` adds the module libraries built on BaseFWX and
+their tests. So far that is `yume_module_relay`, the end-to-end relay channel
+in `src/modules/relay`. It needs the BaseFWX checkout at the revision
+`config/dependencies.json` pins and liboqs, which configuration requires in
+this mode. Core targets never link BaseFWX, so a plain `yume` and `yumed`
+build needs neither.
 
-The caller retains a single-runner `AsioExecutionContext` through the promoted
-carrier lifetimes. The front door supplies H2 dispatch from its context,
-including reserved control tasks for close, cancellation and credit return. It initiates on that context,
-contains runner exceptions and resumes execution, closes owners, calls
-`finish()` and drains completions. Promotion settles cover output and its
-timer before transferring the same TLS/H2 state; published carriers preserve
-ordinary cover handling after listener destruction. Ingress resolves no names.
-Any wider runtime adding system DNS must account for resolver shutdown that
-can outlive the application deadline.
+A few rules hold across the native graph:
 
-## Build the ABI candidate and the schema-1 tools
+- The front door serves ordinary cover over TLS 1.2 or 1.3 and HTTP/1.1 or
+  HTTP/2, but promotes a connection to YTP only on TLS 1.3 with HTTP/2, once
+  per TLS connection. The cover site is loaded once from a confined root, and
+  requests never touch the file system. There is no built-in fallback site.
+- Destination policy runs after service authorization and before DNS or
+  socket work. The route provider checks every resolved address again. An
+  embedding callback can refuse more, never allow more.
+- Host names resolve in a separate helper process. `yume` and `yumed` start
+  their own image as `yume-resolver`. Closing the runtime kills the helper,
+  so a stuck system lookup cannot hold shutdown. SDK hosts pass
+  `resolver_program`, and there is no in-process fallback.
+- Each endpoint runs on one caller-owned execution context. Close cancels
+  owners, drains completions, then returns.
+- The ABI backend refuses adapter declarations. An embedding application
+  removes them from a generated kit and lists the named services it uses.
 
-The replacement ABI and the schema-1 operator tools are explicit opt-ins that
-do not disable the current transport:
+## Build the C ABI
+
+The native application and schema-1 tools are selected by default. The shared
+ABI remains an explicit build-tree opt-in:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DYUME_BUILD_TESTING=ON \
   -DYUME_BUILD_SHARED_ABI=ON \
-  -DYUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=ON \
   -DYUME_WARNINGS_AS_ERRORS=ON
 cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
@@ -127,23 +70,20 @@ cmake --install build --prefix "$PWD/install"
 ```
 
 The build tree contains an unversioned `src/libyume.so` and its contract
-tests. The install contains `yume-setup-ytp1` and `yume-doctor-ytp1` only:
-no ABI library, header, CMake package, or pkg-config metadata is installed.
-Transport-v2 configurations start and move authenticated named-stream bytes
-through the build-tree ABI. A schema-1 endpoint does the same when the build
-also enables every `YUME_BUILD_EXPERIMENTAL_YTP1_*` option, including the
-FrontDoor, and otherwise fails closed with `YUME_STATUS_UNSUPPORTED`. Packet and
-destination-routed paths are unsupported in both dialects.
+tests. The install contains `yume`, `yumed`, `yume-setup` and `yume-doctor`.
+SDK files install only with `YUME_INSTALL_EXPERIMENTAL_SDK=ON` (see
+[ABI installation](../../ABI.md)). The schema-1 ABI backend needs every native
+provider and returns `YUME_STATUS_UNSUPPORTED` without them.
 
 ## Provision a kit and validate it
 
 ```bash
-install/bin/yume-setup-ytp1 init \
+install/bin/yume-setup init \
   --host tunnel.example.com \
   --output "$PWD/yume-kit" \
   --client-name laptop
-install/bin/yume-doctor-ytp1 --config yume-kit/server/yumed.json
-install/bin/yume-doctor-ytp1 --config yume-kit/client/yume.json
+install/bin/yume-doctor --config yume-kit/server/yumed.json
+install/bin/yume-doctor --config yume-kit/client/yume.json
 ```
 
 The output path must not exist. Setup builds the tree in a private staging
@@ -185,17 +125,14 @@ does not inspect file ownership, consume a separate compatibility manifest,
 or print private material. Fix the reported location; there is no CLI
 override for a doctor failure.
 
-## Run the development runtimes
+## Run yume and yumed
 
-With every native provider option enabled, including
-`YUME_BUILD_EXPERIMENTAL_YTP1_ASIO_ROUTE_PROVIDER`, the build produces
-`bin/yumed-ytp1` and `bin/yume-ytp1`. They are development programs, not the
-installed product:
+The default build produces `bin/yumed` and `bin/yume`:
 
 ```bash
-build/bin/yumed-ytp1 --config kit/server/yumed.json --validate
-build/bin/yumed-ytp1 --config kit/server/yumed.json
-build/bin/yume-ytp1 --config kit/client/yume.json
+build/bin/yumed --config kit/server/yumed.json --validate
+build/bin/yumed --config kit/server/yumed.json
+build/bin/yume --config kit/client/yume.json
 curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
@@ -204,17 +141,17 @@ A generated kit runs as written. It declares a `tcp` stream service and a
 `direct_udp` adapters that permit public destinations, and the client's SOCKS5
 adapter names `udp` for UDP ASSOCIATE. Add an explicit network such as
 `10.0.0.0/8` to reach private or loopback destinations. The daemon needs a
-direct adapter for every configured service, and neither program implements
-packet/TUN adapters yet. The kit's `start-server` and `start-client` launchers
-run `yumed-ytp1` and `yume-ytp1` from `PATH`, or the programs that `YUMED_BIN`
+direct, module or packet adapter for every configured service. The packet adapter
+requires the managed network configuration below. The kit's `start-server` and `start-client` launchers
+run `yumed` and `yume` from `PATH`, or the programs that `YUMED_BIN`
 and `YUME_BIN` name.
 
 A normal user can listen on port 443 once the daemon binary holds only the
 bind capability. Install a root-owned copy and grant it there:
 
 ```bash
-sudo install -o root -g root -m 0755 build/bin/yumed-ytp1 /usr/local/bin/yumed-ytp1
-sudo setcap cap_net_bind_service=+ep /usr/local/bin/yumed-ytp1
+sudo install -o root -g root -m 0755 build/bin/yumed /usr/local/bin/yumed
+sudo setcap cap_net_bind_service=+ep /usr/local/bin/yumed
 ```
 
 Replacing the file drops the capability, so repeat both commands after each
@@ -224,10 +161,13 @@ range is not needed. A port above 1023 needs neither step.
 The client runs its SOCKS5 listeners and keeps one session. When that session
 ends, its endpoint notifies the client to start a replacement. Failed attempts,
 and sessions that end within 30 seconds of authenticating, wait with backoff
-from 1 to 30 seconds. A path that drops every connection soon after AUTH
-therefore cannot cause a tight reconnect loop. SOCKS5 offers only the
+from 1 to 30 seconds, so a path that drops every session after AUTH cannot
+cause a tight reconnect loop. SOCKS5 offers only the
 no-authentication method, CONNECT and UDP ASSOCIATE, and refuses requests while
 no session is active. Stop either process with SIGINT or SIGTERM.
+An unrecoverable reconnect timer or SOCKS listener retry failure closes the
+runtime and exits with failure after cleanup. A runner exception likewise
+closes all owners through reserved control dispatch and drains completions.
 
 Clients may send payload with CONNECT before reading its reply. The adapter
 reads only the handshake fields, leaving payload in the socket until the
@@ -257,6 +197,27 @@ at once, closes a destination after 60 idle seconds, and drops datagrams to a
 refused or ended destination for one second before opening it again. Fragments
 and empty datagrams are dropped, because a YTP packet cannot be empty.
 
+A client `forward` adapter listens on a loopback TCP port or a UNIX socket
+path and turns every connection into an authenticated byte-stream OPEN on its
+service. An optional `destination` travels with each OPEN, and the server's
+`direct_tcp` destinations decide whether it is reachable. Without one, the
+server's handler for the service decides where the stream goes. Payload sent
+before the server accepts waits in the socket. A connection made while no
+session is active, or whose OPEN is refused or takes longer than 30 seconds,
+is closed. A UNIX socket's directory must belong to the client's user and be
+closed to writes by group and others. The socket file is mode 0600, a
+connection from another user is closed, and the file is removed on exit. A
+file left by an earlier run is replaced, while a live listener or any other
+file at the path stops startup. Like SOCKS5, forward TCP listeners accept only
+127.0.0.1 or ::1.
+
+A server `module` adapter serves its stream service with a program that
+`yumed` starts before its listeners accept and restarts with backoff. Each
+authorized stream reaches the program as one connection on a private UNIX
+socket, after a header line naming the client identity. A stream that names a
+destination is refused. [Modules](../../MODULES.md) describes what the program
+receives and its trust boundary.
+
 `scripts/yume_ndpi_smoke.py` runs one loopback session inside a rootless
 network namespace with Ethernet-sized frames and records what nDPI reports.
 `scripts/ensure-ndpi.sh` builds the pinned release, or newer sources such as
@@ -273,16 +234,113 @@ turns segmentation and receive offloads off for the run and restores them, so
 the capture holds frames as they crossed the wire. Neither result is a
 classifier verdict or a qualified benchmark.
 
+## Managed Linux TUN networking
+
+A `packet` adapter binds one authenticated packet service to a new Linux TUN.
+YUME owns the interface's lifetime, addresses, routes and optional per-link DNS.
+It requires `/dev/net/tun` and `CAP_NET_ADMIN` in its network namespace. It
+refuses an existing interface name. The Linux networking target also requires
+`libsystemd` for the systemd-resolved D-Bus interface; no shell command changes
+networking and `/etc/resolv.conf` is not rewritten.
+
+For a client with local address `10.71.0.2` and peer address `10.71.0.1`, declare
+an `ip` service with kind `packet`, authorize it in the server's traffic-key
+store, and add this adapter:
+
+```json
+{
+  "kind": "packet",
+  "service": "ip",
+  "interface_name": "yume0",
+  "mtu": 1420,
+  "network": {
+    "addresses": ["10.71.0.2/32"],
+    "routes": ["10.71.0.1/32"],
+    "local_networks": ["10.71.0.2/32"],
+    "peer_networks": ["10.71.0.1/32"],
+    "dns": {"servers": [], "domains": []}
+  }
+}
+```
+
+Reverse the addresses and policies for the server's matching adapter. The
+interface name is local to each machine and is at most 15 bytes. `addresses`
+contains 1–16 canonical interface addresses with prefix lengths; it preserves
+host bits. `routes` contains up to 64 disjoint canonical networks. Address
+assignment does not create an implicit connected-prefix route: declare each
+route explicitly. IPv6 requires an MTU of at least 1280. Before assigning
+addresses or bringing the link up, YUME disables automatic IPv6 link-local
+address generation on its TUN. This does not change host-wide RA policy.
+
+`local_networks` and `peer_networks` each contain 1–64 canonical prefixes.
+A packet leaving the local TUN must have its source in `local_networks` and
+its destination in `peer_networks`; receive reverses those checks. Interface
+addresses must belong to `local_networks`. Loopback, unspecified, multicast,
+reserved and IPv4-mapped IPv6 addresses are refused regardless of the prefixes.
+The packet wrapper checks IP lengths, MTU, IPv4 options and bounded IPv6
+extension chains. Source routing, IPv6 Routing/Home Address/Jumbo forms and
+unsupported opaque extensions fail closed. IPv6 fragments may directly name
+an upper-layer protocol; fragmented extension chains are refused. These checks
+do not perform transport checksum validation, reassembly or nested-IP filtering.
+Source/destination restrictions are separate from credential authorization of the named service. Plan distinct
+services and address policies where different peers have different grants.
+
+A client supplies a numeric `endpoint.connect_address` (or a numeric endpoint
+host) so route management can exclude the transport itself. The route plan
+splits covering prefixes around that one address; it does not add or replace
+routes on the physical interface. Default routing requires this numeric address.
+An assigned TUN address or DNS server cannot equal it. A server's managed
+routes must stay within its `peer_networks`, must not cover a configured
+listener address, and cannot select default routing. Conflicting route adds
+fail startup and remove the newly owned link and its routes.
+
+To manage DNS, set 1–16 numeric `dns.servers` and 1–16 `dns.domains`. Domains
+are routing domains, without a `~` prefix; `"."` routes all DNS names to the
+link. DNS servers must fall within both a managed route and `peer_networks`.
+Both arrays must be empty to leave DNS untouched. YUME requires an authorized
+systemd-resolved service in the same network namespace, pins its D-Bus owner,
+and refuses cross-namespace system-bus use. Cleanup attempts per-link DNS
+reversion and link deletion, reports any failure, and closes the ephemeral device. Cleanup is terminal: it never retries a cached
+interface index after a possibly successful deletion. Configuration validation
+does not establish D-Bus authorization or resolver availability.
+
+The native runtime keeps the owned interface and routes during reconnects
+so selected packets wait or drop until an authenticated packet stream is
+available. Shutdown removes them and restores the prior route selection. This
+is not a persistent firewall kill switch: process death closes the ephemeral
+TUN. YUME does not enable forwarding, install NAT, or change a host firewall;
+an operator providing routed Internet access must configure those policies
+explicitly.
+
+With `YUME_TEST_LINUX_NAMESPACES=ON`, `tests/run_native_tun_test.py` runs the
+native client and daemon in isolated Linux network namespaces. It checks
+IPv4/IPv6 traffic, MTU refusal, TCP transfer, transport exclusion from client
+default routes, reconnect with retained networking, shutdown cleanup and
+rollback after a competing route refuses startup. This fixture leaves DNS
+unconfigured. With `YUME_NATIVE_TEST_RESOLVED` set to the real resolved
+executable, the namespace suite also registers `yume_native_resolved_test`.
+It starts a private bus and resolved service, verifies the per-link policy,
+queries DNS through the tunnel before and after reconnect, and checks that
+shutdown removes the DNS settings. The host service and network remain outside
+these namespaces. The test requires `busctl`, `dbus-daemon` and Linux namespace
+utilities; unavailable prerequisites fail instead of silently skipping.
+
 ## Configuration authority
 
 Schema 1 is role tagged and contains these sections only:
 
 - `endpoint`: one client target or bounded server listeners. A client may add
   `connect_address`, a numeric address dialled instead of resolving `host`,
-  while TLS and admission still authenticate `host`;
+  while TLS and admission still authenticate `host`. A client may also add
+  `socks5_proxy` with a numeric `address`, a `port` and an optional protected
+  `credentials` file holding a username line and a password line of 1 to 255
+  bytes each. The client then reaches its server through that proxy, which
+  resolves `host` unless `connect_address` is set, and offers only
+  username and password authentication when credentials are given;
 - `suite`: the exact mandatory provider composition;
 - `credentials`: references to files, never inline private material;
-- `cover`: the qualified profile and server cover root;
+- `cover`: the profile this build qualifies, the only one it accepts, and the
+  server cover root;
 - `services` and `adapters`: explicit named-service exposure, unique by
   `(name, kind)`. Several adapters of one kind are valid when their concrete
   resources differ; exact resource collisions are rejected;
@@ -293,11 +351,34 @@ Schema 1 is role tagged and contains these sections only:
   loopback, link-local, documentation, benchmarking, 6to4, Teredo and NAT64
   prefixes. Unspecified, multicast and reserved addresses are always refused,
   IPv4-mapped IPv6 is evaluated as IPv4, and ports and hostnames are not policy
-  inputs. A network that no destination could match is rejected;
+  inputs. A network that no destination could match is rejected. Optional
+  `lists` hold up to 16 egress lists, each `{"action": "deny" or "allow",
+  "format": "json" or "vpdb", "file": path}`. They only narrow what `public`
+  and `networks` permit: the most specific entry decides and a deny wins a
+  tie, so an allow entry exempts an address from a broader deny and nothing
+  more. A JSON list holds `ips`, addresses or networks with zero host bits,
+  and `countries`, two-letter codes. A `vpdb` file is the binary VPN provider
+  database, format 1. Lists that name countries need `country_database`, a
+  MaxMind DB file such as GeoLite2-Country, and a country entry loses to any
+  address entry. List files resolve like credential references, must not be
+  symbolic links and are read when `yumed` starts or validates. A JSON list may
+  hold 16 MiB, the other files 128 MiB, and all lists together
+  2,097,152 ranges;
 - `udp_service` on a client `socks5` adapter: the packet service that UDP
   ASSOCIATE opens. Without it the adapter refuses UDP ASSOCIATE;
+- a client `forward` adapter: a stream `service`, either `listen_address` (127.0.0.1
+  or ::1) with `listen_port` or an absolute, normalized `listen_path` of at most
+  107 bytes, and an optional `destination` with `host` and `port`. SOCKS5 and
+  forward listeners may not share an address and port;
+- a server `module` adapter: a stream `service`, an absolute, normalized
+  `program` and optional `arguments` of at most 32 strings of up to 1024
+  bytes. A stream service has at most one `direct_tcp` or `module` adapter;
 - `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
-  packets.
+  packets. Frames allow 1676–1048576 bytes so hybrid rekey INIT fits;
+  concurrent rekey jobs allow 2–64 so crossed rotation has both slots. A
+  server may also set `max_egress_mbps`, from 1 to 1000000: the rate in
+  megabits per second that stream payload shares between busy identities by
+  their `weight`.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
 and unsafe combinations. The development CLIs accept config selection,
@@ -322,7 +403,17 @@ is, the capability manifest carries only named services and kinds, while
 exists before the capability does.
 
 The traffic store accepts 1 through 1024 identities, matching the native
-security factory's bound. The independent admin store accepts 0 through 4096
+security factory's bound. `yume-setup add-client` issues another client bundle
+for an existing server tree and appends its identity, and `remove-client`
+takes one out again. An entry's optional
+`max_sessions`, from 1 to 1024, bounds that identity's concurrent sessions: a
+newer session replaces the identity's oldest. Without it the daemon's session
+capacity is the only bound. An optional `weight`, from 0.1 to 100 and 1 by
+default, is the identity's share of `limits.max_egress_mbps` against the other
+busy identities. SIGHUP reloads both stores and the server's own
+keys: removed identities' sessions end, changed grants apply to the next OPEN,
+a changed weight applies to the next transfer,
+and an invalid store leaves the previous credentials in force. The independent admin store accepts 0 through 4096
 identities. Both stores reject duplicate names and composite identities;
 an admin identity must not appear in the traffic store.
 
@@ -336,26 +427,25 @@ capability bytes, the registered service kind and policy, destination policy
 for the built-in TCP/UDP encodings, and stream, pending-open, queue, packet,
 and route limits. A `RouteProvider` receives only an `AuthorizedRouteRequest`
 built after those checks. Federation, directory, relay applications, reverse
-administration, the reserved, disabled transport-v2 EXEC relay-policy
-surface, host-controller modes, product codecs, and dynamic plugins are outside
-the first YTP/1 path and have no schema-1 aliases.
+administration, command execution, host-controller modes, product codecs, and
+dynamic plugins are outside the first YTP/1 path and have no schema-1 aliases.
 
 ## Packet channels
 
 Packet channels are a first-class YTP/1 service kind, not a byte stream
 carrying a private subprotocol. OPEN names a bounded packet service and may
 carry the strict built-in UDP destination; each write is one opaque packet
-with boundaries preserved end to end; the intended packet ABI batches views while
+with boundaries preserved end to end; the native packet ABI batches views while
 keeping individual boundaries and all-or-none write admission; packet size,
 batch count, stream count, queued bytes, pending opens, and outer and
 in-session credit are bounded before allocation; and every packet OPEN is
-independently authorized. Direct UDP is an explicit `RouteProvider`, and a
-future TUN adapter is an ordinary ABI consumer that cannot bypass route
-policy. The codec and ABI declarations exist. NativeEndpoint composes the
-opt-in Asio provider and configured `direct_udp` handlers into an authenticated
-connected-UDP path with explicit policy and preserved packet boundaries.
-Public ABI packet handle creation and I/O, standalone packet/TUN adapters, and
-production qualification remain unfinished.
+independently authorized. Direct UDP uses an explicit `RouteProvider`.
+NativeEndpoint composes the Asio provider and configured `direct_udp` handlers
+into an authenticated connected-UDP path with destination policy and preserved
+packet boundaries. The native ABI supports named packet handles and routed UDP
+I/O; the standalone Linux runtimes compose managed TUN adapters with directional
+IP policy. See [ABI](../../ABI.md) and the managed Linux TUN section above for
+their bounds and ownership. Production qualification remains open.
 
 ## Diagnostics and evidence
 
@@ -384,11 +474,10 @@ Focused local checks:
 ```bash
 cmake -S . -B build-test -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DYUME_BUILD_TESTING=ON -DYUME_BUILD_SHARED_ABI=ON \
-  -DYUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=ON -DYUME_WARNINGS_AS_ERRORS=ON
+  -DYUME_WARNINGS_AS_ERRORS=ON
 cmake --build build-test -j"$(nproc)"
 ctest --test-dir build-test --output-on-failure
-python3 -m unittest tests.test_yume_setup_transport_v2 \
-  tests.test_yume_setup_ytp1 tests.test_yume_doctor_ytp1
+python3 -m unittest tests.test_yume_setup tests.test_yume_doctor
 python3 tests/test_project_metadata.py
 python3 scripts/generate_transport_profiles.py --check
 python3 scripts/check_website_catalog.py
@@ -405,8 +494,8 @@ role, transcript, identities, parameters, and both capability manifests being
 bound; component stripping, mutation, role confusion, replay, and exporter
 mismatch; and directional one-use keys, nonce uniqueness, bounded pending
 epochs, rekey races, and secure cancellation. Known-answer vectors use only
-`yume/ytp/1/...` domains; transport-v2 vectors are never renamed into YTP/1
-vectors.
+`yume/ytp/1/...` domains. The transport-v2 labels the relay channel keeps
+never enter them.
 
 Before the tunnel can be described as usable, tests must exercise the real
 TLS 1.3 front door, genuine HTTP/2 cover behavior, replay-protected admission,
@@ -421,8 +510,8 @@ batches, rekey pressure, cancellation, and teardown at every asynchronous
 boundary, with ASan, UBSan, TSan, soak, failure-injection, and fuzz suites
 run detached on the private build host.
 
-Performance claims need the signed 0.2 baseline kept runnable and matched
-evidence captured before any switch-over: throughput, p50/p99 latency, CPU
+Performance claims against transport v2 need matched runs of a build from
+commit `9070b0a`, the last that contains it: throughput, p50/p99 latency, CPU
 per byte, allocations, peak memory, and fairness at 1, 32, and 256 streams
 over at least five runs, with environment, raw runs, summary method, and
 uncertainty reported. Ingress claims must name the exact qualified profile

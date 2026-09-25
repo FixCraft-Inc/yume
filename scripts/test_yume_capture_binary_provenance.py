@@ -77,34 +77,7 @@ class CaptureBinaryProvenanceTest(unittest.TestCase):
                     self._elf_with_needed(b"libc.so.6", library), "fixture"
                 )
 
-    def test_exact_bundle_binaries_are_accepted(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            bundle = root / "yume-amd64-linux.tar.xz"
-            bundle.write_bytes(b"bundle")
-            yume = root / "yume"
-            helper = root / "yume-chrome-tls-helper"
-            self._executable(yume, b"exact-yume")
-            self._executable(helper, b"exact-helper")
-            manifest = {"files": [
-                {"file": "yume", "size": yume.stat().st_size,
-                 "sha256": hashlib.sha256(yume.read_bytes()).hexdigest()},
-                {"file": "yume-chrome-tls-helper",
-                 "size": helper.stat().st_size,
-                 "sha256": hashlib.sha256(helper.read_bytes()).hexdigest()},
-            ]}
-            with (
-                mock.patch.object(provenance, "source_version", return_value="0.2.0-dev6"),
-                mock.patch.object(provenance, "transport_dependency", return_value={}),
-                mock.patch.object(provenance, "validate_bundle", return_value=manifest),
-            ):
-                hashes = provenance.validate_capture_binaries(
-                    bundle, yume, helper, "a" * 40
-                )
-            self.assertEqual(hashes[0], manifest["files"][0]["sha256"])
-            self.assertEqual(hashes[1], manifest["files"][1]["sha256"])
-
-    def test_native_capture_requires_only_the_yume_binary(self) -> None:
+    def test_exact_bundle_binary_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bundle = root / "yume-amd64-linux.tar.xz"
@@ -121,10 +94,10 @@ class CaptureBinaryProvenanceTest(unittest.TestCase):
                 mock.patch.object(provenance, "transport_dependency", return_value={}),
                 mock.patch.object(provenance, "validate_bundle", return_value=manifest),
             ):
-                hashes = provenance.validate_capture_binaries(
-                    bundle, yume, None, "a" * 40
+                digest = provenance.validate_capture_binaries(
+                    bundle, yume, "a" * 40
                 )
-            self.assertEqual(hashes, (manifest["files"][0]["sha256"], None))
+            self.assertEqual(digest, manifest["files"][0]["sha256"])
 
     def test_stale_yume_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,15 +105,10 @@ class CaptureBinaryProvenanceTest(unittest.TestCase):
             bundle = root / "yume-amd64-linux.tar.xz"
             bundle.write_bytes(b"bundle")
             yume = root / "yume"
-            helper = root / "yume-chrome-tls-helper"
             self._executable(yume, b"stale-yume")
-            self._executable(helper, b"exact-helper")
             manifest = {"files": [
                 {"file": "yume", "size": len(b"expected-yume"),
                  "sha256": hashlib.sha256(b"expected-yume").hexdigest()},
-                {"file": "yume-chrome-tls-helper",
-                 "size": helper.stat().st_size,
-                 "sha256": hashlib.sha256(helper.read_bytes()).hexdigest()},
             ]}
             with (
                 mock.patch.object(provenance, "source_version", return_value="0.2.0-dev6"),
@@ -151,23 +119,21 @@ class CaptureBinaryProvenanceTest(unittest.TestCase):
                     provenance.ProvenanceError, "differs from the exact release bundle"
                 ):
                     provenance.validate_capture_binaries(
-                        bundle, yume, helper, "a" * 40
+                        bundle, yume, "a" * 40
                     )
 
     def test_non_executable_or_malformed_commit_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             yume = root / "yume"
-            helper = root / "helper"
             yume.write_bytes(b"not executable")
-            self._executable(helper, b"helper")
             with self.assertRaisesRegex(provenance.ProvenanceError, "40-hex"):
                 provenance.validate_capture_binaries(
-                    root / "bundle", yume, helper, "BAD"
+                    root / "bundle", yume, "BAD"
                 )
             with self.assertRaisesRegex(provenance.ProvenanceError, "executable"):
                 provenance.validate_capture_binaries(
-                    root / "bundle", yume, helper, "a" * 40
+                    root / "bundle", yume, "a" * 40
                 )
 
 

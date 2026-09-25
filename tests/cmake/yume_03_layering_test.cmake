@@ -26,11 +26,10 @@ file(MAKE_DIRECTORY
     "${YUME_TEST_ROOT}/src/engine"
     "${YUME_TEST_ROOT}/src/ytp"
     "${YUME_TEST_ROOT}/src/config/v1"
-    "${YUME_TEST_ROOT}/src/core"
-    "${YUME_TEST_ROOT}/src/outbound"
-    "${YUME_TEST_ROOT}/src/client"
-    "${YUME_TEST_ROOT}/src/server"
-    "${YUME_TEST_ROOT}/src/facade"
+    "${YUME_TEST_ROOT}/src/common"
+    "${YUME_TEST_ROOT}/src/fs"
+    "${YUME_TEST_ROOT}/src/stealth"
+    "${YUME_TEST_ROOT}/src/abi"
     "${YUME_TEST_ROOT}/src/runtime"
     "${YUME_TEST_ROOT}/src/providers"
     "${YUME_TEST_ROOT}/src/admission")
@@ -101,53 +100,49 @@ file(WRITE "${YUME_TEST_ROOT}/src/ytp/forbidden.hpp"
 run_layering_check(FALSE "dependency-clean ytp")
 file(REMOVE "${YUME_TEST_ROOT}/src/ytp/forbidden.hpp")
 
+file(WRITE "${YUME_TEST_ROOT}/src/common/forbidden.hpp"
+    "#include <filesystem>\n")
+run_layering_check(FALSE "dependency-clean common")
+file(REMOVE "${YUME_TEST_ROOT}/src/common/forbidden.hpp")
+
 file(WRITE "${YUME_TEST_ROOT}/src/config/v1/forbidden.hpp"
     "#include <sys/socket.h>\n")
 run_layering_check(FALSE "config-v1 public header")
 file(REMOVE "${YUME_TEST_ROOT}/src/config/v1/forbidden.hpp")
 
-# Directional rules for the transport-v2 stack. Each of these was verified by
-# hand once; pinning them here is what keeps them true. Both include spellings
-# must be caught, because a quoted include is the common form and an angled one
-# is what someone reaches for when the quoted form is rejected.
-file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.hpp"
-    "#include \"server/config/config.hpp\"\n")
-run_layering_check(FALSE "forbidden.hpp includes server/")
-file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.hpp")
+# Directional rules. Both include spellings must be caught, because a quoted
+# include is the common form and an angled one is what someone reaches for
+# when the quoted form is rejected.
+file(WRITE "${YUME_TEST_ROOT}/src/stealth/forbidden.hpp"
+    "#include \"providers/h2_duplex_carrier.hpp\"\n")
+run_layering_check(FALSE "forbidden.hpp includes providers/")
+file(REMOVE "${YUME_TEST_ROOT}/src/stealth/forbidden.hpp")
 
-file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.hpp"
-    "#include <client/cli/entry.hpp>\n")
-run_layering_check(FALSE "forbidden.hpp includes client/")
-file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.hpp")
+file(WRITE "${YUME_TEST_ROOT}/src/common/forbidden.hpp"
+    "#include <stealth/cover_profile.hpp>\n")
+run_layering_check(FALSE "forbidden.hpp includes stealth/")
+file(REMOVE "${YUME_TEST_ROOT}/src/common/forbidden.hpp")
 
-file(WRITE "${YUME_TEST_ROOT}/src/client/forbidden.cpp"
-    "#include \"server/session/session.hpp\"\n")
-run_layering_check(FALSE "forbidden.cpp includes server/")
-file(REMOVE "${YUME_TEST_ROOT}/src/client/forbidden.cpp")
-
-file(WRITE "${YUME_TEST_ROOT}/src/server/forbidden.cpp"
-    "#include \"client/cli/entry.hpp\"\n")
-run_layering_check(FALSE "forbidden.cpp includes client/")
-file(REMOVE "${YUME_TEST_ROOT}/src/server/forbidden.cpp")
-
-file(WRITE "${YUME_TEST_ROOT}/src/facade/forbidden.cpp"
+file(WRITE "${YUME_TEST_ROOT}/src/abi/forbidden.cpp"
     "#include \"gui/app.hpp\"\n")
 run_layering_check(FALSE "forbidden.cpp includes gui/")
-file(REMOVE "${YUME_TEST_ROOT}/src/facade/forbidden.cpp")
+file(REMOVE "${YUME_TEST_ROOT}/src/abi/forbidden.cpp")
 
-file(WRITE "${YUME_TEST_ROOT}/src/outbound/forbidden.cpp"
-    "#include \"abi/yume_c.hpp\"\n")
-run_layering_check(FALSE "forbidden.cpp includes abi/")
-file(REMOVE "${YUME_TEST_ROOT}/src/outbound/forbidden.cpp")
+foreach(_forbidden IN ITEMS abi/endpoint_backend.hpp modules/relay/record.hpp)
+    file(WRITE "${YUME_TEST_ROOT}/src/runtime/forbidden.cpp"
+        "#include \"${_forbidden}\"\n")
+    run_layering_check(FALSE "Layering violation: src/runtime/")
+    file(REMOVE "${YUME_TEST_ROOT}/src/runtime/forbidden.cpp")
+endforeach()
 
 # A C source under a guarded layer must be checked too. The glob previously
 # covered only .cpp and .hpp, so a .c file slipped past the rule entirely.
-file(WRITE "${YUME_TEST_ROOT}/src/core/forbidden.c"
-    "#include \"server/config/config.hpp\"\n")
-run_layering_check(FALSE "forbidden.c includes server/")
-file(REMOVE "${YUME_TEST_ROOT}/src/core/forbidden.c")
+file(WRITE "${YUME_TEST_ROOT}/src/fs/forbidden.c"
+    "#include \"runtime/native_endpoint.hpp\"\n")
+run_layering_check(FALSE "forbidden.c includes runtime/")
+file(REMOVE "${YUME_TEST_ROOT}/src/fs/forbidden.c")
 
-foreach(_forbidden IN ITEMS core/security/crypto.hpp providers/ytp1_h2_admission.hpp)
+foreach(_forbidden IN ITEMS fs/secret_file.hpp providers/ytp1_h2_admission.hpp)
     file(WRITE "${YUME_TEST_ROOT}/src/admission/forbidden.hpp"
         "#include \"${_forbidden}\"\n")
     run_layering_check(FALSE "Layering violation: src/admission/")

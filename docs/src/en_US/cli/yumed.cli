@@ -1,137 +1,24 @@
 #!yume-cli 1
 binary:    yumed
 manual:    yumed_8
-output:    src/server/cli/help_text.hpp
-namespace: yume::server::cli
+output:    src/runtime/yumed_help_text.hpp
+namespace: yume::runtime::yumed_cli
+output-kind: static-help
 ---
 @usage
-yumed [--config <path>] [options]
-yumed completion bash
-yumed --completion bash
-yumed --help
+yumed --config <path> [--validate]
 yumed --version
-yumed --credits
+yumed --help
 @end
 
-@section Core
---completion
+@section Options
 --config
---listen
---listen
---cert
---key
---tls_cert
---tls_key
---auth-keys
---auth-keys-meta
---admin-keys
---operator-keys
---operator-keys-meta
---threads
---reverse-port-min
---reverse-port-max
---dns-server
---proxy
---obfs-secret-file
---inner-psk-file
---real-backend
---tls-handshake-timeout-ms
---max-sessions
---bulk-key-max-sessions
---rekey-window
---accept-rate-limit
---egress-mbps
---filter-list
---filter-geolite
---filter-memory-mib
---client-filter-mode
---egress-filter-mode
---packet-egress
---packet-tun-name
---packet-cidr
---packet-mtu
---bench
---allow-exec
---allow-local-ip
---control-full
---codec-allow
---allow-monero-rpc
---service-allow
---monero-rpc-backend
---root
---boring
---timing
-
-@section Security
-@note
-  YUME 2.0 always uses ephemeral ML-KEM-1024 + X25519, a mandatory
-  file-distributed PSK, per-message AES-256-GCM keys, and independent
-  directional epochs. JSON security_mode selects extreme (default),
-  normal, soft, or bounded ultimate limits; see docs/SECURITY_MODES.md.
-@end
-
-@section HTTP / Operator identity
---real-backend
---robots-deny
---real-index
---real-root
---real-secret-file
---operator-identity
---operator-proof-mode
---operator-proof-api
---operator-proof-token-file
---operator-ca-key
---operator-ca-cert
---operator-delegated-key
---operator-delegated-cert
-@note
-  The proof establishes CA-authorized operator identity, not a guarantee
-  that the host cannot inspect or log client traffic. Display names are
-  informational; clients trust the certificate chain and fingerprints.
-@end
-
-@section Relay and Runtime
---server-name
---server-id
---relay-enable
---relay-disable
---directory-enable
---directory-disable
---federation-enable
---federation-identity
---federation-operator-ca
---peer
---cluster-join
---cluster-bootstrap
---public-node
---host-mode
---accept-yume-clients
---no-yume-clients
---client-deny-action
---exposure-check
---hide-in-the-crowd
---upstream-response
---upstream-response-dir
---upstream-response-ttl
---attach-local
-
-@section Key Management
---keys-list
---keys-add
---keys-admin
---keys-remove
---keys-alias
---keys-gen
---keys-gen-add
-@note
-  auth_keys_meta supports key_type (individual|bulk), weight, max_sessions, federation_peer_id plus federation_psk_file, permissions.allow_codecs, permissions.allow_services, and permissions.{allow_local_ip,allow_exec,allow_chat,allow_file,allow_bytes}. True control_full or inbound/outbound-admin grants are rejected; admin requires a distinct --admin-keys identity, and outbound admin also requires the visitor identity in --operator-keys.
-@end
---ui
-
-@section Other
-@note
-  completion bash
-@end
--h
+--validate
 --version
---credits
+-h
+
+@gap
+@note
+Network and security policy come only from the schema-1 configuration.
+This development runtime is not qualified for production use.
+@end

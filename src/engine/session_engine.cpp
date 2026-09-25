@@ -44,6 +44,12 @@ constexpr std::size_t kClosePayloadBytes = 1U;
 constexpr std::size_t kRekeyEpochBytes = 4U;
 constexpr std::size_t kPingPayloadBytes = 8U;
 
+std::size_t rekey_queue_reserve(const SessionLimits& limits) noexcept {
+    return 2U * (ytp1::kFrameHeaderSize + kRekeyEpochBytes) +
+           kProtectedEnvelopeBytes + limits.max_security_overhead +
+           ytp1::kRekeyInitMessageBytes + ytp1::kRekeyAckMessageBytes;
+}
+
 enum class StreamCloseCode : std::uint8_t {
     Normal = 0U,
     Unauthorized = 1U,
@@ -269,8 +275,10 @@ Status protocol_failure(std::string_view message) {
 }
 
 Status validate_limits(const SessionLimits& limits) {
-    if (limits.max_frame_payload == 0U ||
-        limits.max_frame_payload > ytp1::kDefaultMaxFramePayload) {
+    if (limits.max_frame_payload <
+            kRekeyEpochBytes + ytp1::kRekeyInitMessageBytes ||
+        limits.max_frame_payload > ytp1::kDefaultMaxFramePayload ||
+        limits.max_frame_payload > ytp1::kEpochPayloadByteLimit) {
         return Status(StatusCode::InvalidArgument,
                       "session frame limit is outside the YTP/1 bound");
     }
@@ -281,7 +289,7 @@ Status validate_limits(const SessionLimits& limits) {
         return Status(StatusCode::InvalidArgument,
                       "session stream or pending-open limit is invalid");
     }
-    if (limits.max_control_messages == 0U ||
+    if (limits.max_control_messages < 3U ||
         limits.max_queued_bytes == 0U ||
         limits.max_queued_bytes > kAbsoluteMaxBufferBytes ||
         limits.max_stream_queued_bytes == 0U ||
@@ -303,14 +311,23 @@ Status validate_limits(const SessionLimits& limits) {
         return Status(StatusCode::InvalidArgument,
                       "session flow-credit limits are invalid");
     }
-    if (limits.max_concurrent_rekeys == 0U ||
+    if (limits.max_concurrent_rekeys < 2U ||
         limits.max_concurrent_rekeys > kMaxSessionConcurrentRekeys ||
-        limits.max_rekey_payload == 0U ||
+        limits.max_rekey_payload < ytp1::kRekeyInitMessageBytes ||
         limits.max_rekey_payload > kMaxSessionRekeyPayloadBytes ||
         limits.max_security_overhead >
             kMaxSessionSecurityOverheadBytes) {
         return Status(StatusCode::InvalidArgument,
                       "session rekey or security-overhead limit is invalid");
+    }
+    if (limits.max_queued_bytes <= rekey_queue_reserve(limits)) {
+        return Status(StatusCode::InvalidArgument,
+                      "session queue cannot reserve directional rekey controls");
+    }
+    if (limits.rekey_ack_timeout <= std::chrono::milliseconds::zero() ||
+        limits.rekey_ack_timeout > kMaxRekeyAckTimeout) {
+        return Status(StatusCode::InvalidArgument,
+                      "session rekey acknowledgement timeout is invalid");
     }
     return Status::success();
 }
@@ -413,6 +430,15 @@ public:
         return state_;
     }
 
+    SessionTraffic traffic() const noexcept {
+        SessionTraffic counts;
+        counts.payload_bytes_sent = payload_bytes_sent_.load(std::memory_order_relaxed);
+        counts.payload_bytes_received = payload_bytes_received_.load(std::memory_order_relaxed);
+        counts.record_bytes_sent = record_bytes_sent_.load(std::memory_order_relaxed);
+        counts.record_bytes_received = record_bytes_received_.load(std::memory_order_relaxed);
+        return counts;
+    }
+
     Status terminal_status() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return terminal_status_;
@@ -428,6 +454,8 @@ public:
                     CancellationToken cancellation,
                     OpenCompletion completion);
     Status initiate_rekey();
+    std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const noexcept;
+    bool expire_rekey(std::chrono::steady_clock::time_point now) noexcept;
     void stop(Status reason, bool failed) noexcept;
 
     void stream_read(StreamId stream_id,
@@ -573,6 +601,9 @@ private:
                         std::size_t completion_bytes,
                         Carrier::SendCompletion completion);
     Status flush_deferred_records();
+    std::size_t outbound_queue_limit() const noexcept {
+        return limits_.max_queued_bytes - rekey_queue_reserve(limits_);
+    }
     Result<Buffer> encode_frame(ytp1::RecordType type,
                                 StreamId stream_id,
                                 std::span<const std::byte> payload) const;
@@ -604,7 +635,7 @@ private:
 
     void return_receive_credit(StreamId stream_id,
                                std::size_t bytes) noexcept;
-    void drain_pending_writes(StreamId stream_id) noexcept;
+    void drain_pending_writes() noexcept;
     Status send_stream_credit(StreamId stream_id, std::uint32_t increment);
     Status send_close(StreamId stream_id, StreamCloseCode code);
     Status finish_stream_shutdown_if_ready(StreamId stream_id) noexcept;
@@ -648,7 +679,8 @@ private:
     std::mutex security_mutex_;
     // Serializes protected token allocation, one-use sealing, and queue
     // publication so concurrent callers cannot put sequence N+1 on the
-    // carrier before sequence N.
+    // carrier before sequence N. ACK settlement takes this lock before
+    // security_mutex_ or mutex_ so deferred publication cannot miss its flush.
     std::mutex outbound_record_mutex_;
     SessionState state_{SessionState::Created};
     Status terminal_status_{};
@@ -670,6 +702,10 @@ private:
     std::uint64_t next_operation_id_{1U};
     bool operation_ids_exhausted_{false};
     std::size_t pending_write_bytes_{0U};
+    // One publisher gives every credit-ready stream one record per turn.
+    // The cursor survives credit/rekey stalls and callback re-entry.
+    std::uint32_t last_scheduled_stream_id_{0U};
+    bool pending_writes_draining_{false};
     std::size_t inbound_queued_bytes_{0U};
 
     std::uint64_t outbound_connection_credit_{0U};
@@ -682,6 +718,13 @@ private:
     bool outbound_sequence_exhausted_{false};
     bool inbound_sequence_exhausted_{false};
     bool outbound_rekey_pending_{false};
+    bool outbound_rekey_expired_{false};
+    std::chrono::steady_clock::time_point outbound_rekey_deadline_{};
+    std::uint64_t outbound_epoch_bytes_{0U};
+    std::uint64_t outbound_epoch_records_{0U};
+    std::uint64_t inbound_epoch_bytes_{0U};
+    std::uint64_t inbound_epoch_records_{0U};
+    std::chrono::steady_clock::time_point outbound_epoch_first_send_{};
     std::uint32_t outbound_rekey_epoch_{0U};
     std::uint32_t rekey_work_{0U};
 
@@ -690,6 +733,12 @@ private:
     std::optional<ActiveSend> active_send_;
     std::size_t queued_wire_bytes_{0U};
     std::uint32_t queued_control_messages_{0U};
+    // Independent monotonic counters for SessionTraffic. No invariant spans
+    // them, so relaxed ordering suffices.
+    std::atomic<std::uint64_t> payload_bytes_sent_{0U};
+    std::atomic<std::uint64_t> payload_bytes_received_{0U};
+    std::atomic<std::uint64_t> record_bytes_sent_{0U};
+    std::atomic<std::uint64_t> record_bytes_received_{0U};
     bool send_in_progress_{false};
     bool send_pump_running_{false};
     bool send_pump_again_{false};
@@ -910,6 +959,10 @@ SessionState SessionEngine::state() const noexcept {
     return impl_->state();
 }
 
+SessionTraffic SessionEngine::traffic() const noexcept {
+    return impl_->traffic();
+}
+
 Status SessionEngine::terminal_status() const {
     return impl_->terminal_status();
 }
@@ -987,6 +1040,16 @@ void SessionEngine::async_open(
 Status SessionEngine::initiate_rekey() {
     const auto keepalive = weak_from_this().lock();
     return impl_->initiate_rekey();
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+SessionEngine::rekey_deadline() const noexcept {
+    return impl_->rekey_deadline();
+}
+
+bool SessionEngine::expire_rekey(std::chrono::steady_clock::time_point now) noexcept {
+    const auto keepalive = weak_from_this().lock();
+    return impl_->expire_rekey(now);
 }
 
 void SessionEngine::stop(Status reason) noexcept {
@@ -1485,8 +1548,8 @@ Status SessionEngine::Impl::defer_record(
     const std::size_t overhead = ytp1::kFrameHeaderSize +
         kProtectedEnvelopeBytes + security_->max_sealed_overhead();
     if (payload.size() > limits_.max_frame_payload ||
-        payload.size() > limits_.max_queued_bytes ||
-        overhead > limits_.max_queued_bytes - payload.size()) {
+        payload.size() > outbound_queue_limit() ||
+        overhead > outbound_queue_limit() - payload.size()) {
         return Status(StatusCode::ResourceExhausted,
                       "deferred record exceeds the queue bound");
     }
@@ -1497,14 +1560,14 @@ Status SessionEngine::Impl::defer_record(
             return Status(StatusCode::Closed, "session is closed");
         }
         if (is_control &&
-            queued_control_messages_ >= limits_.max_control_messages) {
+            queued_control_messages_ >= limits_.max_control_messages - 2U) {
             return Status(StatusCode::ResourceExhausted,
                           "control-message queue is full");
         }
         const std::size_t retained = queued_wire_bytes_ +
                                      pending_write_bytes_;
-        if (retained > limits_.max_queued_bytes ||
-            reservation > limits_.max_queued_bytes - retained) {
+        if (retained > outbound_queue_limit() ||
+            reservation > outbound_queue_limit() - retained) {
             return Status(StatusCode::ResourceExhausted,
                           "session outbound queue is full");
         }
@@ -1566,6 +1629,31 @@ Status SessionEngine::Impl::enqueue_record(
         return Status(StatusCode::ResourceExhausted,
                       "record payload exceeds the frame bound");
     }
+    // Recheck after starting a rotation: a synchronous carrier may finish its
+    // ACK, or a competing sender may consume the new epoch, before we return.
+    // The ordering lock keeps this check and token consumption indivisible.
+    while (protect && type != ytp1::RecordType::RekeyInit) {
+        bool rotate = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            rotate = state_ == SessionState::Active &&
+                !outbound_rekey_pending_ &&
+                (payload.size() > ytp1::kEpochPayloadByteLimit -
+                                      outbound_epoch_bytes_ ||
+                 outbound_epoch_records_ == ytp1::kEpochRecordLimit ||
+                 (outbound_epoch_records_ != 0U &&
+                  std::chrono::steady_clock::now() - outbound_epoch_first_send_ >=
+                      ytp1::kEpochSendLifetime));
+        }
+        if (!rotate) break;
+        ordering_lock.unlock();
+        const auto status = initiate_rekey();
+        if (!status.ok() && status.code() != StatusCode::AlreadyExists) {
+            fail(status);
+            return status;
+        }
+        ordering_lock.lock();
+    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
@@ -1600,6 +1688,12 @@ Status SessionEngine::Impl::enqueue_record(
                       "record exceeds the outbound queue bound");
     }
     const std::size_t reservation = fixed + payload.size();
+    const bool rekey_control = type == ytp1::RecordType::RekeyInit ||
+                               type == ytp1::RecordType::RekeyAck;
+    const std::size_t queue_limit = rekey_control
+        ? limits_.max_queued_bytes : outbound_queue_limit();
+    const std::uint32_t control_limit = limits_.max_control_messages -
+                                      (rekey_control ? 0U : 2U);
     std::optional<RecordKeyToken> token;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1641,14 +1735,14 @@ Status SessionEngine::Impl::enqueue_record(
                           "protected record sent before AUTH completion");
         }
         if (is_control &&
-            queued_control_messages_ >= limits_.max_control_messages) {
+            queued_control_messages_ >= control_limit) {
             return Status(StatusCode::ResourceExhausted,
                           "control-message queue is full");
         }
         const std::size_t retained = queued_wire_bytes_ +
                                      pending_write_bytes_;
-        if (retained > limits_.max_queued_bytes ||
-            reservation > limits_.max_queued_bytes - retained) {
+        if (retained > queue_limit ||
+            reservation > queue_limit - retained) {
             return Status(StatusCode::ResourceExhausted,
                           "session outbound queue is full");
         }
@@ -1662,6 +1756,13 @@ Status SessionEngine::Impl::enqueue_record(
             }
             token = RecordKeyToken{outbound_epoch_,
                                    next_outbound_sequence_};
+            if (type != ytp1::RecordType::RekeyInit) {
+                if (outbound_epoch_records_ == 0U) {
+                    outbound_epoch_first_send_ = std::chrono::steady_clock::now();
+                }
+                outbound_epoch_bytes_ += payload.size();
+                ++outbound_epoch_records_;
+            }
             if (next_outbound_sequence_ ==
                 std::numeric_limits<std::uint64_t>::max()) {
                 outbound_sequence_exhausted_ = true;
@@ -1768,12 +1869,20 @@ Status SessionEngine::Impl::enqueue_record(
     if (ordering_lock.owns_lock()) {
         ordering_lock.unlock();
     }
+    record_bytes_sent_.fetch_add(actual, std::memory_order_relaxed);
+    if (type == ytp1::RecordType::Data || type == ytp1::RecordType::Packet) {
+        payload_bytes_sent_.fetch_add(payload.size(), std::memory_order_relaxed);
+    }
     request_send_pump();
     return Status::success();
 }
 
 Status SessionEngine::Impl::flush_deferred_records() {
     std::deque<DeferredRecord> deferred;
+    const std::size_t overhead = ytp1::kFrameHeaderSize +
+        kProtectedEnvelopeBytes + security_->max_sealed_overhead();
+    std::size_t deferred_bytes = 0U;
+    std::uint32_t deferred_controls = 0U;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
@@ -1785,26 +1894,42 @@ Status SessionEngine::Impl::flush_deferred_records() {
         }
         deferred.swap(deferred_records_);
         for (const DeferredRecord& record : deferred) {
-            const std::size_t reservation = ytp1::kFrameHeaderSize +
-                kProtectedEnvelopeBytes +
-                security_->max_sealed_overhead() + record.payload.size();
-            queued_wire_bytes_ -= reservation;
+            deferred_bytes += overhead + record.payload.size();
             if (record.is_control) {
-                --queued_control_messages_;
+                ++deferred_controls;
             }
         }
     }
     struct CompletionDrain final {
+        Impl& owner;
         std::deque<DeferredRecord>& records;
+        std::size_t reserved_bytes;
+        std::uint32_t reserved_controls;
         Status reason{StatusCode::Cancelled};
+        void release(std::size_t bytes, std::uint32_t controls) noexcept {
+            std::lock_guard<std::mutex> lock(owner.mutex_);
+            // stop() resets all queue accounting before invoking callbacks.
+            if (!owner.terminal_locked()) {
+                owner.queued_wire_bytes_ -= bytes;
+                owner.queued_control_messages_ -= controls;
+            }
+            reserved_bytes -= bytes;
+            reserved_controls -= controls;
+        }
         ~CompletionDrain() noexcept {
+            release(reserved_bytes, reserved_controls);
             for (auto& record : records) {
                 invoke_noexcept(record.completion, copy_failure(reason), 0U);
                 record.completion = {};
             }
         }
-    } drain{deferred};
+    } drain{*this, deferred, deferred_bytes, deferred_controls};
     for (DeferredRecord& record : deferred) {
+        Buffer payload = std::move(record.payload);
+        // Keep later records reserved across carrier/application callbacks.
+        // This payload is released at the end of its iteration, including
+        // when the record is copied into a subsequent rekey's deferred queue.
+        drain.release(overhead + payload.size(), record.is_control ? 1U : 0U);
         bool closed = false;
         if (!record.stream_id.is_control() && record.type != ytp1::RecordType::Close) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -1831,7 +1956,7 @@ Status SessionEngine::Impl::flush_deferred_records() {
                 };
             }
             status = enqueue_record(record.type, record.stream_id,
-                record.payload.bytes(), true, record.is_control,
+                payload.bytes(), true, record.is_control,
                 record.completion_bytes, std::move(submitted));
         } catch (const std::bad_alloc&) {
             status = failure_status(StatusCode::ResourceExhausted);
@@ -2024,6 +2149,10 @@ void SessionEngine::Impl::on_receive(
 }
 
 Status SessionEngine::Impl::process_received(ReceivedRecord record) {
+    if (expire_rekey(std::chrono::steady_clock::now())) {
+        return failure_status(StatusCode::FailedPrecondition,
+                              "rekey acknowledgement deadline expired");
+    }
     SessionState current;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2033,6 +2162,7 @@ Status SessionEngine::Impl::process_received(ReceivedRecord record) {
         record.payload().size() > carrier_->max_record_size()) {
         return protocol_failure("carrier delivered an invalid record size");
     }
+    record_bytes_received_.fetch_add(record.payload().size(), std::memory_order_relaxed);
 
     if (current == SessionState::Authenticating) {
         const auto decoded = ytp1::DecodeRecord(
@@ -2129,6 +2259,16 @@ Status SessionEngine::Impl::process_protected_record(
         as_u8(plaintext.bytes()), limits_.max_frame_payload);
     if (!decoded.ok()) {
         return protocol_failure("protected YTP/1 record is malformed");
+    }
+    if (decoded.value->header.type != ytp1::RecordType::RekeyInit) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (decoded.value->payload.size() > ytp1::kEpochPayloadByteLimit -
+                                               inbound_epoch_bytes_ ||
+            inbound_epoch_records_ == ytp1::kEpochRecordLimit) {
+            return protocol_failure("peer exceeded the directional epoch limit");
+        }
+        inbound_epoch_bytes_ += decoded.value->payload.size();
+        ++inbound_epoch_records_;
     }
     CarrierCredit outer_credit = record.take_credit();
     return process_decoded_record(*decoded.value,
@@ -2536,6 +2676,7 @@ Status SessionEngine::Impl::process_application_data(
         }
         stream->inbound_credit -= record.payload.size();
         inbound_connection_credit_ -= record.payload.size();
+        payload_bytes_received_.fetch_add(record.payload.size(), std::memory_order_relaxed);
         if (!discard_crossed_data) {
             application_record.emplace(std::move(copied).take_value(),
                 CarrierCredit(record.payload.size(), std::move(*release)));
@@ -2699,7 +2840,6 @@ Status SessionEngine::Impl::process_connection_credit(
     if (!decoded.ok()) {
         return protocol_failure("connection-credit update is malformed");
     }
-    std::vector<StreamId> pending;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (*decoded.value > limits_.max_connection_credit -
@@ -2708,16 +2848,8 @@ Status SessionEngine::Impl::process_connection_credit(
                 "connection-credit update exceeds the configured bound");
         }
         outbound_connection_credit_ += *decoded.value;
-        pending.reserve(streams_.size());
-        for (const auto& [_, stream] : streams_) {
-            if (!stream->pending_writes.empty()) {
-                pending.push_back(stream->id);
-            }
-        }
     }
-    for (StreamId stream_id : pending) {
-        drain_pending_writes(stream_id);
-    }
+    drain_pending_writes();
     return Status::success();
 }
 
@@ -2766,7 +2898,7 @@ Status SessionEngine::Impl::process_stream_credit(const ytp1::RecordView& record
         invoke_noexcept(completion,
             Result<std::shared_ptr<StreamResponder>>(std::move(responder)));
     }
-    drain_pending_writes(stream->id);
+    drain_pending_writes();
     return Status::success();
 }
 
@@ -3027,17 +3159,13 @@ void SessionEngine::Impl::stream_write(
     Buffer payload,
     CancellationToken cancellation,
     StreamResponder::WriteCompletion completion) {
-    if (!completion) {
-        return;
-    }
+    if (!completion) return;
     if (cancellation.is_cancelled()) {
         invoke_noexcept(completion, Status(
             StatusCode::Cancelled, "stream write was cancelled"), 0U);
         return;
     }
-    std::shared_ptr<StreamStateData> stream;
     Status status = Status::success();
-    bool can_send = false;
     std::optional<std::uint64_t> queued_operation;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -3049,54 +3177,46 @@ void SessionEngine::Impl::stream_write(
                             "stream write side is shut down");
         } else if (payload.empty() ||
                    payload.size() > limits_.max_frame_payload ||
+                   payload.size() > limits_.max_connection_credit ||
+                   payload.size() > limits_.max_stream_credit ||
                    (it->second->kind == ServiceKind::PacketChannel &&
                     payload.size() > limits_.max_packet_size)) {
             status = Status(StatusCode::InvalidArgument,
                             "stream payload size is invalid");
         } else {
-            stream = it->second;
-            can_send = stream->pending_writes.empty() &&
-                       payload.size() <= stream->outbound_credit &&
-                       payload.size() <= outbound_connection_credit_ &&
-                       !outbound_rekey_pending_;
-            if (!can_send) {
-                const std::size_t retained = queued_wire_bytes_ +
-                                             pending_write_bytes_;
-                if (payload.size() > limits_.max_stream_queued_bytes -
-                                         stream->outbound_queued_bytes ||
-                    retained > limits_.max_queued_bytes ||
-                    payload.size() > limits_.max_queued_bytes - retained) {
-                    status = Status(StatusCode::ResourceExhausted,
-                                    "stream write queue is full");
-                } else if (operation_ids_exhausted_) {
-                    status = Status(StatusCode::ResourceExhausted,
-                                    "stream operation IDs are exhausted");
-                } else {
-                    try {
-                        const std::uint64_t operation_id = next_operation_id_;
-                        stream->pending_writes.emplace_back(
-                            operation_id, std::move(payload),
-                            std::move(completion));
-                        if (next_operation_id_ ==
-                            std::numeric_limits<std::uint64_t>::max()) {
-                            operation_ids_exhausted_ = true;
-                        } else {
-                            ++next_operation_id_;
-                        }
-                        stream->outbound_queued_bytes +=
-                            stream->pending_writes.back().payload.size();
-                        pending_write_bytes_ +=
-                            stream->pending_writes.back().payload.size();
-                        queued_operation = operation_id;
-                    } catch (const std::bad_alloc&) {
-                        status = Status(StatusCode::ResourceExhausted,
-                                        "stream write queue allocation failed");
-                    }
-                }
+            auto& stream = *it->second;
+            const std::size_t retained = queued_wire_bytes_ +
+                                         pending_write_bytes_;
+            if (payload.size() > limits_.max_stream_queued_bytes -
+                                     stream.outbound_queued_bytes ||
+                retained > outbound_queue_limit() ||
+                payload.size() > outbound_queue_limit() - retained) {
+                status = Status(StatusCode::ResourceExhausted,
+                                "stream write queue is full");
+            } else if (operation_ids_exhausted_) {
+                status = Status(StatusCode::ResourceExhausted,
+                                "stream operation IDs are exhausted");
             } else {
-                stream->outbound_credit -= payload.size();
-                outbound_connection_credit_ -= payload.size();
-                ++stream->outbound_publications;
+                try {
+                    const std::uint64_t operation_id = next_operation_id_;
+                    stream.pending_writes.emplace_back(
+                        operation_id, std::move(payload),
+                        std::move(completion));
+                    if (next_operation_id_ ==
+                        std::numeric_limits<std::uint64_t>::max()) {
+                        operation_ids_exhausted_ = true;
+                    } else {
+                        ++next_operation_id_;
+                    }
+                    stream.outbound_queued_bytes +=
+                        stream.pending_writes.back().payload.size();
+                    pending_write_bytes_ +=
+                        stream.pending_writes.back().payload.size();
+                    queued_operation = operation_id;
+                } catch (const std::bad_alloc&) {
+                    status = Status(StatusCode::ResourceExhausted,
+                                    "stream write queue allocation failed");
+                }
             }
         }
     }
@@ -3104,25 +3224,24 @@ void SessionEngine::Impl::stream_write(
         invoke_noexcept(completion, status, 0U);
         return;
     }
-    if (queued_operation.has_value()) {
-        const std::weak_ptr<SessionEngine> weak = weak_owner();
-        auto registration = cancellation.register_callback(
-            [weak, stream_id,
-             operation_id = *queued_operation] {
-                if (auto engine = weak.lock()) {
-                    engine->impl_->cancel_pending_write(
-                        stream_id, operation_id,
-                        Status(StatusCode::Cancelled,
-                               "stream write was cancelled"));
-                }
-            });
-        if (!registration.ok()) {
-            cancel_pending_write(stream_id, *queued_operation,
-                                 registration.status());
-            return;
-        }
-        CancellationRegistration installed =
-            std::move(registration).take_value();
+    const std::weak_ptr<SessionEngine> weak = weak_owner();
+    auto registration = cancellation.register_callback(
+        [weak, stream_id, operation_id = *queued_operation] {
+            if (auto engine = weak.lock()) {
+                engine->impl_->cancel_pending_write(
+                    stream_id, operation_id,
+                    Status(StatusCode::Cancelled,
+                           "stream write was cancelled"));
+            }
+        });
+    if (!registration.ok()) {
+        cancel_pending_write(stream_id, *queued_operation,
+                             registration.status());
+        return;
+    }
+    CancellationRegistration installed =
+        std::move(registration).take_value();
+    {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = streams_.find(stream_id.value());
         if (it != streams_.end()) {
@@ -3136,97 +3255,52 @@ void SessionEngine::Impl::stream_write(
                 pending->cancellation = std::move(installed);
             }
         }
-        return;
     }
-    if (cancellation.is_cancelled()) {
-        const std::size_t payload_size = payload.size();
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stream->outbound_credit += payload_size;
-            outbound_connection_credit_ += payload_size;
-            --stream->outbound_publications;
-        }
-        invoke_noexcept(completion, Status(
-            StatusCode::Cancelled, "stream write was cancelled"), 0U);
-        const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
-        if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-            fail(shutdown);
-        }
-        return;
-    }
-    const std::size_t payload_size = payload.size();
-    const ytp1::RecordType type = stream->kind == ServiceKind::ByteStream
-        ? ytp1::RecordType::Data
-        : ytp1::RecordType::Packet;
-    std::shared_ptr<StreamResponder::WriteCompletion> completion_holder;
-    try {
-        completion_holder =
-            std::make_shared<StreamResponder::WriteCompletion>(
-                std::move(completion));
-    } catch (const std::bad_alloc&) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stream->outbound_credit += payload_size;
-            outbound_connection_credit_ += payload_size;
-            --stream->outbound_publications;
-        }
-        invoke_noexcept(completion, Status(
-            StatusCode::ResourceExhausted,
-            "stream write completion allocation failed"), 0U);
-        const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
-        if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-            fail(shutdown);
-        }
-        return;
-    }
-    status = enqueue_record(
-        type, stream_id, payload.bytes(), true, false, payload_size,
-        [completion_holder](Status send_status,
-                            std::size_t transferred) noexcept {
-            invoke_noexcept(*completion_holder, std::move(send_status),
-                            transferred);
-            *completion_holder = {};
-        });
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        --stream->outbound_publications;
-        if (!status.ok()) {
-            stream->outbound_credit += payload_size;
-            outbound_connection_credit_ += payload_size;
-        }
-    }
-    if (!status.ok()) {
-        invoke_noexcept(*completion_holder, status, 0U);
-        *completion_holder = {};
-    }
-    const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
-    if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-        fail(shutdown);
-    }
+    drain_pending_writes();
 }
 
-void SessionEngine::Impl::drain_pending_writes(StreamId stream_id) noexcept {
+void SessionEngine::Impl::drain_pending_writes() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pending_writes_draining_) return;
+        pending_writes_draining_ = true;
+    }
     for (;;) {
         std::optional<PendingWrite> pending;
         std::shared_ptr<StreamStateData> stream;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            const auto it = streams_.find(stream_id.value());
-            if (it == streams_.end() || it->second->closed) {
+            if (!terminal_locked() && !outbound_rekey_pending_) {
+                std::shared_ptr<StreamStateData> wrapped;
+                // The stream limit bounds this allocation-free scan. Skip a
+                // stream waiting on its own reader, never one waiting only
+                // on shared credit: otherwise small records can starve it.
+                for (const auto& [id, candidate] : streams_) {
+                    if (candidate->closed || candidate->pending_writes.empty() ||
+                        candidate->pending_writes.front().payload.size() >
+                            candidate->outbound_credit) {
+                        continue;
+                    }
+                    if (id > last_scheduled_stream_id_ &&
+                        (!stream || id < stream->id.value())) {
+                        stream = candidate;
+                    }
+                    if (!wrapped || id < wrapped->id.value()) {
+                        wrapped = candidate;
+                    }
+                }
+                if (!stream) stream = std::move(wrapped);
+            }
+            if (!stream) {
+                pending_writes_draining_ = false;
                 return;
             }
-            if (outbound_rekey_pending_) {
-                return;
-            }
-            if (it->second->pending_writes.empty()) {
-                break;
-            }
-            stream = it->second;
             const std::size_t size = stream->pending_writes.front().payload.size();
-            if (size > stream->outbound_credit ||
-                size > outbound_connection_credit_) {
+            if (size > outbound_connection_credit_) {
+                pending_writes_draining_ = false;
                 return;
             }
+            last_scheduled_stream_id_ = stream->id.value();
             pending.emplace(std::move(stream->pending_writes.front()));
             stream->pending_writes.pop_front();
             stream->outbound_queued_bytes -= size;
@@ -3235,6 +3309,7 @@ void SessionEngine::Impl::drain_pending_writes(StreamId stream_id) noexcept {
             outbound_connection_credit_ -= size;
             ++stream->outbound_publications;
         }
+        const StreamId stream_id = stream->id;
         const std::size_t size = pending->payload.size();
         const ytp1::RecordType type = stream->kind == ServiceKind::ByteStream
             ? ytp1::RecordType::Data
@@ -3251,10 +3326,14 @@ void SessionEngine::Impl::drain_pending_writes(StreamId stream_id) noexcept {
                 outbound_connection_credit_ += size;
                 --stream->outbound_publications;
             }
-            invoke_noexcept(pending->completion, Status(
+            invoke_noexcept(pending->completion, failure_status(
                 StatusCode::ResourceExhausted,
                 "queued-write completion allocation failed"), 0U);
-            break;
+            const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
+            if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
+                fail(shutdown);
+            }
+            continue;
         }
         const Status status = enqueue_record(
             type, stream_id, pending->payload.bytes(), true, false, size,
@@ -3275,12 +3354,11 @@ void SessionEngine::Impl::drain_pending_writes(StreamId stream_id) noexcept {
         if (!status.ok()) {
             invoke_noexcept(*completion_holder, status, 0U);
             *completion_holder = {};
-            break;
         }
-    }
-    const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
-    if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-        fail(shutdown);
+        const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
+        if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
+            fail(shutdown);
+        }
     }
 }
 
@@ -3494,11 +3572,12 @@ void SessionEngine::Impl::remove_stream(StreamId stream_id,
         std::optional<ReceivedRecord> record;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (stream->inbound.empty()) break;
+                if (stream->inbound.empty()) break;
             record.emplace(std::move(stream->inbound.front()));
             stream->inbound.pop_front();
         }
     }
+    drain_pending_writes();
 }
 
 void SessionEngine::Impl::cancel_pending_read(
@@ -3552,6 +3631,7 @@ void SessionEngine::Impl::cancel_pending_write(
     if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
         fail(shutdown);
     }
+    drain_pending_writes();
 }
 
 Status SessionEngine::Impl::initiate_rekey() {
@@ -3573,6 +3653,9 @@ Status SessionEngine::Impl::initiate_rekey() {
         }
         next_epoch = outbound_epoch_ + 1U;
         outbound_rekey_pending_ = true;
+        outbound_rekey_expired_ = false;
+        outbound_rekey_deadline_ =
+            std::chrono::steady_clock::now() + limits_.rekey_ack_timeout;
         outbound_rekey_epoch_ = next_epoch;
         ++rekey_work_;
     }
@@ -3592,6 +3675,7 @@ Status SessionEngine::Impl::initiate_rekey() {
             "security provider threw while beginning rekey"));
     }
     if (!initiation.ok() || initiation.value().empty() ||
+        initiation.value().size() > ytp1::kRekeyInitMessageBytes ||
         initiation.value().size() > limits_.max_rekey_payload ||
         initiation.value().size() > limits_.max_frame_payload -
                                       kRekeyEpochBytes) {
@@ -3615,6 +3699,10 @@ Status SessionEngine::Impl::initiate_rekey() {
     std::memcpy(bytes.mutable_bytes().data() + kRekeyEpochBytes,
                 initiation.value().bytes().data(),
                 initiation.value().size());
+    if (expire_rekey(std::chrono::steady_clock::now())) {
+        return failure_status(StatusCode::FailedPrecondition,
+                              "rekey acknowledgement deadline expired");
+    }
     const Status sent = enqueue_record(
         ytp1::RecordType::RekeyInit, StreamId::control(), bytes.bytes(),
         true, true, 0U, {}, true);
@@ -3624,9 +3712,38 @@ Status SessionEngine::Impl::initiate_rekey() {
     return sent;
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+SessionEngine::Impl::rekey_deadline() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (terminal_locked() || !outbound_rekey_pending_) return std::nullopt;
+    return outbound_rekey_deadline_;
+}
+
+bool SessionEngine::Impl::expire_rekey(
+    std::chrono::steady_clock::time_point now) noexcept {
+    {
+        // Inbound traffic normally needs no outbound publication lock. Only
+        // expiration competes with an ACK committing its candidate root.
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (terminal_locked() || !outbound_rekey_pending_ ||
+            now < outbound_rekey_deadline_) return false;
+    }
+    {
+        std::lock_guard<std::mutex> ordering_lock(outbound_record_mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (terminal_locked() || !outbound_rekey_pending_ ||
+            now < outbound_rekey_deadline_) return false;
+        outbound_rekey_expired_ = true;
+    }
+    fail(failure_status(StatusCode::FailedPrecondition,
+                        "rekey acknowledgement deadline expired"));
+    return true;
+}
+
 Status SessionEngine::Impl::process_rekey_init(
     std::span<const std::byte> payload) {
     if (payload.size() <= kRekeyEpochBytes ||
+        payload.size() > ytp1::kRekeyInitMessageBytes + kRekeyEpochBytes ||
         payload.size() > limits_.max_rekey_payload + kRekeyEpochBytes) {
         return protocol_failure("REKEY_INIT payload has an invalid size");
     }
@@ -3656,6 +3773,7 @@ Status SessionEngine::Impl::process_rekey_init(
             "security provider threw while accepting rekey"));
     }
     if (!acknowledgement.ok() || acknowledgement.value().empty() ||
+        acknowledgement.value().size() > ytp1::kRekeyAckMessageBytes ||
         acknowledgement.value().size() > limits_.max_rekey_payload ||
         acknowledgement.value().size() > limits_.max_frame_payload -
                                            kRekeyEpochBytes) {
@@ -3689,6 +3807,8 @@ Status SessionEngine::Impl::process_rekey_init(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         inbound_epoch_ = next_epoch;
+        inbound_epoch_bytes_ = 0U;
+        inbound_epoch_records_ = 0U;
         --rekey_work_;
     }
     return enqueue_record(ytp1::RecordType::RekeyAck,
@@ -3698,15 +3818,21 @@ Status SessionEngine::Impl::process_rekey_init(
 Status SessionEngine::Impl::process_rekey_ack(
     std::span<const std::byte> payload) {
     if (payload.size() <= kRekeyEpochBytes ||
+        payload.size() > ytp1::kRekeyAckMessageBytes + kRekeyEpochBytes ||
         payload.size() > limits_.max_rekey_payload + kRekeyEpochBytes) {
         return protocol_failure("REKEY_ACK payload has an invalid size");
     }
+    std::unique_lock<std::mutex> ordering_lock(outbound_record_mutex_);
     const std::uint32_t next_epoch = read_u32(payload, 0U);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!outbound_rekey_pending_ ||
             next_epoch != outbound_rekey_epoch_) {
             return protocol_failure("REKEY_ACK epoch is unexpected");
+        }
+        if (outbound_rekey_expired_ ||
+            std::chrono::steady_clock::now() >= outbound_rekey_deadline_) {
+            return protocol_failure("rekey acknowledgement deadline expired");
         }
     }
     Status finished(StatusCode::Internal,
@@ -3727,27 +3853,22 @@ Status SessionEngine::Impl::process_rekey_ack(
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (outbound_rekey_expired_ ||
+            std::chrono::steady_clock::now() >= outbound_rekey_deadline_) {
+            return protocol_failure("rekey acknowledgement deadline expired");
+        }
         outbound_epoch_ = next_epoch;
+        outbound_epoch_bytes_ = 0U;
+        outbound_epoch_records_ = 0U;
         outbound_rekey_pending_ = false;
         --rekey_work_;
     }
+    ordering_lock.unlock();
     const Status flushed = flush_deferred_records();
     if (!flushed.ok()) {
         return flushed;
     }
-    std::vector<StreamId> pending;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pending.reserve(streams_.size());
-        for (const auto& [_, stream] : streams_) {
-            if (!stream->pending_writes.empty()) {
-                pending.push_back(stream->id);
-            }
-        }
-    }
-    for (StreamId stream_id : pending) {
-        drain_pending_writes(stream_id);
-    }
+    drain_pending_writes();
     return Status::success();
 }
 

@@ -102,9 +102,9 @@ def observe(arguments: argparse.Namespace, kit: Path, environment: dict[str, str
             if length != arguments.payload_bytes or digest != expected:
                 raise session.SessionFailure("tunnelled payload differs from the served payload")
             transfers.append({"bytes": length, "seconds": round(seconds, 4)})
-        session.stop_process(client, "yume-ytp1")
+        session.stop_process(client, "yume")
         client = None
-        session.stop_process(server, "yumed-ytp1")
+        session.stop_process(server, "yumed")
         completed = True
     finally:
         for process in (client, server):

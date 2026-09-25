@@ -411,19 +411,10 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
                 value = environment.get(field)
                 if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
                     raise EvidenceError(f"YUME {field} must be lowercase SHA-256")
-            tls_backend = environment.get("tls_backend")
-            if tls_backend not in {"openssl-chrome151", "chrome151"}:
+            if environment.get("tls_backend") != "openssl-chrome151":
                 raise EvidenceError("YUME tls_backend is missing or invalid")
-            helper_hash = environment.get("yume_helper_sha256")
-            if tls_backend == "chrome151":
-                if not isinstance(helper_hash, str) or not SHA256_RE.fullmatch(
-                    helper_hash
-                ):
-                    raise EvidenceError(
-                        "helper-backed YUME arm requires yume_helper_sha256")
-            elif helper_hash is not None:
-                raise EvidenceError(
-                    "native YUME arm must not declare yume_helper_sha256")
+            if "yume_helper_sha256" in environment:
+                raise EvidenceError("YUME arm must not declare yume_helper_sha256")
         runs = _environment_runs(
             environment, "normal Chrome" if normal else "YUME"
         )

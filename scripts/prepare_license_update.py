@@ -67,7 +67,6 @@ SKIP_DIR_NAMES = {
 YUME_EXTRA_FILES = (
     ROOT / "CMakeLists.txt",
     ROOT / "ezbuild.sh",
-    ROOT / "fullau.sh",
 )
 
 YUME_SCAN_DIRS = (

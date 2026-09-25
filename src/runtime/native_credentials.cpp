@@ -7,6 +7,7 @@
 #include "runtime/native_credentials.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <initializer_list>
@@ -23,10 +24,11 @@
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 
-#include "core/security/secret_file.hpp"
-#include "core/security/secure_erase.hpp"
-#include "providers/ytp1_security_provider.hpp"
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "common/secure_erase.hpp"
+#include "fs/secret_file.hpp"
+#include "providers/openssl_security_provider.hpp"
+#include "providers/tls13_secure_channel.hpp"
+#include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
 
 namespace yume::runtime {
@@ -245,6 +247,29 @@ SecretBytes read_psk(const std::filesystem::path& path) {
     return bytes;
 }
 
+// The username on the first line and the password on the second, each 1 to
+// 255 bytes, with at most one final newline and no carriage return or NUL.
+common::Socks5Credentials read_socks5_credentials(const std::filesystem::path& base,
+                                                  const config::v1::FileReference& reference) {
+    const auto bytes = read_file(base, reference, 2U * common::Socks5Credentials::kMaxFieldBytes + 2U);
+    std::string_view text = bytes.text();
+    require(text.find('\r') == std::string_view::npos &&
+                text.find('\0') == std::string_view::npos,
+            "SOCKS5 proxy credentials must not contain a carriage return or NUL");
+    const auto line_end = text.find('\n');
+    require(line_end != std::string_view::npos,
+            "SOCKS5 proxy credentials need a username line and a password line");
+    std::string_view password = text.substr(line_end + 1U);
+    if (!password.empty() && password.back() == '\n') password.remove_suffix(1U);
+    require(password.find('\n') == std::string_view::npos,
+            "SOCKS5 proxy credentials hold only a username line and a password line");
+    auto credentials = common::Socks5Credentials::create(std::string(text.substr(0U, line_end)),
+                                                         std::string(password));
+    require(credentials.has_value(),
+            "SOCKS5 proxy username and password need 1 to 255 bytes each");
+    return std::move(*credentials);
+}
+
 std::vector<std::string_view> pem_blocks(std::string_view text,
                                          bool private_key, std::size_t count) {
     const std::string_view begin = private_key ? "-----BEGIN PRIVATE KEY-----"
@@ -385,6 +410,24 @@ const Json& closed_object(const Json& value,
         require(value.contains(field),
                 "credential store object is missing a field");
     }
+    return value;
+}
+
+// Like closed_object, with fields that may be absent.
+const Json& closed_object(const Json& value,
+                          std::initializer_list<std::string_view> fields,
+                          std::initializer_list<std::string_view> optional) {
+    require(value.is_object(), "credential store object has missing or unknown fields");
+    std::size_t present = 0U;
+    for (auto field : fields) {
+        require(value.contains(field), "credential store object is missing a field");
+        ++present;
+    }
+    for (auto field : optional) {
+        if (value.contains(field)) ++present;
+    }
+    require(value.size() == present,
+            "credential store object has missing or unknown fields");
     return value;
 }
 
@@ -531,15 +574,17 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     const auto store_path =
         resolve_reference(base, refs.authorized_keys().path());
     auto store =
-        read_store(store_path, providers::kMaxYtp1AuthorizedIdentities, false);
+        read_store(store_path, providers::kMaxAuthorizedIdentities, false);
     std::set<std::string> labels;
     std::set<std::string> identities;
     std::vector<AuthorizedIdentity> authorized;
     authorized.reserve(store.at("keys").size());
     std::vector<NativeAuthorizationPolicy::Grant> grants;
+    std::vector<NativeAuthorizationPolicy::SessionLimit> session_limits;
+    std::vector<NativeAuthorizationPolicy::EgressWeight> egress_weights;
     for (const auto& entry : store.at("keys")) {
-        closed_object(entry,
-                      {"name", "identity", "access_psk", "capabilities"});
+        closed_object(entry, {"name", "identity", "access_psk", "capabilities"},
+                      {"max_sessions", "weight"});
         const auto& label = string_field(entry.at("name"), 63);
         validate_label(label);
         require(labels.insert(label).second,
@@ -566,6 +611,22 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
                                          identity.fingerprint);
         grants.insert(grants.end(), std::make_move_iterator(allowed.begin()),
                       std::make_move_iterator(allowed.end()));
+        if (const auto limit = entry.find("max_sessions"); limit != entry.end()) {
+            require(limit->is_number_unsigned() &&
+                        limit->get<std::uint64_t>() >= 1U &&
+                        limit->get<std::uint64_t>() <= kMaxSessionsPerIdentity,
+                    "credential max_sessions must be an integer from 1 to 1024");
+            session_limits.push_back(
+                {identity.fingerprint,
+                 static_cast<std::size_t>(limit->get<std::uint64_t>())});
+        }
+        if (const auto weight = entry.find("weight"); weight != entry.end()) {
+            require(weight->is_number() && std::isfinite(weight->get<double>()) &&
+                        weight->get<double>() >= EgressLimiter::kMinWeight &&
+                        weight->get<double>() <= EgressLimiter::kMaxWeight,
+                    "credential weight must be a number from 0.1 to 100");
+            egress_weights.push_back({identity.fingerprint, weight->get<double>()});
+        }
         authorized.push_back({std::move(identity), std::move(psk)});
     }
 
@@ -587,13 +648,13 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
                 "admin store contains a duplicate identity");
     }
 
-    std::vector<providers::Ytp1AuthorizedIdentityView> views;
+    std::vector<providers::AuthorizedIdentityView> views;
     views.reserve(authorized.size());
     for (const auto& identity : authorized) {
         views.push_back({identity.identity.view(), identity.access_psk.bytes(),
                          identity.identity.fingerprint});
     }
-    auto factory = providers::Ytp1OpenSslSecurityProviderFactory::create_server(
+    auto factory = providers::OpenSslSecurityProviderFactory::create_server(
         {local.view(), kem.bytes(), views});
     require(factory.ok(),
             "native session security credential validation failed",
@@ -603,15 +664,17 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     // Prevent a password callback from reaching a terminal inside the TLS
     // provider. Setup kits use one unencrypted PKCS#8 key.
     (void)pem_blocks(tls_key.text(), true, 1);
-    auto tls = providers::Ytp1Tls13SecureChannelProvider::create_server(
+    auto tls = providers::Tls13SecureChannelProvider::create_server(
         {certificate.bytes(), tls_key.bytes(), {}, {}});
     require(tls.ok(), "native TLS credential validation failed",
             tls.status().code());
     return {std::move(factory).take_value(), std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
-                engine::EndpointRole::Client, std::move(grants)),
+                engine::EndpointRole::Client, std::move(grants),
+                std::move(session_limits), std::move(egress_weights)),
             NativeAdmissionKey(
-                std::span<const std::byte, 32>(admission.bytes().data(), 32))};
+                std::span<const std::byte, 32>(admission.bytes().data(), 32)),
+            std::nullopt};
 }
 
 LoadedNativeCredentials load_client(const config::v1::Config& config,
@@ -634,13 +697,13 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
     auto kem_blocks = pem_blocks(kem_pem.text(), false, 1);
     auto kem_key = parse_key(crypto, kem_blocks[0], false, "ML-KEM-1024");
     auto kem = public_der(kem_key.get());
-    auto factory = providers::Ytp1OpenSslSecurityProviderFactory::create_client(
+    auto factory = providers::OpenSslSecurityProviderFactory::create_client(
         {local.view(), remote.view(), kem, psk.bytes(), remote.fingerprint});
     require(factory.ok(),
             "native session security credential validation failed",
             factory.status().code());
     auto trust = read_file(base, refs.server_trust());
-    auto tls = providers::Ytp1Tls13SecureChannelProvider::create_client(
+    auto tls = providers::Tls13SecureChannelProvider::create_client(
         {tls_server_name, trust.bytes(), {}, {}, {}});
     require(tls.ok(), "native TLS credential validation failed",
             tls.status().code());
@@ -650,11 +713,18 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
         grants.push_back(
             {remote.fingerprint, service.name(), service_kind(service.kind())});
     }
+    std::optional<common::Socks5Credentials> socks5;
+    const auto& proxy =
+        std::get<config::v1::ClientEndpoint>(config.endpoint()).socks5_proxy();
+    if (proxy && proxy->credentials()) {
+        socks5.emplace(read_socks5_credentials(base, *proxy->credentials()));
+    }
     return {std::move(factory).take_value(), std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
                 engine::EndpointRole::Server, std::move(grants)),
             NativeAdmissionKey(
-                std::span<const std::byte, 32>(admission.bytes().data(), 32))};
+                std::span<const std::byte, 32>(admission.bytes().data(), 32)),
+            std::move(socks5)};
 }
 
 }  // namespace
@@ -684,8 +754,36 @@ NativeAdmissionKey::~NativeAdmissionKey() {
 }
 
 NativeAuthorizationPolicy::NativeAuthorizationPolicy(
-    engine::EndpointRole peer_role, std::vector<Grant> grants) noexcept
-    : peer_role_(peer_role), grants_(std::move(grants)) {}
+    engine::EndpointRole peer_role, std::vector<Grant> grants,
+    std::vector<SessionLimit> session_limits,
+    std::vector<EgressWeight> egress_weights) noexcept
+    : peer_role_(peer_role),
+      grants_(std::move(grants)),
+      session_limits_(std::move(session_limits)),
+      egress_weights_(std::move(egress_weights)) {}
+
+bool NativeAuthorizationPolicy::recognizes(
+    std::string_view peer_identity) const noexcept {
+    return std::any_of(grants_.begin(), grants_.end(), [&](const auto& grant) {
+        return grant.peer_identity == peer_identity;
+    });
+}
+
+std::size_t NativeAuthorizationPolicy::max_sessions(
+    std::string_view peer_identity) const noexcept {
+    for (const auto& limit : session_limits_) {
+        if (limit.peer_identity == peer_identity) return limit.max_sessions;
+    }
+    return 0U;
+}
+
+double NativeAuthorizationPolicy::egress_weight(
+    std::string_view peer_identity) const noexcept {
+    for (const auto& weight : egress_weights_) {
+        if (weight.peer_identity == peer_identity) return weight.weight;
+    }
+    return EgressLimiter::kDefaultWeight;
+}
 
 Status NativeAuthorizationPolicy::authorize(
     const engine::StreamOpenContext& context) const noexcept {

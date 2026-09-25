@@ -5,19 +5,28 @@
  */
 #include "runtime/native_endpoint.hpp"
 #include "runtime/native_credentials.hpp"
-#include "core/runtime/bounded_file.hpp"
-#include "providers/ytp1_h2_carrier.hpp"
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "runtime/native_egress_policy.hpp"
+#include "fs/bounded_file.hpp"
+#include "providers/h2_duplex_carrier.hpp"
+#include "providers/tls13_secure_channel.hpp"
+#include "providers/system_resolver.hpp"
+
+#ifndef YUME_TEST_RESOLVER_PROGRAM
+#error "YUME_TEST_RESOLVER_PROGRAM names the resolver helper"
+#endif
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -25,7 +34,9 @@
 #include <vector>
 
 #include <boost/asio/io_context.hpp>
+#include <nlohmann/json.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/recycling_allocator.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #ifdef YUME_NATIVE_TEST_ROUTES
 #include <boost/asio/ip/udp.hpp>
@@ -34,8 +45,23 @@
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
 #include "runtime/native_client_runtime.hpp"
+#include "runtime/native_forward.hpp"
 #include "runtime/native_server_runtime.hpp"
 #include "runtime/native_socks5.hpp"
+#include <boost/asio/local/stream_protocol.hpp>
+#define YUME_TEST_ALIGNED_ALLOCATIONS 1
+#include "test_support/allocation_failure.hpp"
+
+namespace {
+thread_local bool allocation_failure_sustained = false;
+thread_local unsigned injected_allocation_failures = 0U;
+
+void fail_runtime_allocation(std::size_t) {
+    ++injected_allocation_failures;
+    if (!allocation_failure_sustained) yume::test::before_allocate = nullptr;
+    throw std::bad_alloc();
+}
+}
 #endif
 
 #ifdef YUME_TEST_WRAP_ACCEPT
@@ -45,10 +71,18 @@ namespace {
 // Only the runner thread that arms the next accept failure observes it. Every
 // other accept, including ordinary listener traffic, calls the OS.
 thread_local int injected_accept_error = 0;
+#ifdef YUME_NATIVE_TEST_ROUTES
+thread_local bool fail_accept_retry_allocation = false;
+#endif
 }
 extern "C" int __real_accept(int, sockaddr*, socklen_t*);
 extern "C" int __wrap_accept(int socket, sockaddr* address, socklen_t* length) {
     if (const int failure = std::exchange(injected_accept_error, 0)) {
+#ifdef YUME_NATIVE_TEST_ROUTES
+        if (std::exchange(fail_accept_retry_allocation, false)) {
+            yume::test::before_allocate = fail_runtime_allocation;
+        }
+#endif
         errno = failure;
         return -1;
     }
@@ -210,7 +244,7 @@ public:
           endpoint_(std::get<yume::config::v1::ClientEndpoint>(config.endpoint())),
           credentials_(take(load_native_credentials(config, base, endpoint_.host()))),
           tcp_(take(yume::providers::AsioTcpAcceptedChannelOwner::create(runner.context))),
-          h2_(take(yume::providers::Ytp1H2CarrierProvider::create(runner.context->affinity(),
+          h2_(take(yume::providers::H2DuplexCarrierProvider::create(runner.context->affinity(),
               {[context = runner.context](std::function<void()> task) {
                    boost::asio::post(context->executor(), std::move(task));
                },
@@ -245,8 +279,212 @@ private:
     yume::config::v1::ClientEndpoint endpoint_;
     LoadedNativeCredentials credentials_;
     std::shared_ptr<yume::providers::AsioTcpAcceptedChannelOwner> tcp_;
-    std::shared_ptr<yume::providers::Ytp1H2CarrierProvider> h2_;
+    std::shared_ptr<yume::providers::H2DuplexCarrierProvider> h2_;
 };
+
+// With max_sessions 1, a second session of the same identity replaces the
+// first instead of being refused, and the replaced one ends with
+// ResourceExhausted. The newest session keeps working.
+void test_identity_session_replacement(const std::filesystem::path& kit) {
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 4U;
+    server_options.max_pending_starts = 1U;
+    std::promise<Status> first_ended;
+    auto first_reason = first_ended.get_future();
+    std::shared_ptr<SessionEngine> first;
+    server_options.session_ended = [&](std::shared_ptr<SessionEngine> session, Status reason) {
+        if (session == first) first_ended.set_value(std::move(reason));
+    };
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/single-session.json"),
+            kit / "server", bindings(handler), server_options));
+    });
+    std::vector<std::shared_ptr<NativeEndpoint>> clients;
+    std::vector<std::shared_ptr<SessionEngine>> client_sessions;
+    for (int index = 0; index < 2; ++index) {
+        NativeEndpointOptions client_options;
+        client_options.max_sessions = client_options.max_pending_starts = 1U;
+        client_options.connection_address = "127.0.0.1";
+        clients.push_back(runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+            load(kit / "client/yume.json"), kit / "client", bindings(handler), client_options)); }));
+        auto accepting = start(runner, server);
+        auto connecting = start(runner, clients.back());
+        auto accepted = take(await(accepting));
+        client_sessions.push_back(take(await(connecting)));
+        if (index == 0) runner.sync([&] { first = accepted; });
+        else CHECK(accepted->state() == SessionState::Active);
+    }
+    const auto reason = await(first_reason);
+    CHECK(reason.code() == StatusCode::ResourceExhausted);
+    CHECK(client_sessions[1]->state() == SessionState::Active);
+    runner.sync([&] {
+        for (const auto& client : clients) client->close();
+        server->close();
+        first.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+// A configured egress rate paces the stream a handler receives, in both
+// directions. At one byte per microsecond each 100'000-byte record after the
+// first waits about 100 ms, so four records need at least 300 ms each way.
+// Unpaced, they cross loopback in a few milliseconds.
+void test_egress_pacing(const std::filesystem::path& kit) {
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 1U;
+    server_options.max_pending_starts = 1U;
+    auto server = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "server/paced.json"), kit / "server", bindings(handler), server_options)); });
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "client/yume.json"), kit / "client", bindings(handler), client_options)); });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto accepted = take(await(accepting));
+    auto session = take(await(connecting));
+    auto served_promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+    auto served_future = served_promise->get_future();
+    runner.sync([&] { handler->accepted = served_promise; });
+    auto opened = open(runner, session, "echo");
+    auto served = await(served_future);
+    const std::string record(100'000U, 'y');
+    const auto started = std::chrono::steady_clock::now();
+    for (int index = 0; index < 4; ++index) transfer(runner, served, opened, record);
+    const auto sent = std::chrono::steady_clock::now();
+    CHECK(sent - started >= 300ms);
+    for (int index = 0; index < 4; ++index) transfer(runner, opened, served, record);
+    CHECK(std::chrono::steady_clock::now() - sent >= 300ms);
+    runner.sync([&] {
+        client->close();
+        server->close();
+        accepted.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+// Reload applies new grants to an established session's next OPEN, refuses a
+// malformed store without changing anything, and ends a removed identity's
+// session while the endpoint keeps serving.
+void test_credential_reload(const std::filesystem::path& kit) {
+    const auto store_path = kit / "server/credentials/authorized-keys.json";
+    std::string original;
+    CHECK(read_text_file_bounded(store_path, yume::config::v1::kMaxDocumentBytes, &original));
+    const auto write_store = [&](const std::string& text) {
+        std::ofstream output(store_path, std::ios::binary | std::ios::trunc);
+        output << text;
+        CHECK(static_cast<bool>(output));
+    };
+    struct Restore final {
+        std::function<void()> restore;
+        ~Restore() { restore(); }
+    } restore{[&] { write_store(original); }};
+
+    // Owned by the callback, which can outlive this frame while a failed
+    // check unwinds and the runner drains.
+    struct Observed final {
+        std::shared_ptr<SessionEngine> accepted;
+        std::promise<Status> ended;
+        bool reported{false};
+    };
+    const auto observed = std::make_shared<Observed>();
+    auto accepted_reason = observed->ended.get_future();
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 2U;
+    server_options.max_pending_starts = 1U;
+    server_options.session_ended = [observed](std::shared_ptr<SessionEngine> session, Status reason) {
+        if (session && session == observed->accepted && !std::exchange(observed->reported, true))
+            observed->ended.set_value(std::move(reason));
+    };
+    auto server = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "server/yumed.json"), kit / "server", bindings(handler), server_options)); });
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "client/yume.json"), kit / "client", bindings(handler), client_options)); });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto established = take(await(accepting));
+    auto session = take(await(connecting));
+    runner.sync([&] { observed->accepted = established; });
+    // The test handler accepts one armed open at a time.
+    const auto opens = [&](std::string name) {
+        runner.sync([&] {
+            handler->accepted = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        });
+        return open_result(runner, session, std::move(name)).ok();
+    };
+    CHECK(opens("echo"));
+    CHECK(!opens("denied"));
+
+    // Grants move from echo to denied for the established session.
+    auto store = nlohmann::json::parse(original);
+    CHECK(store["keys"].size() == 2U && store["keys"][0]["name"] == "client1");
+    store["keys"][0]["capabilities"] = nlohmann::json::array(
+        {{{"service", "denied"}, {"kind", "stream"}}});
+    write_store(store.dump());
+    CHECK(runner.sync([&] { return server->reload_credentials(); }).ok());
+    CHECK(!opens("echo"));
+    CHECK(opens("denied"));
+    CHECK(session->state() == SessionState::Active);
+
+    // A malformed store changes nothing.
+    write_store("{");
+    CHECK(!runner.sync([&] { return server->reload_credentials(); }).ok());
+    CHECK(opens("denied"));
+
+    // Removing the identity ends its session. The endpoint keeps serving.
+    store["keys"].erase(0U);
+    write_store(store.dump());
+    CHECK(runner.sync([&] { return server->reload_credentials(); }).ok());
+    CHECK(await(accepted_reason).code() == StatusCode::PermissionDenied);
+    CHECK(runner.sync([&] { return client->reload_credentials(); }).code() ==
+          StatusCode::FailedPrecondition);
+    runner.sync([&] {
+        client->close();
+        server->close();
+        observed->accepted.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+// A client whose system lookup never returns. Endpoint close ends the lookup
+// by ending its helper process, so the start settles and the final drain does
+// not wait for the stalled system call.
+void test_stalled_lookup_close(const std::filesystem::path& kit) {
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = options.max_pending_starts = 1U;
+    options.connection_address = "resolver-stall.invalid";
+    yume::providers::SystemResolverOptions resolver;
+    resolver.program = YUME_TEST_STALL_RESOLVER_PROGRAM;
+    auto endpoint = runner.sync([&] {
+        options.resolver = take(yume::providers::SystemResolver::create(runner.context, resolver));
+        return take(NativeEndpoint::create(runner.context, load(kit / "client/yume.json"),
+            kit / "client", bindings(handler), options));
+    });
+    auto starting = start(runner, endpoint);
+    CHECK(starting.wait_for(200ms) == std::future_status::timeout);
+    const auto closed_at = std::chrono::steady_clock::now();
+    endpoint->close();
+    auto settled = await(starting);
+    CHECK(!settled.ok());
+    runner.finish_and_join();
+    CHECK(std::chrono::steady_clock::now() - closed_at < 2s);
+    CHECK(runner.exceptions.load() == 0U);
+}
 
 void test_start_deadline_and_final_drain(const std::filesystem::path& kit) {
     Runner runner;
@@ -264,9 +502,17 @@ void test_start_deadline_and_final_drain(const std::filesystem::path& kit) {
     });
     const auto dual_config = load(kit / "client/dual-kind.json");
     auto packet_handler = std::make_shared<Handler>(ServiceKind::PacketChannel);
+    // The kit's client dials its server by name, which needs a resolver.
     auto dual = runner.sync([&] {
+        CHECK(NativeEndpoint::create(runner.context, dual_config, kit / "client",
+            {{"echo", handler}, {"echo", packet_handler}}, options).status().code() ==
+              StatusCode::InvalidArgument);
+        auto named = options;
+        yume::providers::SystemResolverOptions resolver;
+        resolver.program = YUME_TEST_RESOLVER_PROGRAM;
+        named.resolver = take(yume::providers::SystemResolver::create(runner.context, resolver));
         return take(NativeEndpoint::create(runner.context, dual_config, kit / "client",
-            {{"echo", handler}, {"echo", packet_handler}}, options));
+            {{"echo", handler}, {"echo", packet_handler}}, named));
     });
     dual->close();
     auto endpoint = runner.sync([&] { return take(NativeEndpoint::create(
@@ -349,6 +595,89 @@ void test_promoted_server_auth_deadline(const std::filesystem::path& kit) {
     server.reset();
     CHECK(runner.context->poll() == 0U);
     CHECK(runner.exceptions.load() == 0U);
+}
+
+void test_unanswered_rekey_watchdog(const std::filesystem::path& kit) {
+    Runner server_runner;
+    Runner client_runner;
+    NativeEndpointOptions options;
+    options.max_sessions = 1U;
+    options.max_pending_starts = 1U;
+    options.start_timeout = 5s;
+    auto server = server_runner.sync([&] {
+        return take(NativeEndpoint::create(server_runner.context,
+            load(kit / "server/yumed.json"), kit / "server",
+            bindings(std::make_shared<Handler>()), options));
+    });
+    struct EndEvidence final {
+        std::promise<std::chrono::steady_clock::time_point> completion;
+        std::atomic<unsigned> count{0U};
+        std::atomic<StatusCode> code{StatusCode::Internal};
+    };
+    auto ended = std::make_shared<EndEvidence>();
+    auto ended_future = ended->completion.get_future();
+    options.connection_address = "127.0.0.1";
+    options.rekey_ack_timeout = 200ms;
+    options.session_ended = [ended](auto, Status reason) {
+        ended->code = reason.code();
+        if (ended->count.fetch_add(1U) == 0U)
+            ended->completion.set_value(std::chrono::steady_clock::now());
+    };
+    auto client = client_runner.sync([&] {
+        return take(NativeEndpoint::create(client_runner.context,
+            load(kit / "client/yume.json"), kit / "client",
+            bindings(std::make_shared<Handler>()), options));
+    });
+    auto accepting = start(server_runner, server);
+    auto connecting = start(client_runner, client);
+    auto client_session = take(await(connecting));
+    auto server_session = take(await(accepting));
+
+    std::binary_semaphore paused{0};
+    std::binary_semaphore resume{0};
+    auto resumed = std::make_shared<std::promise<void>>();
+    auto resumed_future = resumed->get_future();
+    boost::asio::post(server_runner.context->executor(), [&paused, &resume, resumed] {
+        paused.release();
+        resume.acquire();
+        resumed->set_value();
+    });
+    struct ResumePeer final {
+        std::binary_semaphore& resume;
+        std::future<void> finished;
+        bool released{false};
+        void release() noexcept {
+            if (!released) { released = true; resume.release(); }
+            finished.wait();
+        }
+        ~ResumePeer() noexcept { release(); }
+    } resume_peer{resume, std::move(resumed_future)};
+    CHECK(paused.try_acquire_for(2s));
+    // Start between idle watchdog polls. The timer must move to the pending
+    // deadline at the next poll, without granting a second timeout interval.
+    std::this_thread::sleep_for(220ms);
+    const auto deadline = client_runner.sync([&] {
+        CHECK(client_session->initiate_rekey().ok());
+        const auto value = client_session->rekey_deadline();
+        CHECK(value);
+        return *value;
+    });
+    const auto closed_at = await(ended_future);
+    CHECK(closed_at >= deadline);
+    CHECK(closed_at - deadline < 500ms);
+    CHECK(ended->code.load() == StatusCode::FailedPrecondition);
+    CHECK(client_session->state() == SessionState::Failed);
+    CHECK(!client_session->rekey_deadline());
+    resume_peer.release();
+    server_runner.sync([&] { server_session->stop(); server->close(); });
+    client_runner.sync([&] { client->close(); });
+    server_runner.finish_and_join();
+    client_runner.finish_and_join();
+    CHECK(ended->count.load() == 1U);
+    CHECK(server_runner.context->poll() == 0U);
+    CHECK(client_runner.context->poll() == 0U);
+    CHECK(server_runner.exceptions.load() == 0U);
+    CHECK(client_runner.exceptions.load() == 0U);
 }
 
 std::shared_ptr<SessionEngine> connect_eventually(Runner& runner,
@@ -799,6 +1128,24 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
     });
     server_options.route_provider = routes;
     if (declared) {
+        // Direct adapters also need the one policy their route provider checks.
+        runner.sync([&] {
+            auto unpaired = NativeEndpoint::create(runner.context, server_config, kit / "server",
+                server_bindings, server_options);
+            CHECK(!unpaired.ok() && unpaired.status().code() == StatusCode::FailedPrecondition);
+        });
+        server_options.egress_policy =
+            take(yume::runtime::NativeEgressPolicy::create(server_config.adapters(), kit / "server"));
+    } else {
+        runner.sync([&] {
+            auto stray = server_options;
+            stray.egress_policy = take(yume::runtime::NativeEgressPolicy::create({}, {}));
+            auto refused = NativeEndpoint::create(runner.context, server_config, kit / "server",
+                server_bindings, std::move(stray));
+            CHECK(!refused.ok() && refused.status().code() == StatusCode::InvalidArgument);
+        });
+    }
+    if (declared) {
         runner.sync([&] {
             // Configured destinations are the request authority. The application
             // callback is an optional further restriction.
@@ -989,16 +1336,18 @@ public:
     void on_open(StreamOpenContext, std::shared_ptr<StreamResponder>) override {
         throw std::runtime_error("SOCKS CONNECT omitted its destination");
     }
-    void async_route(AuthorizedRouteRequest, std::shared_ptr<RouteProvider>,
+    void async_route(AuthorizedRouteRequest request, std::shared_ptr<RouteProvider>,
                      std::shared_ptr<StreamResponder> stream,
                      AcceptanceCompletion completion) override {
         CHECK(accepted && !acceptance);
+        last_port = request.destination().port();
         acceptance = std::move(completion);
         accepted->set_value(std::move(stream));
         accepted.reset();
     }
     std::shared_ptr<std::promise<std::shared_ptr<StreamResponder>>> accepted;
     AcceptanceCompletion acceptance;
+    std::uint16_t last_port{0U};
 private:
     ProviderDescriptor descriptor_;
 };
@@ -1034,6 +1383,28 @@ void check_socks_reply(boost::asio::ip::tcp::socket& socket, std::uint8_t code) 
 void check_socket_closed(boost::asio::ip::tcp::socket& socket) {
     std::array<std::uint8_t, 1> byte{};
     CHECK(read_socket(socket, byte) == 0U);
+}
+
+std::string read_record_text(Runner& runner, const std::shared_ptr<StreamResponder>& stream) {
+    auto promise = std::make_shared<std::promise<Result<ReceivedRecord>>>();
+    auto future = promise->get_future();
+    runner.sync([&] {
+        stream->async_read({}, [promise](auto result) { promise->set_value(std::move(result)); });
+    });
+    auto record = take(await(future));
+    return {reinterpret_cast<const char*>(record.payload().bytes().data()), record.payload().size()};
+}
+
+void write_record_text(Runner& runner, const std::shared_ptr<StreamResponder>& stream,
+                       std::string text) {
+    auto promise = std::make_shared<std::promise<Status>>();
+    auto future = promise->get_future();
+    runner.sync([&] {
+        stream->async_write(take(Buffer::copy_from(
+            {reinterpret_cast<const std::byte*>(text.data()), text.size()}, text.size())), {},
+            [promise](Status status, std::size_t) { promise->set_value(std::move(status)); });
+    });
+    CHECK(await(future).ok());
 }
 
 // A SOCKS5 UDP datagram for an IPv4 destination.
@@ -1212,15 +1583,22 @@ void test_client_reconnect(const std::filesystem::path& kit) {
     });
     unsigned authenticated = 0U;
     unsigned reconnecting = 0U;
+    unsigned stopped = 0U;
     bool reports_on_context = true;
     std::promise<void> initial_auth;
     std::promise<void> replacement_auth;
     auto initial_ready = initial_auth.get_future();
     auto replacement_ready = replacement_auth.get_future();
+    std::vector<NativeClientState> transitions;
+    bool status_on_context = true;
     auto client = runner.sync([&] {
         NativeClientRuntimeOptions options;
         options.reconnect_initial = 50ms;
         options.reconnect_max = 100ms;
+        options.on_status = [&](const NativeClientStatus& status) {
+            status_on_context = status_on_context && runner.context->running_in_this_thread();
+            transitions.push_back(status.state);
+        };
         return take(NativeClientRuntime::create(runner.context,
             load(kit / "client/runtime-client.json"), kit / "client", [&](std::string_view message) {
                 reports_on_context = reports_on_context && runner.context->running_in_this_thread();
@@ -1229,12 +1607,18 @@ void test_client_reconnect(const std::filesystem::path& kit) {
                 ++authenticated;
                 if (authenticated == 1U) initial_auth.set_value();
                 if (authenticated == 2U) replacement_auth.set_value();
-            }, options));
+            }, options, [&](Status) { ++stopped; }));
     });
     auto accepting = start(runner, server);
     runner.sync([&] { CHECK(client->start().ok()); });
     auto first = take(await(accepting));
     await(initial_ready);
+    // status() is readable from this non-context thread.
+    const NativeClientStatus connected = client->status();
+    CHECK(connected.state == NativeClientState::Connected);
+    CHECK(connected.sessions == 1U && connected.failed_attempts == 0U);
+    CHECK(connected.server_identity.size() == 64U);
+    CHECK(connected.traffic.record_bytes_sent > 0U && connected.traffic.payload_bytes_sent == 0U);
     const auto socks = runner.sync([&] { return client->socks5_endpoints().at(0); });
     boost::asio::io_context local_io;
     const auto connect_socks = [&] {
@@ -1266,6 +1650,8 @@ void test_client_reconnect(const std::filesystem::path& kit) {
         runner.sync([&] { stream->close(Status(StatusCode::Closed)); });
     };
     request("before reconnect");
+    const NativeClientStatus before_reconnect = client->status();
+    CHECK(before_reconnect.traffic.payload_bytes_sent >= std::string_view("before reconnect").size());
     // Keep the next accept ready. No wall-clock threshold is needed to prove
     // replacement authentication and that the existing SOCKS listener uses it.
     auto next_accept = start(runner, server);
@@ -1274,18 +1660,414 @@ void test_client_reconnect(const std::filesystem::path& kit) {
     await(replacement_ready);
     CHECK(second != first);
     request("after reconnect");
+    // The configured UNIX forward opens on the replacement session too.
+    CHECK(runner.sync([&] { return client->forward_endpoints().empty(); }));
+    {
+        auto accepted = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto opened = accepted->get_future();
+        runner.sync([&] { handler->accepted = accepted; });
+        boost::asio::local::stream_protocol::socket local(local_io);
+        local.connect(boost::asio::local::stream_protocol::endpoint(
+            (kit / "client/forward.sock").string()));
+        boost::asio::write(local, boost::asio::buffer("forwarded", 9U));
+        auto stream = await(opened);
+        CHECK(runner.sync([&] { return handler->last_port; }) == 2222U);
+        runner.sync([&] { std::exchange(handler->acceptance, {})(Status::success()); });
+        CHECK(read_record_text(runner, stream) == "forwarded");
+        runner.sync([&] { stream->close(Status(StatusCode::Closed)); });
+    }
+    const NativeClientStatus replaced = client->status();
+    CHECK(replaced.state == NativeClientState::Connected && replaced.sessions == 2U);
+    CHECK(replaced.server_identity == connected.server_identity);
+    CHECK(!replaced.last_failure.ok());
+    // Totals keep the first session's traffic after it ended.
+    CHECK(replaced.traffic.payload_bytes_sent >
+          before_reconnect.traffic.payload_bytes_sent);
     runner.sync([&] {
         CHECK(authenticated == 2U && reconnecting == 1U && reports_on_context);
         client->close();
         server->close();
     });
+    CHECK(client->status().state == NativeClientState::Closed);
+    CHECK(!std::filesystem::exists(kit / "client/forward.sock"));
+    CHECK(client->status().traffic.payload_bytes_sent == replaced.traffic.payload_bytes_sent);
+    CHECK(status_on_context);
+    // Connecting, Connected, then after the server ends the first session a
+    // short-session backoff or an immediate reconnect, and finally Closed.
+    CHECK(transitions.size() >= 5U && transitions.front() == NativeClientState::Connecting &&
+          transitions[1] == NativeClientState::Connected &&
+          transitions.back() == NativeClientState::Closed);
     runner.finish_and_join();
-    CHECK(authenticated == 2U && reconnecting == 1U);
+    CHECK(authenticated == 2U && reconnecting == 1U && stopped == 0U);
     CHECK(runner.exceptions.load() == 0U);
     client.reset();
     server.reset();
     CHECK(runner.context->poll() == 0U);
 }
+
+// A non-allocation exception from adapter construction must stay inside the
+// runtime's startup transaction, just like a throwing packet report copy.
+void test_client_start_exception(const std::filesystem::path& kit) {
+    Runner runner;
+    auto client = runner.sync([&] {
+        return take(NativeClientRuntime::create(runner.context,
+            load(kit / "client/runtime-client.json"), kit / "client", {}));
+    });
+    bool injected = false;
+    bool escaped = false;
+    StatusCode result = StatusCode::Ok;
+    runner.sync([&] {
+        yume::test::before_allocate = [](std::size_t) {
+            yume::test::before_allocate = nullptr;
+            throw 42;
+        };
+        try {
+            result = client->start().code();
+        } catch (...) {
+            escaped = true;
+        }
+        injected = yume::test::before_allocate == nullptr;
+        yume::test::before_allocate = nullptr;
+        client->close();
+    });
+    runner.finish_and_join();
+    client.reset();
+    CHECK(injected && !escaped && result == StatusCode::Internal);
+    CHECK(runner.exceptions.load() == 0U && runner.context->poll() == 0U);
+}
+
+// A failed dial remains retryable until its timer cannot be armed. Failure
+// then closes the listener before notifying, including under sustained OOM.
+void test_client_reconnect_timer_failure(const std::filesystem::path& kit, bool sustained) {
+    Runner runner;
+    std::shared_ptr<NativeClientRuntime> client;
+    std::promise<StatusCode> stopped;
+    auto completed = stopped.get_future();
+    unsigned notifications = 0U;
+    unsigned allocation_failures = 0U;
+    bool on_context = false;
+    bool already_closed = false;
+    // Hold every cached Asio block so the next retry must allocate. Otherwise
+    // fault injection can miss timer initiation and hit a later dial instead.
+    boost::asio::recycling_allocator<std::byte> allocator;
+    std::array<std::byte*, BOOST_ASIO_RECYCLING_ALLOCATOR_CACHE_SIZE> cached{};
+    const auto socks = runner.sync([&] {
+        NativeClientRuntimeOptions options;
+        options.reconnect_initial = options.reconnect_max = 20ms;
+        client = take(NativeClientRuntime::create(runner.context,
+            load(kit / "client/runtime-client.json"), kit / "client",
+            [&](std::string_view message) {
+                if (!message.starts_with("session failed")) return;
+                for (auto& block : cached) if (!block) block = allocator.allocate(1U);
+                allocation_failure_sustained = sustained;
+                injected_allocation_failures = 0U;
+                yume::test::before_allocate = fail_runtime_allocation;
+            }, options, [&](Status status) {
+                // Cleanup has already run while allocations were failing.
+                yume::test::before_allocate = nullptr;
+                for (auto*& block : cached) {
+                    if (block) allocator.deallocate(std::exchange(block, nullptr), 1U);
+                }
+                allocation_failures = injected_allocation_failures;
+                ++notifications;
+                on_context = runner.context->running_in_this_thread();
+                already_closed = client->start().code() == StatusCode::FailedPrecondition;
+                client->close();
+                client.reset(); // The callback may release the last public owner.
+                runner.context->finish();
+                stopped.set_value(status.code());
+                throw 1; // Caller exceptions must not escape the event loop.
+            }));
+        CHECK(client->start().ok());
+        return client->socks5_endpoints().at(0U);
+    });
+    const auto ready = completed.wait_for(3s);
+    if (ready != std::future_status::ready) {
+        runner.sync([&] {
+            yume::test::before_allocate = nullptr;
+            for (auto*& block : cached) {
+                if (block) allocator.deallocate(std::exchange(block, nullptr), 1U);
+            }
+            client->close();
+        });
+    }
+    runner.finish_and_join();
+    CHECK(ready == std::future_status::ready);
+    CHECK(completed.get() == StatusCode::ResourceExhausted);
+    CHECK(notifications == 1U && allocation_failures != 0U && on_context && already_closed);
+    CHECK(!client);
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket probe(io);
+    boost::system::error_code error;
+    probe.connect(socks, error);
+    CHECK(error == boost::asio::error::connection_refused);
+    CHECK(runner.exceptions.load() == 0U && runner.context->poll() == 0U);
+}
+
+#ifdef YUME_TEST_WRAP_ACCEPT
+// An OS accept failure first retries. Only failure to schedule that retry is
+// terminal, and the callback can release the adapter from inside the handler.
+void test_socks5_accept_retry(bool fail_retry, bool sustained) {
+    Runner runner;
+    std::shared_ptr<NativeSocks5Adapter> adapter;
+    std::promise<StatusCode> stopped;
+    auto completed = stopped.get_future();
+    unsigned notifications = 0U;
+    unsigned allocation_failures = 0U;
+    bool on_context = false;
+    const auto endpoint = runner.sync([&] {
+        adapter = take(NativeSocks5Adapter::create(runner.context,
+            {"echo", "127.0.0.1", 0U}, [] { return std::shared_ptr<SessionEngine>{}; }, {},
+            [&](Status status) {
+                yume::test::before_allocate = nullptr;
+                allocation_failures = injected_allocation_failures;
+                ++notifications;
+                on_context = runner.context->running_in_this_thread();
+                adapter->close();
+                adapter.reset();
+                runner.context->finish();
+                stopped.set_value(status.code());
+                throw 1;
+            }));
+        injected_accept_error = EMFILE;
+        fail_accept_retry_allocation = fail_retry;
+        allocation_failure_sustained = sustained;
+        injected_allocation_failures = 0U;
+        return adapter->local_endpoint();
+    });
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket probe(io);
+    probe.connect(endpoint);
+    if (fail_retry) {
+        const auto ready = completed.wait_for(3s);
+        if (ready != std::future_status::ready) {
+            runner.sync([&] {
+                yume::test::before_allocate = nullptr;
+                adapter->close();
+            });
+        }
+        runner.finish_and_join();
+        CHECK(ready == std::future_status::ready);
+        CHECK(completed.get() == StatusCode::ResourceExhausted);
+        CHECK(notifications == 1U && allocation_failures != 0U && on_context && !adapter);
+        boost::asio::ip::tcp::socket after(io);
+        boost::system::error_code error;
+        after.connect(endpoint, error);
+        CHECK(error == boost::asio::error::connection_refused);
+    } else {
+        // The queued connection is accepted after the retry, then refused
+        // normally because there is no active session.
+        const std::array<std::uint8_t, 13> request{5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 1, 187};
+        boost::asio::write(probe, boost::asio::buffer(request));
+        probe.non_blocking(true);
+        check_socks_reply(probe, 0x01);
+        runner.sync([&] {
+            CHECK(injected_accept_error == 0);
+            adapter->close();
+            adapter.reset();
+        });
+        runner.finish_and_join();
+        CHECK(notifications == 0U);
+    }
+    CHECK(runner.exceptions.load() == 0U && runner.context->poll() == 0U);
+}
+#endif
+
+// A forward turns each local connection into an OPEN on its service with its
+// fixed destination, then joins the two. Bytes sent before the peer accepts
+// wait in the socket. A refused or expired OPEN, or no session, closes the
+// local connection. The same holds for a UNIX socket listener.
+void test_forward_adapter(const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    using Local = boost::asio::local::stream_protocol;
+    Runner runner;
+    auto handler = std::make_shared<DelayedRouteHandler>();
+    auto client_handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = options.max_pending_starts = 1U;
+    options.route_provider = runner.sync([&] {
+        return take(yume::providers::AsioDirectRouteProvider::create(runner.context,
+            [](const auto&, const auto&) { return Status(StatusCode::PermissionDenied); }));
+    });
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
+            kit / "server", {{"echo", handler}, {"denied", handler}}, options));
+    });
+    options.route_provider.reset();
+    options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, load(kit / "client/yume.json"),
+            kit / "client", bindings(client_handler), options));
+    });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto server_session = take(await(accepting));
+    auto client_session = take(await(connecting));
+    NativeForwardLimits limits;
+    limits.open_timeout = 500ms;
+    const auto create = [&](const v1::ForwardAdapter& adapter, NativeSessionSource sessions) {
+        return runner.sync([&] {
+            return take(NativeForwardAdapter::create(runner.context, adapter, sessions, limits));
+        });
+    };
+    const NativeSessionSource active = [client_session] { return client_session; };
+    const v1::ForwardDestination destination{"127.0.0.1", 2222U};
+    auto forward = create(v1::ForwardAdapter("echo", v1::LoopbackListener{"127.0.0.1", 0U},
+                                             destination), active);
+    const auto endpoint = runner.sync([&] { return forward->local_endpoint(); });
+    CHECK(endpoint.port() != 0U);
+
+    boost::asio::io_context local_io;
+    const auto arm = [&] {
+        auto promise = std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto opened = promise->get_future();
+        runner.sync([&] { handler->accepted = promise; });
+        return opened;
+    };
+    const auto accept_held = [&](Status status) {
+        runner.sync([&] {
+            auto acceptance = std::move(handler->acceptance);
+            if (acceptance) acceptance(std::move(status));
+        });
+    };
+    {
+        auto opened = arm();
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(endpoint);
+        boost::asio::write(local, boost::asio::buffer("early", 5U));
+        auto served = await(opened);
+        CHECK(runner.sync([&] { return handler->last_port; }) == destination.port);
+        accept_held(Status::success());
+        CHECK(read_record_text(runner, served) == "early");
+        write_record_text(runner, served, "reply");
+        local.non_blocking(true);
+        std::array<std::uint8_t, 5> reply{};
+        for (std::size_t offset = 0; offset < reply.size();) {
+            const auto read = read_socket(local, std::span(reply).subspan(offset));
+            CHECK(read != 0U);
+            offset += read;
+        }
+        CHECK(std::string(reply.begin(), reply.end()) == "reply");
+    }
+    {
+        // Held acceptance: the OPEN expires and the connection closes.
+        auto opened = arm();
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(endpoint);
+        (void)await(opened);
+        local.non_blocking(true);
+        check_socket_closed(local);
+        accept_held(Status(StatusCode::Cancelled));
+    }
+    auto denied = create(v1::ForwardAdapter("denied", v1::LoopbackListener{"127.0.0.1", 0U},
+                                            destination), active);
+    {
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(runner.sync([&] { return denied->local_endpoint(); }));
+        local.non_blocking(true);
+        check_socket_closed(local);
+    }
+    auto idle = create(v1::ForwardAdapter("echo", v1::LoopbackListener{"127.0.0.1", 0U},
+                                          destination),
+                       [] { return std::shared_ptr<SessionEngine>{}; });
+    {
+        boost::asio::ip::tcp::socket local(local_io);
+        local.connect(runner.sync([&] { return idle->local_endpoint(); }));
+        local.non_blocking(true);
+        check_socket_closed(local);
+    }
+    std::string directory = "/tmp/yume-forward-XXXXXX";
+    CHECK(::mkdtemp(directory.data()) != nullptr);
+    const auto path = std::filesystem::path(directory) / "forward.sock";
+    auto local_forward = create(v1::ForwardAdapter("echo", v1::UnixListener{path.string()},
+                                                   destination), active);
+    {
+        auto opened = arm();
+        Local::socket local(local_io);
+        local.connect(Local::endpoint(path.string()));
+        boost::asio::write(local, boost::asio::buffer("unix", 4U));
+        auto served = await(opened);
+        accept_held(Status::success());
+        CHECK(read_record_text(runner, served) == "unix");
+    }
+    runner.sync([&] {
+        for (const auto& adapter : {forward, denied, idle, local_forward}) adapter->close();
+        client->close();
+        server->close();
+        server_session.reset();
+        client_session.reset();
+    });
+    CHECK(!std::filesystem::exists(path));
+    std::filesystem::remove(directory);
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+#if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
+// The daemon composition runs a module for a service, and a client forward
+// without a destination reaches it. The module learns the client's identity
+// from the header of its connection.
+void test_module_through_forward(const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    std::string text;
+    CHECK(read_text_file_bounded(kit / "server/yumed.json", v1::kMaxDocumentBytes, &text));
+    auto document = nlohmann::json::parse(text);
+    document["services"] = nlohmann::json::array(
+        {{{"name", "echo"}, {"kind", "stream"}, {"max_concurrent_streams", 8}}});
+    document["adapters"] = nlohmann::json::array(
+        {{{"kind", "module"}, {"service", "echo"}, {"program", YUME_TEST_ECHO_MODULE}}});
+    CHECK(read_text_file_bounded(kit / "server/credentials/authorized-keys.json",
+                                 v1::kMaxDocumentBytes, &text));
+    const std::string identity = nlohmann::json::parse(text)["keys"][0]["identity"]["sha256"];
+    Runner runner;
+    std::vector<std::string> reports;
+    auto server = runner.sync([&] {
+        NativeServerRuntimeOptions options;
+        options.module_launcher = YUME_TEST_MODULE_LAUNCHER;
+        options.report = [&reports](std::string_view line) { reports.emplace_back(line); };
+        return take(NativeServerRuntime::create(runner.context, v1::Parse(document),
+            kit / "server", [](Status) {}, std::move(options)));
+    });
+    runner.sync([&] { CHECK(server->start().ok()); });
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] { return take(NativeEndpoint::create(runner.context,
+        load(kit / "client/yume.json"), kit / "client", bindings(handler), client_options)); });
+    auto connecting = start(runner, client);
+    auto session = take(await(connecting));
+    auto forward = runner.sync([&] {
+        return take(NativeForwardAdapter::create(runner.context,
+            v1::ForwardAdapter("echo", v1::LoopbackListener{"127.0.0.1", 0U}, std::nullopt),
+            [session] { return session; }));
+    });
+    boost::asio::io_context local_io;
+    boost::asio::ip::tcp::socket local(local_io);
+    local.connect(runner.sync([&] { return forward->local_endpoint(); }));
+    boost::asio::write(local, boost::asio::buffer("module", 6U));
+    local.non_blocking(true);
+    const std::string expected = "hello " + identity + "\nmodule";
+    std::string received;
+    while (received.size() < expected.size()) {
+        std::array<std::uint8_t, 256> bytes{};
+        const auto read = read_socket(local, bytes);
+        CHECK(read != 0U);
+        received.append(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(read));
+    }
+    CHECK(received == expected);
+    local.close();
+    runner.sync([&] {
+        forward->close();
+        client->close();
+        server->close();
+        session.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+    CHECK(!reports.empty() && reports.front().find("module echo: started") == 0U);
+}
+#endif
 
 void test_socks5_deadlines(const std::filesystem::path& kit) {
     Runner runner;
@@ -1676,6 +2458,11 @@ void test_adapter_configuration_rejections(const std::filesystem::path& kit) {
         auto unused = NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
             kit / "server", bindings(std::make_shared<Handler>()), std::move(unused_policy));
         CHECK(!unused.ok() && unused.status().code() == StatusCode::InvalidArgument);
+        NativeEndpointOptions unused_packet_owner;
+        unused_packet_owner.caller_runs_packet_adapters = true;
+        auto no_packet = NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
+            kit / "server", bindings(std::make_shared<Handler>()), std::move(unused_packet_owner));
+        CHECK(!no_packet.ok() && no_packet.status().code() == StatusCode::InvalidArgument);
     });
     runner.finish_and_join();
     CHECK(runner.context->poll() == 0U);
@@ -1824,15 +2611,32 @@ int main(int argc, char** argv) {
 #ifdef YUME_NATIVE_TEST_ROUTES
         test_client_short_session_backoff(argv[1]);
         test_client_reconnect(argv[1]);
+        test_client_start_exception(argv[1]);
+        test_client_reconnect_timer_failure(argv[1], false);
+        test_client_reconnect_timer_failure(argv[1], true);
+#ifdef YUME_TEST_WRAP_ACCEPT
+        test_socks5_accept_retry(false, false);
+        test_socks5_accept_retry(true, false);
+        test_socks5_accept_retry(true, true);
+#endif
         test_socks5_deadlines(argv[1]);
         test_socks5_udp_associate(argv[1]);
         test_socks5_udp_backlog(argv[1]);
+        test_forward_adapter(argv[1]);
+#if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
+        test_module_through_forward(argv[1]);
+#endif
         test_destination_route<boost::asio::ip::tcp>(argv[1], false);
         test_destination_route<boost::asio::ip::tcp>(argv[1], true);
         test_destination_route<boost::asio::ip::udp>(argv[1], true);
 #endif
         test_start_deadline_and_final_drain(argv[1]);
+        test_stalled_lookup_close(argv[1]);
+        test_identity_session_replacement(argv[1]);
+        test_egress_pacing(argv[1]);
+        test_credential_reload(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);
+        test_unanswered_rekey_watchdog(argv[1]);
         test_accept_loop(argv[1]);
 #ifdef __linux__
         test_accept_loop_listeners(argv[1]);

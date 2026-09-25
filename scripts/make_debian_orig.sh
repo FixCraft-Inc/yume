@@ -6,11 +6,11 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="$(
-  sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' "${repo_root}/src/core/version.hpp" | head -n1
+  sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' "${repo_root}/src/common/version.hpp" | head -n1
 )"
 
 if [[ -z "${version}" ]]; then
-  echo "failed to read YUME version from src/core/version.hpp" >&2
+  echo "failed to read YUME version from src/common/version.hpp" >&2
   exit 1
 fi
 

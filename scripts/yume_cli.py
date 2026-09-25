@@ -4,12 +4,7 @@
 # Licensed under the GNU Affero General Public License v3.0 or later.
 """Generate the CLI help text and the bash completion script from the manuals.
 
-`yume --help` and `yume --completion bash` used to be hand-written C++ that
-listed every option a second time, beside the manual that already listed it.
-Two lists of the same options drift, and the only thing that catches the drift
-is somebody noticing.
-
-There is one list now. Each option is an `@opt` entry in the manual source
+Each option is an `@opt` entry in the manual source
 under `docs/src/<language>/`, and the `@cli` keys on that entry carry what a
 terminal needs and a manual does not: how the help line spells the term, the
 one-line description, whether the argument completes as a file, and the words
@@ -17,9 +12,11 @@ that complete after it. A layout source under `docs/src/<language>/cli/` says
 what order the help prints them in and under which headings, because the help
 groups options by task while the manual groups them by subject.
 
-This module renders both into a C++ header that the CLI includes, which is
-tracked so a clone builds without Python. `check` fails when the tracked file
-no longer matches its source, which is the gate.
+The native CLI uses a static help string without an output-stream dependency.
+Stream writers with runtime interpolation and Bash completion stay available
+for a CLI that needs them, and no current layout uses them.
+The generated headers are tracked so a clone builds without Python. `check`
+fails when a tracked header no longer matches its source.
 
     scripts/yume_cli.py list
     scripts/yume_cli.py render yume
@@ -53,7 +50,8 @@ CONTINUATION = 29
 TERM_INDENT = 2
 
 # Header keys, closed for the same reason a `.doc` header's are.
-HEADER_KEYS = {"binary", "manual", "output", "namespace"}
+REQUIRED_HEADER_KEYS = {"binary", "manual", "output", "namespace"}
+HEADER_KEYS = REQUIRED_HEADER_KEYS | {"output-kind"}
 
 # Layout directives, closed.
 DIRECTIVES = ("@usage", "@section", "@note", "@gap", "@end")
@@ -103,6 +101,7 @@ class Layout:
     namespace: str
     path: Path
     items: list[Item] = field(default_factory=list)
+    output_kind: str = "stream"
 
 
 def load_layouts(language: str = spec.DEFAULT_LANGUAGE) -> list[Layout]:
@@ -139,7 +138,7 @@ def parse_layout(path: Path) -> Layout:
     else:
         _fail(path, len(lines), "the header is not closed by a '---' line")
 
-    missing = sorted(HEADER_KEYS - set(header))
+    missing = sorted(REQUIRED_HEADER_KEYS - set(header))
     _require(not missing, path, 2, f"the header has no {', '.join(missing)}")
 
     layout = Layout(
@@ -148,6 +147,7 @@ def parse_layout(path: Path) -> Layout:
         output=header["output"][0],
         namespace=header["namespace"][0],
         path=path,
+        output_kind=header.get("output-kind", ("stream", 2))[0],
     )
     _require(
         layout.binary == path.stem,
@@ -160,6 +160,12 @@ def parse_layout(path: Path) -> Layout:
         path,
         header["output"][1],
         f"output {layout.output!r} must be a header under src/",
+    )
+    _require(
+        layout.output_kind in ("stream", "static-help"),
+        path,
+        header.get("output-kind", ("", 2))[1],
+        "output-kind must be stream or static-help",
     )
 
     layout.items = _parse_body(path, lines, index)
@@ -493,7 +499,6 @@ def _stream_line(line: str, layout: Layout) -> list[str]:
 
 def render_header(layout: Layout, ordered: list[Entry], completed: list[spec.Option]) -> str:
     help_lines = render_help(layout, ordered)
-    completion_lines = render_completion(layout, completed)
 
     needs_policy = any(
         INTERPOLATIONS[name].startswith("yume::policy::")
@@ -514,8 +519,22 @@ def render_header(layout: Layout, ordered: list[Entry], completed: list[spec.Opt
         "",
         "#pragma once",
         "",
-        "#include <ostream>",
     ]
+    if layout.output_kind == "static-help":
+        if any(INTERPOLATION_RE.search(line) for line in help_lines):
+            raise CliError(f"{spec.relative(layout.path)}: static-help cannot interpolate runtime values")
+        out.extend([
+            f"namespace {layout.namespace} {{",
+            "",
+            "inline constexpr char kHelpBody[] =",
+            *[f"    {_cxx_literal(line)}" for line in help_lines],
+        ])
+        out[-1] += ";"
+        out.extend(["", f"}}  // namespace {layout.namespace}", ""])
+        return "\n".join(out)
+
+    completion_lines = render_completion(layout, completed)
+    out.append("#include <ostream>")
     if needs_policy:
         out.append("")
         out.append('#include "core/protocol/runtime_policy.hpp"')

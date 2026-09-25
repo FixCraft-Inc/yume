@@ -4,13 +4,19 @@ set -eu
 test -x /usr/bin/yume
 test -x /usr/bin/yumed
 
-yume --version
-yumed --version
+yume --version | grep -F "transport YTP/1, config schema 1"
+yumed --version | grep -F "transport YTP/1, config schema 1"
+yume-setup --help >/dev/null
+yume-doctor --help >/dev/null
 
 man -w yume >/dev/null
 man -w yumed >/dev/null
 
 test -r /etc/yume/yumed.json
-test -r /etc/yume/authorized_keys
-test -r /etc/yume/auth_keys.meta
+python3 -c 'import json; c = json.load(open("/etc/yume/yumed.json")); assert c["schema"] == 1 and c["role"] == "server"'
+# Bootstrap ships no credentials and must never authorize a listener.
+if yumed --config /etc/yume/yumed.json --validate; then
+    echo "Unprovisioned daemon configuration unexpectedly passed validation" >&2
+    exit 1
+fi
 test -r /usr/lib/systemd/system/yumed.service || test -r /lib/systemd/system/yumed.service

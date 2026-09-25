@@ -6,7 +6,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 upstream_version="$(
-  sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' "${repo_root}/src/core/version.hpp" | head -n1
+  sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' "${repo_root}/src/common/version.hpp" | head -n1
 )"
 debian_version="$(cd "${repo_root}" && dpkg-parsechangelog -S Version)"
 archive_version="${upstream_version/-dev/~dev}"
@@ -69,8 +69,8 @@ required=(
   "${prefix}/CMakeLists.txt"
   "${prefix}/README.md"
   "${prefix}/LICENSE"
-  "${prefix}/src/main_client.cpp"
-  "${prefix}/src/main_server.cpp"
+  "${prefix}/src/runtime/yume_main.cpp"
+  "${prefix}/src/runtime/yumed_main.cpp"
   "${prefix}/docs/PACKAGING.md"
   "${prefix}/scripts/make_debian_orig.sh"
   "${prefix}/scripts/check_source_archive_listing.py"

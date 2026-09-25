@@ -2,39 +2,20 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-YUME_EXTRA_CMAKE_ARGS =
-ifneq ($(BASEFWX_PREFIX),)
-YUME_EXTRA_CMAKE_ARGS += -DCMAKE_PREFIX_PATH=$(BASEFWX_PREFIX)
-endif
-
-# Set DEB_BUILD_PROFILES=nogui to skip yume-gui (default is build it).
-YUME_BUILD_GUI = ON
-ifneq (,$(filter nogui,$(DEB_BUILD_PROFILES)))
-YUME_BUILD_GUI = OFF
-endif
-
 %:
 	dh $@ --buildsystem=cmake
 
 override_dh_auto_configure:
 	dh_auto_configure -- \
-		-DYUME_USE_BASEFWX=ON \
-		-DYUME_USE_SYSTEM_BASEFWX=ON \
+		-DYUME_BUILD_NATIVE_APPLICATION=ON \
 		-DYUME_USE_BUNDLED_NLOHMANN=OFF \
 		-DYUME_NATIVE_OPT=OFF \
 		-DYUME_LTO=OFF \
 		-DYUME_STATIC_OPENSSL=OFF \
 		-DYUME_DEB_SHLIBDEPS=ON \
-		-DYUME_BUILD_TRANSPORT_V2=ON \
 		-DYUME_BUILD_SHARED_ABI=OFF \
-		-DYUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=OFF \
-		-DYUME_BUILD_GUI=$(YUME_BUILD_GUI) \
-		$(YUME_EXTRA_CMAKE_ARGS)
-
-ifneq ($(BASEFWX_LIBDIR),)
-override_dh_shlibdeps:
-	dh_shlibdeps -- -l$(BASEFWX_LIBDIR)
-endif
+		-DYUME_INSTALL_EXPERIMENTAL_SDK=OFF \
+		-DYUME_BUILD_GUI=OFF
 
 override_dh_installsystemd:
 	dh_installsystemd -p yume-daemon --name=yumed --no-enable --no-start

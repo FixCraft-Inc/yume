@@ -9,6 +9,7 @@
 #include "ytp/protocol.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -16,6 +17,14 @@
 #include <vector>
 
 namespace yume::ytp1 {
+
+// Directional traffic limits are fixed, independent of application/product
+// versions. INIT has a separate fixed bound and is the last old-root record.
+inline constexpr std::uint64_t kEpochPayloadByteLimit = 1024U * 1024U;
+inline constexpr std::uint64_t kEpochRecordLimit = 512U;
+inline constexpr auto kEpochSendLifetime = std::chrono::milliseconds(500);
+inline constexpr std::size_t kRekeyInitMessageBytes = 1672U;
+inline constexpr std::size_t kRekeyAckMessageBytes = 1640U;
 
 // YTP/1 has one mandatory suite. These identifiers are protocol constants,
 // not provider-selection strings and not negotiation offers.

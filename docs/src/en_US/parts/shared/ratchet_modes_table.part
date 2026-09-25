@@ -1,8 +1,0 @@
-@table
-| Mode | Epoch bytes | Epoch frames | Sender-active time | Purpose |
-| --- | ---: | ---: | ---: | --- |
-| `extreme` | 256 KiB | 512 | 500 ms | Default with the smallest epoch budgets. |
-| `normal` | 8 GiB | 262,144 | 60 s | Lower hybrid-rekey overhead on fast links. |
-| `soft` | 256 GiB | 8,388,608 | 30 min | Throughput-first policy with a much wider epoch compromise window. |
-| `ultimate` | user supplied | user supplied | exact user-supplied milliseconds | Expert-managed bounded policy. |
-@end

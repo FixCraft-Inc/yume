@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from yume_bench_common import (  # noqa: E402
     is_pinned_chrome_version,
     run_streamed_command,
+    wall_throughput,
 )
-from yume_bench_lan import wall_throughput  # noqa: E402
 from yume_bench_resources import (  # noqa: E402
     ProcessResourceSampler,
     _parse_proc_stat,

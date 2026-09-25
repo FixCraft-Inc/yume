@@ -1,7 +1,7 @@
 [
   {
     "title": "Quick start",
-    "summary": "Build, provision, and connect the transport-v2 client and daemon.",
+    "summary": "Build, provision, and connect the native YTP/1 client and daemon.",
     "url": "/docs/QUICKSTART/",
     "source": "docs/QUICKSTART.md",
     "landing_group": "Start here",
@@ -9,8 +9,8 @@
     "home_group": "Start here"
   },
   {
-    "title": "YTP/1 foundation",
-    "summary": "Build experimental providers, create a schema-1 kit, embed native named streams and run the development yumed-ytp1 and yume-ytp1 processes.",
+    "title": "YTP/1 development guide",
+    "summary": "Build options, schema-1 kits, the native runtimes, managed TUN, embedding and verification gates.",
     "url": "https://github.com/FixCraft-Inc/yume/blob/main/docs/development/ytp1/README.md",
     "source": "docs/development/ytp1/README.md",
     "landing_group": "Start here",
@@ -19,7 +19,7 @@
   },
   {
     "title": "YUME explained",
-    "summary": "How YUME works, from the whole picture to keys, threads and limits, followed by the planned YTP/1 path.",
+    "summary": "How yume and yumed carry traffic: the connection, the keys, streams and policy, and what stays visible.",
     "url": "/docs/EXPLAINED/",
     "source": "docs/EXPLAINED.md",
     "landing_group": "Start here",
@@ -27,16 +27,8 @@
     "home_group": "Start here"
   },
   {
-    "title": "How a byte travels",
-    "summary": "One transport-v2 byte, layer by layer: what each layer is for, how it works, what breaks it, and how to review a change.",
-    "url": "/docs/BYTE_PATH/",
-    "source": "docs/BYTE_PATH.md",
-    "landing_group": "Start here",
-    "order": 22
-  },
-  {
     "title": "Why YUME",
-    "summary": "The transport's goals, security contract, and dependency choices.",
+    "summary": "What YUME is for, the order of its priorities, and the security and dependency choices behind it.",
     "url": "/docs/WHY_YUME/",
     "source": "docs/WHY_YUME.md",
     "landing_group": "Start here",
@@ -62,7 +54,7 @@
   },
   {
     "title": "YTP/1 threat model",
-    "summary": "The intended replacement's attacker, operator, endpoint, and metadata boundaries.",
+    "summary": "Attackers, operators, endpoints and metadata: what YUME protects and what it does not.",
     "url": "/docs/THREAT_MODEL/",
     "source": "docs/THREAT_MODEL.md",
     "landing_group": "Security and transport",
@@ -70,26 +62,8 @@
     "home_group": "Start here"
   },
   {
-    "title": "Transport-v2 security modes",
-    "summary": "The authenticated rekey policies retained by the runnable tunnel and not inherited by YTP/1.",
-    "url": "/docs/SECURITY_MODES/",
-    "source": "docs/SECURITY_MODES.md",
-    "landing_group": "Security and transport",
-    "order": 50,
-    "home_group": "Start here"
-  },
-  {
-    "title": "Transport-v2 permissions",
-    "summary": "Current key admission, per-key metadata, and privileged-feature checks.",
-    "url": "/docs/PERMISSIONS/",
-    "source": "docs/PERMISSIONS.md",
-    "landing_group": "Security and transport",
-    "order": 60,
-    "home_group": "Start here"
-  },
-  {
     "title": "Operations",
-    "summary": "Current deployment, services, release verification, limits, and troubleshooting.",
+    "summary": "Provisioning, service deployment, client identities, limits, release verification and troubleshooting for native yume and yumed.",
     "url": "/docs/OPERATIONS/",
     "source": "docs/OPERATIONS.md",
     "landing_group": "Start here",
@@ -106,8 +80,8 @@
     "home_group": "Operating"
   },
   {
-    "title": "Transport-v2 SOCKS bypass prevention",
-    "summary": "Browser proxy settings, route checks, and the operating-system kill-switch boundary for the runnable tunnel.",
+    "title": "Preventing SOCKS bypass",
+    "summary": "Browser proxy settings, route checks, and what a SOCKS proxy cannot enforce.",
     "url": "/docs/LEAK_TIGHT/",
     "source": "docs/LEAK_TIGHT.md",
     "landing_group": "Operating",
@@ -115,17 +89,8 @@
     "home_group": "Operating"
   },
   {
-    "title": "Transport-v2 filtering and cover",
-    "summary": "Current public-listener, active-probe, cover, and self-DPI behavior.",
-    "url": "/docs/FILTERING_SELF_DPI/",
-    "source": "docs/FILTERING_SELF_DPI.md",
-    "landing_group": "Security and transport",
-    "order": 100,
-    "home_group": "Operating"
-  },
-  {
     "title": "Diagnostics",
-    "summary": "Current developer timing hooks, private evidence handling, and result limits.",
+    "summary": "Timing helpers, compiler warnings, sanitizers and fuzzing for native builds, and what each result can show.",
     "url": "/docs/DIAGNOSTICS/",
     "source": "docs/DIAGNOSTICS.md",
     "landing_group": "Operating",
@@ -143,7 +108,7 @@
   },
   {
     "title": "Source map",
-    "summary": "Runtime ownership, YTP/1 data and cryptographic paths, shared components, and missing integration.",
+    "summary": "Where each part of the native runtime lives, how data and keys move through it, and which checks enforce the layers.",
     "url": "/docs/SOURCE_MAP/",
     "source": "docs/SOURCE_MAP.md",
     "landing_group": "Reference and development",
@@ -152,7 +117,7 @@
   },
   {
     "title": "YTP/1 architecture",
-    "summary": "Replacement component ownership, dependency direction, and runtime boundaries.",
+    "summary": "Native component ownership, dependency direction, and runtime boundaries.",
     "url": "/docs/ARCHITECTURE/",
     "source": "docs/ARCHITECTURE.md",
     "landing_group": "Reference and development",
@@ -161,7 +126,7 @@
   },
   {
     "title": "Experimental C ABI",
-    "summary": "The replacement candidate's lifetime rules, statuses, symbols, and freeze gates.",
+    "summary": "The experimental C interface for embedding YUME: lifetimes, statuses, symbols and freeze gates.",
     "url": "/docs/ABI/",
     "source": "docs/ABI.md",
     "landing_group": "Reference and development",
@@ -169,12 +134,12 @@
     "home_group": "Internals and status"
   },
   {
-    "title": "Transport-v2 control API",
-    "summary": "JSON operations used by transport-v2 runtime IPC and the optional GUI.",
-    "url": "/docs/CONTROL_API/",
-    "source": "docs/CONTROL_API.md",
+    "title": "Modules",
+    "summary": "Programs that serve a stream service: configuration, what the program receives, the connection header, restarts and the trust boundary.",
+    "url": "/docs/MODULES/",
+    "source": "docs/MODULES.md",
     "landing_group": "Reference and development",
-    "order": 145,
+    "order": 142,
     "home_group": "Internals and status"
   },
   {
@@ -187,6 +152,15 @@
     "home_group": "Internals and status"
   },
   {
+    "title": "Relay channel",
+    "summary": "The end-to-end channel two YUME users run through a relaying server: handshake, records, ratchet and rekey.",
+    "url": "/docs/protocol/RELAY_CHANNEL/",
+    "source": "docs/protocol/RELAY_CHANNEL.md",
+    "landing_group": "Security and transport",
+    "order": 155,
+    "home_group": "Internals and status"
+  },
+  {
     "title": "Implementation status",
     "summary": "What exists, what has focused tests, and what still blocks a stable release.",
     "url": "/docs/IMPLEMENTATION_STATUS/",
@@ -196,17 +170,8 @@
     "home_group": "Internals and status"
   },
   {
-    "title": "Tests and benchmarks",
-    "summary": "Current transport benchmarks, focused checks, and what each result can establish.",
-    "url": "/docs/SELFTEST/",
-    "source": "docs/SELFTEST.md",
-    "landing_group": "Reference and development",
-    "order": 170,
-    "home_group": "Internals and status"
-  },
-  {
     "title": "Full documentation map",
-    "summary": "Optional features, protocol documents, and contributor references.",
+    "summary": "Every YUME document, grouped by what you want to do.",
     "url": "/docs/README/",
     "source": "docs/README.md",
     "landing_group": "Reference and development",

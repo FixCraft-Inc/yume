@@ -1,67 +1,32 @@
 YUME Debian source package notes
 ================================
 
-The upstream repository can contain bundled or generated dependency trees used
-for portable upstream builds:
+Bundled dependency trees (basefwx/, vendor/ and top-level third_party/) are
+excluded through Files-Excluded in debian/copyright. Debian builds must not
+download dependencies. Use scripts/make_debian_orig.sh to create the matching
+../yume_<version>.orig.tar.xz before dpkg-buildpackage -S. Upstream
+0.3.0-dev1 maps to 1:0.3.0~dev1; the Debian-only epoch preserves package
+ordering and is omitted from source filenames and YUME's reported version.
 
-* basefwx/
-* vendor/
-* top-level third_party/
-
-These are excluded from the Debian source package through Files-Excluded in
-debian/copyright. Debian builds must not download dependencies during package
-builds and should use Debian-packaged libraries.
-
-Use scripts/make_debian_orig.sh from the upstream checkout to create the
-matching ../yume_<version>.orig.tar.xz before running dpkg-buildpackage -S.
-Development suffixes are normalized for Debian ordering, so upstream
-0.3.0-dev1 is packaged as 1:0.3.0~dev1. The Debian-only epoch keeps upgrades
-ordered above the historical 1.1 package after the upstream maturity reset;
-it is omitted from source-package filenames and YUME's reported version.
-
-The current Debian packaging configures YUME with:
-
-    -DYUME_USE_BASEFWX=ON
-    -DYUME_USE_SYSTEM_BASEFWX=ON
-    -DYUME_USE_BUNDLED_NLOHMANN=OFF
-    -DYUME_BUILD_TRANSPORT_V2=ON
-    -DYUME_BUILD_SHARED_ABI=OFF
-    -DYUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS=OFF
-    -DYUME_STATIC_OPENSSL=OFF
+The Debian build selects the native YTP/1 application, leaves out the BaseFWX
+modules, the GUI and the experimental SDK, and uses system JSON, nghttp2,
+libsystemd and dynamically linked OpenSSL. It emits yume and yume-daemon.
+The schema-1 setup/doctor scripts are installed with the client. The daemon
+ships an unprovisioned schema-1 bootstrap and a disabled service. No private
+keys or usable authorization records are shipped or generated on install.
 
 The package is UNRELEASED and deliberately fails against stock Debian
-`libssl-dev`: transport-v2's native profile requires the reviewed ClientHello
-API in `patches/openssl/series`. The package build environment must provide a
-separately packaged OpenSSL 3.5+ carrying that exact API. Publishing such an
-OpenSSL package, and expressing its exact binary-package dependency, remains a
-prerequisite for publishing YUME Debian binaries. `debian/rules` selects the
-dynamic provider so dpkg-shlibdeps can record the corresponding runtime edge;
-it never downloads or builds OpenSSL during a Debian package build.
+libssl-dev: native TLS requires the reviewed ClientHello API in
+patches/openssl/series. The build environment must provide a separately
+packaged OpenSSL 3.5+ carrying that API. Publishing that dependency and naming
+its exact binary-package requirement remain publication prerequisites.
+debian/rules never downloads or builds OpenSSL. Dynamic linking lets
+dpkg-shlibdeps record its runtime edge; debian/control also states the 3.5
+floor because provider-based ML-DSA lookup has no 3.5-only ELF symbol.
 
-YUME now expects BaseFWX to be packaged separately and provided through
-libbasefwx-dev >= 3.8.0~dev1-1. This is the first package line containing
-the explicit-salt HKDF, X25519, and selectable ML-KEM-1024 APIs used by
-YUME's current transport-v2 cryptographic contract. The BaseFWX source package
-can also build a basefwx CLI package, but YUME only needs libbasefwx-dev at
-build time and libbasefwx3 at runtime. Do not build Debian packages against
-the bundled basefwx/ tree or against vendor/; both are excluded from the
-Debian source tarball.
-dpkg-shlibdeps should then produce the runtime dependency on libbasefwx3
-from the linked yume binaries.
-
-YUME also requires OpenSSL 3.5 or newer for its mandatory composite
-Ed25519 + ML-DSA-87 identities. The generic provider lookup does not reference
-a 3.5-only versioned ELF symbol, so `debian/control` carries an explicit
-`libssl3t64 (>= 3.5.0)` runtime floor in addition to `${shlibs:Depends}`.
-
-This source package emits yume, yume-daemon, and, unless the `nogui` build
-profile is active, yume-gui. The yume package contains the current
-transport-v2 client CLI and its working provisioning helper; yume-daemon
-contains yumed, the disabled yumed.service unit, sysusers/tmpfiles integration,
-and /etc/yume configuration.
-
-The role-neutral ABI v1 and schema-1 YTP/1 setup/doctor code remain
-build-tree development surfaces. They are deliberately not installed or
-packaged until a live endpoint, stream, and packet path passes the ABI gates.
-The retained libyume symbol/install metadata is inert review material for that
-future gate, not a claim that this source package emits libyume.so.1.
+The BaseFWX modules remain available for explicit development builds,
+outside this package payload, and the GUI source does not build until it is
+ported to the native runtime. Neither libyume1 nor libyume-dev is
+emitted before ABI freeze and release qualification; debian/libyume1.symbols
+is candidate review metadata only. Full Debian build, install, upgrade and
+service tests still have to pass in the intended distribution environment.

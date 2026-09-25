@@ -16,15 +16,14 @@
 #include <utility>
 #include <vector>
 
-#include <boost/asio/basic_socket_acceptor.hpp>
 #include <boost/asio/basic_waitable_timer.hpp>
-#include <boost/asio/ip/v6_only.hpp>
 
 #include "engine/buffer.hpp"
 #include "engine/cancellation.hpp"
 #include "engine/route_provider.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
 #include "providers/direct_route_handler.hpp"
+#include "runtime/local_listener.hpp"
 #include "runtime/native_socks5_udp.hpp"
 #include "runtime/socks5_request.hpp"
 
@@ -41,11 +40,7 @@ using engine::StreamResponder;
 using Clock = std::chrono::steady_clock;
 using Timer = boost::asio::basic_waitable_timer<
     Clock, boost::asio::wait_traits<Clock>, providers::AsioExecutionContext::Executor>;
-using Acceptor = boost::asio::basic_socket_acceptor<
-    boost::asio::ip::tcp, providers::AsioExecutionContext::Executor>;
 using Error = boost::system::error_code;
-
-constexpr std::chrono::seconds kAcceptRetryDelay{1};
 
 Status diagnostic(StatusCode code, std::string_view message) noexcept {
     try {
@@ -82,9 +77,7 @@ struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
           udp_service(std::move(udp_service_name)),
           sessions(std::move(session_source)),
           limits(bounds),
-          channels(std::move(owner)),
-          acceptor(context->executor()),
-          retry(context->executor()) {}
+          channels(std::move(owner)) {}
 
     std::shared_ptr<engine::SessionEngine> active_session() const noexcept {
         if (closing || !sessions) return nullptr;
@@ -95,25 +88,23 @@ struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
         }
     }
 
-    void start_accept() noexcept;
-    void retry_accept() noexcept;
-    void adopt(providers::AsioTcpSocket socket) noexcept;
+    void adopt(LocalListener::Connection accepted) noexcept;
     void remove(const Connection* connection) noexcept;
+    void stop(Status status) noexcept;
     void close() noexcept;
 
     std::shared_ptr<providers::AsioExecutionContext> context;
     std::string service;
     std::optional<std::string> udp_service;
     NativeSessionSource sessions;
+    Stopped on_stopped;
     NativeSocks5Limits limits;
     std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
-    Acceptor acceptor;
-    Timer retry;
+    std::shared_ptr<LocalListener> listener;
     boost::asio::ip::tcp::endpoint endpoint;
     std::list<std::shared_ptr<Connection>> connections;
-    bool accepting{false};
-    bool retry_pending{false};
     bool closing{false};
+    StatusCode failure{StatusCode::Ok};
 };
 
 // One local client from accept until its stream is bridged, its UDP
@@ -446,60 +437,13 @@ private:
     bool done_{false};
 };
 
-void NativeSocks5Adapter::State::start_accept() noexcept {
-    if (closing || accepting || retry_pending || connections.size() >= limits.max_connections) return;
-    try {
-        accepting = true;
-        acceptor.async_accept(context->executor(),
-            [self = shared_from_this()](const Error& error, providers::AsioTcpSocket socket) noexcept {
-                self->accepting = false;
-                if (self->closing) {
-                    Error ignored;
-                    socket.close(ignored);
-                    return;
-                }
-                if (error) {
-                    // A local listener survives transient failures such as
-                    // descriptor exhaustion and tries again after a pause.
-                    self->retry_accept();
-                    return;
-                }
-                self->adopt(std::move(socket));
-                self->start_accept();
-            });
-    } catch (...) {
-        accepting = false;
-        retry_accept();
-    }
-}
-
-void NativeSocks5Adapter::State::retry_accept() noexcept {
-    if (closing || retry_pending) return;
-    try {
-        retry_pending = true;
-        retry.expires_after(kAcceptRetryDelay);
-        retry.async_wait([self = shared_from_this()](const Error& error) noexcept {
-            self->retry_pending = false;
-            if (!error) self->start_accept();
-        });
-    } catch (...) {
-        // Without a retry nothing would ever accept again, so stop visibly.
-        retry_pending = false;
-        close();
-    }
-}
-
-void NativeSocks5Adapter::State::adopt(providers::AsioTcpSocket socket) noexcept {
+void NativeSocks5Adapter::State::adopt(LocalListener::Connection accepted) noexcept {
     try {
         // A UDP association accepts datagrams only from this address.
-        Error error;
-        const auto peer = socket.remote_endpoint(error);
-        if (error) return;
-        auto channel = channels->adopt(std::move(socket));
-        if (!channel.ok()) return;
+        if (!accepted.peer_address) return;
         auto connection = std::make_shared<Connection>(weak_from_this(), service, udp_service,
-                                                       limits, std::move(channel).take_value(),
-                                                       peer.address(), context->executor());
+                                                       limits, std::move(accepted.channel),
+                                                       *accepted.peer_address, context->executor());
         connections.push_back(connection);
         connection->start();
     } catch (...) {
@@ -508,26 +452,36 @@ void NativeSocks5Adapter::State::adopt(providers::AsioTcpSocket socket) noexcept
 
 void NativeSocks5Adapter::State::remove(const Connection* connection) noexcept {
     connections.remove_if([connection](const auto& value) { return value.get() == connection; });
-    start_accept();
+    if (listener) listener->resume();
+}
+
+void NativeSocks5Adapter::State::stop(Status status) noexcept {
+    if (closing) return;
+    failure = status.code();
+    auto stopped = std::move(on_stopped);
+    close();
+    if (stopped) {
+        try { stopped(std::move(status)); } catch (...) {}
+    }
 }
 
 void NativeSocks5Adapter::State::close() noexcept {
     if (closing) return;
     closing = true;
-    Error ignored;
-    acceptor.close(ignored);
-    retry.cancel(ignored);
+    if (listener) listener->close();
     auto current = std::move(connections);
     connections.clear();
     for (const auto& connection : current) connection->close();
     channels->cancel();
+    on_stopped = {};
 }
 
 engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create(
     std::shared_ptr<providers::AsioExecutionContext> context,
     const config::v1::Socks5Adapter& adapter,
     NativeSessionSource sessions,
-    NativeSocks5Limits limits) {
+    NativeSocks5Limits limits,
+    Stopped on_stopped) {
     using Created = engine::Result<std::shared_ptr<NativeSocks5Adapter>>;
     if (!context || !sessions || limits.max_connections == 0U || limits.max_connections > 4096U ||
         limits.handshake_timeout <= std::chrono::milliseconds::zero() ||
@@ -552,21 +506,31 @@ engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create
         auto state = std::make_shared<State>(context, adapter.service(), adapter.udp_service(),
                                              std::move(sessions), limits,
                                              std::move(channels).take_value());
-        const boost::asio::ip::tcp::endpoint listen{address, adapter.listen_port()};
-        state->acceptor.open(listen.protocol(), error);
-        if (!error && address.is_v6()) state->acceptor.set_option(boost::asio::ip::v6_only(true), error);
-        if (!error) state->acceptor.set_option(boost::asio::socket_base::reuse_address(true), error);
-        if (!error) state->acceptor.bind(listen, error);
-        if (!error) state->acceptor.listen(boost::asio::socket_base::max_listen_connections, error);
-        if (!error) state->endpoint = state->acceptor.local_endpoint(error);
-        if (error) {
-            const auto code = error == boost::asio::error::address_in_use ? StatusCode::AddressInUse
-                : error == boost::asio::error::access_denied ? StatusCode::PermissionDenied
-                : StatusCode::Internal;
-            return Created(diagnostic(code, "SOCKS5 listener could not open"));
-        }
-        state->start_accept();
-        return Created(std::shared_ptr<NativeSocks5Adapter>(new NativeSocks5Adapter(std::move(state))));
+        auto listener = LocalListener::open(context,
+            LocalListener::Loopback{address, adapter.listen_port()}, state->channels,
+            "SOCKS5 listener");
+        if (!listener.ok()) return Created(listener.status());
+        state->listener = std::move(listener).take_value();
+        state->endpoint = state->listener->tcp_endpoint();
+        // Keep creation failures on the synchronous result path. Publish the
+        // callback only once an owner and the first accept or retry exist.
+        auto result = std::shared_ptr<NativeSocks5Adapter>(new NativeSocks5Adapter(state));
+        const std::weak_ptr<State> weak = state;
+        state->listener->start(
+            [weak](LocalListener::Connection connection) {
+                if (const auto self = weak.lock()) self->adopt(std::move(connection));
+            },
+            [weak] {
+                const auto self = weak.lock();
+                return !self || self->closing ||
+                       self->connections.size() >= self->limits.max_connections;
+            },
+            [weak](Status status) {
+                if (const auto self = weak.lock()) self->stop(std::move(status));
+            });
+        if (state->closing) return Created(Status(state->failure));
+        state->on_stopped = std::move(on_stopped);
+        return Created(std::move(result));
     } catch (const std::bad_alloc&) {
         return Created(Status(StatusCode::ResourceExhausted));
     } catch (...) {

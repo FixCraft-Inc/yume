@@ -2,6 +2,11 @@
 # Copyright (C) 2026 FixCraft Inc.
 # Licensed under the GNU Affero General Public License v3.0 or later.
 
+# Stages the yume_cli install component and checks the installed native
+# layout: the programs, manuals and cover-profile data are present, the setup
+# tools start, source-only registries stay out of the examples, and the
+# Debian install lists assign every installed program and manual.
+
 cmake_minimum_required(VERSION 3.20)
 
 foreach(_required
@@ -10,8 +15,8 @@ foreach(_required
         YUME_PYTHON
         YUME_INSTALL_BINDIR
         YUME_INSTALL_DATADIR
-        YUME_DEBIAN_INSTALL_MANIFEST
-        YUME_COVER_MANIFEST)
+        YUME_INSTALL_MANDIR
+        YUME_DEBIAN_DIR)
     if(NOT DEFINED ${_required} OR "${${_required}}" STREQUAL "")
         message(FATAL_ERROR "${_required} is required")
     endif()
@@ -46,15 +51,31 @@ if(NOT _install_result EQUAL 0)
         "staged yume_cli install failed:\n${_install_output}${_install_error}")
 endif()
 
-set(_setup "${_test_prefix}/${YUME_INSTALL_BINDIR}/yume-setup")
+set(_bin "${_test_prefix}/${YUME_INSTALL_BINDIR}")
+set(_man "${_test_prefix}/${YUME_INSTALL_MANDIR}")
 set(_required_artifacts
-    "${_setup}"
-    "${_test_prefix}/${YUME_INSTALL_BINDIR}/yume-packet-quick"
-    "${_test_prefix}/${YUME_INSTALL_DATADIR}/yume/cover-node/backend.mjs"
+    "${_bin}/yume"
+    "${_bin}/yumed"
+    "${_bin}/yume-setup"
+    "${_bin}/yume-doctor"
+    "${_man}/man1/yume.1"
+    "${_man}/man8/yumed.8"
     "${_test_prefix}/${YUME_INSTALL_DATADIR}/yume/cover-profile/manifest.json")
 foreach(_artifact IN LISTS _required_artifacts)
     if(NOT EXISTS "${_artifact}")
-        message(FATAL_ERROR "installed YUME helper artifact not found: ${_artifact}")
+        message(FATAL_ERROR "installed YUME artifact not found: ${_artifact}")
+    endif()
+endforeach()
+
+foreach(_tool IN ITEMS yume-setup yume-doctor)
+    execute_process(
+        COMMAND "${YUME_PYTHON}" "${_bin}/${_tool}" --help
+        RESULT_VARIABLE _help_result
+        OUTPUT_QUIET
+        ERROR_VARIABLE _help_error
+    )
+    if(NOT _help_result EQUAL 0)
+        message(FATAL_ERROR "installed ${_tool} --help failed: ${_help_error}")
     endif()
 endforeach()
 
@@ -66,54 +87,26 @@ foreach(_source_registry IN ITEMS dependencies.json transport_profiles.json)
     endif()
 endforeach()
 
-file(STRINGS "${YUME_DEBIAN_INSTALL_MANIFEST}" _debian_install_lines)
-set(_required_assignments
+# Each Debian binary package must claim the installed files it ships.
+function(yume_require_debian_assignments package)
+    file(STRINGS "${YUME_DEBIAN_DIR}/${package}.install" _lines)
+    foreach(_assignment IN LISTS ARGN)
+        list(FIND _lines "${_assignment}" _index)
+        if(_index EQUAL -1)
+            message(FATAL_ERROR
+                "debian/${package}.install does not assign ${_assignment}")
+        endif()
+    endforeach()
+endfunction()
+
+yume_require_debian_assignments(yume
+    "usr/bin/yume"
     "usr/bin/yume-setup"
-    "usr/bin/yume-packet-quick"
-    "usr/share/yume/cover-node/*"
+    "usr/bin/yume-doctor"
+    "usr/share/man/man1/yume.1"
     "usr/share/yume/cover-profile/*")
-foreach(_assignment IN LISTS _required_assignments)
-    list(FIND _debian_install_lines "${_assignment}" _assignment_index)
-    if(_assignment_index EQUAL -1)
-        message(FATAL_ERROR
-            "debian/yume.install does not assign ${_assignment}")
-    endif()
-endforeach()
+yume_require_debian_assignments(yume-daemon
+    "usr/bin/yumed"
+    "usr/share/man/man8/yumed.8")
 
-execute_process(
-    COMMAND "${_setup}" --help
-    RESULT_VARIABLE _help_result
-    OUTPUT_QUIET
-    ERROR_VARIABLE _help_error
-)
-if(NOT _help_result EQUAL 0)
-    message(FATAL_ERROR "installed yume-setup --help failed: ${_help_error}")
-endif()
-
-execute_process(
-    COMMAND "${YUME_PYTHON}" -c
-            "import runpy, sys
-ns = runpy.run_path(sys.argv[1])
-print(ns['pinned_node_version']())"
-            "${_setup}"
-    RESULT_VARIABLE _version_result
-    OUTPUT_VARIABLE _installed_version
-    ERROR_VARIABLE _version_error
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(NOT _version_result EQUAL 0)
-    message(FATAL_ERROR
-        "installed yume-setup could not load its cover manifest: "
-        "${_version_error}")
-endif()
-
-file(READ "${YUME_COVER_MANIFEST}" _manifest)
-string(JSON _expected_version GET "${_manifest}" server version)
-if(NOT "${_installed_version}" STREQUAL "${_expected_version}")
-    message(FATAL_ERROR
-        "installed Node version ${_installed_version} does not match "
-        "fixture ${_expected_version}")
-endif()
-
-message(STATUS
-    "installed yume-setup resolved Node ${_installed_version} from staged data")
+message(STATUS "installed native layout matches the Debian install lists")

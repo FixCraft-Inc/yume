@@ -4,7 +4,7 @@
 # Licensed under the GNU Affero General Public License v3.0 or later.
 """Run a YTP/1 session from this machine to a remote host over a direct link.
 
-The client (yume-ytp1) runs here and the daemon (yumed-ytp1) runs on the remote
+The client (yume) runs here and the daemon (yumed) runs on the remote
 host through SSH. Before anything starts, a preflight records the route,
 interface state, negotiated speed and MTU, and requires SSH to answer on the
 remote address. An unavailable link fails with exit status 3.
@@ -394,6 +394,7 @@ def run(arguments: argparse.Namespace, report: dict[str, object]) -> None:
     quoted = shlex.quote(remote_dir)
     report["local_host"] = {"name": platform.node(), "cpus": os.cpu_count()}
     report["remote_link"] = remote_link(ssh_host, remote)
+    # Retain the report schema's comparison keys across executable migration.
     report["binaries"] = {
         "yume-ytp1": session.file_digest(arguments.yume),
         "yumed-ytp1": ssh(ssh_host, f"sha256sum {shlex.quote(arguments.remote_yumed)}").split()[0],
@@ -437,7 +438,7 @@ def run(arguments: argparse.Namespace, report: dict[str, object]) -> None:
                                           env=environment, stdout=log, stderr=subprocess.STDOUT)
                 session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
                 measure(arguments, remote, socks_port, report)
-                session.stop_process(client, "yume-ytp1")
+                session.stop_process(client, "yume")
                 client = None
         finally:
             if client is not None and client.poll() is None:
@@ -459,7 +460,7 @@ def run(arguments: argparse.Namespace, report: dict[str, object]) -> None:
             except (session.SessionFailure, subprocess.SubprocessError, OSError, tarfile.TarError) as error:
                 report["pull_error"] = f"{error}. The remote run stays in {remote_dir}"
     if log_path.is_file():
-        session.reject_secret_output("yume-ytp1", log_path.read_text(encoding="utf-8", errors="replace"))
+        session.reject_secret_output("yume", log_path.read_text(encoding="utf-8", errors="replace"))
 
 
 def printable(report: dict[str, object]) -> dict[str, object]:
@@ -486,13 +487,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--remote-host", default="10.77.77.1", help="remote address on the direct link")
     parser.add_argument("--ssh-host", help="SSH destination, default the remote address")
-    parser.add_argument("--remote-yumed", help="yumed-ytp1 path on the remote host")
-    parser.add_argument("--yume", type=Path, help="local yume-ytp1")
+    parser.add_argument("--remote-yumed", help="yumed path on the remote host")
+    parser.add_argument("--yume", type=Path, help="local yume")
     parser.add_argument("--openssl", type=Path, help="openssl for kit generation")
     parser.add_argument("--output", type=Path, required=True, help="new directory for the report")
     parser.add_argument("--server-name", default="link.example.test")
     parser.add_argument("--port", type=int, default=8443,
-                        help="daemon port. Below 1024 needs a yumed-ytp1 allowed to bind it")
+                        help="daemon port. Below 1024 needs a yumed allowed to bind it")
     parser.add_argument("--target-port", type=int, default=18080,
                         help="tunnel destination port, reached on the remote host itself")
     parser.add_argument("--baseline-port", type=int,

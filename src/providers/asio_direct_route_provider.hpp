@@ -15,6 +15,7 @@
 
 #include "engine/route_provider.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "providers/system_resolver.hpp"
 
 namespace yume::providers {
 
@@ -28,6 +29,7 @@ inline constexpr std::uint32_t kAsioDirectRouteProviderApiVersion = 1U;
 struct AsioDirectRouteLimits final {
     std::size_t max_pending_opens{64U};
     std::size_t max_active_connections{1024U};
+    // The system resolver returns at most resolver_protocol::kMaxAddresses.
     std::size_t max_resolved_endpoints{32U};
     std::size_t max_tcp_read_bytes{64U * 1024U};
     std::size_t max_tcp_write_bytes{64U * 1024U};
@@ -64,14 +66,17 @@ using ResolvedRoutePolicy = std::function<engine::Status(
 // TCP shutdown_write() returns FailedPrecondition for wrong affinity.
 // cancel()/channel close remain cross-thread and use reserved control dispatch.
 // Close all channels, finish the context, and drain before releasing its owner.
-// System resolution may outlive its application deadline during final drain.
+// Destination names use the optional resolver on the same context. Without
+// one, a name is refused before any lookup or socket. The provider cancels
+// its own lookups but does not close the shared resolver.
 class AsioDirectRouteProvider final : public engine::RouteProvider {
 public:
     static engine::Result<std::shared_ptr<AsioDirectRouteProvider>> create(
         std::shared_ptr<AsioExecutionContext> context,
         ResolvedRoutePolicy resolved_policy,
         AsioDirectRouteLimits limits = {},
-        SocketProtector socket_protector = {});
+        SocketProtector socket_protector = {},
+        std::shared_ptr<SystemResolver> resolver = {});
 
     AsioDirectRouteProvider(const AsioDirectRouteProvider&) = delete;
     AsioDirectRouteProvider& operator=(const AsioDirectRouteProvider&) = delete;

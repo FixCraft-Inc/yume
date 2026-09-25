@@ -25,14 +25,14 @@ PROFILE = "linux-desktop-0.3.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
 BUNDLE_DIRECTORY = "yume-amd64-linux"
-HELPER_NAME = "yume-chrome-tls-helper"
 EXPECTED_BUNDLE_FILES = {
     "LICENSE": 0o644,
     "QUICKSTART.md": 0o644,
     "THIRD_PARTY_NOTICES.md": 0o644,
     "manifest.json": 0o644,
     "yume": 0o755,
-    HELPER_NAME: 0o755,
+    "yume-setup": 0o755,
+    "yume-doctor": 0o755,
 }
 MAX_BUNDLE_FILE_BYTES = {
     "LICENSE": 1024 * 1024,
@@ -40,7 +40,8 @@ MAX_BUNDLE_FILE_BYTES = {
     "THIRD_PARTY_NOTICES.md": 1024 * 1024,
     "manifest.json": 1024 * 1024,
     "yume": 512 * 1024 * 1024,
-    HELPER_NAME: 64 * 1024 * 1024,
+    "yume-setup": 1024 * 1024,
+    "yume-doctor": 1024 * 1024,
 }
 MAX_SERVER_BYTES = 512 * 1024 * 1024
 
@@ -104,7 +105,7 @@ def validate_ref(ref: str, repository: str) -> None:
 
 
 def source_version() -> str:
-    text = (ROOT / "src" / "core" / "version.hpp").read_text(encoding="utf-8")
+    text = (ROOT / "src" / "common" / "version.hpp").read_text(encoding="utf-8")
     match = re.search(r'kVersion\[\]\s*=\s*"([^"]+)"', text)
     require(match is not None, "Cannot read YUME source version")
     return match.group(1)
@@ -160,22 +161,13 @@ def validate_workflow_guards() -> None:
     required_release = (
         "linux-desktop-0.3.0",
         "libbrotli-dev",
-        'go-version: "1.26.5"',
-        "check-latest: false",
-        "-DYUME_BUILD_CHROME_TLS_HELPER=ON",
-        "-DYUME_BUILD_GUI=OFF",
+        "-DYUME_BUILD_NATIVE_APPLICATION=ON",
+        "-DYUME_BUILD_SHARED_ABI=OFF",
+        "-DYUME_BUILD_BASEFWX_MODULES=OFF",
         "-DYUME_STATIC=OFF",
         "-DYUME_STATIC_OPENSSL=ON",
         "-DYUME_WARNINGS_AS_ERRORS=ON",
         "-DCMAKE_SKIP_BUILD_RPATH=ON",
-        "-DBASEFWX_REQUIRE_ARGON2=ON",
-        "-DBASEFWX_REQUIRE_OQS=ON",
-        "-DBASEFWX_OQS_STATIC=ON",
-        "-DOQS_LIBRARY=\"${YUME_LIBOQS_PREFIX}/lib/liboqs.a\"",
-        "LIBOQS_PREFIX_OVERRIDE=\"${YUME_LIBOQS_PREFIX}\"",
-        "LIBOQS_VERSION=0.16.0",
-        "-DBASEFWX_REQUIRE_LZMA=ON",
-        "GOPROXY=off",
         "package_linux_release.py",
         BUNDLE_NAME,
         SERVER_NAME,
@@ -201,8 +193,8 @@ def validate_workflow_guards() -> None:
     # Derive the lane count so a new lane must carry the same guarantees.
     cmake_lanes = ci_yml.count("cmake -S . -B ")
     require(cmake_lanes >= 3,
-            "ci.yml must keep at least the release, sanitizer and GUI build lanes; "
-            f"found {cmake_lanes} lanes that configure CMake")
+            "ci.yml must keep at least the release, sanitizer and thread-sanitizer "
+            f"build lanes; found {cmake_lanes} lanes that configure CMake")
     require(ci_yml.count(dependency_setup) == cmake_lanes,
             "every CI build lane must preserve the combined OpenSSL/nghttp2 "
             f"environment: {cmake_lanes} lanes configure CMake but "
@@ -218,6 +210,7 @@ def validate_workflow_guards() -> None:
     for needle in (
         'YUME_OPENSSL_FORCE_PINNED: "1"',
         "-DYUME_STATIC_OPENSSL=ON",
+        "-DYUME_BUILD_BASEFWX_MODULES=ON",
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
         "-DBASEFWX_REQUIRE_LZMA=ON",
@@ -266,8 +259,8 @@ def validate_workflow_guards() -> None:
     require("branches: [main, DEV]" in ci_yml, "ci.yml must cover main and DEV")
     require("scripts/check_dependency_sbom.py --check" in ci_yml,
             "CI preflight must reject stale declared-dependency SBOM metadata")
-    require(release_yml.count("-B build-helper-") >= 2,
-            "release.yml must configure two clean helper build directories")
+    require(release_yml.count("cmake -S . -B build-release") == 1,
+            "release.yml must configure exactly one release build directory")
     forbidden = (
         "build-macos", "openwrt", "windows-x86_64", "armv7", "armv8",
         "busybox", "yume-gui", "yume-amd64-linux-static", "debian archive",
@@ -287,39 +280,18 @@ def validate_cmake_cache(path: pathlib.Path) -> None:
     require(path.is_file(), f"Missing CMake cache: {path}")
     cache = path.read_text(encoding="utf-8", errors="replace")
     required = {
-        "YUME_USE_BASEFWX": "ON",
-        "YUME_BUILD_CHROME_TLS_HELPER": "ON",
+        "YUME_BUILD_NATIVE_APPLICATION": "ON",
+        "YUME_BUILD_SHARED_ABI": "OFF",
+        "YUME_BUILD_BASEFWX_MODULES": "OFF",
         "YUME_STATIC_OPENSSL": "ON",
-        "YUME_BUILD_GUI": "OFF",
         "YUME_STATIC": "OFF",
         "YUME_WARNINGS_AS_ERRORS": "ON",
         "CMAKE_SKIP_BUILD_RPATH": "ON",
-        "BASEFWX_REQUIRE_ARGON2": "ON",
-        "BASEFWX_REQUIRE_OQS": "ON",
-        "BASEFWX_OQS_STATIC": "ON",
-        "BASEFWX_REQUIRE_LZMA": "ON",
     }
     for name, expected in required.items():
         actual = cache_value(cache, name)
         require(actual == expected,
                 f"Release CMake cache requires {name}={expected}, found {actual}")
-    oqs_library = cache_value(cache, "OQS_LIBRARY")
-    oqs_library_static = cache_value(cache, "OQS_LIBRARY_STATIC")
-    require(oqs_library is not None and oqs_library.endswith("/lib/liboqs.a"),
-            f"Release CMake cache requires an explicit static OQS_LIBRARY, found {oqs_library}")
-    require(oqs_library_static == oqs_library,
-            "Release CMake cache OQS_LIBRARY_STATIC must match OQS_LIBRARY")
-
-
-def validate_helper_rebuilds(first: pathlib.Path, second: pathlib.Path) -> str:
-    for path in (first, second):
-        require(path.is_file() and not path.is_symlink(),
-                f"Missing regular Chrome TLS helper rebuild: {path}")
-    first_hash = sha256_file(first)
-    second_hash = sha256_file(second)
-    require(first_hash == second_hash,
-            "Chrome TLS helper clean rebuild SHA-256 mismatch")
-    return first_hash
 
 
 def require_elf_amd64(data: bytes, description: str) -> None:
@@ -423,14 +395,13 @@ def require_no_runtime_search_path(data: bytes, description: str) -> None:
         require(b"/" not in library,
                 f"{description} contains an unsafe DT_NEEDED path")
         require(not library.startswith(b"liboqs.so"),
-                f"{description} dynamically links liboqs; release binaries must use the pinned static archive")
+                f"{description} loads liboqs, which no release binary links")
         require(not library.startswith((b"libssl", b"libcrypto")),
                 f"{description} dynamically links OpenSSL; the native Chrome TLS "
                 "patch must be embedded in the release binary")
 
 
 def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
-                    expected_helper_hash: str | None,
                     transport: dict[str, object]) -> dict[str, object]:
     require(bundle.is_file() and not bundle.is_symlink(), f"Missing release bundle: {bundle}")
     with tarfile.open(bundle, "r:xz") as archive:
@@ -441,8 +412,12 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
         expected_names = {BUNDLE_DIRECTORY} | {
             f"{BUNDLE_DIRECTORY}/{name}" for name in EXPECTED_BUNDLE_FILES
         }
-        require(names == expected_names,
+        require(len(members) == len(expected_names) and names == expected_names,
                 "Release bundle contents are incomplete or contain unexpected files")
+        root = next(member for member in members
+                    if member.name.rstrip("/") == BUNDLE_DIRECTORY)
+        require(root.isdir(), "Release bundle root must be a directory")
+        require(root.mode == 0o755, "Release bundle root must have mode 0755")
         payloads: dict[str, bytes] = {}
         for name, mode in EXPECTED_BUNDLE_FILES.items():
             member = archive.getmember(f"{BUNDLE_DIRECTORY}/{name}")
@@ -456,7 +431,6 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
 
     require_glibc_amd64(payloads["yume"], "bundled yume")
     require_no_runtime_search_path(payloads["yume"], "bundled yume")
-    require_elf_amd64(payloads[HELPER_NAME], "bundled Chrome TLS helper")
     manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
     require(isinstance(manifest, dict), "Bundle manifest must be an object")
     require(manifest.get("schema") == 1, "Bundle manifest schema mismatch")
@@ -469,35 +443,32 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     require(manifest.get("libc") == "glibc", "Bundle libc mismatch")
     require(manifest.get("transport_profile") == transport["id"],
             "Bundle transport profile mismatch")
-    helper = manifest.get("chrome_tls_helper", {})
-    require(helper.get("build_id") == transport["helper_build_id"],
-            "Bundle helper identity mismatch")
-    require(helper.get("ipc_protocol") == 1, "Bundle helper IPC mismatch")
-    require(helper.get("required_at_runtime") is False,
-            "Bundled helper must be declared optional at runtime")
-    require(helper.get("go_version") == "go1.26.5", "Bundle helper Go version mismatch")
-    helper_hash = sha256_bytes(payloads[HELPER_NAME])
-    require(helper.get("sha256") == helper_hash, "Bundle helper SHA-256 mismatch")
-    require(helper.get("clean_rebuild_sha256") == helper_hash,
-            "Bundle helper reproducibility evidence mismatch")
-    if expected_helper_hash is not None:
-        require(helper_hash == expected_helper_hash,
-                "Bundled helper differs from clean rebuilds")
+    require(manifest.get("transport") == "YTP/1" and
+            manifest.get("config_schema") == 1 and
+            manifest.get("suite") == "ytp1-tls13-h2",
+            "Bundle must declare the native schema-1 YTP/1 application")
+    server_metadata = manifest.get("standalone_server")
+    require(isinstance(server_metadata, dict), "Bundle standalone server metadata is missing")
+    for name, output in (
+            ("yume", manifest.get("client_version_output")),
+            ("yumed", server_metadata.get("version_output"))):
+        require(isinstance(output, str) and
+                output.startswith(f"{name} {version}\n") and
+                "transport YTP/1, config schema 1, suite ytp1-tls13-h2" in output,
+                f"Bundle {name} native identity is missing or mismatched")
     features = manifest.get("required_features", {})
     require(features == {
-        "argon2": True,
         "native_chrome_client_hello": True,
         "openssl_minimum": "3.5.0",
         "patched_openssl_embedded": True,
         "post_quantum": True,
     }, "Bundle mandatory feature declarations are incomplete or relaxed")
-    require(manifest.get("optional_features") == {"chrome_tls_helper": True},
-            "Bundle optional helper declaration is missing or malformed")
     entries = manifest.get("files")
     require(isinstance(entries, list), "Bundle manifest file list is missing")
     by_name = {entry.get("file"): entry for entry in entries if isinstance(entry, dict)}
     expected_manifest_files = set(EXPECTED_BUNDLE_FILES) - {"manifest.json"}
-    require(set(by_name) == expected_manifest_files,
+    require(len(entries) == len(expected_manifest_files) and
+            set(by_name) == expected_manifest_files,
             "Bundle manifest file list is incomplete or unexpected")
     for name in expected_manifest_files:
         entry = by_name[name]
@@ -511,14 +482,12 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
 
 
 def validate_artifacts(directory: pathlib.Path, version: str, commit: str,
-                       expected_helper_hash: str | None,
                        transport: dict[str, object]) -> None:
     require(directory.is_dir(), f"Release artifact directory not found: {directory}")
     present = {path.name for path in directory.iterdir() if path.is_file()}
     require(present == {BUNDLE_NAME, SERVER_NAME},
             "Release artifacts are incomplete or include unexpected platforms/variants")
-    manifest = validate_bundle(directory / BUNDLE_NAME, version, commit,
-                               expected_helper_hash, transport)
+    manifest = validate_bundle(directory / BUNDLE_NAME, version, commit, transport)
     server = directory / SERVER_NAME
     require(server.is_file() and not server.is_symlink(),
             "Server artifact must be a regular file")
@@ -557,8 +526,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tag")
     parser.add_argument("--skip-ref-fetch", action="store_true")
     parser.add_argument("--cmake-cache", type=pathlib.Path)
-    parser.add_argument("--helper-build-a", type=pathlib.Path)
-    parser.add_argument("--helper-build-b", type=pathlib.Path)
     parser.add_argument("--artifacts", type=pathlib.Path)
     return parser.parse_args()
 
@@ -578,14 +545,8 @@ def main() -> None:
     validate_workflow_guards()
     if args.cmake_cache is not None:
         validate_cmake_cache(args.cmake_cache)
-    require((args.helper_build_a is None) == (args.helper_build_b is None),
-            "Both helper rebuild paths are required together")
-    helper_hash = None
-    if args.helper_build_a is not None:
-        helper_hash = validate_helper_rebuilds(
-            args.helper_build_a, args.helper_build_b)
     if args.artifacts is not None:
-        validate_artifacts(args.artifacts, version, commit, helper_hash, transport)
+        validate_artifacts(args.artifacts, version, commit, transport)
     print(f"Preflight OK: profile={PROFILE} version={version} "
           f"transport={transport['id']} BaseFWX={ref}")
 

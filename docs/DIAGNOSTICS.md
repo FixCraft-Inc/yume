@@ -1,53 +1,44 @@
 <!-- Generated from docs/src/en_US/pages/diagnostics.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Developer diagnostics
 
-> **Runnable transport-v2 path:** these diagnostics apply to the current
-> product. Replacement typed diagnostics and `yume-doctor-ytp1` are documented
-> in the [YTP/1 foundation page](development/ytp1/README.md#diagnostics-and-evidence).
+Operators check a configuration with `--validate` and `yume-doctor`, which
+[operations](OPERATIONS.md#troubleshooting) describes, and the
+[native guide](development/ytp1/README.md#diagnostics-and-evidence) covers
+typed runtime diagnostics and evidence. This page is for developers: the
+timing helpers, the warning set, sanitizers and fuzzing.
 
-YUME keeps precise in-process timing available for diagnosis without carrying
-it in production executables. The build configuration, not a runtime flag,
-defines that boundary.
+## Timing helpers
 
-| CMake configuration | Timing code | Runtime default |
-|---|---:|---:|
-| `Release`, `MinSizeRel` | compiled out | unavailable |
-| `RelWithDebInfo`, `Debug` | compiled in | off |
+`src/common/timing.hpp` holds the shared timing types. `Stopwatch` times one
+synchronous operation, `SampleAccumulator` batches counts and nanoseconds, and
+`IntervalTimer` tracks an asynchronous span. `YUME_TIMING_SINK` hands an event
+to a sink, and in builds without diagnostics it removes the event together
+with the expression that builds its details.
 
-`./ezbuild.sh` produces a portable, `-O3`/LTO `Release` build by default.
-Use `./ezbuild.sh --native` for the fastest binary on the current CPU; that
-binary must not be copied to an older/different CPU. Use `./ezbuild.sh --dev`
-for an optimized `RelWithDebInfo` build with diagnostic hooks. Self-test builds
-are also developer builds so endpoint profiling can opt in to the same hooks.
-Fast-math stays disabled in every mode.
+The build configuration, not a runtime flag, decides whether any of this
+exists:
 
-In a developer build, pass `--timing` to `yume` and `yumed`, or set
-`YUME_TIMING=1`. A production binary warns that `--timing` is unavailable and
-ignores `YUME_TIMING`.
+| CMake configuration | Timing code |
+|---|---|
+| `Release`, `MinSizeRel` | compiled out, no clock reads |
+| `RelWithDebInfo`, `Debug` | compiled in, off until a caller turns it on |
 
-## One implementation, bounded hook points
+Today only the HTTP/2 carrier uses the helpers. With `set_timing_enabled(true)`
+it records feed, flush, WebSocket encode and decode time next to its credit and
+window counters, and only its tests turn that on. `yume` and `yumed` have no
+timing switch.
 
-The shared API is `src/core/diagnostics/timing.hpp`. It provides:
+`./ezbuild.sh` builds `Release`. `./ezbuild.sh --dev` builds an optimized
+`RelWithDebInfo` with the helpers compiled in. `./ezbuild.sh --native` tunes
+for the current CPU, so that binary must not be copied to an older or
+different CPU. Fast-math stays off in every mode.
 
-- `Stopwatch` for one synchronous operation;
-- `SampleAccumulator` for batched hot-path counts and nanoseconds;
-- `IntervalTimer` for asynchronous spans such as `REKEY_INIT` to `REKEY_ACK`;
-- `YUME_TIMING_LOG` and `YUME_TIMING_SINK`, which remove the whole event and
-  its detail-building expression from production preprocessing.
-
-The current low-level hooks cover connection setup, TLS and H2 carrier setup,
-AUTH hybrid work, SOCKS/open lifecycle, write selection/queue depth, ratchet
-seal/open batches, rekey waits, TLS write completion, and H2/WebSocket
-encode/decode/flush totals. These are the state and I/O boundaries needed to
-locate stalls; logging every function would add noise and make traces harder to
-use.
-
-New timing work should use the shared types instead of open-coding
-`steady_clock::now()` pairs or adding per-file enable flags. Detail strings must
-stay inside a timing macro. For an asynchronous callback, guard a diagnostic
-timer and its lambda capture with `#if YUME_ENABLE_DEV_DIAGNOSTICS` so a Release
-closure has no diagnostic member. Never log keys, nonces, plaintext, auth
-responses, secret paths, or full peer-controlled payloads.
+New timing work should use these types instead of pairs of
+`steady_clock::now()` calls or per-file switches. Keep detail strings inside
+`YUME_TIMING_SINK`. Guard a diagnostic timer that an asynchronous callback
+captures with `#if YUME_ENABLE_DEV_DIAGNOSTICS`, so a Release closure carries
+no diagnostic member. Never log keys, nonces, plaintext, authentication
+material, secret paths or full peer-controlled payloads.
 
 ## Compiler warnings
 
@@ -57,30 +48,29 @@ responses, secret paths, or full peer-controlled payloads.
 | `YUME_WARNINGS_AS_ERRORS` | `OFF` (`ON` in CI) | Promote those warnings to errors |
 
 The set is `-Wall -Wextra -Wformat-security -Wvla -Wnon-virtual-dtor` on
-GCC/Clang and `/W4 /permissive-` on MSVC, applied through
-`yume_apply_warnings()` in `src/CMakeLists.txt`. Most first-party targets pick
-it up via the existing `yume_apply_perf_opts()` hook; the installed shared
-library (`yume_abi`) calls `yume_apply_warnings()` directly, so its
-optimisation settings stay a separate decision from its warning settings.
+GCC and Clang and `/W4 /permissive-` on MSVC, applied through
+`yume_apply_warnings()` in `src/CMakeLists.txt`. Most first-party targets get
+it from `yume_apply_perf_opts()`. The shared library `yume_abi` calls
+`yume_apply_warnings()` directly, so its optimization settings stay a
+separate decision from its warnings.
 
-Coverage is enforced, not assumed: a configure-time audit at the end of
-`src/CMakeLists.txt` fails the build if any target that compiles first-party
-code never received the set. Add a genuinely exempt target to
-`YUME_WARNING_EXEMPT_TARGETS` with a reason.
+A configure-time audit at the end of `src/CMakeLists.txt` fails the build if
+any target that compiles first-party code never received the set. Add an
+exempt target to `YUME_WARNING_EXEMPT_TARGETS` with a reason.
 
-Both the Release and the sanitizer CI jobs build with `-Werror`. That is
-deliberate duplication: warnings whose analysis depends on optimization level
-(`-Wformat-truncation` among them) fire in only one of the two configurations,
-so gating a single job leaves part of the set unenforced.
+The CI test lanes build with `-Werror` at different optimization levels on
+purpose. Warnings whose analysis depends on optimization, such as
+`-Wformat-truncation`, fire in only some configurations, so gating one lane
+would leave part of the set unenforced.
 
-Bundled dependencies (BaseFWX, Dear ImGui, ImPlot, nanosvg, stb) are separate
-targets or `SYSTEM` includes and never receive it, so any warning printed here
-is about code this tree owns and can fix. Do not silence one with a blanket
-`-Wno-`; either fix it or add a narrowly scoped, commented suppression.
+Bundled dependencies such as BaseFWX are separate targets or `SYSTEM`
+includes and never receive the set, so any warning printed here is about code
+this tree owns and can fix. Do not silence one with a blanket `-Wno-`. Fix it
+or add a narrowly scoped, commented suppression.
 
 The deliberately disabled flags are `-Wconversion`, `-Wsign-conversion`,
-`-Wshadow`, `-Wcast-qual`, and `-Wold-style-cast`. Each needs a dedicated
-cleanup pass instead of a suppression and is enabled as that work is done.
+`-Wshadow`, `-Wcast-qual` and `-Wold-style-cast`. Each needs its own cleanup
+pass instead of a suppression and is enabled when that work is done.
 
 Two diagnostics are demoted from errors rather than disabled, so they still
 print. Both are limitations of a specific toolchain reported against a system
@@ -91,9 +81,9 @@ or third-party header, where an in-source pragma does not apply:
 | `-Wstringop-overread` | GCC 11 only | GCC 11 propagates an exact string length proved at the call site into libstdc++'s `std::string` move assignment, then warns about the short-string branch a string of that length can never take. GCC 12 and later do not emit it. |
 | `-Wtsan` | GCC, ThreadSanitizer lane | GCC reports that Boost.Asio's atomic fences are not modeled by TSan. |
 
-Neither is a licence to ignore the warning elsewhere. The release toolchain is
-GCC 11 because `release.yml` builds on `ubuntu-22.04`, so a real overread on
-that compiler still appears in the log.
+Neither is permission to ignore the warning elsewhere. The release toolchain
+is GCC 11 because `release.yml` builds on `ubuntu-22.04`, so a real overread
+on that compiler still appears in the log.
 
 ## Sanitizers
 
@@ -106,15 +96,15 @@ UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
   ctest --test-dir build-asan --output-on-failure
 ```
 
-`YUME_SANITIZE` accepts `none` (default), `address`, `undefined`,
-`address+undefined`, or `thread`. It instruments every source-built target
-added by this tree, including bundled BaseFWX sources. Prebuilt vendor
-archives and system libraries are not instrumented.
+`YUME_SANITIZE` accepts `none` (the default), `address`, `undefined`,
+`address+undefined` or `thread`. It instruments every source-built target in
+this tree, including bundled BaseFWX sources when the modules are on. Prebuilt
+vendor archives and system libraries are not instrumented.
 
 The option forces `YUME_LTO=OFF`, because link-time optimization inlines and
 reorders across exactly the boundaries a sanitizer reports against. It refuses
-to combine with `YUME_STATIC` (the sanitizer runtime must stay dynamic) and
-with compilers other than GCC/Clang. UBSan builds add
+to combine with `YUME_STATIC`, since the sanitizer runtime must stay dynamic,
+and with compilers other than GCC and Clang. UBSan builds add
 `-fno-sanitize-recover=all` so a violation aborts instead of printing and
 continuing, which is what makes it usable as a CI gate.
 
@@ -128,58 +118,62 @@ cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DYUME_BUILD_TESTING=ON -DYUME_BUILD_FUZZERS=ON
 cmake --build build-fuzz -j"$(nproc)" \
-  --target yume_fuzz_h2_probe_decoder yume_fuzz_client_config \
-           yume_fuzz_server_config
+  --target yume_fuzz_ytp1_protocol yume_fuzz_ytp1_auth yume_fuzz_config_v1
 bash tests/fuzz/run_fuzzers.sh build-fuzz/bin 600 fuzz-out
 ```
 
 `tests/fuzz/run_fuzzers.sh` seeds the corpora, runs each harness for the given
-per-target budget, and exits nonzero if libFuzzer writes any artifact. CI runs
-the same script with a short budget as a regression gate. A longer campaign is
-the same invocation with a larger budget and a corpus carried over from the
-previous run. Seeds come from `tests/fuzz/make_seeds.py`, which generates them
-as code rather than checking in opaque binaries, and includes the hostile HPACK
-encodings the decoder regressions pin.
+per-target budget with a bounded input size, and exits nonzero if libFuzzer
+writes any artifact. CI runs the same script with a short budget as a
+regression gate. A longer campaign is the same invocation with a larger budget
+and a corpus carried over from the previous run. `tests/fuzz/make_seeds.py`
+generates the seeds as code rather than checking in opaque binaries, and
+derives the configuration seeds from the schema-1 examples in `config/`.
 
 `YUME_BUILD_FUZZERS` builds libFuzzer harnesses for the parsers that consume
 input from outside a trust boundary, and requires Clang. It selects
 `YUME_SANITIZE=address+undefined` and `YUME_LTO=OFF`, with coverage and
-ASan/UBSan checks in source-built parser libraries as well as the harnesses.
-Only the harness executables link libFuzzer's main function. Other sanitizer
-selections require a separate build. Prebuilt dependencies remain outside this
-instrumentation, and the harnesses are never installed. Verify parser compile
-commands and object instrumentation when retaining qualification evidence.
+ASan/UBSan checks in the source-built parser libraries as well as the
+harnesses. Only the harness executables link libFuzzer's main function. Other
+sanitizer selections need a separate build. Prebuilt dependencies stay outside
+this instrumentation, and the harnesses are never installed. Verify parser
+compile commands and object instrumentation when you keep qualification
+evidence.
 
-| Harness | Parser | Reached by |
+| Harness | Parser | Checks |
 | --- | --- | --- |
-| `yume_fuzz_h2_probe_decoder` | `obfs::H2InboundDecoder` | an unauthenticated peer, before any admission check |
-| `yume_fuzz_client_config` | `facade::config_io::parse_client_json` | a configuration file, the GUI, and the C ABI |
-| `yume_fuzz_server_config` | `facade::config_io::parse_server_json` | a configuration file and the GUI |
+| `yume_fuzz_ytp1_protocol` | YTP/1 frame, OPEN, destination and capability codecs in `ytp/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
+| `yume_fuzz_ytp1_auth` | AUTH TLV records in `ytp/security.*` | Unknown critical fields, duplicate IDs, reordered TLVs and wrong suite values are refused, and unknown noncritical fields survive |
+| `yume_fuzz_config_v1` | The schema-1 parser in `config/v1/` | Typed rejection is the expected failure, and any other exception is a finding. It opens no credential file |
 
-The decoder harness asserts a stronger contract than "does not crash": the
-decoder must reject malformed input rather than throw, because a throw would
-unwind into the Asio worker instead of the session that owns the connection.
-Both configuration harnesses assert the same for their loaders. Corpora live
-outside the tree; a crashing input is evidence and does not belong in Git.
+Corpora live outside the tree. A crashing input is evidence and does not
+belong in Git.
 
 ## Verification
 
 ```bash
-# Production: optimized, no timing implementation/event strings.
+# Production: optimized, no timing code.
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
   -DYUME_BUILD_TESTING=ON -DYUME_LTO=ON
 cmake --build build-release -j"$(nproc)"
 ctest --test-dir build-release --output-on-failure
-nm -C build-release/src/libyume_core.a | grep 'diagnostics::log_timing'  # no match
-strings build-release/bin/yume | grep 'timing component='               # no match
 
-# Developer: optimized hooks, runtime opt-in.
+# Developer: the same tests with the timing helpers compiled in.
 cmake -S . -B build-dev -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DYUME_BUILD_TESTING=ON -DYUME_BUILD_SELFTEST=ON
+  -DYUME_BUILD_TESTING=ON
 cmake --build build-dev -j"$(nproc)"
 ctest --test-dir build-dev --output-on-failure
-./build-dev/bin/yume --timing --help
 ```
+
+`yume_h2_carrier_test` asserts at compile time that the timing helpers exist
+exactly when the configuration says they do, so either run above fails if the
+switch and the build disagree.
+
+Native test executables keep their checks in optimized builds. Most define
+their own `CHECK` macro, which `NDEBUG` does not remove, and a test that calls
+`assert()` is compiled with `-UNDEBUG`. Keep it that way: a Release or
+RelWithDebInfo test run must not pass because CMake defined `NDEBUG` and
+compiled the checks away.
 
 Benchmark comparisons must state whether timing was enabled. Do not compare an
 instrumented run with an uninstrumented one as if they were identical builds.

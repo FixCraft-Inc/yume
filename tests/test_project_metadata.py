@@ -44,7 +44,7 @@ class MetadataTests(unittest.TestCase):
 
     def make_source_archive_fixture(self, root: pathlib.Path) -> None:
         (root / "scripts").mkdir(parents=True)
-        (root / "src/core").mkdir(parents=True)
+        (root / "src/common").mkdir(parents=True)
         (root / ".agents").mkdir()
         (root / ".private").mkdir()
         (root / ".secrets").mkdir()
@@ -57,7 +57,7 @@ class MetadataTests(unittest.TestCase):
                         root / "scripts/make_debian_orig.sh")
         shutil.copyfile(ROOT / "scripts/check_source_archive_listing.py",
                         root / "scripts/check_source_archive_listing.py")
-        (root / "src/core/version.hpp").write_text(
+        (root / "src/common/version.hpp").write_text(
             'inline constexpr char kVersion[] = "0.3.0-dev1";\n',
             encoding="utf-8")
         (root / "README.md").write_text("public\n", encoding="utf-8")
@@ -164,17 +164,13 @@ class MetadataTests(unittest.TestCase):
         self.assertGreaterEqual(len(profile["tls_wire_candidates"]), 1)
 
     def test_reader_facing_docs_state_the_product_version(self) -> None:
-        """The website and vcpkg had drift checks; the human-facing docs did
-        not, so all three front-door documents drifted into calling the
-        transport-v2 wire version the product version and labelling the
-        binaries with it. The product version is derived here rather than
-        hardcoded so a version bump forces these documents forward."""
-        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        """The website and vcpkg had drift checks and the front-door documents
+        did not, so they drifted into labelling the binaries with a wire
+        version. The product version is derived here rather than hardcoded
+        so a version bump forces these documents forward."""
+        version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         product = re.search(
             r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
-        ).group(1)
-        wire = re.search(
-            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
         ).group(1)
 
         for relative in ("README.md", "docs/README.md",
@@ -185,31 +181,19 @@ class MetadataTests(unittest.TestCase):
             self.assertTrue(
                 product in text,
                 f"{relative} must state the product version {product}")
-            # The wire version may appear, but only where the prose says it is
-            # the transport-v2 wire. Otherwise it reads as the product version.
-            for paragraph in text.split("\n\n"):
-                if wire not in paragraph:
-                    continue
-                self.assertRegex(
-                    paragraph.replace("\n", " "),
-                    r"transport-v2 wire|wire `?" + re.escape(wire),
-                    f"{relative} mentions {wire} without saying it is the "
-                    "transport-v2 wire version")
 
     def test_manual_pages_state_the_product_version(self) -> None:
-        """The roff header names the product a page belongs to. It carried
-        the transport-v2 wire version until the front-door documents were
-        corrected, so pin it to the product version as well."""
-        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        """The roff header names the product a page belongs to. It once
+        carried a wire version, so pin it to the product version."""
+        version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         product = re.search(
             r'kVersion\[\]\s*=\s*"([^"]+)";', version_header
         ).group(1)
-        wire = re.search(
-            r'kTransportVersion\s*=\s*"([^"]+)";', version_header
-        ).group(1)
-        for relative in ("docs/man/yume.1", "docs/man/yumed.8",
-                         "docs/man/yume-gui.1"):
-            lines = (ROOT / relative).read_text(encoding="utf-8").splitlines()
+        pages = sorted((ROOT / "docs/man").glob("*.[18]"))
+        self.assertTrue(pages)
+        for page in pages:
+            relative = page.relative_to(ROOT).as_posix()
+            lines = page.read_text(encoding="utf-8").splitlines()
             first_line = next(line for line in lines if not line.startswith('.\\"'))
             self.assertTrue(
                 first_line.startswith(".TH "),
@@ -217,27 +201,21 @@ class MetadataTests(unittest.TestCase):
             self.assertIn(
                 f'"YUME {product}"', first_line,
                 f"{relative} header must name product version {product}")
-            self.assertNotIn(
-                wire, first_line,
-                f"{relative} header must not carry wire version {wire}")
 
     def test_product_and_transport_versions_are_coherent(self) -> None:
-        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        version_header = (ROOT / "src/common/version.hpp").read_text(encoding="utf-8")
         self.assertIn('kVersion[] = "0.3.0-dev1"', version_header)
-        self.assertIn('kRuntimeTransport = "transport-v2"', version_header)
-        self.assertIn('kTransportVersion = "0.2.0-dev6"', version_header)
-        self.assertIn("kTransportProfile = kEvidenceProfile", version_header)
         self.assertIn('kYtpVersion = "YTP/1"', version_header)
         self.assertIn("kYtpVersionNumber = 1", version_header)
-        self.assertIn('kYtpMaturity = "experimental-unwired"', version_header)
+        self.assertIn('kYtpMaturity = "experimental"', version_header)
         self.assertIn("kConfigSchema = 1", version_header)
         self.assertIn("kAbiVersion = 1", version_header)
         self.assertIn('kTransportSuite = "ytp1-tls13-h2"', version_header)
         vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         self.assertEqual(vcpkg["version-string"], "0.3.0-dev1")
 
-        setup = runpy.run_path(str(ROOT / "tools/yume_setup_ytp1.py"))
-        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor_ytp1.py"))
+        setup = runpy.run_path(str(ROOT / "tools/yume_setup.py"))
+        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
         self.assertEqual(setup["PRODUCT_VERSION"], "0.3.0-dev1")
         for tool in (setup, doctor):
             self.assertEqual(tool["PROFILE"], "chrome151-node24-v1")
@@ -253,28 +231,26 @@ class MetadataTests(unittest.TestCase):
 
     def test_runnable_transport_and_experimental_surfaces_are_separated(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertRegex(
-            cmake,
-            r'option\(YUME_BUILD_TRANSPORT_V2[\s\S]*?\n\s*ON\)',
-        )
+        self.assertNotIn("YUME_BUILD_TRANSPORT_V2", cmake)
         self.assertRegex(
             cmake,
             r'option\(YUME_BUILD_SHARED_ABI[\s\S]*?\n\s*OFF\)',
         )
-        self.assertIn("tools/yume_setup_transport_v2.py", cmake)
-        self.assertIn("tools/yume_setup_ytp1.py", cmake)
-        self.assertIn("YUME_INSTALL_EXPERIMENTAL_YTP1_TOOLS", cmake)
+        self.assertIn("tools/yume_setup.py", cmake)
+        self.assertIn("RENAME yume-setup COMPONENT yume_cli", cmake)
+        self.assertIn("RENAME yume-doctor COMPONENT yume_cli", cmake)
         self.assertNotIn("YUME_BUILD_LEGACY_02", cmake)
 
         source_cmake = (ROOT / "src/CMakeLists.txt").read_text(
             encoding="utf-8")
-        self.assertIn("if(YUME_BUILD_TRANSPORT_V2)", source_cmake)
-        # The build-tree-only candidate deliberately has no numbered SONAME,
+        self.assertNotIn("YUME_BUILD_TRANSPORT_V2", source_cmake)
+        # The development candidate deliberately has no numbered SONAME,
         # but it still needs the normal unversioned ELF SONAME so consumers do
         # not record a build-directory-relative DT_NEEDED entry.
         self.assertNotIn("NO_SONAME ON", source_cmake)
         self.assertNotIn("SOVERSION 1", source_cmake)
-        self.assertNotIn("install(TARGETS yume_abi", source_cmake)
+        self.assertIn("if(YUME_INSTALL_EXPERIMENTAL_SDK)", source_cmake)
+        self.assertIn("install(TARGETS yume_abi", source_cmake)
 
         control = (ROOT / "debian/control").read_text(encoding="utf-8")
         rules = (ROOT / "debian/rules").read_text(encoding="utf-8")
@@ -282,7 +258,9 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn("Package: libyume-dev", control)
         self.assertIn("Package: yume\n", control)
         self.assertIn("Package: yume-daemon\n", control)
-        self.assertIn("-DYUME_BUILD_TRANSPORT_V2=ON", rules)
+        self.assertIn("-DYUME_BUILD_NATIVE_APPLICATION=ON", rules)
+        self.assertNotIn("YUME_BUILD_TRANSPORT_V2", rules)
+        self.assertNotIn("Package: yume-gui", control)
         self.assertIn("-DYUME_BUILD_SHARED_ABI=OFF", rules)
         self.assertIn("-DYUME_STATIC_OPENSSL=OFF", rules)
 
@@ -291,28 +269,53 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("deliberately fails against stock Debian", debian_readme)
         self.assertIn("patches/openssl/series", debian_readme)
 
+    def test_build_scripts_pass_only_defined_cmake_variables(self) -> None:
+        """A removed option passed on a command line is silently ignored, so
+        every YUME variable a workflow or Debian configure sets must be one
+        the build still defines."""
+        defined: set[str] = set()
+        for source in (ROOT / "CMakeLists.txt", ROOT / "src/CMakeLists.txt",
+                       *sorted((ROOT / "cmake").glob("*.cmake"))):
+            text = source.read_text(encoding="utf-8")
+            defined.update(re.findall(r"option\((YUME_[A-Z0-9_]+)", text))
+            defined.update(re.findall(r"set\((YUME_[A-Z0-9_]+)\s[^)]*CACHE", text))
+        self.assertIn("YUME_BUILD_NATIVE_APPLICATION", defined)
+        commands: list[tuple[str, str]] = []
+        for workflow in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            text = workflow.read_text(encoding="utf-8")
+            commands.extend(
+                (workflow.name, command) for command in
+                re.findall(r"cmake -S \. -B [^\n]*(?:\n[^\n]+)*", text))
+        commands.append(("debian/rules",
+                         (ROOT / "debian/rules").read_text(encoding="utf-8")))
+        self.assertGreaterEqual(len(commands), 5)
+        for origin, command in commands:
+            for name in re.findall(r"-D(YUME_[A-Z0-9_]+)=", command):
+                self.assertIn(name, defined, f"{origin} sets undefined {name}")
+
     def test_debian_daemon_bootstrap_contract_is_complete(self) -> None:
         config = json.loads(
             (ROOT / "debian/yumed.json").read_text(encoding="utf-8"))
-        self.assertEqual(config["obfs_secret_file"], "/etc/yume/obfs.hex")
-        self.assertEqual(config["inner_psk_file"], "/etc/yume/inner.hex")
-        self.assertRegex(
-            config["real_backend"],
-            r"^loopback://(?:127\.0\.0\.1|\[::1\]):[1-9][0-9]{0,4}$",
-        )
-
+        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
+        checked = doctor["_validate_config"](config)
+        role, cover_root = checked.role, checked.cover_root
+        self.assertEqual(role, "server")
+        self.assertEqual(checked.list_files, [])
+        self.assertIsNone(checked.socks5_credentials)
+        self.assertEqual(config["schema"], 1)
+        self.assertEqual(cover_root, "cover-site")
         unit = (ROOT / "debian/yume-daemon.yumed.service").read_text(
             encoding="utf-8")
-        for path in (config["obfs_secret_file"], config["inner_psk_file"]):
-            self.assertIn(f"ConditionPathExists={path}", unit)
-
+        for reference in config["credentials"].values():
+            self.assertIn(
+                f"ConditionPathExists=/etc/yume/{reference['file']}", unit)
+        self.assertIn("--config /etc/yume/yumed.json --validate", unit)
+        rules = (ROOT / "debian/rules").read_text(encoding="utf-8")
+        self.assertIn("--no-enable --no-start", rules)
         readme = (ROOT / "debian/yume-daemon.README.Debian").read_text(
             encoding="utf-8")
-        for required in (
-                config["obfs_secret_file"], config["inner_psk_file"],
-                config["real_backend"], "exactly 64 lowercase hexadecimal",
-                "owned by yume, mode 0600"):
-            self.assertIn(required, readme)
+        self.assertIn("owned by yume with mode 0600", readme)
+        self.assertIn("yume-doctor --config /etc/yume/yumed.json", readme)
 
     def test_installed_documentation_keeps_authoritative_links(self) -> None:
         for document in (
@@ -355,133 +358,6 @@ class MetadataTests(unittest.TestCase):
         gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("website/docs/**/*.md", gitignore)
 
-    def test_audited_cli_help_and_man_options_are_synchronized(self) -> None:
-        client_args = (ROOT / "src/client/cli/config/args.cpp").read_text(
-            encoding="utf-8")
-        parser_options = set(re.findall(
-            r'"(--[a-z][a-z0-9-]*)', client_args))
-        help_source = (ROOT / "src/client/cli/display/help_text.hpp").read_text(
-            encoding="utf-8")
-        help_body = help_source.split("void write_help_body", 1)[1]
-        help_options = set(re.findall(
-            r'(--[a-z][a-z0-9-]*)', help_body))
-        self.assertFalse(
-            parser_options - help_options,
-            f"client help is missing parser options: "
-            f"{sorted(parser_options - help_options)}",
-        )
-
-        client_man = (ROOT / "docs/man/yume.1").read_text(encoding="utf-8")
-        for option in parser_options:
-            self.assertRegex(
-                client_man,
-                rf"{re.escape(option)}(?![a-z0-9-])",
-                f"client man page is missing option token {option}",
-            )
-
-        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
-            encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
-        self.assertIn("--admin-keys <path>", server_help)
-        self.assertIn("--keys-admin", server_help)
-        self.assertIn("--tls_cert <path>", server_help)
-        self.assertIn("--tls_key <path>", server_help)
-        self.assertIn("--allow-exec", server_help)
-        self.assertIn("--completion <shell>", server_help)
-        self.assertIn("--admin-keys ", server_man)
-        self.assertIn("--keys-admin", server_man)
-        self.assertIn("--tls_cert ", server_man)
-        self.assertIn("--tls_key ", server_man)
-        self.assertIn("--allow-exec", server_man)
-        self.assertRegex(server_man, r'--completion.*shell')
-
-    def test_disabled_exec_contract_is_consistent(self) -> None:
-        client_args = (ROOT / "src/client/cli/config/args.cpp").read_text(
-            encoding="utf-8")
-        self.assertIn("--allow-exec is unavailable", client_args)
-
-        controller = (ROOT / "src/client/runtime/controller.cpp").read_text(
-            encoding="utf-8")
-        self.assertNotIn(
-            'args.emplace_back("--allow-exec")',
-            controller,
-            "the subprocess controller must not emit an option the client "
-            "parser refuses",
-        )
-
-        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertIn(
-            'option(YUME_FEATURE_EXEC "Compile in reserved relayed EXEC '
-            'policy handling" OFF)',
-            cmake,
-        )
-        self.assertNotIn(
-            'option(YUME_FEATURE_EXEC "Compile in server-side command '
-            'execution path" OFF)',
-            cmake,
-        )
-
-        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
-            encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
-        startup = (ROOT / "src/server/cli/startup_checks.cpp").read_text(
-            encoding="utf-8")
-        self.assertIn("Reserved relayed EXEC policy input", server_help)
-        self.assertNotIn("Enable server command execution", server_help)
-        self.assertIn("Reserved relayed EXEC policy input", server_man)
-        self.assertNotIn("Enable server-side command execution", server_man)
-        self.assertIn(
-            "the reserved relayed EXEC policy remains disabled", startup)
-        self.assertNotIn(
-            "rebuild with that option to enable server-side command execution",
-            startup,
-        )
-
-    def test_yumed_completion_alias_is_documented(self) -> None:
-        server_args = (ROOT / "src/server/cli/args.cpp").read_text(
-            encoding="utf-8")
-        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
-            encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
-        self.assertIn(
-            '(arg == "completion" || arg == "--completion")',
-            server_args,
-        )
-        self.assertIn("yumed --completion bash", server_help)
-        self.assertIn("--completion <shell>", server_help)
-        self.assertIn(".B --completion", server_man)
-        self.assertIn('.BI "--completion " shell', server_man)
-        self.assertRegex(server_man, r"\.B yumed\s+\.B completion\s+\.B bash")
-
-    def test_operator_proof_token_is_file_only(self) -> None:
-        server_keys = (
-            ROOT / "src/config/server_document_keys.hpp"
-        ).read_text(encoding="utf-8")
-        server_config = (
-            ROOT / "src/server/config/config.hpp"
-        ).read_text(encoding="utf-8")
-        server_args = (ROOT / "src/server/cli/args.cpp").read_text(
-            encoding="utf-8")
-        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
-            encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
-        facade_io = (
-            ROOT / "src/facade/config/server_config_io.cpp"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn('"anonym_token_file"', server_keys)
-        self.assertIn('{"anonym_token",', server_keys)
-        self.assertIn("std::string anonym_token_file;", server_config)
-        self.assertNotIn("std::string anonym_token;", server_config)
-        self.assertIn('arg == "--operator-proof-token-file"', server_args)
-        self.assertNotIn('arg == "--operator-proof-token"', server_args)
-        self.assertIn("--operator-proof-token-file <path>", server_help)
-        self.assertNotIn("--operator-proof-token <str>", server_help)
-        self.assertIn('.BI "--operator-proof-token-file " path', server_man)
-        self.assertNotIn('.BI "--operator-proof-token " string', server_man)
-        self.assertIn("cfg_key::anonym_token_file", facade_io)
-        self.assertNotIn("cfg_key::anonym_token,", facade_io)
-
     def test_source_map_names_every_top_level_source_directory(self) -> None:
         source_map = (ROOT / "docs/SOURCE_MAP.md").read_text(encoding="utf-8")
         source_directories = sorted(
@@ -494,40 +370,19 @@ class MetadataTests(unittest.TestCase):
                 f"docs/SOURCE_MAP.md does not name src/{directory}/",
             )
 
-    def test_cover_response_limits_are_documented(self) -> None:
-        limits = (ROOT / "src/server/runtime/cover_response.hpp").read_text(
-            encoding="utf-8")
-        for declaration in (
-                "kMaxResponseBytes = 8U * 1024U * 1024U",
-                "kMaxResponseFiles = 256U",
-                "kMaxDirectoryEntries = 4096U",
-                "kMaxCacheBytes = 64U * 1024U * 1024U"):
-            self.assertIn(declaration, limits)
-
-        server_help = (ROOT / "src/server/cli/help_text.hpp").read_text(
-            encoding="utf-8")
-        server_man = (ROOT / "docs/man/yumed.8").read_text(encoding="utf-8")
-        for claim in ("maximum 8 MiB", "4096 entries", "256 captures",
-                      "64 MiB total"):
-            self.assertIn(claim, server_help)
-        for claim in ("limited to 8 MiB", "4096 directory entries",
-                      "256 matching files", "64 MiB in aggregate"):
-            self.assertIn(claim, " ".join(server_man.split()))
-
     def test_native_openssl_runtime_contract_is_fail_closed(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertRegex(
             cmake,
             r'option\(YUME_STATIC_OPENSSL[\s\S]*?runtime libssl dependency"'
-            r'\s+\$\{YUME_BUILD_TRANSPORT_V2\}\)',
+            r'\s+ON\)',
         )
         self.assertIn("SSL_OP_YUME_CHROME_CLIENT_HELLO", cmake)
         self.assertIn("SSL_CTRL_YUME_CHROME_CLIENT_HELLO", cmake)
         self.assertIn("Stock libssl is not accepted for native TLS", cmake)
         self.assertRegex(
             cmake,
-            r'if\(\(YUME_BUILD_TRANSPORT_V2 AND NOT YUME_TRANSPORT_CORE_ONLY\) OR'
-            r'\s+YUME_BUILD_EXPERIMENTAL_YTP1_TLS13_PROVIDER\)'
+            r'if\(YUME_BUILD_NATIVE_PROVIDERS\)'
             r'\s+include\(CheckCXXSourceCompiles\)',
         )
 
@@ -535,9 +390,8 @@ class MetadataTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"native_chrome_client_hello": True', package_script)
         self.assertIn('"patched_openssl_embedded": True', package_script)
-        self.assertIn('"required_at_runtime": False', package_script)
-        self.assertNotIn('"chrome_tls_helper": True,\n                "openssl_minimum"',
-                         package_script)
+        self.assertIn('"transport": "YTP/1"', package_script)
+        self.assertNotIn('"argon2": True', package_script)
 
     def test_dependency_revision_must_be_immutable(self) -> None:
         document = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -610,17 +464,6 @@ class MetadataTests(unittest.TestCase):
             path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
             with self.assertRaises(ProfileError):
                 generate(path, evidence_profile_id="different-profile-v1")
-
-    def test_helper_build_ids_must_be_unique(self) -> None:
-        document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
-        duplicate = copy.deepcopy(document["profiles"][0])
-        duplicate["id"] = "second-profile-v1"
-        duplicate["client_alias"] = "second"
-        document["profiles"].append(duplicate)
-        with tempfile.TemporaryDirectory() as temporary:
-            path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
-            with self.assertRaisesRegex(ProfileError, "duplicate helper build ID"):
-                generate(path)
 
     def test_current_carrier_geometry_is_exact(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
@@ -911,6 +754,8 @@ exec "${REAL_LN}" "$@"
         self.assertIn(r"\.private", options)
         self.assertIn(r"\.secrets", options)
         self.assertIn(r"website/docs/.*\.md", options)
+        # The diagram tool and the website sync write Jekyll's SVG copies here.
+        self.assertIn(r"_site|_includes/diagrams)(/|$)", options)
         self.assertIn(r"(^|/)\.DS_Store$", options)
         self.assertIn(r"^(AGENTS\.md|AI_NOTES\.md|opencode\.json)$", options)
 
@@ -921,6 +766,7 @@ exec "${REAL_LN}" "$@"
         self.assertIn("\n .secrets\n", copyright_text)
         self.assertIn("\n .DS_Store\n", copyright_text)
         self.assertIn("\n website/_site\n", copyright_text)
+        self.assertIn("\n website/_includes/diagrams\n", copyright_text)
 
 
 if __name__ == "__main__":

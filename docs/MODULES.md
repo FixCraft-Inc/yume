@@ -1,0 +1,126 @@
+<!-- Generated from docs/src/en_US/pages/modules.doc by scripts/yume_docs.py. Edit that file, not this one. -->
+# YUME modules
+
+A module is a program that serves one of the daemon's stream services.
+`yumed` starts it, passes it the service's authorized streams over a private
+UNIX socket and starts it again when it exits. A module needs no network port
+and no YUME library. Only the daemon runs modules so far. Client-side modules
+are planned.
+
+## Configure a module
+
+Declare a stream service in the server configuration and give it a `module`
+adapter:
+
+```json
+{
+  "kind": "module",
+  "service": "echo",
+  "program": "/usr/local/libexec/yume/yume-echo-module",
+  "arguments": []
+}
+```
+
+The build produces the example as `bin/yume-echo-module`, and nothing installs
+it. To try it at the path above, install a root-owned copy:
+
+```bash
+sudo install -D -o root -g root -m 0755 build/bin/yume-echo-module \
+  /usr/local/libexec/yume/yume-echo-module
+```
+
+`program` is an absolute, normalized path, and the optional `arguments` hold
+at most 32 strings of up to 1024 bytes each. On the server a stream service
+has one adapter, so a service with a module has no `direct_tcp` adapter. Identities reach the
+service through their grants as usual, such as
+`{"service": "echo", "kind": "stream"}` in an authorized-keys entry.
+
+`yumed --validate` and daemon startup refuse a program that is a symbolic
+link or not a regular file, belongs to a user other than root or the daemon's,
+is writable by group or others, is not executable, is set-user-ID or
+set-group-ID, or has file capabilities. SIGHUP reloads credential stores only, so a changed module
+adapter takes effect when `yumed` restarts. Supervision needs Linux 5.3 or
+newer and glibc 2.34 or newer.
+
+A client reaches the module through any adapter that opens the stream service
+without a destination, such as a `forward` adapter:
+
+```json
+{"kind": "forward", "service": "echo", "listen_path": "/run/user/1000/yume/echo.sock"}
+```
+
+The daemon refuses a stream that names a destination.
+
+## What the program receives
+
+The daemon starts a copy of itself as `yume-module`. That launcher arranges for
+the kernel to kill the module if `yumed` dies, sets no_new_privs, clears its
+capabilities, and then runs `program` with `program` as `argv[0]`, followed by
+`arguments`. The module runs as the daemon's user and starts with:
+
+- descriptor 3, a listening UNIX stream socket to accept connections from;
+- descriptor 0 reading `/dev/null`, and descriptors 1 and 2 shared with
+  `yumed`, so its messages reach the daemon's log;
+- the daemon's environment, default signal handling, an empty signal mask and
+  a process group of its own.
+
+No other descriptor is open. The socket is `module.sock` in a new directory of
+mode 0700 below `TMPDIR`, or `/tmp` when `TMPDIR` is unset. The packaged
+service gives the daemon a private `/tmp`.
+
+## Streams
+
+Each authorized stream of the service arrives as one connection. Before the
+stream's bytes, the daemon writes one line:
+
+```text
+yume-module 1 <identity> <service>
+```
+
+`identity` is the client's composite key fingerprint, the 64 lowercase
+hexadecimal digits recorded as `sha256` in its authorized-keys entry.
+`service` is the service name, and a newline ends the line. After it, the
+connection carries the stream in both directions. When the client closes its
+sending side, the module reads end of file and can still reply. When the
+module shuts down its sending side, the client reads end of file, and closing
+the connection ends the stream. A module that finds a version other than 1
+should close the connection.
+
+The client's stream opens once the connection is made and the line is
+written, so stream bytes can follow the line at once. A module that has not
+taken the connection within 10 seconds fails the open. Streams are refused
+while the module is down, and one module receives at most 1024 connections at
+once.
+
+## Restarts and stopping
+
+When the module exits, its connections close and their streams end. The
+daemon logs the exit and starts the program again after one second, doubling
+the delay up to 30 seconds. After a run of 30 seconds or more, the next
+restart waits one second again. The listening socket stays the same across
+restarts, so a connection still waiting in its queue reaches the next run.
+
+When `yumed` stops, it sends SIGTERM, sends SIGKILL after five seconds, then
+removes the socket and its directory. If `yumed` is killed without a chance to
+stop the module, the kernel kills the module too. Log lines name the service,
+as in `module echo: started as process 4242`.
+
+## Trust
+
+The daemon checks each identity's grant before a stream reaches the module.
+The header can be trusted because only the daemon's user can reach the
+socket. The module runs as that same user, so it can read everything the
+daemon's user can, including the server's configuration and credential files,
+and it can connect to other modules' sockets. Run only programs you would
+trust with the server's keys. Keeping modules away from those keys is an open
+item in the [implementation status](IMPLEMENTATION_STATUS.md).
+
+## Write a module
+
+`src/modules/echo/echo_module.cpp` is a complete module of under 100 lines. It
+accepts connections on descriptor 3, reads the header line, greets the client
+by identity and echoes the stream back. Any program that can accept
+connections on an inherited UNIX socket can be a module. Read the header up to
+its newline without discarding what follows, since stream bytes can arrive in
+the same read. Exit promptly on SIGTERM. The daemon bounds how many streams
+reach a module, while the module bounds its own work on each one.

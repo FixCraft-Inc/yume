@@ -15,9 +15,11 @@
 #include <string_view>
 
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/local/stream_protocol.hpp>
 
 #include "engine/byte_channel.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "providers/system_resolver.hpp"
 
 namespace yume::providers {
 
@@ -32,6 +34,8 @@ inline constexpr std::uint32_t kAsioTcpByteChannelProviderApiVersion = 1U;
 // dispatch. Keep the context running until channel and operation cleanup drains.
 using AsioTcpSocket = boost::asio::basic_stream_socket<
     boost::asio::ip::tcp, AsioExecutionContext::Executor>;
+using AsioUnixSocket = boost::asio::basic_stream_socket<
+    boost::asio::local::stream_protocol, AsioExecutionContext::Executor>;
 
 // Provider-local bounds apply even when this source-level provider is embedded
 // without the included runtime. Queue byte limits include every accepted
@@ -48,6 +52,7 @@ struct AsioTcpChannelLimits {
 
 struct AsioTcpByteChannelLimits final : AsioTcpChannelLimits {
     std::size_t max_pending_creates{32U};
+    // The system resolver returns at most resolver_protocol::kMaxAddresses.
     std::size_t max_resolved_endpoints{32U};
     std::size_t max_connect_attempts{16U};
     std::chrono::milliseconds resolve_timeout{10'000};
@@ -56,10 +61,11 @@ struct AsioTcpByteChannelLimits final : AsioTcpChannelLimits {
     std::chrono::milliseconds connect_timeout{10'000};
 };
 
-// Bounded ownership for connected sockets accepted by a server front door.
-// Adopted channels use the same queue, cancellation, half-close, and cleanup
-// implementation as client-created channels. The owner contains no listener,
-// remote-host, resolver, or connection policy.
+// Bounded ownership for connected TCP or UNIX stream sockets that a listener
+// accepted or a caller connected. Adopted channels use the same queue,
+// cancellation, half-close, and cleanup implementation as client-created
+// channels. The owner contains no listener, remote-host, resolver, or
+// connection policy.
 // Channels retain their own lifetime after owner destruction, which cancels
 // current operations without closing those channels.
 class AsioTcpAcceptedChannelOwner final {
@@ -79,6 +85,8 @@ public:
     // the execution context when the socket has no concurrent users.
     engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(
         AsioTcpSocket socket);
+    engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(
+        AsioUnixSocket socket);
 
     // Cancels current channel operations without closing the channels or
     // preventing later adoption.
@@ -102,12 +110,16 @@ using AsioTcpSocketProtector =
 
 class AsioTcpByteChannelProvider final : public engine::ByteChannelProvider {
 public:
+    // A numeric remote_host is dialed directly. A hostname needs a resolver
+    // on the same context, and creation refuses one without it. The provider
+    // cancels its lookups but does not close the shared resolver.
     static engine::Result<std::shared_ptr<AsioTcpByteChannelProvider>> create(
         std::shared_ptr<AsioExecutionContext> context,
         std::string remote_host,
         std::uint16_t remote_port,
         AsioTcpByteChannelLimits limits = {},
-        AsioTcpSocketProtector socket_protector = {});
+        AsioTcpSocketProtector socket_protector = {},
+        std::shared_ptr<SystemResolver> resolver = {});
 
     AsioTcpByteChannelProvider(const AsioTcpByteChannelProvider&) = delete;
     AsioTcpByteChannelProvider& operator=(

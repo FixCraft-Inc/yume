@@ -1,225 +1,105 @@
 <!-- Generated from docs/src/en_US/pages/quickstart.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME quick start
 
-> **Runnable transport-v2 path:** these commands drive the default-built
-> `yume` and `yumed` product. The separate
-> [YTP/1 foundation page](development/ytp1/README.md) uses
-> `yume-setup-ytp1` / `yume-doctor-ytp1` and does not yet create a tunnel.
-
-This starts the focused Linux desktop client/server slice on one machine. It
-uses the real HTTP/2 carrier, mandatory hybrid ratchet, and a separate Node.js
-cover bound to loopback.
+This starts the native Linux client and daemon with schema-1 configuration,
+TLS/H2, hybrid authentication, and a local SOCKS5 listener. YUME remains
+experimental; [implementation status](IMPLEMENTATION_STATUS.md) distinguishes
+working paths from remaining qualification gates.
 
 ## Build
 
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
-./ezbuild.sh
+./ezbuild.sh --tests
 ```
 
-On a fresh clone, `ezbuild.sh` creates `basefwx/` at the pinned dependency
-commit. An existing attached BaseFWX branch is treated as a developer worktree
-and is never fetched or detached automatically. Set
-`BASEFWX_SYNC_MODE=pinned` for an explicitly pinned build, or
-`BASEFWX_SYNC_MODE=worktree` to require the current checkout.
+The normal build produces `build/bin/yume` and `build/bin/yumed`. It prepares
+the pinned, patched OpenSSL required by the native TLS profile and uses a
+bounded build job count. It does not prepare or change the separate BaseFWX
+checkout. Native Linux applications also need libsystemd development files;
+see [build requirements](../CONTRIBUTING.md#build).
 
-`ezbuild.sh` always selects the pinned, checksum-verified and patched OpenSSL
-source because the default native ClientHello emitter requires that capability.
-It also prepares the supported nghttp2 revision when the system copy is too
-old.
-Direct CMake builds must first source `scripts/ensure-openssl.sh` and call
-`yume_openssl_ensure`; stock OpenSSL is rejected. The normal build embeds the
-patched library. The default is a portable Release build with `-O3`, LTO,
-fast-math disabled, and developer timing code compiled out. `./ezbuild.sh --native`
-produces the fastest executables for the current CPU but they are not portable;
-`./ezbuild.sh --dev` produces optimized RelWithDebInfo binaries with opt-in
-`--timing` hooks. The build produces `build/bin/yume` and
-`build/bin/yumed`. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
+Use an isolated build directory for a sanitizer or shared SDK build.
 
-## One-command server and client kit
+## Create a local kit
 
-After building, install the binaries/helpers or run the helper directly from
-the clone:
+The setup and doctor tools require Python 3 and OpenSSL 3.5 or newer with the
+required algorithms. To use the same OpenSSL installation as the build:
 
 ```bash
-sudo cmake --install build
-yume-setup init \
-  --output ~/yume-kit \
-  --host build-host.example \
-  --port 8443 \
-  --tls-name remote-builder-test \
-  --client-name phone
+source scripts/ensure-openssl.sh
+yume_openssl_ensure
+python3 tools/yume_setup.py init \
+  --host localhost --port 8443 \
+  --output "$PWD/yume-kit" --client-name laptop
+python3 tools/yume_doctor.py --config yume-kit/server/yumed.json
+python3 tools/yume_doctor.py --config yume-kit/client/yume.json
 ```
 
-The helper uses the operating system CSPRNG for both 256-bit secret files,
-generates browser-compatible ECDSA TLS certificates, the delegated operator
-certificate key, and composite Ed25519 + ML-DSA-87 client identities, writes
-owner-only configs, and
-prints the exact server and client paths. It never prints secret values. For a
-real deployment, supply an existing operator CA with `--ca-key` and
-`--ca-cert`; otherwise the generated CA is a test/bootstrap CA whose private
-key lives under `offline-ca/` and should be moved off-server.
+The output directory must not exist. Setup atomically publishes owner-only
+credentials, a separate access PSK for the client identity, TLS material,
+server and client configurations, and a static cover site. Admission, access,
+TLS and composite identity credentials have distinct purposes. Do not replace
+them with one shared key or expose them in logs or source control.
 
-Start packet routing and the two server processes as printed by the helper.
-`start-yumed` waits for the cover backend, avoiding the startup race that can
-otherwise look like a TLS failure. A browser URL is only a cover-health check;
-YUME clients use the same listener for the authenticated H2 tunnel.
+The local kit uses a development CA and static cover content. A public
+endpoint needs deliberately chosen cover content and TLS trust; this kit does
+not establish public HTTPS credibility or production readiness. Use a DNS name
+for `endpoint.host`. A fixed dial address belongs in the client's
+`endpoint.connect_address`; hostname and admission checks still use `host`.
 
-Issue more credentials without editing PEM or metadata files by hand:
+## Start both processes
+
+Validate the daemon configuration, then run it in one terminal:
 
 ```bash
-yume-setup issue-key --kit ~/yume-kit --name laptop --type individual
-yume-setup issue-key --kit ~/yume-kit --name shared-lab --type bulk --max-sessions 50
-yume-setup issue-key --kit ~/yume-kit --name controller --type admin
+build/bin/yumed --config yume-kit/server/yumed.json --validate
+build/bin/yumed --config yume-kit/server/yumed.json
 ```
 
-Bulk credentials are denied relay/admin privileges by default and remain
-independently session-counted and fair-shared. An admin profile gets one visitor
-identity in the operator store and a different second identity in `admin_keys`.
-Each client directory includes a desktop config,
-`DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
-`~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
-containing both required YUME transport-v2 secrets. The separate Android client
-has earlier import evidence but must be re-synchronized to the
-current native candidate; its connected VPN/routing and release path is also
-not qualified. Share passwords must be at least 12 characters, matching
-BaseFWX itself.
-
-## Create local test material
-
-Generate a client identity:
+In another terminal:
 
 ```bash
-install -d -m 0700 ~/.config/yume
-./build/bin/yumed --keys-gen ~/.config/yume/client
-sudo install -d -m 0755 /etc/yume
-sudo install -m 0644 ~/.config/yume/client.pub /etc/yume/authorized_keys
+build/bin/yume --config yume-kit/client/yume.json --validate
+build/bin/yume --config yume-kit/client/yume.json
 ```
 
-Create the two independent 32-byte random secrets:
+The daemon serves ordinary HTTPS cover and authenticated tunnel traffic on
+its configured listener. The generated kit needs no separate Node process.
+Port 8443 needs no privileged bind capability. A managed service on port 443
+can grant only `CAP_NET_BIND_SERVICE`; see [packaging](PACKAGING.md).
+
+The client exposes SOCKS5 on `127.0.0.1:1080`. For example:
 
 ```bash
-umask 077
-openssl rand -hex 32 | tr -d '\n' > ~/.config/yume/admission.hex
-openssl rand -hex 32 | tr -d '\n' > ~/.config/yume/inner.hex
-chmod 0600 ~/.config/yume/admission.hex ~/.config/yume/inner.hex
+curl --socks5-hostname 127.0.0.1:1080 https://example.com/
 ```
 
-Each file must contain exactly 64 lowercase hex characters and must not be
-group/world-readable. Production clients receive both files through a secure
-out-of-band channel; there is no public-key-only 2.0 mode.
+CONNECT resolves destination names on the daemon. Every resolved address must
+satisfy the service's destination policy. The kit permits public destinations;
+private or loopback destinations need an explicit network in the corresponding
+server adapter. UDP ASSOCIATE uses the configured packet service and preserves
+individual datagrams. Local SOCKS connections are refused while no YTP session
+is active. The client reconnects with bounded backoff after session loss.
+Stop either process with SIGINT or SIGTERM.
 
-Create a local TLS certificate if you do not already have one:
-
-```bash
-install -d -m 0700 certs
-openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
-  -keyout certs/server.key -out certs/server.crt \
-  -subj /CN=localhost \
-  -addext subjectAltName=DNS:localhost,IP:127.0.0.1
-chmod 0600 certs/server.key
-```
-
-## Start the cover and daemon
-
-Run the pinned development cover in one terminal:
+## Validate and extend
 
 ```bash
-node tools/cover-node/backend.mjs
-```
-
-Use the Node version named by the active transport profile. It listens on
-`127.0.0.1:3000`. In production, supervise the Node process separately and
-never expose its port publicly.
-
-Start `yumed` in another terminal:
-
-```bash
-sudo ./build/bin/yumed \
-  --listen 443 \
-  --cert certs/server.crt \
-  --key certs/server.key \
-  --auth-keys /etc/yume/authorized_keys \
-  --max-sessions 256 \
-  --bulk-key-max-sessions 64 \
-  --accept-rate-limit 100 \
-  --obfs-secret-file "$HOME/.config/yume/admission.hex" \
-  --inner-psk-file "$HOME/.config/yume/inner.hex" \
-  --real-backend loopback://127.0.0.1:3000 \
-  --real-index /etc/yume/cover-index.html
-```
-
-This configuration requires a cover source such as `--real-index` in addition
-to the backend. Ordinary HTTP/1.1 and HTTP/2 GET/HEAD requests reach Node;
-separate partial-preface, malformed-probe, and admission-disabled paths can
-use the decoy page. The daemon ships no built-in page. `--real-root <dir>` or
-`--upstream-response-dir <dir>` satisfies the same startup requirement. See
-[probe and cover behavior](FILTERING_SELF_DPI.md) for the current file-read,
-captured-replay, and failure-response limitations.
-
-`yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
-to Node. Node never receives tunnel payloads, identities, or secret material.
-
-## Connect the client
-
-```bash
-./build/bin/yume \
-  --server 127.0.0.1 \
-  --port 443 \
-  --tls-name localhost \
-  --tls-ca certs/server.crt \
-  --auth ~/.config/yume/client.key \
-  --obfs-secret-file ~/.config/yume/admission.hex \
-  --inner-psk-file ~/.config/yume/inner.hex \
-  --profile chrome \
-  --socks 127.0.0.1:1080
-```
-
-Point an application at the local SOCKS5 listener on `127.0.0.1:1080`.
-
-## Verify the tools
-
-Version output is offline by default:
-
-```bash
-./build/bin/yume --version
-YUME_UPDATE_CHECK=1 ./build/bin/yume --version
-```
-
-Build and run the optional benchmark path:
-
-```bash
-./ezbuild.sh --selftest --tests
-./build/bin/yume --quick-bench
-./build/bin/yume --full-bench
 ctest --test-dir build --output-on-failure
+build/bin/yume --version
+build/bin/yumed --version
 ```
 
-The full benchmark is intentionally heavy. Use an approved benchmark host, not
-a daily-driver laptop. See [SELFTEST.md](SELFTEST.md) for the local transport,
-real endpoint, and crypto-only benchmark boundaries.
+For other hosts, provision a kit for the endpoint's DNS name and move each
+client bundle through an authenticated channel. Keep the offline CA private
+material off the server. Run doctor and `--validate` as the identity that will
+run the program. Configuration and security policy have no command-line
+overrides.
 
-One-stream LAN results do not establish high-latency performance. The
-[performance boundary](IMPLEMENTATION_STATUS.md#performance-boundary)
-sets the evidence required for a performance claim.
-
-## Production notes
-
-- Keep Node on a loopback IP literal and supervise it separately from `yumed`.
-- Keep TLS private keys and both shared secret files owner-readable only.
-- Distribute the admission and inner PSK files out of band to every client.
-- Treat regular keys as individual by default. If many clients must share one
-  private key, explicitly configure a bounded `bulk` policy; privileged
-  permissions are rejected for bulk keys. Keep operator/controller keys in the
-  separate operator trust store. See [PERMISSIONS.md](PERMISSIONS.md).
-- Set `--egress-mbps` at or below the server's measured upstream limit when
-  clients should share a bounded link fairly. Size session and accept-rate
-  limits for the host, and enforce hard process CPU/RAM ceilings through the
-  service manager. See [OPERATIONS.md](OPERATIONS.md).
-- Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
-  the original TLS connection. Use TCP passthrough when a fronting layer is
-  required.
-- The development tree is not release-complete. Check the
-  [implementation status](IMPLEMENTATION_STATUS.md) before treating a test
-  result as a production support claim.
+[The native development guide](development/ytp1/README.md) owns detailed
+credential, managed Linux TUN, packet policy, reconnect and embedding guidance.
+[ABI.md](ABI.md) describes the experimental SDK. GUI and Android migration,
+decentralized discovery and multi-hop routing are separate work; this quick
+start connects to an explicitly configured server.

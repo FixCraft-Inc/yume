@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,20 +18,28 @@
 
 namespace yume::runtime {
 
+class EgressListRules;
+
 // Destination authority declared by schema-1 direct adapters. One immutable
 // rule per (service, protocol) decides both stages of a routed OPEN. The
 // requested destination is checked before any DNS or socket work, then every
 // numeric address a DNS name selects is checked before a socket opens.
 // Port and hostname are not policy inputs. Unspecified, multicast and
 // reserved addresses are refused even when a network contains them, and
-// IPv4-mapped IPv6 is evaluated as IPv4.
+// IPv4-mapped IPv6 is evaluated as IPv4. An address the adapter permits is
+// still refused when its egress lists deny it.
 class NativeEgressPolicy final {
 public:
     // Adapters other than direct TCP/UDP are ignored. A policy without direct
     // adapters permits nothing. A duplicate service/protocol pair or a rule
-    // that permits nothing is InvalidArgument.
+    // that permits nothing is InvalidArgument. Egress list files are read
+    // here, relative to base_directory, and a failure names the adapter entry
+    // by its configuration pointer. Adapters with identical lists share one
+    // loaded copy. Build one policy per configuration and give it to every
+    // check, so the request and resolved stages see the same lists.
     static engine::Result<std::shared_ptr<const NativeEgressPolicy>> create(
-        const std::vector<config::v1::Adapter>& adapters);
+        const std::vector<config::v1::Adapter>& adapters,
+        const std::filesystem::path& base_directory);
 
     NativeEgressPolicy(const NativeEgressPolicy&) = delete;
     NativeEgressPolicy& operator=(const NativeEgressPolicy&) = delete;
@@ -55,6 +64,8 @@ private:
         std::string service;
         engine::NetworkProtocol protocol;
         config::v1::DestinationPolicy destinations;
+        // Null when the adapter has no lists.
+        std::shared_ptr<const EgressListRules> lists;
     };
 
     explicit NativeEgressPolicy(std::vector<Rule> rules) noexcept;

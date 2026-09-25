@@ -15,7 +15,7 @@ enum class NativeCliRole : std::uint8_t {
     Server,
 };
 
-// Runs the development yume-ytp1 or yumed-ytp1 process. Network and security
+// Runs the development yume or yumed process. Network and security
 // policy come only from the schema-1 configuration. Returns the exit status:
 // 0 after a requested stop, 1 for a runtime failure, 2 for usage or
 // configuration errors.

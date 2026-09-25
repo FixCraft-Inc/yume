@@ -6,9 +6,13 @@
 
 #include "runtime/native_egress_policy.hpp"
 
+#include <cerrno>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "common/ip_network.hpp"
@@ -16,7 +20,11 @@
 namespace {
 using namespace yume::engine;
 using yume::config::v1::Adapter;
+using yume::config::v1::DestinationList;
+using yume::config::v1::DestinationListAction;
+using yume::config::v1::DestinationListFormat;
 using yume::config::v1::DestinationPolicy;
+using yume::config::v1::FileReference;
 using yume::config::v1::DirectTcpAdapter;
 using yume::config::v1::DirectUdpAdapter;
 using yume::config::v1::Socks5Adapter;
@@ -70,7 +78,7 @@ std::shared_ptr<const NativeEgressPolicy> policy() {
         networks({"10.0.0.0/8", "fd00::/8"}))));
     adapters.emplace_back(DirectTcpAdapter("lan", DestinationPolicy(false,
         networks({"0.0.0.0/0"}))));
-    return take(NativeEgressPolicy::create(adapters));
+    return take(NativeEgressPolicy::create(adapters, {}));
 }
 
 bool allowed(const NativeEgressPolicy& egress, const char* service, const RouteDestination& destination) {
@@ -83,15 +91,15 @@ void test_creation() {
     std::vector<Adapter> adapters;
     adapters.emplace_back(DirectTcpAdapter("web", DestinationPolicy(true, {})));
     adapters.emplace_back(DirectTcpAdapter("web", DestinationPolicy(false, networks({"10.0.0.0/8"}))));
-    CHECK(NativeEgressPolicy::create(adapters).status().code() == StatusCode::InvalidArgument);
+    CHECK(NativeEgressPolicy::create(adapters, {}).status().code() == StatusCode::InvalidArgument);
     adapters.pop_back();
     adapters.emplace_back(DirectUdpAdapter("web", DestinationPolicy(false, networks({"10.0.0.0/8"}))));
-    CHECK(NativeEgressPolicy::create(adapters).ok());
+    CHECK(NativeEgressPolicy::create(adapters, {}).ok());
     adapters.emplace_back(DirectUdpAdapter("empty", DestinationPolicy(false, {})));
-    CHECK(NativeEgressPolicy::create(adapters).status().code() == StatusCode::InvalidArgument);
+    CHECK(NativeEgressPolicy::create(adapters, {}).status().code() == StatusCode::InvalidArgument);
 
     // Without direct adapters nothing is permitted.
-    const auto none = take(NativeEgressPolicy::create({}));
+    const auto none = take(NativeEgressPolicy::create({}, {}));
     CHECK(!allowed(*none, "web", v4(NetworkProtocol::Tcp, {8U, 8U, 8U, 8U})));
 }
 
@@ -154,10 +162,103 @@ void test_request_stage() {
 
 }  // namespace
 
+class TempDirectory final {
+public:
+    TempDirectory() {
+        std::string pattern =
+            (std::filesystem::temp_directory_path() / "yume-egress-policy-XXXXXX").string();
+        if (!::mkdtemp(pattern.data())) {
+            throw std::system_error(errno, std::generic_category(), "create test directory");
+        }
+        path_ = pattern;
+    }
+    ~TempDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+void write(const std::filesystem::path& path, const std::string& contents) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output << contents;
+    CHECK(output.good());
+}
+
+// Lists narrow a service's destinations. A more specific Allow exempts an
+// address from a broader Deny, but nothing widens the adapter's own policy.
+void test_egress_lists() {
+    const TempDirectory root;
+    write(root.path() / "deny.json", R"({"ips": ["8.8.8.0/24", "2606:4700::/32"]})");
+    write(root.path() / "allow.json", R"({"ips": ["8.8.8.8", "192.168.0.0/16"]})");
+    // VPN database format 1 with no providers and one address, 9.9.9.9.
+    write(root.path() / "vpn.bin", std::string("VPDB\x01\0\0\0", 8) +
+          std::string("\0\0\0\0\x01\0\0\0", 8) + std::string(12, '\0') +
+          std::string("\x09\x09\x09\x09\0\0", 6));
+    const auto deny = DestinationListAction::Deny;
+    const auto json = DestinationListFormat::Json;
+    const std::vector<DestinationList> lists{
+        {deny, json, FileReference("deny.json")},
+        {DestinationListAction::Allow, json, FileReference((root.path() / "allow.json").string())},
+        {deny, DestinationListFormat::Vpdb, FileReference("vpn.bin")}};
+    std::vector<Adapter> adapters;
+    adapters.emplace_back(DirectTcpAdapter("web", DestinationPolicy(true, {}, lists)));
+    adapters.emplace_back(DirectUdpAdapter("web", DestinationPolicy(true, {}, lists)));
+    adapters.emplace_back(DirectTcpAdapter("lan", DestinationPolicy(false, networks({"10.0.0.0/8"}), lists)));
+    const auto egress = take(NativeEgressPolicy::create(adapters, root.path()));
+    const auto tcp = NetworkProtocol::Tcp;
+    CHECK(allowed(*egress, "web", v4(tcp, {8U, 8U, 4U, 4U})));
+    CHECK(!allowed(*egress, "web", v4(tcp, {8U, 8U, 8U, 9U})));
+    CHECK(allowed(*egress, "web", v4(tcp, {8U, 8U, 8U, 8U})));
+    CHECK(!allowed(*egress, "web", v4(tcp, {9U, 9U, 9U, 9U})));
+    CHECK(!allowed(*egress, "web", v6(tcp, "::ffff:808:809")));
+    CHECK(!allowed(*egress, "web", v6(tcp, "2606:4700::1111")));
+    CHECK(!allowed(*egress, "web", v4(NetworkProtocol::Udp, {8U, 8U, 8U, 9U})));
+    CHECK(!allowed(*egress, "lan", v4(tcp, {192U, 168U, 1U, 1U})));
+    CHECK(allowed(*egress, "lan", v4(tcp, {10U, 1U, 2U, 3U})));
+    CHECK(egress->authorize_address("web", v4(tcp, {8U, 8U, 8U, 9U})).message().find("egress list") !=
+          std::string::npos);
+
+    // A load failure names the configuration entry and creates nothing.
+    const auto refused = [&](DestinationPolicy destinations, const std::string& fragment) {
+        std::vector<Adapter> pair;
+        pair.emplace_back(DirectTcpAdapter("plain", DestinationPolicy(true, {})));
+        pair.emplace_back(DirectTcpAdapter("web", std::move(destinations)));
+        const auto created = NativeEgressPolicy::create(pair, root.path());
+        CHECK(!created.ok());
+        if (created.status().message().find(fragment) == std::string::npos) {
+            std::cerr << "unexpected message: " << created.status().message() << "\n";
+            std::abort();
+        }
+    };
+    const auto one = [](DestinationListFormat format, const char* file) {
+        return std::vector<DestinationList>{{DestinationListAction::Deny, format, FileReference(file)}};
+    };
+    write(root.path() / "bad.json", R"({"ips": ["8.8.8.0/24", "nonsense"]})");
+    refused(DestinationPolicy(true, {}, one(json, "bad.json")), "/adapters/1/destinations/lists/0: /ips/1:");
+    refused(DestinationPolicy(true, {}, one(json, "missing.json")), "/adapters/1/destinations/lists/0:");
+    refused(DestinationPolicy(true, {}, one(DestinationListFormat::Vpdb, "deny.json")),
+            "/adapters/1/destinations/lists/0: not a VPN database");
+    write(root.path() / "countries.json", R"({"countries": ["US"]})");
+    refused(DestinationPolicy(true, {}, one(json, "countries.json")),
+            "/adapters/1/destinations: a list names countries, so country_database is required");
+    refused(DestinationPolicy(true, {}, one(json, "deny.json"), FileReference("GeoLite2-Country.mmdb")),
+            "/adapters/1/destinations/country_database: no list names a country");
+    write(root.path() / "not.mmdb", "not a database");
+    refused(DestinationPolicy(true, {}, one(json, "countries.json"), FileReference("not.mmdb")),
+            "/adapters/1/destinations/country_database: country database has no MaxMind DB metadata");
+    std::filesystem::create_symlink(root.path() / "deny.json", root.path() / "link.json");
+    refused(DestinationPolicy(true, {}, one(json, "link.json")), "/adapters/1/destinations/lists/0:");
+}
+
 int main() {
     test_creation();
     test_public_addresses();
     test_explicit_networks();
     test_request_stage();
+    test_egress_lists();
     std::cout << "native egress policy checks passed\n";
 }

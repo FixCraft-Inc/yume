@@ -10,19 +10,17 @@ catalog-group: Security and transport
 catalog-home: Start here
 catalog-order: 30
 ---
-This page describes transport profiles and evidence for the default
-transport-v2 runtime.
-The YTP/1 foundation does not yet wire the native TLS 1.3 secure
-channel, HTTP/2 front door or carrier, replay-protected admission, or
-production YTP/1 security provider. See the current
-[implementation status](IMPLEMENTATION_STATUS.md). Descriptions below of live
-carrier behavior apply to the transport-v2 product and remain evidence inputs,
-not claims that the replacement runtime works.
+This page describes the transport profile, carrier, admission and cover that
+`yume` and `yumed` use, and the evidence behind them. The runtimes and the
+schema-1 ABI backend compose TLS 1.3, the HTTP/2 front door and carrier,
+exporter-bound replay-protected admission and hybrid session security. Their
+complete-session stealth qualification remains open. See the current
+[implementation status](IMPLEMENTATION_STATUS.md).
 
 YUME keeps its admitted tunnel inside a TLS 1.3, HTTP/2, and WebSocket
-connection. The same public listener sends ordinary requests to a separate
-cover site on loopback. This makes the session less like a proprietary tunnel
-and raises the cost of casual active probing.
+connection. The same public listener answers ordinary requests from a static
+cover site that `yumed` loads at start. This makes the session less like a
+proprietary tunnel and raises the cost of casual active probing.
 
 It does not make YUME identical to a browser, hide connection timing or volume,
 or guarantee that a classifier cannot distinguish it.
@@ -30,7 +28,7 @@ or guarantee that a classifier cannot distinguish it.
 ## One captured profile
 
 The active client and cover identity comes from the immutable registry in
-`config/transport_profiles.json` and `src/core/stealth/cover_profile.*`. The
+`config/transport_profiles.json` and `src/stealth/cover_profile.*`. The
 registry selects a committed browser and cover-server fixture under
 `tests/fixtures/`. It owns the TLS choice, request headers, HTTP/2 settings and
 priorities, asset order, WebSocket behavior, and cover-server identity.
@@ -71,47 +69,49 @@ padding, or future cadence must come from a committed target capture.
 
 ## Admission and failure behavior
 
-Every client needs two independent 32-byte random secrets:
+Every client holds two independent 32-byte random secrets:
 
-- the admission secret lets a request reach AUTH
-- the inner pre-shared key contributes to session establishment
+- the admission key, which the server shares with its clients, lets a request
+  reach AUTH
+- the client's own access PSK contributes to its session keys
 
-Each file contains exactly 64 lowercase hexadecimal characters and has no group
-or world permission bits. Both are distributed out of band. The current
-transport has no public-key-only or empty-secret public-node mode.
+Each is a file of exactly 32 raw bytes, not all zero, read through the
+owner-only secret-file reader, and both are distributed out of band. The
+server refuses an access PSK equal to the admission key. There is no
+public-key-only or empty-secret public-node mode.
 
-Admission binds the transport version, the transport profile, normalized SNI,
-an hour bucket, and a random nonce with HMAC-SHA256. The nonce enters a bounded
-replay cache shared by sessions in one process. It retains at most 4096
-nonces for two hours and refuses new admissions when full, preserving live
-replay entries. Restart loses that state, and clock changes affect validity
-and expiry. TLS SNI and HTTP/2 `:authority` must agree.
+Admission is an HMAC-SHA256 token in the extended CONNECT path over the
+canonical TLS SNI, an exporter from this TLS connection and a random nonce
+([YTP admission](protocol/YTP_1.md#h2-admission-v1)). Wall-clock time and the
+evidence profile are not part of it, and one TLS connection can promote at
+most one carrier. The nonce enters a replay cache that every listener in the
+process shares. It keeps at most 4096 nonces for two hours of monotonic time
+and refuses new admissions when full rather than dropping live entries. A
+restart loses that state. TLS SNI and HTTP/2 `:authority` must agree.
 
-Malformed, expired, cached-replay, wrong-secret, authority-mismatched or
-cache-saturated requests do not receive an AUTH message. They take a bounded
-cover path. A later
-PSK or transcript failure closes the admitted carrier without a plaintext YUME
-marker or downgrade response.
+A missing, malformed, wrong-key, replayed or cache-saturated proof, or a
+request beyond promotion capacity, gets the cover site and never an AUTH
+message. A later PSK or transcript failure closes the admitted carrier without
+a plaintext YUME marker or downgrade response.
 
-## Loopback cover server
+## Cover site
 
-`yumed` terminates public TLS and HTTP/2. A separately supervised cover process
-listens on a configured loopback IP literal. YUME performs no DNS lookup for
-that backend, follows no redirect, and accepts no peer-selected backend.
+`yumed` terminates public TLS and HTTP/2 and serves cover from an immutable
+static site it loads from a confined directory at start. The site must hold the
+assets the active browser profile loads, or startup fails. Requests select
+preloaded routes, so serving cover reads no file and resolves no name. By
+default a file is at most 1 MiB and the whole site at most 16 MiB.
 
-Ordinary GET and HEAD requests can reach the cover process. Tunnel payloads,
-client identities, admission values, and session secrets cannot. Hop-by-hop
-headers are removed and request, response, body, and timeout limits are
-enforced.
-
-Cover work is admitted for at most four streams per public connection and 32
-across the process. Each response body is capped at 8 MiB. Backend response
-state and serialized TLS-write state have separate bounded budgets. Saturation
-uses retryable `REFUSED_STREAM`, and reset or connection close cancels the
-loopback work and releases its admission.
+Tunnel payloads, client identities, admission values and session secrets never
+reach cover handling. One connection may hold at most 64 open cover streams
+and make 256 requests, and a response is served only while it fits under
+4 MiB of queued output. One 30-second deadline covers the TLS handshake,
+requests and cover drain until a carrier is promoted.
 
 Those are availability bounds. They are not proof that overload looks exactly
-like the target cover server.
+like the target cover server. A reverse-proxy cover in front of a real website
+can be written in schema 1 but is not implemented yet, and a server configured
+with one refuses to start.
 
 ## What observers can still see
 
@@ -145,10 +145,10 @@ qualify certificate validation, exporter behavior, hello retry, resumption,
 reconnect, full-session timing, build reproducibility, or classifier parity.
 A matching ALPN, JA3, or JA4 value is narrower still.
 
-The older helper backend remains comparison evidence. Its tests do not qualify
-the native default. Remove it only after the native backend passes its own full
-handshake, validation, exporter, lifecycle, resumption, soak, build,
-same-session, classifier, and review gates.
+The Go helper backend that transport v2 compared against has been removed.
+The native backend's full handshake, resumption, soak, same-session and
+classifier gates remain open in the
+[implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Reproducible checks
 
@@ -160,19 +160,21 @@ python3 scripts/yume_h2_fingerprint.py chrome \
   --emitter build/bin/yume_h2_opening_probe
 @end
 
-Run a local functional carrier and cover check without packet capture:
+Observe one real YTP/1 session with nDPI inside a rootless network namespace:
 
 @code bash
-python3 scripts/yume_carrier_diagnose.py \
-  --local-server \
-  --capture-tool none \
-  --out yume-dpi-functional
+python3 scripts/yume_ndpi_smoke.py \
+  --yumed build/bin/yumed --yume build/bin/yume \
+  --ndpi-reader /path/to/ndpiReader --openssl /path/to/openssl \
+  --output yume-ndpi-smoke
 @end
 
-This proves the exercised functional path, not ClientHello or classifier
-parity. Packet capture should run only on an approved evidence host with
-deliberately granted capture access. Do not give the YUME binaries root or
-capture privileges to make a check pass.
+The script runs the session under `unshare -rn`, so it needs no host
+privileges, and writes the raw reader output and a summary to a new directory.
+It observes one loopback session and is not a classifier result. Packet
+capture outside such a namespace should run only on an approved evidence host
+with deliberately granted capture access. Do not give the YUME binaries root
+or capture privileges to make a check pass.
 
 The classifier-evidence validator accepts bounded, checksummed, sanitized
 artifacts and requires matched normal-browser and YUME arms. Raw NetLogs,
@@ -208,9 +210,9 @@ process memory have different consequences. Recovery requires fresh
 uncompromised contributions. It is not correct to say that every key becomes
 useless after a fixed number of milliseconds.
 
-The [transport-v2 wire contract](protocol/YUME_2_0_WIRE.md)
-records the runnable product's record and ratchet formulas. The
-[YTP/1 kernel contract](protocol/YTP_1.md) records the replacement's canonical
+The [relay channel contract](protocol/RELAY_CHANNEL.md) records the relay
+module's handshake and ratchet formulas. The
+[YTP/1 kernel contract](protocol/YTP_1.md) records YTP/1's canonical
 encodings, fixed security constants, and exact unfinished cryptographic/runtime
 boundary. The [implementation status](IMPLEMENTATION_STATUS.md) records the
 current release and evidence boundary.

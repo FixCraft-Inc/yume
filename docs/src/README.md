@@ -94,7 +94,7 @@ Header keys and directives are closed: an unknown spelling fails generation.
 | `kind` | `page` or `man` |
 | `title`, `summary` | Required text; a manual's NAME section also comes from these |
 | `markdown` | Public repository-relative `.md` output path |
-| `man` | `docs/man/<name>.<section>`, or the separate `docs/development/ytp1/man/` design references, for `kind: man` |
+| `man` | `docs/man/<name>.<section>` for `kind: man`; reference-runtime manuals use their explicit binary names |
 | `web` | `yes` publishes a page; requires a Markdown output |
 | `web-path` | Optional path under `website/docs/`, written as `docs/<name>.md`; preserves routes such as BaseFWX's `SECURITY_MODEL` |
 | `web-title` | Optional web H1 and browser title, co-located with the document title |
@@ -168,9 +168,18 @@ Use `complete: no` for a documented, rejected option that should not be
 suggested by the shell; it cannot also declare file or value completions.
 
 `en_US/cli/*.cli` owns help grouping and free text, referencing options by
-flag. Every printed option must be referenced exactly once. `sync` writes
-`src/client/cli/display/help_text.hpp` and `src/server/cli/help_text.hpp`.
-Use `python3 scripts/yume_cli.py render yume --layer help` to preview.
+flag. Every printed option must be referenced exactly once. Native layouts
+use `output-kind: static-help` to generate a constant help string in
+`src/runtime/yume_help_text.hpp` and `src/runtime/yumed_help_text.hpp`.
+Static help accepts no runtime interpolation and includes no completion writer.
+The native CLI supports only the options documented in these layouts.
+
+The `yume-v2-reference` and `yumed-v2-reference` layouts generate stream writers
+in `src/client/cli/display/help_text.hpp` and `src/server/cli/help_text.hpp`.
+Their manuals and Bash completion use those explicit reference binary names.
+The default output kind is `stream`; `output-kind` accepts only `stream` or
+`static-help`. Use `python3 scripts/yume_cli.py render yume --layer help` to
+preview native help, and select the reference binary name to preview its help.
 
 ## Languages
 

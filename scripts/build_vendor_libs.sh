@@ -1108,9 +1108,8 @@ build_argon2() {
     # OPTTARGET=generic keeps argon2 portable. Unlike liboqs, the reference
     # argon2 selects its SIMD path at compile time, so a vendored build is
     # deliberately the portable one rather than the fastest possible on the
-    # build machine. YUME 2.0 does not use argon2 on the transport path (no
-    # Argon2 at connection setup or per epoch), so this costs nothing there;
-    # it only affects BaseFWX file operations.
+    # build machine. The transport never uses Argon2, so this only affects
+    # BaseFWX file operations.
     local make_args=(
         CFLAGS="-I${argon2_inc} -fPIC ${path_flags}"
         OPTTARGET=generic

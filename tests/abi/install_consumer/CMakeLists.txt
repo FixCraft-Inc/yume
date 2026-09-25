@@ -92,7 +92,7 @@ if(YUME_TEST_NATIVE_TRAFFIC)
             set(_extension cpp)
         endif()
         add_executable(yume_installed_${_kind}_probe
-            "${YUME_SOURCE_DIR}/src/abi/ytp1_${_kind}_probe.${_extension}")
+            "${YUME_SOURCE_DIR}/src/abi/${_kind}_probe.${_extension}")
         target_link_libraries(yume_installed_${_kind}_probe PRIVATE yume::yume Threads::Threads)
         list(APPEND _consumer_targets yume_installed_${_kind}_probe)
     endforeach()
@@ -134,7 +134,8 @@ if(BUILD_TESTING)
             COMMAND "${YUME_PYTHON_EXECUTABLE}"
                 "${YUME_SOURCE_DIR}/tests/test_yume_abi_stream.py"
                 --probe "$<TARGET_FILE:yume_installed_stream_probe>"
-                --openssl "${YUME_OPENSSL_EXECUTABLE}")
+                --openssl "${YUME_OPENSSL_EXECUTABLE}"
+                --resolver "${yume_RESOLVER_PROGRAM}")
         add_test(NAME yume_installed_tcp_routes
             COMMAND "${YUME_PYTHON_EXECUTABLE}"
                 "${YUME_SOURCE_DIR}/tests/test_yume_abi_route.py"

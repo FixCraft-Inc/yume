@@ -607,6 +607,16 @@ if(YUME_BUILD_BASEFWX_MODULES)
                 elseif(MSVC)
                     target_compile_options(basefwxcpp PRIVATE /wd4996)
                 endif()
+                # BaseFWX compiles its Release objects for LTO only. A
+                # shared-ABI build links the module libraries and their tests
+                # with the -fno-lto that the ABI's non-LTO archives propagate,
+                # and the linker cannot read LTO-only objects then.
+                if(YUME_BUILD_SHARED_ABI AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                    set_target_properties(basefwxcpp PROPERTIES
+                        INTERPROCEDURAL_OPTIMIZATION OFF
+                        INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF)
+                    target_compile_options(basefwxcpp PRIVATE -fno-lto)
+                endif()
             endif()
         else()
             message(FATAL_ERROR "BaseFWX sources not found at basefwx/cpp")

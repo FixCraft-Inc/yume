@@ -22,8 +22,8 @@
 #include "providers/socks5_upstream.hpp"
 #include "runtime/native_egress_policy.hpp"
 #include "runtime/paced_stream.hpp"
-#include "providers/ytp1_front_door.hpp"
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/h2_web_front_door.hpp"
+#include "providers/openssl_security_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/direct_route_handler.hpp"
 #include "ytp/security.hpp"
@@ -647,7 +647,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     SessionLimits session_bounds;
     std::shared_ptr<const EngineGraph> graph;
     std::shared_ptr<AsioTcpByteChannelProvider> tcp;
-    std::vector<std::shared_ptr<Ytp1FrontDoor>> listeners;
+    std::vector<std::shared_ptr<H2WebFrontDoor>> listeners;
     std::vector<std::unique_ptr<Slot>> slots;
     std::vector<std::unique_ptr<Timer>> retry_timers; // One per server listener.
     std::optional<AcceptScheduler> accepts; // Servers with listeners only.
@@ -788,10 +788,10 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 static_cast<std::uint64_t>(*mbps) * 125'000U)});
         std::vector<ProviderRequirement> requirements;
         requirements.push_back(requirement(ProviderKind::ByteChannel, kAsioTcpByteChannelProviderId));
-        requirements.push_back(requirement(ProviderKind::SecureChannel, kYtp1Tls13SecureChannelProviderId));
+        requirements.push_back(requirement(ProviderKind::SecureChannel, kTls13SecureChannelProviderId));
         requirements.push_back(requirement(ProviderKind::FrontDoor, config::v1::kFrontDoorProvider));
-        requirements.push_back(requirement(ProviderKind::Carrier, kYtp1H2CarrierProviderId));
-        requirements.push_back(requirement(ProviderKind::SessionSecurity, kYtp1OpenSslSecurityProviderId));
+        requirements.push_back(requirement(ProviderKind::Carrier, kH2DuplexCarrierProviderId));
+        requirements.push_back(requirement(ProviderKind::SessionSecurity, kOpenSslSecurityProviderId));
         requirements.push_back(requirement(ProviderKind::RouteProvider, kAsioDirectRouteProviderId));
         std::vector<ServiceRequirement> service_requirements;
         std::vector<NativeServiceBinding> handlers;
@@ -850,12 +850,12 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 require(builder.register_byte_channel_provider(state->tcp));
             }
             require(builder.register_secure_channel_provider(credentials.tls_provider));
-            Ytp1H2Dispatch dispatch{
+            H2Dispatch dispatch{
                 [context](std::function<void()> task) { boost::asio::post(context->executor(), std::move(task)); },
                 [context](ControlTask& task, std::shared_ptr<void> owner) noexcept {
                     context->submit(task, std::move(owner));
                 }};
-            require(builder.register_carrier_provider(require(Ytp1H2CarrierProvider::create(context->affinity(),
+            require(builder.register_carrier_provider(require(H2DuplexCarrierProvider::create(context->affinity(),
                 std::move(dispatch), {endpoint.host(), endpoint.port(), {}}, credentials.admission_key.bytes()))));
         }
         state->graph = require(builder.build());
@@ -867,7 +867,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 "native reverse-proxy cover is not implemented");
             auto root = std::filesystem::path(cover_config->root().path());
             if (root.is_relative()) root = base_directory / root;
-            auto cover = require(Ytp1CoverSite::load_directory(root));
+            auto cover = require(CoverSite::load_directory(root));
             for (const auto& asset : cover_profile::active().assets) {
                 if (cover->respond("GET", asset.path).status_code != 200)
                     throw Status(StatusCode::InvalidArgument,
@@ -880,10 +880,10 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 boost::system::error_code error;
                 auto numeric = boost::asio::ip::make_address(address, error);
                 if (error) throw Status(StatusCode::InvalidArgument);
-                Ytp1FrontDoorConfig ingress;
+                H2WebFrontDoorConfig ingress;
                 ingress.listen_endpoint = {numeric, endpoint.port()};
                 ingress.limits.max_promoted_carriers = state->options.max_sessions;
-                state->listeners.push_back(require(Ytp1FrontDoor::create(context, std::move(ingress),
+                state->listeners.push_back(require(H2WebFrontDoor::create(context, std::move(ingress),
                     credentials.tls_provider, cover, replay, credentials.admission_key.bytes())));
             }
             // Automatic accept state is allocated with the listeners, before

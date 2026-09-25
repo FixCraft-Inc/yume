@@ -28,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-#include "providers/ytp1_h2_carrier.hpp"
+#include "providers/h2_duplex_carrier.hpp"
 #include "providers/ytp1_h2_admission.hpp"
 
 namespace test_allocation_failure {
@@ -153,7 +153,7 @@ public:
         tasks_.push_back(std::move(task));
     }
 
-    Ytp1H2Dispatch dispatch() {
+    H2Dispatch dispatch() {
         return {
             [this](std::function<void()> task) { post(std::move(task)); },
             [this](ControlTask& task, std::shared_ptr<void> owner) noexcept {
@@ -547,7 +547,7 @@ private:
             h2_->queued_output_bytes() != 0U) {
             return;
         }
-        auto promoted = make_ytp1_h2_admitted_server_carrier(
+        auto promoted = make_admitted_h2_duplex_server_carrier(
             std::move(channel_), std::move(h2_), ExecutorAffinity(77U),
             executor_.dispatch());
         CHECK(promoted.ok());
@@ -617,7 +617,7 @@ struct OpenedPair final {
 OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
                      bool expect_success = true,
                      std::shared_ptr<TestExecutor> executor = {},
-                     std::shared_ptr<Ytp1H2CarrierProvider> provider = {}) {
+                     std::shared_ptr<H2DuplexCarrierProvider> provider = {}) {
     OpenedPair pair;
     pair.executor = executor ? std::move(executor) : std::make_shared<TestExecutor>();
     pair.pipe = std::make_shared<TestPipe>(*pair.executor);
@@ -632,10 +632,10 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
 
     if (!provider) {
         auto mutable_key = kTestAdmissionKey;
-        provider = require(Ytp1H2CarrierProvider::create(
+        provider = require(H2DuplexCarrierProvider::create(
             ExecutorAffinity(77U),
             pair.executor->dispatch(),
-            Ytp1H2ClientConfig{"COVER.EXAMPLE", 443U, {}}, mutable_key));
+            H2DuplexClientConfig{"COVER.EXAMPLE", 443U, {}}, mutable_key));
         mutable_key.fill(std::byte{0});
     }
     bool completed = false;
@@ -659,12 +659,12 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
     pair.server = pair.server_opening->take_carrier();
     CHECK(pair.server != nullptr);
     CHECK(pair.server->descriptor().provider_id() ==
-          kYtp1H2CarrierProviderId);
+          kH2DuplexCarrierProviderId);
     if (expect_success) {
         CHECK(pair.client_open_status.ok());
         CHECK(pair.client != nullptr);
         CHECK(pair.client->descriptor().provider_id() ==
-              kYtp1H2CarrierProviderId);
+              kH2DuplexCarrierProviderId);
     }
     return pair;
 }
@@ -673,21 +673,21 @@ void test_limits_cover_envelope_and_receive_window() {
     auto executor = std::make_shared<TestExecutor>();
     const auto post = executor->dispatch();
 
-    Ytp1H2ClientConfig retained_too_small{
+    H2DuplexClientConfig retained_too_small{
         "cover.example", 443U, {}};
     retained_too_small.limits.max_retained_receive_bytes =
         retained_too_small.limits.max_record_bytes;
-    auto retained = Ytp1H2CarrierProvider::create(
+    auto retained = H2DuplexCarrierProvider::create(
         ExecutorAffinity(77U), post, std::move(retained_too_small), kTestAdmissionKey);
     CHECK(!retained.ok());
     CHECK(retained.status().code() == StatusCode::InvalidArgument);
 
-    Ytp1H2ClientConfig record_too_large{
+    H2DuplexClientConfig record_too_large{
         "cover.example", 443U, {}};
     record_too_large.limits.max_record_bytes =
         obfs::kAdmittedH2ReceiveWindowBytes -
-        kYtp1H2CarrierEnvelopeBytes + 1U;
-    auto oversized = Ytp1H2CarrierProvider::create(
+        kH2DuplexEnvelopeBytes + 1U;
+    auto oversized = H2DuplexCarrierProvider::create(
         ExecutorAffinity(77U), post, std::move(record_too_large), kTestAdmissionKey);
     CHECK(!oversized.ok());
     CHECK(oversized.status().code() == StatusCode::InvalidArgument);
@@ -696,20 +696,20 @@ void test_limits_cover_envelope_and_receive_window() {
 void test_admission_configuration_rejects_invalid_inputs() {
     TestExecutor executor;
     const auto post = executor.dispatch();
-    const Ytp1H2ClientConfig valid{"cover.example", 443U, {}};
+    const H2DuplexClientConfig valid{"cover.example", 443U, {}};
     const std::array<std::byte, kYtp1H2AdmissionKeyBytes + 1U> oversized_key{};
     for (std::size_t size : {0U, 1U, 31U, 33U}) {
-        auto result = Ytp1H2CarrierProvider::create(
+        auto result = H2DuplexCarrierProvider::create(
             ExecutorAffinity(77U), post, valid,
             std::span(oversized_key).first(size));
         CHECK(!result.ok());
         CHECK(result.status().code() == StatusCode::InvalidArgument);
     }
     for (const auto& config : {
-             Ytp1H2ClientConfig{"cover.example", 0U, {}},
-             Ytp1H2ClientConfig{"cover.example/path", 443U, {}},
-             Ytp1H2ClientConfig{"cover.example.", 443U, {}}}) {
-        auto result = Ytp1H2CarrierProvider::create(
+             H2DuplexClientConfig{"cover.example", 0U, {}},
+             H2DuplexClientConfig{"cover.example/path", 443U, {}},
+             H2DuplexClientConfig{"cover.example.", 443U, {}}}) {
+        auto result = H2DuplexCarrierProvider::create(
             ExecutorAffinity(77U), post, config, kTestAdmissionKey);
         CHECK(!result.ok());
         CHECK(result.status().code() == StatusCode::InvalidArgument);
@@ -753,10 +753,10 @@ void test_admission_failures_close_before_http_output() {
                 expected_exporter_calls = 1U;
                 break;
         }
-        auto provider = require(Ytp1H2CarrierProvider::create(
+        auto provider = require(H2DuplexCarrierProvider::create(
             ExecutorAffinity(77U),
             executor.dispatch(),
-            Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+            H2DuplexClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
         unsigned int completions = 0U;
         std::optional<StatusCode> actual;
         provider->async_create(
@@ -778,10 +778,10 @@ void test_admission_failures_close_before_http_output() {
 
 void test_admission_uses_fresh_nonce_and_exporter_binding() {
     auto executor = std::make_shared<TestExecutor>();
-    auto provider = require(Ytp1H2CarrierProvider::create(
+    auto provider = require(H2DuplexCarrierProvider::create(
         ExecutorAffinity(77U),
         executor->dispatch(),
-        Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+        H2DuplexClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
     OpenedPair first = open_pair({}, true, executor, provider);
     OpenedPair second = open_pair({}, true, executor, provider);
     const auto& first_path = first.server_opening->admission_path();
@@ -907,10 +907,10 @@ void test_executor_rejection_settles_each_operation_once() {
 void test_executor_rejection_settles_provider_creation_once() {
     TestExecutor executor;
     auto pipe = std::make_shared<TestPipe>(executor);
-    auto provider = require(Ytp1H2CarrierProvider::create(
+    auto provider = require(H2DuplexCarrierProvider::create(
         ExecutorAffinity(77U),
         executor.dispatch(),
-        Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+        H2DuplexClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
 
     executor.reject_new_tasks();
     unsigned int completions = 0U;
@@ -987,9 +987,9 @@ void test_client_creation_allocation_failures_settle_once() {
         TestExecutor executor;
         auto pipe = std::make_shared<TestPipe>(executor);
         pipe->endpoints[0].hold_writes = true;
-        auto provider = require(Ytp1H2CarrierProvider::create(
+        auto provider = require(H2DuplexCarrierProvider::create(
             ExecutorAffinity(77U), executor.dispatch(),
-            Ytp1H2ClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
+            H2DuplexClientConfig{"cover.example", 443U, {}}, kTestAdmissionKey));
         std::unique_ptr<SecureChannel> channel = std::make_unique<FakeSecureChannel>(pipe, 0U);
         CancellationSource cancellation;
         unsigned int calls = 0U;

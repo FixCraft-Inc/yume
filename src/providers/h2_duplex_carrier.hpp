@@ -20,9 +20,9 @@
 
 namespace yume::providers {
 
-inline constexpr std::string_view kYtp1H2CarrierProviderId = "h2-duplex";
-inline constexpr std::uint32_t kYtp1H2CarrierProviderApiVersion = 1U;
-inline constexpr std::size_t kYtp1H2CarrierEnvelopeBytes = 12U;
+inline constexpr std::string_view kH2DuplexCarrierProviderId = "h2-duplex";
+inline constexpr std::uint32_t kH2DuplexCarrierProviderApiVersion = 1U;
+inline constexpr std::size_t kH2DuplexEnvelopeBytes = 12U;
 
 // The supplied executor owns every carrier state transition. It must accept
 // work until all carriers and provider operations have settled and invoke tasks
@@ -34,7 +34,7 @@ inline constexpr std::size_t kYtp1H2CarrierEnvelopeBytes = 12U;
 // retains and drains the executor after releasing the last open carrier handle.
 // Repeated close/cancel, credit return and destruction of a carrier that has
 // already closed and drained enqueue no further control work.
-struct Ytp1H2Dispatch final {
+struct H2Dispatch final {
     std::function<void(std::function<void()>)> post;
     std::function<void(ControlTask&, std::shared_ptr<void>)> submit;
     explicit operator bool() const noexcept { return post && submit; }
@@ -43,14 +43,14 @@ struct Ytp1H2Dispatch final {
 // A promoted server keeps serving ordinary streams on the same connection.
 // This handler must be bounded, synchronous and retain its cover source. It
 // never performs another admission or promotion. False terminates the carrier.
-class Ytp1H2CoverHandler {
+class H2CoverHandler {
 public:
-    virtual ~Ytp1H2CoverHandler() = default;
+    virtual ~H2CoverHandler() = default;
     virtual bool respond(obfs::H2Carrier&, const obfs::H2Request&) = 0;
     virtual void stream_closed(std::int32_t stream_id) noexcept = 0;
 };
 
-struct Ytp1H2CarrierLimits final {
+struct H2DuplexCarrierLimits final {
     // Includes the protected YTP envelope and AEAD output handed to Carrier,
     // but excludes the carrier-private 12-byte record envelope.
     std::size_t max_record_bytes{2U * 1024U * 1024U};
@@ -60,12 +60,12 @@ struct Ytp1H2CarrierLimits final {
     std::size_t secure_read_bytes{64U * 1024U};
 };
 
-engine::Status validate_ytp1_h2_carrier_limits(const Ytp1H2CarrierLimits& limits);
+engine::Status validate_h2_duplex_carrier_limits(const H2DuplexCarrierLimits& limits);
 
-struct Ytp1H2ClientConfig final {
+struct H2DuplexClientConfig final {
     std::string server_name;
     std::uint16_t server_port{443U};
-    Ytp1H2CarrierLimits limits{};
+    H2DuplexCarrierLimits limits{};
 };
 
 // Client-side provider. Creation performs the genuine profile priming GET and
@@ -74,20 +74,20 @@ struct Ytp1H2ClientConfig final {
 // The intended server name must match the name authenticated by the TLS
 // provider. Each create consumes its SecureChannel once, derives its own
 // exporter-bound admission path, and closes on failure without retrying it.
-class Ytp1H2CarrierProvider final : public engine::CarrierProvider {
+class H2DuplexCarrierProvider final : public engine::CarrierProvider {
 public:
     // Key storage is borrowed only for this call. The provider copies exactly
     // 32 bytes into one immutable owner shared with pending creates; its final
     // destruction wipes those bytes. The caller owns wiping its input.
-    static engine::Result<std::shared_ptr<Ytp1H2CarrierProvider>> create(
+    static engine::Result<std::shared_ptr<H2DuplexCarrierProvider>> create(
         engine::ExecutorAffinity executor_affinity,
-        Ytp1H2Dispatch dispatch,
-        Ytp1H2ClientConfig config,
+        H2Dispatch dispatch,
+        H2DuplexClientConfig config,
         std::span<const std::byte> admission_key);
 
-    Ytp1H2CarrierProvider(const Ytp1H2CarrierProvider&) = delete;
-    Ytp1H2CarrierProvider& operator=(const Ytp1H2CarrierProvider&) = delete;
-    ~Ytp1H2CarrierProvider() noexcept override = default;
+    H2DuplexCarrierProvider(const H2DuplexCarrierProvider&) = delete;
+    H2DuplexCarrierProvider& operator=(const H2DuplexCarrierProvider&) = delete;
+    ~H2DuplexCarrierProvider() noexcept override = default;
 
     const engine::ProviderDescriptor& descriptor() const noexcept override;
     void async_create(std::unique_ptr<engine::SecureChannel> channel,
@@ -96,22 +96,22 @@ public:
                       Completion completion) override;
 
     engine::ExecutorAffinity executor_affinity() const noexcept;
-    const Ytp1H2ClientConfig& config() const noexcept;
+    const H2DuplexClientConfig& config() const noexcept;
 
 private:
     struct AdmissionKey;
 
-    Ytp1H2CarrierProvider(
+    H2DuplexCarrierProvider(
         engine::ProviderDescriptor descriptor,
         engine::ExecutorAffinity executor_affinity,
-        Ytp1H2Dispatch dispatch,
-        Ytp1H2ClientConfig config,
+        H2Dispatch dispatch,
+        H2DuplexClientConfig config,
         std::shared_ptr<const AdmissionKey> admission_key) noexcept;
 
     engine::ProviderDescriptor descriptor_;
     engine::ExecutorAffinity executor_affinity_;
-    Ytp1H2Dispatch dispatch_;
-    Ytp1H2ClientConfig config_;
+    H2Dispatch dispatch_;
+    H2DuplexClientConfig config_;
     std::shared_ptr<const AdmissionKey> admission_key_;
 };
 
@@ -122,12 +122,12 @@ private:
 // state are therefore never reconstructed from raw TLS or hidden in an opaque
 // context handle.
 engine::Result<std::unique_ptr<engine::Carrier>>
-make_ytp1_h2_admitted_server_carrier(
+make_admitted_h2_duplex_server_carrier(
     std::unique_ptr<engine::SecureChannel> channel,
     std::unique_ptr<obfs::H2Carrier> admitted_h2,
     engine::ExecutorAffinity executor_affinity,
-    Ytp1H2Dispatch dispatch,
-    Ytp1H2CarrierLimits limits = {},
-    std::shared_ptr<Ytp1H2CoverHandler> cover = {});
+    H2Dispatch dispatch,
+    H2DuplexCarrierLimits limits = {},
+    std::shared_ptr<H2CoverHandler> cover = {});
 
 }  // namespace yume::providers

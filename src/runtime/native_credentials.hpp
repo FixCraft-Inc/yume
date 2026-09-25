@@ -21,8 +21,8 @@
 #include "engine/stream_handler.hpp"
 
 namespace yume::providers {
-class Ytp1OpenSslSecurityProviderFactory;
-class Ytp1Tls13SecureChannelProvider;
+class OpenSslSecurityProviderFactory;
+class Tls13SecureChannelProvider;
 }  // namespace yume::providers
 
 namespace yume::runtime {
@@ -95,9 +95,9 @@ private:
 inline constexpr std::size_t kMaxSessionsPerIdentity = 1024U;
 
 struct LoadedNativeCredentials final {
-    std::shared_ptr<providers::Ytp1OpenSslSecurityProviderFactory>
+    std::shared_ptr<providers::OpenSslSecurityProviderFactory>
         security_factory;
-    std::shared_ptr<providers::Ytp1Tls13SecureChannelProvider> tls_provider;
+    std::shared_ptr<providers::Tls13SecureChannelProvider> tls_provider;
     std::shared_ptr<const NativeAuthorizationPolicy> authorization;
     NativeAdmissionKey admission_key;
     // A client's SOCKS5 proxy credentials, when its configuration names them.

@@ -1068,7 +1068,7 @@ yume_status yume_get_build_info(yume_build_info* out,
     copy_text(value.product_version, sizeof(value.product_version),
               yume::kCompatibilityManifest.product_version);
     copy_text(value.crypto_backend, sizeof(value.crypto_backend),
-              yume::embed::ytp1_crypto_backend());
+              yume::embed::crypto_backend_identity());
 #if defined(__clang__)
     copy_text(value.compiler, sizeof(value.compiler), "clang");
 #elif defined(__GNUC__)
@@ -1097,7 +1097,7 @@ yume_status yume_get_compatibility(yume_compatibility* out,
     copy_text(value.suite, sizeof(value.suite),
               yume::kCompatibilityManifest.transport_suite);
     copy_text(value.crypto_backend, sizeof(value.crypto_backend),
-              yume::embed::ytp1_crypto_backend());
+              yume::embed::crypto_backend_identity());
     copy_text(value.secure_channel_provider,
               sizeof(value.secure_channel_provider),
               yume::kCompatibilityManifest.secure_channel_provider);
@@ -1109,7 +1109,7 @@ yume_status yume_get_compatibility(yume_compatibility* out,
               yume::kCompatibilityManifest.session_component);
     copy_text(value.session_security_provider,
               sizeof(value.session_security_provider),
-              yume::embed::ytp1_session_security_provider());
+              yume::embed::security_provider_identity());
     copy_text(value.evidence_profile, sizeof(value.evidence_profile),
               yume::kCompatibilityManifest.evidence_profile);
     return copy_sized(out, out_size, YUME_COMPATIBILITY_MIN_SIZE, value,
@@ -1566,7 +1566,7 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
                 }
             }
             auto outcome = yume::embed::BackendIo::Failed;
-            endpoint->control->backend = yume::embed::make_ytp1_backend(
+            endpoint->control->backend = yume::embed::make_native_backend(
                 endpoint->config, endpoint->runtime->config_base_dir,
                 endpoint->runtime->resolver_program,
                 std::move(registrations), std::move(socket_protector),

@@ -15,13 +15,13 @@
 #include "admission/h2_admission.hpp"
 #include "engine/front_door.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
-#include "providers/ytp1_cover_site.hpp"
-#include "providers/ytp1_h2_carrier.hpp"
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "providers/cover_site.hpp"
+#include "providers/h2_duplex_carrier.hpp"
+#include "providers/tls13_secure_channel.hpp"
 
 namespace yume::providers {
 
-struct Ytp1FrontDoorLimits final {
+struct H2WebFrontDoorLimits final {
     std::size_t max_connections{128U};
     std::size_t max_promoted_carriers{128U};
     std::size_t max_pending_accepts{32U};
@@ -33,13 +33,13 @@ struct Ytp1FrontDoorLimits final {
     std::chrono::milliseconds connection_timeout{30'000};
 };
 
-struct Ytp1FrontDoorConfig final {
+struct H2WebFrontDoorConfig final {
     // Numeric endpoint only: ingress performs no DNS resolution. Port zero
     // requests an ephemeral port, available through local_endpoint(). IPv6
     // listeners are IPv6-only; an IPv4 listener may use the same port.
     boost::asio::ip::tcp::endpoint listen_endpoint;
-    Ytp1FrontDoorLimits limits{};
-    Ytp1H2CarrierLimits carrier_limits{};
+    H2WebFrontDoorLimits limits{};
+    H2DuplexCarrierLimits carrier_limits{};
 };
 
 // A native listening FrontDoor, independent of CLI/configuration and the ABI.
@@ -56,20 +56,20 @@ struct Ytp1FrontDoorConfig final {
 // A waiter is consumed only by a successful promotion, never by a probe.
 // ReplayCache ticks and TTL must use monotonic seconds; share the cache across
 // listeners accepting the same admission credential.
-class Ytp1FrontDoor final : public engine::FrontDoor {
+class H2WebFrontDoor final : public engine::FrontDoor {
 public:
     // Socket setup preserves permission, address conflict, invalid-address and
     // resource-exhaustion outcomes. Failure publishes no listener; any opened
     // socket closes before return, so a corrected configuration can retry.
-    static engine::Result<std::shared_ptr<Ytp1FrontDoor>> create(
+    static engine::Result<std::shared_ptr<H2WebFrontDoor>> create(
         std::shared_ptr<AsioExecutionContext> context,
-        Ytp1FrontDoorConfig config,
-        std::shared_ptr<Ytp1Tls13SecureChannelProvider> tls,
-        std::shared_ptr<const Ytp1CoverSite> cover,
+        H2WebFrontDoorConfig config,
+        std::shared_ptr<Tls13SecureChannelProvider> tls,
+        std::shared_ptr<const CoverSite> cover,
         std::shared_ptr<admission::ReplayCache> replay,
         std::span<const std::byte> admission_key);
 
-    ~Ytp1FrontDoor() noexcept override;
+    ~H2WebFrontDoor() noexcept override;
     engine::ExecutorAffinity executor_affinity() const noexcept override;
     boost::asio::ip::tcp::endpoint local_endpoint() const noexcept;
     // True once closing has begun, including when a failed OS accept closed the
@@ -85,7 +85,7 @@ public:
 
 private:
     class State;
-    explicit Ytp1FrontDoor(std::shared_ptr<State> state) noexcept;
+    explicit H2WebFrontDoor(std::shared_ptr<State> state) noexcept;
     std::shared_ptr<State> state_;
 };
 

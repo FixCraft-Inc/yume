@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_cover_site.hpp"
+#include "providers/cover_site.hpp"
 
 #include <algorithm>
 #include <new>
@@ -22,7 +22,7 @@ constexpr std::size_t kMaxTotalBytes = 256U * 1024U * 1024U;
 constexpr std::size_t kMaxHeaderBytes = 16U * 1024U;
 constexpr std::string_view kNotFoundContentType = "text/html";
 
-bool valid_limits(const Ytp1CoverLimits& limits) noexcept {
+bool valid_limits(const CoverLimits& limits) noexcept {
     return limits.max_routes > 0U && limits.max_routes <= kMaxRoutes &&
            limits.max_file_bytes > 0U && limits.max_file_bytes <= kMaxFileBytes &&
            limits.max_total_bytes > 0U && limits.max_total_bytes <= kMaxTotalBytes &&
@@ -124,11 +124,11 @@ std::string_view content_type(const std::filesystem::path& file) {
 
 }  // namespace
 
-engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load_directory(
-    const std::filesystem::path& root, Ytp1CoverLimits limits) noexcept {
+engine::Result<std::shared_ptr<const CoverSite>> CoverSite::load_directory(
+    const std::filesystem::path& root, CoverLimits limits) noexcept {
     using engine::Status;
     using engine::StatusCode;
-    using SiteResult = engine::Result<std::shared_ptr<const Ytp1CoverSite>>;
+    using SiteResult = engine::Result<std::shared_ptr<const CoverSite>>;
     namespace fs = std::filesystem;
     try {
         // FileRoot validates every root component before enumeration as well
@@ -136,7 +136,7 @@ engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load_directo
         // change the snapshot; it cannot authorize a symlink content read.
         if (!valid_limits(limits) || !runtime::FileRoot::open(root))
             return SiteResult(Status(StatusCode::InvalidArgument, "cover site root or limits are invalid"));
-        std::vector<Ytp1CoverFile> routes;
+        std::vector<CoverFile> routes;
         std::size_t entries = 0U;
         std::size_t path_bytes = 0U;
         for (fs::recursive_directory_iterator it(root), end; it != end; ++it) {
@@ -171,14 +171,14 @@ engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load_directo
     }
 }
 
-engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load(
+engine::Result<std::shared_ptr<const CoverSite>> CoverSite::load(
     const std::filesystem::path& root,
-    const std::vector<Ytp1CoverFile>& routes,
+    const std::vector<CoverFile>& routes,
     const std::filesystem::path& not_found_file,
-    Ytp1CoverLimits limits) noexcept {
+    CoverLimits limits) noexcept {
     using engine::Status;
     using engine::StatusCode;
-    using SiteResult = engine::Result<std::shared_ptr<const Ytp1CoverSite>>;
+    using SiteResult = engine::Result<std::shared_ptr<const CoverSite>>;
     try {
         if (!valid_limits(limits) || routes.empty() || not_found_file.empty()) {
             return SiteResult(Status(StatusCode::InvalidArgument,
@@ -188,7 +188,7 @@ engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load(
             return SiteResult(Status(StatusCode::ResourceExhausted,
                                      "cover site route limit exceeded"));
         }
-        auto site = std::shared_ptr<Ytp1CoverSite>(new Ytp1CoverSite(limits));
+        auto site = std::shared_ptr<CoverSite>(new CoverSite(limits));
         std::array<char, kMaxPathBytes> normalized{};
         std::size_t route_bytes = 0U;
         for (const auto& route : routes) {
@@ -260,7 +260,7 @@ engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load(
         auto status = read_representation(not_found_file, kNotFoundContentType,
                                           site->not_found_);
         if (!status.ok()) return SiteResult(std::move(status));
-        return SiteResult(std::shared_ptr<const Ytp1CoverSite>(std::move(site)));
+        return SiteResult(std::shared_ptr<const CoverSite>(std::move(site)));
     } catch (const std::bad_alloc&) {
         // Empty diagnostics keep the allocation-failure boundary nonallocating.
         return SiteResult(Status(StatusCode::ResourceExhausted));
@@ -269,7 +269,7 @@ engine::Result<std::shared_ptr<const Ytp1CoverSite>> Ytp1CoverSite::load(
     }
 }
 
-Ytp1CoverResponse Ytp1CoverSite::respond(std::string_view method,
+CoverResponse CoverSite::respond(std::string_view method,
                                        std::string_view target) const noexcept {
     const Representation* representation = &not_found_;
     int status = 404;

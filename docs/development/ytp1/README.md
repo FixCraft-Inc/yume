@@ -22,7 +22,7 @@ To build one component, name its target:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DYUME_BUILD_TESTING=ON -DYUME_WARNINGS_AS_ERRORS=ON
-cmake --build build --target yume_ytp1_front_door -j2
+cmake --build build --target yume_h2_web_front_door -j2
 ```
 
 Set `YUME_NATIVE_TEST_OPENSSL` to the pinned installation's `bin/openssl` when

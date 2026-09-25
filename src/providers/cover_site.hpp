@@ -21,13 +21,13 @@
 
 namespace yume::providers {
 
-struct Ytp1CoverFile final {
+struct CoverFile final {
     std::string path;
     std::filesystem::path relative_file;
     std::string content_type;
 };
 
-struct Ytp1CoverLimits final {
+struct CoverLimits final {
     std::size_t max_routes{256U};
     std::size_t max_file_bytes{1024U * 1024U};
     // Includes loaded bodies, route names and response header names/values.
@@ -36,7 +36,7 @@ struct Ytp1CoverLimits final {
     std::size_t max_header_bytes{1024U};
 };
 
-struct Ytp1CoverResponse final {
+struct CoverResponse final {
     int status_code{404};
     std::span<const std::pair<std::string, std::string>> headers;
     std::string_view body;
@@ -46,27 +46,27 @@ struct Ytp1CoverResponse final {
 // route and an explicit HTML not-found file; no synthetic site is available.
 // Files are confined through runtime::FileRoot and no descriptor is retained.
 // Requests perform no allocation, filesystem access or DNS resolution.
-class Ytp1CoverSite final {
+class CoverSite final {
 public:
-    static engine::Result<std::shared_ptr<const Ytp1CoverSite>> load(
+    static engine::Result<std::shared_ptr<const CoverSite>> load(
         const std::filesystem::path& root,
-        const std::vector<Ytp1CoverFile>& routes,
+        const std::vector<CoverFile>& routes,
         const std::filesystem::path& not_found_file,
-        Ytp1CoverLimits limits = {}) noexcept;
+        CoverLimits limits = {}) noexcept;
 
     // Load an operator-owned tree with index.html at / and 404.html for misses.
     // Every regular file becomes an exact route; nested index.html also maps
     // to its directory URL. Hidden entries, links, special files, excessive
     // depth and enumeration limits fail startup. FileRoot owns content reads;
     // enumeration never makes request-time filesystem access necessary.
-    static engine::Result<std::shared_ptr<const Ytp1CoverSite>> load_directory(
-        const std::filesystem::path& root, Ytp1CoverLimits limits = {}) noexcept;
+    static engine::Result<std::shared_ptr<const CoverSite>> load_directory(
+        const std::filesystem::path& root, CoverLimits limits = {}) noexcept;
 
     // Returned views remain valid while this immutable site is retained.
     // GET/HEAD select configured routes; all other methods and invalid targets
     // receive the same configured not-found representation. HEAD omits only
     // the body, retaining the GET content-length. Queries do not select files.
-    Ytp1CoverResponse respond(std::string_view method,
+    CoverResponse respond(std::string_view method,
                              std::string_view target) const noexcept;
 
 private:
@@ -75,9 +75,9 @@ private:
         std::string body;
     };
 
-    explicit Ytp1CoverSite(Ytp1CoverLimits limits) noexcept : limits_(limits) {}
+    explicit CoverSite(CoverLimits limits) noexcept : limits_(limits) {}
 
-    Ytp1CoverLimits limits_;
+    CoverLimits limits_;
     std::map<std::string, Representation, std::less<>> routes_;
     Representation not_found_;
 };

@@ -76,7 +76,7 @@ Implementation paths below are relative to `src/`. The candidate header in
 @table
 | Path | Owns |
 | --- | --- |
-| `abi/` | The opt-in C ABI. `yume_c.cpp` owns handles, input validation, diagnostics, callback rules and backend leasing. It parses schema 1 through `config/v1` and reaches the runtime only through the embedding seam `endpoint_backend.hpp`. `ytp1_backend.cpp` is `yume_embed_ytp1`, which runs `NativeEndpoint` on its own execution thread and links no BaseFWX. Without the native provider graph, schema-1 start is unsupported. `compatibility_manifest.hpp` is the version view the ABI reports. |
+| `abi/` | The opt-in C ABI. `yume_c.cpp` owns handles, input validation, diagnostics, callback rules and backend leasing. It parses schema 1 through `config/v1` and reaches the runtime only through the embedding seam `endpoint_backend.hpp`. `native_backend.cpp` is `yume_embed`, which runs `NativeEndpoint` on its own execution thread and links no BaseFWX. Without the native provider graph, schema-1 start is unsupported. `compatibility_manifest.hpp` is the version view the ABI reports. |
 | `include/yume/` | The public candidate C header. It is unfrozen; development SDK installation is opt-in. |
 | `common/` | Dependency-pure contracts shared across replacement layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, the UDP datagram budget both SOCKS5 UDP relays use, hex encoding, best-effort secret erasure, the development timing helpers, and the product and protocol version constants |
 @end
@@ -106,17 +106,17 @@ replacement merely because both builds pass. Follow actual target inputs:
 @table
 | Boundary | Current source evidence | Missing connection |
 | --- | --- | --- |
-| Server ingress | `providers/ytp1_front_door.*` implements native listening, configured static cover, exporter/replay admission and retained H2/TLS promotion | Composed through `runtime/native_endpoint.*` by the development `yumed` and the schema-1 ABI backend. Qualification remains |
-| Client admission | `providers/ytp1_h2_carrier.*` owns a 32-byte key and emits a fresh exporter-bound proof through `ytp1_h2_admission.*` | Composed by `runtime/native_endpoint.*` and reached through the schema-1 ABI backend and `yume` |
-| TLS profile | `providers/ytp1_tls13_secure_channel.cpp` applies `stealth/tls_client_profile.*`, shared with transport v2; a published YTP channel still requires TLS 1.3 and H2 | Qualify actual provider output and full-session behavior; native profile configuration alone does not establish circumvention |
-| Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | `abi/ytp1_backend.cpp` drives named streams/packets and routed client OPENs for the ABI; standalone application-service adapters remain open |
+| Server ingress | `providers/h2_web_front_door.*` implements native listening, configured static cover, exporter/replay admission and retained H2/TLS promotion | Composed through `runtime/native_endpoint.*` by the development `yumed` and the schema-1 ABI backend. Qualification remains |
+| Client admission | `providers/h2_duplex_carrier.*` owns a 32-byte key and emits a fresh exporter-bound proof through `ytp1_h2_admission.*` | Composed by `runtime/native_endpoint.*` and reached through the schema-1 ABI backend and `yume` |
+| TLS profile | `providers/tls13_secure_channel.cpp` applies `stealth/tls_client_profile.*`, shared with transport v2; a published YTP channel still requires TLS 1.3 and H2 | Qualify actual provider output and full-session behavior; native profile configuration alone does not establish circumvention |
+| Session composition | `runtime/native_endpoint.cpp` calls `SessionBootstrap::create` for both roles, retains active engines and composes configured direct TCP/UDP adapters whose schema-1 destinations `runtime/native_egress_policy.*` enforces | `abi/native_backend.cpp` drives named streams/packets and routed client OPENs for the ABI; standalone application-service adapters remain open |
 | Embedding | `abi/yume_c.cpp` selects the compiled backend by configuration dialect. The YTP/1 backend carries named byte streams, named packets and destination-routed TCP/UDP OPENs | Supported-platform SDK and production qualification; transport-v2 packet/routed operations remain unsupported |
 | Applications | The default native `yumed`/`yume` run direct routes, SOCKS5 CONNECT/UDP ASSOCIATE and Linux managed TUN over `NativeEndpoint` | Application-service adapters, packaging, later GUI/Android integration and production qualification |
 @end
 
 `yume_h2_carrier` is the single build owner of the `stealth/` H2,
 WebSocket, wire-profile and observer sources. The native adapter
-`yume_ytp1_h2_carrier` links it.
+`yume_h2_duplex_carrier` links it.
 It propagates the diagnostics setting to callers because public declarations
 depend on it; Release and MinSizeRel compile those diagnostics out.
 `yume_cover_profile` owns profile data and fingerprint interpretation;
@@ -141,11 +141,11 @@ layering rejects dependencies on either protocol or runtime. The v2 wrapper in
 `core/stealth/obfs_signal.*` retains its version/profile/SNI/hour/nonce encoding.
 `providers/ytp1_h2_admission.*` owns the distinct exporter-bound
 [YTP admission construction](protocol/YTP_1.md#h2-admission-v1). It deliberately
-omits wall time and evidence-profile IDs. `providers/ytp1_front_door.*`
+omits wall time and evidence-profile IDs. `providers/h2_web_front_door.*`
 combines those helpers with received TLS SNI, a locally derived exporter, a
 caller-shared replay cache, configured cover and one promotion per TLS lifetime.
 
-`providers/ytp1_cover_site.*` loads an immutable operator-supplied static site
+`providers/cover_site.*` loads an immutable operator-supplied static site
 through `runtime::FileRoot`, including an index and explicit not-found file.
 Requests select preloaded routes without filesystem access or DNS. There is
 no built-in fallback site or reverse-proxy implementation in this candidate.
@@ -203,9 +203,9 @@ and `providers/linux_tun_packet_channel.*` owns asynchronous device I/O.
 | Stage | Data and operation | Source owner |
 | --- | --- | --- |
 | Application to session | A named service opens a byte stream or packet channel. Writes consume stream and connection credit, then become canonical DATA or PACKET frames. | `engine/session_engine.cpp`, `ytp/protocol.cpp` |
-| Record protection | The security provider seals the canonical frame with AES-256-GCM. A directional epoch and sequence identify a one-use key/nonce pair. The engine prefixes the ciphertext with that token. | `engine/session_engine.cpp::protect_frame`, `providers/ytp1_security_provider.cpp` |
-| H2 carrier | A 12-byte length envelope preserves each record across partial reads. The shared H2/WebSocket implementation carries it through RFC 8441 extended CONNECT and accounts for receive credit. | `providers/ytp1_h2_carrier.cpp`, `stealth/h2_carrier.cpp`, `stealth/websocket_codec.cpp` |
-| Outer connection | OpenSSL TLS 1.3 encrypts H2 bytes. Memory BIOs exchange encrypted bytes with a ByteChannel. The Asio client provider reads and writes the TCP socket. | `providers/ytp1_tls13_secure_channel.cpp`, `providers/asio_tcp_byte_channel_provider.cpp` |
+| Record protection | The security provider seals the canonical frame with AES-256-GCM. A directional epoch and sequence identify a one-use key/nonce pair. The engine prefixes the ciphertext with that token. | `engine/session_engine.cpp::protect_frame`, `providers/openssl_security_provider.cpp` |
+| H2 carrier | A 12-byte length envelope preserves each record across partial reads. The shared H2/WebSocket implementation carries it through RFC 8441 extended CONNECT and accounts for receive credit. | `providers/h2_duplex_carrier.cpp`, `stealth/h2_carrier.cpp`, `stealth/websocket_codec.cpp` |
+| Outer connection | OpenSSL TLS 1.3 encrypts H2 bytes. Memory BIOs exchange encrypted bytes with a ByteChannel. The Asio client provider reads and writes the TCP socket. | `providers/tls13_secure_channel.cpp`, `providers/asio_tcp_byte_channel_provider.cpp` |
 | Peer delivery | The reverse path removes TLS and carrier framing, verifies the record token/tag, decodes the canonical frame and dispatches its stream ID. Invalid protection or framing terminates the session. | TLS/H2 providers, `engine/session_engine.cpp` |
 | Destination access | OPEN authorization produces an `AuthorizedRouteRequest`. The Asio provider checks every selected numeric address through an explicit policy before socket creation. The direct-route handler bridges the stream to a TCP or UDP route, retains credit until delivery and closes both sides on terminal failure. | `engine/session_engine.cpp::process_open`, `providers/direct_route_handler.cpp`, `providers/asio_direct_route_provider.cpp` |
 @end
@@ -231,8 +231,8 @@ Standalone and public-library adapters remain unfinished.
 @table
 | Mechanism | Purpose and implementation |
 | --- | --- |
-| TLS 1.3 | `ytp1_tls13_secure_channel.cpp` verifies the configured trust and hostname and selects H2 with ALPN. Distinct TLS exporter labels bind YTP authentication and H2 admission to this connection. Its client applies the shared browser profile; full-session stealth remains unqualified. |
-| Ed25519 + ML-DSA-87 | `ytp1_security_provider.cpp::verify_composite` requires both signatures for the composite identity. The client checks its configured server identity. The server selects an authorized client identity and its access PSK. |
+| TLS 1.3 | `tls13_secure_channel.cpp` verifies the configured trust and hostname and selects H2 with ALPN. Distinct TLS exporter labels bind YTP authentication and H2 admission to this connection. Its client applies the shared browser profile; full-session stealth remains unqualified. |
+| Ed25519 + ML-DSA-87 | `openssl_security_provider.cpp::verify_composite` requires both signatures for the composite identity. The client checks its configured server identity. The server selects an authorized client identity and its access PSK. |
 | SHA-256 and HMAC-SHA256 | SHA-256 hashes canonical transcript/identity inputs. HMAC authenticates the per-identity PSK proof and key confirmation. Hashing alone provides no confidentiality. The admission key and access PSK have different roles. |
 | X25519 + ML-KEM-1024 | Hybrid establishment contributes both shared secrets. `derive_initial_roots` binds them with the access PSK, TLS exporter, transcript, roles, identities and capabilities through the canonical key-schedule encoding. |
 | HKDF-SHA256 and AES-256-GCM | HKDF derives directional roots and per-record key/nonce material. GCM encrypts and authenticates application frames. Suite, direction, epoch and sequence enter the authenticated data. Rekey uses its own domain and authenticated exchange. |
@@ -282,7 +282,7 @@ include in `stealth/`, stops the build rather than being noticed later.
 | Client connect path | `client/cli/entry.cpp` (see the caution below) |
 | Server frame handling | `server/session/session.cpp`, then the sibling `.cpp` files |
 | Egress and SSRF policy | `server/session/net.cpp` |
-| Embedding YUME | `include/yume/yume.h`, [ABI.md](ABI.md), `abi/stream_integration_probe.c`, `abi/ytp1_stream_probe.c` |
+| Embedding YUME | `include/yume/yume.h`, [ABI.md](ABI.md), `abi/stream_integration_probe.c`, `abi/stream_probe.c` |
 | Adding a transport backend | `abi/endpoint_backend.hpp` |
 | Config keys | `config/client_document_keys.hpp` and `config/server_document_keys.hpp` are the closed transport-v2 key sets both parsers of each role check, over the shared `config/document_keys.hpp` predicate; `facade/config/keys.hpp` holds the spellings, `config/v1/config.hpp` is schema 1 |
 @end
@@ -352,7 +352,7 @@ include in `stealth/`, stops the build rather than being noticed later.
 C++ unit tests sit next to their source as `*_test.cpp` and are registered
 individually in `src/CMakeLists.txt`. Integration and system tests live in
 `tests/`. The end-to-end ABI data paths are `yume_abi_stream_integration` for
-transport v2 and `yume_abi_ytp1_stream_integration` for schema 1. Each
+transport v2 and `yume_abi_stream_integration` for schema 1. Each
 provisions a real server and client and moves bytes over a named service
 stream.
 

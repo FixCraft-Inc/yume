@@ -6,7 +6,7 @@
 
 #include "test_support/allocation_failure.hpp"
 
-#include "providers/ytp1_cover_site.hpp"
+#include "providers/cover_site.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -75,13 +75,13 @@ public:
         require(static_cast<bool>(file), "cannot write cover test file");
     }
     const fs::path& root() const noexcept { return root_; }
-    std::vector<Ytp1CoverFile> routes() const {
+    std::vector<CoverFile> routes() const {
         return {{"/", "index.html", "text/html; charset=utf-8"},
                 {"/style.css", "style.css", "text/css"},
                 {"/image.bin", "image.bin", "application/octet-stream"}};
     }
-    std::shared_ptr<const Ytp1CoverSite> load(Ytp1CoverLimits limits = {}) const {
-        auto result = Ytp1CoverSite::load(root_, routes(), "missing.html", limits);
+    std::shared_ptr<const CoverSite> load(CoverLimits limits = {}) const {
+        auto result = CoverSite::load(root_, routes(), "missing.html", limits);
         require(result.ok(), "cover fixture did not load");
         return std::move(result).take_value();
     }
@@ -90,7 +90,7 @@ private:
     fs::path root_;
 };
 
-std::string_view header(const Ytp1CoverResponse& response, std::string_view name) {
+std::string_view header(const CoverResponse& response, std::string_view name) {
     for (const auto& [field, value] : response.headers) {
         if (field == name) return value;
     }
@@ -169,45 +169,45 @@ void test_missing_invalid_and_unsupported_are_ordinary_cover() {
 void test_configuration_and_retained_bounds() {
     SiteFiles files;
     const auto routes = files.routes();
-    auto absent = Ytp1CoverSite::load(files.root(), {}, "missing.html");
+    auto absent = CoverSite::load(files.root(), {}, "missing.html");
     require(!absent.ok(), "site started without any routes");
-    require(!Ytp1CoverSite::load(files.root(), routes, {}).ok(),
+    require(!CoverSite::load(files.root(), routes, {}).ok(),
             "site started without configured not-found content");
     auto changed = routes;
     changed.erase(changed.begin());
-    require(!Ytp1CoverSite::load(files.root(), changed, "missing.html").ok(),
+    require(!CoverSite::load(files.root(), changed, "missing.html").ok(),
             "site started without index route");
     changed = routes;
     changed.push_back(routes.front());
-    const auto duplicate = Ytp1CoverSite::load(files.root(), changed, "missing.html");
+    const auto duplicate = CoverSite::load(files.root(), changed, "missing.html");
     require(!duplicate.ok() && duplicate.status().code() == StatusCode::AlreadyExists,
             "duplicate route was accepted");
     for (const auto path : {"/%73tyle.css", "/?q=1", "/..", "/a//b"}) {
         changed = routes;
         changed[1U].path = path;
-        require(!Ytp1CoverSite::load(files.root(), changed, "missing.html").ok(),
+        require(!CoverSite::load(files.root(), changed, "missing.html").ok(),
                 "noncanonical configured route was accepted");
     }
     changed = routes;
     changed[0U].content_type = "text/html\r\nx-extra: value";
-    require(!Ytp1CoverSite::load(files.root(), changed, "missing.html").ok(),
+    require(!CoverSite::load(files.root(), changed, "missing.html").ok(),
             "configured header injection was accepted");
 
-    auto limits = Ytp1CoverLimits{};
+    auto limits = CoverLimits{};
     limits.max_routes = routes.size() - 1U;
-    require(!Ytp1CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
+    require(!CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
             "route count bound was ignored");
     limits = {};
     limits.max_file_bytes = 3U;
-    require(!Ytp1CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
+    require(!CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
             "per-file bound was ignored");
     limits = {};
     limits.max_header_bytes = 16U;
-    require(!Ytp1CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
+    require(!CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
             "response header bound was ignored");
     limits = {};
     limits.max_path_bytes = 4U;
-    require(!Ytp1CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
+    require(!CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
             "configured path bound was ignored");
 
     const auto site = files.load();
@@ -222,19 +222,19 @@ void test_configuration_and_retained_bounds() {
     for (const auto& [name, value] : missing.headers) retained += name.size() + value.size();
     limits = {};
     limits.max_total_bytes = retained;
-    require(Ytp1CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
+    require(CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
             "exact aggregate bound was refused");
     --limits.max_total_bytes;
-    require(!Ytp1CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
+    require(!CoverSite::load(files.root(), routes, "missing.html", limits).ok(),
             "aggregate bound was ignored");
 
-    for (const auto member : {&Ytp1CoverLimits::max_routes, &Ytp1CoverLimits::max_file_bytes,
-                              &Ytp1CoverLimits::max_total_bytes, &Ytp1CoverLimits::max_path_bytes,
-                              &Ytp1CoverLimits::max_header_bytes}) {
+    for (const auto member : {&CoverLimits::max_routes, &CoverLimits::max_file_bytes,
+                              &CoverLimits::max_total_bytes, &CoverLimits::max_path_bytes,
+                              &CoverLimits::max_header_bytes}) {
         for (const auto value : {std::size_t{0U}, std::numeric_limits<std::size_t>::max()}) {
             limits = {};
             limits.*member = value;
-            const auto result = Ytp1CoverSite::load(files.root(), routes, "missing.html", limits);
+            const auto result = CoverSite::load(files.root(), routes, "missing.html", limits);
             require(!result.ok() && result.status().code() == StatusCode::InvalidArgument,
                     "invalid configured resource limit was accepted");
         }
@@ -258,12 +258,12 @@ void test_file_confinement_and_special_files() {
                                     fs::path("fifo"), fs::path("directory"), fs::path("absent"),
                                     fs::path("../index.html"), outside.root() / "index.html"}) {
         routes[0U].relative_file = candidate;
-        require(!Ytp1CoverSite::load(files.root(), routes, "missing.html").ok(),
+        require(!CoverSite::load(files.root(), routes, "missing.html").ok(),
                 "unsafe cover file was accepted");
-        require(!Ytp1CoverSite::load(files.root(), files.routes(), candidate).ok(),
+        require(!CoverSite::load(files.root(), files.routes(), candidate).ok(),
                 "unsafe not-found file was accepted");
     }
-    require(!Ytp1CoverSite::load(files.root() / "linked-dir", files.routes(),
+    require(!CoverSite::load(files.root() / "linked-dir", files.routes(),
                                 "missing.html").ok(),
             "symlink root was accepted");
 }
@@ -276,7 +276,7 @@ void test_startup_allocation_failures_are_contained() {
     for (int index = 0; index < 512; ++index) {
         allocation_failure_after = index;
         allocation_failed = false;
-        const auto result = Ytp1CoverSite::load(files.root(), routes, not_found);
+        const auto result = CoverSite::load(files.root(), routes, not_found);
         allocation_failure_after = -1;
         require(!allocation_failed || !result.ok(),
                 "partially loaded site escaped after allocation failure");
@@ -295,7 +295,7 @@ void test_directory_snapshot_and_bounds() {
     require(fs::create_directory(files.root() / "assets"), "cannot create assets");
     files.write("assets/site.js", "document.documentElement.dataset.ready = 'yes';");
     files.write("assets/index.html", "<title>Assets</title>");
-    auto loaded = Ytp1CoverSite::load_directory(files.root());
+    auto loaded = CoverSite::load_directory(files.root());
     require(loaded.ok(), "directory site did not load");
     const auto& site = loaded.value();
     require(site->respond("GET", "/index.html").body == site->respond("GET", "/").body,
@@ -304,22 +304,22 @@ void test_directory_snapshot_and_bounds() {
             "nested index route missing");
     require(header(site->respond("GET", "/assets/site.js"), "content-type") ==
                 "text/javascript; charset=utf-8", "asset MIME type missing");
-    auto bounds = Ytp1CoverLimits{};
+    auto bounds = CoverLimits{};
     bounds.max_routes = 4U;
-    require(!Ytp1CoverSite::load_directory(files.root(), bounds).ok(),
+    require(!CoverSite::load_directory(files.root(), bounds).ok(),
             "enumeration or route bound ignored");
     files.write(".secret", "not public");
-    require(!Ytp1CoverSite::load_directory(files.root()).ok(), "hidden file published");
+    require(!CoverSite::load_directory(files.root()).ok(), "hidden file published");
     require(fs::remove(files.root() / ".secret"), "cannot remove test hidden file");
     require(::symlink(files.root().c_str(), (files.root() / "loop").c_str()) == 0,
             "cannot create directory link");
-    require(!Ytp1CoverSite::load_directory(files.root()).ok(), "directory link accepted");
+    require(!CoverSite::load_directory(files.root()).ok(), "directory link accepted");
     require(fs::remove(files.root() / "loop"), "cannot remove test link");
     require(::mkfifo((files.root() / "fifo").c_str(), 0600) == 0, "cannot create FIFO");
-    require(!Ytp1CoverSite::load_directory(files.root()).ok(), "special file accepted");
+    require(!CoverSite::load_directory(files.root()).ok(), "special file accepted");
     require(fs::remove(files.root() / "fifo"), "cannot remove test FIFO");
     require(fs::remove(files.root() / "404.html"), "cannot remove test 404");
-    require(!Ytp1CoverSite::load_directory(files.root()).ok(), "missing 404 accepted");
+    require(!CoverSite::load_directory(files.root()).ok(), "missing 404 accepted");
 }
 #endif
 
@@ -337,7 +337,7 @@ int main() {
         test_startup_allocation_failures_are_contained();
         test_directory_snapshot_and_bounds();
 #else
-        require(!Ytp1CoverSite::load(".", {{"/", "index.html", "text/html"}},
+        require(!CoverSite::load(".", {{"/", "index.html", "text/html"}},
                                     "missing.html").ok(),
                 "unsupported platform failed to close file confinement boundary");
 #endif

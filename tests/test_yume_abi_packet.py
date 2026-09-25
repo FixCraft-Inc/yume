@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
 import yume_native_session as session  # noqa: E402
-from test_yume_abi_ytp1_stream import composite_fingerprint  # noqa: E402
+from test_yume_abi_stream import composite_fingerprint  # noqa: E402
 
 SERVICES = (("echo", "stream"), ("echo", "packet"), ("unregistered", "packet"),
             ("denied", "packet"), ("stream-only", "stream"))

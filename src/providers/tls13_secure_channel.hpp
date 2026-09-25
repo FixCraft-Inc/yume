@@ -16,11 +16,11 @@
 
 namespace yume::providers {
 
-inline constexpr std::string_view kYtp1Tls13SecureChannelProviderId =
+inline constexpr std::string_view kTls13SecureChannelProviderId =
     "tls13-native";
-inline constexpr std::uint32_t kYtp1Tls13SecureChannelProviderApiVersion = 1U;
+inline constexpr std::uint32_t kTls13SecureChannelProviderApiVersion = 1U;
 
-struct Ytp1Tls13Limits final {
+struct Tls13Limits final {
     std::size_t max_plaintext_bytes{64U * 1024U};
     std::size_t max_encrypted_chunk_bytes{64U * 1024U};
     std::size_t max_credential_pem_bytes{256U * 1024U};
@@ -31,23 +31,23 @@ struct Ytp1Tls13Limits final {
 // Client creation requires the active browser profile and patched OpenSSL.
 // Its broader TLS/ALPN offer does not permit a downgrade: only negotiated
 // TLS 1.3 plus h2 can produce a SecureChannel.
-struct Ytp1Tls13ClientConfigView final {
+struct Tls13ClientConfigView final {
     std::string_view server_name;
     std::span<const std::byte> trust_anchors_pem;
-    Ytp1Tls13Limits limits{};
+    Tls13Limits limits{};
     // Optional as a pair. Supplying one without the other fails closed.
     std::span<const std::byte> certificate_chain_pem;
     std::span<const std::byte> private_key_pem;
 };
 
-struct Ytp1Tls13ServerConfigView final {
+struct Tls13ServerConfigView final {
     std::span<const std::byte> certificate_chain_pem;
     std::span<const std::byte> private_key_pem;
     // Empty means ordinary server-authenticated TLS. When non-empty, mutual
     // TLS is mandatory and the verified leaf certificate becomes outer peer
     // evidence; it still is not the inner authenticated transport identity.
     std::span<const std::byte> client_trust_anchors_pem;
-    Ytp1Tls13Limits limits{};
+    Tls13Limits limits{};
 };
 
 // A completed public-server TLS connection before carrier admission. This is
@@ -55,9 +55,9 @@ struct Ytp1Tls13ServerConfigView final {
 // must never acquire the TLS 1.3/H2 SecureChannel provider provenance.
 // Metadata is read locally from this connection's SSL object after handshake.
 // Operations and promotion follow the underlying ByteChannel's executor.
-class Ytp1TlsServerConnection : public engine::ByteChannel {
+class TlsServerConnection : public engine::ByteChannel {
 public:
-    ~Ytp1TlsServerConnection() override = default;
+    ~TlsServerConnection() override = default;
     virtual std::uint16_t tls_version() const noexcept = 0;
     virtual std::string_view negotiated_protocol() const noexcept = 0;
     virtual std::string_view server_name() const noexcept = 0;
@@ -73,24 +73,24 @@ public:
     virtual engine::Result<std::unique_ptr<engine::SecureChannel>> promote() = 0;
 };
 
-class Ytp1Tls13SecureChannelProvider final
+class Tls13SecureChannelProvider final
     : public engine::SecureChannelProvider {
 public:
     struct Impl;
     using ServerCoverCompletion = std::function<void(
-        engine::Result<std::unique_ptr<Ytp1TlsServerConnection>>)>;
+        engine::Result<std::unique_ptr<TlsServerConnection>>)>;
 
-    static engine::Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>
-    create_client(const Ytp1Tls13ClientConfigView& config);
+    static engine::Result<std::shared_ptr<Tls13SecureChannelProvider>>
+    create_client(const Tls13ClientConfigView& config);
 
-    static engine::Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>
-    create_server(const Ytp1Tls13ServerConfigView& config);
+    static engine::Result<std::shared_ptr<Tls13SecureChannelProvider>>
+    create_server(const Tls13ServerConfigView& config);
 
-    Ytp1Tls13SecureChannelProvider(
-        const Ytp1Tls13SecureChannelProvider&) = delete;
-    Ytp1Tls13SecureChannelProvider& operator=(
-        const Ytp1Tls13SecureChannelProvider&) = delete;
-    ~Ytp1Tls13SecureChannelProvider() override;
+    Tls13SecureChannelProvider(
+        const Tls13SecureChannelProvider&) = delete;
+    Tls13SecureChannelProvider& operator=(
+        const Tls13SecureChannelProvider&) = delete;
+    ~Tls13SecureChannelProvider() override;
 
     const engine::ProviderDescriptor& descriptor() const noexcept override;
     engine::EndpointRole local_role() const noexcept;
@@ -112,7 +112,7 @@ private:
                          engine::CancellationToken cancellation,
                          Completion completion,
                          ServerCoverCompletion cover_completion);
-    Ytp1Tls13SecureChannelProvider(engine::ProviderDescriptor descriptor,
+    Tls13SecureChannelProvider(engine::ProviderDescriptor descriptor,
                                    std::shared_ptr<Impl> impl) noexcept;
 
     engine::ProviderDescriptor descriptor_;

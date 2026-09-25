@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_h2_carrier.hpp"
+#include "providers/h2_duplex_carrier.hpp"
 #include "providers/ytp1_h2_admission.hpp"
 
 #include <openssl/crypto.h>
@@ -77,17 +77,17 @@ void invoke_noexcept(Callback& callback, Args&&... args) noexcept {
     }
 }
 
-Status validate_limits(const Ytp1H2CarrierLimits& limits) {
+Status validate_limits(const H2DuplexCarrierLimits& limits) {
     const bool framed_record_fits =
         limits.max_record_bytes <=
         obfs::kAdmittedH2ReceiveWindowBytes -
-            kYtp1H2CarrierEnvelopeBytes;
+            kH2DuplexEnvelopeBytes;
     const bool retained_record_fits =
         limits.max_record_bytes <=
         std::numeric_limits<std::size_t>::max() -
-            kYtp1H2CarrierEnvelopeBytes &&
+            kH2DuplexEnvelopeBytes &&
         limits.max_retained_receive_bytes >=
-            limits.max_record_bytes + kYtp1H2CarrierEnvelopeBytes;
+            limits.max_record_bytes + kH2DuplexEnvelopeBytes;
     if (limits.max_record_bytes == 0U ||
         limits.max_record_bytes > engine::kAbsoluteMaxBufferBytes ||
         !framed_record_fits ||
@@ -112,8 +112,8 @@ Status validate_limits(const Ytp1H2CarrierLimits& limits) {
 
 Result<ProviderDescriptor> make_descriptor() {
     return ProviderDescriptor::create(
-        std::string(kYtp1H2CarrierProviderId), ProviderKind::Carrier,
-        kYtp1H2CarrierProviderApiVersion,
+        std::string(kH2DuplexCarrierProviderId), ProviderKind::Carrier,
+        kH2DuplexCarrierProviderApiVersion,
         engine::mandatory_capabilities(ProviderKind::Carrier));
 }
 
@@ -131,14 +131,14 @@ void write_be32(std::uint8_t* output, std::uint32_t value) noexcept {
     output[3] = static_cast<std::uint8_t>(value & 0xffU);
 }
 
-class Ytp1H2CarrierState;
+class H2DuplexCarrierState;
 
-class Ytp1H2Carrier final : public Carrier {
+class H2DuplexCarrier final : public Carrier {
 public:
-    explicit Ytp1H2Carrier(
-        std::shared_ptr<Ytp1H2CarrierState> state) noexcept
+    explicit H2DuplexCarrier(
+        std::shared_ptr<H2DuplexCarrierState> state) noexcept
         : state_(std::move(state)) {}
-    ~Ytp1H2Carrier() noexcept override;
+    ~H2DuplexCarrier() noexcept override;
 
     const ProviderDescriptor& descriptor() const noexcept override;
     ExecutorAffinity executor_affinity() const noexcept override;
@@ -154,20 +154,20 @@ public:
     void close() noexcept override;
 
 private:
-    std::shared_ptr<Ytp1H2CarrierState> state_;
+    std::shared_ptr<H2DuplexCarrierState> state_;
 };
 
-class Ytp1H2CarrierState final
-    : public std::enable_shared_from_this<Ytp1H2CarrierState> {
+class H2DuplexCarrierState final
+    : public std::enable_shared_from_this<H2DuplexCarrierState> {
 public:
-    Ytp1H2CarrierState(
+    H2DuplexCarrierState(
         ProviderDescriptor descriptor,
         ExecutorAffinity affinity,
-        Ytp1H2Dispatch post,
-        Ytp1H2CarrierLimits limits,
+        H2Dispatch post,
+        H2DuplexCarrierLimits limits,
         std::unique_ptr<SecureChannel> channel,
         std::unique_ptr<obfs::H2Carrier> h2,
-        std::shared_ptr<Ytp1H2CoverHandler> cover = {})
+        std::shared_ptr<H2CoverHandler> cover = {})
         : descriptor_(std::move(descriptor)),
           affinity_(affinity),
           dispatch_(std::move(post)),
@@ -213,7 +213,7 @@ public:
         create_completion_ = std::move(completion);
 
         try {
-            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
             create_token_ = cancellation;
             auto registration = cancellation.register_callback([weak] {
                 if (auto self = weak.lock()) self->notify_control();
@@ -340,7 +340,7 @@ public:
     void request_close() noexcept { request_terminal(StatusCode::Closed); }
 
     static void on_control(void* pointer) noexcept {
-        auto& self = *static_cast<Ytp1H2CarrierState*>(pointer);
+        auto& self = *static_cast<H2DuplexCarrierState*>(pointer);
         try { self.settle_control(); }
         catch (const std::bad_alloc&) { self.fail(safe_status(StatusCode::ResourceExhausted)); }
         catch (...) { self.fail(safe_status(StatusCode::Internal)); }
@@ -489,7 +489,7 @@ private:
             const std::uint64_t id = next_operation_id_++;
             pending_receive_.emplace(
                 PendingReceive{id, std::move(completion), {}, cancellation});
-            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
             auto registration = cancellation.register_callback([weak] {
                 if (auto self = weak.lock()) self->notify_control();
             });
@@ -583,7 +583,7 @@ private:
             const std::size_t record_bytes = record.size();
             pending_send_.emplace(
                 PendingSend{id, record_bytes, std::move(completion), {}, cancellation});
-            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
             auto registration = cancellation.register_callback([weak] {
                 if (auto self = weak.lock()) self->notify_control();
             });
@@ -600,7 +600,7 @@ private:
             }
 
             std::vector<std::uint8_t> framed(
-                kYtp1H2CarrierEnvelopeBytes + record_bytes);
+                kH2DuplexEnvelopeBytes + record_bytes);
             std::copy(kCarrierMagic.begin(), kCarrierMagic.end(),
                       framed.begin());
             framed[4] = kCarrierEnvelopeVersion;
@@ -609,7 +609,7 @@ private:
             framed[7] = 0U;
             write_be32(framed.data() + 8,
                        static_cast<std::uint32_t>(record_bytes));
-            std::memcpy(framed.data() + kYtp1H2CarrierEnvelopeBytes,
+            std::memcpy(framed.data() + kH2DuplexEnvelopeBytes,
                         record.bytes().data(), record_bytes);
             if (!h2_->SendBinary(framed)) {
                 fail(h2_failure("queue H2 carrier record"));
@@ -645,7 +645,7 @@ private:
             records_.pop_front();
             queued_record_bytes_ -= record.payload.size();
             const std::size_t credit_bytes = record.credit_bytes;
-            const std::weak_ptr<Ytp1H2CarrierState> weak = weak_from_this();
+            const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
             CarrierCredit credit(
                 credit_bytes,
                 [weak](std::size_t bytes) {
@@ -714,7 +714,7 @@ private:
     }
 
     bool parse_record_header(std::span<const std::uint8_t> header) {
-        if (header.size() != kYtp1H2CarrierEnvelopeBytes ||
+        if (header.size() != kH2DuplexEnvelopeBytes ||
             !std::equal(kCarrierMagic.begin(), kCarrierMagic.end(),
                         header.begin()) ||
             header[4] != kCarrierEnvelopeVersion || header[5] != 0U ||
@@ -731,17 +731,17 @@ private:
             return false;
         }
         expected_payload_bytes_ = payload_length;
-        if (!h2_->ConsumeTunnelBytes(kYtp1H2CarrierEnvelopeBytes)) {
+        if (!h2_->ConsumeTunnelBytes(kH2DuplexEnvelopeBytes)) {
             fail(h2_failure("retire H2 carrier envelope credit"));
             return false;
         }
-        if (owned_credit_bytes_ < kYtp1H2CarrierEnvelopeBytes) {
+        if (owned_credit_bytes_ < kH2DuplexEnvelopeBytes) {
             fail(safe_status(StatusCode::Internal,
                         "H2 carrier envelope credit ledger underflow"));
             return false;
         }
-        owned_credit_bytes_ -= kYtp1H2CarrierEnvelopeBytes;
-        input_offset_ += kYtp1H2CarrierEnvelopeBytes;
+        owned_credit_bytes_ -= kH2DuplexEnvelopeBytes;
+        input_offset_ += kH2DuplexEnvelopeBytes;
         return true;
     }
 
@@ -751,11 +751,11 @@ private:
             std::span<const std::uint8_t> available = retained_input();
             if (!expected_payload_bytes_.has_value()) {
                 if (records_.size() >= limits_.max_buffered_records ||
-                    available.size() < kYtp1H2CarrierEnvelopeBytes) {
+                    available.size() < kH2DuplexEnvelopeBytes) {
                     return;
                 }
                 if (!parse_record_header(
-                        available.first(kYtp1H2CarrierEnvelopeBytes))) {
+                        available.first(kH2DuplexEnvelopeBytes))) {
                     return;
                 }
                 compact_input();
@@ -1141,11 +1141,11 @@ private:
 
     ProviderDescriptor descriptor_;
     ExecutorAffinity affinity_;
-    Ytp1H2Dispatch dispatch_;
-    Ytp1H2CarrierLimits limits_;
+    H2Dispatch dispatch_;
+    H2DuplexCarrierLimits limits_;
     std::unique_ptr<SecureChannel> channel_;
     std::unique_ptr<obfs::H2Carrier> h2_;
-    std::shared_ptr<Ytp1H2CoverHandler> cover_;
+    std::shared_ptr<H2CoverHandler> cover_;
     engine::CancellationSource transport_cancellation_;
 
     engine::CarrierProvider::Completion create_completion_;
@@ -1160,7 +1160,7 @@ private:
     std::string authority_;
     std::string carrier_path_;
     Status terminal_status_{StatusCode::Closed};
-    ControlTask control_{&Ytp1H2CarrierState::on_control};
+    ControlTask control_{&H2DuplexCarrierState::on_control};
     std::mutex control_mutex_;
     StatusCode requested_terminal_{StatusCode::Ok};
     std::size_t returned_credit_{0U};
@@ -1181,51 +1181,51 @@ private:
     bool terminal_{false};
 };
 
-Ytp1H2Carrier::~Ytp1H2Carrier() noexcept {
+H2DuplexCarrier::~H2DuplexCarrier() noexcept {
     state_->request_close();
 }
 
-const ProviderDescriptor& Ytp1H2Carrier::descriptor() const noexcept {
+const ProviderDescriptor& H2DuplexCarrier::descriptor() const noexcept {
     return state_->descriptor();
 }
 
-ExecutorAffinity Ytp1H2Carrier::executor_affinity() const noexcept {
+ExecutorAffinity H2DuplexCarrier::executor_affinity() const noexcept {
     return state_->affinity();
 }
 
-std::size_t Ytp1H2Carrier::max_record_size() const noexcept {
+std::size_t H2DuplexCarrier::max_record_size() const noexcept {
     return state_->max_record_size();
 }
 
-SecureChannel& Ytp1H2Carrier::secure_channel() noexcept {
+SecureChannel& H2DuplexCarrier::secure_channel() noexcept {
     return state_->channel();
 }
 
-const SecureChannel& Ytp1H2Carrier::secure_channel() const noexcept {
+const SecureChannel& H2DuplexCarrier::secure_channel() const noexcept {
     return state_->channel();
 }
 
-void Ytp1H2Carrier::async_receive(CancellationToken cancellation,
+void H2DuplexCarrier::async_receive(CancellationToken cancellation,
                                   ReceiveCompletion completion) {
     state_->async_receive(std::move(cancellation), std::move(completion));
 }
 
-void Ytp1H2Carrier::async_send(Buffer record,
+void H2DuplexCarrier::async_send(Buffer record,
                                CancellationToken cancellation,
                                SendCompletion completion) {
     state_->async_send(std::move(record), std::move(cancellation),
                        std::move(completion));
 }
 
-void Ytp1H2Carrier::cancel() noexcept {
+void H2DuplexCarrier::cancel() noexcept {
     state_->request_cancel();
 }
 
-void Ytp1H2Carrier::close() noexcept {
+void H2DuplexCarrier::close() noexcept {
     state_->request_close();
 }
 
-void Ytp1H2CarrierState::finish_client_opening() {
+void H2DuplexCarrierState::finish_client_opening() {
     if (!opening_ || terminal_) {
         return;
     }
@@ -1244,7 +1244,7 @@ void Ytp1H2CarrierState::finish_client_opening() {
         std::move(create_completion_);
     try {
         std::unique_ptr<Carrier> carrier =
-            std::make_unique<Ytp1H2Carrier>(shared_from_this());
+            std::make_unique<H2DuplexCarrier>(shared_from_this());
         Result<std::unique_ptr<Carrier>> result(std::move(carrier));
         invoke_noexcept(completion, std::move(result));
     } catch (const std::bad_alloc&) {
@@ -1262,7 +1262,7 @@ void Ytp1H2CarrierState::finish_client_opening() {
 
 }  // namespace
 
-struct Ytp1H2CarrierProvider::AdmissionKey final {
+struct H2DuplexCarrierProvider::AdmissionKey final {
     explicit AdmissionKey(std::span<const std::byte> key) noexcept {
         std::copy(key.begin(), key.end(), bytes.begin());
     }
@@ -1273,11 +1273,11 @@ struct Ytp1H2CarrierProvider::AdmissionKey final {
     std::array<std::byte, kYtp1H2AdmissionKeyBytes> bytes{};
 };
 
-Ytp1H2CarrierProvider::Ytp1H2CarrierProvider(
+H2DuplexCarrierProvider::H2DuplexCarrierProvider(
     ProviderDescriptor descriptor,
     ExecutorAffinity executor_affinity,
-    Ytp1H2Dispatch post,
-    Ytp1H2ClientConfig config,
+    H2Dispatch post,
+    H2DuplexClientConfig config,
     std::shared_ptr<const AdmissionKey> admission_key) noexcept
     : descriptor_(std::move(descriptor)),
       executor_affinity_(executor_affinity),
@@ -1285,59 +1285,59 @@ Ytp1H2CarrierProvider::Ytp1H2CarrierProvider(
       config_(std::move(config)),
       admission_key_(std::move(admission_key)) {}
 
-Result<std::shared_ptr<Ytp1H2CarrierProvider>>
-Ytp1H2CarrierProvider::create(
+Result<std::shared_ptr<H2DuplexCarrierProvider>>
+H2DuplexCarrierProvider::create(
     ExecutorAffinity executor_affinity,
-    Ytp1H2Dispatch post,
-    Ytp1H2ClientConfig config,
+    H2Dispatch post,
+    H2DuplexClientConfig config,
     std::span<const std::byte> admission_key) {
     if (!executor_affinity.valid() || !post) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
+        return Result<std::shared_ptr<H2DuplexCarrierProvider>>(safe_status(
             StatusCode::InvalidArgument,
             "H2 carrier provider requires an executor and valid affinity"));
     }
     if (admission_key.size() != kYtp1H2AdmissionKeyBytes ||
         config.server_port == 0U) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
+        return Result<std::shared_ptr<H2DuplexCarrierProvider>>(safe_status(
             StatusCode::InvalidArgument,
             "H2 carrier requires an exact 32-byte admission key and nonzero port"));
     }
     const Status limits_status = validate_limits(config.limits);
     if (!limits_status.ok()) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(limits_status.code(), limits_status.message()));
+        return Result<std::shared_ptr<H2DuplexCarrierProvider>>(safe_status(limits_status.code(), limits_status.message()));
     }
     try {
         auto descriptor = make_descriptor();
         if (!descriptor.ok()) {
-            return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(
+            return Result<std::shared_ptr<H2DuplexCarrierProvider>>(
                 descriptor.status());
         }
         auto normalized = canonicalize_ytp1_h2_server_name(config.server_name);
         if (!normalized.has_value()) {
-            return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
+            return Result<std::shared_ptr<H2DuplexCarrierProvider>>(safe_status(
                 StatusCode::InvalidArgument,
                 "H2 carrier intended TLS server name is invalid"));
         }
         config.server_name = std::move(*normalized);
         auto owned_key = std::make_shared<AdmissionKey>(admission_key);
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(
-            std::shared_ptr<Ytp1H2CarrierProvider>(
-                new Ytp1H2CarrierProvider(
+        return Result<std::shared_ptr<H2DuplexCarrierProvider>>(
+            std::shared_ptr<H2DuplexCarrierProvider>(
+                new H2DuplexCarrierProvider(
                     std::move(descriptor).take_value(), executor_affinity,
                     std::move(post), std::move(config), std::move(owned_key))));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<Ytp1H2CarrierProvider>>(safe_status(
+        return Result<std::shared_ptr<H2DuplexCarrierProvider>>(safe_status(
             StatusCode::ResourceExhausted,
             "H2 carrier provider allocation failed"));
     }
 }
 
 const ProviderDescriptor&
-Ytp1H2CarrierProvider::descriptor() const noexcept {
+H2DuplexCarrierProvider::descriptor() const noexcept {
     return descriptor_;
 }
 
-void Ytp1H2CarrierProvider::async_create(
+void H2DuplexCarrierProvider::async_create(
     std::unique_ptr<SecureChannel> channel,
     EndpointRole local_role,
     CancellationToken cancellation,
@@ -1351,8 +1351,8 @@ void Ytp1H2CarrierProvider::async_create(
             std::make_shared<Completion>(std::move(completion));
         const ProviderDescriptor descriptor = descriptor_;
         const ExecutorAffinity executor_affinity = executor_affinity_;
-        const Ytp1H2Dispatch post = dispatch_;
-        const Ytp1H2ClientConfig config = config_;
+        const H2Dispatch post = dispatch_;
+        const H2DuplexClientConfig config = config_;
         const auto admission_key = admission_key_;
         dispatch_.post([descriptor, executor_affinity, post, config, admission_key, owned_channel,
                local_role,
@@ -1451,7 +1451,7 @@ void Ytp1H2CarrierProvider::async_create(
                 }
                 auto h2 = std::make_unique<obfs::H2Carrier>(
                     obfs::H2CarrierRole::Client);
-                auto state = std::make_shared<Ytp1H2CarrierState>(
+                auto state = std::make_shared<H2DuplexCarrierState>(
                     descriptor, executor_affinity, post, config.limits,
                     std::move(*owned_channel), std::move(h2));
                 state->start_client(
@@ -1506,22 +1506,22 @@ void Ytp1H2CarrierProvider::async_create(
 }
 
 ExecutorAffinity
-Ytp1H2CarrierProvider::executor_affinity() const noexcept {
+H2DuplexCarrierProvider::executor_affinity() const noexcept {
     return executor_affinity_;
 }
 
-const Ytp1H2ClientConfig&
-Ytp1H2CarrierProvider::config() const noexcept {
+const H2DuplexClientConfig&
+H2DuplexCarrierProvider::config() const noexcept {
     return config_;
 }
 
-Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
+Result<std::unique_ptr<Carrier>> make_admitted_h2_duplex_server_carrier(
     std::unique_ptr<SecureChannel> channel,
     std::unique_ptr<obfs::H2Carrier> admitted_h2,
     ExecutorAffinity executor_affinity,
-    Ytp1H2Dispatch post,
-    Ytp1H2CarrierLimits limits,
-    std::shared_ptr<Ytp1H2CoverHandler> cover) {
+    H2Dispatch post,
+    H2DuplexCarrierLimits limits,
+    std::shared_ptr<H2CoverHandler> cover) {
     try {
         const Status limits_status = validate_limits(limits);
         if (!limits_status.ok()) {
@@ -1557,11 +1557,11 @@ Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
             channel->close();
             return Result<std::unique_ptr<Carrier>>(descriptor.status());
         }
-        auto state = std::make_shared<Ytp1H2CarrierState>(
+        auto state = std::make_shared<H2DuplexCarrierState>(
             std::move(descriptor).take_value(), executor_affinity, post,
             limits, std::move(channel), std::move(admitted_h2), std::move(cover));
         std::unique_ptr<Carrier> carrier =
-            std::make_unique<Ytp1H2Carrier>(state);
+            std::make_unique<H2DuplexCarrier>(state);
         const auto dispatched = state->post([state] { state->start_admitted_server(); });
         if (dispatched != StatusCode::Ok) {
             state->request_close();
@@ -1580,7 +1580,7 @@ Result<std::unique_ptr<Carrier>> make_ytp1_h2_admitted_server_carrier(
     }
 }
 
-Status validate_ytp1_h2_carrier_limits(const Ytp1H2CarrierLimits& limits) {
+Status validate_h2_duplex_carrier_limits(const H2DuplexCarrierLimits& limits) {
     return validate_limits(limits);
 }
 

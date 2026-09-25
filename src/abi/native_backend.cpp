@@ -36,7 +36,7 @@
 #include "engine/transport_suite.hpp"
 #include "providers/asio_execution_context.hpp"
 #include "providers/control_task.hpp"
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 #include "runtime/native_endpoint.hpp"
 
 // The YTP/1 embedding backend. It adapts the asynchronous, single-runner
@@ -1678,9 +1678,9 @@ BackendIo NativeRun::accept(std::size_t index, std::uint32_t timeout_ms,
 // ---------------------------------------------------------------------------
 // Backend
 
-class Ytp1BackendStream final : public BackendStream {
+class NativeBackendStream final : public BackendStream {
 public:
-    ~Ytp1BackendStream() override { close(); }
+    ~NativeBackendStream() override { close(); }
 
     void attach(std::shared_ptr<NativeStream> stream) noexcept {
         stream_ = std::move(stream);
@@ -1726,9 +1726,9 @@ private:
     std::shared_ptr<NativeStream> stream_;
 };
 
-class Ytp1BackendPacket final : public BackendPacket {
+class NativeBackendPacket final : public BackendPacket {
 public:
-    ~Ytp1BackendPacket() override { close(); }
+    ~NativeBackendPacket() override { close(); }
     void attach(std::shared_ptr<NativeStream> stream) noexcept {
         stream_ = std::move(stream);
     }
@@ -1756,9 +1756,9 @@ private:
     std::shared_ptr<NativeStream> stream_;
 };
 
-class Ytp1Backend final : public EndpointBackend {
+class NativeBackend final : public EndpointBackend {
 public:
-    Ytp1Backend(const v1::Config& config, std::filesystem::path base,
+    NativeBackend(const v1::Config& config, std::filesystem::path base,
                 std::filesystem::path resolver_program,
                 std::vector<BackendService> registrations,
                 SocketProtector socket_protector)
@@ -1770,7 +1770,7 @@ public:
 
     // A caller may drop the handle without stopping first. The runner is
     // joined before the endpoint state it drives is released.
-    ~Ytp1Backend() override { stop(); }
+    ~NativeBackend() override { stop(); }
 
     BackendIo start(std::uint32_t timeout_ms, std::string& error) override;
     void stop() noexcept override;
@@ -1813,7 +1813,7 @@ private:
     std::thread runner_;
 };
 
-void Ytp1Backend::shutdown(const std::shared_ptr<NativeRun>& run,
+void NativeBackend::shutdown(const std::shared_ptr<NativeRun>& run,
                            std::thread& runner) noexcept {
     if (!run) return;
     run->begin_stop();
@@ -1836,7 +1836,7 @@ void Ytp1Backend::shutdown(const std::shared_ptr<NativeRun>& run,
     }
 }
 
-BackendIo Ytp1Backend::start(std::uint32_t timeout_ms, std::string& error) {
+BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
     std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (current()) {
         describe(error, "endpoint is already running");
@@ -1929,7 +1929,7 @@ BackendIo Ytp1Backend::start(std::uint32_t timeout_ms, std::string& error) {
     return BackendIo::Ok;
 }
 
-void Ytp1Backend::stop() noexcept {
+void NativeBackend::stop() noexcept {
     try {
         std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         std::shared_ptr<NativeRun> run;
@@ -1945,14 +1945,14 @@ void Ytp1Backend::stop() noexcept {
     }
 }
 
-bool Ytp1Backend::running() const noexcept {
+bool NativeBackend::running() const noexcept {
     const auto run = current();
     if (!run || !run->running()) return false;
     return run->server || (run->session &&
                            run->session->state() == engine::SessionState::Active);
 }
 
-BackendIo Ytp1Backend::open_stream(const std::string& service,
+BackendIo NativeBackend::open_stream(const std::string& service,
                                    const std::optional<BackendDestination>& destination,
                                    std::uint32_t timeout_ms,
                                    std::unique_ptr<BackendStream>& out,
@@ -2006,7 +2006,7 @@ BackendIo Ytp1Backend::open_stream(const std::string& service,
         route.emplace(std::move(parsed).take_value());
     }
     const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    auto handle = std::make_unique<Ytp1BackendStream>();
+    auto handle = std::make_unique<NativeBackendStream>();
     auto operation = std::make_shared<OpenOperation>(run, service, std::move(route));
     if (!run->submit(operation->open_task, operation)) {
         describe(error, "client endpoint is not running");
@@ -2020,7 +2020,7 @@ BackendIo Ytp1Backend::open_stream(const std::string& service,
     return BackendIo::Ok;
 }
 
-BackendIo Ytp1Backend::accept_stream(const std::string& service,
+BackendIo NativeBackend::accept_stream(const std::string& service,
                                      std::uint32_t timeout_ms,
                                      std::unique_ptr<BackendStream>& out,
                                      std::string& error) {
@@ -2044,7 +2044,7 @@ BackendIo Ytp1Backend::accept_stream(const std::string& service,
         describe(error, "byte-stream service is not registered on this endpoint");
         return BackendIo::NotFound;
     }
-    auto handle = std::make_unique<Ytp1BackendStream>();
+    auto handle = std::make_unique<NativeBackendStream>();
     std::shared_ptr<NativeStream> stream;
     const BackendIo io = run->accept(*index, timeout_ms, stream, error);
     if (io != BackendIo::Ok) return io;
@@ -2053,7 +2053,7 @@ BackendIo Ytp1Backend::accept_stream(const std::string& service,
     return BackendIo::Ok;
 }
 
-BackendIo Ytp1Backend::open_packet(const std::string& service,
+BackendIo NativeBackend::open_packet(const std::string& service,
                                    const std::optional<BackendDestination>& destination,
                                    std::uint32_t timeout_ms,
                                    std::unique_ptr<BackendPacket>& out,
@@ -2107,7 +2107,7 @@ BackendIo Ytp1Backend::open_packet(const std::string& service,
         route.emplace(std::move(parsed).take_value());
     }
     const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    auto handle = std::make_unique<Ytp1BackendPacket>();
+    auto handle = std::make_unique<NativeBackendPacket>();
     auto operation = std::make_shared<OpenOperation>(run, service, std::move(route),
                                                       engine::ServiceKind::PacketChannel);
     if (!run->submit(operation->open_task, operation)) {
@@ -2122,7 +2122,7 @@ BackendIo Ytp1Backend::open_packet(const std::string& service,
     return BackendIo::Ok;
 }
 
-BackendIo Ytp1Backend::accept_packet(const std::string& service,
+BackendIo NativeBackend::accept_packet(const std::string& service,
                                      std::uint32_t timeout_ms,
                                      std::unique_ptr<BackendPacket>& out,
                                      std::string& error) {
@@ -2146,7 +2146,7 @@ BackendIo Ytp1Backend::accept_packet(const std::string& service,
         describe(error, "packet service is not registered on this endpoint");
         return BackendIo::NotFound;
     }
-    auto handle = std::make_unique<Ytp1BackendPacket>();
+    auto handle = std::make_unique<NativeBackendPacket>();
     std::shared_ptr<NativeStream> stream;
     const BackendIo io = run->accept(*index, timeout_ms, stream, error);
     if (io != BackendIo::Ok) return io;
@@ -2157,7 +2157,7 @@ BackendIo Ytp1Backend::accept_packet(const std::string& service,
 
 }  // namespace
 
-std::unique_ptr<EndpointBackend> make_ytp1_backend(
+std::unique_ptr<EndpointBackend> make_native_backend(
     const config::v1::Config& config,
     std::string_view base_dir,
     std::string_view resolver_program,
@@ -2185,7 +2185,7 @@ std::unique_ptr<EndpointBackend> make_ytp1_backend(
                 return nullptr;
             }
         }
-        auto backend = std::make_unique<Ytp1Backend>(
+        auto backend = std::make_unique<NativeBackend>(
             config, std::filesystem::path(std::string(base_dir)),
             std::filesystem::path(std::string(resolver_program)),
             std::move(registered_services), std::move(socket_protector));
@@ -2203,12 +2203,12 @@ std::unique_ptr<EndpointBackend> make_ytp1_backend(
     return nullptr;
 }
 
-std::string_view ytp1_session_security_provider() noexcept {
-    return providers::kYtp1OpenSslSecurityProviderId;
+std::string_view security_provider_identity() noexcept {
+    return providers::kOpenSslSecurityProviderId;
 }
 
-std::string_view ytp1_crypto_backend() noexcept {
-    return providers::ytp1_openssl_crypto_backend();
+std::string_view crypto_backend_identity() noexcept {
+    return providers::openssl_crypto_backend();
 }
 
 }  // namespace yume::embed

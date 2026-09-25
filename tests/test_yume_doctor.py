@@ -859,8 +859,8 @@ class YumeDoctorTests(unittest.TestCase):
 
     def test_authorized_identity_limit_matches_native_factory(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))
-        source = (ROOT / "src/providers/ytp1_security_provider.hpp").read_text()
-        match = re.search(r"kMaxYtp1AuthorizedIdentities\s*=\s*(\d+)U", source)
+        source = (ROOT / "src/providers/openssl_security_provider.hpp").read_text()
+        match = re.search(r"kMaxAuthorizedIdentities\s*=\s*(\d+)U", source)
         self.assertIsNotNone(match)
         maximum = int(match[1])
         self.assertEqual(doctor["MAX_AUTHORIZED_IDENTITIES"], maximum)

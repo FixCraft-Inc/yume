@@ -66,7 +66,7 @@ the library comes from the staged prefix.
 
 ## Configuration and the backend seam
 
-The internal embedding seam has one backend, `yume_embed_ytp1`, which composes
+The internal embedding seam has one backend, `yume_embed`, which composes
 the native endpoint and links no BaseFWX. The seam and the public ABI candidate
 change together with their callers and tests. Exported names are not frozen.
 
@@ -188,8 +188,8 @@ lists every byte-stream service it opens.
 
 The complete working version of both sides, including peer-identity checks and
 teardown on every failure path, is
-[`src/abi/ytp1_stream_probe.c`](../src/abi/ytp1_stream_probe.c). It runs as
-`yume_abi_ytp1_stream_integration`. It provisions a kit with `yume-setup` and also checks refusals, deadlines,
+[`src/abi/stream_probe.c`](../src/abi/stream_probe.c). It runs as
+`yume_abi_stream_integration`. It provisions a kit with `yume-setup` and also checks refusals, deadlines,
 restart, and stream handles that outlive their endpoint.
 
 ## Intended installed interface

@@ -132,18 +132,18 @@ if(BUILD_TESTING)
     if(YUME_TEST_NATIVE_TRAFFIC)
         add_test(NAME yume_installed_named_streams
             COMMAND "${YUME_PYTHON_EXECUTABLE}"
-                "${YUME_SOURCE_DIR}/tests/test_yume_abi_ytp1_stream.py"
+                "${YUME_SOURCE_DIR}/tests/test_yume_abi_stream.py"
                 --probe "$<TARGET_FILE:yume_installed_stream_probe>"
                 --openssl "${YUME_OPENSSL_EXECUTABLE}")
         add_test(NAME yume_installed_tcp_routes
             COMMAND "${YUME_PYTHON_EXECUTABLE}"
-                "${YUME_SOURCE_DIR}/tests/test_yume_abi_ytp1_route.py"
+                "${YUME_SOURCE_DIR}/tests/test_yume_abi_route.py"
                 --probe "$<TARGET_FILE:yume_installed_route_probe>"
                 --yumed "${YUME_INSTALLED_DAEMON}"
                 --openssl "${YUME_OPENSSL_EXECUTABLE}")
         add_test(NAME yume_installed_named_packets_and_udp
             COMMAND "${YUME_PYTHON_EXECUTABLE}"
-                "${YUME_SOURCE_DIR}/tests/test_yume_abi_ytp1_packet.py"
+                "${YUME_SOURCE_DIR}/tests/test_yume_abi_packet.py"
                 --probe "$<TARGET_FILE:yume_installed_packet_probe>"
                 --yumed "${YUME_INSTALLED_DAEMON}"
                 --openssl "${YUME_OPENSSL_EXECUTABLE}")

@@ -26,8 +26,8 @@
 
 #include "common/secure_erase.hpp"
 #include "fs/secret_file.hpp"
-#include "providers/ytp1_security_provider.hpp"
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "providers/openssl_security_provider.hpp"
+#include "providers/tls13_secure_channel.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
 
@@ -574,7 +574,7 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     const auto store_path =
         resolve_reference(base, refs.authorized_keys().path());
     auto store =
-        read_store(store_path, providers::kMaxYtp1AuthorizedIdentities, false);
+        read_store(store_path, providers::kMaxAuthorizedIdentities, false);
     std::set<std::string> labels;
     std::set<std::string> identities;
     std::vector<AuthorizedIdentity> authorized;
@@ -648,13 +648,13 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
                 "admin store contains a duplicate identity");
     }
 
-    std::vector<providers::Ytp1AuthorizedIdentityView> views;
+    std::vector<providers::AuthorizedIdentityView> views;
     views.reserve(authorized.size());
     for (const auto& identity : authorized) {
         views.push_back({identity.identity.view(), identity.access_psk.bytes(),
                          identity.identity.fingerprint});
     }
-    auto factory = providers::Ytp1OpenSslSecurityProviderFactory::create_server(
+    auto factory = providers::OpenSslSecurityProviderFactory::create_server(
         {local.view(), kem.bytes(), views});
     require(factory.ok(),
             "native session security credential validation failed",
@@ -664,7 +664,7 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     // Prevent a password callback from reaching a terminal inside the TLS
     // provider. Setup kits use one unencrypted PKCS#8 key.
     (void)pem_blocks(tls_key.text(), true, 1);
-    auto tls = providers::Ytp1Tls13SecureChannelProvider::create_server(
+    auto tls = providers::Tls13SecureChannelProvider::create_server(
         {certificate.bytes(), tls_key.bytes(), {}, {}});
     require(tls.ok(), "native TLS credential validation failed",
             tls.status().code());
@@ -697,13 +697,13 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
     auto kem_blocks = pem_blocks(kem_pem.text(), false, 1);
     auto kem_key = parse_key(crypto, kem_blocks[0], false, "ML-KEM-1024");
     auto kem = public_der(kem_key.get());
-    auto factory = providers::Ytp1OpenSslSecurityProviderFactory::create_client(
+    auto factory = providers::OpenSslSecurityProviderFactory::create_client(
         {local.view(), remote.view(), kem, psk.bytes(), remote.fingerprint});
     require(factory.ok(),
             "native session security credential validation failed",
             factory.status().code());
     auto trust = read_file(base, refs.server_trust());
-    auto tls = providers::Ytp1Tls13SecureChannelProvider::create_client(
+    auto tls = providers::Tls13SecureChannelProvider::create_client(
         {tls_server_name, trust.bytes(), {}, {}, {}});
     require(tls.ok(), "native TLS credential validation failed",
             tls.status().code());

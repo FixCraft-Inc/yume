@@ -28,7 +28,7 @@ class Config;
 // leaves the ABI shell free of any runtime and gives a future non-C binding
 // the same entry point.
 //
-// The YTP/1 backend in yume_embed_ytp1 implements it by composing the native
+// The YTP/1 backend in yume_embed implements it by composing the native
 // endpoint, without BaseFWX. The seam and the public ABI candidate are
 // unfrozen and change together with their callers and tests.
 namespace yume::embed {
@@ -199,7 +199,7 @@ public:
 // service the configuration declares. Relative credential references resolve
 // against `base_dir`. `resolver_program` is the SystemResolver helper for a
 // transport host that is a name, and empty leaves such a host unresolvable.
-std::unique_ptr<EndpointBackend> make_ytp1_backend(
+std::unique_ptr<EndpointBackend> make_native_backend(
     const config::v1::Config& config,
     std::string_view base_dir,
     std::string_view resolver_program,
@@ -209,10 +209,10 @@ std::unique_ptr<EndpointBackend> make_ytp1_backend(
     std::string& error);
 
 // Identity of the key-holding YTP/1 session-security implementation.
-std::string_view ytp1_session_security_provider() noexcept;
+std::string_view security_provider_identity() noexcept;
 
 // Identity of the cryptographic library that implementation runs on, such as
 // "openssl-3.5.7".
-std::string_view ytp1_crypto_backend() noexcept;
+std::string_view crypto_backend_identity() noexcept;
 
 }  // namespace yume::embed

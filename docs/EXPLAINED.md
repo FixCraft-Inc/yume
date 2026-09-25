@@ -104,8 +104,8 @@ undetectable. The [threat model](THREAT_MODEL.md) and
 | --- | --- |
 | How do the programs start? | `src/runtime/yume_main.cpp`, `src/runtime/native_cli.cpp` |
 | How does a client keep its session? | `src/runtime/native_client_runtime.cpp`, `src/runtime/native_endpoint.cpp` |
-| How are streams, records and keys handled? | `src/engine/session_engine.cpp`, `src/providers/ytp1_security_provider.cpp` |
-| What does the server show a visitor? | `src/providers/ytp1_front_door.cpp`, `src/providers/ytp1_cover_site.cpp` |
-| How does the TLS look like Chrome? | `src/providers/ytp1_tls13_secure_channel.cpp`, [transport profiles](TRANSPORT_PROFILES.md) |
+| How are streams, records and keys handled? | `src/engine/session_engine.cpp`, `src/providers/openssl_security_provider.cpp` |
+| What does the server show a visitor? | `src/providers/h2_web_front_door.cpp`, `src/providers/cover_site.cpp` |
+| How does the TLS look like Chrome? | `src/providers/tls13_secure_channel.cpp`, [transport profiles](TRANSPORT_PROFILES.md) |
 | Which folder owns what? | [Source map](SOURCE_MAP.md) |
 | What works today? | [Implementation status](IMPLEMENTATION_STATUS.md) |

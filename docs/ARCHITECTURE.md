@@ -108,7 +108,7 @@ cover fetches and H2 output to settle before transfer. At most one promotion
 is allowed per TLS connection. The [admission contract](protocol/YTP_1.md#h2-admission-v1)
 defines the exporter-bound proof and replay rules.
 
-The native `Ytp1FrontDoor` implements this boundary with a native TCP listener
+The native `H2WebFrontDoor` implements this boundary with a native TCP listener
 and `AsioTcpAcceptedChannelOwner`. Its configured immutable static site loads
 through `runtime::FileRoot`, requires an index and explicit not-found file,
 and serves ordinary and rejected-admission requests from the same content.
@@ -150,7 +150,7 @@ arbitrary WebSocket and secure-channel fragmentation. Send completion means
 the complete record has drained through H2 flow control and the secure-channel
 write queue, not merely that it entered an internal queue.
 
-The source-level `Ytp1H2Dispatch` separates ordinary operation submission from
+The source-level `H2Dispatch` separates ordinary operation submission from
 reserved control delivery. Ordinary submission may reject before accepting an
 operation. Close, cancellation and move-owned credit return use an embedded,
 coalesced task whose submission must not allocate or invoke inline. Both paths
@@ -395,7 +395,7 @@ Native source is organized by dependency:
 | `src/runtime/` | protected schema-1 credentials, immutable per-identity authorization, native endpoint/session lifetimes, configured egress policy, and the `yume`/`yumed` runtimes with their SOCKS5 and TUN adapters |
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
 | `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. Each dialect reaches its runtime through its own embed backend |
-| `src/abi/ytp1_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
+| `src/abi/native_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
 | `tools/` | provisioning and evidence tooling |
 
 The installed `yumed` and `yume` build from `src/runtime/` with every native
@@ -412,7 +412,7 @@ yume_session_bootstrap        filesystem, or GUI dependency
 yume_config_v1                nlohmann JSON only
 native providers              engine/YTP plus their explicit system libraries
 native runtime                config, bootstrap, providers, protected files
-yume_embed_ytp1               native runtime, OpenSSL security provider and
+yume_embed               native runtime, OpenSSL security provider and
                               threads, no transport v2 or BaseFWX
 C ABI                         config_v1 plus embed backends, no private-header API
 future adapters/executables   C ABI or explicit application layer
@@ -448,7 +448,7 @@ unsupported. Development SDK installation is a separate opt-in, not an ABI freez
 
 The ABI selects a backend by configuration dialect. Transport-v2 documents run
 the existing client and daemon runtimes. Schema-1 documents run the native
-endpoint through `yume_embed_ytp1` when the provider graph is built, and fail
+endpoint through `yume_embed` when the provider graph is built, and fail
 closed otherwise. Neither dialect is an implicit provider for the other. The
 schema-1 backend owns one execution thread per started endpoint and performs
 every engine and provider call on it. Application threads hand requests over

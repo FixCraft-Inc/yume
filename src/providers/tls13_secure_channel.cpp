@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "providers/tls13_secure_channel.hpp"
 #include "stealth/cover_profile.hpp"
 #include "stealth/tls_client_profile.hpp"
 
@@ -96,7 +96,7 @@ void invoke_noexcept(Callback& callback, Args&&... args) noexcept {
     }
 }
 
-bool valid_limits(const Ytp1Tls13Limits& limits) noexcept {
+bool valid_limits(const Tls13Limits& limits) noexcept {
     return limits.max_plaintext_bytes > 0U &&
            limits.max_plaintext_bytes <= engine::kAbsoluteMaxBufferBytes &&
            limits.max_encrypted_chunk_bytes > 0U &&
@@ -209,9 +209,9 @@ int select_h2(SSL* ssl, const unsigned char** out, unsigned char* out_length,
 
 Result<ProviderDescriptor> make_descriptor() {
     return ProviderDescriptor::create(
-        std::string(kYtp1Tls13SecureChannelProviderId),
+        std::string(kTls13SecureChannelProviderId),
         ProviderKind::SecureChannel,
-        kYtp1Tls13SecureChannelProviderApiVersion,
+        kTls13SecureChannelProviderApiVersion,
         engine::mandatory_capabilities(ProviderKind::SecureChannel)
             .with(Capability::Tls13));
 }
@@ -266,10 +266,10 @@ Result<SecureChannelPeerEvidence> certificate_evidence(
 
 }  // namespace
 
-struct Ytp1Tls13SecureChannelProvider::Impl final {
+struct Tls13SecureChannelProvider::Impl final {
     Impl(SslCtxPtr value, ProviderDescriptor provider_descriptor,
          EndpointRole role, std::string name,
-         Ytp1Tls13Limits configured_limits, bool mutual) noexcept
+         Tls13Limits configured_limits, bool mutual) noexcept
         : context(std::move(value)), descriptor(std::move(provider_descriptor)),
           configured_role(role),
           server_name(std::move(name)), limits(configured_limits),
@@ -279,7 +279,7 @@ struct Ytp1Tls13SecureChannelProvider::Impl final {
     ProviderDescriptor descriptor;
     EndpointRole configured_role{EndpointRole::Client};
     std::string server_name;
-    Ytp1Tls13Limits limits;
+    Tls13Limits limits;
     bool mutual_tls{false};
 };
 
@@ -287,7 +287,7 @@ namespace {
 
 class TlsChannelState;
 
-class ServerTlsConnection final : public Ytp1TlsServerConnection {
+class ServerTlsConnection final : public TlsServerConnection {
 public:
     explicit ServerTlsConnection(std::shared_ptr<TlsChannelState> state) noexcept
         : state_(std::move(state)) {}
@@ -356,7 +356,7 @@ struct PendingWrite final {
 class TlsChannelState final
     : public std::enable_shared_from_this<TlsChannelState> {
 public:
-    TlsChannelState(std::shared_ptr<Ytp1Tls13SecureChannelProvider::Impl> owner,
+    TlsChannelState(std::shared_ptr<Tls13SecureChannelProvider::Impl> owner,
                     std::unique_ptr<engine::ByteChannel> transport,
                     SslPtr ssl, BIO* read_bio, BIO* write_bio,
                     bool cover_mode)
@@ -368,7 +368,7 @@ public:
 
     void start(CancellationToken cancellation,
                engine::SecureChannelProvider::Completion completion,
-               Ytp1Tls13SecureChannelProvider::ServerCoverCompletion cover_completion) {
+               Tls13SecureChannelProvider::ServerCoverCompletion cover_completion) {
         // Construction can allocate cancellation state. Transfer callbacks
         // only after it succeeds, then contain registration failures here.
         handshake_completion_ = std::move(completion);
@@ -649,7 +649,7 @@ private:
         Status status;
         std::size_t count{0U};
         engine::SecureChannelProvider::Completion handshake;
-        Ytp1Tls13SecureChannelProvider::ServerCoverCompletion cover;
+        Tls13SecureChannelProvider::ServerCoverCompletion cover;
         SecureChannel::ReadCompletion read;
         SecureChannel::WriteCompletion write;
     };
@@ -1023,13 +1023,13 @@ private:
         case ActionKind::HandshakeSuccess: {
             if (action.cover) {
                 try {
-                    std::unique_ptr<Ytp1TlsServerConnection> connection =
+                    std::unique_ptr<TlsServerConnection> connection =
                         std::make_unique<ServerTlsConnection>(shared_from_this());
-                    Result<std::unique_ptr<Ytp1TlsServerConnection>> result(
+                    Result<std::unique_ptr<TlsServerConnection>> result(
                         std::move(connection));
                     invoke_noexcept(action.cover, std::move(result));
                 } catch (...) {
-                    Result<std::unique_ptr<Ytp1TlsServerConnection>> failure(
+                    Result<std::unique_ptr<TlsServerConnection>> failure(
                         safe_status(StatusCode::ResourceExhausted,
                                     "TLS cover connection allocation failed"));
                     invoke_noexcept(action.cover, std::move(failure));
@@ -1052,7 +1052,7 @@ private:
         }
         case ActionKind::HandshakeFailure: {
             if (action.cover) {
-                Result<std::unique_ptr<Ytp1TlsServerConnection>> result(
+                Result<std::unique_ptr<TlsServerConnection>> result(
                     std::move(action.status));
                 invoke_noexcept(action.cover, std::move(result));
                 break;
@@ -1146,7 +1146,7 @@ private:
         drive();
     }
 
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider::Impl> owner_;
+    std::shared_ptr<Tls13SecureChannelProvider::Impl> owner_;
     std::unique_ptr<engine::ByteChannel> transport_;
     SslPtr ssl_{nullptr, SSL_free};
     BIO* read_bio_{nullptr};
@@ -1156,7 +1156,7 @@ private:
     Phase phase_{Phase::Handshake};
     std::optional<SecureChannelPeerEvidence> evidence_;
     engine::SecureChannelProvider::Completion handshake_completion_;
-    Ytp1Tls13SecureChannelProvider::ServerCoverCompletion cover_completion_;
+    Tls13SecureChannelProvider::ServerCoverCompletion cover_completion_;
     CancellationRegistration handshake_cancellation_;
     engine::CancellationSource internal_cancellation_;
     std::optional<PendingRead> read_;
@@ -1260,19 +1260,19 @@ Result<std::unique_ptr<SecureChannel>> ServerTlsConnection::promote() {
 
 }  // namespace
 
-Ytp1Tls13SecureChannelProvider::Ytp1Tls13SecureChannelProvider(
+Tls13SecureChannelProvider::Tls13SecureChannelProvider(
     ProviderDescriptor descriptor, std::shared_ptr<Impl> impl) noexcept
     : descriptor_(std::move(descriptor)), impl_(std::move(impl)) {}
 
-Ytp1Tls13SecureChannelProvider::~Ytp1Tls13SecureChannelProvider() = default;
+Tls13SecureChannelProvider::~Tls13SecureChannelProvider() = default;
 
-engine::EndpointRole Ytp1Tls13SecureChannelProvider::local_role() const noexcept {
+engine::EndpointRole Tls13SecureChannelProvider::local_role() const noexcept {
     return impl_->configured_role;
 }
 
-Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>
-Ytp1Tls13SecureChannelProvider::create_client(
-    const Ytp1Tls13ClientConfigView& config) {
+Result<std::shared_ptr<Tls13SecureChannelProvider>>
+Tls13SecureChannelProvider::create_client(
+    const Tls13ClientConfigView& config) {
     const bool has_certificate = !config.certificate_chain_pem.empty();
     const bool has_private_key = !config.private_key_pem.empty();
     if (!valid_limits(config.limits) || !valid_server_name(config.server_name) ||
@@ -1283,7 +1283,7 @@ Ytp1Tls13SecureChannelProvider::create_client(
             config.limits.max_credential_pem_bytes ||
         config.private_key_pem.size() >
             config.limits.max_credential_pem_bytes) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::InvalidArgument, "invalid TLS client configuration"));
     }
     SslCtxPtr context(SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
@@ -1292,14 +1292,14 @@ Ytp1Tls13SecureChannelProvider::create_client(
         (has_certificate &&
          !install_server_identity(context.get(), config.certificate_chain_pem,
                                   config.private_key_pem))) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::FailedPrecondition, "TLS client context initialization failed"));
     }
     SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER, nullptr);
     try {
         const auto& profile = cover_profile::active();
         if (profile.tls_required_version != TLS1_3_VERSION) {
-            return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+            return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
                 safe_status(StatusCode::ProviderMismatch,
                             "TLS cover profile does not require TLS 1.3"));
         }
@@ -1308,45 +1308,45 @@ Ytp1Tls13SecureChannelProvider::create_client(
         const auto warnings = tls_stealth::configure_client_profile(
             context.get(), profile.tls_profile, true);
         if (!warnings.empty()) {
-            return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+            return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
                 safe_status(StatusCode::FailedPrecondition,
                             "TLS browser profile could not be applied exactly"));
         }
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::ResourceExhausted,
                         "TLS browser profile allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::FailedPrecondition,
                         "TLS browser profile requires supported patched OpenSSL"));
     }
     auto descriptor = make_descriptor();
-    if (!descriptor.ok()) return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(descriptor.status());
+    if (!descriptor.ok()) return Result<std::shared_ptr<Tls13SecureChannelProvider>>(descriptor.status());
     try {
         ProviderDescriptor concrete = std::move(descriptor).take_value();
         auto impl = std::make_shared<Impl>(std::move(context), concrete,
                                            EndpointRole::Client,
                                            std::string(config.server_name), config.limits, false);
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
-            std::shared_ptr<Ytp1Tls13SecureChannelProvider>(
-                new Ytp1Tls13SecureChannelProvider(std::move(concrete),
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
+            std::shared_ptr<Tls13SecureChannelProvider>(
+                new Tls13SecureChannelProvider(std::move(concrete),
                                                     std::move(impl))));
     } catch (...) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::ResourceExhausted, "TLS provider allocation failed"));
     }
 }
 
-Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>
-Ytp1Tls13SecureChannelProvider::create_server(
-    const Ytp1Tls13ServerConfigView& config) {
+Result<std::shared_ptr<Tls13SecureChannelProvider>>
+Tls13SecureChannelProvider::create_server(
+    const Tls13ServerConfigView& config) {
     if (!valid_limits(config.limits) || config.certificate_chain_pem.empty() ||
         config.private_key_pem.empty() ||
         config.certificate_chain_pem.size() > config.limits.max_credential_pem_bytes ||
         config.private_key_pem.size() > config.limits.max_credential_pem_bytes ||
         config.client_trust_anchors_pem.size() > config.limits.max_credential_pem_bytes) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::InvalidArgument, "invalid TLS server configuration"));
     }
     SslCtxPtr context(SSL_CTX_new(TLS_server_method()), SSL_CTX_free);
@@ -1357,47 +1357,47 @@ Ytp1Tls13SecureChannelProvider::create_server(
                                  config.private_key_pem) ||
         (mutual && !add_trust_anchors(context.get(),
                                      config.client_trust_anchors_pem))) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::FailedPrecondition, "TLS server context initialization failed"));
     }
     SSL_CTX_set_alpn_select_cb(context.get(), select_h2, nullptr);
     SSL_CTX_set_verify(context.get(), mutual ? SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
                                              : SSL_VERIFY_NONE, nullptr);
     auto descriptor = make_descriptor();
-    if (!descriptor.ok()) return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(descriptor.status());
+    if (!descriptor.ok()) return Result<std::shared_ptr<Tls13SecureChannelProvider>>(descriptor.status());
     try {
         ProviderDescriptor concrete = std::move(descriptor).take_value();
         auto impl = std::make_shared<Impl>(std::move(context), concrete,
                                            EndpointRole::Server,
                                            std::string{}, config.limits, mutual);
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
-            std::shared_ptr<Ytp1Tls13SecureChannelProvider>(
-                new Ytp1Tls13SecureChannelProvider(std::move(concrete),
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
+            std::shared_ptr<Tls13SecureChannelProvider>(
+                new Tls13SecureChannelProvider(std::move(concrete),
                                                     std::move(impl))));
     } catch (...) {
-        return Result<std::shared_ptr<Ytp1Tls13SecureChannelProvider>>(
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
             safe_status(StatusCode::ResourceExhausted, "TLS provider allocation failed"));
     }
 }
 
 const ProviderDescriptor&
-Ytp1Tls13SecureChannelProvider::descriptor() const noexcept { return descriptor_; }
+Tls13SecureChannelProvider::descriptor() const noexcept { return descriptor_; }
 
-void Ytp1Tls13SecureChannelProvider::async_wrap(
+void Tls13SecureChannelProvider::async_wrap(
     std::unique_ptr<engine::ByteChannel> channel, EndpointRole local_role,
     CancellationToken cancellation, Completion completion) {
     async_wrap_impl(std::move(channel), local_role, std::move(cancellation),
                     std::move(completion), {});
 }
 
-void Ytp1Tls13SecureChannelProvider::async_wrap_server_cover(
+void Tls13SecureChannelProvider::async_wrap_server_cover(
     std::unique_ptr<engine::ByteChannel> channel,
     CancellationToken cancellation, ServerCoverCompletion completion) {
     async_wrap_impl(std::move(channel), EndpointRole::Server,
                     std::move(cancellation), {}, std::move(completion));
 }
 
-void Ytp1Tls13SecureChannelProvider::async_wrap_impl(
+void Tls13SecureChannelProvider::async_wrap_impl(
     std::unique_ptr<engine::ByteChannel> channel, EndpointRole local_role,
     CancellationToken cancellation, Completion completion,
     ServerCoverCompletion cover_completion) {
@@ -1405,7 +1405,7 @@ void Ytp1Tls13SecureChannelProvider::async_wrap_impl(
     const bool cover = static_cast<bool>(cover_completion);
     const auto fail = [&](Status status) noexcept {
         if (cover) {
-            Result<std::unique_ptr<Ytp1TlsServerConnection>> result(std::move(status));
+            Result<std::unique_ptr<TlsServerConnection>> result(std::move(status));
             invoke_noexcept(cover_completion, std::move(result));
         } else {
             Result<std::unique_ptr<SecureChannel>> result(std::move(status));

@@ -115,7 +115,7 @@ Implemented and covered by focused tests:
   a source-dependency SPDX SBOM. This inventory is not proof of source
   ancestry.
 
-The native `Ytp1FrontDoor` now implements a TCP listener over the
+The native `H2WebFrontDoor` now implements a TCP listener over the
 accepted-channel owner, ordinary TLS 1.2/1.3 and HTTP/1.1/H2 cover traffic,
 and strict TLS 1.3/H2 admission promotion. Its operator-supplied immutable
 static site uses confined `FileRoot` reads and has no fallback content.
@@ -135,7 +135,7 @@ TLS/H2 failure settlement preserves callbacks when diagnostics cannot allocate.
 Ingress resolves no names. The source-level native endpoint now connects this ingress to session bootstrap,
 and the experimental schema-1 ABI backend composes that endpoint.
 
-`yume_ytp1_front_door_test` exercises real loopback TLS/H2 ingress, configured
+`yume_h2_web_front_door_test` exercises real loopback TLS/H2 ingress, configured
 cover responses, invalid-then-valid admission on one connection, exporter
 mismatch, replay expiry, cache and promotion-capacity saturation, bidirectional
 carrier records larger than the initial H2 window, cancellation, handshake
@@ -276,7 +276,7 @@ server startup and selected teardown paths. These checks are not comprehensive
 allocation-failure, application-adapter, sanitizer or security qualification.
 
 When the shared ABI and every native provider are enabled, the experimental
-`yume_embed_ytp1` backend runs `NativeEndpoint` on its own execution thread
+`yume_embed` backend runs `NativeEndpoint` on its own execution thread
 behind the blocking C ABI. Schema-1 clients open, and servers accept,
 authenticated named byte streams and packet channels with the composite peer identity.
 Clients also open TCP/UDP destinations through a native daemon's declared direct services. A server
@@ -290,9 +290,9 @@ Accept transfers local ownership without waiting for execution-thread dispatch;
 shutdown deadlines cover that dispatch as well as prior writes. An escaped
 runner exception closes the endpoint and drains accepted work. The
 native FrontDoor enables address reuse on POSIX, so a restarted server can
-rebind its port. `yume_abi_ytp1_stream_integration` exercises setup-generated
+rebind its port. `yume_abi_stream_integration` exercises setup-generated
 credentials, peer identity, refused opens, deadlines, half-close, stop, restart
-and stream handles that outlive their endpoint. `yume_ytp1_backend_test` also
+and stream handles that outlive their endpoint. `yume_native_backend_test` also
 pauses execution to check deadline handling, acceptance rollback, partial-read
 credit lifetime and cleanup after an escaped delivery exception.
 No standalone YTP/1 runtime uses

@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "providers/tls13_secure_channel.hpp"
 #include "stealth/cover_profile.hpp"
 #include "stealth/tls_client_profile.hpp"
 #include "stealth/tls_fingerprint.hpp"
@@ -340,7 +340,7 @@ PemIdentity make_identity() {
 
 void test_client_hello_uses_browser_profile() {
     const PemIdentity identity = make_identity();
-    auto provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
     auto pair = std::make_shared<PairState>();
     CancellationSource cancellation;
@@ -411,7 +411,7 @@ void test_required_profile_refuses_invalid_context_and_unknown_profile() {
 
 void test_handshake_cancellation_during_pending_write() {
     const PemIdentity identity = make_identity();
-    auto provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
     auto pair = std::make_shared<PairState>();
     pair->sides[0].defer_write_completion = true;
@@ -440,7 +440,7 @@ void test_handshake_cancellation_during_pending_write() {
 void test_browser_offer_does_not_allow_negotiated_downgrade(
     int peer_version, bool peer_selects_h2) {
     const PemIdentity identity = make_identity();
-    auto provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(
         SSL_CTX_new(TLS_server_method()), SSL_CTX_free);
@@ -528,8 +528,8 @@ void test_browser_offer_does_not_allow_negotiated_downgrade(
 }
 
 std::shared_ptr<PairState> establish(
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider> client_provider,
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider> server_provider,
+    std::shared_ptr<Tls13SecureChannelProvider> client_provider,
+    std::shared_ptr<Tls13SecureChannelProvider> server_provider,
     std::unique_ptr<SecureChannel>& client,
     std::unique_ptr<SecureChannel>& server) {
     auto pair = std::make_shared<PairState>();
@@ -549,9 +549,9 @@ std::shared_ptr<PairState> establish(
 
 void test_close_settles_pending_io(bool pending_write) {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     std::unique_ptr<SecureChannel> client;
     std::unique_ptr<SecureChannel> server;
@@ -585,7 +585,7 @@ void test_close_settles_pending_io(bool pending_write) {
 void test_upstream_failure_settles_during_allocation_denial(
     bool handshake, bool write_failure) {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
     std::unique_ptr<SecureChannel> client;
     std::unique_ptr<SecureChannel> server;
@@ -606,7 +606,7 @@ void test_upstream_failure_settles_during_allocation_denial(
             });
         assert(wrap_completions == 0U);
     } else {
-        auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+        auto server_provider = take(Tls13SecureChannelProvider::create_server(
             {identity.certificate, identity.key, {}, {}}));
         pair = establish(client_provider, server_provider, client, server);
         client->async_read(16U, {}, [&](Result<Buffer> result) {
@@ -652,7 +652,7 @@ void test_upstream_failure_settles_during_allocation_denial(
 
 void test_state_and_registration_allocation_failures_settle_wrap() {
     const PemIdentity identity = make_identity();
-    auto provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     bool reached_successful_start = false;
     for (std::size_t nth = 1U; nth <= 64U; ++nth) {
@@ -685,9 +685,9 @@ void test_state_and_registration_allocation_failures_settle_wrap() {
 
 void test_registration_failure_settles_pending_io(bool write) {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     std::unique_ptr<SecureChannel> client;
     std::unique_ptr<SecureChannel> server;
@@ -720,9 +720,9 @@ void test_registration_failure_settles_pending_io(bool write) {
 
 void test_success_io_exporter_and_bounds() {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     assert(client_provider->descriptor().provider_id() == "tls13-native");
     assert(client_provider->descriptor().capabilities().contains(Capability::Tls13));
@@ -826,9 +826,9 @@ void test_success_io_exporter_and_bounds() {
 
 void test_role_hostname_and_handshake_cancellation_fail_closed() {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"wrong.example", identity.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     auto pair = std::make_shared<PairState>();
     bool role_failed = false;
@@ -859,7 +859,7 @@ void test_role_hostname_and_handshake_cancellation_fail_closed() {
     CancellationSource cancellation;
     cancellation.cancel();
     bool cancelled = false;
-    auto valid_client = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto valid_client = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
     valid_client->async_wrap(
         std::make_unique<PairChannel>(pair, 0U, ExecutorAffinity(9U)),
@@ -874,9 +874,9 @@ void test_role_hostname_and_handshake_cancellation_fail_closed() {
 void test_untrusted_certificate_fails_closed() {
     const PemIdentity trusted = make_identity();
     const PemIdentity untrusted = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", trusted.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {untrusted.certificate, untrusted.key, {}, {}}));
     auto pair = std::make_shared<PairState>();
     bool failed = false;
@@ -896,13 +896,13 @@ void test_untrusted_certificate_fails_closed() {
 void test_mutual_tls_outer_client_evidence() {
     const PemIdentity server_identity = make_identity();
     const PemIdentity client_identity = make_identity();
-    Ytp1Tls13ClientConfigView client_config{
+    Tls13ClientConfigView client_config{
         "localhost", server_identity.certificate, {}, {}, {}};
     client_config.certificate_chain_pem = client_identity.certificate;
     client_config.private_key_pem = client_identity.key;
     auto client_provider = take(
-        Ytp1Tls13SecureChannelProvider::create_client(client_config));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+        Tls13SecureChannelProvider::create_client(client_config));
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {server_identity.certificate, server_identity.key,
          client_identity.certificate, {}}));
     std::unique_ptr<SecureChannel> client;
@@ -916,14 +916,14 @@ void test_mutual_tls_outer_client_evidence() {
 void test_server_cover_negotiation_and_promotion(int version,
                                                 std::string_view protocol) {
     const PemIdentity identity = make_identity();
-    auto provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     auto pair = std::make_shared<PairState>();
     PairChannel raw_transport(pair, 0U, ExecutorAffinity(91U));
-    std::unique_ptr<Ytp1TlsServerConnection> cover;
+    std::unique_ptr<TlsServerConnection> cover;
     provider->async_wrap_server_cover(
         std::make_unique<PairChannel>(pair, 1U, ExecutorAffinity(91U)), {},
-        [&](Result<std::unique_ptr<Ytp1TlsServerConnection>> result) {
+        [&](Result<std::unique_ptr<TlsServerConnection>> result) {
             cover = take(std::move(result));
         });
     // The SSL_CTX must remain owned through the connection after the provider
@@ -1012,7 +1012,7 @@ void test_server_cover_negotiation_and_promotion(int version,
         assert(wrote);
     } else {
         auto channel = take(std::move(promotion));
-        assert(channel->descriptor().provider_id() == kYtp1Tls13SecureChannelProviderId);
+        assert(channel->descriptor().provider_id() == kTls13SecureChannelProviderId);
         assert(channel->descriptor().capabilities().contains(Capability::Tls13));
         assert(channel->executor_affinity() == ExecutorAffinity(91U));
         assert(!cover->promote().ok());
@@ -1034,7 +1034,7 @@ void test_server_cover_negotiation_and_promotion(int version,
 
 void test_server_cover_cancellation_and_teardown() {
     const PemIdentity identity = make_identity();
-    auto provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     auto pair = std::make_shared<PairState>();
     CancellationSource cancellation;
@@ -1042,7 +1042,7 @@ void test_server_cover_cancellation_and_teardown() {
     provider->async_wrap_server_cover(
         std::make_unique<PairChannel>(pair, 1U, ExecutorAffinity(92U)),
         cancellation.token(),
-        [&](Result<std::unique_ptr<Ytp1TlsServerConnection>> result) {
+        [&](Result<std::unique_ptr<TlsServerConnection>> result) {
             assert(!result.ok() && result.status().code() == StatusCode::Cancelled);
             ++completions;
         });
@@ -1054,9 +1054,9 @@ void test_server_cover_cancellation_and_teardown() {
 
 void test_simultaneous_read_and_write() {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     std::unique_ptr<SecureChannel> client;
     std::unique_ptr<SecureChannel> server;
@@ -1085,9 +1085,9 @@ void test_simultaneous_read_and_write() {
 
 void test_immediate_callback_releases_final_channel(bool write) {
     const PemIdentity identity = make_identity();
-    auto client_provider = take(Ytp1Tls13SecureChannelProvider::create_client(
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
         {"localhost", identity.certificate, {}, {}, {}}));
-    auto server_provider = take(Ytp1Tls13SecureChannelProvider::create_server(
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     std::unique_ptr<SecureChannel> client;
     std::unique_ptr<SecureChannel> server;

@@ -15,17 +15,17 @@
 
 namespace yume::providers {
 
-inline constexpr std::string_view kYtp1OpenSslSecurityProviderId =
+inline constexpr std::string_view kOpenSslSecurityProviderId =
     "openssl35.ytp1-security";
-inline constexpr std::uint32_t kYtp1OpenSslSecurityProviderApiVersion = 1U;
-inline constexpr std::size_t kMaxYtp1AuthorizedIdentities = 1024U;
+inline constexpr std::uint32_t kOpenSslSecurityProviderApiVersion = 1U;
+inline constexpr std::size_t kMaxAuthorizedIdentities = 1024U;
 
 // Names the OpenSSL release this provider runs on as "openssl-" followed by
 // the loaded library's full version text, for example "openssl-3.5.7". A
 // shared build can load a later compatible release than the headers it was
 // compiled with, so the text comes from the runtime library. It is formatted
 // once and may be read from any thread.
-std::string_view ytp1_openssl_crypto_backend() noexcept;
+std::string_view openssl_crypto_backend() noexcept;
 
 // Key inputs use one canonical encoding: unencrypted PKCS#8 DER for private
 // keys and SubjectPublicKeyInfo DER for public keys. Views are borrowed only
@@ -41,7 +41,7 @@ struct CompositePublicIdentityView final {
     std::span<const std::byte> ml_dsa_87_public_key_der;
 };
 
-struct Ytp1ClientCredentialsView final {
+struct ClientCredentialsView final {
     CompositePrivateIdentityView local_identity;
     CompositePublicIdentityView trusted_server_identity;
     std::span<const std::byte> server_ml_kem_1024_public_key_der;
@@ -49,37 +49,37 @@ struct Ytp1ClientCredentialsView final {
     std::string_view server_peer_identity;
 };
 
-struct Ytp1AuthorizedIdentityView final {
+struct AuthorizedIdentityView final {
     CompositePublicIdentityView identity;
     std::span<const std::byte> access_psk;
     std::string_view peer_identity;
 };
 
-struct Ytp1ServerCredentialsView final {
+struct ServerCredentialsView final {
     CompositePrivateIdentityView local_identity;
     std::span<const std::byte> ml_kem_1024_private_key_der;
-    std::span<const Ytp1AuthorizedIdentityView> authorized_identities;
+    std::span<const AuthorizedIdentityView> authorized_identities;
 };
 
 // One factory is configured for exactly one role. Provider selection is
 // instance-local and immutable; create() rejects the other role and never
 // performs algorithm or credential fallback.
-class Ytp1OpenSslSecurityProviderFactory final
+class OpenSslSecurityProviderFactory final
     : public engine::SessionSecurityProviderFactory {
 public:
     static engine::Result<
-        std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>
-    create_client(const Ytp1ClientCredentialsView& credentials);
+        std::shared_ptr<OpenSslSecurityProviderFactory>>
+    create_client(const ClientCredentialsView& credentials);
 
     static engine::Result<
-        std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>
-    create_server(const Ytp1ServerCredentialsView& credentials);
+        std::shared_ptr<OpenSslSecurityProviderFactory>>
+    create_server(const ServerCredentialsView& credentials);
 
-    Ytp1OpenSslSecurityProviderFactory(
-        const Ytp1OpenSslSecurityProviderFactory&) = delete;
-    Ytp1OpenSslSecurityProviderFactory& operator=(
-        const Ytp1OpenSslSecurityProviderFactory&) = delete;
-    ~Ytp1OpenSslSecurityProviderFactory() override;
+    OpenSslSecurityProviderFactory(
+        const OpenSslSecurityProviderFactory&) = delete;
+    OpenSslSecurityProviderFactory& operator=(
+        const OpenSslSecurityProviderFactory&) = delete;
+    ~OpenSslSecurityProviderFactory() override;
 
     const engine::ProviderDescriptor& descriptor() const noexcept override;
     engine::Result<std::unique_ptr<engine::SessionSecurityProvider>> create(
@@ -88,7 +88,7 @@ public:
 private:
     struct Impl;
 
-    Ytp1OpenSslSecurityProviderFactory(
+    OpenSslSecurityProviderFactory(
         engine::ProviderDescriptor descriptor,
         std::shared_ptr<Impl> impl) noexcept;
 

@@ -7,8 +7,8 @@
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
 #include "fs/bounded_file.hpp"
-#include "providers/ytp1_h2_carrier.hpp"
-#include "providers/ytp1_tls13_secure_channel.hpp"
+#include "providers/h2_duplex_carrier.hpp"
+#include "providers/tls13_secure_channel.hpp"
 #include "providers/system_resolver.hpp"
 
 #ifndef YUME_TEST_RESOLVER_PROGRAM
@@ -244,7 +244,7 @@ public:
           endpoint_(std::get<yume::config::v1::ClientEndpoint>(config.endpoint())),
           credentials_(take(load_native_credentials(config, base, endpoint_.host()))),
           tcp_(take(yume::providers::AsioTcpAcceptedChannelOwner::create(runner.context))),
-          h2_(take(yume::providers::Ytp1H2CarrierProvider::create(runner.context->affinity(),
+          h2_(take(yume::providers::H2DuplexCarrierProvider::create(runner.context->affinity(),
               {[context = runner.context](std::function<void()> task) {
                    boost::asio::post(context->executor(), std::move(task));
                },
@@ -279,7 +279,7 @@ private:
     yume::config::v1::ClientEndpoint endpoint_;
     LoadedNativeCredentials credentials_;
     std::shared_ptr<yume::providers::AsioTcpAcceptedChannelOwner> tcp_;
-    std::shared_ptr<yume::providers::Ytp1H2CarrierProvider> h2_;
+    std::shared_ptr<yume::providers::H2DuplexCarrierProvider> h2_;
 };
 
 // With max_sessions 1, a second session of the same identity replaces the

@@ -7,7 +7,7 @@
 // Exercise the private blocking adapter with a deliberately paused executor.
 // Including its implementation keeps test-only controls out of the embed API;
 // this executable does not link the separately compiled backend archive.
-#include "abi/ytp1_backend.cpp"
+#include "abi/native_backend.cpp"
 #include "test_support/allocation_failure.hpp"
 
 #include <array>

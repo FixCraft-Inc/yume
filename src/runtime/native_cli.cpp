@@ -26,7 +26,7 @@
 #include "providers/asio_execution_context.hpp"
 #include "providers/child_process.hpp"
 #include "providers/system_resolver_helper.hpp"
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 #include "runtime/module_launcher.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
@@ -130,14 +130,14 @@ std::optional<Arguments> parse(int argc, char** argv, std::string& error) {
 
 void print_version(NativeCliRole role) {
     const auto name = program(role);
-    const auto backend = providers::ytp1_openssl_crypto_backend();
+    const auto backend = providers::openssl_crypto_backend();
     std::printf("%.*s %s\n", static_cast<int>(name.size()), name.data(), kVersion);
     std::printf("transport %.*s, config schema %u, suite %.*s\n",
                 static_cast<int>(kYtpVersion.size()), kYtpVersion.data(), kConfigSchema,
                 static_cast<int>(kTransportSuite.size()), kTransportSuite.data());
     std::printf("session security %.*s, crypto backend %.*s\n",
-                static_cast<int>(providers::kYtp1OpenSslSecurityProviderId.size()),
-                providers::kYtp1OpenSslSecurityProviderId.data(),
+                static_cast<int>(providers::kOpenSslSecurityProviderId.size()),
+                providers::kOpenSslSecurityProviderId.data(),
                 static_cast<int>(backend.size()), backend.data());
     std::printf("evidence profile %.*s\n", static_cast<int>(kEvidenceProfile.size()),
                 kEvidenceProfile.data());

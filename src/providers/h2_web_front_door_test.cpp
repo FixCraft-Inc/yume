@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_front_door.hpp"
+#include "providers/h2_web_front_door.hpp"
 #include "providers/ytp1_h2_admission.hpp"
 #include "stealth/cover_profile.hpp"
 
@@ -215,13 +215,13 @@ public:
         std::error_code error;
         std::filesystem::remove_all(root_, error);
     }
-    std::shared_ptr<const Ytp1CoverSite> load() const {
-        std::vector<Ytp1CoverFile> routes{
+    std::shared_ptr<const CoverSite> load() const {
+        std::vector<CoverFile> routes{
             {"/", "index.html", "text/html; charset=utf-8"},
             {"/asset.css", "asset.css", "text/css"}};
         for (const auto& asset : cover_profile::active().assets)
             routes.push_back({std::string(asset.path), "asset.css", "text/css"});
-        return take(Ytp1CoverSite::load(root_, routes, "404.html"));
+        return take(CoverSite::load(root_, routes, "404.html"));
     }
 
 private:
@@ -434,18 +434,18 @@ namespace {
 
 class Fixture final {
 public:
-    explicit Fixture(Ytp1FrontDoorLimits limits = {},
+    explicit Fixture(H2WebFrontDoorLimits limits = {},
                      std::size_t replay_entries = 64U,
                      std::uint64_t replay_ttl_seconds = 3600U)
         : identity(make_identity()), cover(files.load()),
           replay(std::make_shared<admission::ReplayCache>(replay_entries, replay_ttl_seconds)),
-          tls(take(Ytp1Tls13SecureChannelProvider::create_server(
+          tls(take(Tls13SecureChannelProvider::create_server(
               {identity.certificate, identity.key, {}, {}}))) {
-        Ytp1FrontDoorConfig config;
+        H2WebFrontDoorConfig config;
         config.listen_endpoint = {boost::asio::ip::address_v4::loopback(), 0U};
         config.limits = limits;
         door = runtime.sync([&] {
-            return take(Ytp1FrontDoor::create(runtime.context(), config, tls,
+            return take(H2WebFrontDoor::create(runtime.context(), config, tls,
                 cover, replay, kAdmissionKey));
         });
         CHECK(door->local_endpoint().address().is_loopback());
@@ -456,7 +456,7 @@ public:
         if (door) door->close();
         door.reset();
     }
-    Ytp1H2Dispatch post() const {
+    H2Dispatch post() const {
         return {
             [context = runtime.context()](std::function<void()> task) {
                 boost::asio::post(context->executor(), std::move(task));
@@ -490,10 +490,10 @@ public:
     IoRuntime runtime;
     CoverFiles files;
     PemIdentity identity;
-    std::shared_ptr<const Ytp1CoverSite> cover;
+    std::shared_ptr<const CoverSite> cover;
     std::shared_ptr<admission::ReplayCache> replay;
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider> tls;
-    std::shared_ptr<Ytp1FrontDoor> door;
+    std::shared_ptr<Tls13SecureChannelProvider> tls;
+    std::shared_ptr<H2WebFrontDoor> door;
 };
 
 void check_cover(const HttpResponse& response) {
@@ -593,9 +593,9 @@ public:
         AsioTcpSocket socket(fixture.runtime.context()->executor());
         socket.connect({boost::asio::ip::address_v4::loopback(), fixture.port()});
         auto channel = take(tcp_owner_->adopt(std::move(socket)));
-        client_tls_ = take(Ytp1Tls13SecureChannelProvider::create_client(
+        client_tls_ = take(Tls13SecureChannelProvider::create_client(
             {"localhost", fixture.identity.certificate, {}, {}, {}}));
-        client_h2_ = take(Ytp1H2CarrierProvider::create(
+        client_h2_ = take(H2DuplexCarrierProvider::create(
             fixture.runtime.context()->affinity(), fixture.post(),
             {"localhost", fixture.port(), {}}, kAdmissionKey));
         auto promise = std::make_shared<std::promise<Result<std::unique_ptr<Carrier>>>>();
@@ -615,11 +615,11 @@ public:
         });
         client = take(await(connected));
         auto server_result = take(await(accepted));
-        CHECK(server_result.descriptor().provider_id() == kYtp1H2CarrierProviderId);
+        CHECK(server_result.descriptor().provider_id() == kH2DuplexCarrierProviderId);
         server = std::move(server_result).take_carrier();
         CHECK(server->executor_affinity() == fixture.runtime.context()->affinity());
         CHECK(server->secure_channel().executor_affinity() == server->executor_affinity());
-        CHECK(server->secure_channel().descriptor().provider_id() == kYtp1Tls13SecureChannelProviderId);
+        CHECK(server->secure_channel().descriptor().provider_id() == kTls13SecureChannelProviderId);
     }
     ~CarrierPair() noexcept {
         if (client) client->close();
@@ -653,8 +653,8 @@ public:
 private:
     Fixture& fixture_;
     std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp_owner_;
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider> client_tls_;
-    std::shared_ptr<Ytp1H2CarrierProvider> client_h2_;
+    std::shared_ptr<Tls13SecureChannelProvider> client_tls_;
+    std::shared_ptr<H2DuplexCarrierProvider> client_h2_;
 };
 
 void test_native_promotion_record_credit_and_owner_lifetime() {
@@ -683,7 +683,7 @@ void test_native_promotion_record_credit_and_owner_lifetime() {
 
     // Removing the listener must not cancel the TCP owner of an already
     // published carrier or invalidate the cover/parser state it retains.
-    std::weak_ptr<Ytp1FrontDoor> weak_door = fixture.door;
+    std::weak_ptr<H2WebFrontDoor> weak_door = fixture.door;
     fixture.destroy_door();
     CHECK(weak_door.expired());
     pair.exchange(*pair.client, *pair.server, payload);
@@ -767,20 +767,20 @@ void test_cross_connection_replay_after_promotion() {
 void test_configuration_and_initiation_bounds() {
     Fixture fixture;
     fixture.runtime.sync([&] {
-        Ytp1FrontDoorConfig config;
+        H2WebFrontDoorConfig config;
         config.listen_endpoint = {boost::asio::ip::address_v4::loopback(), 0U};
         config.carrier_limits.max_record_bytes = 0U;
-        const auto invalid = Ytp1FrontDoor::create(fixture.runtime.context(), config,
+        const auto invalid = H2WebFrontDoor::create(fixture.runtime.context(), config,
             fixture.tls, fixture.cover, fixture.replay, kAdmissionKey);
         CHECK(!invalid.ok() && invalid.status().code() == StatusCode::InvalidArgument);
         config.carrier_limits = {};
         config.limits.max_connections = 0U;
-        CHECK(!Ytp1FrontDoor::create(fixture.runtime.context(), config,
+        CHECK(!H2WebFrontDoor::create(fixture.runtime.context(), config,
             fixture.tls, fixture.cover, fixture.replay, kAdmissionKey).ok());
         config.limits = {};
-        auto client_tls = take(Ytp1Tls13SecureChannelProvider::create_client(
+        auto client_tls = take(Tls13SecureChannelProvider::create_client(
             {"localhost", fixture.identity.certificate, {}, {}, {}}));
-        CHECK(!Ytp1FrontDoor::create(fixture.runtime.context(), config,
+        CHECK(!H2WebFrontDoor::create(fixture.runtime.context(), config,
             client_tls, fixture.cover, fixture.replay, kAdmissionKey).ok());
     });
     bool rejected = false;
@@ -793,9 +793,9 @@ void test_configuration_and_initiation_bounds() {
 void test_listener_conflict_preserves_existing_listener() {
     Fixture fixture;
     fixture.runtime.sync([&] {
-        Ytp1FrontDoorConfig config;
+        H2WebFrontDoorConfig config;
         config.listen_endpoint = fixture.door->local_endpoint();
-        const auto conflict = Ytp1FrontDoor::create(fixture.runtime.context(), config,
+        const auto conflict = H2WebFrontDoor::create(fixture.runtime.context(), config,
             fixture.tls, fixture.cover, fixture.replay, kAdmissionKey);
         CHECK(!conflict.ok() && conflict.status().code() == StatusCode::AddressInUse);
     });
@@ -820,14 +820,14 @@ void test_listener_os_failure_classification_and_retry() {
              std::pair{EINVAL, StatusCode::InvalidArgument},
              std::pair{EIO, StatusCode::Internal}}) {
         fixture.runtime.sync([&] {
-            Ytp1FrontDoorConfig config;
+            H2WebFrontDoorConfig config;
             config.listen_endpoint = {boost::asio::ip::address_v4::loopback(), 0U};
             injected_bind_error = error;
-            const auto failed = Ytp1FrontDoor::create(fixture.runtime.context(), config,
+            const auto failed = H2WebFrontDoor::create(fixture.runtime.context(), config,
                 fixture.tls, fixture.cover, fixture.replay, kAdmissionKey);
             const int unconsumed = std::exchange(injected_bind_error, 0);
             CHECK(unconsumed == 0 && !failed.ok() && failed.status().code() == expected);
-            auto retry = take(Ytp1FrontDoor::create(fixture.runtime.context(), config,
+            auto retry = take(H2WebFrontDoor::create(fixture.runtime.context(), config,
                 fixture.tls, fixture.cover, fixture.replay, kAdmissionKey));
             CHECK(retry->local_endpoint().port() != 0U);
             retry->close();
@@ -839,7 +839,7 @@ void test_listener_os_failure_classification_and_retry() {
 #endif
 
 void test_promoted_capacity_uses_cover_and_recovers() {
-    Ytp1FrontDoorLimits limits;
+    H2WebFrontDoorLimits limits;
     limits.max_promoted_carriers = 1U;
     Fixture fixture(limits);
     {
@@ -862,7 +862,7 @@ void test_promoted_capacity_uses_cover_and_recovers() {
 }
 
 void test_overlapping_admission_reserves_capacity_before_publication() {
-    Ytp1FrontDoorLimits limits;
+    H2WebFrontDoorLimits limits;
     limits.max_promoted_carriers = 1U;
     Fixture fixture(limits);
     auto first_accept = fixture.accept();
@@ -897,7 +897,7 @@ void test_overlapping_admission_reserves_capacity_before_publication() {
 }
 
 void test_accept_cancellation_bounds_and_close() {
-    Ytp1FrontDoorLimits limits;
+    H2WebFrontDoorLimits limits;
     limits.max_pending_accepts = 1U;
     Fixture fixture(limits);
     CancellationSource cancellation;
@@ -931,7 +931,7 @@ void test_accept_cancellation_bounds_and_close() {
 }
 
 void test_stalled_handshake_deadline_releases_connection_capacity() {
-    Ytp1FrontDoorLimits limits;
+    H2WebFrontDoorLimits limits;
     limits.max_connections = 1U;
     limits.connection_timeout = 500ms;
     Fixture fixture(limits);
@@ -961,8 +961,8 @@ void test_closed_listener_destruction_after_final_drain() {
     fixture.runtime.finish_and_join();
     auto closed = await(accept);
     CHECK(!closed.ok() && closed.status().code() == StatusCode::Closed);
-    std::weak_ptr<const Ytp1CoverSite> cover = fixture.cover;
-    std::weak_ptr<Ytp1Tls13SecureChannelProvider> tls = fixture.tls;
+    std::weak_ptr<const CoverSite> cover = fixture.cover;
+    std::weak_ptr<Tls13SecureChannelProvider> tls = fixture.tls;
     fixture.cover.reset();
     fixture.tls.reset();
     fixture.door->close();
@@ -1012,16 +1012,16 @@ void test_ipv4_ipv6_wildcard_pair_shares_port() {
 
     Fixture fixture;
     fixture.destroy_door();
-    Ytp1FrontDoorConfig config;
+    H2WebFrontDoorConfig config;
     config.listen_endpoint = {boost::asio::ip::address_v4::any(), 0U};
     fixture.door = fixture.runtime.sync([&] {
-        return take(Ytp1FrontDoor::create(fixture.runtime.context(), config,
+        return take(H2WebFrontDoor::create(fixture.runtime.context(), config,
             fixture.tls, fixture.cover, fixture.replay, kAdmissionKey));
     });
     const auto port = fixture.port();
     config.listen_endpoint = {boost::asio::ip::address_v6::any(), port};
     auto ipv6 = fixture.runtime.sync([&] {
-        return take(Ytp1FrontDoor::create(fixture.runtime.context(), config,
+        return take(H2WebFrontDoor::create(fixture.runtime.context(), config,
             fixture.tls, fixture.cover, fixture.replay, kAdmissionKey));
     });
     CHECK(ipv6->local_endpoint().address().is_v6());

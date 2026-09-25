@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_front_door.hpp"
+#include "providers/h2_web_front_door.hpp"
 #include "providers/ytp1_h2_admission.hpp"
 
 #include <algorithm>
@@ -131,11 +131,11 @@ private:
 };
 
 // Retained by the promoted carrier, without retaining the listening owner.
-struct CoverSession final : Ytp1H2CoverHandler {
-    CoverSession(std::shared_ptr<const Ytp1CoverSite> value, Ytp1FrontDoorLimits bounds)
+struct CoverSession final : H2CoverHandler {
+    CoverSession(std::shared_ptr<const CoverSite> value, H2WebFrontDoorLimits bounds)
         : site(std::move(value)), limits(bounds) {}
-    std::shared_ptr<const Ytp1CoverSite> site;
-    Ytp1FrontDoorLimits limits;
+    std::shared_ptr<const CoverSite> site;
+    H2WebFrontDoorLimits limits;
     std::size_t requests{0U};
     std::set<std::int32_t> streams;
 
@@ -158,7 +158,7 @@ struct CoverSession final : Ytp1H2CoverHandler {
 };
 }
 
-class Ytp1FrontDoor::State final : public std::enable_shared_from_this<State> {
+class H2WebFrontDoor::State final : public std::enable_shared_from_this<State> {
 public:
     struct Waiter final {
         CancellationToken token;
@@ -169,12 +169,12 @@ public:
     };
     class Connection;
 
-    State(std::shared_ptr<AsioExecutionContext> execution, Ytp1FrontDoorConfig options,
-          std::shared_ptr<Ytp1Tls13SecureChannelProvider> tls_provider,
-          std::shared_ptr<const Ytp1CoverSite> site,
+    State(std::shared_ptr<AsioExecutionContext> execution, H2WebFrontDoorConfig options,
+          std::shared_ptr<Tls13SecureChannelProvider> tls_provider,
+          std::shared_ptr<const CoverSite> site,
           std::shared_ptr<admission::ReplayCache> replay_cache,
           std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp_owner,
-          Ytp1H2Dispatch dispatch)
+          H2Dispatch dispatch)
         : context(std::move(execution)), config(std::move(options)),
           tls(std::move(tls_provider)), cover(std::move(site)), replay(std::move(replay_cache)),
           tcp(std::move(tcp_owner)), post(std::move(dispatch)),
@@ -229,12 +229,12 @@ public:
     }
 
     std::shared_ptr<AsioExecutionContext> context;
-    Ytp1FrontDoorConfig config;
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider> tls;
-    std::shared_ptr<const Ytp1CoverSite> cover;
+    H2WebFrontDoorConfig config;
+    std::shared_ptr<Tls13SecureChannelProvider> tls;
+    std::shared_ptr<const CoverSite> cover;
     std::shared_ptr<admission::ReplayCache> replay;
     std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp;
-    Ytp1H2Dispatch post;
+    H2Dispatch post;
     boost::asio::basic_socket_acceptor<Tcp, AsioExecutionContext::Executor> acceptor;
     Tcp::endpoint endpoint;
     std::shared_ptr<PromotionBudget> budget;
@@ -248,7 +248,7 @@ public:
     bool accepting{false};
 };
 
-class Ytp1FrontDoor::State::Connection final
+class H2WebFrontDoor::State::Connection final
     : public std::enable_shared_from_this<Connection> {
 public:
     explicit Connection(const std::shared_ptr<State>& owner)
@@ -274,7 +274,7 @@ public:
                 else if (self->promoting_ && !self->terminal_) self->publish();
             });
             owner->tls->async_wrap_server_cover(std::move(adopted).take_value(), cancellation_.token(),
-                [self = shared_from_this()](Result<std::unique_ptr<Ytp1TlsServerConnection>> result) noexcept {
+                [self = shared_from_this()](Result<std::unique_ptr<TlsServerConnection>> result) noexcept {
                     try {
                         if (!result.ok()) { self->stop(); return; }
                         auto tls = std::move(result).take_value();
@@ -501,7 +501,7 @@ private:
                 waiter_->token.is_cancelled() || waiter_->epoch != owner->cancel_epoch.load()) { stop(); return; }
             auto secure = tls_->promote();
             if (!secure.ok()) { stop(); return; }
-            auto made = make_ytp1_h2_admitted_server_carrier(std::move(secure).take_value(),
+            auto made = make_admitted_h2_duplex_server_carrier(std::move(secure).take_value(),
                 std::move(h2_), context_->affinity(), owner->post, owner->config.carrier_limits,
                 cover_);
             if (!made.ok()) { stop(); return; }
@@ -520,7 +520,7 @@ private:
     boost::asio::steady_timer timer_;
     std::shared_ptr<CoverSession> cover_;
     CancellationSource cancellation_;
-    std::unique_ptr<Ytp1TlsServerConnection> tls_;
+    std::unique_ptr<TlsServerConnection> tls_;
     std::unique_ptr<obfs::H2Carrier> h2_;
     std::optional<obfs::H2Request> candidate_;
     std::shared_ptr<Waiter> waiter_;
@@ -533,7 +533,7 @@ private:
     bool reading_{false}, writing_{false}, http_done_{false}, pumping_{false}, repump_{false};
 };
 
-void Ytp1FrontDoor::State::start_accept() noexcept {
+void H2WebFrontDoor::State::start_accept() noexcept {
     if (closing.load() || accepting || connections.size() >= config.limits.max_connections) return;
     try {
         accepting = true;
@@ -552,12 +552,12 @@ void Ytp1FrontDoor::State::start_accept() noexcept {
     } catch (...) { accepting = false; request_close(); }
 }
 
-void Ytp1FrontDoor::State::remove(Connection* connection) noexcept {
+void H2WebFrontDoor::State::remove(Connection* connection) noexcept {
     connections.remove_if([connection](const auto& value) { return value.get() == connection; });
     start_accept();
 }
 
-void Ytp1FrontDoor::State::settle_control() noexcept {
+void H2WebFrontDoor::State::settle_control() noexcept {
     if (closing.load()) {
         Error ignored;
         acceptor.close(ignored);
@@ -579,7 +579,7 @@ void Ytp1FrontDoor::State::settle_control() noexcept {
     }
 }
 
-void Ytp1FrontDoor::State::add_waiter(CancellationToken token, AcceptCompletion completion) {
+void H2WebFrontDoor::State::add_waiter(CancellationToken token, AcceptCompletion completion) {
     context->require_context();
     if (!completion) return;
     if (closing.load() || token.is_cancelled() || waiters.size() >= config.limits.max_pending_accepts) {
@@ -611,15 +611,15 @@ void Ytp1FrontDoor::State::add_waiter(CancellationToken token, AcceptCompletion 
     }
 }
 
-Result<std::shared_ptr<Ytp1FrontDoor>> Ytp1FrontDoor::create(
-    std::shared_ptr<AsioExecutionContext> context, Ytp1FrontDoorConfig config,
-    std::shared_ptr<Ytp1Tls13SecureChannelProvider> tls,
-    std::shared_ptr<const Ytp1CoverSite> cover,
+Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create(
+    std::shared_ptr<AsioExecutionContext> context, H2WebFrontDoorConfig config,
+    std::shared_ptr<Tls13SecureChannelProvider> tls,
+    std::shared_ptr<const CoverSite> cover,
     std::shared_ptr<admission::ReplayCache> replay,
     std::span<const std::byte> admission_key) {
     if (!context || !tls || tls->local_role() != EndpointRole::Server ||
         !cover || !replay || admission_key.size() != kYtp1H2AdmissionKeyBytes)
-        return Result<std::shared_ptr<Ytp1FrontDoor>>(Status(StatusCode::InvalidArgument));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::InvalidArgument));
     context->require_context();
     const auto& limits = config.limits;
     if (!limits.max_connections || limits.max_connections > 4096U ||
@@ -630,15 +630,15 @@ Result<std::shared_ptr<Ytp1FrontDoor>> Ytp1FrontDoor::create(
         !limits.max_output_bytes || limits.max_output_bytes > 32U * 1024U * 1024U ||
         limits.connection_timeout <= std::chrono::milliseconds::zero() ||
         limits.connection_timeout > std::chrono::minutes(10))
-        return Result<std::shared_ptr<Ytp1FrontDoor>>(Status(StatusCode::InvalidArgument));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::InvalidArgument));
     try {
-        const auto carrier_status = validate_ytp1_h2_carrier_limits(config.carrier_limits);
-        if (!carrier_status.ok()) return Result<std::shared_ptr<Ytp1FrontDoor>>(carrier_status);
+        const auto carrier_status = validate_h2_duplex_carrier_limits(config.carrier_limits);
+        if (!carrier_status.ok()) return Result<std::shared_ptr<H2WebFrontDoor>>(carrier_status);
         AsioTcpChannelLimits tcp_limits;
         tcp_limits.max_active_channels = limits.max_connections + limits.max_promoted_carriers;
         auto tcp = AsioTcpAcceptedChannelOwner::create(context, tcp_limits);
-        if (!tcp.ok()) return Result<std::shared_ptr<Ytp1FrontDoor>>(tcp.status());
-        Ytp1H2Dispatch post{
+        if (!tcp.ok()) return Result<std::shared_ptr<H2WebFrontDoor>>(tcp.status());
+        H2Dispatch post{
             [context](std::function<void()> task) {
                 boost::asio::post(context->executor(), std::move(task));
             },
@@ -662,32 +662,32 @@ Result<std::shared_ptr<Ytp1FrontDoor>> Ytp1FrontDoor::create(
 #endif
         if (!error) state->acceptor.bind(state->config.listen_endpoint, error);
         if (!error) state->acceptor.listen(boost::asio::socket_base::max_listen_connections, error);
-        if (error) return Result<std::shared_ptr<Ytp1FrontDoor>>(listener_error(error));
+        if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error));
         state->endpoint = state->acceptor.local_endpoint(error);
-        if (error) return Result<std::shared_ptr<Ytp1FrontDoor>>(listener_error(error));
-        auto result = std::shared_ptr<Ytp1FrontDoor>(new Ytp1FrontDoor(state));
+        if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error));
+        auto result = std::shared_ptr<H2WebFrontDoor>(new H2WebFrontDoor(state));
         state->start_accept();
-        if (state->closing.load()) return Result<std::shared_ptr<Ytp1FrontDoor>>(Status(StatusCode::Internal));
-        return Result<std::shared_ptr<Ytp1FrontDoor>>(std::move(result));
+        if (state->closing.load()) return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::Internal));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(std::move(result));
     } catch (const boost::system::system_error& error) {
-        return Result<std::shared_ptr<Ytp1FrontDoor>>(listener_error(error.code()));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error.code()));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<Ytp1FrontDoor>>(Status(StatusCode::ResourceExhausted));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::ResourceExhausted));
     } catch (...) {
-        return Result<std::shared_ptr<Ytp1FrontDoor>>(Status(StatusCode::Internal));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::Internal));
     }
 }
 
-Ytp1FrontDoor::Ytp1FrontDoor(std::shared_ptr<State> state) noexcept : state_(std::move(state)) {}
-Ytp1FrontDoor::~Ytp1FrontDoor() noexcept { close(); }
-ExecutorAffinity Ytp1FrontDoor::executor_affinity() const noexcept { return state_->context->affinity(); }
-Tcp::endpoint Ytp1FrontDoor::local_endpoint() const noexcept { return state_->endpoint; }
-bool Ytp1FrontDoor::closed() const noexcept { return state_->closing.load(); }
-void Ytp1FrontDoor::async_accept(CancellationToken token, AcceptCompletion completion) {
+H2WebFrontDoor::H2WebFrontDoor(std::shared_ptr<State> state) noexcept : state_(std::move(state)) {}
+H2WebFrontDoor::~H2WebFrontDoor() noexcept { close(); }
+ExecutorAffinity H2WebFrontDoor::executor_affinity() const noexcept { return state_->context->affinity(); }
+Tcp::endpoint H2WebFrontDoor::local_endpoint() const noexcept { return state_->endpoint; }
+bool H2WebFrontDoor::closed() const noexcept { return state_->closing.load(); }
+void H2WebFrontDoor::async_accept(CancellationToken token, AcceptCompletion completion) {
     const auto state = state_;
     state->add_waiter(std::move(token), std::move(completion));
 }
-void Ytp1FrontDoor::cancel() noexcept { state_->request_cancel(); }
-void Ytp1FrontDoor::close() noexcept { state_->request_close(); }
+void H2WebFrontDoor::cancel() noexcept { state_->request_cancel(); }
+void H2WebFrontDoor::close() noexcept { state_->request_close(); }
 
 }  // namespace yume::providers

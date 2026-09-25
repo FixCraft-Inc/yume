@@ -114,7 +114,7 @@ file(REMOVE "${YUME_TEST_ROOT}/src/config/v1/forbidden.hpp")
 # include is the common form and an angled one is what someone reaches for
 # when the quoted form is rejected.
 file(WRITE "${YUME_TEST_ROOT}/src/stealth/forbidden.hpp"
-    "#include \"providers/ytp1_h2_carrier.hpp\"\n")
+    "#include \"providers/h2_duplex_carrier.hpp\"\n")
 run_layering_check(FALSE "forbidden.hpp includes providers/")
 file(REMOVE "${YUME_TEST_ROOT}/src/stealth/forbidden.hpp")
 

@@ -29,7 +29,7 @@
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 #include "test_support/tls_identity.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"

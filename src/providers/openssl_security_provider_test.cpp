@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -44,10 +44,10 @@ using yume::engine::SessionSecurityProvider;
 using yume::engine::StatusCode;
 using yume::providers::CompositePrivateIdentityView;
 using yume::providers::CompositePublicIdentityView;
-using yume::providers::Ytp1ClientCredentialsView;
-using yume::providers::Ytp1AuthorizedIdentityView;
-using yume::providers::Ytp1OpenSslSecurityProviderFactory;
-using yume::providers::Ytp1ServerCredentialsView;
+using yume::providers::ClientCredentialsView;
+using yume::providers::AuthorizedIdentityView;
+using yume::providers::OpenSslSecurityProviderFactory;
+using yume::providers::ServerCredentialsView;
 
 struct PkeyDeleter final {
     void operator()(EVP_PKEY* value) const noexcept { EVP_PKEY_free(value); }
@@ -248,26 +248,26 @@ struct ProviderPair final {
 };
 
 ProviderPair make_pair(const Fixture& fixture, const PairOptions& options) {
-    const Ytp1ClientCredentialsView client_credentials{
+    const ClientCredentialsView client_credentials{
         private_view(fixture.client), public_view(*options.trusted_server),
         as_bytes(fixture.server_kem_public), as_bytes(options.client_psk),
         "server-peer",
     };
-    const Ytp1AuthorizedIdentityView authorized{
+    const AuthorizedIdentityView authorized{
         public_view(*options.authorized_client), as_bytes(options.server_psk),
         "client-peer",
     };
-    const std::array<Ytp1AuthorizedIdentityView, 1> authorized_identities{authorized};
-    const Ytp1ServerCredentialsView server_credentials{
+    const std::array<AuthorizedIdentityView, 1> authorized_identities{authorized};
+    const ServerCredentialsView server_credentials{
         private_view(fixture.server), as_bytes(fixture.server_kem_private),
         authorized_identities,
     };
     auto client_factory = require(
-        Ytp1OpenSslSecurityProviderFactory::create_client(
+        OpenSslSecurityProviderFactory::create_client(
             client_credentials),
         "client factory");
     auto server_factory = require(
-        Ytp1OpenSslSecurityProviderFactory::create_server(
+        OpenSslSecurityProviderFactory::create_server(
             server_credentials),
         "server factory");
     check(!client_factory->create(EndpointRole::Server).ok(),
@@ -782,12 +782,12 @@ void test_component_mutation_and_stripping(const Fixture& fixture) {
 
 void test_factory_bounds_and_cancellation(const Fixture& fixture) {
     auto options = default_options(fixture);
-    Ytp1ClientCredentialsView client_credentials{
+    ClientCredentialsView client_credentials{
         private_view(fixture.client), public_view(fixture.server),
         as_bytes(fixture.server_kem_public), as_bytes(options.client_psk),
         "server-peer",
     };
-    check(Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(OpenSslSecurityProviderFactory::create_client(
               client_credentials).ok(),
           "canonical PKCS#8 private credentials were rejected");
     const auto alternate_private = overlong_ber_outer_length(
@@ -797,34 +797,34 @@ void test_factory_bounds_and_cancellation(const Fixture& fixture) {
     noncanonical_private.ed25519_private_key_der =
         as_bytes(alternate_private);
     client_credentials.local_identity = noncanonical_private;
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "noncanonical BER private-key encoding was accepted");
     client_credentials.local_identity = private_view(fixture.client);
     std::array<std::uint8_t, yume::ytp1::kPskSize> zero_psk{};
     client_credentials.access_psk = as_bytes(zero_psk);
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "zero client PSK was accepted");
     client_credentials.access_psk = as_bytes(options.client_psk).first(31U);
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "short client PSK was accepted");
     client_credentials.access_psk = as_bytes(options.client_psk);
     client_credentials.server_peer_identity = {};
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "empty peer label was accepted");
     const std::string oversized_label(
         yume::engine::kMaxPeerIdentityBytes + 1U, 'x');
     client_credentials.server_peer_identity = oversized_label;
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "oversized peer label was accepted");
     client_credentials.server_peer_identity = "server-peer";
     client_credentials.server_ml_kem_1024_public_key_der =
         as_bytes(fixture.server.ed_public);
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "wrong server KEM algorithm was accepted");
     client_credentials.server_ml_kem_1024_public_key_der =
@@ -834,38 +834,38 @@ void test_factory_bounds_and_cancellation(const Fixture& fixture) {
     CompositePublicIdentityView noncanonical = public_view(fixture.server);
     noncanonical.ed25519_public_key_der = as_bytes(trailing_public);
     client_credentials.trusted_server_identity = noncanonical;
-    check(!Ytp1OpenSslSecurityProviderFactory::create_client(
+    check(!OpenSslSecurityProviderFactory::create_client(
                client_credentials).ok(),
           "noncanonical public DER was accepted");
 
-    const Ytp1AuthorizedIdentityView authorized{
+    const AuthorizedIdentityView authorized{
         public_view(fixture.client), as_bytes(options.server_psk),
         "client-peer",
     };
-    const std::array<Ytp1AuthorizedIdentityView, 2> duplicates{
+    const std::array<AuthorizedIdentityView, 2> duplicates{
         authorized, authorized};
-    Ytp1ServerCredentialsView server_credentials{
+    ServerCredentialsView server_credentials{
         private_view(fixture.server), as_bytes(fixture.server_kem_private),
         duplicates,
     };
-    check(!Ytp1OpenSslSecurityProviderFactory::create_server(
+    check(!OpenSslSecurityProviderFactory::create_server(
                server_credentials).ok(),
           "duplicate authorized identity was accepted");
     server_credentials.ml_kem_1024_private_key_der =
         as_bytes(fixture.server.ed_private);
-    check(!Ytp1OpenSslSecurityProviderFactory::create_server(
+    check(!OpenSslSecurityProviderFactory::create_server(
                server_credentials).ok(),
           "wrong server KEM private algorithm was accepted");
     server_credentials.ml_kem_1024_private_key_der =
         as_bytes(fixture.server_kem_private);
     server_credentials.authorized_identities = {};
-    check(!Ytp1OpenSslSecurityProviderFactory::create_server(
+    check(!OpenSslSecurityProviderFactory::create_server(
                server_credentials).ok(),
           "empty authorized-identity set was accepted");
-    std::vector<Ytp1AuthorizedIdentityView> too_many(
-        yume::providers::kMaxYtp1AuthorizedIdentities + 1U, authorized);
+    std::vector<AuthorizedIdentityView> too_many(
+        yume::providers::kMaxAuthorizedIdentities + 1U, authorized);
     server_credentials.authorized_identities = too_many;
-    check(!Ytp1OpenSslSecurityProviderFactory::create_server(
+    check(!OpenSslSecurityProviderFactory::create_server(
                server_credentials).ok(),
           "oversized authorized-identity set was accepted");
 
@@ -892,7 +892,7 @@ void test_crypto_backend_identity() {
     const std::string loaded =
         std::string("openssl-") + OpenSSL_version(OPENSSL_FULL_VERSION_STRING);
     const std::string_view reported =
-        yume::providers::ytp1_openssl_crypto_backend();
+        yume::providers::openssl_crypto_backend();
     check(reported.size() < 32U,
           "crypto backend identity does not fit a manifest field");
     check(reported.starts_with("openssl-3."),
@@ -900,7 +900,7 @@ void test_crypto_backend_identity() {
     check(std::string_view(loaded).starts_with(reported),
           "crypto backend identity does not name the loaded OpenSSL");
     check(reported.data() ==
-              yume::providers::ytp1_openssl_crypto_backend().data(),
+              yume::providers::openssl_crypto_backend().data(),
           "crypto backend identity is not one stable value");
 }
 

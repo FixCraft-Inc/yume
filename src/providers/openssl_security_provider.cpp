@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "providers/ytp1_security_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
@@ -736,16 +736,16 @@ enum class ProviderState : std::uint8_t {
     Cancelled,
 };
 
-class Ytp1OpenSslSecurityProvider final : public SessionSecurityProvider {
+class OpenSslSecurityProvider final : public SessionSecurityProvider {
 public:
-    explicit Ytp1OpenSslSecurityProvider(
+    explicit OpenSslSecurityProvider(
         std::shared_ptr<const CredentialStore> credentials) noexcept
         : credentials_(std::move(credentials)), role_(credentials_->role) {}
 
-    ~Ytp1OpenSslSecurityProvider() override { cancel(); }
+    ~OpenSslSecurityProvider() override { cancel(); }
 
     std::string_view provider_id() const noexcept override {
-        return kYtp1OpenSslSecurityProviderId;
+        return kOpenSslSecurityProviderId;
     }
 
     std::string_view suite_id() const noexcept override {
@@ -1347,7 +1347,7 @@ private:
 };
 
 Result<AuthenticationOutput>
-Ytp1OpenSslSecurityProvider::make_server_challenge() {
+OpenSslSecurityProvider::make_server_challenge() {
     X25519KeyPair server_x = generate_x25519(*credentials_->crypto);
     const std::vector<std::uint8_t> nonce = random_bytes(
         *credentials_->crypto, 32U);
@@ -1393,7 +1393,7 @@ Ytp1OpenSslSecurityProvider::make_server_challenge() {
 }
 
 Result<AuthenticationOutput>
-Ytp1OpenSslSecurityProvider::process_server_challenge(
+OpenSslSecurityProvider::process_server_challenge(
     std::span<const std::byte> canonical_message) {
     constexpr std::array<std::uint16_t, 7> kExpectedFields{
         static_cast<std::uint16_t>(ytp1::AuthFieldId::TranscriptHash),
@@ -1521,7 +1521,7 @@ Ytp1OpenSslSecurityProvider::process_server_challenge(
 }
 
 Result<AuthenticationOutput>
-Ytp1OpenSslSecurityProvider::process_client_response(
+OpenSslSecurityProvider::process_client_response(
     std::span<const std::byte> canonical_message) {
     constexpr std::array<std::uint16_t, 8> kExpectedFields{
         static_cast<std::uint16_t>(ytp1::AuthFieldId::TranscriptHash),
@@ -1668,7 +1668,7 @@ Ytp1OpenSslSecurityProvider::process_client_response(
 }
 
 Result<AuthenticationOutput>
-Ytp1OpenSslSecurityProvider::process_server_accepted(
+OpenSslSecurityProvider::process_server_accepted(
     std::span<const std::byte> canonical_message) {
     constexpr std::array<std::uint16_t, 3> kExpectedFields{
         static_cast<std::uint16_t>(ytp1::AuthFieldId::TranscriptHash),
@@ -1734,33 +1734,33 @@ Ytp1OpenSslSecurityProvider::process_server_accepted(
 
 }  // namespace
 
-struct Ytp1OpenSslSecurityProviderFactory::Impl final {
+struct OpenSslSecurityProviderFactory::Impl final {
     explicit Impl(std::shared_ptr<const CredentialStore> value) noexcept
         : credentials(std::move(value)) {}
 
     std::shared_ptr<const CredentialStore> credentials;
 };
 
-Ytp1OpenSslSecurityProviderFactory::Ytp1OpenSslSecurityProviderFactory(
+OpenSslSecurityProviderFactory::OpenSslSecurityProviderFactory(
     ProviderDescriptor descriptor,
     std::shared_ptr<Impl> impl) noexcept
     : descriptor_(std::move(descriptor)), impl_(std::move(impl)) {}
 
-Ytp1OpenSslSecurityProviderFactory::~Ytp1OpenSslSecurityProviderFactory() =
+OpenSslSecurityProviderFactory::~OpenSslSecurityProviderFactory() =
     default;
 
 const ProviderDescriptor&
-Ytp1OpenSslSecurityProviderFactory::descriptor() const noexcept {
+OpenSslSecurityProviderFactory::descriptor() const noexcept {
     return descriptor_;
 }
 
-Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>
-Ytp1OpenSslSecurityProviderFactory::create_client(
-    const Ytp1ClientCredentialsView& input) {
+Result<std::shared_ptr<OpenSslSecurityProviderFactory>>
+OpenSslSecurityProviderFactory::create_client(
+    const ClientCredentialsView& input) {
     if (input.access_psk.size() != ytp1::kPskSize ||
         !any_nonzero(as_u8(input.access_psk)) ||
         !valid_peer_label(input.server_peer_identity)) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::InvalidArgument,
                    "client PSK or server peer label is invalid"));
     }
@@ -1784,9 +1784,9 @@ Ytp1OpenSslSecurityProviderFactory::create_client(
             std::string(input.server_peer_identity);
 
         auto descriptor = ProviderDescriptor::create(
-            std::string(kYtp1OpenSslSecurityProviderId),
+            std::string(kOpenSslSecurityProviderId),
             ProviderKind::SessionSecurity,
-            kYtp1OpenSslSecurityProviderApiVersion,
+            kOpenSslSecurityProviderApiVersion,
             engine::CapabilitySet::of({
                 engine::Capability::CompositeAuthentication,
                 engine::Capability::HybridEstablishment,
@@ -1795,37 +1795,37 @@ Ytp1OpenSslSecurityProviderFactory::create_client(
             }));
         if (!descriptor.ok()) {
             return Result<
-                std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+                std::shared_ptr<OpenSslSecurityProviderFactory>>(
                 descriptor.status());
         }
         auto impl = std::make_shared<Impl>(credentials);
-        auto factory = std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>(
-            new Ytp1OpenSslSecurityProviderFactory(
+        auto factory = std::shared_ptr<OpenSslSecurityProviderFactory>(
+            new OpenSslSecurityProviderFactory(
                 std::move(descriptor).take_value(), std::move(impl)));
         return Result<
-            std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+            std::shared_ptr<OpenSslSecurityProviderFactory>>(
             std::move(factory));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::ResourceExhausted,
                    "client provider-factory allocation failed"));
     } catch (const std::invalid_argument&) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::InvalidArgument,
                    "client credential material is invalid"));
     } catch (...) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::ProviderMismatch,
                    "required OpenSSL 3.5 YTP/1 algorithms are unavailable"));
     }
 }
 
-Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>
-Ytp1OpenSslSecurityProviderFactory::create_server(
-    const Ytp1ServerCredentialsView& input) {
+Result<std::shared_ptr<OpenSslSecurityProviderFactory>>
+OpenSslSecurityProviderFactory::create_server(
+    const ServerCredentialsView& input) {
     if (input.authorized_identities.empty() ||
-        input.authorized_identities.size() > kMaxYtp1AuthorizedIdentities) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        input.authorized_identities.size() > kMaxAuthorizedIdentities) {
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::InvalidArgument,
                    "server authorized-identity count is outside its bound"));
     }
@@ -1843,7 +1843,7 @@ Ytp1OpenSslSecurityProviderFactory::create_server(
             credentials->server_ml_kem_key.get());
         credentials->authorized_identities.reserve(input.authorized_identities.size());
 
-        for (const Ytp1AuthorizedIdentityView& authorized :
+        for (const AuthorizedIdentityView& authorized :
              input.authorized_identities) {
             if (authorized.access_psk.size() != ytp1::kPskSize ||
                 !any_nonzero(as_u8(authorized.access_psk)) ||
@@ -1872,9 +1872,9 @@ Ytp1OpenSslSecurityProviderFactory::create_server(
         }
 
         auto descriptor = ProviderDescriptor::create(
-            std::string(kYtp1OpenSslSecurityProviderId),
+            std::string(kOpenSslSecurityProviderId),
             ProviderKind::SessionSecurity,
-            kYtp1OpenSslSecurityProviderApiVersion,
+            kOpenSslSecurityProviderApiVersion,
             engine::CapabilitySet::of({
                 engine::Capability::CompositeAuthentication,
                 engine::Capability::HybridEstablishment,
@@ -1883,33 +1883,33 @@ Ytp1OpenSslSecurityProviderFactory::create_server(
             }));
         if (!descriptor.ok()) {
             return Result<
-                std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+                std::shared_ptr<OpenSslSecurityProviderFactory>>(
                 descriptor.status());
         }
         auto impl = std::make_shared<Impl>(credentials);
-        auto factory = std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>(
-            new Ytp1OpenSslSecurityProviderFactory(
+        auto factory = std::shared_ptr<OpenSslSecurityProviderFactory>(
+            new OpenSslSecurityProviderFactory(
                 std::move(descriptor).take_value(), std::move(impl)));
         return Result<
-            std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+            std::shared_ptr<OpenSslSecurityProviderFactory>>(
             std::move(factory));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::ResourceExhausted,
                    "server provider-factory allocation failed"));
     } catch (const std::invalid_argument&) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::InvalidArgument,
                    "server credential material is invalid"));
     } catch (...) {
-        return Result<std::shared_ptr<Ytp1OpenSslSecurityProviderFactory>>(
+        return Result<std::shared_ptr<OpenSslSecurityProviderFactory>>(
             Status(StatusCode::ProviderMismatch,
                    "required OpenSSL 3.5 YTP/1 algorithms are unavailable"));
     }
 }
 
 Result<std::unique_ptr<SessionSecurityProvider>>
-Ytp1OpenSslSecurityProviderFactory::create(EndpointRole local_role) {
+OpenSslSecurityProviderFactory::create(EndpointRole local_role) {
     if (!impl_ || !impl_->credentials ||
         local_role != impl_->credentials->role) {
         return Result<std::unique_ptr<SessionSecurityProvider>>(Status(
@@ -1918,7 +1918,7 @@ Ytp1OpenSslSecurityProviderFactory::create(EndpointRole local_role) {
     }
     try {
         std::unique_ptr<SessionSecurityProvider> provider =
-            std::make_unique<Ytp1OpenSslSecurityProvider>(
+            std::make_unique<OpenSslSecurityProvider>(
                 impl_->credentials);
         return Result<std::unique_ptr<SessionSecurityProvider>>(
             std::move(provider));
@@ -1929,7 +1929,7 @@ Ytp1OpenSslSecurityProviderFactory::create(EndpointRole local_role) {
     }
 }
 
-std::string_view ytp1_openssl_crypto_backend() noexcept {
+std::string_view openssl_crypto_backend() noexcept {
     // OpenSSL_version returns static text owned by the loaded library. The
     // formatted identity is built once under the thread-safe static guard.
     static const std::array<char, 32> identity = [] {

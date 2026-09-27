@@ -4,14 +4,17 @@
 # Licensed under the GNU Affero General Public License v3.0 or later.
 """Measure a YTP/1 session across emulated wide-area links, without root.
 
-The script re-executes itself under `unshare -rn` and builds two network
-namespaces joined by a veth pair: the client side runs yume and the
-measurements, and the server side runs yumed and a payload server. Only the
-veth pair carries netem delay, loss and rate limits, in both directions, so
-the direct path and the tunnel each cross the emulated link once. The SOCKS
-hop to yume and the daemon's hop to its destination stay on loopback without
-delay. Each veth end sends one MTU-sized packet per buffer, so loss applies
-to packets as it would on a real link.
+The script re-executes itself under `unshare -rn` and builds three network
+namespaces: the client side runs yume and the measurements, the server side
+runs yumed and a payload server, and a router between them forwards packets
+and applies netem delay, loss and rate limits on its two outgoing
+interfaces. The direct path and the tunnel each cross the emulated link
+once. The SOCKS hop to yume and the daemon's hop to its destination stay on
+loopback without delay. The delay lives in the router because netem on a
+sender's own interface holds that sender's packets, and TCP Small Queues
+then throttles the socket far below the path's capacity. Every interface
+sends one MTU-sized packet per buffer, so loss applies to packets as it
+would on a real link.
 
 For every condition the client starts a fresh session, so the report records
 how long a session takes to carry its first request. It then alternates timed
@@ -47,8 +50,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import yume_native_session as session  # noqa: E402
 
 INSIDE = "YUME_WAN_EMULATION_INSIDE"
-CLIENT_ADDRESS, SERVER_ADDRESS = "10.200.0.1", "10.200.0.2"
-CLIENT_LINK, SERVER_LINK = "yume-wan-c", "yume-wan-s"
+CLIENT_ADDRESS, ROUTER_CLIENT_ADDRESS = "10.200.0.1", "10.200.0.2"
+ROUTER_SERVER_ADDRESS, SERVER_ADDRESS = "10.200.1.1", "10.200.1.2"
+CLIENT_LINK, ROUTER_CLIENT_LINK = "yume-wan-c", "yume-wan-rc"
+ROUTER_SERVER_LINK, SERVER_LINK = "yume-wan-rs", "yume-wan-s"
 MTU = 1500
 STREAM_BYTES = 1 << 40
 SMALL_BYTES = 1024
@@ -221,39 +226,61 @@ def run(argv: list[str], **options: object) -> subprocess.CompletedProcess:
 
 
 class Link:
-    """A veth pair between this namespace and a child namespace kept alive by `sleep`."""
+    """Client, router and server namespaces joined by two veth pairs.
+
+    The client side is this process's namespace. The router and the server
+    are namespaces held open by `sleep` children, entered with nsenter.
+    """
 
     def __init__(self) -> None:
         self.ip = shutil.which("ip") or "/sbin/ip"
         self.tc = shutil.which("tc") or "/sbin/tc"
         self.nsenter = shutil.which("nsenter") or "/usr/bin/nsenter"
-        run([self.ip, "link", "set", "lo", "up"])
-        run([self.ip, "link", "add", CLIENT_LINK, "type", "veth", "peer", "name", SERVER_LINK])
-        self.holder = subprocess.Popen([shutil.which("unshare") or "/usr/bin/unshare", "-n", "sleep", "infinity"])
+        unshare = shutil.which("unshare") or "/usr/bin/unshare"
+        self.holders = {side: subprocess.Popen([unshare, "-n", "sleep", "infinity"])
+                        for side in ("router", "server")}
         deadline = time.monotonic() + 10
-        while os.readlink(f"/proc/{self.holder.pid}/ns/net") == os.readlink("/proc/self/ns/net"):
-            if time.monotonic() > deadline or self.holder.poll() is not None:
-                raise session.SessionFailure("the server namespace did not start")
-            time.sleep(0.05)
-        run([self.ip, "link", "set", SERVER_LINK, "netns", str(self.holder.pid)])
-        for inside, name, address in ((False, CLIENT_LINK, CLIENT_ADDRESS), (True, SERVER_LINK, SERVER_ADDRESS)):
-            run(self.command(inside, [self.ip, "addr", "add", f"{address}/30", "dev", name]))
-            run(self.command(inside, [self.ip, "link", "set", name, "mtu", str(MTU), "gso_max_segs", "1", "up"]))
-        run(self.command(True, [self.ip, "link", "set", "lo", "up"]))
+        own = os.readlink("/proc/self/ns/net")
+        for side, holder in self.holders.items():
+            while os.readlink(f"/proc/{holder.pid}/ns/net") == own:
+                if time.monotonic() > deadline or holder.poll() is not None:
+                    raise session.SessionFailure(f"the {side} namespace did not start")
+                time.sleep(0.05)
+        pid = {side: str(holder.pid) for side, holder in self.holders.items()}
+        run([self.ip, "link", "add", CLIENT_LINK, "type", "veth", "peer", "name", ROUTER_CLIENT_LINK])
+        run([self.ip, "link", "set", ROUTER_CLIENT_LINK, "netns", pid["router"]])
+        run(self.command("router", [self.ip, "link", "add", ROUTER_SERVER_LINK, "type", "veth",
+                                    "peer", "name", SERVER_LINK]))
+        run(self.command("router", [self.ip, "link", "set", SERVER_LINK, "netns", pid["server"]]))
+        for side, name, address in (("client", CLIENT_LINK, CLIENT_ADDRESS),
+                                    ("router", ROUTER_CLIENT_LINK, ROUTER_CLIENT_ADDRESS),
+                                    ("router", ROUTER_SERVER_LINK, ROUTER_SERVER_ADDRESS),
+                                    ("server", SERVER_LINK, SERVER_ADDRESS)):
+            run(self.command(side, [self.ip, "addr", "add", f"{address}/30", "dev", name]))
+            run(self.command(side, [self.ip, "link", "set", name, "mtu", str(MTU), "gso_max_segs", "1", "up"]))
+        for side in ("client", "router", "server"):
+            run(self.command(side, [self.ip, "link", "set", "lo", "up"]))
+        run(self.command("client", [self.ip, "route", "add", "default", "via", ROUTER_CLIENT_ADDRESS]))
+        run(self.command("server", [self.ip, "route", "add", "default", "via", ROUTER_SERVER_ADDRESS]))
+        run(self.command("router", ["sh", "-c", "echo 1 > /proc/sys/net/ipv4/ip_forward"]))
 
-    def command(self, server_side: bool, argv: list[str]) -> list[str]:
-        return [self.nsenter, "-t", str(self.holder.pid), "-n", *argv] if server_side else argv
+    def command(self, side: str, argv: list[str]) -> list[str]:
+        if side == "client":
+            return argv
+        return [self.nsenter, "-t", str(self.holders[side].pid), "-n", *argv]
 
     def shape(self, condition: dict[str, float]) -> list[str]:
+        """The same netem settings on both router exits, one per direction."""
         qdisc = netem_arguments(condition)
-        for inside, name in ((False, CLIENT_LINK), (True, SERVER_LINK)):
-            run(self.command(inside, [self.tc, "qdisc", "replace", "dev", name, "root", *qdisc]))
+        for name in (ROUTER_CLIENT_LINK, ROUTER_SERVER_LINK):
+            run(self.command("router", [self.tc, "qdisc", "replace", "dev", name, "root", *qdisc]))
         return qdisc
 
     def close(self) -> None:
-        if self.holder.poll() is None:
-            self.holder.kill()
-            self.holder.wait(timeout=5)
+        for holder in self.holders.values():
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait(timeout=5)
 
 
 def set_queued_bytes(kit: Path, value: int) -> None:
@@ -353,11 +380,11 @@ def run_inside(arguments: argparse.Namespace) -> int:
                 (kit / "client/yume.json").read_text(encoding="utf-8"))["limits"]["max_queued_bytes"]
             logs = {name: (arguments.output / f"{name}.log").open("wb") for name in ("payload", "yumed")}
             processes.append(subprocess.Popen(
-                link.command(True, [sys.executable, "-c", PAYLOAD_SERVER, str(STREAM_BYTES),
+                link.command("server", [sys.executable, "-c", PAYLOAD_SERVER, str(STREAM_BYTES),
                                     str(SMALL_BYTES), str(target_port)]),
                 stdout=logs["payload"], stderr=subprocess.STDOUT))
             processes.append(subprocess.Popen(
-                link.command(True, [str(arguments.yumed), "--config", str(kit / "server/yumed.json")]),
+                link.command("server", [str(arguments.yumed), "--config", str(kit / "server/yumed.json")]),
                 env=environment, stdout=logs["yumed"], stderr=subprocess.STDOUT))
             deadline = time.monotonic() + 30
             wait_for_text(arguments.output / "payload.log", "ready", processes[0], deadline)

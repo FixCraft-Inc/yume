@@ -244,9 +244,11 @@ the capture holds frames as they crossed the wire. Neither result is a
 classifier verdict or a qualified benchmark.
 
 `scripts/yume_wan_emulation.py` measures a session across emulated wide-area
-links without root. It joins two network namespaces with a veth pair and
-puts netem delay, loss and rate limits on that pair only, so the direct path
-and the tunnel each cross the emulated link once. For each `--condition`,
+links without root. A router namespace between the client and server
+namespaces applies netem delay, loss and rate limits, so the direct path and
+the tunnel each cross the emulated link once. Netem on a sender's own
+interface would hold its packets, and TCP Small Queues would then throttle
+that socket. For each `--condition`,
 such as `rtt=100,loss=0.5,rate=50`, it records how long a new session takes
 to carry its first request, direct and tunnelled download rates over a fixed
 window with the second half reported separately as steady state, and small

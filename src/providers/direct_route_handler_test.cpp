@@ -22,6 +22,7 @@
 #include "engine/front_door.hpp"
 #include "engine/session_engine.hpp"
 #include "providers/direct_route_handler.hpp"
+#include "test_support/allocation_failure.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
 
@@ -640,6 +641,13 @@ public:
             buffer(payload), CarrierCredit(payload.size(),
                                            std::move(release)))));
     }
+    // Builds nothing, so an armed allocation failure lands in the bridge.
+    void deliver_record(ReceivedRecord record) {
+        CHECK(read_);
+        auto completion = std::move(read_);
+        read_ = {};
+        completion(Result<ReceivedRecord>(std::move(record)));
+    }
     void end(Status status = Status(
                  StatusCode::EndOfStream, "manual stream EOF")) {
         CHECK(read_);
@@ -1227,6 +1235,54 @@ void test_authorization_is_fail_closed() {
     CHECK(handler->authorize(context).code() == StatusCode::Internal);
 }
 
+// One failed allocation while the bridge forwards a stream record either
+// leaves that write in flight or fails the bridge once. It never escapes the
+// bridge's noexcept write path.
+void test_stream_record_allocation_failure_is_contained() {
+    bool reached_success = false;
+    for (std::size_t failure = 1U; failure <= 256U && !reached_success;
+         ++failure) {
+        auto trace = std::make_shared<ChannelTrace>();
+        ManualByteChannel* channel = nullptr;
+        auto provider = std::make_shared<ManualRouteProvider>([&] {
+            auto owned = std::make_unique<ManualByteChannel>(trace, 3U);
+            channel = owned.get();
+            std::unique_ptr<ByteChannel> base = std::move(owned);
+            return RouteConnection::byte_stream(std::move(base));
+        });
+        auto stream =
+            std::make_shared<ManualStream>(ServiceKind::ByteStream, 32U);
+        direct_handler(ServiceKind::ByteStream)
+            ->on_route(authorized_request(ServiceKind::ByteStream), provider,
+                       stream);
+        CHECK(stream->read_issues == 1);
+        int release_calls = 0;
+        ReceivedRecord record(
+            buffer("abcdef"),
+            CarrierCredit(6U, [&](std::size_t) { ++release_calls; }));
+        yume::test::arm_allocation_failure(failure);
+        stream->deliver_record(std::move(record));
+        const bool fired = yume::test::disarm_allocation_failure();
+        if (stream->close_calls == 0) {
+            CHECK((trace->writes == std::vector<std::string>{"abc"}));
+            CHECK(release_calls == 0);
+            reached_success = !fired;
+            channel->complete_write();
+            CHECK((trace->writes == std::vector<std::string>{"abc", "def"}));
+            channel->complete_write();
+            CHECK(release_calls == 1);
+        } else {
+            CHECK(stream->close_calls == 1);
+            CHECK(trace->close_calls == 1);
+            CHECK(release_calls == 1);
+        }
+        stream->close(Status(StatusCode::Closed));
+        CHECK(release_calls == 1);
+        CHECK(trace->close_calls == 1);
+    }
+    CHECK(reached_success);
+}
+
 }  // namespace
 }  // namespace yume::providers
 
@@ -1235,6 +1291,7 @@ int main() {
     try {
         test_open_failure_kind_mismatch_and_exception();
         test_byte_bridge_credit_duplex_and_half_close();
+        test_stream_record_allocation_failure_is_contained();
         test_partial_completion_and_cancellation_close_once();
         test_route_to_stream_partial_completion();
         test_packet_boundaries_and_credit();

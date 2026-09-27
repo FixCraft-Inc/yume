@@ -36,19 +36,11 @@ using engine::StatusCode;
 using engine::StreamResponder;
 
 Status allocation_failure(std::string_view operation) noexcept {
-    try {
-        return Status(StatusCode::ResourceExhausted, operation);
-    } catch (...) {
-        return Status(StatusCode::ResourceExhausted);
-    }
+    return Status::diagnostic(StatusCode::ResourceExhausted, operation);
 }
 
 Status provider_failure(std::string_view operation) noexcept {
-    try {
-        return Status(StatusCode::Internal, operation);
-    } catch (...) {
-        return Status(StatusCode::Internal);
-    }
+    return Status::diagnostic(StatusCode::Internal, operation);
 }
 
 void close_connection(RouteConnection& connection) noexcept {
@@ -341,9 +333,8 @@ private:
             }
             PendingStreamRecord& pending = *pending_stream_record_;
             if (pending.offset >= pending.total_size) {
-                preparation_failure = Status(
-                    StatusCode::Internal,
-                    "route bridge lost stream payload state");
+                preparation_failure =
+                    provider_failure("route bridge lost stream payload state");
             } else if (kind_ == ServiceKind::ByteStream) {
                 byte_channel = byte_channel_.get();
                 chunk_size = std::min(
@@ -352,7 +343,7 @@ private:
             } else {
                 packet_channel = packet_channel_.get();
                 if (pending.total_size > packet_channel->max_packet_size()) {
-                    preparation_failure = Status(
+                    preparation_failure = Status::diagnostic(
                         StatusCode::ResourceExhausted,
                         "YTP packet exceeds the route-provider packet bound");
                 } else {
@@ -360,7 +351,7 @@ private:
                 }
             }
             if (preparation_failure.ok() && chunk_size == 0U) {
-                preparation_failure = Status(
+                preparation_failure = Status::diagnostic(
                     StatusCode::ProviderMismatch,
                     "route provider declared a zero write bound");
             }
@@ -377,8 +368,9 @@ private:
             return;
         }
 
-        Result<Buffer> outbound(Status(
-            StatusCode::Internal, "route write payload was not prepared"));
+        // Every path below replaces this or returns before reading it, so
+        // it carries no message to allocate.
+        Result<Buffer> outbound{Status(StatusCode::Internal)};
         CarrierCredit terminal_credit;
         if (whole_payload) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -430,7 +422,8 @@ private:
                 std::lock_guard<std::mutex> lock(mutex_);
                 route_write_inflight_ = false;
             }
-            fail(outbound.status());
+            fail(Status::diagnostic(outbound.status().code(),
+                                    outbound.status().message()));
             return;
         }
 
@@ -565,8 +558,8 @@ private:
                 std::lock_guard<std::mutex> lock(mutex_);
                 route_read_inflight_ = false;
             }
-            fail(Status(StatusCode::ProviderMismatch,
-                        "route read has no positive common bound"));
+            fail(Status::diagnostic(StatusCode::ProviderMismatch,
+                                    "route read has no positive common bound"));
             return;
         }
 

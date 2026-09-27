@@ -27,11 +27,6 @@ namespace {
 using engine::Status;
 using engine::StatusCode;
 
-// Matches the embedding backend's server sizing.
-constexpr std::size_t kServerSessions = 128U;
-constexpr std::size_t kMaxPendingStarts = 32U;
-constexpr std::size_t kPendingStartsPerListener = 4U;
-
 bool has_runtime_adapter(const config::v1::Config& config, const config::v1::Service& service) {
     return std::any_of(config.adapters().begin(), config.adapters().end(), [&](const auto& adapter) {
         if (const auto* tcp = std::get_if<config::v1::DirectTcpAdapter>(&adapter)) {
@@ -158,13 +153,13 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                 has_direct = true;
             }
         }
-        const std::size_t listeners = endpoint.listen_addresses().size();
-        state->accept.pending_per_listener = std::max<std::size_t>(
-            1U, std::min(kPendingStartsPerListener, kMaxPendingStarts / listeners));
+        const auto sizing =
+            native_server_sizing(endpoint.listen_addresses().size());
+        state->accept = sizing.accept;
 
         NativeEndpointOptions options;
-        options.max_sessions = kServerSessions;
-        options.max_pending_starts = state->accept.pending_per_listener * listeners;
+        options.max_sessions = sizing.max_sessions;
+        options.max_pending_starts = sizing.max_pending_starts;
         options.caller_runs_packet_adapters = !state->packets.empty();
         options.caller_runs_module_adapters = !state->modules.empty();
         if (has_direct) {

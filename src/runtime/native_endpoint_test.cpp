@@ -827,6 +827,31 @@ std::unique_ptr<Carrier> promote_eventually(AdmissionOnlyClient& admission) {
     }
 }
 
+// Every configurable listener count keeps a pending start on each listener
+// within the 32-start total, as start_accepting requires.
+void test_server_sizing() {
+    struct Expected {
+        std::size_t listeners, per_listener, total;
+    };
+    for (const auto expected :
+         {Expected{0U, 4U, 0U}, Expected{1U, 4U, 4U}, Expected{8U, 4U, 32U},
+          Expected{9U, 3U, 27U}, Expected{16U, 2U, 32U}}) {
+        const auto sizing = native_server_sizing(expected.listeners);
+        CHECK(sizing.max_sessions == 128U);
+        CHECK(sizing.accept.pending_per_listener == expected.per_listener);
+        CHECK(sizing.max_pending_starts == expected.total);
+        CHECK(sizing.accept.retry_delay == NativeAcceptOptions{}.retry_delay);
+    }
+    for (std::size_t listeners = 1U;
+         listeners <= yume::config::v1::kMaxListenAddresses; ++listeners) {
+        const auto sizing = native_server_sizing(listeners);
+        CHECK(sizing.accept.pending_per_listener >= 1U);
+        CHECK(sizing.accept.pending_per_listener <=
+              sizing.max_pending_starts / listeners);
+        CHECK(sizing.max_pending_starts <= 32U);
+    }
+}
+
 void test_accept_loop(const std::filesystem::path& kit) {
     Runner runner;
     const auto server_config = load(kit / "server/yumed.json");
@@ -2666,6 +2691,7 @@ void run(const std::filesystem::path& kit) {
 int main(int argc, char** argv) {
     try {
         CHECK(argc == 2);
+        test_server_sizing();
         test_adapter_configuration_rejections(argv[1]);
         run(argv[1]);
         test_session_ended_notifications(argv[1]);

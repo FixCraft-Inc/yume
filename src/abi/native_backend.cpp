@@ -68,11 +68,6 @@ constexpr std::chrono::milliseconds kClientStartGrace{5'000};
 // Blocked calls re-check endpoint shutdown at this interval. Engine
 // completions delivered during the final drain normally wake them sooner.
 constexpr std::chrono::milliseconds kStopRecheck{100};
-// Server accept sizing. NativeEndpoint paces refused and immediately failed
-// starts with its default retry delay.
-constexpr std::size_t kServerSessions = 128U;
-constexpr std::size_t kMaxPendingStarts = 32U;
-constexpr std::size_t kPendingStartsPerListener = 4U;
 // Authenticated OPENs held for application accept across one endpoint. Each
 // holds no receive credit until it is accepted.
 constexpr std::size_t kMaxWaitingOpens = 256U;
@@ -1537,13 +1532,10 @@ Status NativeRun::create_endpoint(
             return Status(StatusCode::InvalidArgument,
                           "server endpoint has no listen address");
         }
-        // Every listener keeps at least one pending start. A total the
-        // endpoint cannot hold fails creation instead of starving a listener.
-        accept_.pending_per_listener = std::max<std::size_t>(
-            1U, std::min(kPendingStartsPerListener,
-                         kMaxPendingStarts / listener_count));
-        options.max_sessions = kServerSessions;
-        options.max_pending_starts = accept_.pending_per_listener * listener_count;
+        const auto sizing = runtime::native_server_sizing(listener_count);
+        accept_ = sizing.accept;
+        options.max_sessions = sizing.max_sessions;
+        options.max_pending_starts = sizing.max_pending_starts;
     } else {
         options.max_sessions = 1U;
         options.max_pending_starts = 1U;

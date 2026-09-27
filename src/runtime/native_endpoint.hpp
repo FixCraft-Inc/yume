@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -100,6 +102,31 @@ struct NativeAcceptOptions final {
     // that failed sooner than this after being armed.
     std::chrono::milliseconds retry_delay{100};
 };
+
+// yumed and the embedding backend size their servers alike: 128 sessions, and
+// up to 4 pending starts on each listener, fewer when the total would pass 32
+// but never none. Refused and immediately failed starts keep the default retry
+// delay. No listeners give no pending starts.
+struct NativeServerSizing final {
+    std::size_t max_sessions{0U};
+    std::size_t max_pending_starts{0U};
+    NativeAcceptOptions accept;
+};
+
+inline NativeServerSizing native_server_sizing(
+    std::size_t listener_count) noexcept {
+    constexpr std::size_t kMaxPendingStarts = 32U;
+    constexpr std::size_t kPendingStartsPerListener = 4U;
+    NativeServerSizing sizing;
+    sizing.max_sessions = 128U;
+    sizing.accept.pending_per_listener = std::max<std::size_t>(
+        1U, std::min(
+                kPendingStartsPerListener,
+                kMaxPendingStarts / std::max<std::size_t>(1U, listener_count)));
+    sizing.max_pending_starts =
+        sizing.accept.pending_per_listener * listener_count;
+    return sizing;
+}
 
 // One immutable native YTP endpoint composition, shared by application layers.
 // Config and protected credentials are loaded before publishing any listener.

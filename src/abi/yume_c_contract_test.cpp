@@ -6,6 +6,7 @@
 
 #include "yume/yume.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -15,6 +16,10 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+
+#if defined(YUME_TEST_ABI_ALLOCATIONS)
+#include "test_support/allocation_failure.hpp"
+#endif
 
 namespace {
 
@@ -90,6 +95,121 @@ yume_runtime* make_runtime(std::size_t options_size,
     require(runtime != nullptr, "runtime was not published");
     return runtime;
 }
+
+#if defined(YUME_TEST_ABI_ALLOCATIONS)
+struct StartupAllocationContext {
+    yume_endpoint* endpoint{nullptr};
+    std::array<yume_event, 8U> events{};
+    std::size_t event_count{0U};
+    yume_status reentry_status{YUME_STATUS_OK};
+    bool arm_next_start{true};
+    bool sustained{false};
+};
+
+void startup_allocation_event(const yume_event* event, void* user_data) {
+    auto* context = static_cast<StartupAllocationContext*>(user_data);
+    if (!event || !context || context->event_count == context->events.size()) {
+        std::abort();
+    }
+    context->events[context->event_count++] = *event;
+    if (event->endpoint_state == YUME_ENDPOINT_STARTING &&
+        context->arm_next_start) {
+        context->arm_next_start = false;
+        if (context->sustained) {
+            yume::test::fail_allocations.store(true);
+        } else {
+            yume::test::arm_allocation_failure(1U);
+        }
+    } else if (event->endpoint_state == YUME_ENDPOINT_FAILED) {
+        // This forbidden call writes its own diagnostic. Startup must restore
+        // its final failure after callback delivery, including under pressure.
+        context->reentry_status = yume_endpoint_stop(context->endpoint, 0U);
+    }
+}
+
+void test_startup_allocation_settlement(std::string_view server_text) {
+    for (const bool sustained : {false, true}) {
+        StartupAllocationContext context;
+        context.sustained = sustained;
+        yume_runtime_options options{};
+        options.struct_size = sizeof(options);
+        options.abi_version = YUME_ABI_VERSION;
+        options.event_callback = startup_allocation_event;
+        options.callback_user_data = &context;
+        yume_runtime* runtime = nullptr;
+        require(yume_runtime_create(&options, &runtime) == YUME_STATUS_OK,
+                "allocation test runtime creation failed");
+        yume_config* config = nullptr;
+        require(yume_config_parse_json(runtime, server_text.data(),
+                                       server_text.size(),
+                                       &config) == YUME_STATUS_OK,
+                "allocation test config parsing failed");
+        require(yume_endpoint_create(runtime, config, &context.endpoint) ==
+                    YUME_STATUS_OK,
+                "allocation test endpoint creation failed");
+        yume_config_destroy(config);
+        yume_service_descriptor service{};
+        service.struct_size = sizeof(service);
+        service.abi_version = YUME_ABI_VERSION;
+        service.name = {"tcp", 3U};
+        service.kind = YUME_SERVICE_BYTE_STREAM;
+        require(yume_endpoint_register_service(context.endpoint, &service) ==
+                    YUME_STATUS_OK,
+                "allocation test service registration failed");
+
+        // Arm only after STARTING was published. The registered service forces
+        // startup to allocate before the fixture's adapters are refused.
+        const yume_status status = yume_endpoint_start(context.endpoint, 0U);
+        yume::test::fail_allocations.store(false);
+        const bool fired = sustained || yume::test::disarm_allocation_failure();
+        require(fired && status == YUME_STATUS_RESOURCE_EXHAUSTED,
+                "startup allocation failure lost its typed status");
+        require(
+            yume_endpoint_state(context.endpoint) == YUME_ENDPOINT_FAILED &&
+                context.event_count == 2U &&
+                context.events[0].endpoint_state == YUME_ENDPOINT_STARTING &&
+                context.events[0].status == YUME_STATUS_OK &&
+                context.events[1].endpoint_state == YUME_ENDPOINT_FAILED &&
+                context.events[1].status == status,
+            "startup allocation failure did not settle its state and events");
+        require(context.reentry_status == YUME_STATUS_INVALID_STATE,
+                "allocation-failure event allowed lifecycle re-entry");
+        yume_diagnostic diagnostic{};
+        diagnostic.struct_size = sizeof(diagnostic);
+        diagnostic.abi_version = YUME_ABI_VERSION;
+        require(
+            yume_handle_get_diagnostic(context.endpoint, &diagnostic,
+                                       sizeof(diagnostic)) == YUME_STATUS_OK &&
+                diagnostic.status == status && diagnostic.message[0] != '\0',
+            "startup allocation failure lost its final diagnostic");
+        require(yume_endpoint_start(context.endpoint, 0U) ==
+                        YUME_STATUS_INVALID_STATE &&
+                    context.event_count == 2U,
+                "allocation-failed start bypassed the stop-before-retry rule");
+        require(
+            yume_endpoint_stop(context.endpoint, 0U) == YUME_STATUS_OK &&
+                yume_endpoint_state(context.endpoint) ==
+                    YUME_ENDPOINT_STOPPED &&
+                context.event_count == 4U &&
+                context.events[2].endpoint_state == YUME_ENDPOINT_STOPPING &&
+                context.events[3].endpoint_state == YUME_ENDPOINT_STOPPED,
+            "allocation-failed endpoint did not stop cleanly");
+        // The unchanged fixture declares adapters: a fresh retry must reach
+        // that expected refusal instead of retaining STARTING or a half-start.
+        require(
+            yume_endpoint_start(context.endpoint, 0U) ==
+                    YUME_STATUS_UNSUPPORTED &&
+                yume_endpoint_state(context.endpoint) == YUME_ENDPOINT_FAILED &&
+                context.event_count == 6U &&
+                context.events[4].endpoint_state == YUME_ENDPOINT_STARTING &&
+                context.events[5].endpoint_state == YUME_ENDPOINT_FAILED &&
+                context.events[5].status == YUME_STATUS_UNSUPPORTED,
+            "allocation-failed endpoint could not retry after stop");
+        yume_endpoint_destroy(context.endpoint);
+        yume_runtime_destroy(runtime);
+    }
+}
+#endif
 
 }  // namespace
 
@@ -330,6 +450,9 @@ int main(int argc, char** argv) {
             "client service registration was accepted");
 
     const std::string server_text = read_file(argv[2]);
+#if defined(YUME_TEST_ABI_ALLOCATIONS)
+    test_startup_allocation_settlement(server_text);
+#endif
     yume_config* server_config = nullptr;
     require(yume_config_parse_json(first, server_text.data(),
                                    server_text.size(), &server_config) ==

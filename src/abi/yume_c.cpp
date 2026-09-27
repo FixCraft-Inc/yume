@@ -1529,23 +1529,25 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
         emit_endpoint_event(endpoint->runtime, endpoint->control->id,
                             YUME_ENDPOINT_STARTING, YUME_STATUS_OK);
 
-        // A build without the native provider graph has no backend and reports
-        // a typed unsupported start.
         yume_status failure = YUME_STATUS_INTERNAL_ERROR;
-        std::string detail = "endpoint backend unavailable";
+        std::string_view detail = "endpoint backend unavailable";
         bool started = false;
         std::string error;
-        if (!endpoint->control->backend) {
-            yume::embed::SocketProtector socket_protector;
-            std::vector<yume::embed::BackendService> registrations;
-            {
-                std::lock_guard<std::mutex> lock(endpoint->mutex);
-                if (endpoint->socket_protector) {
-                    const auto callback = endpoint->socket_protector;
-                    void* const callback_data =
-                        endpoint->socket_protector_data;
-                    socket_protector =
-                        [callback, callback_data](std::intptr_t socket) {
+        // Once STARTING is visible, every failure must settle the lifecycle.
+        // Keep diagnostic selection allocation-free so exhausted startup work
+        // still reaches the terminal state and event below.
+        try {
+            if (!endpoint->control->backend) {
+                yume::embed::SocketProtector socket_protector;
+                std::vector<yume::embed::BackendService> registrations;
+                {
+                    std::lock_guard<std::mutex> lock(endpoint->mutex);
+                    if (endpoint->socket_protector) {
+                        const auto callback = endpoint->socket_protector;
+                        void* const callback_data =
+                            endpoint->socket_protector_data;
+                        socket_protector = [callback, callback_data](
+                                               std::intptr_t socket) {
                             try {
                                 CallbackScope callback_scope;
                                 return callback(
@@ -1555,41 +1557,52 @@ yume_status yume_endpoint_start(yume_endpoint* endpoint,
                                 return false;
                             }
                         };
+                    }
+                    registrations.reserve(endpoint->services.size());
+                    for (const auto& [key, registration] : endpoint->services) {
+                        registrations.push_back(yume::embed::BackendService{
+                            key.name,
+                            registration.kind == YUME_SERVICE_PACKET
+                                ? yume::embed::BackendServiceKind::Packet
+                                : yume::embed::BackendServiceKind::ByteStream});
+                    }
                 }
-                registrations.reserve(endpoint->services.size());
-                for (const auto& [key, registration] : endpoint->services) {
-                    registrations.push_back(yume::embed::BackendService{
-                        key.name,
-                        registration.kind == YUME_SERVICE_PACKET
-                            ? yume::embed::BackendServiceKind::Packet
-                            : yume::embed::BackendServiceKind::ByteStream});
+                auto outcome = yume::embed::BackendIo::Failed;
+                endpoint->control->backend = yume::embed::make_native_backend(
+                    endpoint->config, endpoint->runtime->config_base_dir,
+                    endpoint->runtime->resolver_program,
+                    std::move(registrations), std::move(socket_protector),
+                    outcome, error);
+                if (!endpoint->control->backend &&
+                    outcome != yume::embed::BackendIo::Failed) {
+                    failure = status_from_backend(outcome);
                 }
             }
-            auto outcome = yume::embed::BackendIo::Failed;
-            endpoint->control->backend = yume::embed::make_native_backend(
-                endpoint->config, endpoint->runtime->config_base_dir,
-                endpoint->runtime->resolver_program,
-                std::move(registrations), std::move(socket_protector),
-                outcome, error);
-            if (!endpoint->control->backend &&
-                outcome != yume::embed::BackendIo::Failed) {
-                failure = status_from_backend(outcome);
+            if (!endpoint->control->backend) {
+                if (!error.empty()) detail = error;
+            } else if (const auto io =
+                           endpoint->control->backend->start(timeout_ms, error);
+                       io == yume::embed::BackendIo::Ok) {
+                started = true;
+            } else {
+                // The backend carries the runtime's typed outcome, so an
+                // embedder never recovers it from diagnostic text.
+                failure = status_from_backend(io);
+                detail = error.empty()
+                             ? std::string_view("endpoint failed to start")
+                             : std::string_view(error);
             }
+        } catch (const std::bad_alloc&) {
+            failure = YUME_STATUS_RESOURCE_EXHAUSTED;
+            detail = "allocation failed";
+        } catch (...) {
+            failure = YUME_STATUS_INTERNAL_ERROR;
+            detail = "unexpected endpoint startup failure";
         }
-        if (!endpoint->control->backend) {
-            if (!error.empty()) detail = error;
-        } else if (const auto io =
-                       endpoint->control->backend->start(timeout_ms, error);
-                   io == yume::embed::BackendIo::Ok) {
-            started = true;
-        } else {
+        if (!started && endpoint->control->backend) {
             // A failed start leaves no half-open runtime behind. The backend
-            // is torn down so a retry re-runs the whole sequence.
+            // is stopped even when startup unwound with an exception.
             endpoint->control->backend->stop();
-            // The backend carries the runtime's typed outcome, so an embedder
-            // never recovers the failure class from diagnostic text.
-            failure = status_from_backend(io);
-            detail = error.empty() ? "endpoint failed to start" : error;
         }
 
         bool cancelled = false;

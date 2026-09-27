@@ -1742,6 +1742,10 @@ if(YUME_BUILD_TESTING)
         add_executable(yume_c_abi_contract_test
             abi/yume_c_contract_test.cpp)
         target_link_libraries(yume_c_abi_contract_test PRIVATE yume_abi)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_definitions(yume_c_abi_contract_test PRIVATE YUME_TEST_ABI_ALLOCATIONS=1)
+            target_include_directories(yume_c_abi_contract_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        endif()
         yume_apply_perf_opts(yume_c_abi_contract_test)
         yume_assert_exact_link_dependencies(
             yume_c_abi_contract_test yume_abi)

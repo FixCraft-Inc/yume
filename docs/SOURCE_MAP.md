@@ -40,11 +40,11 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `abi/` | The opt-in C ABI. `yume_c.cpp` owns handles, input validation, diagnostics, callback rules and backend leasing. It accepts only schema-1 documents, parses them through `config/v1` and reaches the runtime only through the embedding seam `endpoint_backend.hpp`. `native_backend.cpp` is `yume_embed`, which runs `NativeEndpoint` on its own execution thread and links no BaseFWX. `compatibility_manifest.hpp` is the version view the ABI reports |
 | `common/` | Dependency-clean contracts shared across layers and the ABI: the canonical service-name grammar and bound, canonical destination networks, the egress address classes that configuration and native policy share, the UDP datagram budget the SOCKS5 UDP relay uses, hex encoding, best-effort secret erasure, the development timing helpers, and the product and protocol version constants |
 | `admission/` | Shared path/authority parsing, private-context HMAC and bounded monotonic replay reservations, with no protocol or runtime dependency |
-| `stealth/` | The browser-shaped outer layers: the Chrome TLS client profile applied to OpenSSL, the active cover profile with its generated registry, TLS fingerprints, and the HTTP/2 and WebSocket carrier with its wire profile and outer observer. `clienthello_dump.cpp` and `h2_opening_probe.cpp` are evidence probes that the tests run |
+| `stealth/` | The browser-shaped outer layers: the Chrome TLS client profile applied to OpenSSL, the active cover profile with its generated registry, and the HTTP/2 and WebSocket carrier with its wire profile and outer observer. `clienthello_dump.cpp` and `h2_opening_probe.cpp` are evidence probes that the tests run |
 | `fs/` | Bounded regular-file reads, and reading and writing owner-only secret files. Reads open nonblocking and refuse special files before reading |
 | `config/v1/` | The strict schema-1 parser with RFC 6901 error pointers |
 | `modules/` | Module programs, which link no YUME library, and the libraries they build on. `echo/` is the example module that the tests run. `relay/` is the relay channel between two users (handshake, records and hybrid ratchet), the stores its users keep (encrypted chat history, the password-derived relay secret and peer trust), and the invite and directory records with the policies that check them. `files/` holds relay file transfer on top of it: an outbound source pinned to one opened file and a confined receiver that publishes only a verified file. `codecs/` is the application codec core for a planned codec module: the HTTP request and response envelope, backend dialing rules and the Monero RPC descriptor. `share/` is the password-sealed `.yss` container for a planned kit import format. The libraries build only with `YUME_BUILD_BASEFWX_MODULES=ON` |
-| `test_support/` | Allocation-failure hooks and generated TLS identities for isolated tests, with no production allocator or runtime dependency |
+| `test_support/` | Allocation-failure hooks, generated TLS identities and JA3/JA4 ClientHello analysis for isolated tests, with no production allocator or runtime dependency |
 | `include/yume/` | The public candidate C header. It is unfrozen, and development SDK installation is opt-in |
 
 ## Composition and open gaps
@@ -65,8 +65,8 @@ inputs, not file names:
 WebSocket, wire-profile and observer sources, and the native adapter
 `yume_h2_duplex_carrier` links it. It propagates the diagnostics setting to
 callers because public declarations depend on it. Release and MinSizeRel
-compile those diagnostics out. `yume_cover_profile` owns profile data and
-fingerprint interpretation, and `yume_tls_client_profile` owns SSL_CTX profile
+compile those diagnostics out. `yume_cover_profile` owns profile data with no
+library dependency, and `yume_tls_client_profile` owns SSL_CTX profile
 configuration. The H2 library links profile data, nghttp2, OpenSSL Crypto and
 platform threading, with no SSL, BaseFWX or session-engine dependency.
 `yume_bounded_files` owns the bounded and confined reader that the cover site,

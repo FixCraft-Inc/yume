@@ -11,6 +11,7 @@
 
 #include "stealth/cover_profile.hpp"
 #include "stealth/tls_fingerprint.hpp"
+#include "test_support/tls_fingerprint_analysis.hpp"
 
 namespace {
 
@@ -56,8 +57,8 @@ void test_browser_match_thresholds() {
     assert(known.has_value());
 
     yume::tls_fingerprint::FingerprintData observed;
-    observed.ja3_hash = known->ja3_hash;
-    observed.ja4_hash = known->ja4_hash;
+    observed.ja3_hash = yume::tls_fingerprint::known_ja3_hash(*known);
+    observed.ja4_hash = yume::tls_fingerprint::known_ja4_hash(*known);
     auto [profile, score] = yume::tls_fingerprint::match_browser_profile(observed);
     assert(profile == known->profile);
     assert(score == 100.0);
@@ -83,16 +84,16 @@ void test_browser_match_thresholds() {
 // registry generated from the committed browser capture.
 void test_profiles_offer_no_signature_algorithm_the_browser_omits() {
     const auto& cover = yume::cover_profile::active();
-    for (const auto& profile : yume::tls_fingerprint::get_known_browser_fingerprints()) {
-        if (profile.profile != cover.tls_profile) continue;
-        assert(std::equal(profile.signature_algorithms.begin(),
-                          profile.signature_algorithms.end(),
-                          cover.tls_signature_algorithms.begin(),
-                          cover.tls_signature_algorithms.end()));
-        assert(std::find(profile.signature_algorithms.begin(),
-                         profile.signature_algorithms.end(), 0x0807) ==
-               profile.signature_algorithms.end());
-    }
+    const auto profile =
+        yume::tls_fingerprint::get_browser_profile_info(cover.tls_profile);
+    assert(profile.has_value());
+    assert(std::equal(profile->signature_algorithms.begin(),
+                      profile->signature_algorithms.end(),
+                      cover.tls_signature_algorithms.begin(),
+                      cover.tls_signature_algorithms.end()));
+    assert(std::find(profile->signature_algorithms.begin(),
+                     profile->signature_algorithms.end(),
+                     0x0807) == profile->signature_algorithms.end());
 }
 
 }  // namespace

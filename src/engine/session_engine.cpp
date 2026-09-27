@@ -3197,14 +3197,17 @@ void SessionEngine::Impl::stream_write(
                             "stream payload size is invalid");
         } else {
             auto& stream = *it->second;
+            // Shrinking a payload does not release its backing allocation.
+            // Memory admission is independent of wire and flow-credit bytes.
+            const std::size_t storage_bytes = payload.retained_capacity();
             const std::size_t retained = queued_wire_bytes_ +
                                          pending_write_bytes_;
-            if (payload.size() > limits_.max_stream_queued_bytes -
-                                     stream.outbound_queued_bytes ||
+            if (storage_bytes > limits_.max_stream_queued_bytes -
+                                    stream.outbound_queued_bytes ||
                 retained > outbound_queue_limit() ||
-                payload.size() > outbound_queue_limit() - retained) {
-                status = Status(StatusCode::ResourceExhausted,
-                                "stream write queue is full");
+                storage_bytes > outbound_queue_limit() - retained) {
+                status = Status::diagnostic(StatusCode::ResourceExhausted,
+                                            "stream write queue is full");
             } else if (operation_ids_exhausted_) {
                 status = Status(StatusCode::ResourceExhausted,
                                 "stream operation IDs are exhausted");
@@ -3220,10 +3223,8 @@ void SessionEngine::Impl::stream_write(
                     } else {
                         ++next_operation_id_;
                     }
-                    stream.outbound_queued_bytes +=
-                        stream.pending_writes.back().payload.size();
-                    pending_write_bytes_ +=
-                        stream.pending_writes.back().payload.size();
+                    stream.outbound_queued_bytes += storage_bytes;
+                    pending_write_bytes_ += storage_bytes;
                     queued_operation = operation_id;
                 } catch (const std::bad_alloc&) {
                     status = Status(StatusCode::ResourceExhausted,
@@ -3315,8 +3316,10 @@ void SessionEngine::Impl::drain_pending_writes() noexcept {
             last_scheduled_stream_id_ = stream->id.value();
             pending.emplace(std::move(stream->pending_writes.front()));
             stream->pending_writes.pop_front();
-            stream->outbound_queued_bytes -= size;
-            pending_write_bytes_ -= size;
+            const std::size_t storage_bytes =
+                pending->payload.retained_capacity();
+            stream->outbound_queued_bytes -= storage_bytes;
+            pending_write_bytes_ -= storage_bytes;
             stream->outbound_credit -= size;
             outbound_connection_credit_ -= size;
             ++stream->outbound_publications;
@@ -3636,11 +3639,11 @@ void SessionEngine::Impl::cancel_pending_write(
         if (write_it == pending.end()) {
             return;
         }
-        const std::size_t bytes = write_it->payload.size();
+        const std::size_t storage_bytes = write_it->payload.retained_capacity();
         completion = std::move(write_it->completion);
         pending.erase(write_it);
-        stream_it->second->outbound_queued_bytes -= bytes;
-        pending_write_bytes_ -= bytes;
+        stream_it->second->outbound_queued_bytes -= storage_bytes;
+        pending_write_bytes_ -= storage_bytes;
     }
     invoke_noexcept(completion, std::move(reason), 0U);
     const Status shutdown = finish_stream_shutdown_if_ready(stream_id);

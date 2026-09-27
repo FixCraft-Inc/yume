@@ -39,7 +39,8 @@ using AsioUnixSocket = boost::asio::basic_stream_socket<
 
 // Provider-local bounds apply even when this source-level provider is embedded
 // without the included runtime. Queue byte limits include every accepted
-// operation until completion.
+// operation until completion. Writes charge retained Buffer capacity, even
+// when only a smaller logical payload is sent.
 struct AsioTcpChannelLimits {
     std::size_t max_active_channels{1024U};
     std::size_t max_read_bytes{64U * 1024U};

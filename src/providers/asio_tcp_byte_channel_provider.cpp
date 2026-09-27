@@ -515,6 +515,7 @@ public:
             return;
         }
         const std::size_t bytes = buffer.size();
+        const std::size_t retained = buffer.retained_capacity();
         Status error = Status::success();
         std::uint64_t id = 0U;
         {
@@ -527,7 +528,7 @@ public:
                     "stream write exceeds the provider bound");
             } else if (submitted_writes_ >=
                            channels_->limits().max_queued_write_operations ||
-                       !add_fits(submitted_write_bytes_, bytes,
+                       !add_fits(submitted_write_bytes_, retained,
                                  channels_->limits().max_queued_write_bytes)) {
                 error =
                     Status::diagnostic(StatusCode::ResourceExhausted,
@@ -540,7 +541,7 @@ public:
             } else {
                 id = next_operation_id_++;
                 ++submitted_writes_;
-                submitted_write_bytes_ += bytes;
+                submitted_write_bytes_ += retained;
             }
         }
         if (!error.ok()) {
@@ -686,29 +687,31 @@ private:
                        Buffer buffer,
                        CancellationToken cancellation,
                        ByteChannel::WriteCompletion completion) noexcept {
-        const std::size_t bytes = buffer.size();
-        std::unique_ptr<PendingWrite> operation;
-        try {
-            operation = std::make_unique<PendingWrite>(
-                id, std::move(buffer), std::move(cancellation),
-                std::move(completion));
-            writes_.push_back(std::move(operation));
-            start_next_write();
-        } catch (const std::bad_alloc&) {
-            release_write_reservation(bytes);
-            auto& selected_completion =
-                operation ? operation->completion : completion;
-            invoke_noexcept(selected_completion, allocation_status(
-                "stream write queue allocation failed"), 0U);
-        } catch (...) {
-            release_write_reservation(bytes);
-            auto& selected_completion =
-                operation ? operation->completion : completion;
-            invoke_noexcept(selected_completion,
-                            Status::diagnostic(StatusCode::Internal,
-                                               "stream write queueing failed"),
-                            0U);
+        const std::size_t retained = buffer.retained_capacity();
+        Status failure;
+        {
+            // Either owner releases the allocation before rollback publishes
+            // the reservation to a reentrant completion callback.
+            Buffer owned_buffer = std::move(buffer);
+            std::unique_ptr<PendingWrite> operation;
+            try {
+                operation = std::make_unique<PendingWrite>(
+                    id, std::move(owned_buffer), std::move(cancellation),
+                    std::move(completion));
+                writes_.push_back(std::move(operation));
+                start_next_write();
+                return;
+            } catch (const std::bad_alloc&) {
+                failure =
+                    allocation_status("stream write queue allocation failed");
+            } catch (...) {
+                failure = Status::diagnostic(StatusCode::Internal,
+                                             "stream write queueing failed");
+            }
+            if (operation) completion = std::move(operation->completion);
         }
+        release_write_reservation(retained);
+        invoke_noexcept(completion, std::move(failure), 0U);
     }
 
     std::optional<StatusCode> requested_terminal(std::uint64_t id) noexcept {
@@ -1043,10 +1046,12 @@ private:
         std::unique_ptr<PendingWrite> operation = std::move(writes_.front());
         writes_.pop_front();
         operation->cancellation.unregister();
-        const std::size_t reserved = operation->buffer.size();
-        release_write_reservation(reserved);
+        const std::size_t reserved = operation->buffer.retained_capacity();
         ByteChannel::WriteCompletion completion =
             std::move(operation->completion);
+        // A completion may immediately submit another full-budget write.
+        operation.reset();
+        release_write_reservation(reserved);
         invoke_noexcept(completion, std::move(status), transferred);
     }
 
@@ -1112,6 +1117,7 @@ private:
     std::size_t submitted_reads_{0U};
     std::size_t submitted_writes_{0U};
     std::size_t submitted_read_bytes_{0U};
+    // Retained capacity, including active I/O.
     std::size_t submitted_write_bytes_{0U};
     bool close_requested_{false};
     bool write_shutdown_requested_{false};

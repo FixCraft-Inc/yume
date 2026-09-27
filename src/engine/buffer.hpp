@@ -18,8 +18,8 @@ inline constexpr std::size_t kAbsoluteMaxBufferBytes =
     16U * 1024U * 1024U;
 
 // Single-owner storage with a lifetime bound on both size and retained
-// capacity. The limit follows the buffer through moves so an asynchronous
-// queue cannot silently retain more memory than its admission decision.
+// capacity. The limit follows the buffer through moves. Asynchronous queues
+// charge retained_capacity(), which can exceed the logical payload size.
 class Buffer final {
 public:
     static Result<Buffer> allocate(std::size_t size, std::size_t max_size);
@@ -37,6 +37,9 @@ public:
     void clear() noexcept { storage_.clear(); }
 
     std::size_t size() const noexcept { return storage_.size(); }
+    std::size_t retained_capacity() const noexcept {
+        return storage_.capacity();
+    }
     std::size_t max_size() const noexcept { return max_size_; }
     bool empty() const noexcept { return storage_.empty(); }
 

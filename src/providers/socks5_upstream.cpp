@@ -96,9 +96,12 @@ class Handshake final : public std::enable_shared_from_this<Handshake> {
 public:
     Handshake(std::shared_ptr<AsioExecutionContext> context,
               std::shared_ptr<engine::ByteChannelProvider> proxy,
-              std::shared_ptr<const Settings> settings, Completion completion)
-        : context_(std::move(context)), proxy_(std::move(proxy)), settings_(std::move(settings)),
-          timer_(context_->executor()), completion_(std::move(completion)) {}
+              std::shared_ptr<const Settings> settings, Completion&& completion)
+        : context_(std::move(context)),
+          proxy_(std::move(proxy)),
+          settings_(std::move(settings)),
+          timer_(context_->executor()),
+          completion_(std::move(completion)) {}
 
     void start(engine::EndpointRole role, const CancellationToken& caller) {
         const std::weak_ptr<Handshake> weak = weak_from_this();
@@ -117,9 +120,12 @@ public:
                 self->source_.cancel();
             }
         });
-        proxy_->async_create(role, source_.token(),
-            [self = shared_from_this()](Result<std::unique_ptr<ByteChannel>> created) {
-                self->on_connected(std::move(created));
+        proxy_->async_create(
+            role, source_.token(),
+            [self = shared_from_this()](
+                Result<std::unique_ptr<ByteChannel>> created) noexcept {
+                self->contained(
+                    [&] { self->on_connected(std::move(created)); });
             });
     }
 
@@ -149,14 +155,16 @@ private:
         auto buffer = Buffer::copy_from(std::as_bytes(std::span(bytes)), bytes.size());
         if (!buffer.ok()) return fail(buffer.status());
         const std::size_t size = bytes.size();
-        channel_->async_write(std::move(buffer).take_value(), source_.token(),
-            [self = shared_from_this(), size, next, reply_bytes](Status status, std::size_t written) {
+        channel_->async_write(
+            std::move(buffer).take_value(), source_.token(),
+            [self = shared_from_this(), size, next, reply_bytes](
+                Status status, std::size_t written) noexcept {
                 if (!status.ok()) return self->fail(std::move(status));
                 if (written != size) {
                     return self->fail(Status::diagnostic(
                         StatusCode::Closed, "SOCKS5 request was cut short"));
                 }
-                self->expect(next, reply_bytes);
+                self->contained([&] { self->expect(next, reply_bytes); });
             });
     }
 
@@ -170,8 +178,11 @@ private:
     }
 
     void read() {
-        channel_->async_read(wanted_ - input_.size(), source_.token(),
-            [self = shared_from_this()](Result<Buffer> received) { self->on_read(std::move(received)); });
+        channel_->async_read(
+            wanted_ - input_.size(), source_.token(),
+            [self = shared_from_this()](Result<Buffer> received) noexcept {
+                self->contained([&] { self->on_read(std::move(received)); });
+            });
     }
 
     void on_read(Result<Buffer> received) {
@@ -245,7 +256,8 @@ private:
     }
 
     void settle() noexcept {
-        timer_.cancel();
+        boost::system::error_code ignored;
+        timer_.cancel(ignored);
         registration_.unregister();
     }
 
@@ -260,7 +272,20 @@ private:
         }
     }
 
-    void fail(Status status) {
+    // Channels contain callback exceptions, so a step that threw would leave
+    // the completion unsettled. Fail the handshake instead.
+    template <typename Step>
+    void contained(Step&& step) noexcept {
+        try {
+            step();
+        } catch (const std::bad_alloc&) {
+            fail(Status(StatusCode::ResourceExhausted));
+        } catch (...) {
+            fail(Status(StatusCode::Internal));
+        }
+    }
+
+    void fail(Status status) noexcept {
         if (!completion_) return;
         if (timed_out_)
             status = Status::diagnostic(StatusCode::Closed,
@@ -283,7 +308,6 @@ private:
     std::shared_ptr<engine::ByteChannelProvider> proxy_;
     std::shared_ptr<const Settings> settings_;
     boost::asio::steady_timer timer_;
-    Completion completion_;
     CancellationSource source_;
     CancellationRegistration registration_;
     std::unique_ptr<ByteChannel> channel_;
@@ -291,6 +315,9 @@ private:
     std::size_t wanted_{0U};
     Step step_{Step::Method};
     bool timed_out_{false};
+    // Initialized last, so a constructor that throws leaves the caller's
+    // completion intact to report the failure.
+    Completion completion_;
 };
 
 }  // namespace

@@ -21,6 +21,7 @@
 #include <boost/asio/write.hpp>
 
 #include "providers/asio_tcp_byte_channel_provider.hpp"
+#include "test_support/allocation_failure.hpp"
 
 namespace {
 using boost::asio::ip::make_address;
@@ -407,6 +408,165 @@ void test_creation_rules() {
     CHECK(moved.username() == "second" && moved.password() == "value");
 }
 
+// One failed allocation while a handshake is set up either makes async_create
+// throw without a completion or settles the completion exactly once.
+void test_setup_allocation_failure_settles_once() {
+    auto io = context();
+    // No proxy listens on a port whose acceptor was closed, so every started
+    // handshake settles quickly.
+    std::uint16_t port = 0U;
+    {
+        tcp::acceptor closed(io->executor(),
+                             tcp::endpoint(make_address("127.0.0.1"), 0));
+        port = closed.local_endpoint().port();
+    }
+    const auto provider = provider_for(io, port, "host", 443U);
+    bool reached_end = false;
+    for (std::size_t failure = 1U; failure <= 64U && !reached_end; ++failure) {
+        auto created = std::make_shared<Created>();
+        yume::engine::ByteChannelProvider::Completion completion =
+            [created](Result<std::unique_ptr<ByteChannel>> result) {
+                ++created->calls;
+                created->result.emplace(std::move(result));
+            };
+        bool threw = false;
+        bool fired = false;
+        on_context(io, [&] {
+            yume::test::arm_allocation_failure(failure);
+            try {
+                provider->async_create(EndpointRole::Client, {},
+                                       std::move(completion));
+            } catch (const std::bad_alloc&) {
+                threw = true;
+            }
+            fired = yume::test::disarm_allocation_failure();
+        });
+        if (!threw) poll_until(io, [&] { return created->calls != 0; });
+        for (int round = 0; round < 20; ++round) io->poll();
+        CHECK(created->calls == (threw ? 0 : 1));
+        reached_end = !fired;
+    }
+    CHECK(reached_end);
+}
+
+// A proxy connection that the test advances one callback at a time. Like a
+// real channel, it contains exceptions from the callbacks it runs.
+struct Script final {
+    yume::engine::ByteChannel::ReadCompletion read;
+    yume::engine::ByteChannel::WriteCompletion write;
+    std::size_t written{0U};
+};
+
+class ScriptedChannel final : public ByteChannel {
+public:
+    ScriptedChannel(ExecutorAffinity affinity, std::shared_ptr<Script> script)
+        : affinity_(affinity), script_(std::move(script)) {}
+    ExecutorAffinity executor_affinity() const noexcept override {
+        return affinity_;
+    }
+    std::size_t max_read_size() const noexcept override { return 4096U; }
+    std::size_t max_write_size() const noexcept override { return 4096U; }
+    void async_read(std::size_t, CancellationToken,
+                    ReadCompletion completion) override {
+        script_->read = std::move(completion);
+    }
+    void async_write(Buffer buffer, CancellationToken,
+                     WriteCompletion completion) override {
+        script_->written = buffer.size();
+        script_->write = std::move(completion);
+    }
+    Status shutdown_write() noexcept override { return Status::success(); }
+    void cancel() noexcept override {}
+    void close() noexcept override {}
+
+private:
+    ExecutorAffinity affinity_;
+    std::shared_ptr<Script> script_;
+};
+
+class ScriptedProvider final : public yume::engine::ByteChannelProvider {
+public:
+    ScriptedProvider()
+        : descriptor_(yume::engine::ProviderDescriptor::create(
+                          "test.scripted-proxy",
+                          yume::engine::ProviderKind::ByteChannel, 1U,
+                          yume::engine::mandatory_capabilities(
+                              yume::engine::ProviderKind::ByteChannel))
+                          .take_value()) {}
+    const yume::engine::ProviderDescriptor& descriptor()
+        const noexcept override {
+        return descriptor_;
+    }
+    void async_create(EndpointRole, CancellationToken,
+                      Completion completion) override {
+        created = std::move(completion);
+    }
+    Completion created;
+
+private:
+    yume::engine::ProviderDescriptor descriptor_;
+};
+
+// Runs one pending callback the way a channel does. False when none waits.
+template <typename Callback, typename... Args>
+bool deliver(Callback& pending, Args&&... args) {
+    if (!pending) return false;
+    auto callback = std::move(pending);
+    pending = nullptr;
+    try {
+        callback(std::forward<Args>(args)...);
+    } catch (...) {
+    }
+    return true;
+}
+
+Buffer received(const std::string& text) {
+    auto buffer = Buffer::copy_from(
+        std::as_bytes(std::span(text.data(), text.size())), text.size());
+    CHECK(buffer.ok());
+    return std::move(buffer).take_value();
+}
+
+// One failed allocation in any step of the exchange still settles the
+// completion exactly once, even though the channel contains the exception.
+void test_exchange_allocation_failure_settles_once() {
+    auto io = context();
+    bool reached_end = false;
+    for (std::size_t failure = 1U; failure <= 256U && !reached_end; ++failure) {
+        auto proxy = std::make_shared<ScriptedProvider>();
+        auto created =
+            Socks5UpstreamProvider::create(io, proxy, "192.0.2.1", 443U);
+        CHECK(created.ok());
+        const auto provider = std::move(created).take_value();
+        auto outcome = start(io, provider);
+        CHECK(proxy->created && outcome->calls == 0);
+        auto script = std::make_shared<Script>();
+        std::unique_ptr<ByteChannel> channel =
+            std::make_unique<ScriptedChannel>(io->affinity(), script);
+        auto method = received(bytes({0x05, 0x00}));
+        auto head = received(bytes({0x05, 0x00, 0x00, 0x01}));
+        auto rest = received(bytes({192, 0, 2, 7}) + port_bytes(443U));
+        yume::test::arm_allocation_failure(failure);
+        deliver(proxy->created,
+                Result<std::unique_ptr<ByteChannel>>(std::move(channel)));
+        if (deliver(script->write, Status::success(), script->written) &&
+            deliver(script->read, Result<Buffer>(std::move(method))) &&
+            deliver(script->write, Status::success(), script->written) &&
+            deliver(script->read, Result<Buffer>(std::move(head)))) {
+            deliver(script->read, Result<Buffer>(std::move(rest)));
+        }
+        const bool fired = yume::test::disarm_allocation_failure();
+        CHECK(!script->read && !script->write);
+        CHECK(outcome->calls == 1);
+        CHECK(fired || outcome->result->ok());
+        reached_end = !fired;
+        if (outcome->result->ok())
+            close_channel(io, std::move(*outcome->result).take_value());
+        for (int round = 0; round < 20; ++round) io->poll();
+    }
+    CHECK(reached_end);
+}
+
 }  // namespace
 
 int main() {
@@ -415,6 +575,8 @@ int main() {
     test_refusals();
     test_deadline_and_cancellation();
     test_creation_rules();
+    test_setup_allocation_failure_settles_once();
+    test_exchange_allocation_failure_settles_once();
     std::cout << "SOCKS5 upstream checks passed\n";
     return 0;
 }

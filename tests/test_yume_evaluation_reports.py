@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +141,54 @@ class WanEmulationTest(unittest.TestCase):
         # The stream ended on a whole cycle, so the next byte must be 0x00.
         with self.assertRaises(wan.session.SessionFailure):
             check.feed(b"\x01")
+
+    def test_fairness_is_one_for_equal_streams_and_one_over_n_for_a_hog(self) -> None:
+        self.assertAlmostEqual(wan.fairness_index([40.0, 40.0, 40.0, 40.0]), 1.0)
+        self.assertAlmostEqual(wan.fairness_index([160.0, 0.0, 0.0, 0.0]), 0.25)
+        self.assertAlmostEqual(wan.fairness_index([0.0, 0.0]), 1.0)
+        for rates in ([], [1.0, -1.0], [float("nan")]):
+            with self.subTest(rates=rates), self.assertRaises(ValueError):
+                wan.fairness_index(rates)
+
+    def test_plateau_compares_the_last_quarter_with_the_second(self) -> None:
+        # The first quarter is warm-up and may climb freely.
+        flat = [10, 50, 100, 101, 100, 102, 101, 103]
+        self.assertTrue(wan.plateau(flat, 1.10, 0)["flat"])
+        growing = [10, 50, 100, 110, 120, 130, 140, 150]
+        check = wan.plateau(growing, 1.10, 0)
+        self.assertFalse(check["flat"])
+        self.assertEqual((check["baseline_peak"], check["final_peak"]), (110, 150))
+        self.assertTrue(wan.plateau([5, 6, 6, 6, 6, 6, 7, 8], 1.0, 2)["flat"])
+        with self.assertRaises(ValueError):
+            wan.plateau([1, 2, 3], 1.0, 0)
+
+    def test_process_resources_reads_this_process(self) -> None:
+        resources = wan.process_resources(os.getpid())
+        self.assertGreater(resources["rss_kib"], 0)
+        self.assertGreaterEqual(resources["fds"], 3)
+
+    def test_parallel_downloads_run_at_once_and_check_every_byte(self) -> None:
+        port = wan.session.free_port()
+        server = subprocess.Popen(
+            [sys.executable, "-c", wan.PAYLOAD_SERVER, str(wan.STREAM_BYTES), str(wan.SMALL_BYTES), str(port)],
+            stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(server.stdout.readline().strip(), "ready")
+            started = time.monotonic()
+            outcome = wan.parallel_downloads(None, "127.0.0.1", port, 2.0, 3)
+            # Three sequential two-second windows would take six seconds.
+            self.assertLess(time.monotonic() - started, 5.0)
+            self.assertEqual(len(outcome["streams"]), 3)
+            self.assertTrue(all(stream["bytes"] > 0 for stream in outcome["streams"]))
+            self.assertGreater(outcome["fairness"], 0.0)
+            self.assertLessEqual(outcome["fairness"], 1.0)
+            self.assertGreater(outcome["aggregate_tail_mbit_s"], 0.0)
+        finally:
+            server.kill()
+            server.wait(timeout=5)
+            server.stdout.close()
+        with self.assertRaises(wan.session.SessionFailure):
+            wan.parallel_downloads(None, "127.0.0.1", port, 2.0, 2)
 
 if __name__ == "__main__":
     unittest.main()

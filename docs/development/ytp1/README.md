@@ -247,6 +247,14 @@ request round trips. Every byte is checked against the served pattern.
 Emulating each packet in software caps throughput below a real network card,
 so compare the tunnel with the direct path from the same run.
 
+`--streams N` adds N simultaneous downloads per path to each condition and
+reports their total and Jain's fairness index, which is 1.0 when every stream
+gets the same rate. Over the tunnel they share one session. `--soak SECONDS`
+then keeps those downloads running under `--soak-condition` while it samples
+the resident memory and open descriptors of `yume` and `yumed` every five
+seconds. The run fails unless the peaks of the last quarter stay within 10 %
+plus 1 MiB of memory and two descriptors of the second quarter's.
+
 ## Managed Linux TUN networking
 
 A `packet` adapter binds one authenticated packet service to a new Linux TUN.

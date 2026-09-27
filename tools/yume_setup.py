@@ -1188,8 +1188,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="yume-setup",
         description=(
-            "Create an experimental YTP/1 server kit and first client bundle; "
-            "the live endpoint provider is not yet qualified."
+            "Create a YTP/1 server kit and its first client bundle for the "
+            "experimental native yumed and yume. It does not start either program."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)

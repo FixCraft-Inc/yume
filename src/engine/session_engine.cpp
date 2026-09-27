@@ -1545,29 +1545,31 @@ Status SessionEngine::Impl::defer_record(
     Carrier::SendCompletion completion) {
     const std::size_t overhead = ytp1::kFrameHeaderSize +
         kProtectedEnvelopeBytes + security_->max_sealed_overhead();
+    // Refusals here consume no record token, so their diagnostics must not
+    // throw into a caller that would treat the exception as a lost token.
     if (payload.size() > limits_.max_frame_payload ||
         payload.size() > outbound_queue_limit() ||
         overhead > outbound_queue_limit() - payload.size()) {
-        return Status(StatusCode::ResourceExhausted,
-                      "deferred record exceeds the queue bound");
+        return Status::diagnostic(StatusCode::ResourceExhausted,
+                                  "deferred record exceeds the queue bound");
     }
     const std::size_t reservation = overhead + payload.size();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
-            return Status(StatusCode::Closed, "session is closed");
+            return Status::diagnostic(StatusCode::Closed, "session is closed");
         }
         if (is_control &&
             queued_control_messages_ >= limits_.max_control_messages - 2U) {
-            return Status(StatusCode::ResourceExhausted,
-                          "control-message queue is full");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "control-message queue is full");
         }
         const std::size_t retained = queued_wire_bytes_ +
                                      pending_write_bytes_;
         if (retained > outbound_queue_limit() ||
             reservation > outbound_queue_limit() - retained) {
-            return Status(StatusCode::ResourceExhausted,
-                          "session outbound queue is full");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "session outbound queue is full");
         }
         queued_wire_bytes_ += reservation;
         if (is_control) {
@@ -1583,7 +1585,7 @@ Status SessionEngine::Impl::defer_record(
         if (is_control) {
             --queued_control_messages_;
         }
-        return copy.status();
+        return copy_failure(copy.status());
     }
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1592,7 +1594,9 @@ Status SessionEngine::Impl::defer_record(
             if (is_control) {
                 --queued_control_messages_;
             }
-            return Status(StatusCode::Closed, "session is closed");
+            // A throw here would reach the handler below and release the
+            // reservation twice.
+            return Status::diagnostic(StatusCode::Closed, "session is closed");
         }
         deferred_records_.emplace_back(
             type, stream_id, std::move(copy).take_value(), is_control,
@@ -1604,8 +1608,8 @@ Status SessionEngine::Impl::defer_record(
         if (is_control) {
             --queued_control_messages_;
         }
-        return Status(StatusCode::ResourceExhausted,
-                      "deferred-record queue allocation failed");
+        return Status::diagnostic(StatusCode::ResourceExhausted,
+                                  "deferred-record queue allocation failed");
     }
 }
 
@@ -1623,9 +1627,13 @@ Status SessionEngine::Impl::enqueue_record(
         ordering_lock = std::unique_lock<std::mutex>(
             outbound_record_mutex_);
     }
+    // Refusals before a protected record takes its token leave the session
+    // usable, so their diagnostics must not throw into a caller that would
+    // treat the exception as a lost token. Once the token is taken, a failure
+    // fails the session here.
     if (payload.size() > limits_.max_frame_payload) {
-        return Status(StatusCode::ResourceExhausted,
-                      "record payload exceeds the frame bound");
+        return Status::diagnostic(StatusCode::ResourceExhausted,
+                                  "record payload exceeds the frame bound");
     }
     // Recheck after starting a rotation: a synchronous carrier may finish its
     // ACK, or a competing sender may consume the new epoch, before we return.
@@ -1645,9 +1653,9 @@ Status SessionEngine::Impl::enqueue_record(
         }
         if (!rotate) break;
         ordering_lock.unlock();
-        const auto status = initiate_rekey();
+        Status status = initiate_rekey();
         if (!status.ok() && status.code() != StatusCode::AlreadyExists) {
-            fail(status);
+            fail(copy_failure(status));
             return status;
         }
         ordering_lock.lock();
@@ -1655,7 +1663,7 @@ Status SessionEngine::Impl::enqueue_record(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
-            return Status(StatusCode::Closed, "session is closed");
+            return Status::diagnostic(StatusCode::Closed, "session is closed");
         }
         if (!stream_id.is_control() && type != ytp1::RecordType::Close) {
             const auto it = streams_.find(stream_id.value());
@@ -1683,8 +1691,8 @@ Status SessionEngine::Impl::enqueue_record(
     const std::size_t fixed = ytp1::kFrameHeaderSize + envelope;
     if (payload.size() > limits_.max_queued_bytes ||
         fixed > limits_.max_queued_bytes - payload.size()) {
-        return Status(StatusCode::ResourceExhausted,
-                      "record exceeds the outbound queue bound");
+        return Status::diagnostic(StatusCode::ResourceExhausted,
+                                  "record exceeds the outbound queue bound");
     }
     const std::size_t reservation = fixed + payload.size();
     const bool rekey_control = type == ytp1::RecordType::RekeyInit ||
@@ -1697,7 +1705,7 @@ Status SessionEngine::Impl::enqueue_record(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
-            return Status(StatusCode::Closed, "session is closed");
+            return Status::diagnostic(StatusCode::Closed, "session is closed");
         }
         if (!stream_id.is_control() && type != ytp1::RecordType::Close) {
             const auto it = streams_.find(stream_id.value());
@@ -1725,35 +1733,37 @@ Status SessionEngine::Impl::enqueue_record(
                 state_ == SessionState::Active &&
                 type == ytp1::RecordType::RekeyAck;
             if (!auth_flight && !rekey_ack) {
-                return Status(
+                return Status::diagnostic(
                     StatusCode::FailedPrecondition,
                     "unprotected record is invalid in the session state");
             }
         }
         if (protect && state_ != SessionState::AwaitingCapabilities &&
             state_ != SessionState::Active) {
-            return Status(StatusCode::FailedPrecondition,
-                          "protected record sent before AUTH completion");
+            return Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                "protected record sent before AUTH completion");
         }
         if (is_control &&
             queued_control_messages_ >= control_limit) {
-            return Status(StatusCode::ResourceExhausted,
-                          "control-message queue is full");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "control-message queue is full");
         }
         const std::size_t retained = queued_wire_bytes_ +
                                      pending_write_bytes_;
         if (retained > queue_limit ||
             reservation > queue_limit - retained) {
-            return Status(StatusCode::ResourceExhausted,
-                          "session outbound queue is full");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "session outbound queue is full");
         }
         if (type == ytp1::RecordType::Open) {
             streams_.at(stream_id.value())->open_published = true;
         }
         if (protect) {
             if (outbound_sequence_exhausted_) {
-                return Status(StatusCode::ResourceExhausted,
-                              "outbound record sequence is exhausted");
+                return Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "outbound record sequence is exhausted");
             }
             token = RecordKeyToken{outbound_epoch_,
                                    next_outbound_sequence_};
@@ -1779,7 +1789,7 @@ Status SessionEngine::Impl::enqueue_record(
 
     auto encoded = encode_frame(type, stream_id, payload);
     if (!encoded.ok()) {
-        const Status failure = encoded.status();
+        Status failure = copy_failure(encoded.status());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             queued_wire_bytes_ -= reservation;
@@ -1792,7 +1802,7 @@ Status SessionEngine::Impl::enqueue_record(
             // retry would create a wire-visible gap, so this session cannot
             // continue safely.
             ordering_lock.unlock();
-            fail(failure);
+            fail(copy_failure(failure));
         }
         return failure;
     }
@@ -1801,7 +1811,7 @@ Status SessionEngine::Impl::enqueue_record(
         wire = protect_frame(std::move(wire).take_value(), *token);
     }
     if (!wire.ok()) {
-        const Status failure = wire.status();
+        Status failure = copy_failure(wire.status());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             queued_wire_bytes_ -= reservation;
@@ -1811,14 +1821,14 @@ Status SessionEngine::Impl::enqueue_record(
         }
         if (protect) {
             ordering_lock.unlock();
-            fail(failure);
+            fail(copy_failure(failure));
         }
         return failure;
     }
     Buffer wire_buffer = std::move(wire).take_value();
     if (wire_buffer.size() > carrier_->max_record_size() ||
         wire_buffer.size() > reservation) {
-        const Status failure(
+        Status failure = Status::diagnostic(
             StatusCode::ProviderMismatch,
             "composed record exceeds its reserved carrier bound");
         {
@@ -1830,7 +1840,7 @@ Status SessionEngine::Impl::enqueue_record(
         }
         if (protect) {
             ordering_lock.unlock();
-            fail(failure);
+            fail(copy_failure(failure));
         }
         return failure;
     }
@@ -1843,7 +1853,10 @@ Status SessionEngine::Impl::enqueue_record(
                 if (is_control) {
                     --queued_control_messages_;
                 }
-                return Status(StatusCode::Closed, "session is closed");
+                // A throw here would reach the handler below and release
+                // the reservation twice.
+                return Status::diagnostic(StatusCode::Closed,
+                                          "session is closed");
             }
             outbound_queue_.emplace_back(
                 std::move(wire_buffer), is_control, completion_bytes,
@@ -1851,9 +1864,9 @@ Status SessionEngine::Impl::enqueue_record(
             queued_wire_bytes_ -= reservation - actual;
         }
     } catch (const std::bad_alloc&) {
-        const Status failure(
-            StatusCode::ResourceExhausted,
-            "outbound record queue allocation failed");
+        Status failure =
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "outbound record queue allocation failed");
         {
             std::lock_guard<std::mutex> lock(mutex_);
             queued_wire_bytes_ -= reservation;
@@ -1863,7 +1876,7 @@ Status SessionEngine::Impl::enqueue_record(
         }
         if (protect) {
             ordering_lock.unlock();
-            fail(failure);
+            fail(copy_failure(failure));
         }
         return failure;
     }

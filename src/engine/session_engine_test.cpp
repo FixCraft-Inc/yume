@@ -1809,6 +1809,88 @@ void test_live_write_publication_allocation_failures() {
     }
 }
 
+void test_queue_refusal_survives_diagnostic_allocation_failure() {
+    for (const bool fail_diagnostic : {false, true}) {
+        SessionLimits limits;
+        limits.max_security_overhead = 0U;
+        const std::size_t control_reserve = 2U * (ytp1::kFrameHeaderSize + 4U) +
+                                            16U + ytp1::kRekeyInitMessageBytes +
+                                            ytp1::kRekeyAckMessageBytes;
+        constexpr std::size_t kOrdinaryBudget = 512U;
+        constexpr std::size_t kPayloadBytes = 32U;
+        constexpr std::size_t kWireOverhead = ytp1::kFrameHeaderSize + 16U;
+        constexpr std::size_t kHeldPayloadBytes =
+            kOrdinaryBudget - kWireOverhead - kPayloadBytes;
+        limits.max_queued_bytes = control_reserve + kOrdinaryBudget;
+        limits.max_stream_queued_bytes = kOrdinaryBudget;
+        TestSession session(true, false, limits);
+        session.start_to_active();
+        session.open_peer_stream();
+        std::uint64_t sequence = 2U;
+        grant_competing_credit(session, sequence, 0U,
+                               kHeldPayloadBytes + kPayloadBytes);
+        grant_competing_credit(session, sequence, 1U,
+                               kHeldPayloadBytes + kPayloadBytes);
+        session.carrier->hold_sends = true;
+        int held_completions = 0;
+        bool held_ok = false;
+        session.handler->responder->async_write(
+            require(Buffer::allocate(kHeldPayloadBytes, kHeldPayloadBytes)), {},
+            [&](Status status, std::size_t bytes) {
+                ++held_completions;
+                held_ok = status.ok() && bytes == kHeldPayloadBytes;
+            });
+        CHECK(held_completions == 0);
+        const auto sealed_before = session.trace->sealed.size();
+        const auto token_before = session.trace->sealed.back();
+        auto payload = require(Buffer::allocate(kPayloadBytes, kPayloadBytes));
+        int refused = 0;
+        bool refusal_ok = false;
+        bool empty_diagnostic = false;
+        StreamResponder::WriteCompletion completion = [&](Status status,
+                                                          std::size_t bytes) {
+            ++refused;
+            refusal_ok =
+                status.code() == StatusCode::ResourceExhausted && bytes == 0U;
+            empty_diagnostic = status.message().empty();
+        };
+        // The payload fits admission, but its wire overhead cannot fit until
+        // the held send completes. Refusal consumes neither a token nor credit.
+        if (fail_diagnostic) {
+            constexpr std::string_view kRefusal =
+                "session outbound queue is full";
+            test_allocation_failure::fail_once_for_size(kRefusal.size() + 1U);
+        }
+        session.handler->responder->async_write(std::move(payload), {},
+                                                std::move(completion));
+        CHECK(!test_allocation_failure::armed());
+        CHECK(refused == 1 && refusal_ok);
+        CHECK(empty_diagnostic == fail_diagnostic);
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(held_completions == 0);
+        CHECK(session.trace->sealed.size() == sealed_before);
+
+        session.carrier->hold_sends = false;
+        session.carrier->complete_send();
+        CHECK(held_completions == 1 && held_ok);
+        int replacement = 0;
+        bool replacement_ok = false;
+        session.handler->responder->async_write(
+            require(Buffer::allocate(kPayloadBytes, kPayloadBytes)), {},
+            [&](Status status, std::size_t bytes) {
+                ++replacement;
+                replacement_ok = status.ok() && bytes == kPayloadBytes;
+            });
+        CHECK(replacement == 1 && replacement_ok);
+        CHECK((session.trace->sealed.back() ==
+               RecordKeyToken{token_before.epoch, token_before.sequence + 1U}));
+        CHECK(session.engine->traffic().payload_bytes_sent ==
+              kHeldPayloadBytes + kPayloadBytes);
+        session.engine->stop();
+        CHECK(refused == 1 && held_completions == 1 && replacement == 1);
+    }
+}
+
 void test_live_write_inline_completion_reentry() {
     const std::array<std::byte, 4U> data{};
     for (const bool stop_in_completion : {false, true}) {
@@ -3316,6 +3398,7 @@ void run_test() {
     test_stream_registration_allocation_failures();
     test_stream_cancellation_under_allocation_failure();
     test_live_write_publication_allocation_failures();
+    test_queue_refusal_survives_diagnostic_allocation_failure();
     test_live_write_inline_completion_reentry();
     test_terminal_responder_allocation_failures();
     test_carrier_failure_settles_write_before_close_notice();

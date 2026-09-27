@@ -450,6 +450,17 @@ void test_credential_reload(const std::filesystem::path& kit) {
     CHECK(await(accepted_reason).code() == StatusCode::PermissionDenied);
     CHECK(runner.sync([&] { return client->reload_credentials(); }).code() ==
           StatusCode::FailedPrecondition);
+#ifdef YUME_NATIVE_TEST_ROUTES
+    // The refusal keeps its code when its diagnostic cannot be allocated.
+    const auto refused = runner.sync([&] {
+        yume::test::arm_allocation_failure(1U);
+        auto status = client->reload_credentials();
+        CHECK(yume::test::disarm_allocation_failure());
+        return status;
+    });
+    CHECK(refused.code() == StatusCode::FailedPrecondition &&
+          refused.message().empty());
+#endif
     runner.sync([&] {
         client->close();
         server->close();

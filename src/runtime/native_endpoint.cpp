@@ -382,7 +382,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     // previous credentials remain in force.
     Status reload() noexcept {
         if (role != EndpointRole::Server || !reload_inputs)
-            return Status(StatusCode::FailedPrecondition, "only a server endpoint reloads credentials");
+            return Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                "only a server endpoint reloads credentials");
         if (closing.load(std::memory_order_acquire)) return Status(StatusCode::Closed);
         try {
             auto& inputs = *reload_inputs;

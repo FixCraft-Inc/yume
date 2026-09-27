@@ -177,7 +177,7 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   offloads off for wire-sized frames, and run nDPI on that capture. It names
   the remote host with a required `--remote-host`. `scripts/yume_wan_emulation.py`
   measures sessions across emulated wide-area links without root: netem
-  delay, loss and rate limits on a veth pair between two network namespaces,
+  delay, loss and rate limits in a router namespace between client and server,
   with session setup time, direct and tunnelled download rates and small
   request round trips per condition. Their results are observations, not
   classifier verdicts or benchmarks.

@@ -171,12 +171,13 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
         return true;
     }
 
-    static Status failure(std::string_view what, const beast::error_code& error) noexcept {
-        if (error == beast::error::timeout) {
-            return Status::diagnostic(StatusCode::Closed,
-                                      std::string(what) + ": timed out");
-        }
+    static Status failure(std::string_view what,
+                          const beast::error_code& error) noexcept {
         try {
+            if (error == beast::error::timeout) {
+                return Status(StatusCode::Closed,
+                              std::string(what) + ": timed out");
+            }
             return Status(StatusCode::Closed, std::string(what) + ": " + error.message());
         } catch (...) {
             return Status(StatusCode::Closed);

@@ -2,7 +2,7 @@
 name:     ytp_1
 kind:     page
 title:    YUME Transport Protocol 1 kernel
-summary:  The bounded canonical transport kernel and its still-open provider and runtime boundaries.
+summary:  The canonical transport kernel, native composition and qualification boundaries.
 markdown: docs/protocol/YTP_1.md
 web:      yes
 catalog-title: YTP/1 protocol
@@ -27,7 +27,7 @@ This contract remains narrower than a complete transport product. The kernel
 implements canonical encodings, structural validation, bounds, stream rules,
 fixed suite metadata, domains, and key-schedule input encoding. The session
 engine implements the authenticated record lifecycle and multiplexing over a
-carrier. Opt-in candidates implement the fixed hybrid handshake, a memory-BIO
+carrier. Native providers implement the fixed hybrid handshake, a memory-BIO
 TLS 1.3 secure channel, duplex H2 carrier behavior, client TCP ByteChannel, and
 direct TCP/connected-UDP routing. A native FrontDoor composes accepted TCP,
 TLS, genuine static cover and admission into the H2 carrier. The internal
@@ -35,11 +35,12 @@ NativeEndpoint composes both bootstrap roles, protected schema-1 credentials,
 per-identity named-handler authorization, bounded automatic server accepts,
 session ownership and shutdown drain.
 It also composes configured direct TCP/UDP adapters whose schema-1
-destinations are authorized before resolution and for every resolved address. An experimental schema-1 C ABI backend carries
-named byte streams over it, but does not compose destination adapters.
-Development `yumed` and `yume` processes compose it with direct
-routes and a SOCKS5 adapter with CONNECT and UDP ASSOCIATE. Packet/TUN adapters and the remaining
-qualification gates are unfinished, as listed below.
+destinations are authorized before resolution and for every resolved address.
+The experimental schema-1 C ABI backend carries named streams, named packets
+and routed TCP/UDP requests, while refusing adapter declarations.
+Development `yumed` and `yume` processes compose direct routes, SOCKS5 CONNECT
+and UDP ASSOCIATE, forwards, server modules and managed Linux TUN.
+Production qualification remains open, as listed below.
 
 ## Conventions and compatibility
 
@@ -103,9 +104,9 @@ allocation refuse admission without evicting a live nonce. At most one
 successful carrier promotion is allowed for a TLS connection throughout its
 lifetime. A TTL cache alone cannot enforce that rule after an entry expires.
 Missing, invalid, replayed or resource-exhausted admission follows the genuine
-configured cover path and never starts AUTH. The opt-in native FrontDoor
+configured cover path and never starts AUTH. The native FrontDoor
 implements these ingress rules with a configured immutable static website;
-they do not establish a complete YTP session runtime.
+admission alone does not authenticate a YTP peer.
 
 ## Streams and frames
 
@@ -407,8 +408,8 @@ The provider `openssl35.ytp1-security` enforces this exact composition. It
 creates a private
 OpenSSL library context, loads only the instance-local default provider,
 requires every named algorithm, and has no provider fallback or suite
-negotiation. This target is an experimental implementation, not a production
-YTP/1 path or installed runtime contract.
+negotiation. The native programs and C ABI use this provider. Its production
+qualification remains open.
 
 ### Domains
 
@@ -431,7 +432,7 @@ EXPORTER-yume/ytp/1/channel-binding/v1
 @end
 
 The kernel embeds the root domain in the key-schedule input and checks the
-domain constants in its focused test. The opt-in provider uses these domains
+domain constants in its focused test. The security provider uses these domains
 for composite identity, transcript, signatures, PSK authentication, hybrid
 handshake confirmation, directional roots, per-record material and AAD, and
 directional rekey. Implementations MUST NOT substitute formulas or
@@ -566,7 +567,7 @@ between that output and any input field so secret material is not silently
 aliased or copied through an unsafe buffer.
 
 The kernel does not provide a decoder or perform cryptography for this
-encoding. The opt-in provider supplies the checked operations: it requires
+encoding. The security provider supplies the checked operations: it requires
 exact key algorithms and canonical public DER, rejects all-zero hybrid shared
 contributions, compares authentication values with OpenSSL's constant-time
 primitive, and runs the fixed HKDF before publishing peer evidence or
@@ -704,7 +705,7 @@ Implemented in the dependency-pure session engine and its in-memory tests:
 - crossed and sequential directional rekey lifecycle, cancellation, teardown,
   half-close, backpressure, and allocation-failure contracts.
 
-Implemented in the opt-in `yume_openssl_security_provider` target and exercised by
+Implemented in `yume_openssl_security_provider` and exercised by
 `yume_openssl_security_provider_test` with freshly generated real keys:
 
 - private OpenSSL context and exact Ed25519, ML-DSA-87, X25519,
@@ -722,7 +723,7 @@ Implemented in the opt-in `yume_openssl_security_provider` target and exercised 
   mutation, mismatch, component-stripping, replay, epoch, and post-failure
   negative tests.
 
-Implemented as separate opt-in provider candidates with focused tests:
+Implemented as separate native providers with focused tests:
 
 - `yume_tls13_secure_channel` wraps an engine ByteChannel with OpenSSL
   memory BIOs, enforces TLS 1.3 and ALPN `h2`, verifies client-side trust and
@@ -745,7 +746,7 @@ Implemented as separate opt-in provider candidates with focused tests:
   numeric-destination policy before socket creation and using the same
   single-runner execution context and reserved controls as native ingress.
 
-Implemented in the opt-in `yume_h2_web_front_door` target: a native listener using
+Implemented in `yume_h2_web_front_door`: a native listener using
 the accepted-channel owner, a configured static site loaded through confined
 `FileRoot` reads, received-SNI/exporter verification, shared replay reservations,
 bounded admission capacity and one promotion per TLS lifetime. Promotion
@@ -768,7 +769,7 @@ declarations. Focused integration exercises configured authenticated TCP/UDP
 routes, packet boundaries, policy refusal and retained credit after drain, plus
 real TCP/TLS/H2, AUTH, OPEN refusal followed by acceptance, data, rekey,
 half-close and final ownership drain. This is an internal runtime seam; its
-tests do not establish a complete runnable tunnel or production qualification.
+tests do not establish production qualification.
 
 Not implemented or not qualified as a production YTP/1 path:
 
@@ -786,9 +787,8 @@ Not implemented or not qualified as a production YTP/1 path:
 
 The native endpoint and its providers are internal C++ components. The native
 executables are installed by default; the experimental C SDK has a separate
-installation opt-in. Schema-1 ABI
-endpoint start uses them only in builds that include them and fails with a
-typed unsupported status otherwise. The relay module, the GUI and other
+installation opt-in. Enabling the native programs or the shared ABI builds
+the complete native provider graph. The relay module, the GUI and other
 product-specific surfaces are not part of YTP/1.
 
 `yume` and `yumed` run on this contract. Remaining adapters, independent peer

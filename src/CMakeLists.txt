@@ -391,9 +391,8 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     endif()
 endif()
 
-# Concrete direct TCP/connected-UDP egress remains an opt-in provider until
-# the replacement endpoint graph is wired and qualified. Its public header is
-# a source-level C++20 provider contract; it is not part of the C ABI.
+# Concrete direct TCP/connected-UDP egress belongs to the native provider
+# graph. Its C++20 contract is internal to native endpoint composition.
 if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_asio_direct_route_provider STATIC
         providers/asio_direct_route_provider.cpp

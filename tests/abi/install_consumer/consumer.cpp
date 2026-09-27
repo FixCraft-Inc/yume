@@ -101,18 +101,11 @@ int main() {
                "compatibility manifest is incomplete or inconsistent")) {
         return 3;
     }
-    // The manifest names the composition this library links. An unwired
-    // build reports both fields as unwired. A linked schema-1 backend names
-    // its concrete provider and cryptographic backend.
-    const bool native_backend =
-        std::strcmp(compatibility.session_security_provider, "unwired") != 0;
-    const bool unwired_crypto =
-        std::strcmp(build.crypto_backend, "unwired") == 0;
-    if (!check(native_backend
-                   ? std::strcmp(compatibility.session_security_provider,
-                                 "openssl35.ytp1-security") == 0 &&
-                         !unwired_crypto
-                   : unwired_crypto,
+    // Every shared ABI build links the native provider composition.
+    if (!check(std::strcmp(compatibility.session_security_provider,
+                           "openssl35.ytp1-security") == 0 &&
+                   std::string_view(build.crypto_backend)
+                       .starts_with("openssl-3."),
                "manifest does not describe one consistent YTP/1 composition")) {
         return 3;
     }
@@ -152,14 +145,11 @@ int main() {
     }
     Endpoint endpoint(endpoint_raw, &yume_endpoint_destroy);
 
-    // The fixture names credential files that do not exist. An unwired build
-    // refuses before reading them, and a linked backend refuses when it
-    // cannot read them. Neither may start.
+    // Missing credential files must produce a typed start failure.
     const yume_status started = yume_endpoint_start(endpoint.get(), 0U);
-    const bool refused = native_backend
-        ? started != YUME_STATUS_OK && started != YUME_STATUS_UNSUPPORTED &&
-              started != YUME_STATUS_INTERNAL_ERROR
-        : started == YUME_STATUS_UNSUPPORTED;
+    const bool refused = started != YUME_STATUS_OK &&
+                         started != YUME_STATUS_UNSUPPORTED &&
+                         started != YUME_STATUS_INTERNAL_ERROR;
     if (!check(refused, "endpoint start did not fail closed") ||
         !check(yume_endpoint_state(endpoint.get()) == YUME_ENDPOINT_FAILED,
                "failed endpoint start did not enter FAILED")) {
@@ -169,15 +159,11 @@ int main() {
     yume_diagnostic diagnostic{};
     diagnostic.struct_size = sizeof(diagnostic);
     diagnostic.abi_version = YUME_ABI_VERSION;
-    if (!check(yume_handle_get_diagnostic(endpoint.get(), &diagnostic,
-                                          sizeof(diagnostic)) ==
-                   YUME_STATUS_OK &&
-                   diagnostic.status == started &&
-                   diagnostic.message[0] != '\0' &&
-                   (native_backend ||
-                    std::strstr(diagnostic.message,
-                                "provider is not linked") != nullptr),
-               "endpoint diagnostic did not preserve the typed start failure")) {
+    if (!check(
+            yume_handle_get_diagnostic(endpoint.get(), &diagnostic,
+                                       sizeof(diagnostic)) == YUME_STATUS_OK &&
+                diagnostic.status == started && diagnostic.message[0] != '\0',
+            "endpoint diagnostic did not preserve the typed start failure")) {
         return 9;
     }
 

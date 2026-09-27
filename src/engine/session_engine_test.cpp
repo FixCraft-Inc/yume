@@ -1290,6 +1290,50 @@ void test_pending_write_capacity_admission_and_release() {
     }
 }
 
+// remove_stream releases a closed stream's queued bytes at once and then
+// completes its writes one at a time. A write cancelled in between, here from
+// the first write's completion, must not be released again: that wrapped the
+// session's queued-byte count, and the next record found the queue full and
+// failed the session.
+void test_write_cancelled_during_stream_removal_is_released_once() {
+    TestSession session;
+    session.start_to_active();
+    session.open_peer_stream();
+    CancellationSource second;
+    std::array<StatusCode, 2U> codes{StatusCode::Ok, StatusCode::Ok};
+    int completions = 0;
+    // The peer has granted no stream credit, so both writes stay queued.
+    session.handler->responder->async_write(shrunk_write_buffer(4096U), {},
+                                            [&](Status status, std::size_t) {
+                                                codes[0] = status.code();
+                                                ++completions;
+                                                CHECK(second.cancel());
+                                            });
+    session.handler->responder->async_write(shrunk_write_buffer(4096U),
+                                            second.token(),
+                                            [&](Status status, std::size_t) {
+                                                codes[1] = status.code();
+                                                ++completions;
+                                            });
+    CHECK(completions == 0);
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    session.carrier->deliver(
+        protected_wire(0U, 2U, frame(ytp1::RecordType::Close, 1U, aborted)));
+    CHECK(completions == 2);
+    CHECK(codes[0] != StatusCode::Ok && codes[1] == StatusCode::Cancelled);
+
+    const std::size_t sent_before = session.carrier->sent.size();
+    std::optional<StatusCode> opened;
+    session.engine->async_open(
+        "echo", ServiceKind::ByteStream,
+        [&](auto result) { opened = result.status().code(); });
+    CHECK(!opened.has_value());
+    CHECK(session.carrier->sent.size() == sent_before + 1U);
+    CHECK(protected_record(session.carrier->sent.back()).header.type ==
+          ytp1::RecordType::Open);
+    CHECK(session.engine->state() == SessionState::Active);
+}
+
 void test_pending_write_capacity_is_shared_across_streams() {
     SessionLimits limits;
     limits.max_security_overhead = 0U;
@@ -3722,6 +3766,7 @@ void run_test() {
     test_termination_overrides_an_earlier_fin();
     test_partial_credit_does_not_reorder_queued_writes();
     test_pending_write_capacity_admission_and_release();
+    test_write_cancelled_during_stream_removal_is_released_once();
     test_pending_write_capacity_is_shared_across_streams();
     test_competing_streams_rotate_across_credit_updates();
     test_competing_streams_skip_stalled_reader();

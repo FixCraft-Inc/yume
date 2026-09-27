@@ -3884,8 +3884,13 @@ void SessionEngine::Impl::cancel_pending_write(
         const std::size_t storage_bytes = write_it->payload.retained_capacity();
         completion = std::move(write_it->completion);
         pending.erase(write_it);
-        stream_it->second->outbound_queued_bytes -= storage_bytes;
-        pending_write_bytes_ -= storage_bytes;
+        // remove_stream releases a closed stream's queued bytes at once and
+        // then completes its writes one at a time, so a write cancelled in
+        // between, even from another write's completion, is no longer charged.
+        if (!stream_it->second->closed) {
+            stream_it->second->outbound_queued_bytes -= storage_bytes;
+            pending_write_bytes_ -= storage_bytes;
+        }
     }
     invoke_noexcept(completion, std::move(reason), 0U);
     const Status shutdown = finish_stream_shutdown_if_ready(stream_id);

@@ -465,7 +465,5 @@ engine::Result<std::shared_ptr<LinuxTunNetwork>> LinuxTunNetwork::create(
 LinuxTunNetwork::LinuxTunNetwork(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
 LinuxTunNetwork::~LinuxTunNetwork() noexcept = default;
 engine::PacketChannel& LinuxTunNetwork::channel() noexcept { return *state_->tun; }
-std::string_view LinuxTunNetwork::interface_name() const noexcept { return state_->tun->interface_name(); }
-unsigned LinuxTunNetwork::interface_index() const noexcept { return state_->tun->interface_index(); }
 Status LinuxTunNetwork::close() noexcept { return state_->close(); }
 }  // namespace yume::runtime

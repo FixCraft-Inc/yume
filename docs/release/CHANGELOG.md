@@ -722,8 +722,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   relay channel, file transfer, codecs, the share container, egress lists,
   per-client speed limits, forwards, the SOCKS5 upstream and the loopback
   fetch are native, and `config/yume.json` and `config/yumed.json` are now the
-  schema-1 examples. The GUI source stays for the GUI phase and does not
-  build.
+  schema-1 examples.
+- **The transport-v2 desktop GUI.** Its source in `src/gui` was built on the
+  removed v2 facade and could not build since. Every page depended on that
+  facade, so a native GUI is a new design rather than an update. The source
+  and its two unregistered GUI test scripts are readable in commits up to
+  `cff6905`, and `YUME_BUILD_GUI` is gone.
 - **Inline `real_secret` and the `--real-secret` flag.** The cover-backend
   secret could be passed in argv, where the process table exposes it, or
   written into the configuration file. Both server loaders now refuse the key

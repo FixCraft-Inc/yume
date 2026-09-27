@@ -7,7 +7,6 @@
 
 #include <memory>
 #include <optional>
-#include <string_view>
 
 #include "config/v1/config.hpp"
 #include "engine/route_provider.hpp"
@@ -41,8 +40,6 @@ public:
     LinuxTunNetwork& operator=(const LinuxTunNetwork&) = delete;
 
     engine::PacketChannel& channel() noexcept;
-    std::string_view interface_name() const noexcept;
-    unsigned interface_index() const noexcept;
     [[nodiscard]] engine::Status close() noexcept;
 
 private:

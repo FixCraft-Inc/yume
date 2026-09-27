@@ -14,8 +14,7 @@ override_dh_auto_configure:
 		-DYUME_STATIC_OPENSSL=OFF \
 		-DYUME_DEB_SHLIBDEPS=ON \
 		-DYUME_BUILD_SHARED_ABI=OFF \
-		-DYUME_INSTALL_EXPERIMENTAL_SDK=OFF \
-		-DYUME_BUILD_GUI=OFF
+		-DYUME_INSTALL_EXPERIMENTAL_SDK=OFF
 
 override_dh_installsystemd:
 	dh_installsystemd -p yume-daemon --name=yumed --no-enable --no-start

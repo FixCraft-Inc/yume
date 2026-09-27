@@ -96,7 +96,6 @@ public:
                       Completion completion) override;
 
     engine::ExecutorAffinity executor_affinity() const noexcept;
-    const H2DuplexClientConfig& config() const noexcept;
 
 private:
     struct AdmissionKey;

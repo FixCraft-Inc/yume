@@ -42,10 +42,6 @@ std::string nonce_hex(const Nonce& nonce);
 std::optional<ParsedPath> parse_path(std::string_view path) noexcept;
 std::string build_path(const Token& token, const Nonce& nonce);
 
-// Preserves transport-v2 host normalization (case and trailing root dots).
-// This is not strict DNS validation; YTP/1 applies its own hostname contract.
-std::optional<std::string> normalize_server_name(std::string_view name);
-
 bool authority_matches_tls_sni(
     std::string_view authority,
     std::string_view tls_sni,

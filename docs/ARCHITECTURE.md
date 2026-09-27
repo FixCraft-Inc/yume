@@ -16,7 +16,7 @@ in from outside.
 The HTTP/2 and WebSocket carrier code and the browser profile came from
 transport v2, the protocol before YTP/1, which has been removed. The relay
 channel, file transfer, codecs and the share container live on as module
-libraries, and the GUI waits as source for a native interface.
+libraries. The transport-v2 GUI was removed, and a new one is planned.
 A new protocol name proves neither better speed nor stronger security.
 [Implementation status](IMPLEMENTATION_STATUS.md) lists the open gates.
 
@@ -410,8 +410,7 @@ Native source is organized by dependency:
 | `tools/` | provisioning and evidence tooling |
 
 The installed `yumed` and `yume` build from `src/runtime/` with every native
-provider. The GUI source in `src/gui` does not build until it has a native
-interface. The [source map](SOURCE_MAP.md#composition-and-open-gaps) lists
+provider. The [source map](SOURCE_MAP.md#composition-and-open-gaps) lists
 what is composed and what is still open.
 
 The foundational CMake targets enforce the following dependency rule:

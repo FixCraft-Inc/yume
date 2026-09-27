@@ -483,7 +483,7 @@ without raising the 256 MiB RSS growth guard. Other sanitizer tests keep their
 existing options. This finite workload does not measure live queue ownership,
 prove a memory plateau or observe automatic rekeys.
 
-The GUI in `src/gui` does not build until it has a native interface. CodeQL
+There is no desktop GUI. CodeQL
 analyzes the native programs, `libyume` and the module libraries. Debian definitions
 use the native config-only daemon, validate configuration before startup and
 leave the service disabled after installation. Native release archives carry

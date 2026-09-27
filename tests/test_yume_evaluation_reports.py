@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import yume_ethernet_smoke as ethernet  # noqa: E402
 import yume_ndpi_report as ndpi  # noqa: E402
+import yume_wan_emulation as wan  # noqa: E402
 
 READER_TEXT = """
 Traffic statistics:
@@ -108,6 +109,35 @@ class EthernetReportTest(unittest.TestCase):
         self.assertEqual(ethernet.rate(125_000_000, 1.0), 1000.0)
         self.assertEqual(ethernet.rate(1, 0.0), 0.0)
 
+
+
+class WanEmulationTest(unittest.TestCase):
+    def test_condition_fields_default_to_an_unshaped_link(self) -> None:
+        self.assertEqual(wan.parse_condition("rtt=100,loss=0.5"),
+                         {"rtt_ms": 100.0, "loss_percent": 0.5, "rate_mbit": 0.0})
+        for text in ("delay=10", "rtt=-1", "rtt=nan", "rtt=10,loss=25", "rtt"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                wan.parse_condition(text)
+
+    def test_each_direction_delays_half_the_round_trip(self) -> None:
+        self.assertEqual(wan.netem_arguments(wan.parse_condition("rtt=100,loss=1")),
+                         ["netem", "delay", "50ms", "loss", "1%", "limit", str(wan.UNSHAPED_QUEUE_PACKETS)])
+
+    def test_a_rate_limit_sizes_the_queue_from_the_path(self) -> None:
+        # 50 Mbit/s at 200 ms holds about 834 full packets in flight.
+        self.assertEqual(wan.netem_arguments(wan.parse_condition("rtt=200,rate=50"))[-4:],
+                         ["rate", "50mbit", "limit", "3334"])
+        self.assertEqual(wan.netem_arguments(wan.parse_condition("rtt=2,rate=10"))[-1], "1000")
+
+    def test_pattern_check_follows_the_cycle_across_chunks(self) -> None:
+        check = wan.PatternCheck()
+        stream = bytes(range(256)) * 9000
+        for start in range(0, len(stream), 70001):
+            check.feed(stream[start:start + 70001])
+        self.assertEqual(check.offset, len(stream))
+        # The stream ended on a whole cycle, so the next byte must be 0x00.
+        with self.assertRaises(wan.session.SessionFailure):
+            check.feed(b"\x01")
 
 if __name__ == "__main__":
     unittest.main()

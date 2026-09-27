@@ -169,8 +169,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   frames. `scripts/yume_ethernet_smoke.py` compares repeated untunnelled and
   tunnelled transfers over a direct link after a preflight that fails when the
   link is unavailable. It can capture the tunnel on the remote interface, with
-  offloads off for wire-sized frames, and run nDPI on that capture. Their
-  results are observations, not classifier verdicts or benchmarks.
+  offloads off for wire-sized frames, and run nDPI on that capture. It names
+  the remote host with a required `--remote-host`. `scripts/yume_wan_emulation.py`
+  measures sessions across emulated wide-area links without root: netem
+  delay, loss and rate limits on a veth pair between two network namespaces,
+  with session setup time, direct and tunnelled download rates and small
+  request round trips per condition. Their results are observations, not
+  classifier verdicts or benchmarks.
 - **Configured egress destinations.** Server `direct_tcp` and `direct_udp`
   adapters require `destinations`: `public` for globally reachable unicast
   addresses and `networks` for canonical CIDR prefixes. `NativeEgressPolicy`

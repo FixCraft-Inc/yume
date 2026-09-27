@@ -447,9 +447,10 @@ def main() -> int:
         parser.error(str(error))
     if not 2 <= arguments.seconds <= 60 or not 1 <= arguments.repeats <= 20 or \
             not 1 <= arguments.requests <= 200 or not 1 <= arguments.port <= 65535 or \
-            (arguments.max_queued_bytes is not None and not 1 << 16 <= arguments.max_queued_bytes <= 64 << 20):
+            (arguments.max_queued_bytes is not None and not 1 << 16 <= arguments.max_queued_bytes <= 16 << 20):
+        # The configuration parser owns the queue budget bound (kMaxQueuedBytes).
         parser.error("seconds must be 2..60, repeats 1..20, requests 1..200, port 1..65535 "
-                     "and max queued bytes 64 KiB..64 MiB")
+                     "and max queued bytes 64 KiB..16 MiB")
     for name in ("yumed", "yume", "openssl"):
         setattr(arguments, name, getattr(arguments, name).resolve(strict=True))
     arguments.output = arguments.output.resolve()

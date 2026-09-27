@@ -1005,7 +1005,11 @@ void test_accept_loop_listener_failure(const std::filesystem::path& kit) {
     });
     boost::asio::io_context io;
     boost::asio::ip::tcp::socket probe(io);
-    probe.connect({boost::asio::ip::address_v4::loopback(), port});
+    // The listener closes with this connection queued. That reset can reach
+    // connect itself before it returns.
+    boost::system::error_code connected;
+    probe.connect({boost::asio::ip::address_v4::loopback(), port}, connected);
+    CHECK(!connected || connected == boost::asio::error::connection_reset);
     const auto status = await(failure);
     CHECK(status.code() == StatusCode::Closed);
     runner.sync([&] {
@@ -1837,8 +1841,12 @@ void test_socks5_accept_retry(bool fail_retry, bool sustained) {
     });
     boost::asio::io_context io;
     boost::asio::ip::tcp::socket probe(io);
-    probe.connect(endpoint);
+    boost::system::error_code connected;
+    probe.connect(endpoint, connected);
     if (fail_retry) {
+        // The listener closes with this connection queued. That reset can
+        // reach connect itself before it returns.
+        CHECK(!connected || connected == boost::asio::error::connection_reset);
         const auto ready = completed.wait_for(3s);
         if (ready != std::future_status::ready) {
             runner.sync([&] {
@@ -1857,6 +1865,7 @@ void test_socks5_accept_retry(bool fail_retry, bool sustained) {
     } else {
         // The queued connection is accepted after the retry, then refused
         // normally because there is no active session.
+        CHECK(!connected);
         const std::array<std::uint8_t, 13> request{5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 1, 187};
         boost::asio::write(probe, boost::asio::buffer(request));
         probe.non_blocking(true);

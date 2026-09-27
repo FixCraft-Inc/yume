@@ -2048,6 +2048,15 @@ Status SessionEngine::Impl::flush_deferred_records() {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto it = streams_.find(record.stream_id.value());
             closed = it == streams_.end() || it->second->closed;
+            // Application data took its connection credit when it was
+            // published. Dropped here, it never reaches the peer, which still
+            // counts that credit as granted, so it comes back. Losing it
+            // shrank the session's window by a record at a time until the
+            // peer could no longer reach its return point.
+            if (closed && (record.type == ytp1::RecordType::Data ||
+                           record.type == ytp1::RecordType::Packet)) {
+                outbound_connection_credit_ += payload.size();
+            }
         }
         if (closed) {
             invoke_noexcept(record.completion,

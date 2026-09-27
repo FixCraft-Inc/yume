@@ -384,6 +384,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   data for a round trip. The endpoint's rekey timer also rotates a used epoch
   as soon as it is 500 ms old, so a request after an idle moment no longer
   waits a round trip on each side for REKEY_ACK.
+- **Connection credit of dropped data.** A DATA or PACKET record that started
+  a key rotation waited behind it with its connection credit already taken.
+  If its stream closed before REKEY_ACK arrived, the record was dropped
+  without returning that credit, while the peer, which never saw the record,
+  still counted it as granted. Each drop shrank the session's usable window
+  by a record, until the sender held less credit than its next record while
+  the receiver waited for half its window, and every stream stalled. A soak
+  of repeated parallel downloads slowed from about 190 to 126 Mbit/s and
+  stalled after 16 to 18 minutes. The dropped record's credit now comes back.
 - **H2 carrier window follows the session budget.** The admitted carrier's
   receive window was a fixed 8 MiB. The carrier keeps each record's H2 credit
   until its sink completes and nghttp2 returns credit at half its window, so a

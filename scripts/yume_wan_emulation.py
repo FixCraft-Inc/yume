@@ -463,11 +463,18 @@ def run_soak(arguments: argparse.Namespace, link: Link, kit: Path, environment: 
 
         sampler = threading.Thread(target=sample, daemon=True)
         sampler.start()
+        failure = None
         try:
             while (remaining := started + arguments.soak - time.monotonic()) >= 2:
-                outcome = parallel_downloads(socks_port, "127.0.0.1", target_port, min(30.0, remaining),
-                                             arguments.streams)
-                rounds.append({"aggregate_tail_mbit_s": outcome["aggregate_tail_mbit_s"],
+                round_start = round(time.monotonic() - started, 1)
+                try:
+                    outcome = parallel_downloads(socks_port, "127.0.0.1", target_port, min(30.0, remaining),
+                                                 arguments.streams)
+                except (session.SessionFailure, OSError) as error:
+                    failure = f"round {len(rounds) + 1}, {round_start} s into the soak: {error}"
+                    break
+                rounds.append({"start_s": round_start,
+                               "aggregate_tail_mbit_s": outcome["aggregate_tail_mbit_s"],
                                "fairness": outcome["fairness"],
                                "bytes": sum(stream["bytes"] for stream in outcome["streams"])})
         finally:
@@ -480,6 +487,11 @@ def run_soak(arguments: argparse.Namespace, link: Link, kit: Path, environment: 
         raise session.SessionFailure("soak sampling failed: " + sampler_errors[0])
     result["rounds"] = rounds
     result["samples"] = samples
+    if failure is not None:
+        # The rounds and samples before the failure are the evidence for it.
+        result["error"] = failure
+        result["flat"] = False
+        return result
     result["plateau"] = {
         f"{program}_{metric}": plateau([sample_row[program][metric] for sample_row in samples], *bounds)
         for program in ("yume", "yumed") for metric, bounds in PLATEAU_BOUNDS.items()}

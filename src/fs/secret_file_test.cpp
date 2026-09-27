@@ -149,33 +149,6 @@ void Write(const std::filesystem::path& path,
     ::chmod(path.c_str(), mode);
 }
 
-void LoadContract() {
-    const auto base = std::filesystem::temp_directory_path() /
-        ("yume-secret-load-test-" + std::to_string(ProcessId()));
-    std::filesystem::remove_all(base);
-    std::filesystem::create_directories(base);
-    const auto secret_path = base / "secret.hex";
-    const std::string good(64, 'a');
-
-    Write(secret_path, good, 0600);
-    auto secret = yume::security::LoadSecretFile32(secret_path);
-    auto bytes = secret.CopyBytes();
-    assert(bytes.size() == 32 && bytes.front() == 0xaa && bytes.back() == 0xaa);
-
-    const auto nul_path = std::filesystem::path(secret_path.string() + '\0' + "ignored");
-    assert(Throws([&] { (void)yume::security::LoadSecretFile32(nul_path); }));
-    assert(Throws([&] { (void)yume::security::ReadPrivateKeyFileStrict(nul_path); }));
-
-    Write(secret_path, good + "\n", 0600);
-    assert(Throws([&] { (void)yume::security::LoadSecretFile32(secret_path); }));
-    Write(secret_path, std::string(64, 'A'), 0600);
-    assert(Throws([&] { (void)yume::security::LoadSecretFile32(secret_path); }));
-    Write(secret_path, good, 0640);
-    assert(Throws([&] { (void)yume::security::LoadSecretFile32(secret_path); }));
-
-    std::filesystem::remove_all(base);
-}
-
 void PrivateKeyLoadContract() {
     const auto base = std::filesystem::temp_directory_path() /
         ("yume-private-key-test-" + std::to_string(ProcessId()));
@@ -187,6 +160,10 @@ void PrivateKeyLoadContract() {
     Write(key_path, pem, 0600);
     const auto contents = yume::security::ReadPrivateKeyFileStrict(key_path);
     assert(std::string(contents.begin(), contents.end()) == pem);
+    const auto nul_path =
+        std::filesystem::path(key_path.string() + '\0' + "ignored");
+    assert(Throws(
+        [&] { (void)yume::security::ReadPrivateKeyFileStrict(nul_path); }));
 
     const auto token_path = base / "operator-proof.token";
     Write(token_path, "private-token", 0600);
@@ -212,12 +189,8 @@ void PrivateKeyLoadContract() {
     const auto fifo_path = base / "fifo.key";
     assert(::mkfifo(fifo_path.c_str(), 0600) == 0);
     ::alarm(3);
-    assert(Throws([&] {
-        (void)yume::security::ReadPrivateKeyFileStrict(fifo_path);
-    }));
-    assert(Throws([&] {
-        (void)yume::security::LoadSecretFile32(fifo_path);
-    }));
+    assert(Throws(
+        [&] { (void)yume::security::ReadPrivateKeyFileStrict(fifo_path); }));
     ::alarm(0);
     const auto link_path = base / "identity-link.key";
     assert(::symlink(key_path.c_str(), link_path.c_str()) == 0);
@@ -252,7 +225,6 @@ void PrivateKeyLoadContract() {
 int main() {
     WriterContract();
 #if !defined(_WIN32)
-    LoadContract();
     PrivateKeyLoadContract();
 #endif
     return 0;

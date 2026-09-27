@@ -983,8 +983,60 @@ void test_accept_loop_listeners(const std::filesystem::path& kit) {
 #endif
 
 #ifdef YUME_TEST_WRAP_ACCEPT
-// A failed OS accept closes the FrontDoor listener. The loop must report that
-// once and close the endpoint instead of retrying a listener that is gone.
+// Descriptor exhaustion in an OS accept only pauses the FrontDoor. The queued
+// connection stays queued, and a client connecting during the pause still gets
+// its session.
+void test_accept_loop_listener_exhaustion(const std::filesystem::path& kit) {
+    Runner runner;
+    const auto server_config = load(kit / "server/yumed.json");
+    const auto client_config = load(kit / "client/yume.json");
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions options;
+    options.max_sessions = 1U;
+    options.max_pending_starts = 1U;
+    options.start_timeout = 5s;
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, server_config,
+                                           kit / "server", bindings(handler),
+                                           options));
+    });
+    options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, client_config,
+                                           kit / "client", bindings(handler),
+                                           options));
+    });
+    unsigned failures = 0U;  // Written on the runner, read after its drain.
+    const auto port = runner.sync([&] {
+        CHECK(server->start_accepting({}, [&failures](Status) { ++failures; })
+                  .ok());
+        injected_accept_error = EMFILE;
+        return server->listener_endpoint(0U).port();
+    });
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket probe(io);
+    probe.connect({boost::asio::ip::address_v4::loopback(), port});
+    auto session = connect_eventually(runner, client);
+    runner.sync([&] {
+        CHECK(injected_accept_error == 0);
+        CHECK(session->state() == SessionState::Active);
+    });
+    boost::system::error_code ignored;
+    probe.close(ignored);
+    client->close();
+    server->close();
+    runner.finish_and_join();
+    CHECK(failures == 0U);
+    client.reset();
+    server.reset();
+    CHECK(runner.context->poll() == 0U);
+    session.reset();
+    CHECK(runner.context->poll() == 0U);
+    CHECK(runner.exceptions.load() == 0U);
+}
+
+// Any other OS accept error closes the FrontDoor listener. The loop must report
+// that once and close the endpoint instead of retrying a listener that is gone.
 void test_accept_loop_listener_failure(const std::filesystem::path& kit) {
     Runner runner;
     const auto server_config = load(kit / "server/yumed.json");
@@ -1000,7 +1052,7 @@ void test_accept_loop_listener_failure(const std::filesystem::path& kit) {
         CHECK(server->start_accepting({}, [reported](Status status) {
             reported->set_value(std::move(status));
         }).ok());
-        injected_accept_error = EMFILE;
+        injected_accept_error = EINVAL;
         return server->listener_endpoint(0U).port();
     });
     boost::asio::io_context io;
@@ -2651,6 +2703,7 @@ int main(int argc, char** argv) {
         test_accept_loop_listeners(argv[1]);
 #endif
 #ifdef YUME_TEST_WRAP_ACCEPT
+        test_accept_loop_listener_exhaustion(argv[1]);
         test_accept_loop_listener_failure(argv[1]);
 #endif
         std::cout << "native AUTH, named services, refusal, rekey and shutdown passed\n";

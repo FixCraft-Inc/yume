@@ -2926,6 +2926,22 @@ void test_stop_during_rekey_flush_settles_remaining_records() {
     CHECK(opens == 1);
 }
 
+// The byte budget bounds queued and held bytes, not one buffer, so it has
+// its own ceiling above the largest buffer.
+void test_session_budget_ceiling() {
+    static_assert(kMaxSessionQueuedBytes > kAbsoluteMaxBufferBytes);
+    SessionLimits limits;
+    limits.max_queued_bytes = kMaxSessionQueuedBytes;
+    fit_receive_windows(limits);
+    CHECK(validate_session_limits(limits).ok());
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    CHECK(session.engine->state() == SessionState::Active);
+    limits.max_queued_bytes = kMaxSessionQueuedBytes + 1U;
+    CHECK(validate_session_limits(limits).code() ==
+          StatusCode::InvalidArgument);
+}
+
 void test_rekey_deadline_boundary_and_stale_timer() {
     SessionLimits invalid;
     invalid.rekey_ack_timeout = std::chrono::milliseconds(0);
@@ -3560,6 +3576,55 @@ void test_receive_credit_returns_after_half_a_window() {
            std::vector<std::uint32_t>{32U * 1024U, 16U * 1024U}));
 }
 
+// The peer sends 1 KiB records, consumed at once, until stream 1 returns
+// credit, and the function reports how much was consumed by then.
+std::size_t consumed_before_stream_return(TestSession& session) {
+    std::uint64_t sequence = 2U;
+    GrantedCredit granted;
+    scan_granted_credit(session, granted);
+    CHECK(granted.stream_increments.size() == 1U);
+    std::size_t consumed = 0U;
+    while (granted.stream_increments.size() == 1U &&
+           consumed < granted.stream) {
+        deliver_consumed(session, sequence, 1024U);
+        consumed += 1024U;
+        scan_granted_credit(session, granted);
+    }
+    CHECK(granted.stream_increments.size() == 2U);
+    CHECK(granted.stream_increments.back() == consumed);
+    return consumed;
+}
+
+// A window at its maximum returns credit every 1/n of itself for n updates
+// per window. A window that can still grow returns at half whatever n is.
+void test_receive_credit_returns_per_window_at_the_maximum() {
+    for (const std::uint32_t updates : {2U, 4U, 8U}) {
+        SessionLimits limits = small_window_limits();
+        limits.initial_stream_credit = 32U * 1024U;
+        limits.max_stream_credit = 32U * 1024U;
+        limits.credit_returns_per_window = updates;
+        TestSession session(true, false, limits);
+        session.start_to_active();
+        session.open_peer_stream();
+        CHECK(consumed_before_stream_return(session) == 32U * 1024U / updates);
+    }
+
+    SessionLimits growing = small_window_limits();
+    growing.credit_returns_per_window = 8U;
+    TestSession session(true, false, growing);
+    session.start_to_active();
+    session.open_peer_stream();
+    CHECK(consumed_before_stream_return(session) ==
+          growing.initial_stream_credit / 2U);
+
+    for (const std::uint32_t invalid : {0U, 1U, 3U, 6U, 16U}) {
+        SessionLimits limits;
+        limits.credit_returns_per_window = invalid;
+        CHECK(validate_session_limits(limits).code() ==
+              StatusCode::InvalidArgument);
+    }
+}
+
 void test_receive_credit_returns_before_a_blocked_peer_could_stall() {
     // A 6 KiB window with 4 KiB frames. After spending 2.5 KiB the peer
     // holds 3.5 KiB, less than a full frame. Waiting for half the window
@@ -3862,6 +3927,7 @@ void run_test() {
     test_rekey_ack_waits_for_deferred_publication();
     test_rekey_flush_preserves_unpublished_reservations();
     test_stop_during_rekey_flush_settles_remaining_records();
+    test_session_budget_ceiling();
     test_rekey_deadline_boundary_and_stale_timer();
     test_rekey_deadline_covers_provider_queue_and_late_ack();
     test_rekey_ack_wire_contract();
@@ -3874,6 +3940,7 @@ void run_test() {
     test_unacknowledged_streams_remain_bounded();
     test_cancel_unpublished_open_behind_rekey();
     test_receive_credit_returns_after_half_a_window();
+    test_receive_credit_returns_per_window_at_the_maximum();
     test_receive_credit_returns_before_a_blocked_peer_could_stall();
     test_receive_window_grows_to_its_bound_while_drained_quickly();
     test_receive_window_holds_while_the_application_is_slow();

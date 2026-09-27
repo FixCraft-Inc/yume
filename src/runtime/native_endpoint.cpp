@@ -23,6 +23,7 @@
 #include "providers/socks5_upstream.hpp"
 #include "runtime/native_egress_policy.hpp"
 #include "runtime/paced_stream.hpp"
+#include "providers/h2_duplex_carrier.hpp"
 #include "providers/h2_web_front_door.hpp"
 #include "providers/openssl_security_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
@@ -40,7 +41,13 @@ using Timer = boost::asio::basic_waitable_timer<
 
 constexpr std::chrono::seconds kMaxAcceptRetryDelay{10};
 // A budget the parser accepts must be one the session engine accepts.
-static_assert(config::v1::kMaxQueuedBytes <= kAbsoluteMaxBufferBytes);
+static_assert(config::v1::kMaxQueuedBytes <= kMaxSessionQueuedBytes);
+// Every accepted budget gets an H2 carrier window of twice its size.
+static_assert(config::v1::kMaxQueuedBytes <= kMaxH2DuplexSessionBudgetBytes);
+// The configured credit returns are ones the engine accepts.
+static_assert(config::v1::kDefaultCreditReturns ==
+                  SessionLimits{}.credit_returns_per_window &&
+              config::v1::kMaxCreditReturns == kMaxSessionCreditReturns);
 // The configured epoch range is the one YTP/1 advertises and accepts.
 static_assert(config::v1::kMinEpochBytes == ytp1::kMinEpochPayloadBytes &&
               config::v1::kMaxEpochBytes == ytp1::kMaxEpochPayloadBytes);
@@ -189,6 +196,7 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
     limits.max_packet_size = config.max_packet_bytes();
     limits.max_concurrent_rekeys = config.max_rekey_jobs();
     limits.max_epoch_bytes = config.max_epoch_bytes();
+    limits.credit_returns_per_window = config.credit_returns_per_window();
     // Receive windows start small and grow while the application keeps up.
     // The connection window may reach the whole byte budget. A stream may
     // reach two thirds of it, the share Chromium allows, so one stalled
@@ -928,8 +936,13 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 [context](ControlTask& task, std::shared_ptr<void> owner) noexcept {
                     context->submit(task, std::move(owner));
                 }};
-            require(builder.register_carrier_provider(require(H2DuplexCarrierProvider::create(context->affinity(),
-                std::move(dispatch), {endpoint.host(), endpoint.port(), {}}, credentials.admission_key.bytes()))));
+            require(builder.register_carrier_provider(
+                require(H2DuplexCarrierProvider::create(
+                    context->affinity(), std::move(dispatch),
+                    {endpoint.host(), endpoint.port(),
+                     h2_duplex_limits_for_budget(
+                         config.limits().max_queued_bytes())},
+                    credentials.admission_key.bytes()))));
         }
         state->graph = require(builder.build());
         if (role == EndpointRole::Server) {
@@ -956,6 +969,8 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 H2WebFrontDoorConfig ingress;
                 ingress.listen_endpoint = {numeric, endpoint.port()};
                 ingress.limits.max_promoted_carriers = state->options.max_sessions;
+                ingress.carrier_limits = h2_duplex_limits_for_budget(
+                    config.limits().max_queued_bytes());
                 state->listeners.push_back(require(H2WebFrontDoor::create(context, std::move(ingress),
                     credentials.tls_provider, cover, replay, credentials.admission_key.bytes())));
             }

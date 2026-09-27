@@ -25,6 +25,10 @@ inline constexpr std::size_t kMaxSessionSecurityOverheadBytes = 4096U;
 inline constexpr std::size_t kMaxSessionRekeyPayloadBytes = 64U * 1024U;
 inline constexpr std::uint32_t kMaxSessionConcurrentRekeys = 64U;
 inline constexpr auto kMaxRekeyAckTimeout = std::chrono::seconds(30);
+// The largest byte budget (SessionLimits::max_queued_bytes) a session accepts.
+// It bounds queued and held bytes, not any one buffer.
+inline constexpr std::size_t kMaxSessionQueuedBytes = 64U * 1024U * 1024U;
+inline constexpr std::uint32_t kMaxSessionCreditReturns = 8U;
 
 enum class SessionState : std::uint8_t {
     Created,
@@ -72,6 +76,12 @@ struct SessionLimits final {
     std::uint32_t max_connection_credit{8U * 1024U * 1024U};
     std::uint32_t initial_stream_credit{256U * 1024U};
     std::uint32_t max_stream_credit{4U * 1024U * 1024U};
+    // Credit updates per window once a window has reached its maximum: 2, 4
+    // or 8. Returned credit parks up to one update's worth at the receiver,
+    // so a sender that the window holds back moves (1 - 1/n) of it per round
+    // trip, for n updates per window. A growing window returns at half, as
+    // browsers do.
+    std::uint32_t credit_returns_per_window{2U};
     // The most protected payload one directional epoch may carry, a power of
     // two from 1 MiB through 64 MiB. The capability manifest advertises it and
     // the session uses the smaller of the two sides' values. Larger epochs

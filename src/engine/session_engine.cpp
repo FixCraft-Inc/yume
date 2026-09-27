@@ -284,9 +284,8 @@ Status validate_limits(const SessionLimits& limits) {
         return Status(StatusCode::InvalidArgument,
                       "session stream or pending-open limit is invalid");
     }
-    if (limits.max_control_messages < 3U ||
-        limits.max_queued_bytes == 0U ||
-        limits.max_queued_bytes > kAbsoluteMaxBufferBytes ||
+    if (limits.max_control_messages < 3U || limits.max_queued_bytes == 0U ||
+        limits.max_queued_bytes > kMaxSessionQueuedBytes ||
         limits.max_stream_queued_bytes == 0U ||
         limits.max_stream_queued_bytes > limits.max_queued_bytes) {
         return Status(StatusCode::InvalidArgument,
@@ -303,7 +302,11 @@ Status validate_limits(const SessionLimits& limits) {
         limits.max_connection_credit > limits.max_queued_bytes ||
         limits.initial_stream_credit == 0U ||
         limits.initial_stream_credit > limits.max_stream_credit ||
-        limits.max_stream_credit > limits.max_connection_credit) {
+        limits.max_stream_credit > limits.max_connection_credit ||
+        limits.credit_returns_per_window < 2U ||
+        limits.credit_returns_per_window > kMaxSessionCreditReturns ||
+        (limits.credit_returns_per_window &
+         (limits.credit_returns_per_window - 1U)) != 0U) {
         return Status(StatusCode::InvalidArgument,
                       "session flow-credit limits are invalid");
     }
@@ -656,7 +659,8 @@ private:
 
     void return_receive_credit(StreamId stream_id,
                                std::size_t bytes) noexcept;
-    std::uint64_t return_threshold(std::uint64_t window) const noexcept;
+    std::uint64_t return_threshold(std::uint64_t window,
+                                   std::uint64_t maximum) const noexcept;
     std::uint64_t grow_window_locked(
         ReceiveWindow& window, std::uint64_t maximum,
         std::chrono::steady_clock::time_point now) const noexcept;
@@ -3698,7 +3702,8 @@ void SessionEngine::Impl::return_receive_credit(
                 StreamStateData& stream = *it->second;
                 ReceiveWindow& window = stream.receive_window;
                 window.unreturned += bytes;
-                if (window.unreturned >= return_threshold(window.size)) {
+                if (window.unreturned >=
+                    return_threshold(window.size, limits_.max_stream_credit)) {
                     const std::uint64_t growth = grow_window_locked(
                         window, limits_.max_stream_credit, now);
                     stream_increment = window.unreturned + growth;
@@ -3707,8 +3712,9 @@ void SessionEngine::Impl::return_receive_credit(
                 }
             }
             connection.unreturned += bytes;
-            const bool due =
-                connection.unreturned >= return_threshold(connection.size);
+            const bool due = connection.unreturned >=
+                             return_threshold(connection.size,
+                                              limits_.max_connection_credit);
             std::uint64_t growth =
                 due ? grow_window_locked(connection,
                                          limits_.max_connection_credit, now)
@@ -3764,16 +3770,21 @@ void SessionEngine::Impl::return_receive_credit(
 }
 
 std::uint64_t SessionEngine::Impl::return_threshold(
-    std::uint64_t window) const noexcept {
+    std::uint64_t window, std::uint64_t maximum) const noexcept {
     // Credit goes back once half a window is consumed, as Chromium and
     // nghttp2 return it. A peer blocked on credit holds less than one frame
     // of it, so a receiver whose application keeps up has consumed more than
     // the window less one frame. Returning by then keeps the peer moving.
+    // Consumed credit below the threshold stays parked here, so a window
+    // that can no longer grow returns more often when configured to: a
+    // sender it holds back then moves more than half of it per round trip.
     const std::uint64_t frame = limits_.max_frame_payload;
     if (window <= frame) {
         return 1U;
     }
-    return std::min(window / 2U, window - frame);
+    const std::uint64_t updates =
+        window >= maximum ? limits_.credit_returns_per_window : 2U;
+    return std::min(window / updates, window - frame);
 }
 
 std::uint64_t SessionEngine::Impl::grow_window_locked(

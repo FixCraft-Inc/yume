@@ -403,7 +403,13 @@ When two returns on a window come less than two round trips apart, the window
 was limiting the sender, and the engine doubles it, as Chromium does. A stream
 window can reach two thirds of the budget and the connection window the whole
 budget. The connection window stays at least one and a half times the largest
-stream window, and no window shrinks. The engine times round trips locally,
+stream window, and no window shrinks. Consumed credit below the return point
+waits at the receiver, so a sender held back by a window that can no longer
+grow moves about half of it per round trip. `limits.credit_returns_per_window`,
+2 by default, 4 or 8, makes such a window return credit every half, quarter or
+eighth of itself, so the sender moves about a half, three quarters or seven
+eighths of it per round trip and the receiver sends that many more credit
+records. The engine times round trips locally,
 from its AUTH flight to the peer's answer and from each REKEY_INIT to its ACK,
 keeps the smallest sample of the last ten seconds, and sends no record to take
 them.

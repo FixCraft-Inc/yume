@@ -902,6 +902,30 @@ class YumeDoctorTests(unittest.TestCase):
                 self.assertIn("/limits/max_epoch_bytes", result.stderr)
         client_path.write_text(original)
 
+    def test_credit_returns_match_the_parser(self) -> None:
+        source = (ROOT / "src/config/v1/config.hpp").read_text()
+        bounds = {
+            name: int(re.search(rf"{name}\s*=\s*(\d+)U;", source)[1])
+            for name in ("kDefaultCreditReturns", "kMaxCreditReturns")
+        }
+        doctor = runpy.run_path(str(DOCTOR))
+        self.assertEqual(doctor["CREDIT_RETURNS"][0], bounds["kDefaultCreditReturns"])
+        self.assertEqual(doctor["CREDIT_RETURNS"][-1], bounds["kMaxCreditReturns"])
+        client_path = self.case / "client/yume.json"
+        original = client_path.read_text()
+        for value, accepted in ((2, True), (4, True), (8, True), (1, False), (3, False),
+                                (16, False)):
+            config = json.loads(original)
+            config["limits"]["credit_returns_per_window"] = value
+            client_path.write_text(json.dumps(config))
+            result = self.run_doctor(client_path)
+            if accepted:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            else:
+                self.assertEqual(result.returncode, 1, value)
+                self.assertIn("/limits/credit_returns_per_window", result.stderr)
+        client_path.write_text(original)
+
     def test_authorized_identity_limit_matches_native_factory(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))
         source = (ROOT / "src/providers/openssl_security_provider.hpp").read_text()

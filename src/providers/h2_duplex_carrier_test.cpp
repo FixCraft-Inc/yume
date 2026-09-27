@@ -19,6 +19,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -691,6 +692,41 @@ void test_limits_cover_envelope_and_receive_window() {
         ExecutorAffinity(77U), post, std::move(record_too_large), kTestAdmissionKey);
     CHECK(!oversized.ok());
     CHECK(oversized.status().code() == StatusCode::InvalidArgument);
+
+    // The window stays within the carrier's bounds, and the retained bound
+    // covers it, so a peer that respects H2 flow control cannot exceed it.
+    const auto window_limits = [](std::size_t window, std::size_t retained) {
+        H2DuplexCarrierLimits limits;
+        limits.admitted_receive_window_bytes = window;
+        limits.max_retained_receive_bytes = retained;
+        return validate_h2_duplex_carrier_limits(limits).ok();
+    };
+    constexpr std::size_t kMinWindow = obfs::kAdmittedH2ReceiveWindowBytes;
+    constexpr std::size_t kMaxWindow = obfs::kMaxAdmittedH2ReceiveWindowBytes;
+    CHECK(window_limits(kMinWindow, kMinWindow));
+    CHECK(window_limits(kMaxWindow, kMaxWindow));
+    CHECK(!window_limits(kMinWindow - 1U, kMaxWindow));
+    CHECK(!window_limits(kMaxWindow + 1U, kMaxWindow));
+    CHECK(!window_limits(2U * kMinWindow, 2U * kMinWindow - 1U));
+    CHECK(!window_limits(kMinWindow, kMaxWindow + 1U));
+
+    // Twice the session budget, never below the default or above the bound.
+    for (const auto& [budget, window] :
+         {std::pair<std::size_t, std::size_t>{64U * 1024U, kMinWindow},
+          {4U * 1024U * 1024U, kMinWindow},
+          {6U * 1024U * 1024U, 12U * 1024U * 1024U},
+          {kMaxH2DuplexSessionBudgetBytes, kMaxWindow},
+          {kMaxH2DuplexSessionBudgetBytes + 1U, kMaxWindow},
+          {std::numeric_limits<std::size_t>::max(), kMaxWindow}}) {
+        const H2DuplexCarrierLimits limits =
+            h2_duplex_limits_for_budget(budget);
+        CHECK(limits.admitted_receive_window_bytes == window);
+        CHECK(limits.max_retained_receive_bytes ==
+              std::max(H2DuplexCarrierLimits{}.max_retained_receive_bytes,
+                       window));
+        CHECK(validate_h2_duplex_carrier_limits(limits).ok());
+    }
+    CHECK(H2DuplexCarrierLimits{}.admitted_receive_window_bytes == kMinWindow);
 }
 
 void test_admission_configuration_rejects_invalid_inputs() {

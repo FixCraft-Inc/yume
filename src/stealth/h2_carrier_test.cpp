@@ -298,12 +298,16 @@ void FullSessionRoundTrip() {
     // Production enables this only after its role-specific carrier-admission
     // checks. A full ratchet epoch must then cross without waiting for reverse
     // WINDOW_UPDATE traffic between partial sends.
-    assert(server.EnableAdmittedReceiveWindow());
-    assert(server.EnableAdmittedReceiveWindow());
+    assert(server.EnableAdmittedReceiveWindow(
+        yume::obfs::kAdmittedH2ReceiveWindowBytes));
+    assert(server.EnableAdmittedReceiveWindow(
+        yume::obfs::kAdmittedH2ReceiveWindowBytes));
     Pump(server, client);
     assert(client.carrier_active());
-    assert(client.EnableAdmittedReceiveWindow());
-    assert(client.EnableAdmittedReceiveWindow());
+    assert(client.EnableAdmittedReceiveWindow(
+        yume::obfs::kAdmittedH2ReceiveWindowBytes));
+    assert(client.EnableAdmittedReceiveWindow(
+        yume::obfs::kAdmittedH2ReceiveWindowBytes));
     Pump(client, server);
     assert(client.carrier_active() && server.carrier_active());
 
@@ -777,6 +781,52 @@ void ClientManualFlowControlStallsAndResumes() {
     assert(client.unconsumed_tunnel_bytes() == 0);
 }
 
+// The caller sizes the admitted window within fixed bounds, and the peer may
+// send that much before any credit returns.
+void AdmittedReceiveWindowIsTheCallersChoice() {
+    using yume::obfs::kAdmittedH2ReceiveWindowBytes;
+    using yume::obfs::kMaxAdmittedH2ReceiveWindowBytes;
+    for (const std::size_t window : {kAdmittedH2ReceiveWindowBytes - 1U,
+                                     kMaxAdmittedH2ReceiveWindowBytes + 1U}) {
+        H2Carrier client(H2CarrierRole::Client);
+        H2Carrier server(H2CarrierRole::Server);
+        OpenCarrier(client, server);
+        assert(!client.EnableAdmittedReceiveWindow(window));
+        assert(client.failed());
+    }
+    {
+        H2Carrier client(H2CarrierRole::Client);
+        H2Carrier server(H2CarrierRole::Server);
+        OpenCarrier(client, server);
+        assert(
+            client.EnableAdmittedReceiveWindow(kAdmittedH2ReceiveWindowBytes));
+        assert(!client.EnableAdmittedReceiveWindow(
+            2U * kAdmittedH2ReceiveWindowBytes));
+        assert(client.failed());
+    }
+
+    const H2Bytes payload(12U * 1024U * 1024U, 0x5a);
+    for (const std::size_t window :
+         {kAdmittedH2ReceiveWindowBytes, 2U * kAdmittedH2ReceiveWindowBytes}) {
+        H2Carrier client(H2CarrierRole::Client);
+        H2Carrier server(H2CarrierRole::Server);
+        OpenCarrier(client, server);
+        (void)client.TakeOutbound();
+        assert(client.EnableAdmittedReceiveWindow(window));
+        Pump(client, server);
+        assert(server.SendBinary(payload));
+        Pump(server, client);
+        const std::size_t received = client.TakeTunnelBytes().size();
+        if (window < payload.size()) {
+            assert(received < window);
+            assert(server.queued_output_bytes() != 0);
+        } else {
+            assert(received == payload.size());
+            assert(server.queued_output_bytes() == 0);
+        }
+    }
+}
+
 void ServerOverConsumeFailsClosed() {
     H2Carrier client(H2CarrierRole::Client);
     H2Carrier server(H2CarrierRole::Server);
@@ -887,6 +937,7 @@ int main() {
     ServerManualFlowControlStallsAndResumes();
     ClientCoverDataReturnsCreditImmediately();
     ClientManualFlowControlStallsAndResumes();
+    AdmittedReceiveWindowIsTheCallersChoice();
     ServerOverConsumeFailsClosed();
     PaddedDataIsRetiredWithoutTunnelCredit();
     ServerCreditCanRetireAfterStreamClose();

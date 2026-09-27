@@ -1212,11 +1212,12 @@ ResourceLimits ParseLimits(const Json& limits) {
         "max_packet_bytes",
         "max_packet_batch",
     }};
-    CheckClosedObject(limits, "/limits",
-                      {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
-                       keys[6], keys[7], "max_egress_mbps", "max_epoch_bytes"},
-                      {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
-                       keys[6], keys[7]});
+    CheckClosedObject(
+        limits, "/limits",
+        {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6], keys[7],
+         "max_egress_mbps", "max_epoch_bytes", "credit_returns_per_window"},
+        {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
+         keys[7]});
 
     const auto read = [&](std::string_view key,
                           std::uint32_t minimum,
@@ -1264,10 +1265,18 @@ ResourceLimits ParseLimits(const Json& limits) {
             Fail("/limits/max_epoch_bytes", "must be a power of two");
         }
     }
-    return ResourceLimits(max_frame_bytes, max_streams, max_queued_bytes,
-                          max_pending_opens, max_rekey_jobs,
-                          max_control_messages, max_packet_bytes,
-                          max_packet_batch, max_egress_mbps, max_epoch_bytes);
+    std::uint32_t credit_returns = kDefaultCreditReturns;
+    if (limits.contains("credit_returns_per_window")) {
+        credit_returns = read("credit_returns_per_window",
+                              kDefaultCreditReturns, kMaxCreditReturns);
+        if ((credit_returns & (credit_returns - 1U)) != 0U) {
+            Fail("/limits/credit_returns_per_window", "must be 2, 4 or 8");
+        }
+    }
+    return ResourceLimits(
+        max_frame_bytes, max_streams, max_queued_bytes, max_pending_opens,
+        max_rekey_jobs, max_control_messages, max_packet_bytes,
+        max_packet_batch, max_egress_mbps, max_epoch_bytes, credit_returns);
 }
 
 void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,

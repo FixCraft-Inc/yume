@@ -38,28 +38,20 @@ constexpr std::size_t kMaxPendingServerRequests = 64U;
 constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
 // Receive window advertised once the caller has admitted the carrier.
 //
-// This is the binding constraint on inbound throughput at WAN latency, not the
-// ratchet and not TCP: a window of W delivers at most W/RTT, so 2 MiB capped a
-// 60 ms path near 280 Mbit/s while the kernel's autotuned TCP window had
-// already grown to ~3.9 MB (545 Mbit/s) underneath it. 8 MiB is approximately
-// one bandwidth-delay product for a 1 Gbit/s path at 60 ms (7.5 MB). It does
-// not guarantee uninterrupted 1 Gbit/s delivery: nghttp2 normally sends a
-// WINDOW_UPDATE after roughly half the window is consumed, so the remaining
-// credit must also cover the update's return trip.
+// A window of W delivers at most W per round trip, and nghttp2 sends a
+// WINDOW_UPDATE only after half the window is consumed, so a bulk sender
+// moves about W/2 per round trip once the window binds. The provider keeps
+// each record's credit until its sink completes, so the window must also
+// cover what the session holds for slow readers. The caller therefore sizes
+// it: the native runtime uses twice the session's byte budget, never less
+// than kAdmittedH2ReceiveWindowBytes.
 //
 // The WINDOW_UPDATE increment is TLS-encrypted and its frame remains 13 bytes,
 // so the magnitude is not directly visible. A larger receive window can still
 // change externally observable burst and timing geometry, and therefore needs
 // separate capture and classifier evidence.
-//
-// Why not larger. Server receive credit is now returned explicitly after
-// WebSocket framing is handled and tunnel payload drains downstream, so a fast
-// peer stalls at this bounded window instead of filling application queues.
-// Increasing it would still enlarge retained protocol/parser state and change
-// WINDOW_UPDATE timing; that belongs with separate WAN and classifier evidence.
-// See docs/IMPLEMENTATION_STATUS.md, "Performance boundary".
-constexpr std::int32_t kAdmittedReceiveWindow =
-    static_cast<std::int32_t>(kAdmittedH2ReceiveWindowBytes);
+static_assert(kMaxAdmittedH2ReceiveWindowBytes <=
+              static_cast<std::size_t>(NGHTTP2_MAX_WINDOW_SIZE));
 
 nghttp2_nv Nv(std::string& name, std::string& value) {
     return nghttp2_nv{
@@ -368,24 +360,31 @@ public:
         return !failed();
     }
 
-    bool EnableAdmittedReceiveWindow() {
+    bool EnableAdmittedReceiveWindow(std::size_t window_bytes) {
         if (!carrier_active_ || carrier_stream_id_ < 0 || carrier_closed_ ||
             failed()) {
             return Fail(
                 "admitted receive window requires an active carrier");
         }
-        if (admitted_receive_window_enabled_) return true;
+        if (window_bytes < kAdmittedH2ReceiveWindowBytes ||
+            window_bytes > kMaxAdmittedH2ReceiveWindowBytes) {
+            return Fail("admitted receive window is outside its bounds");
+        }
+        if (admitted_receive_window_bytes_ != 0U) {
+            return admitted_receive_window_bytes_ == window_bytes ||
+                   Fail("admitted receive window was already set");
+        }
+        const auto window = static_cast<std::int32_t>(window_bytes);
         if (!CheckBool(nghttp2_session_set_local_window_size(
-                           session_.get(), NGHTTP2_FLAG_NONE, 0,
-                           kAdmittedReceiveWindow),
+                           session_.get(), NGHTTP2_FLAG_NONE, 0, window),
                        "expand admitted HTTP/2 connection receive window") ||
             !CheckBool(nghttp2_session_set_local_window_size(
                            session_.get(), NGHTTP2_FLAG_NONE,
-                           carrier_stream_id_, kAdmittedReceiveWindow),
+                           carrier_stream_id_, window),
                        "expand admitted HTTP/2 stream receive window")) {
             return false;
         }
-        admitted_receive_window_enabled_ = true;
+        admitted_receive_window_bytes_ = window_bytes;
         Flush();
         return !failed();
     }
@@ -1751,8 +1750,12 @@ private:
             stats_.websocket_decode_ns += decode_timer.elapsed_ns();
         }
 #endif
-        if (decoded.size() > kMaxQueuedOutput - std::min(kMaxQueuedOutput, tunnel_bytes_.size())) {
-            Fail("decoded tunnel input queue exceeded 32 MiB");
+        // A peer that respects flow control holds at most the admitted
+        // window of unconsumed payload here.
+        if (decoded.size() > kMaxAdmittedH2ReceiveWindowBytes -
+                                 std::min(kMaxAdmittedH2ReceiveWindowBytes,
+                                          tunnel_bytes_.size())) {
+            Fail("decoded tunnel input queue exceeded its bound");
             return;
         }
         if (tunnel_bytes_.empty()) {
@@ -2004,7 +2007,7 @@ private:
     bool carrier_active_{false};
     bool carrier_closed_{false};
     bool carrier_h2_stream_closed_{false};
-    bool admitted_receive_window_enabled_{false};
+    std::size_t admitted_receive_window_bytes_{0U};
     bool graceful_close_started_{false};
     bool server_fragment_fixture_sent_{false};
     bool server_active_ping_sent_{false};
@@ -2135,8 +2138,8 @@ bool H2Carrier::AcceptCarrier(std::int32_t stream_id,
                               const H2Headers& response_headers) {
     return impl_->AcceptCarrier(stream_id, response_headers);
 }
-bool H2Carrier::EnableAdmittedReceiveWindow() {
-    return impl_->EnableAdmittedReceiveWindow();
+bool H2Carrier::EnableAdmittedReceiveWindow(std::size_t window_bytes) {
+    return impl_->EnableAdmittedReceiveWindow(window_bytes);
 }
 bool H2Carrier::RejectCarrier(std::int32_t stream_id, unsigned status,
                               const H2Headers& headers, H2Bytes body) {

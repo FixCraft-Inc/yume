@@ -249,6 +249,9 @@ and grow while the application drains them within two round trips. Engine tests
 cover the return point, growth to the bound, a slow reader whose window stays,
 a peer that cannot buffer past its credit and grants above the local maxima. An
 endpoint test covers a client whose byte budget is smaller than the server's.
+The admitted H2 carrier's receive window is twice the budget, from 8 MiB to
+128 MiB. Carrier tests cover its bounds and a peer that may send the whole
+window before any credit returns.
 These cases do not establish sustained real-carrier fairness or high-RTT
 behavior.
 Automatic rotation remains an open security-preservation gate despite the

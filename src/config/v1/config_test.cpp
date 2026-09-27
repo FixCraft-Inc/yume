@@ -1177,7 +1177,7 @@ void TestResourceLimits() {
     constexpr std::array<Bound, 8> bounds{{
         {"max_frame_bytes", 1676, 1048576},
         {"max_streams", 1, 65535},
-        {"max_queued_bytes", 65536, 16777216},
+        {"max_queued_bytes", 65536, 67108864},
         {"max_pending_opens", 1, 1024},
         {"max_rekey_jobs", 2, 64},
         {"max_control_messages", 8, 4096},
@@ -1225,7 +1225,7 @@ void TestResourceLimits() {
     maximum["limits"] = {
         {"max_frame_bytes", 1048576},
         {"max_streams", 65535},
-        {"max_queued_bytes", 16777216},
+        {"max_queued_bytes", 67108864},
         {"max_pending_opens", 1024},
         {"max_rekey_jobs", 64},
         {"max_control_messages", 4096},
@@ -1252,6 +1252,22 @@ void TestResourceLimits() {
         Json epochs = ClientDocument();
         epochs["limits"]["max_epoch_bytes"] = epoch;
         ExpectError(epochs, "/limits/max_epoch_bytes");
+    }
+
+    // credit_returns_per_window is optional, 2 by default, and 2, 4 or 8.
+    Check(Parse(ClientDocument()).limits().credit_returns_per_window() ==
+              kDefaultCreditReturns,
+          "the default credit returns are not two per window");
+    for (const std::uint32_t returns : {2U, 4U, kMaxCreditReturns}) {
+        Json credit = ClientDocument();
+        credit["limits"]["credit_returns_per_window"] = returns;
+        Check(Parse(credit).limits().credit_returns_per_window() == returns,
+              "valid credit returns were rejected");
+    }
+    for (const std::uint32_t returns : {1U, 3U, 6U, 16U}) {
+        Json credit = ClientDocument();
+        credit["limits"]["credit_returns_per_window"] = returns;
+        ExpectError(credit, "/limits/credit_returns_per_window");
     }
 
     Json document = ClientDocument();

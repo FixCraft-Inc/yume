@@ -38,13 +38,19 @@ inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
 // limits.max_queued_bytes bounds one session's queued bytes. The session
 // engine refuses a larger budget at start, and the runtime checks at compile
 // time that this bound stays within the engine's.
-inline constexpr std::uint32_t kMaxQueuedBytes = 16U * 1024U * 1024U;
+inline constexpr std::uint32_t kMaxQueuedBytes = 64U * 1024U * 1024U;
 // limits.max_epoch_bytes, a power of two: the most traffic one key epoch
 // carries in one direction. A session uses the smaller of the two sides'
 // values. YTP/1 fixes the range, and the runtime checks at compile time that
 // these bounds match it.
 inline constexpr std::uint32_t kMinEpochBytes = 1U << 20;
 inline constexpr std::uint32_t kMaxEpochBytes = 1U << 26;
+// limits.credit_returns_per_window, 2, 4 or 8: how many credit updates a
+// receive window sends per window once it has reached its maximum. More let a
+// far sender use more of the window each round trip and send more small
+// records upstream. The session engine accepts the same values.
+inline constexpr std::uint32_t kDefaultCreditReturns = 2U;
+inline constexpr std::uint32_t kMaxCreditReturns = 8U;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -590,15 +596,14 @@ using Adapter = std::variant<Socks5Adapter,
 
 class ResourceLimits final {
 public:
-    ResourceLimits(std::uint32_t max_frame_bytes, std::uint32_t max_streams,
-                   std::uint32_t max_queued_bytes,
-                   std::uint32_t max_pending_opens,
-                   std::uint32_t max_rekey_jobs,
-                   std::uint32_t max_control_messages,
-                   std::uint32_t max_packet_bytes,
-                   std::uint32_t max_packet_batch,
-                   std::optional<std::uint32_t> max_egress_mbps = std::nullopt,
-                   std::uint32_t max_epoch_bytes = kMinEpochBytes)
+    ResourceLimits(
+        std::uint32_t max_frame_bytes, std::uint32_t max_streams,
+        std::uint32_t max_queued_bytes, std::uint32_t max_pending_opens,
+        std::uint32_t max_rekey_jobs, std::uint32_t max_control_messages,
+        std::uint32_t max_packet_bytes, std::uint32_t max_packet_batch,
+        std::optional<std::uint32_t> max_egress_mbps = std::nullopt,
+        std::uint32_t max_epoch_bytes = kMinEpochBytes,
+        std::uint32_t credit_returns_per_window = kDefaultCreditReturns)
         : max_frame_bytes_(max_frame_bytes),
           max_streams_(max_streams),
           max_queued_bytes_(max_queued_bytes),
@@ -608,7 +613,8 @@ public:
           max_packet_bytes_(max_packet_bytes),
           max_packet_batch_(max_packet_batch),
           max_egress_mbps_(max_egress_mbps),
-          max_epoch_bytes_(max_epoch_bytes) {}
+          max_epoch_bytes_(max_epoch_bytes),
+          credit_returns_per_window_(credit_returns_per_window) {}
 
     std::uint32_t max_frame_bytes() const noexcept {
         return max_frame_bytes_;
@@ -639,6 +645,9 @@ public:
         return max_egress_mbps_;
     }
     std::uint32_t max_epoch_bytes() const noexcept { return max_epoch_bytes_; }
+    std::uint32_t credit_returns_per_window() const noexcept {
+        return credit_returns_per_window_;
+    }
 
 private:
     std::uint32_t max_frame_bytes_;
@@ -651,6 +660,7 @@ private:
     std::uint32_t max_packet_batch_;
     std::optional<std::uint32_t> max_egress_mbps_;
     std::uint32_t max_epoch_bytes_;
+    std::uint32_t credit_returns_per_window_;
 };
 
 class Config final {

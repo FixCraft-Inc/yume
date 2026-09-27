@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -129,16 +130,22 @@ void test_password_and_size_rules() {
     oversized.resize(kMaxShareFileBytes + 1U, 0U);
     assert(!open_share(oversized, kPassword, &error));
 
-    // A correct header over a payload that is not JSON. The destination is
-    // sized first: GCC 11 misreports vector::insert after a fixed header as an
-    // overread in optimized -Werror builds.
+    // The unterminated string makes the parser include the synthetic secret
+    // in its diagnostic. Opening an authenticated payload must not expose it.
+    constexpr std::string_view kSecretMarker = "share-json-secret-marker";
+    const std::string malformed_json =
+        "{\"identity\":\"" + std::string(kSecretMarker);
     const auto garbage = basefwx::fwxaes::EncryptRaw(
-        std::vector<std::uint8_t>{'n', 'o', 't', ' ', 'j', 's', 'o', 'n'}, kPassword);
+        std::vector<std::uint8_t>(malformed_json.begin(), malformed_json.end()),
+        kPassword);
+    // Size first: GCC 11 misreports vector::insert after a fixed header as an
+    // overread in optimized -Werror builds.
     std::vector<std::uint8_t> not_json(12U + garbage.size());
     std::copy(sealed.begin(), sealed.begin() + 12, not_json.begin());
     std::copy(garbage.begin(), garbage.end(), not_json.begin() + 12);
     assert(!open_share(not_json, kPassword, &error));
     assert(error.find("not JSON") != std::string::npos);
+    assert(error.find(kSecretMarker) == std::string::npos);
 }
 
 // BaseFWX maps its default "auto" KDF label through BASEFWX_USER_KDF. Sealing

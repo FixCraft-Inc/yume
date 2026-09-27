@@ -225,10 +225,21 @@ std::unique_ptr<DirectionalRatchet> DirectionalRatchet::MakeAdvanced(
         DeriveEpochPskContribution(established_psk_key, direction_, epoch_ + 1)};
     SecureBytes guarded_input;
     Bytes& input = guarded_input.bytes();
-    AppendLengthPrefixed(input, root_.bytes());
-    AppendLengthPrefixed(input, mlkem_shared);
-    AppendLengthPrefixed(input, x25519_shared);
-    AppendLengthPrefixed(input, guarded_epoch_psk.bytes());
+    const Bytes* const fields[] = {&root_.bytes(), &mlkem_shared,
+                                   &x25519_shared, &guarded_epoch_psk.bytes()};
+    std::size_t input_size = 4U * sizeof(std::uint32_t);
+    for (const Bytes* field : fields) {
+        if (field->size() > std::numeric_limits<std::uint32_t>::max() ||
+            field->size() >
+                std::numeric_limits<std::size_t>::max() - input_size) {
+            throw std::runtime_error("ratchet input is too large");
+        }
+        input_size += field->size();
+    }
+    // Growth would free earlier copies of roots and shared secrets without
+    // wiping them. Allocate the complete input while it is still empty.
+    input.reserve(input_size);
+    for (const Bytes* field : fields) AppendLengthPrefixed(input, *field);
     SecureBytes guarded_next_root{
         Hkdf(input, root_.bytes(), kEpochRootLabel, 32)};
     // The new ratchet copies the root into its own wiped storage before any

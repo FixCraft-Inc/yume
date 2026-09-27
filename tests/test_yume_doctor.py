@@ -79,7 +79,7 @@ class YumeDoctorTests(unittest.TestCase):
             self.assertEqual(
                 result.stdout.strip(),
                 "yume-doctor: configuration and credentials valid; "
-                "runtime provider not qualified",
+                "no session was started",
             )
             self.assertEqual(result.stderr, "")
 

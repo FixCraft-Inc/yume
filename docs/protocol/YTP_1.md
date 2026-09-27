@@ -632,7 +632,10 @@ opposite-direction rekeys without retaining old directional roots.
 The native engine rotates its outbound root before accepting protected payload
 past 1 MiB or 512 records in an epoch, and checks the 500 ms age threshold on
 the next protected send. INIT does not count toward these application thresholds.
-These limits do not promise autonomous root expiry while idle.
+The native endpoint also rotates an epoch that has carried a record as soon as
+it is 500 ms old, so the next send does not wait a round trip for the ACK. An
+epoch that carried nothing is not rotated, so an idle session's root does not
+expire on its own.
 
 A pending outbound rekey has a separate local ACK deadline. The default is
 30 seconds; callers may select a positive duration up to 30 seconds. The deadline

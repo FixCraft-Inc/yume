@@ -242,8 +242,10 @@ that ends right after AUTH.
 The established endpoint rekey cases explicitly initiate rotation. The session
 engine also contains an automatic rotation candidate: one MiB of directional
 payload, 512 protected records, or 500 ms checked on the next protected send.
+The native endpoint's rekey timer also rotates a used epoch once it is 500 ms
+old, so a request after an idle moment does not wait for REKEY_ACK.
 It reserves outbound space for rekey controls. Focused engine tests cover byte,
-record and send-age thresholds, crossed rotation, synchronous ACK delivery,
+record and send-age thresholds, idle rotation, crossed rotation, synchronous ACK delivery,
 reserved queue capacity, peer overshoot refusal, deferred publication and ACK
 deadline expiry. The native endpoint also tests its unanswered-ACK watchdog.
 Competing-stream tests cover credit changes, stalled readers, callback reentry

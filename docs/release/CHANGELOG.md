@@ -376,7 +376,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Fewer round trips on far servers.** `yumed` now sets TCP_NODELAY on the
   connections it accepts, as `yume` already did on its own. Nagle had held
   small records such as AUTH, credit and REKEY_INIT behind unacknowledged
-  data for a round trip.
+  data for a round trip. The endpoint's rekey timer also rotates a used epoch
+  as soon as it is 500 ms old, so a request after an idle moment no longer
+  waits a round trip on each side for REKEY_ACK.
 - **Session queue budget.** `limits.max_queued_bytes` accepts 64 KiB to
   16 MiB. The parser and `yume-doctor` accepted up to 64 MiB while the
   session engine refuses more than 16 MiB, so a larger budget passed

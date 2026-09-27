@@ -3641,6 +3641,61 @@ void test_peer_grants_are_bounded_by_the_protocol_not_local_windows() {
     }
 }
 
+void test_aged_epoch_rotates_without_a_send() {
+    TestSession session;
+    session.start_to_active();
+    // CAPABILITIES and the connection grant opened epoch 0.
+    const auto deadline = session.engine->rotation_deadline();
+    CHECK(deadline.has_value());
+    int epoch_starts = 0;
+    CHECK(session.engine->notify_on_epoch_start([&] { ++epoch_starts; }).ok());
+    CHECK(session.engine->notify_on_epoch_start([] {}).code() ==
+          StatusCode::AlreadyExists);
+    const std::size_t sent = session.carrier->sent.size();
+    CHECK(session.engine
+              ->rotate_aged_epoch(*deadline - std::chrono::milliseconds(1))
+              .ok());
+    CHECK(session.carrier->sent.size() == sent);
+    CHECK(session.engine->rotate_aged_epoch(*deadline).ok());
+    CHECK(session.carrier->sent.size() == sent + 1U);
+    CHECK(protected_record_type(session.carrier->sent.back()) ==
+          ytp1::RecordType::RekeyInit);
+    // Nothing more is due while the rotation waits for its ACK.
+    CHECK(!session.engine->rotation_deadline().has_value());
+    CHECK(session.engine->rotate_aged_epoch(*deadline + std::chrono::seconds(1))
+              .ok());
+    CHECK(session.carrier->sent.size() == sent + 1U);
+    const auto acknowledgement = rekey_payload(1U, std::byte{2});
+    session.carrier->deliver(
+        frame(ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
+    CHECK(session.engine->state() == SessionState::Active);
+
+    // An unused epoch never rotates, however old.
+    CHECK(!session.engine->rotation_deadline().has_value());
+    CHECK(session.engine->rotate_aged_epoch(*deadline + std::chrono::hours(1))
+              .ok());
+    CHECK(session.carrier->sent.size() == sent + 1U);
+    CHECK(epoch_starts == 0);
+
+    // The record that opens epoch 1 reports it once.
+    const std::array<std::byte, 8> ping{};
+    session.carrier->deliver(
+        protected_wire(0U, 1U, frame(ytp1::RecordType::Ping, 0U, ping)));
+    CHECK(epoch_starts == 1);
+    CHECK((session.trace->sealed.back().epoch == 1U));
+    CHECK(session.engine->rotation_deadline().has_value());
+    session.carrier->deliver(
+        protected_wire(0U, 2U, frame(ytp1::RecordType::Ping, 0U, ping)));
+    CHECK(epoch_starts == 1);
+
+    TestSession stopped;
+    stopped.start_to_active();
+    stopped.engine->stop();
+    CHECK(stopped.engine->notify_on_epoch_start([] {}).code() ==
+          StatusCode::Closed);
+    CHECK(!stopped.engine->rotation_deadline().has_value());
+}
+
 void test_receive_windows_fit_the_queue_budget() {
     SessionLimits limits;
     CHECK(validate_session_limits(limits).ok());
@@ -3718,6 +3773,7 @@ void run_test() {
     test_receive_window_holds_while_the_application_is_slow();
     test_peer_grants_are_bounded_by_the_protocol_not_local_windows();
     test_receive_windows_fit_the_queue_budget();
+    test_aged_epoch_rotates_without_a_send();
 }
 
 }  // namespace

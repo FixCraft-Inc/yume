@@ -452,6 +452,11 @@ public:
     Status initiate_rekey();
     std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const noexcept;
     bool expire_rekey(std::chrono::steady_clock::time_point now) noexcept;
+    std::optional<std::chrono::steady_clock::time_point> rotation_deadline()
+        const noexcept;
+    Status rotate_aged_epoch(
+        std::chrono::steady_clock::time_point now) noexcept;
+    Status notify_on_epoch_start(std::function<void()> observer);
     void stop(Status reason, bool failed) noexcept;
 
     void stream_read(StreamId stream_id,
@@ -699,6 +704,10 @@ private:
     Status terminal_status_{};
     StartCompletion start_completion_;
     ClosedCompletion closed_completion_;
+    // Shared so a sender can take it under the lock without allocating and
+    // run it after releasing the lock.
+    std::shared_ptr<const std::function<void()>> epoch_observer_;
+    bool epoch_observer_registered_{false};
     Status deferred_closed_status_;
     bool closed_observer_registered_{false};
     bool teardown_drained_{false};
@@ -1073,6 +1082,22 @@ SessionEngine::rekey_deadline() const noexcept {
 bool SessionEngine::expire_rekey(std::chrono::steady_clock::time_point now) noexcept {
     const auto keepalive = weak_from_this().lock();
     return impl_->expire_rekey(now);
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+SessionEngine::rotation_deadline() const noexcept {
+    return impl_->rotation_deadline();
+}
+
+Status SessionEngine::rotate_aged_epoch(
+    std::chrono::steady_clock::time_point now) noexcept {
+    const auto keepalive = weak_from_this().lock();
+    return impl_->rotate_aged_epoch(now);
+}
+
+Status SessionEngine::notify_on_epoch_start(std::function<void()> observer) {
+    const auto keepalive = weak_from_this().lock();
+    return impl_->notify_on_epoch_start(std::move(observer));
 }
 
 void SessionEngine::stop(Status reason) noexcept {
@@ -1718,6 +1743,9 @@ Status SessionEngine::Impl::enqueue_record(
                             completion_bytes, std::move(completion));
     }
 
+    // Taken when this record starts a fresh outbound epoch, and run once the
+    // record is queued and every lock is released.
+    std::shared_ptr<const std::function<void()>> epoch_observer;
     const std::size_t envelope = protect
         ? kProtectedEnvelopeBytes + security_->max_sealed_overhead()
         : 0U;
@@ -1806,6 +1834,7 @@ Status SessionEngine::Impl::enqueue_record(
             if (type != ytp1::RecordType::RekeyInit) {
                 if (outbound_epoch_records_ == 0U) {
                     outbound_epoch_first_send_ = std::chrono::steady_clock::now();
+                    epoch_observer = epoch_observer_;
                 }
                 outbound_epoch_bytes_ += payload.size();
                 ++outbound_epoch_records_;
@@ -1924,6 +1953,9 @@ Status SessionEngine::Impl::enqueue_record(
         payload_bytes_sent_.fetch_add(payload.size(), std::memory_order_relaxed);
     }
     request_send_pump();
+    if (epoch_observer) {
+        invoke_noexcept(*epoch_observer);
+    }
     return Status::success();
 }
 
@@ -3949,6 +3981,60 @@ SessionEngine::Impl::rekey_deadline() const noexcept {
     return outbound_rekey_deadline_;
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+SessionEngine::Impl::rotation_deadline() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != SessionState::Active || outbound_rekey_pending_ ||
+        outbound_epoch_records_ == 0U) {
+        return std::nullopt;
+    }
+    return outbound_epoch_first_send_ + ytp1::kEpochSendLifetime;
+}
+
+Status SessionEngine::Impl::rotate_aged_epoch(
+    std::chrono::steady_clock::time_point now) noexcept try {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != SessionState::Active || outbound_rekey_pending_ ||
+            outbound_epoch_records_ == 0U ||
+            now - outbound_epoch_first_send_ < ytp1::kEpochSendLifetime) {
+            return Status::success();
+        }
+    }
+    // A send may start the same rotation first. Any other refusal fails the
+    // session, as the send path's rotation does.
+    const Status started = initiate_rekey();
+    if (started.ok() || started.code() == StatusCode::AlreadyExists) {
+        return Status::success();
+    }
+    fail(copy_failure(started));
+    return copy_failure(started);
+} catch (const std::bad_alloc&) {
+    fail(Status::diagnostic(StatusCode::ResourceExhausted));
+    return Status::diagnostic(StatusCode::ResourceExhausted);
+} catch (...) {
+    fail(Status::diagnostic(StatusCode::Internal));
+    return Status::diagnostic(StatusCode::Internal);
+}
+
+Status SessionEngine::Impl::notify_on_epoch_start(
+    std::function<void()> observer) {
+    if (!observer) return Status(StatusCode::InvalidArgument);
+    std::shared_ptr<const std::function<void()>> shared;
+    try {
+        shared =
+            std::make_shared<const std::function<void()>>(std::move(observer));
+    } catch (const std::bad_alloc&) {
+        return Status::diagnostic(StatusCode::ResourceExhausted);
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (epoch_observer_registered_) return Status(StatusCode::AlreadyExists);
+    if (terminal_locked()) return Status(StatusCode::Closed);
+    epoch_observer_registered_ = true;
+    epoch_observer_ = std::move(shared);
+    return Status::success();
+}
+
 bool SessionEngine::Impl::expire_rekey(
     std::chrono::steady_clock::time_point now) noexcept {
     {
@@ -4119,12 +4205,14 @@ void SessionEngine::Impl::stop(Status reason, bool failed) noexcept {
     std::unordered_map<std::uint32_t, std::shared_ptr<StreamStateData>>
         retired_streams;
     std::optional<ActiveSend> retired_active;
+    std::shared_ptr<const std::function<void()>> retired_observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
             return;
         }
         state_ = SessionState::Closing;
+        retired_observer = std::move(epoch_observer_);
         terminal_status_ = copy_failure(reason);
         start = std::move(start_completion_);
         for (auto& [_, stream] : streams_) {

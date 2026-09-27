@@ -231,8 +231,8 @@ receives and its trust boundary.
 network namespace with Ethernet-sized frames and records what nDPI reports.
 `scripts/ensure-ndpi.sh` builds the pinned release, or newer sources such as
 `--ref dev` under a prefix named by their commit. `scripts/yume_ethernet_smoke.py`
-runs the client on this machine and the daemon on a directly connected host,
-after a link preflight that fails when the direct route is unavailable. It
+runs the client on this machine and the daemon on a directly connected host
+named by `--remote-host`, after a link preflight that fails when the direct route is unavailable. It
 alternates untunnelled and tunnelled fetches of one payload. The daemon reaches
 the tunnel destination on its own host, and the untunnelled fetch crosses the
 link to `--baseline-port`, which a firewall on that host must allow. With
@@ -242,6 +242,17 @@ with tcpdump, which drops to the normal user once the interface is open, and
 turns segmentation and receive offloads off for the run and restores them, so
 the capture holds frames as they crossed the wire. Neither result is a
 classifier verdict or a qualified benchmark.
+
+`scripts/yume_wan_emulation.py` measures a session across emulated wide-area
+links without root. It joins two network namespaces with a veth pair and
+puts netem delay, loss and rate limits on that pair only, so the direct path
+and the tunnel each cross the emulated link once. For each `--condition`,
+such as `rtt=100,loss=0.5,rate=50`, it records how long a new session takes
+to carry its first request, direct and tunnelled download rates over a fixed
+window with the second half reported separately as steady state, and small
+request round trips. Every byte is checked against the served pattern.
+Emulating each packet in software caps throughput below a real network card,
+so compare the tunnel with the direct path from the same run.
 
 ## Managed Linux TUN networking
 

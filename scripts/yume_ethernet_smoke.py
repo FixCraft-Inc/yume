@@ -485,7 +485,7 @@ def printable(report: dict[str, object]) -> dict[str, object]:
 def main() -> int:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--remote-host", default="10.77.77.1", help="remote address on the direct link")
+    parser.add_argument("--remote-host", required=True, help="the remote host's address on the link")
     parser.add_argument("--ssh-host", help="SSH destination, default the remote address")
     parser.add_argument("--remote-yumed", help="yumed path on the remote host")
     parser.add_argument("--yume", type=Path, help="local yume")

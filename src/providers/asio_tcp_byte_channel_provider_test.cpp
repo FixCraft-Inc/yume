@@ -28,6 +28,11 @@
 #include <utility>
 #include <vector>
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/local/connect_pair.hpp>
@@ -543,8 +548,17 @@ void test_accepted_socket_traffic_half_close_cancel_and_close() {
     IoRuntime runtime;
     auto owner = make_accepted_owner(runtime);
     auto pair = connected_pair(runtime.executor());
+    // A duplicate descriptor observes the socket after the channel owns it.
+    const int observer = ::dup(pair.first.native_handle());
+    CHECK(observer >= 0);
     auto adopted = runtime.sync([&]() { return owner->adopt(std::move(pair.first)); });
     CHECK(adopted.ok());
+    int no_delay = 0;
+    socklen_t no_delay_size = sizeof(no_delay);
+    CHECK(::getsockopt(observer, IPPROTO_TCP, TCP_NODELAY, &no_delay,
+                       &no_delay_size) == 0);
+    CHECK(::close(observer) == 0);
+    CHECK(no_delay != 0);
     std::unique_ptr<ByteChannel> channel =
         std::move(adopted).take_value();
     AsioTcpSocket peer = std::move(pair.second);

@@ -1777,6 +1777,11 @@ Result<std::unique_ptr<ByteChannel>> adopt_connected(
 
 Result<std::unique_ptr<ByteChannel>> AsioTcpAcceptedChannelOwner::adopt(
     AsioTcpSocket socket) {
+    // Sessions send small records (AUTH, credit, rekey, short replies) that
+    // Nagle would hold behind unacknowledged data for a round trip. Outbound
+    // connections disable it the same way, as common web servers do.
+    boost::system::error_code ignored;
+    socket.set_option(Tcp::no_delay(true), ignored);
     return adopt_connected(impl_->channels(), std::move(socket));
 }
 

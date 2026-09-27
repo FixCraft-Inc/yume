@@ -48,8 +48,6 @@ int main() {
 
     assert(profile.id == manifest["profile_id"].get<std::string>());
     assert(yume::cover_profile::find_by_id(profile.id) == &profile);
-    assert(yume::cover_profile::find_by_registry_name(profile.registry_name) ==
-           &profile);
     assert(yume::cover_profile::find_by_id("unknown-profile") == nullptr);
 
     assert(profile.browser_name == manifest["client"]["browser"].get<std::string>());

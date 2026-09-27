@@ -66,9 +66,10 @@ void test_canonical_vector() {
         "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
         "YTP admission canonical input changed");
     const auto token = derive_ytp1_h2_admission_token(kKey, kServerName, kExporter, kNonce);
-    require(token && admission::token_hex(*token) ==
-        "5cce6d59ef5999bc862090608b5d3867eed659b2a1ff9c8e8d45397af3d31a6c",
-        "YTP admission HMAC vector changed");
+    constexpr std::string_view kTokenVector =
+        "5cce6d59ef5999bc862090608b5d3867eed659b2a1ff9c8e8d45397af3d31a6c";
+    require(token && bytes_hex(*token) == kTokenVector,
+            "YTP admission HMAC vector changed");
     const auto path = build_ytp1_h2_admission_path(kKey, kServerName, kExporter, kNonce);
     require(path && *path ==
         "/5cce6d59ef5999bc862090608b5d3867eed659b2a1ff9c8e8d45397af3d31a6c/"

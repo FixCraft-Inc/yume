@@ -77,15 +77,6 @@ const Profile* find_by_id(std::string_view id) {
     return it == profiles.end() ? nullptr : &*it;
 }
 
-const Profile* find_by_registry_name(std::string_view name) {
-    const auto profiles = all();
-    const auto it = std::find_if(profiles.begin(), profiles.end(),
-                                 [name](const Profile& profile) {
-                                     return profile.registry_name == name;
-                                 });
-    return it == profiles.end() ? nullptr : &*it;
-}
-
 const Profile& active() {
     const Profile* profile = find_by_id(yume::kEvidenceProfile);
     if (profile == nullptr) {

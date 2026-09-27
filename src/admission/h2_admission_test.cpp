@@ -7,6 +7,7 @@
 #include "test_support/allocation_failure.hpp"
 
 #include "admission/h2_admission.hpp"
+#include "common/hex.hpp"
 
 #include <openssl/evp.h>
 
@@ -55,12 +56,11 @@ void test_path_boundaries() {
     const auto parsed = parse_path(path);
     require(parsed && parsed->token == token && parsed->nonce == nonce,
             "canonical path did not roundtrip");
-    require(token_hex(token) ==
-        "abababababababababababababababababababababababababababababababab",
-        "token hex changed");
-    require(nonce_hex(nonce) ==
-        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-        "nonce encoding changed");
+    require(
+        path ==
+            "/abababababababababababababababababababababababababababababababab"
+            "/000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "path encoding changed");
     require(!parse_path("") && !parse_path(path + "x") &&
             !parse_path(path.substr(1)), "malformed path length was accepted");
     for (std::size_t i = 0; i < path.size(); ++i) {
@@ -68,9 +68,9 @@ void test_path_boundaries() {
         mutated[i] = i == 0U || i == 65U ? '0' : 'G';
         require(!parse_path(mutated), "noncanonical path was accepted");
     }
-    require(!parse_token_hex(std::string(64U, 'A')) &&
-            !parse_nonce_hex(std::string(63U, '0')),
-            "noncanonical hex was accepted");
+    require(
+        !parse_path("/" + std::string(64U, 'A') + "/" + std::string(64U, '0')),
+        "noncanonical hex was accepted");
 }
 
 void test_authority_boundaries() {
@@ -96,9 +96,12 @@ void test_hmac_vector_and_private_provider() {
     key.fill(std::byte{0x0b});
     constexpr std::string_view input = "Hi There";
     const auto token = hmac_sha256(key, std::as_bytes(std::span(input)));
-    require(token && token_hex(*token) ==
-        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
-        "HMAC-SHA256 known answer failed");
+    constexpr std::string_view kHmacVector =
+        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7";
+    require(token && yume::encoding::hex_lower(std::span(
+                         reinterpret_cast<const std::uint8_t*>(token->data()),
+                         token->size())) == kHmacVector,
+            "HMAC-SHA256 known answer failed");
     require(!hmac_sha256({}, {}), "empty admission key was accepted");
     require(constant_time_equal(*token, *token), "equal token rejected");
     for (std::size_t i = 0; i < token->size(); ++i) {

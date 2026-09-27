@@ -52,7 +52,9 @@ public:
     // both `limit` and a safe plaintext-response budget. Either bound sets
     // `truncated`. Protection, I/O, and record-integrity failures are explicit
     // so callers never confuse an unreadable history with a genuinely empty
-    // one.
+    // one. Records contain exactly ts_ms (int64), peer_id, peer_name,
+    // direction and text (strings). Duplicate or unknown fields, nested values,
+    // empty peer IDs and directions other than in/out are rejected.
     HistoryListResult list_chat(
         const std::optional<std::string>& peer_id = std::nullopt,
         std::size_t limit = 200U) const;

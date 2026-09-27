@@ -1712,11 +1712,21 @@ if(YUME_BUILD_TESTING)
         # execution; linking its archive too would duplicate the definitions.
         target_link_libraries(yume_native_backend_test PRIVATE
             yume_native_endpoint yume_openssl_security_provider Threads::Threads)
+        target_compile_definitions(yume_native_backend_test PRIVATE
+            YUME_TEST_RESOLVER_PROGRAM="$<TARGET_FILE:yume-resolver>")
+        add_dependencies(yume_native_backend_test yume-resolver)
         yume_apply_perf_opts(yume_native_backend_test)
         add_test(NAME yume_native_backend_test COMMAND yume_native_backend_test
             "${CMAKE_SOURCE_DIR}/config/yumed.json")
         set_tests_properties(yume_native_backend_test PROPERTIES
             TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+        add_test(NAME yume_native_backend_open_integration
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/run_native_endpoint_test.py"
+                --binary "$<TARGET_FILE:yume_native_backend_test>"
+                --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+        set_tests_properties(yume_native_backend_open_integration PROPERTIES
+            TIMEOUT 180 LABELS "foundation;0.3;abi;integration")
     endif()
 
     add_executable(yume_config_v1_test

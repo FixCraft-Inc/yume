@@ -452,15 +452,18 @@ class OpenOperation final : public std::enable_shared_from_this<OpenOperation> {
 public:
     OpenOperation(std::shared_ptr<NativeRun> run, std::string service,
                   std::optional<engine::RouteDestination> destination,
+                  Clock::time_point deadline,
                   engine::ServiceKind kind = engine::ServiceKind::ByteStream)
-        : run_(std::move(run)), service_(std::move(service)),
-          destination_(std::move(destination)), kind_(kind) {}
+        : run_(std::move(run)),
+          service_(std::move(service)),
+          destination_(std::move(destination)),
+          deadline_(deadline),
+          kind_(kind) {}
 
     providers::ControlTask open_task{&OpenOperation::on_open_task};
     providers::ControlTask cancel_task{&OpenOperation::on_cancel_task};
 
-    BackendIo wait(Clock::time_point deadline,
-                   std::shared_ptr<NativeStream>& out, std::string& error);
+    BackendIo wait(std::shared_ptr<NativeStream>& out, std::string& error);
 
 private:
     static void on_open_task(void* value) noexcept {
@@ -477,12 +480,14 @@ private:
     std::shared_ptr<NativeRun> run_;
     const std::string service_;
     const std::optional<engine::RouteDestination> destination_;
+    const Clock::time_point deadline_;
     const engine::ServiceKind kind_;
     engine::CancellationSource cancellation_;
     std::mutex mutex_;
     std::condition_variable cv_;
     bool done_{false};
     bool abandoned_{false};
+    bool admitted_{false};
     BackendIo io_{BackendIo::Failed};
     std::shared_ptr<NativeStream> stream_;
     std::string failure_;
@@ -1193,6 +1198,26 @@ void OpenOperation::open_on_runner() noexcept {
         settle(BackendIo::NotRunning, "client session is not active");
         return;
     }
+    bool admitted = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (done_ || abandoned_) return;
+        if (Clock::now() >= deadline_) {
+            done_ = true;
+            io_ = BackendIo::Timeout;
+            describe(failure_, "stream OPEN timed out before admission");
+        } else {
+            // This admission decision and caller abandonment are ordered by
+            // the same mutex. Engine callbacks may complete inline, so release
+            // it before starting OPEN; later abandonment queues cancellation.
+            admitted_ = true;
+            admitted = true;
+        }
+    }
+    if (!admitted) {
+        cv_.notify_all();
+        return;
+    }
     try {
         session->async_open(
             service_, kind_, destination_,
@@ -1264,14 +1289,13 @@ void OpenOperation::settle(BackendIo io, std::string_view reason) noexcept {
     cv_.notify_all();
 }
 
-BackendIo OpenOperation::wait(Clock::time_point deadline,
-                              std::shared_ptr<NativeStream>& out,
+BackendIo OpenOperation::wait(std::shared_ptr<NativeStream>& out,
                               std::string& error) {
     std::unique_lock<std::mutex> lock(mutex_);
     while (!done_) {
         const auto now = Clock::now();
-        if (now >= deadline || !run_->running()) break;
-        cv_.wait_until(lock, std::min(deadline, now + kStopRecheck));
+        if (now >= deadline_ || !run_->running()) break;
+        cv_.wait_until(lock, std::min(deadline_, now + kStopRecheck));
     }
     if (done_) {
         if (io_ == BackendIo::Ok) {
@@ -1283,11 +1307,13 @@ BackendIo OpenOperation::wait(Clock::time_point deadline,
         return io_;
     }
     abandoned_ = true;
+    const bool cancel = admitted_;
     lock.unlock();
     // The OPEN may already be on the wire. Cancellation sends an abort, or
     // drops an OPEN still held behind a rekey, and a crossed acceptance is
     // closed by on_opened.
-    if (!run_->submit(cancel_task, shared_from_this())) {
+    if (!run_->running() ||
+        (cancel && !run_->submit(cancel_task, shared_from_this()))) {
         describe(error, "client endpoint is stopping");
         return BackendIo::NotRunning;
     }
@@ -1957,6 +1983,7 @@ BackendIo NativeBackend::open_stream(const std::string& service,
                                    std::uint32_t timeout_ms,
                                    std::unique_ptr<BackendStream>& out,
                                    std::string& error) {
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
     out.reset();
     if (config_.role() != v1::Role::Client) {
         describe(error, "a server endpoint does not open streams");
@@ -2005,15 +2032,15 @@ BackendIo NativeBackend::open_stream(const std::string& service,
         }
         route.emplace(std::move(parsed).take_value());
     }
-    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
     auto handle = std::make_unique<NativeBackendStream>();
-    auto operation = std::make_shared<OpenOperation>(run, service, std::move(route));
+    auto operation = std::make_shared<OpenOperation>(
+        run, service, std::move(route), deadline);
     if (!run->submit(operation->open_task, operation)) {
         describe(error, "client endpoint is not running");
         return BackendIo::NotRunning;
     }
     std::shared_ptr<NativeStream> stream;
-    const BackendIo io = operation->wait(deadline, stream, error);
+    const BackendIo io = operation->wait(stream, error);
     if (io != BackendIo::Ok) return io;
     handle->attach(std::move(stream));
     out = std::move(handle);
@@ -2058,6 +2085,7 @@ BackendIo NativeBackend::open_packet(const std::string& service,
                                    std::uint32_t timeout_ms,
                                    std::unique_ptr<BackendPacket>& out,
                                    std::string& error) {
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
     out.reset();
     if (config_.role() != v1::Role::Client) {
         describe(error, "a server endpoint does not open packets");
@@ -2106,16 +2134,16 @@ BackendIo NativeBackend::open_packet(const std::string& service,
         }
         route.emplace(std::move(parsed).take_value());
     }
-    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
     auto handle = std::make_unique<NativeBackendPacket>();
-    auto operation = std::make_shared<OpenOperation>(run, service, std::move(route),
-                                                      engine::ServiceKind::PacketChannel);
+    auto operation = std::make_shared<OpenOperation>(
+        run, service, std::move(route), deadline,
+        engine::ServiceKind::PacketChannel);
     if (!run->submit(operation->open_task, operation)) {
         describe(error, "client endpoint is not running");
         return BackendIo::NotRunning;
     }
     std::shared_ptr<NativeStream> stream;
-    const BackendIo io = operation->wait(deadline, stream, error);
+    const BackendIo io = operation->wait(stream, error);
     if (io != BackendIo::Ok) return io;
     handle->attach(std::move(stream));
     out = std::move(handle);

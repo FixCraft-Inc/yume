@@ -16,20 +16,20 @@ namespace yume::providers {
 
 enum class IpPacketDirection { ToTunnel, FromTunnel };
 
-// Validates a caller-owned IP device's packet I/O before it crosses a YTP packet
-// stream. Compose with bridge_established_route after an authorized packet OPEN.
-// There is no v2 bulk envelope: each underlying packet is one YTP PACKET.
+// Validates a caller-owned IP device's packet I/O before it crosses a YTP
+// packet stream. Compose with bridge_established_route after an authorized
+// packet OPEN. Each underlying packet is one YTP PACKET record.
 //
-// The caller must provide address policy for both directions, including assigned
-// source/destination restrictions where needed. Before invoking policy, this
-// adapter checks exact IPv4/IPv6 lengths, MTU and bounded option/extension
-// chains. It rejects source routing, address-rewriting headers and opaque IPv6
-// extensions that prevent inspection. Checksums, upper-layer protocols and
-// fragment reassembly remain outside this adapter's contract. Policy refusal
-// or exceptions fail closed.
-// It does not attach a TUN, assign addresses, install routes/DNS or authorize OPEN.
-// All operations and policy callbacks use the wrapped channel's context and
-// cancellation contract; retained receive state survives adapter destruction.
+// The caller must provide address policy for both directions, including
+// assigned source/destination restrictions where needed. Before invoking
+// policy, this adapter checks exact IPv4/IPv6 lengths, MTU and bounded
+// option/extension chains. It rejects source routing, address-rewriting headers
+// and opaque IPv6 extensions that prevent inspection. Checksums, upper-layer
+// protocols and fragment reassembly remain outside this adapter's contract.
+// Policy refusal or exceptions fail closed. It does not attach a TUN, assign
+// addresses, install routes/DNS or authorize OPEN. All operations and policy
+// callbacks use the wrapped channel's context and cancellation contract;
+// retained receive state survives adapter destruction.
 class IpPacketChannel final : public engine::PacketChannel {
 public:
     using AuthorizationPolicy = std::function<engine::Status(

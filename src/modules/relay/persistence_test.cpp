@@ -7,10 +7,13 @@
 #include "modules/relay/history.hpp"
 #include "modules/relay/secret.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cerrno>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -23,6 +26,7 @@
 #include "fs/secret_file.hpp"
 #include "modules/relay/base64.hpp"
 #include "modules/relay/storage_crypto.hpp"
+#include "test_support/allocation_failure.hpp"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -156,12 +160,295 @@ void write_authenticated_history_record(
     assert(::chmod(log_path.c_str(), 0600) == 0);
 }
 
+constexpr std::size_t kHistoryProbeTextBytes = 4096U;
+constexpr char kHistoryProbeMarker = 'Q';
+
+struct HistoryPlaintextProbe {
+    std::array<void*, 64> candidates{};
+    std::size_t candidate_count{0};
+    std::size_t target_allocation{0};
+    std::size_t failure_countdown{0};
+    void* watched{nullptr};
+    bool saw_plaintext{false};
+    bool failed{false};
+    bool sustain_failure{false};
+    bool released{false};
+    bool wiped{false};
+};
+
+HistoryPlaintextProbe history_probe;
+
+void observe_history_allocation(void* storage, std::size_t size) {
+    if (size < kHistoryProbeTextBytes + 1U) return;
+    // The lexer fills reserved capacity incrementally. Initialize it before
+    // observing that fill so the probe never reads indeterminate bytes.
+    std::fill_n(static_cast<char*>(storage), size, '\0');
+    const std::size_t index = history_probe.candidate_count++;
+    if (index < history_probe.candidates.size()) {
+        history_probe.candidates[index] = storage;
+    }
+    if (index + 1U == history_probe.target_allocation) {
+        history_probe.watched = storage;
+    }
+}
+
+void fail_after_history_plaintext(std::size_t) {
+    if (history_probe.failed && history_probe.sustain_failure) {
+        throw std::bad_alloc();
+    }
+    if (!history_probe.watched || history_probe.released ||
+        history_probe.failure_countdown == 0U) {
+        return;
+    }
+    const auto* bytes = static_cast<const char*>(history_probe.watched);
+    history_probe.saw_plaintext =
+        history_probe.saw_plaintext ||
+        std::all_of(bytes, bytes + kHistoryProbeTextBytes,
+                    [](char byte) { return byte == kHistoryProbeMarker; });
+    // The reader can take ownership of the lexer's larger string allocation.
+    // Arm only once the complete plaintext exists in the selected buffer.
+    if (!history_probe.saw_plaintext) return;
+    if (--history_probe.failure_countdown == 0U) {
+        history_probe.failed = true;
+        throw std::bad_alloc();
+    }
+}
+
+void observe_history_release(void* storage) noexcept {
+    if (!storage || history_probe.released ||
+        storage != history_probe.watched) {
+        return;
+    }
+    history_probe.released = true;
+    const auto* bytes = static_cast<const char*>(storage);
+    history_probe.wiped = std::all_of(bytes, bytes + kHistoryProbeTextBytes,
+                                      [](char byte) { return byte == 0; });
+}
+
+class HistoryAllocationObserver {
+public:
+    HistoryAllocationObserver() noexcept {
+        yume::test::after_allocate = observe_history_allocation;
+        yume::test::before_allocate = fail_after_history_plaintext;
+        yume::test::before_deallocate = observe_history_release;
+    }
+    ~HistoryAllocationObserver() {
+        yume::test::after_allocate = nullptr;
+        yume::test::before_allocate = nullptr;
+        yume::test::before_deallocate = nullptr;
+    }
+    HistoryAllocationObserver(const HistoryAllocationObserver&) = delete;
+    HistoryAllocationObserver& operator=(const HistoryAllocationObserver&) =
+        delete;
+};
+
+void test_history_selection_allocation_wipes_plaintext() {
+    // Negative control: the observer must notice an ordinary unwiped release.
+    history_probe = {};
+    {
+        HistoryAllocationObserver observer;
+        std::string unguarded(kHistoryProbeTextBytes, kHistoryProbeMarker);
+        history_probe.watched = unguarded.data();
+        yume::test::keep_contents(unguarded.data());
+    }
+    assert(history_probe.released && !history_probe.wiped);
+
+    TempDirectory temp;
+    yume::relay::HistoryStore history(temp.path() / "history", "probe");
+    std::string text(kHistoryProbeTextBytes, kHistoryProbeMarker);
+    yume::relay::RelaySecretWiper text_wiper(text);
+    history.append_chat({1, "peer", "Peer", "in", text});
+
+    // Learn which allocation becomes the returned text instead of depending
+    // on the JSON parser's allocation count or the map's node size.
+    std::size_t target_allocation = 0U;
+    history_probe = {};
+    {
+        HistoryAllocationObserver observer;
+        auto listed = history.list_chat("peer");
+        assert(listed.available && listed.items.size() == 1U);
+        assert(listed.items.front().text == text);
+        assert(history_probe.candidate_count <=
+               history_probe.candidates.size());
+        for (std::size_t index = 0; index < history_probe.candidate_count;
+             ++index) {
+            if (history_probe.candidates[index] ==
+                listed.items.front().text.data()) {
+                target_allocation = index + 1U;
+            }
+        }
+        history_probe.watched = listed.items.front().text.data();
+    }
+    assert(target_allocation != 0U);
+    assert(history_probe.released && history_probe.wiped);
+
+    bool reached_success = false;
+    std::size_t failures = 0U;
+    for (std::size_t failure = 1U; failure <= 64U; ++failure) {
+        history_probe = {};
+        history_probe.target_allocation = target_allocation;
+        history_probe.failure_countdown = failure;
+        bool available = false;
+        {
+            HistoryAllocationObserver observer;
+            auto listed = history.list_chat("peer");
+            available = listed.available;
+            if (available) {
+                assert(listed.items.size() == 1U);
+                assert(listed.items.front().text == text);
+                assert(listed.items.front().text.data() ==
+                       history_probe.watched);
+            } else {
+                assert(listed.items.empty() && !listed.error.empty());
+            }
+        }
+        // The sweep crosses path validation, map insertion and result
+        // allocation after the owned text exists. Every release must be clean.
+        assert(history_probe.saw_plaintext && history_probe.released &&
+               history_probe.wiped);
+        if (!history_probe.failed) {
+            assert(available);
+            reached_success = true;
+            break;
+        }
+        assert(!available);
+        ++failures;
+    }
+    assert(failures != 0U && reached_success);
+}
+
+void test_history_append_allocation_wipes_plaintext() {
+    using namespace yume::relay;
+    TempDirectory temp;
+    HistoryStore history(temp.path() / "history", "append");
+    history.append_chat({0, "peer", "Peer", "in", "initialize key"});
+    ChatHistoryEntry entry{
+        1, "peer", "Peer", "in",
+        std::string(kHistoryProbeTextBytes, kHistoryProbeMarker)};
+    RelaySecretWiper entry_wiper(entry.text);
+
+    bool reached_success = false;
+    for (std::size_t failure = 1U; failure <= 256U; ++failure) {
+        assert(history.delete_chat("peer"));
+        history_probe = {};
+        // The entry already exists. Its JSON text field is the first large
+        // allocation in append, before dump() creates serialized copies.
+        history_probe.target_allocation = 1U;
+        history_probe.failure_countdown = failure;
+        {
+            HistoryAllocationObserver observer;
+            history.append_chat(entry);
+        }
+        assert(history_probe.saw_plaintext && history_probe.released &&
+               history_probe.wiped);
+        if (!history_probe.failed) {
+            auto listed = history.list_chat("peer");
+            assert(listed.available && listed.items.size() == 1U);
+            assert(listed.items.front().text == entry.text);
+            reached_success = true;
+            break;
+        }
+    }
+    assert(reached_success);
+
+    // Cleanup must survive sustained failure after plaintext is copied.
+    history_probe = {};
+    history_probe.target_allocation = 1U;
+    history_probe.failure_countdown = 1U;
+    history_probe.sustain_failure = true;
+    {
+        HistoryAllocationObserver observer;
+        history.append_chat(entry);
+    }
+    assert(history_probe.failed && history_probe.released &&
+           history_probe.wiped);
+
+    // Cover failures before the plaintext field exists, including partial
+    // object construction. Optional persistence must return normally.
+    reached_success = false;
+    for (std::size_t failure = 1U; failure <= 256U; ++failure) {
+        assert(history.delete_chat("peer"));
+        yume::test::arm_allocation_failure(failure);
+        history.append_chat(entry);
+        const bool fired = yume::test::disarm_allocation_failure();
+        if (!fired) {
+            reached_success = true;
+            break;
+        }
+    }
+    assert(reached_success);
+}
+
+void test_history_record_schema() {
+    using namespace yume::relay;
+    TempDirectory temp;
+    const auto root = temp.path() / "history";
+    HistoryStore history(root, "schema");
+    history.append_chat({0, "peer", "Peer", "in", "initialize key"});
+    const auto key = root / "schema/history.key";
+    const auto log = root / "schema/chat-peer.log";
+
+    const std::string escaped =
+        R"({"text":"line\n\"\\ 雪","direction":"out","peer_name":"","peer_id":"peer","ts_ms":-9223372036854775808})";
+    write_authenticated_history_record(key, log, escaped);
+    auto listed = history.list_chat("peer");
+    assert(listed.available && listed.items.size() == 1U);
+    assert(listed.items.front().ts_ms ==
+           std::numeric_limits<std::int64_t>::min());
+    assert(listed.items.front().text == "line\n\"\\ 雪");
+    assert(listed.items.front().peer_name.empty());
+    assert(listed.items.front().direction == "out");
+
+    const std::string valid =
+        R"({"ts_ms":9223372036854775807,"peer_id":"peer","peer_name":"Peer","direction":"in","text":""})";
+    write_authenticated_history_record(key, log, valid);
+    listed = history.list_chat("peer");
+    assert(listed.available && listed.items.size() == 1U);
+    assert(listed.items.front().ts_ms ==
+           std::numeric_limits<std::int64_t>::max());
+    assert(listed.items.front().text.empty());
+
+    std::vector<std::string> invalid{
+        "[]",
+        "null",
+        "1",
+        "true",
+        R"("string")",
+        R"({"ts_ms":1,"peer_id":"peer","peer_name":"Peer","direction":"in"})",
+        R"({"ts_ms":1,"peer_id":"peer","peer_name":"Peer","direction":"in","text":"x","unknown":0})",
+        R"({"ts_ms":1,"peer_id":"peer","peer_name":"Peer","direction":"in","text":"first","text":"last"})",
+        R"({"ts_ms":1.0,"peer_id":"peer","peer_name":"Peer","direction":"in","text":"x"})",
+        R"({"ts_ms":9223372036854775808,"peer_id":"peer","peer_name":"Peer","direction":"in","text":"x"})",
+        R"({"ts_ms":-9223372036854775809,"peer_id":"peer","peer_name":"Peer","direction":"in","text":"x"})",
+        R"({"ts_ms":1,"peer_id":"","peer_name":"Peer","direction":"in","text":"x"})",
+        R"({"ts_ms":1,"peer_id":1,"peer_name":"Peer","direction":"in","text":"x"})",
+        R"({"ts_ms":1,"peer_id":"peer","peer_name":null,"direction":"in","text":"x"})",
+        R"({"ts_ms":1,"peer_id":"peer","peer_name":"Peer","direction":false,"text":"x"})",
+        R"({"ts_ms":1,"peer_id":"peer","peer_name":"Peer","direction":"in","text":1})",
+        R"({"text":"sensitive marker","ts_ms":1,)",
+        R"({"text":"sensitive marker","peer_id":{}})",
+        valid + " false",
+    };
+    invalid.push_back(R"({"text":"sensitive marker","peer_id":)" +
+                      std::string(4096U, '[') + "0" + std::string(4096U, ']') +
+                      "}");
+    for (const auto& record : invalid) {
+        write_authenticated_history_record(key, log, record);
+        const auto result = history.list_chat("peer");
+        assert(!result.available && result.items.empty() && !result.truncated);
+        assert(result.error == "relay history contains an invalid record");
+    }
+}
+
 }  // namespace
 
 int main() {
     using namespace yume;
     using namespace yume::relay;
 
+    test_history_selection_allocation_wipes_plaintext();
+    test_history_append_allocation_wipes_plaintext();
+    test_history_record_schema();
     std::string erasable = "relay-secret-material";
     erasable.reserve(128);
     wipe_relay_secret(erasable);

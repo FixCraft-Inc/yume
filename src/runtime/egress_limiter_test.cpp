@@ -101,7 +101,6 @@ double total(const std::vector<Identity>& identities) {
 }
 
 // Busy identities split the rate by weight and together use all of it.
-// Transport v2's limiter gave this pair half the rate, split evenly.
 void test_weighted_shares() {
     EgressLimiter limiter(kRate);
     std::vector<Identity> identities{{"heavy", 3.0}, {"light", 1.0}};

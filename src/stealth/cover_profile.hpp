@@ -98,12 +98,9 @@ struct Profile {
     std::uint16_t tls_required_version;
 
     // ClientHello selection policy handed to stock OpenSSL by the
-    // openssl-diagnostic backend. Previously these were free literals inside
-    // tls_fingerprint.cpp keyed only by the BrowserProfile enum, so the cover
-    // identity had two owners and nothing bound the cipher/group/sigalg lists
-    // to the committed capture. They are generated from the registry now, and
-    // scripts/generate_transport_profiles.py pins their exact gap against the
-    // captured browser ClientHello.
+    // openssl-diagnostic backend. The registry generates these lists, so the
+    // cover identity has one owner, and scripts/generate_transport_profiles.py
+    // pins their exact gap against the captured browser ClientHello.
     //
     // This is NOT a byte-parity claim. Stock OpenSSL cannot place GREASE in the
     // cipher list, supported_groups, supported_versions, or key_share, and it

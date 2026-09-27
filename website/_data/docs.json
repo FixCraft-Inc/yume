@@ -144,7 +144,7 @@
   },
   {
     "title": "YTP/1 protocol",
-    "summary": "The bounded canonical transport kernel and its still-open provider and runtime boundaries.",
+    "summary": "The canonical transport kernel, native composition and qualification boundaries.",
     "url": "/docs/protocol/YTP_1/",
     "source": "docs/protocol/YTP_1.md",
     "landing_group": "Security and transport",

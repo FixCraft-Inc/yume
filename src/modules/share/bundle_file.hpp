@@ -65,7 +65,8 @@ std::vector<std::uint8_t> seal_share(const nlohmann::json& document,
 
 // Decrypts and parses file contents. Returns nullopt with a one-line message
 // for a bad header, a refused password, a wrong password, corrupted data or a
-// payload that is not JSON. The decrypted bytes are wiped. The caller owns the
+// payload that is not JSON. JSON parse failures use a fixed diagnostic without
+// decrypted content. The decrypted bytes are wiped. The caller owns the
 // document and wipes it, for example with JsonSecretWiper. The JSON parser's
 // own buffers are not wiped.
 std::optional<nlohmann::json> open_share(const std::vector<std::uint8_t>& blob,

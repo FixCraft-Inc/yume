@@ -68,25 +68,18 @@ constexpr std::size_t kMaximumResolvedEndpoints = 256U;
 constexpr std::size_t kMaximumUdpPayloadBytes = 65'507U;
 constexpr auto kMaximumOpenPhaseTimeout = std::chrono::minutes(10);
 
-Status safe_status(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 Status cancelled_status() noexcept {
-    return safe_status(StatusCode::Cancelled,
-                       "Asio route operation was cancelled");
+    return Status::diagnostic(StatusCode::Cancelled,
+                              "Asio route operation was cancelled");
 }
 
 Status closed_status() noexcept {
-    return safe_status(StatusCode::Closed, "Asio route channel is closed");
+    return Status::diagnostic(StatusCode::Closed,
+                              "Asio route channel is closed");
 }
 
 Status allocation_status(std::string_view message) noexcept {
-    return safe_status(StatusCode::ResourceExhausted, message);
+    return Status::diagnostic(StatusCode::ResourceExhausted, message);
 }
 
 void publish_cancel_id(std::atomic<std::uint64_t>& destination,
@@ -200,8 +193,8 @@ Status protect_socket(Socket& socket,
     } catch (const std::bad_alloc&) {
         return allocation_status("socket-protection callback allocation failed");
     } catch (...) {
-        return safe_status(StatusCode::Internal,
-                           "socket-protection callback threw");
+        return Status::diagnostic(StatusCode::Internal,
+                                  "socket-protection callback threw");
     }
 }
 
@@ -243,13 +236,14 @@ public:
             active_connections_ + pending_opens_ >=
                 limits_.max_active_connections) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
-                safe_status(StatusCode::ResourceExhausted,
-                            "direct-route provider capacity exhausted"));
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "direct-route provider capacity exhausted"));
         }
         if (next_target_id_ == std::numeric_limits<std::uint64_t>::max()) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
-                safe_status(StatusCode::ResourceExhausted,
-                            "direct-route operation identifier exhausted"));
+                Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "direct-route operation identifier exhausted"));
         }
         const std::uint64_t id = next_target_id_++;
         try {
@@ -285,7 +279,8 @@ public:
             found->second.kind != TargetKind::PendingOpen ||
             pending_opens_ == 0U ||
             active_connections_ >= limits_.max_active_connections) {
-            return safe_status(StatusCode::ResourceExhausted,
+            return Status::diagnostic(
+                StatusCode::ResourceExhausted,
                 "direct-route active-connection capacity exhausted");
         }
         found->second.kind = TargetKind::ActiveConnection;
@@ -376,7 +371,7 @@ Status socket_operation_status(const boost::system::error_code& error,
     if (error == boost::asio::error::operation_aborted || cancelled) {
         return cancelled_status();
     }
-    return safe_status(StatusCode::Closed, operation);
+    return Status::diagnostic(StatusCode::Closed, operation);
 }
 
 }  // namespace
@@ -436,8 +431,10 @@ public:
         if (close_requested_.load(std::memory_order_acquire)) {
             complete_read(std::move(completion), closed_status());
         } else if (max_bytes == 0U || max_bytes > max_read_size()) {
-            complete_read(std::move(completion), safe_status(StatusCode::InvalidArgument,
-                "TCP read exceeds the provider bound"));
+            complete_read(
+                std::move(completion),
+                Status::diagnostic(StatusCode::InvalidArgument,
+                                   "TCP read exceeds the provider bound"));
         } else {
             start_read(max_bytes, std::move(cancellation), std::move(completion));
         }
@@ -452,8 +449,11 @@ public:
         if (close_requested_.load(std::memory_order_acquire) || write_shutdown_requested_) {
             invoke_noexcept(completion, closed_status(), 0U);
         } else if (buffer.size() > max_write_size()) {
-            invoke_noexcept(completion, safe_status(StatusCode::ResourceExhausted,
-                "TCP write exceeds the provider bound"), 0U);
+            invoke_noexcept(
+                completion,
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "TCP write exceeds the provider bound"),
+                0U);
         } else {
             start_write(std::move(buffer), std::move(cancellation), std::move(completion));
         }
@@ -528,8 +528,8 @@ private:
             if (pending_read_) {
                 complete_read(
                     std::move(completion),
-                    safe_status(StatusCode::FailedPrecondition,
-                                "only one TCP read may be outstanding"));
+                    Status::diagnostic(StatusCode::FailedPrecondition,
+                                       "only one TCP read may be outstanding"));
                 return;
             }
             if (cancellation.is_cancelled()) {
@@ -538,7 +538,9 @@ private:
             }
             auto allocated = Buffer::allocate(max_bytes, max_read_size());
             if (!allocated.ok()) {
-                complete_read(std::move(completion), safe_status(allocated.status().code(), allocated.status().message()));
+                complete_read(std::move(completion),
+                              Status::diagnostic(allocated.status().code(),
+                                                 allocated.status().message()));
                 return;
             }
             const std::uint64_t id = next_operation_id_++;
@@ -552,7 +554,9 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_read(safe_status(registration.status().code(), registration.status().message()));
+                settle_read(
+                    Status::diagnostic(registration.status().code(),
+                                       registration.status().message()));
                 return;
             }
             pending_read_->cancellation =
@@ -575,11 +579,12 @@ private:
             }
         } catch (...) {
             if (pending_read_) {
-                settle_read(safe_status(StatusCode::Internal,
-                                        "TCP read setup failed"));
+                settle_read(Status::diagnostic(StatusCode::Internal,
+                                               "TCP read setup failed"));
             } else {
-                complete_read(std::move(completion), safe_status(
-                    StatusCode::Internal, "TCP read setup failed"));
+                complete_read(std::move(completion),
+                              Status::diagnostic(StatusCode::Internal,
+                                                 "TCP read setup failed"));
             }
         }
     }
@@ -595,8 +600,8 @@ private:
             if (pending_write_) {
                 invoke_noexcept(
                     completion,
-                    safe_status(StatusCode::FailedPrecondition,
-                                "only one TCP write may be outstanding"),
+                    Status::diagnostic(StatusCode::FailedPrecondition,
+                                       "only one TCP write may be outstanding"),
                     0U);
                 return;
             }
@@ -614,7 +619,10 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_write(safe_status(registration.status().code(), registration.status().message()), 0U);
+                settle_write(
+                    Status::diagnostic(registration.status().code(),
+                                       registration.status().message()),
+                    0U);
                 return;
             }
             pending_write_->cancellation =
@@ -631,12 +639,14 @@ private:
             }
         } catch (...) {
             if (pending_write_) {
-                settle_write(safe_status(StatusCode::Internal,
-                                         "TCP write setup failed"),
+                settle_write(Status::diagnostic(StatusCode::Internal,
+                                                "TCP write setup failed"),
                              0U);
             } else {
-                invoke_noexcept(completion, safe_status(
-                    StatusCode::Internal, "TCP write setup failed"), 0U);
+                invoke_noexcept(completion,
+                                Status::diagnostic(StatusCode::Internal,
+                                                   "TCP write setup failed"),
+                                0U);
             }
         }
     }
@@ -696,14 +706,15 @@ private:
                 return;
             }
             if (transferred > pending_read_->buffer.size()) {
-                settle_read(safe_status(
+                settle_read(Status::diagnostic(
                     StatusCode::Internal,
                     "TCP read completion exceeded its buffer"));
                 return;
             }
             const Status resized = pending_read_->buffer.resize(transferred);
             if (!resized.ok()) {
-                settle_read(safe_status(resized.code(), resized.message()));
+                settle_read(
+                    Status::diagnostic(resized.code(), resized.message()));
                 return;
             }
             ByteChannel::ReadCompletion completion =
@@ -712,8 +723,8 @@ private:
             pending_read_.reset();
             complete_read(std::move(completion), std::move(buffer));
         } catch (...) {
-            settle_read(safe_status(StatusCode::Internal,
-                                    "TCP read completion failed"));
+            settle_read(Status::diagnostic(StatusCode::Internal,
+                                           "TCP read completion failed"));
         }
     }
 
@@ -745,7 +756,9 @@ private:
         } catch (const std::bad_alloc&) {
             settle_write(allocation_status("TCP write continuation allocation failed"), transferred);
         } catch (...) {
-            settle_write(safe_status(StatusCode::Internal, "TCP write continuation failed"), transferred);
+            settle_write(Status::diagnostic(StatusCode::Internal,
+                                            "TCP write continuation failed"),
+                         transferred);
         }
     }
 
@@ -755,8 +768,10 @@ private:
         if (!pending_write_ || pending_write_->id != id) return;
         auto& operation = *pending_write_;
         if (transferred > operation.buffer.size() - operation.transferred) {
-            settle_write(safe_status(StatusCode::Internal,
-                "TCP write completion exceeded its buffer"), operation.transferred);
+            settle_write(
+                Status::diagnostic(StatusCode::Internal,
+                                   "TCP write completion exceeded its buffer"),
+                operation.transferred);
             return;
         }
         operation.transferred += transferred;
@@ -969,8 +984,11 @@ public:
         if (close_requested_.load(std::memory_order_acquire)) {
             invoke_noexcept(completion, closed_status(), 0U);
         } else if (packet.size() > max_packet_size()) {
-            invoke_noexcept(completion, safe_status(StatusCode::ResourceExhausted,
-                "UDP packet exceeds the provider bound"), 0U);
+            invoke_noexcept(
+                completion,
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "UDP packet exceeds the provider bound"),
+                0U);
         } else {
             start_send(std::move(packet), std::move(cancellation), std::move(completion));
         }
@@ -1031,8 +1049,9 @@ private:
             if (pending_receive_) {
                 complete_receive(
                     std::move(completion),
-                    safe_status(StatusCode::FailedPrecondition,
-                                "only one UDP receive may be outstanding"));
+                    Status::diagnostic(
+                        StatusCode::FailedPrecondition,
+                        "only one UDP receive may be outstanding"));
                 return;
             }
             if (cancellation.is_cancelled()) {
@@ -1042,7 +1061,10 @@ private:
             auto allocated = Buffer::allocate(
                 receive_capacity(), receive_capacity());
             if (!allocated.ok()) {
-                complete_receive(std::move(completion), safe_status(allocated.status().code(), allocated.status().message()));
+                complete_receive(
+                    std::move(completion),
+                    Status::diagnostic(allocated.status().code(),
+                                       allocated.status().message()));
                 return;
             }
             const std::uint64_t id = next_operation_id_++;
@@ -1056,7 +1078,9 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_receive(safe_status(registration.status().code(), registration.status().message()));
+                settle_receive(
+                    Status::diagnostic(registration.status().code(),
+                                       registration.status().message()));
                 return;
             }
             pending_receive_->cancellation =
@@ -1081,11 +1105,13 @@ private:
             }
         } catch (...) {
             if (pending_receive_) {
-                settle_receive(safe_status(
-                    StatusCode::Internal, "UDP receive setup failed"));
+                settle_receive(Status::diagnostic(StatusCode::Internal,
+                                                  "UDP receive setup failed"));
             } else {
-                complete_receive(std::move(completion), safe_status(
-                    StatusCode::Internal, "UDP receive setup failed"));
+                complete_receive(
+                    std::move(completion),
+                    Status::diagnostic(StatusCode::Internal,
+                                       "UDP receive setup failed"));
             }
         }
     }
@@ -1101,8 +1127,8 @@ private:
             if (pending_send_) {
                 invoke_noexcept(
                     completion,
-                    safe_status(StatusCode::FailedPrecondition,
-                                "only one UDP send may be outstanding"),
+                    Status::diagnostic(StatusCode::FailedPrecondition,
+                                       "only one UDP send may be outstanding"),
                     0U);
                 return;
             }
@@ -1120,7 +1146,9 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                settle_send(safe_status(registration.status().code(), registration.status().message()), 0U);
+                settle_send(Status::diagnostic(registration.status().code(),
+                                               registration.status().message()),
+                            0U);
                 return;
             }
             pending_send_->cancellation =
@@ -1144,12 +1172,14 @@ private:
             }
         } catch (...) {
             if (pending_send_) {
-                settle_send(safe_status(StatusCode::Internal,
-                                        "UDP send setup failed"),
+                settle_send(Status::diagnostic(StatusCode::Internal,
+                                               "UDP send setup failed"),
                             0U);
             } else {
-                invoke_noexcept(completion, safe_status(
-                    StatusCode::Internal, "UDP send setup failed"), 0U);
+                invoke_noexcept(completion,
+                                Status::diagnostic(StatusCode::Internal,
+                                                   "UDP send setup failed"),
+                                0U);
             }
         }
     }
@@ -1202,7 +1232,7 @@ private:
             }
             if (error) {
                 if (error == boost::asio::error::message_size) {
-                    settle_receive(safe_status(
+                    settle_receive(Status::diagnostic(
                         StatusCode::ResourceExhausted,
                         "UDP datagram exceeds the provider packet bound"));
                 } else {
@@ -1213,13 +1243,13 @@ private:
                 return;
             }
             if (transferred > pending_receive_->buffer.size()) {
-                settle_receive(safe_status(
+                settle_receive(Status::diagnostic(
                     StatusCode::Internal,
                     "UDP receive completion exceeded its buffer"));
                 return;
             }
             if (transferred > max_packet_size()) {
-                settle_receive(safe_status(
+                settle_receive(Status::diagnostic(
                     StatusCode::ResourceExhausted,
                     "UDP datagram exceeds the provider packet bound"));
                 return;
@@ -1227,7 +1257,8 @@ private:
             const Status resized =
                 pending_receive_->buffer.resize(transferred);
             if (!resized.ok()) {
-                settle_receive(safe_status(resized.code(), resized.message()));
+                settle_receive(
+                    Status::diagnostic(resized.code(), resized.message()));
                 return;
             }
             PacketChannel::ReceiveCompletion completion =
@@ -1236,8 +1267,8 @@ private:
             pending_receive_.reset();
             complete_receive(std::move(completion), std::move(packet));
         } catch (...) {
-            settle_receive(safe_status(
-                StatusCode::Internal, "UDP receive completion failed"));
+            settle_receive(Status::diagnostic(StatusCode::Internal,
+                                              "UDP receive completion failed"));
         }
     }
 
@@ -1259,9 +1290,8 @@ private:
                             error, closed_, cancelled, "UDP send failed"),
                         transferred);
         } else if (transferred != expected) {
-            settle_send(safe_status(
-                            StatusCode::Internal,
-                            "UDP send completed only partially"),
+            settle_send(Status::diagnostic(StatusCode::Internal,
+                                           "UDP send completed only partially"),
                         transferred);
         } else {
             settle_send(Status::success(), transferred);
@@ -1463,9 +1493,9 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                finish(Result<RouteConnection>(safe_status(
-                    registration.status().code(),
-                    registration.status().message())));
+                finish(Result<RouteConnection>(
+                    Status::diagnostic(registration.status().code(),
+                                       registration.status().message())));
                 return;
             }
             cancellation_ = std::move(registration).take_value();
@@ -1477,9 +1507,9 @@ private:
                 request_.stream_id().is_control() ||
                 !engine::valid_service_name(request_.service_name()) ||
                 request_.peer_evidence().identity().empty()) {
-                finish(Result<RouteConnection>(safe_status(
-                    StatusCode::InvalidArgument,
-                    "authorized route request is invalid")));
+                finish(Result<RouteConnection>(
+                    Status::diagnostic(StatusCode::InvalidArgument,
+                                       "authorized route request is invalid")));
                 return;
             }
             switch (request_.destination().protocol()) {
@@ -1490,14 +1520,14 @@ private:
                 begin_udp();
                 return;
             }
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::InvalidArgument,
-                "authorized route protocol is invalid")));
+            finish(Result<RouteConnection>(
+                Status::diagnostic(StatusCode::InvalidArgument,
+                                   "authorized route protocol is invalid")));
         } catch (const std::bad_alloc&) {
             finish(Result<RouteConnection>(allocation_status(
                 "direct-route open allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
+            finish(Result<RouteConnection>(Status::diagnostic(
                 StatusCode::Internal, "direct-route open failed")));
         }
     }
@@ -1531,9 +1561,9 @@ private:
         if (address.is_v6()) {
             const auto ipv6 = address.to_v6();
             if (ipv6.scope_id() != 0U) {
-                return Result<RouteDestination>(safe_status(
-                    StatusCode::FailedPrecondition,
-                    "scoped IPv6 routes are unsupported"));
+                return Result<RouteDestination>(
+                    Status::diagnostic(StatusCode::FailedPrecondition,
+                                       "scoped IPv6 routes are unsupported"));
             }
             if (!ipv6.is_v4_mapped()) {
                 return RouteDestination::ipv6(
@@ -1575,7 +1605,7 @@ private:
             finish(Result<RouteConnection>(allocation_status(
                 "resolved-route policy allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
+            finish(Result<RouteConnection>(Status::diagnostic(
                 StatusCode::Internal, "resolved-route policy threw")));
         }
         return false;
@@ -1586,7 +1616,7 @@ private:
     void begin_resolve() {
         const auto& resolver = provider_->resolver();
         if (!resolver) {
-            finish(Result<RouteConnection>(safe_status(
+            finish(Result<RouteConnection>(Status::diagnostic(
                 StatusCode::FailedPrecondition,
                 "direct-route destination names are not resolved here")));
             return;
@@ -1613,12 +1643,13 @@ private:
     Status resolution_failure(const Status& status) const noexcept {
         if (status.code() == StatusCode::ResourceExhausted ||
             status.code() == StatusCode::Cancelled) {
-            return safe_status(status.code(), status.message());
+            return Status::diagnostic(status.code(), status.message());
         }
-        return safe_status(StatusCode::NotFound,
-                           request_.destination().protocol() == NetworkProtocol::Tcp
-                               ? "TCP destination resolution failed"
-                               : "UDP destination resolution failed");
+        return Status::diagnostic(
+            StatusCode::NotFound,
+            request_.destination().protocol() == NetworkProtocol::Tcp
+                ? "TCP destination resolution failed"
+                : "UDP destination resolution failed");
     }
 
     void cancel_lookup() noexcept {
@@ -1639,7 +1670,7 @@ private:
             return;
         }
         cancel_lookup();
-        finish(Result<RouteConnection>(safe_status(
+        finish(Result<RouteConnection>(Status::diagnostic(
             StatusCode::NotFound,
             "direct-route destination resolution timed out")));
     }
@@ -1658,7 +1689,7 @@ private:
             udp_socket_.cancel(ignored);
             udp_socket_.close(ignored);
         }
-        finish(Result<RouteConnection>(safe_status(
+        finish(Result<RouteConnection>(Status::diagnostic(
             StatusCode::Closed,
             "direct-route destination connection timed out")));
     }
@@ -1722,7 +1753,7 @@ private:
                 }
             }
             if (tcp ? tcp_endpoints_.empty() : udp_endpoints_.empty()) {
-                finish(Result<RouteConnection>(safe_status(
+                finish(Result<RouteConnection>(Status::diagnostic(
                     StatusCode::NotFound,
                     tcp ? "TCP destination resolution returned no endpoints"
                         : "UDP destination resolution returned no endpoints")));
@@ -1741,8 +1772,9 @@ private:
             finish(Result<RouteConnection>(allocation_status(
                 "resolved-endpoint allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::Internal, "destination resolution completion failed")));
+            finish(Result<RouteConnection>(Status::diagnostic(
+                StatusCode::Internal,
+                "destination resolution completion failed")));
         }
     }
 
@@ -1780,14 +1812,13 @@ private:
                     });
                 return;
             }
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::NotFound,
-                "TCP destination connection failed")));
+            finish(Result<RouteConnection>(Status::diagnostic(
+                StatusCode::NotFound, "TCP destination connection failed")));
         } catch (const std::bad_alloc&) {
             finish(Result<RouteConnection>(allocation_status(
                 "TCP connection allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
+            finish(Result<RouteConnection>(Status::diagnostic(
                 StatusCode::Internal, "TCP connection setup failed")));
         }
     }
@@ -1826,14 +1857,13 @@ private:
                     });
                 return;
             }
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::NotFound,
-                "UDP destination connection failed")));
+            finish(Result<RouteConnection>(Status::diagnostic(
+                StatusCode::NotFound, "UDP destination connection failed")));
         } catch (const std::bad_alloc&) {
             finish(Result<RouteConnection>(allocation_status(
                 "UDP connection allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
+            finish(Result<RouteConnection>(Status::diagnostic(
                 StatusCode::Internal, "UDP connection setup failed")));
         }
     }
@@ -1882,9 +1912,9 @@ private:
             finish(Result<RouteConnection>(allocation_status(
                 "TCP route-channel allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::Internal,
-                "TCP route-channel construction failed")));
+            finish(Result<RouteConnection>(
+                Status::diagnostic(StatusCode::Internal,
+                                   "TCP route-channel construction failed")));
         }
     }
 
@@ -1931,9 +1961,9 @@ private:
             finish(Result<RouteConnection>(allocation_status(
                 "UDP route-channel allocation failed")));
         } catch (...) {
-            finish(Result<RouteConnection>(safe_status(
-                StatusCode::Internal,
-                "UDP route-channel construction failed")));
+            finish(Result<RouteConnection>(
+                Status::diagnostic(StatusCode::Internal,
+                                   "UDP route-channel construction failed")));
         }
     }
 
@@ -2061,8 +2091,10 @@ AsioDirectRouteProvider::create(
         return Result<std::shared_ptr<AsioDirectRouteProvider>>(allocation_status(
             "Asio direct-route provider allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<AsioDirectRouteProvider>>(safe_status(
-            StatusCode::Internal, "Asio direct-route provider construction failed"));
+        return Result<std::shared_ptr<AsioDirectRouteProvider>>(
+            Status::diagnostic(
+                StatusCode::Internal,
+                "Asio direct-route provider construction failed"));
     }
 }
 
@@ -2090,9 +2122,9 @@ void AsioDirectRouteProvider::async_open(
         invoke_noexcept(completion, std::move(failure));
         return;
     } catch (...) {
-        Result<RouteConnection> failure(safe_status(
-            StatusCode::Internal,
-            "direct-route completion construction failed"));
+        Result<RouteConnection> failure(
+            Status::diagnostic(StatusCode::Internal,
+                               "direct-route completion construction failed"));
         invoke_noexcept(completion, std::move(failure));
         return;
     }
@@ -2102,8 +2134,8 @@ void AsioDirectRouteProvider::async_open(
         request.peer_evidence().identity().empty()) {
         complete_open_failure(
             open_completion,
-            safe_status(StatusCode::InvalidArgument,
-                        "authorized route request is invalid"));
+            Status::diagnostic(StatusCode::InvalidArgument,
+                               "authorized route request is invalid"));
         return;
     }
 
@@ -2111,8 +2143,8 @@ void AsioDirectRouteProvider::async_open(
     if (!reservation.ok()) {
         complete_open_failure(
             open_completion,
-            safe_status(reservation.status().code(),
-                        reservation.status().message()));
+            Status::diagnostic(reservation.status().code(),
+                               reservation.status().message()));
         return;
     }
     const auto [target_id, reserved_epoch] =
@@ -2134,8 +2166,8 @@ void AsioDirectRouteProvider::async_open(
         state->release(target_id);
         complete_open_failure(
             open_completion,
-            safe_status(StatusCode::Internal,
-                        "direct-route open construction failed"));
+            Status::diagnostic(StatusCode::Internal,
+                               "direct-route open construction failed"));
     }
 }
 

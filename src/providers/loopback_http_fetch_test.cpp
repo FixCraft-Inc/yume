@@ -24,6 +24,8 @@
 #include <boost/asio/streambuf.hpp>
 #include <boost/asio/write.hpp>
 
+#include "test_support/allocation_failure.hpp"
+
 namespace {
 using boost::asio::ip::address;
 using boost::asio::ip::make_address;
@@ -296,6 +298,33 @@ void test_cancellation() {
     CHECK(idle->accepted == 0);
 }
 
+void test_timeout_diagnostic_allocation_failure() {
+    auto io = context();
+    auto held = std::make_shared<Backend>(io, "", Backend::After::Hold);
+    held->serve();
+    LoopbackHttpLimits limits;
+    limits.response_timeout = 200ms;
+    auto outcome = std::make_shared<Outcome>();
+    const auto handle =
+        start_fetch(io, outcome, held->port(), "GET", "/", limits);
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (held->request.empty() &&
+           std::chrono::steady_clock::now() < deadline) {
+        io->poll();
+    }
+    CHECK(!held->request.empty() && outcome->calls == 0);
+    // All request I/O is established. Fail the first allocation when the
+    // unanswered request times out and constructs its diagnostic.
+    yume::test::arm_allocation_failure(1U);
+    run_until(io, *outcome);
+    CHECK(yume::test::disarm_allocation_failure());
+    CHECK(outcome->result && !outcome->result->ok());
+    CHECK(outcome->result->status().code() == StatusCode::Closed);
+    CHECK(outcome->result->status().message().empty());
+    for (int round = 0; round < 10; ++round) io->poll();
+    CHECK(outcome->calls == 1);
+}
+
 void test_completion_exceptions_are_contained() {
     auto io = context();
     auto backend = std::make_shared<Backend>(io, "HTTP/1.1 204 No Content\r\n\r\n");
@@ -410,6 +439,7 @@ int main() {
     test_chunked_and_eof_bodies();
     test_limits();
     test_backend_failures();
+    test_timeout_diagnostic_allocation_failure();
     test_cancellation();
     test_completion_exceptions_are_contained();
     test_invalid_requests();

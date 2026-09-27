@@ -42,15 +42,6 @@ bool origin_form(std::string_view target) noexcept {
                        [](char ch) { return ch > 0x20 && ch < 0x7f; });
 }
 
-// The message is diagnostic. Losing it to allocation failure keeps the code.
-Status status_of(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 }  // namespace
 
 struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
@@ -71,7 +62,9 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
 
     void begin() noexcept {
         if (!completion) return;
-        if (cancelled) return fail(status_of(StatusCode::Cancelled, "backend fetch cancelled"));
+        if (cancelled)
+            return fail(Status::diagnostic(StatusCode::Cancelled,
+                                           "backend fetch cancelled"));
         try {
             parser.emplace();
             parser->header_limit(static_cast<std::uint32_t>(
@@ -83,7 +76,8 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
                 self->on_connect(error);
             });
         } catch (...) {
-            fail(status_of(StatusCode::ResourceExhausted, "backend fetch could not start"));
+            fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                    "backend fetch could not start"));
         }
     }
 
@@ -97,7 +91,8 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
                     self->on_write(written);
                 });
         } catch (...) {
-            fail(status_of(StatusCode::ResourceExhausted, "backend request could not be sent"));
+            fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                    "backend request could not be sent"));
         }
     }
 
@@ -110,7 +105,8 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
                     self->on_read(read);
                 });
         } catch (...) {
-            fail(status_of(StatusCode::ResourceExhausted, "backend response could not be read"));
+            fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                    "backend response could not be read"));
         }
     }
 
@@ -118,18 +114,23 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
         if (settled()) return;
         if (error == http::error::header_limit || error == http::error::body_limit ||
             error == http::error::buffer_overflow) {
-            return fail(status_of(StatusCode::ResourceExhausted, "backend response exceeds its limit"));
+            return fail(
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "backend response exceeds its limit"));
         }
         if (error) return fail(failure("backend response failed", error));
         if (!parser->is_done()) {
-            return fail(status_of(StatusCode::Closed, "backend ended before a complete response"));
+            return fail(
+                Status::diagnostic(StatusCode::Closed,
+                                   "backend ended before a complete response"));
         }
         try {
             auto message = parser->release();
             // 1xx responses are not final, and a cover backend has no reason
             // to switch protocols.
             if (message.result_int() < 200U) {
-                return fail(status_of(StatusCode::Closed, "backend sent no final response"));
+                return fail(Status::diagnostic(
+                    StatusCode::Closed, "backend sent no final response"));
             }
             LoopbackHttpResponse response;
             response.status = message.result_int();
@@ -145,8 +146,9 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
                 if (name == "content-length" && !head) continue;
                 header_bytes += name.size() + field.value().size();
                 if (header_bytes > limits.response_headers) {
-                    return fail(status_of(StatusCode::ResourceExhausted,
-                                            "backend response exceeds its limit"));
+                    return fail(Status::diagnostic(
+                        StatusCode::ResourceExhausted,
+                        "backend response exceeds its limit"));
                 }
                 response.headers.emplace_back(std::move(name), std::string(field.value()));
             }
@@ -154,7 +156,8 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
             if (!head) response.headers.emplace_back("content-length", std::to_string(response.body.size()));
             finish(Result<LoopbackHttpResponse>(std::move(response)));
         } catch (...) {
-            fail(status_of(StatusCode::ResourceExhausted, "backend response could not be kept"));
+            fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                    "backend response could not be kept"));
         }
     }
 
@@ -163,15 +166,18 @@ struct LoopbackHttpFetch::State final : std::enable_shared_from_this<State> {
     bool settled() noexcept {
         if (!completion) return true;
         if (!cancelled) return false;
-        fail(status_of(StatusCode::Cancelled, "backend fetch cancelled"));
+        fail(Status::diagnostic(StatusCode::Cancelled,
+                                "backend fetch cancelled"));
         return true;
     }
 
-    static Status failure(std::string_view what, const beast::error_code& error) noexcept {
-        if (error == beast::error::timeout) {
-            return status_of(StatusCode::Closed, std::string(what) + ": timed out");
-        }
+    static Status failure(std::string_view what,
+                          const beast::error_code& error) noexcept {
         try {
+            if (error == beast::error::timeout) {
+                return Status(StatusCode::Closed,
+                              std::string(what) + ": timed out");
+            }
             return Status(StatusCode::Closed, std::string(what) + ": " + error.message());
         } catch (...) {
             return Status(StatusCode::Closed);
@@ -209,16 +215,24 @@ Result<std::shared_ptr<LoopbackHttpFetch::State>> prepare(
     LoopbackHttpFetch::Completion completion) {
     using Prepared = Result<std::shared_ptr<LoopbackHttpFetch::State>>;
     if (!address.is_loopback()) {
-        return Prepared(status_of(StatusCode::InvalidArgument, "backend address is not loopback"));
+        return Prepared(Status::diagnostic(StatusCode::InvalidArgument,
+                                           "backend address is not loopback"));
     }
-    if (port == 0U) return Prepared(status_of(StatusCode::InvalidArgument, "backend port is 0"));
+    if (port == 0U)
+        return Prepared(Status::diagnostic(StatusCode::InvalidArgument,
+                                           "backend port is 0"));
     if (method != "GET" && method != "HEAD") {
-        return Prepared(status_of(StatusCode::InvalidArgument, "backend method must be GET or HEAD"));
+        return Prepared(Status::diagnostic(
+            StatusCode::InvalidArgument, "backend method must be GET or HEAD"));
     }
     if (!origin_form(target)) {
-        return Prepared(status_of(StatusCode::InvalidArgument, "backend target is not an origin-form path"));
+        return Prepared(
+            Status::diagnostic(StatusCode::InvalidArgument,
+                               "backend target is not an origin-form path"));
     }
-    if (!completion) return Prepared(status_of(StatusCode::InvalidArgument, "backend fetch needs a completion"));
+    if (!completion)
+        return Prepared(Status::diagnostic(StatusCode::InvalidArgument,
+                                           "backend fetch needs a completion"));
     try {
         const bool head = method == "HEAD";
         auto state = std::make_shared<LoopbackHttpFetch::State>(
@@ -251,7 +265,9 @@ Result<std::shared_ptr<LoopbackHttpFetch>> LoopbackHttpFetch::start(
     const boost::asio::ip::address& address, std::uint16_t port, std::string_view method,
     std::string_view target, LoopbackHttpLimits limits, Completion completion) {
     using Started = Result<std::shared_ptr<LoopbackHttpFetch>>;
-    if (!context) return Started(status_of(StatusCode::InvalidArgument, "backend fetch needs a context"));
+    if (!context)
+        return Started(Status::diagnostic(StatusCode::InvalidArgument,
+                                          "backend fetch needs a context"));
     context->require_context();
     auto prepared = prepare(context->executor(), address, port, method, target, limits,
                             std::move(completion));
@@ -291,8 +307,9 @@ Status probe_loopback_http(const boost::asio::ip::address& address, std::uint16_
     if (!outcome->ok()) return outcome->status();
     const unsigned status = outcome->value().status;
     if (status >= 500U) {
-        return status_of(StatusCode::FailedPrecondition,
-                         "backend answered HTTP " + std::to_string(status));
+        return Status::diagnostic(
+            StatusCode::FailedPrecondition,
+            "backend answered HTTP " + std::to_string(status));
     }
     return Status::success();
 }

@@ -391,9 +391,8 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     endif()
 endif()
 
-# Concrete direct TCP/connected-UDP egress remains an opt-in provider until
-# the replacement endpoint graph is wired and qualified. Its public header is
-# a source-level C++20 provider contract; it is not part of the C ABI.
+# Concrete direct TCP/connected-UDP egress belongs to the native provider
+# graph. Its C++20 contract is internal to native endpoint composition.
 if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_asio_direct_route_provider STATIC
         providers/asio_direct_route_provider.cpp
@@ -1712,11 +1711,21 @@ if(YUME_BUILD_TESTING)
         # execution; linking its archive too would duplicate the definitions.
         target_link_libraries(yume_native_backend_test PRIVATE
             yume_native_endpoint yume_openssl_security_provider Threads::Threads)
+        target_compile_definitions(yume_native_backend_test PRIVATE
+            YUME_TEST_RESOLVER_PROGRAM="$<TARGET_FILE:yume-resolver>")
+        add_dependencies(yume_native_backend_test yume-resolver)
         yume_apply_perf_opts(yume_native_backend_test)
         add_test(NAME yume_native_backend_test COMMAND yume_native_backend_test
             "${CMAKE_SOURCE_DIR}/config/yumed.json")
         set_tests_properties(yume_native_backend_test PROPERTIES
             TIMEOUT 10 LABELS "foundation;0.3;native-runtime")
+        add_test(NAME yume_native_backend_open_integration
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/run_native_endpoint_test.py"
+                --binary "$<TARGET_FILE:yume_native_backend_test>"
+                --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+        set_tests_properties(yume_native_backend_open_integration PROPERTIES
+            TIMEOUT 180 LABELS "foundation;0.3;abi;integration")
     endif()
 
     add_executable(yume_config_v1_test
@@ -1742,6 +1751,10 @@ if(YUME_BUILD_TESTING)
         add_executable(yume_c_abi_contract_test
             abi/yume_c_contract_test.cpp)
         target_link_libraries(yume_c_abi_contract_test PRIVATE yume_abi)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_definitions(yume_c_abi_contract_test PRIVATE YUME_TEST_ABI_ALLOCATIONS=1)
+            target_include_directories(yume_c_abi_contract_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        endif()
         yume_apply_perf_opts(yume_c_abi_contract_test)
         yume_assert_exact_link_dependencies(
             yume_c_abi_contract_test yume_abi)
@@ -1764,18 +1777,6 @@ if(YUME_BUILD_TESTING)
         yume_apply_warnings(yume_c_abi_consumer_c)
         yume_assert_exact_link_dependencies(yume_c_abi_consumer_c yume_abi)
         add_test(NAME yume_c_abi_consumer_c COMMAND yume_c_abi_consumer_c)
-
-        # Stream-id ownership regression. A rolled-back OPEN must release,
-        # unregister, or close-and-retire exactly according to how far it got,
-        # or a late ACK can alias a later stream on the same transport. This
-        # header is dependency-free, so the check needs no runtime.
-        add_executable(yume_abi_stream_open_transaction_test
-            abi/service_open_transaction_test.cpp)
-        target_include_directories(yume_abi_stream_open_transaction_test
-            PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-        yume_apply_warnings(yume_abi_stream_open_transaction_test)
-        add_test(NAME yume_abi_stream_open_transaction_test
-            COMMAND yume_abi_stream_open_transaction_test)
 
         # Real schema-1 setup credentials through the public C ABI: both
         # endpoint lifecycles, peer identity, refusals, deadlines, half-close,
@@ -1841,8 +1842,7 @@ if(YUME_BUILD_TESTING)
 
         set(_yume_abi_contract_tests
             yume_c_abi_contract_test
-            yume_c_abi_consumer_c
-            yume_abi_stream_open_transaction_test)
+            yume_c_abi_consumer_c)
         if(UNIX AND CMAKE_NM)
             if(APPLE)
                 set(_yume_abi_format macho)

@@ -312,10 +312,6 @@ WebSocketDrain WebSocketCodec::TakeDrain() {
     return drain;
 }
 
-WebSocketBytes WebSocketCodec::TakeDecoded() {
-    return TakeDrain().tunnel_bytes;
-}
-
 WebSocketBytes WebSocketCodec::TakeWireReplies() {
     WebSocketBytes out;
     out.swap(wire_replies_);

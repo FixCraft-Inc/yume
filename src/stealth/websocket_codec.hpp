@@ -84,9 +84,6 @@ public:
     void Feed(const WebSocketBytes& data) { Feed(data.data(), data.size()); }
 
     WebSocketDrain TakeDrain();
-    // Compatibility helper for users without external flow control. Framing
-    // credit is discarded together with the drain metadata.
-    WebSocketBytes TakeDecoded();
     WebSocketBytes TakeWireReplies();
 
     bool closed() const noexcept { return closed_; }

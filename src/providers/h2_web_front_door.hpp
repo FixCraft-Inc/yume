@@ -72,8 +72,10 @@ public:
     ~H2WebFrontDoor() noexcept override;
     engine::ExecutorAffinity executor_affinity() const noexcept override;
     boost::asio::ip::tcp::endpoint local_endpoint() const noexcept;
-    // True once closing has begun, including when a failed OS accept closed the
-    // listener. A closed listener never accepts again.
+    // True once closing has begun. Descriptor or memory exhaustion pauses
+    // accepting for a second. Any other accept failure, or a pause that cannot
+    // be scheduled, closes the listener, and a closed listener never accepts
+    // again.
     bool closed() const noexcept;
     void async_accept(engine::CancellationToken cancellation,
                       AcceptCompletion completion) override;

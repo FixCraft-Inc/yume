@@ -114,7 +114,7 @@ public:
                                const H2Headers& additional_headers = {});
 
     // Server only. Ordinary GET/HEAD requests are returned by TakeRequests().
-    // The caller either proxies one to Node with RespondHttp(), or validates an
+    // The caller either answers one with RespondHttp(), or validates an
     // extended CONNECT and calls AcceptCarrier()/RejectCarrier().
     std::vector<H2Request> TakeRequests();
     // Server only. Reports peer resets and ordinary stream completion so an

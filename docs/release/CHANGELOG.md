@@ -360,6 +360,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Native failure handling and memory bounds.** Expired ABI opens no longer
+  enter the session while waiting for dispatch. Startup and stream operations
+  settle their callbacks and state when allocation fails. Buffer growth stays
+  within its bound, and write queues charge retained capacity. The public
+  listener retries temporary descriptor or memory exhaustion. Share-import
+  errors omit decrypted JSON, file-name checks need no allocation, and relay
+  rekey and history cleanup keep secret storage under a wipe guard. History
+  reads reject duplicate or nested fields without building a JSON tree.
 - **Unqualified cover profiles are refused.** A schema-1 document that names a
   cover profile other than the one the build qualifies now fails to load, in
   `yume`, `yumed` and the C ABI alike. Before, the programs accepted such a

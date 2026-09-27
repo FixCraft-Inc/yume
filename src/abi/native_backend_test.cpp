@@ -10,13 +10,19 @@
 #include "abi/native_backend.cpp"
 #include "test_support/allocation_failure.hpp"
 
+#ifndef YUME_TEST_RESOLVER_PROGRAM
+#error "YUME_TEST_RESOLVER_PROGRAM names the resolver helper"
+#endif
+
 #include <array>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <thread>
 
 #include <boost/asio/post.hpp>
 
@@ -515,11 +521,142 @@ void test_packet_configured_batch_bound(const v1::Config& config) {
     CHECK(count == 1U && required == 0U);
 }
 
+v1::Config read_kit_config(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    CHECK(input);
+    const std::string text{std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>()};
+    return v1::ParseJson(text);
+}
+
+struct PausedClient final {
+    PausedClient(const v1::Config& config, const std::filesystem::path& base) {
+        auto context = providers::AsioExecutionContext::create(
+            engine::ExecutorAffinity(78U));
+        CHECK(context.ok());
+        run = std::make_shared<NativeRun>(
+            std::move(context).take_value(), config, base,
+            std::filesystem::path(YUME_TEST_RESOLVER_PROGRAM),
+            std::vector<BackendService>{}, providers::AsioTcpSocketProtector{});
+        auto startup =
+            std::make_shared<StartOperation>(run, std::chrono::seconds(10));
+        CHECK(run->submit(startup->task, startup));
+        // Stopping this temporary runner pauses delivery without ending the
+        // NativeRun. run_until_drained() would instead mark it terminal.
+        std::jthread runner([run = run] {
+            try {
+                run->context->run();
+            } catch (...) {
+                CHECK(false);
+            }
+        });
+        Status status;
+        bool settled = false;
+        try {
+            settled =
+                startup->wait(Clock::now() + std::chrono::seconds(12), status);
+        } catch (...) {
+            run->context->stop();
+            throw;
+        }
+        run->context->stop();
+        runner.join();
+        CHECK(settled && status.ok());
+        CHECK(run->running() && run->session);
+        run->context->poll();
+        CHECK(run->session->state() == engine::SessionState::Active);
+    }
+
+    ~PausedClient() {
+        run->begin_stop();
+        run->context->finish();
+        run->run_until_drained();
+    }
+
+    std::shared_ptr<NativeRun> run;
+};
+
+void test_open_deadline_admission(const std::filesystem::path& kit,
+                                  engine::ServiceKind kind) {
+    const bool packet = kind == engine::ServiceKind::PacketChannel;
+    const auto server_base = kit / "server";
+    const auto client_base = kit / "client";
+    NativeBackend server(
+        read_kit_config(server_base /
+                        (packet ? "packet-services.json" : "yumed.json")),
+        server_base, {},
+        std::vector<BackendService>{
+            {"echo", packet ? BackendServiceKind::Packet
+                            : BackendServiceKind::ByteStream}},
+        {});
+    std::string error;
+    CHECK(server.start(0U, error) == BackendIo::Ok);
+    PausedClient client(
+        read_kit_config(client_base /
+                        (packet ? "routes-udp.json" : "yume.json")),
+        client_base);
+    const auto& run = client.run;
+    const auto queue_open = [&](Clock::time_point deadline,
+                                std::string service = "echo") {
+        auto operation = std::make_shared<OpenOperation>(
+            run, std::move(service), std::nullopt, deadline, kind);
+        CHECK(run->submit(operation->open_task, operation));
+        return operation;
+    };
+    std::shared_ptr<NativeStream> opened;
+    // This counter advances when a record enters the send queue, even if its
+    // I/O completion has not run. An OPEN followed by an abort is not
+    // invisible.
+    const auto sent_before = run->session->traffic().record_bytes_sent;
+
+    // The caller abandons an OPEN while its runner task is still queued.
+    auto abandoned = queue_open(Clock::now() + std::chrono::milliseconds(1));
+    CHECK(abandoned->wait(opened, error) == BackendIo::Timeout);
+    CHECK(!opened);
+    run->context->poll();
+    CHECK(run->session->traffic().record_bytes_sent == sent_before);
+
+    // The runner also enforces expiry when the caller has not started waiting.
+    auto expired = queue_open(Clock::now() - std::chrono::milliseconds(1));
+    run->context->poll();
+    CHECK(expired->wait(opened, error) == BackendIo::Timeout);
+    CHECK(!opened && run->session->traffic().record_bytes_sent == sent_before);
+
+    // An unadvertised service completes inline inside async_open. Holding the
+    // operation mutex across that call would deadlock this refusal.
+    auto refused =
+        queue_open(Clock::now() + std::chrono::seconds(1), "not-advertised");
+    run->context->poll();
+    CHECK(refused->wait(opened, error) == BackendIo::NotFound);
+    CHECK(!opened && run->session->traffic().record_bytes_sent == sent_before);
+
+    // Once admitted, timeout still queues an abort. The server deliberately
+    // leaves this OPEN waiting for its application's accept call.
+    auto admitted = queue_open(Clock::now() + std::chrono::seconds(1));
+    run->context->poll();
+    const auto sent_open = run->session->traffic().record_bytes_sent;
+    CHECK(sent_open > sent_before);
+    CHECK(admitted->wait(opened, error) == BackendIo::Timeout);
+    CHECK(!opened);
+    run->context->poll();
+    CHECK(run->session->traffic().record_bytes_sent > sent_open);
+    CHECK(run->running() &&
+          run->session->state() == engine::SessionState::Active);
+}
+
 }  // namespace
 }  // namespace yume::embed
 
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
+    if (std::filesystem::is_directory(argv[1])) {
+        yume::embed::test_open_deadline_admission(
+            argv[1], yume::engine::ServiceKind::ByteStream);
+        yume::embed::test_open_deadline_admission(
+            argv[1], yume::engine::ServiceKind::PacketChannel);
+        std::cout << "YTP embedding OPEN admission deadline checks passed\n";
+        return 0;
+    }
     std::ifstream input(argv[1]);
     if (!input) return 2;
     const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};

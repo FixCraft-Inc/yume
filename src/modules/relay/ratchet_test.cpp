@@ -6,13 +6,18 @@
 
 #include "modules/relay/ratchet.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+
+#include "test_support/allocation_failure.hpp"
 
 namespace {
 
@@ -47,6 +52,141 @@ Bytes FromHex(std::string_view hex) {
         out.push_back(static_cast<std::uint8_t>(std::stoi(std::string(hex.substr(i, 2)), nullptr, 16)));
     }
     return out;
+}
+
+constexpr std::uint8_t kRekeyProbeRootByte = 0xd3U;
+constexpr std::size_t kRekeyProbePrefixBytes = 4U + 32U;
+
+struct RekeyAllocation {
+    void* storage{nullptr};
+    std::size_t size{0};
+    bool contains_input{false};
+};
+
+struct RekeyInputProbe {
+    std::array<RekeyAllocation, 32> allocations{};
+    std::size_t observed{0};
+    std::size_t released{0};
+    std::size_t unwiped{0};
+    bool overflow{false};
+    bool fail_after_input{false};
+    bool failed{false};
+};
+
+RekeyInputProbe rekey_probe;
+
+void recognize_rekey_input(RekeyAllocation& allocation) noexcept {
+    if (!allocation.storage || allocation.contains_input) return;
+    const auto* bytes = static_cast<const std::uint8_t*>(allocation.storage);
+    if (bytes[0] == 0U && bytes[1] == 0U && bytes[2] == 0U && bytes[3] == 32U &&
+        std::all_of(
+            bytes + 4U, bytes + kRekeyProbePrefixBytes,
+            [](std::uint8_t byte) { return byte == kRekeyProbeRootByte; })) {
+        allocation.contains_input = true;
+        ++rekey_probe.observed;
+    }
+}
+
+void before_rekey_allocation(std::size_t) {
+    for (auto& allocation : rekey_probe.allocations) {
+        recognize_rekey_input(allocation);
+    }
+    if (rekey_probe.fail_after_input && rekey_probe.observed != 0U &&
+        !rekey_probe.failed) {
+        rekey_probe.failed = true;
+        throw std::bad_alloc();
+    }
+}
+
+void observe_rekey_allocation(void* storage, std::size_t size) {
+    if (size < kRekeyProbePrefixBytes || size > 512U) return;
+    // Initialize the storage before construction so recognition never reads
+    // indeterminate bytes from unrelated allocations or spare capacity.
+    std::memset(storage, 0, size);
+    for (auto& allocation : rekey_probe.allocations) {
+        if (!allocation.storage) {
+            allocation = {storage, size, false};
+            return;
+        }
+    }
+    rekey_probe.overflow = true;
+}
+
+void observe_rekey_release(void* storage) noexcept {
+    if (!storage) return;
+    for (auto& allocation : rekey_probe.allocations) {
+        if (allocation.storage != storage) continue;
+        recognize_rekey_input(allocation);
+        if (allocation.contains_input) {
+            ++rekey_probe.released;
+            const auto* bytes = static_cast<const std::uint8_t*>(storage);
+            if (!std::all_of(bytes, bytes + allocation.size,
+                             [](std::uint8_t byte) { return byte == 0U; })) {
+                ++rekey_probe.unwiped;
+            }
+        }
+        allocation = {};
+        return;
+    }
+}
+
+class RekeyAllocationObserver {
+public:
+    RekeyAllocationObserver() noexcept {
+        yume::test::before_allocate = before_rekey_allocation;
+        yume::test::after_allocate = observe_rekey_allocation;
+        yume::test::before_deallocate = observe_rekey_release;
+    }
+    ~RekeyAllocationObserver() {
+        yume::test::before_allocate = nullptr;
+        yume::test::after_allocate = nullptr;
+        yume::test::before_deallocate = nullptr;
+    }
+    RekeyAllocationObserver(const RekeyAllocationObserver&) = delete;
+    RekeyAllocationObserver& operator=(const RekeyAllocationObserver&) = delete;
+};
+
+void test_rekey_input_wiped_before_release() {
+    // Negative control: ordinary vector growth releases the marked input
+    // without wiping it, which the observer must detect.
+    rekey_probe = {};
+    {
+        RekeyAllocationObserver observer;
+        Bytes unguarded(kRekeyProbePrefixBytes, 0U);
+        unguarded[3] = 32U;
+        std::fill(unguarded.begin() + 4U, unguarded.end(), kRekeyProbeRootByte);
+        yume::test::keep_contents(unguarded.data());
+        unguarded.reserve(2U * kRekeyProbePrefixBytes);
+    }
+    assert(!rekey_probe.overflow && rekey_probe.observed != 0U &&
+           rekey_probe.released == rekey_probe.observed &&
+           rekey_probe.unwiped != 0U);
+
+    DirectionalRatchet source(Direction::ClientToServer,
+                              Filled(32U, kRekeyProbeRootByte));
+    const Bytes kem = Filled(32U, 0x71U);
+    const Bytes x25519 = Filled(32U, 0x72U);
+    const Bytes psk = Filled(32U, 0x73U);
+    for (const bool fail : {false, true}) {
+        rekey_probe = {};
+        rekey_probe.fail_after_input = fail;
+        bool completed = false;
+        {
+            RekeyAllocationObserver observer;
+            try {
+                auto advanced = source.MakeAdvanced(kem, x25519, psk);
+                assert(advanced->epoch() == 1U);
+                completed = true;
+            } catch (const std::bad_alloc&) {
+                assert(fail);
+            }
+        }
+        assert(!rekey_probe.overflow && rekey_probe.observed != 0U &&
+               rekey_probe.released == rekey_probe.observed &&
+               rekey_probe.unwiped == 0U);
+        assert(completed != fail && rekey_probe.failed == fail);
+        assert(source.epoch() == 0U);
+    }
 }
 
 // Known answers from the transport-v2 ratchet this copy came from. The root is
@@ -226,6 +366,7 @@ void TestExactCustomTiming() {
 }  // namespace
 
 int main() {
+    test_rekey_input_wiped_before_release();
     TestDirectionalRoundTripAndReplayRejection();
     TestAadTamperAndTimeBoundary();
     TestByteBoundaryAndEpochAdvance();

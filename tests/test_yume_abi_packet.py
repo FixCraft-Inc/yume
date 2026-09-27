@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import errno
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,24 @@ class TargetV6(Target):
         super().server_bind()
 
 
+def bind_targets() -> tuple[Target, TargetV6]:
+    """Bind one UDP echo target per localhost address family to a shared port.
+
+    UDP connect cannot detect an absent receiver. Both families use the same
+    port so DNS order cannot select a dead target. The kernel picks a port that
+    is free for IPv4 only, and a concurrent test can already hold it on ::1.
+    """
+    for _ in range(16):
+        target4 = Target(("127.0.0.1", 0))
+        try:
+            return target4, TargetV6(("::1", target4.server_address[1]))
+        except OSError as error:
+            target4.server_close()
+            if error.errno != errno.EADDRINUSE:
+                raise
+    raise session.SessionFailure("no UDP port was free on both localhost families")
+
+
 def named(probe: Path, openssl: Path, kit: Path, environment: dict[str, str]) -> None:
     session.provision_kit(kit, "localhost", session.free_port(), environment)
     for relative in ("server/yumed.json", "client/yume.json"):
@@ -103,10 +122,9 @@ def named(probe: Path, openssl: Path, kit: Path, environment: dict[str, str]) ->
 
 def routed(probe: Path, daemon: Path, root: Path, environment: dict[str, str]) -> None:
     with ExitStack() as stack:
-        target4 = stack.enter_context(Target(("127.0.0.1", 0)))
-        # UDP connect cannot detect an absent receiver. Both localhost address
-        # families use the same port so DNS order cannot select a dead target.
-        target6 = stack.enter_context(TargetV6(("::1", target4.server_address[1])))
+        target4, target6 = bind_targets()
+        stack.enter_context(target4)
+        stack.enter_context(target6)
         targets = (target4, target6)
         threads: list[threading.Thread] = []
         server: subprocess.Popen | None = None

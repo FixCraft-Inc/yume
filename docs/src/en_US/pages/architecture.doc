@@ -56,6 +56,11 @@ distinct from terminal close. Its idempotent write shutdown is ordered after
 accepted writes and preserves the read direction; providers that cannot
 implement a genuine half-close fail instead of substituting a full close.
 
+The session engine and native TCP write queues charge each buffer's retained
+capacity to their memory budgets. Wire lengths and flow credit use its logical
+size. Shrinking a buffer does not allocate or return its reserved capacity, so
+a short payload can still exhaust a queue's memory budget.
+
 The native TCP provider uses a shared `AsioExecutionContext`. Its source-level
 factories take that owner; socket adoption uses its concrete executor type.
 The caller runs exactly one execution thread at a time and initiates create,
@@ -194,7 +199,8 @@ share the same session engine.
 Credential parsing uses a private OpenSSL context and passes canonical DER to
 the independent security factory. Admission, traffic access and administrator
 authority remain separate. `yume_private_files` owns the protected-file reader
-shared with the older runtime, without importing BaseFWX.
+shared by credential loading and the module libraries, without importing
+BaseFWX.
 
 Creation validates the mapped session limits and requires capacity for the
 complete 64 KiB AUTH envelope before opening listeners. Static cover loads a
@@ -241,9 +247,12 @@ release old engine handles so they do not consume front-door capacity.
 A server may hand accepting to the endpoint. It keeps a set number of starts
 pending on every listener within that bound, re-arms after each settlement and
 waits a retry delay after a refused or immediately failed start. Manual and
-automatic server starts are exclusive. If a listener stops accepting, or a retry
-cannot be scheduled while its listener has nothing pending, the endpoint closes
-and reports that failure once. The schema-1 ABI backend uses this loop.
+automatic server starts are exclusive. The FrontDoor pauses OS accepts for one
+second after descriptor or memory exhaustion. Other accept failures, or a
+retry timer that cannot be scheduled, close the listener. If a listener stops
+accepting, or an endpoint start retry cannot be scheduled while its listener
+has nothing pending, the endpoint closes and reports that failure once. The
+schema-1 ABI backend uses this loop.
 Client startup has one absolute dial/TLS/carrier/AUTH deadline. A server starts
 its session-creation/AUTH deadline after validated carrier promotion; idle accept
 waiting does not consume that budget. FrontDoor independently bounds connections
@@ -462,8 +471,8 @@ and stream/packet handles own their application I/O lifetimes. Native packet
 handles preserve record boundaries and credit. Development SDK installation is
 a separate opt-in, not an ABI freeze.
 
-The ABI accepts schema-1 documents only. They run the native endpoint through
-`yume_embed` when the provider graph is built, and fail closed otherwise. The
+The ABI accepts schema-1 documents only. Enabling its build also enables the
+complete native provider graph, which `yume_embed` composes. The
 schema-1 backend owns one execution thread per started endpoint and performs
 every engine and provider call on it. Application threads hand requests over
 through allocation-free control tasks. Received records keep their receive

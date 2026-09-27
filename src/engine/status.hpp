@@ -46,6 +46,10 @@ public:
     Status(StatusCode code, std::string_view message = {});
 
     static Status success() noexcept { return {}; }
+    // The code is authoritative. If diagnostic storage cannot be allocated,
+    // return the same code with an empty message.
+    static Status diagnostic(StatusCode code,
+                             std::string_view message = {}) noexcept;
 
     bool ok() const noexcept { return code_ == StatusCode::Ok; }
     StatusCode code() const noexcept { return code_; }

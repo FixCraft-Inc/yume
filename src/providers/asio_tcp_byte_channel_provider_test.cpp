@@ -122,6 +122,14 @@ Buffer make_buffer(std::string_view text,
         limit));
 }
 
+Buffer make_short_buffer(std::size_t retained, char value) {
+    auto buffer = require(Buffer::allocate(retained, retained));
+    buffer.mutable_bytes()[0] = static_cast<std::byte>(value);
+    CHECK(buffer.resize(1U).ok());
+    CHECK(buffer.retained_capacity() > buffer.size());
+    return buffer;
+}
+
 std::string buffer_text(const Buffer& buffer) {
     return std::string(
         reinterpret_cast<const char*>(buffer.bytes().data()), buffer.size());
@@ -1198,6 +1206,153 @@ struct CompletionRecord final {
     }
 };
 
+class WriteStorageProbe final {
+public:
+    explicit WriteStorageProbe(const Buffer& buffer)
+        : storage_(buffer.bytes().data()),
+          previous_(yume::test::before_deallocate) {
+        CHECK(active_ == nullptr);
+        active_ = this;
+        yume::test::before_deallocate = &observe;
+    }
+    WriteStorageProbe(const WriteStorageProbe&) = delete;
+    WriteStorageProbe& operator=(const WriteStorageProbe&) = delete;
+    ~WriteStorageProbe() {
+        yume::test::before_deallocate = previous_;
+        active_ = nullptr;
+    }
+    bool released() const noexcept { return released_; }
+
+private:
+    static void observe(void* storage) noexcept {
+        if (storage == active_->storage_) active_->released_ = true;
+        if (active_->previous_) active_->previous_(storage);
+    }
+
+    inline static thread_local WriteStorageProbe* active_{nullptr};
+    const void* storage_;
+    void (*previous_)(void*) noexcept;
+    bool released_{false};
+};
+
+void test_retained_write_capacity_and_publication() {
+    for (const bool cancel : {false, true}) {
+        auto context =
+            require(AsioExecutionContext::create(ExecutorAffinity(97U)));
+        Buffer first = make_short_buffer(32U * 1024U, 'A');
+        Buffer rejected = make_short_buffer(32U * 1024U, 'X');
+        Buffer retry = make_short_buffer(32U * 1024U, 'B');
+        AsioTcpChannelLimits limits;
+        limits.max_write_bytes = 1U;
+        limits.max_queued_write_bytes = first.retained_capacity();
+        limits.max_queued_write_operations = 4U;
+        auto owner =
+            require(AsioTcpAcceptedChannelOwner::create(context, limits));
+        auto pair = connected_pair(context->executor());
+        auto channel = require(owner->adopt(std::move(pair.first)));
+        std::array<CompletionRecord, 3U> records{};
+        WriteStorageProbe storage(first);
+        bool released_before_callback = false;
+        boost::asio::post(context->executor(), [&]() {
+            channel->async_write(
+                std::move(first), {},
+                [&](Status status, std::size_t transferred) noexcept {
+                    records[0].record(*context, status, transferred);
+                    released_before_callback = storage.released();
+                    // Completion publishes the entire retained-byte budget
+                    // before reentrant admission, on success or cancellation.
+                    channel->async_write(
+                        std::move(retry), {},
+                        [&](Status next_status, std::size_t count) noexcept {
+                            records[2].record(*context, next_status, count);
+                        });
+                });
+            // Both payloads fit the logical write bound. With two retained
+            // allocations only the queue's byte bound refuses this one.
+            channel->async_write(
+                std::move(rejected), {},
+                [&](Status status, std::size_t count) noexcept {
+                    records[1].record(*context, status, count);
+                });
+            if (cancel) channel->cancel();
+        });
+        context->finish();
+        context->run();
+        for (const auto& record : records) {
+            CHECK(record.calls == 1U && record.on_context);
+        }
+        CHECK(records[0].code ==
+              (cancel ? StatusCode::Cancelled : StatusCode::Ok));
+        CHECK(records[0].transferred <= 1U);
+        CHECK(records[1].code == StatusCode::ResourceExhausted &&
+              records[1].transferred == 0U);
+        CHECK(records[2].code == StatusCode::Ok &&
+              records[2].transferred == 1U);
+        CHECK(released_before_callback);
+        if (!cancel) {
+            CHECK(records[0].transferred == 1U);
+            std::array<char, 2U> bytes{};
+            CHECK(boost::asio::read(pair.second, boost::asio::buffer(bytes)) ==
+                  bytes.size());
+            CHECK((bytes == std::array<char, 2U>{'A', 'B'}));
+        }
+        channel.reset();
+        owner.reset();
+        context->run();
+        for (const auto& record : records) CHECK(record.calls == 1U);
+    }
+}
+
+void test_retained_write_capacity_cancelled_queue() {
+    auto context = require(AsioExecutionContext::create(ExecutorAffinity(98U)));
+    Buffer first = make_short_buffer(16U * 1024U, 'A');
+    Buffer second = make_short_buffer(16U * 1024U, 'B');
+    const std::size_t retained =
+        first.retained_capacity() + second.retained_capacity();
+    Buffer retry = make_short_buffer(retained, 'C');
+    AsioTcpChannelLimits limits;
+    limits.max_write_bytes = 1U;
+    limits.max_queued_write_bytes = retained;
+    limits.max_queued_write_operations = 4U;
+    auto owner = require(AsioTcpAcceptedChannelOwner::create(context, limits));
+    auto pair = connected_pair(context->executor());
+    auto channel = require(owner->adopt(std::move(pair.first)));
+    std::array<CompletionRecord, 3U> records{};
+    boost::asio::post(context->executor(), [&]() {
+        channel->async_write(std::move(first), {},
+                             [&](Status status, std::size_t count) noexcept {
+                                 records[0].record(*context, status, count);
+                             });
+        channel->async_write(
+            std::move(second), {},
+            [&](Status status, std::size_t count) noexcept {
+                records[1].record(*context, status, count);
+                // The active write and the queued write must both release
+                // their capacity before this full-budget buffer is admitted.
+                channel->async_write(
+                    std::move(retry), {},
+                    [&](Status next_status, std::size_t transferred) noexcept {
+                        records[2].record(*context, next_status, transferred);
+                    });
+            });
+        channel->cancel();
+    });
+    context->finish();
+    context->run();
+    for (const auto& record : records) {
+        CHECK(record.calls == 1U && record.on_context);
+    }
+    CHECK(records[0].code == StatusCode::Cancelled &&
+          records[0].transferred <= 1U);
+    CHECK(records[1].code == StatusCode::Cancelled &&
+          records[1].transferred == 0U);
+    CHECK(records[2].code == StatusCode::Ok && records[2].transferred == 1U);
+    channel.reset();
+    owner.reset();
+    context->run();
+    for (const auto& record : records) CHECK(record.calls == 1U);
+}
+
 // Fill the sender's bounded kernel queue before adoption so the first async
 // write is still active when cancellation/close runs. The peer never reads.
 void fill_send_queue(AsioTcpSocket& socket) {
@@ -1402,20 +1557,23 @@ void test_initiation_failure_stays_on_context() {
     limits.max_queued_read_operations = 1U;
     limits.max_queued_write_operations = 1U;
     limits.max_queued_read_bytes = 1U;
-    limits.max_queued_write_bytes = 1U;
+    limits.max_queued_write_bytes = 32U * 1024U;
     auto owner = require(AsioTcpAcceptedChannelOwner::create(context, limits));
     auto provider = require(AsioTcpByteChannelProvider::create(
         context, "127.0.0.1", unused_tcp_port()));
     auto pair = connected_pair(context->executor());
     std::unique_ptr<ByteChannel> channel;
     std::array<CompletionRecord, 3U> records{};
-    Buffer write = make_buffer("W");
+    Buffer write = make_short_buffer(limits.max_queued_write_bytes, 'W');
+    WriteStorageProbe write_storage(write);
+    bool released_before_failure = false;
     ByteChannel::ReadCompletion read_completion = [&](Result<Buffer> result) noexcept {
         records[0].record(*context, result.status());
     };
     ByteChannel::WriteCompletion write_completion =
         [&](Status status, std::size_t count) noexcept {
             records[1].record(*context, status, count);
+            released_before_failure = write_storage.released();
         };
     ByteChannelProvider::Completion create_completion =
         [&](Result<std::unique_ptr<ByteChannel>> result) noexcept {
@@ -1432,6 +1590,7 @@ void test_initiation_failure_stays_on_context() {
     CHECK(records[0].calls == 1U);
     CHECK(records[1].calls == 1U);
     CHECK(records[2].calls == 1U);
+    CHECK(released_before_failure);
     for (const auto& record : records) {
         CHECK(record.code == StatusCode::ResourceExhausted);
         CHECK(record.on_context);
@@ -1441,7 +1600,7 @@ void test_initiation_failure_stays_on_context() {
     // subsequent read/write uses the same channel after allocation recovers.
     std::array<CompletionRecord, 2U> reused{};
     bool correct_byte = false;
-    Buffer retry_write = make_buffer("W");
+    Buffer retry_write = make_short_buffer(limits.max_queued_write_bytes, 'W');
     boost::asio::write(pair.second, boost::asio::buffer("R", 1U));
     boost::asio::post(context->executor(), [&]() {
         channel->async_read(1U, {}, [&](Result<Buffer> result) noexcept {
@@ -1490,6 +1649,8 @@ int main() {
         yume::providers::test_connect_deadline_covers_protection_and_attempts();
         yume::providers::test_operation_bounds_cancel_and_close();
         yume::providers::test_submission_operation_and_byte_bounds();
+        yume::providers::test_retained_write_capacity_and_publication();
+        yume::providers::test_retained_write_capacity_cancelled_queue();
         yume::providers::test_create_cancellation_capacity_and_reuse();
         yume::providers::test_execution_context_affinity_and_single_runner();
         yume::providers::test_reserved_control_dispatch_under_sustained_allocation_failure();

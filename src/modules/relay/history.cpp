@@ -47,21 +47,9 @@ constexpr std::size_t kMaxHistoryResultPlaintextBytes = 512U * 1024U;
 constexpr std::size_t kMaxHistoryListItems = 1000U;
 constexpr std::size_t kMaxHistoryFilesPerOperation = 1024U;
 constexpr std::size_t kMaxHistoryDirectoryEntriesPerOperation = 4096U;
-constexpr std::size_t kHistoryRecordFieldCount = 5U;
 
 bool is_valid_history_direction(std::string_view direction) noexcept {
     return direction == "in" || direction == "out";
-}
-
-bool is_valid_history_timestamp(const nlohmann::json& value) {
-    if (!value.is_number_integer()) return false;
-    // JSON text has no signed-integer tag, and nlohmann parses ordinary
-    // non-negative values as unsigned. Accept those only within int64_t so the
-    // subsequent conversion cannot narrow or wrap.
-    return !value.is_number_unsigned() ||
-        value.get<std::uint64_t>() <=
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::int64_t>::max());
 }
 
 std::string safe_component(std::string value) {
@@ -96,18 +84,19 @@ private:
     std::vector<std::uint8_t>& value_;
 };
 
+// Only the append path builds JSON objects. Install this guard while the
+// object is empty and add scalar fields, so clear() never destroys nested
+// containers. nlohmann's general object destructor can allocate a work stack.
 class HistoryJsonWiper {
 public:
     explicit HistoryJsonWiper(nlohmann::json& value) noexcept : value_(value) {}
     ~HistoryJsonWiper() {
-        try {
-            if (value_.is_object() && value_.contains("text") &&
-                value_["text"].is_string()) {
-                wipe_relay_secret(value_["text"].get_ref<std::string&>());
-                value_.erase("text");
+        for (auto& field : value_) {
+            if (auto* text = field.get_ptr<std::string*>()) {
+                wipe_relay_secret(*text);
             }
-        } catch (...) {
         }
+        value_.clear();
     }
     HistoryJsonWiper(const HistoryJsonWiper&) = delete;
     HistoryJsonWiper& operator=(const HistoryJsonWiper&) = delete;
@@ -115,6 +104,118 @@ private:
     nlohmann::json& value_;
 };
 
+// Parse directly into an entry whose text already has a wipe guard. Refusing
+// containers at the first nested token bounds parser depth and avoids a DOM
+// whose partial construction or destruction could allocate during cleanup.
+// The stored schema is closed, including duplicate fields. Changing its fields
+// requires an explicit format/migration decision rather than a permissive read.
+class HistoryRecordReader final : public nlohmann::json_sax<nlohmann::json> {
+public:
+    explicit HistoryRecordReader(ChatHistoryEntry& item) noexcept
+        : item_(item) {}
+
+    bool null() override { return false; }
+    bool boolean(bool) override { return false; }
+    bool number_float(number_float_t, const string_t&) override {
+        return false;
+    }
+    bool binary(binary_t&) override { return false; }
+    bool start_array(std::size_t) override { return false; }
+    bool end_array() override { return false; }
+    bool parse_error(std::size_t, const std::string&,
+                     const nlohmann::detail::exception&) override {
+        // Library diagnostics may contain decrypted tokens.
+        return false;
+    }
+
+    bool number_integer(number_integer_t value) override {
+        if (pending_ != Field::Timestamp) return false;
+        item_.ts_ms = value;
+        pending_ = Field::None;
+        return true;
+    }
+
+    bool number_unsigned(number_unsigned_t value) override {
+        if (value > static_cast<number_unsigned_t>(
+                        std::numeric_limits<std::int64_t>::max())) {
+            return false;
+        }
+        return number_integer(static_cast<number_integer_t>(value));
+    }
+
+    bool string(string_t& value) override {
+        switch (pending_) {
+            case Field::PeerId:
+                item_.peer_id.swap(value);
+                break;
+            case Field::PeerName:
+                item_.peer_name.swap(value);
+                break;
+            case Field::Direction:
+                item_.direction.swap(value);
+                break;
+            case Field::Text:
+                item_.text.swap(value);
+                break;
+            default:
+                return false;
+        }
+        pending_ = Field::None;
+        return true;
+    }
+
+    bool start_object(std::size_t) override {
+        if (started_) return false;
+        started_ = true;
+        return true;
+    }
+
+    bool key(string_t& value) override {
+        if (!started_ || finished_ || pending_ != Field::None) return false;
+        if (value == "ts_ms")
+            pending_ = Field::Timestamp;
+        else if (value == "peer_id")
+            pending_ = Field::PeerId;
+        else if (value == "peer_name")
+            pending_ = Field::PeerName;
+        else if (value == "direction")
+            pending_ = Field::Direction;
+        else if (value == "text")
+            pending_ = Field::Text;
+        else
+            return false;
+        const auto bit = static_cast<unsigned>(pending_);
+        if ((seen_ & bit) != 0U) return false;
+        seen_ |= bit;
+        return true;
+    }
+
+    bool end_object() override {
+        if (!started_ || finished_ || pending_ != Field::None ||
+            seen_ != kAllFields || item_.peer_id.empty() ||
+            !is_valid_history_direction(item_.direction)) {
+            return false;
+        }
+        finished_ = true;
+        return true;
+    }
+
+private:
+    enum class Field : unsigned {
+        None = 0U,
+        Timestamp = 1U << 0U,
+        PeerId = 1U << 1U,
+        PeerName = 1U << 2U,
+        Direction = 1U << 3U,
+        Text = 1U << 4U,
+    };
+    static constexpr unsigned kAllFields = (1U << 5U) - 1U;
+    ChatHistoryEntry& item_;
+    Field pending_{Field::None};
+    unsigned seen_{0U};
+    bool started_{false};
+    bool finished_{false};
+};
 
 class FileDescriptor {
 public:
@@ -481,14 +582,16 @@ void HistoryStore::append_chat(const ChatHistoryEntry& entry) {
     }
     std::lock_guard<std::mutex> lock(mutex_);
     try {
-        nlohmann::json json{
-            {"ts_ms", entry.ts_ms},
-            {"peer_id", entry.peer_id},
-            {"peer_name", entry.peer_name},
-            {"direction", entry.direction},
-            {"text", entry.text},
-        };
+        auto json = nlohmann::json::object();
         HistoryJsonWiper json_wiper{json};
+        json["ts_ms"] = entry.ts_ms;
+        json["peer_id"] = entry.peer_id;
+        json["peer_name"] = entry.peer_name;
+        json["direction"] = entry.direction;
+        // Register the field before copying plaintext into its storage.
+        auto& text = json["text"];
+        text = std::string{};
+        text.get_ref<std::string&>() = entry.text;
         std::string plain = json.dump();
         StringWiper plain_wiper{plain};
         // Never persist a record that this implementation must reject when it
@@ -581,45 +684,25 @@ HistoryListResult HistoryStore::list_chat(
                         throw std::runtime_error(
                             "relay history record exceeds the safe result limit");
                     }
-                    auto json = nlohmann::json::parse(plain);
-                    HistoryJsonWiper json_wiper{json};
-                    // This protected on-disk record is a closed schema. Any
-                    // future field change needs an explicit version/migration,
-                    // not a permissive decoder that silently changes meaning.
-                    if (!json.is_object() ||
-                        json.size() != kHistoryRecordFieldCount ||
-                        !json.contains("ts_ms") ||
-                        !is_valid_history_timestamp(json["ts_ms"]) ||
-                        !json.contains("peer_id") ||
-                        !json["peer_id"].is_string() ||
-                        json["peer_id"].get_ref<const std::string&>().empty() ||
-                        !json.contains("peer_name") ||
-                        !json["peer_name"].is_string() ||
-                        !json.contains("direction") ||
-                        !json["direction"].is_string() ||
-                        !is_valid_history_direction(
-                            json["direction"]
-                                .get_ref<const std::string&>()) ||
-                        !json.contains("text") ||
-                        !json["text"].is_string()) {
+                    ChatHistoryEntry item;
+                    StringWiper item_text_wiper{item.text};
+                    HistoryRecordReader reader(item);
+                    if (!nlohmann::json::sax_parse(plain, &reader)) {
                         throw std::runtime_error(
                             "relay history record schema is invalid");
                     }
-                    ChatHistoryEntry item;
-                    item.ts_ms = json["ts_ms"].get<std::int64_t>();
-                    item.peer_id = json["peer_id"].get<std::string>();
-                    item.peer_name = json["peer_name"].get<std::string>();
-                    item.direction = json["direction"].get<std::string>();
-                    item.text = json["text"].get<std::string>();
-                    StringWiper item_text_wiper{item.text};
                     if (chat_path_for_peer(item.peer_id).filename() != name) {
                         throw std::runtime_error(
                             "relay history record does not match its log");
                     }
                     const RecordKey key{item.ts_ms, sequence++};
+                    // Allocate the owner before moving text out of its guard.
+                    // A failed node allocation must leave item_text_wiper
+                    // responsible for the original plaintext buffer.
+                    auto retained = newest.emplace(key, RetainedRecord{});
+                    retained->second.item = std::move(item);
+                    retained->second.plaintext_bytes = plain.size();
                     plaintext_bytes_retained += plain.size();
-                    newest.emplace(
-                        key, RetainedRecord{std::move(item), plain.size()});
                     while (newest.size() > limit ||
                            plaintext_bytes_retained >
                                kMaxHistoryResultPlaintextBytes) {

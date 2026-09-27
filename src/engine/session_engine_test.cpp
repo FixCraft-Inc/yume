@@ -613,11 +613,12 @@ public:
             std::move(record), CarrierCredit(size,
                 [this](std::size_t bytes) { released += bytes; }))));
     }
-    void complete_send() {
+    void complete_send(Status status = Status::success()) {
         CHECK(held_send_);
         auto completion = std::move(held_send_);
         held_send_ = {};
-        completion(Status::success(), held_send_bytes_);
+        const std::size_t transferred = status.ok() ? held_send_bytes_ : 0U;
+        completion(std::move(status), transferred);
     }
     std::vector<Buffer> sent;
     std::size_t released{0U};
@@ -1188,6 +1189,159 @@ std::vector<std::uint32_t> sent_data_streams(
     return ids;
 }
 
+Buffer shrunk_write_buffer(std::size_t capacity) {
+    Buffer buffer = require(Buffer::allocate(capacity, capacity));
+    buffer.mutable_bytes()[0] = std::byte{0x5a};
+    CHECK(buffer.resize(1U).ok());
+    CHECK(buffer.size() == 1U && buffer.retained_capacity() == capacity);
+    return buffer;
+}
+
+void test_pending_write_capacity_admission_and_release() {
+    for (const bool cancel_first : {false, true}) {
+        SessionLimits limits;
+        limits.max_stream_queued_bytes = 32U;
+        std::array<int, 2U> completions{};
+        std::array<StatusCode, 2U> codes{};
+        std::array<std::size_t, 2U> transferred{99U, 99U};
+        int rejected = 0;
+        bool rejections_ok = true;
+        CancellationSource cancellation;
+        TestSession session(true, false, limits);
+        session.start_to_active();
+        session.open_peer_stream();
+        const std::size_t sent_before = session.carrier->sent.size();
+        std::uint64_t sequence = 2U;
+        auto reject = [&](Status status, std::size_t bytes) {
+            ++rejected;
+            rejections_ok = rejections_ok &&
+                            status.code() == StatusCode::ResourceExhausted &&
+                            bytes == 0U;
+        };
+
+        // A one-byte payload can retain more than the entire stream budget.
+        session.handler->responder->async_write(shrunk_write_buffer(33U), {},
+                                                reject);
+        CHECK(rejected == 1 && rejections_ok);
+        session.handler->responder->async_write(
+            shrunk_write_buffer(32U), cancellation.token(),
+            [&](Status status, std::size_t bytes) {
+                ++completions[0];
+                codes[0] = status.code();
+                transferred[0] = bytes;
+            });
+        CHECK(completions[0] == 0);
+        session.handler->responder->async_write(shrunk_write_buffer(1U), {},
+                                                reject);
+        CHECK(rejected == 2 && rejections_ok);
+
+        if (cancel_first) {
+            CHECK(cancellation.cancel());
+        } else {
+            // Two bytes of peer credit must send two one-byte payloads even
+            // though each allocation consumes the full memory reservation.
+            grant_competing_credit(session, sequence, 0U, 2U);
+            grant_competing_credit(session, sequence, 1U, 2U);
+        }
+        CHECK(completions[0] == 1);
+        CHECK(codes[0] ==
+              (cancel_first ? StatusCode::Cancelled : StatusCode::Ok));
+        CHECK(transferred[0] == (cancel_first ? 0U : 1U));
+
+        session.handler->responder->async_write(
+            shrunk_write_buffer(32U), {},
+            [&](Status status, std::size_t bytes) {
+                ++completions[1];
+                codes[1] = status.code();
+                transferred[1] = bytes;
+            });
+        if (cancel_first) {
+            CHECK(completions[1] == 0);
+            grant_competing_credit(session, sequence, 0U, 1U);
+            grant_competing_credit(session, sequence, 1U, 1U);
+        }
+        CHECK(completions[1] == 1 && codes[1] == StatusCode::Ok);
+        CHECK(transferred[1] == 1U);
+        const std::size_t sent = cancel_first ? 1U : 2U;
+        CHECK(session.carrier->sent.size() == sent_before + sent);
+        CHECK(session.engine->traffic().payload_bytes_sent == sent);
+        for (std::size_t index = 0U; index < sent; ++index) {
+            const auto record =
+                protected_record(session.carrier->sent[sent_before + index]);
+            CHECK(record.header.type == ytp1::RecordType::Data);
+            CHECK(record.payload.size() == 1U && record.payload[0] == 0x5aU);
+        }
+        cancellation.cancel();
+        session.engine->stop();
+        CHECK((completions == std::array<int, 2U>{1, 1}));
+    }
+}
+
+void test_pending_write_capacity_is_shared_across_streams() {
+    SessionLimits limits;
+    limits.max_security_overhead = 0U;
+    const std::size_t control_reserve = 2U * (ytp1::kFrameHeaderSize + 4U) +
+                                        16U + ytp1::kRekeyInitMessageBytes +
+                                        ytp1::kRekeyAckMessageBytes;
+    constexpr std::size_t ordinary_budget = 512U;
+    limits.max_queued_bytes = control_reserve + ordinary_budget;
+    limits.max_stream_queued_bytes = ordinary_budget;
+    std::array<int, 4U> completions{};
+    std::array<StatusCode, 4U> codes{};
+    std::array<std::size_t, 4U> transferred{99U, 99U, 99U, 99U};
+    int rejected = 0;
+    bool rejection_ok = false;
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    std::uint64_t sequence = 1U;
+    auto first = open_competing_stream(session, 1U, sequence);
+    auto second = open_competing_stream(session, 3U, sequence);
+    auto third = open_competing_stream(session, 5U, sequence);
+    auto completion = [&](std::size_t index) {
+        return [&, index](Status status, std::size_t bytes) {
+            ++completions[index];
+            codes[index] = status.code();
+            transferred[index] = bytes;
+        };
+    };
+    first->async_write(shrunk_write_buffer(ordinary_budget / 2U), {},
+                       completion(0U));
+    second->async_write(shrunk_write_buffer(ordinary_budget / 2U), {},
+                        completion(1U));
+    CHECK(completions[0] == 0 && completions[1] == 0);
+    third->async_write(
+        shrunk_write_buffer(1U), {}, [&](Status status, std::size_t bytes) {
+            ++rejected;
+            rejection_ok =
+                status.code() == StatusCode::ResourceExhausted && bytes == 0U;
+        });
+    CHECK(rejected == 1 && rejection_ok);
+
+    // Removing one stream releases its full allocation for another stream.
+    first->close(Status(StatusCode::Cancelled));
+    CHECK(session.engine->state() == SessionState::Active);
+    CHECK(completions[0] == 1 && codes[0] == StatusCode::Cancelled);
+    CHECK(transferred[0] == 0U);
+    third->async_write(shrunk_write_buffer(ordinary_budget / 2U), {},
+                       completion(2U));
+    CHECK(completions[2] == 0);
+    grant_competing_credit(session, sequence, 0U, 2U);
+    grant_competing_credit(session, sequence, 3U, 1U);
+    grant_competing_credit(session, sequence, 5U, 1U);
+    CHECK(completions[1] == 1 && completions[2] == 1);
+    CHECK(codes[1] == StatusCode::Ok && codes[2] == StatusCode::Ok);
+    CHECK(transferred[1] == 1U && transferred[2] == 1U);
+    CHECK(session.engine->traffic().payload_bytes_sent == 2U);
+
+    // Publication must return both streams' reservations to the shared pool.
+    third->async_write(shrunk_write_buffer(ordinary_budget), {},
+                       completion(3U));
+    CHECK(completions[3] == 0);
+    session.engine->stop();
+    CHECK((completions == std::array<int, 4U>{1, 1, 1, 1}));
+    CHECK(codes[3] == StatusCode::Cancelled && transferred[3] == 0U);
+}
+
 void test_competing_streams_rotate_across_credit_updates() {
     TestSession session;
     session.start_to_active();
@@ -1420,6 +1574,497 @@ void test_pending_read_settled_after_allocation_failure() {
 
     session.engine->stop();
     CHECK(completions == 1);
+}
+
+void test_stream_registration_allocation_failures() {
+    const std::array<std::byte, 4U> data{};
+    for (const bool sustained : {false, true}) {
+        for (const bool writing : {false, true}) {
+            bool completed_sweep = false;
+            std::size_t failures = 0U;
+            for (std::size_t nth = 1U; nth <= 32U; ++nth) {
+                SessionLimits limits;
+                limits.max_stream_queued_bytes = data.size();
+                TestSession session(true, false, limits);
+                session.start_to_active();
+                session.open_peer_stream();
+                CancellationSource cancellation;
+                Buffer payload = copy_bytes(data);
+                int completions = 0;
+                StatusCode code = StatusCode::Ok;
+                std::size_t transferred = 99U;
+                StreamResponder::ReadCompletion read = [&](auto result) {
+                    ++completions;
+                    code = result.status().code();
+                };
+                StreamResponder::WriteCompletion write =
+                    [&](Status status, std::size_t bytes) {
+                        ++completions;
+                        code = status.code();
+                        transferred = bytes;
+                    };
+                bool fired = false;
+                {
+                    test_allocation_failure::Scope failure(nth, sustained);
+                    if (writing) {
+                        session.handler->responder->async_write(
+                            std::move(payload), cancellation.token(),
+                            std::move(write));
+                    } else {
+                        session.handler->responder->async_read(
+                            cancellation.token(), std::move(read));
+                    }
+                    fired = failure.fired();
+                }
+                CHECK(completions == (fired ? 1 : 0));
+                if (fired) CHECK(code == StatusCode::ResourceExhausted);
+                CHECK(cancellation.cancel());
+                CHECK(completions == 1);
+                CHECK(code == (fired ? StatusCode::ResourceExhausted
+                                     : StatusCode::Cancelled));
+                if (writing) CHECK(transferred == 0U);
+                CHECK(session.engine->state() == SessionState::Active);
+
+                // The failed registration must release the read slot or the
+                // entire write reservation before calling application code.
+                int replacement = 0;
+                bool replacement_ok = false;
+                if (writing) {
+                    session.handler->responder->async_write(
+                        copy_bytes(data), {},
+                        [&](Status status, std::size_t bytes) {
+                            ++replacement;
+                            replacement_ok =
+                                status.ok() && bytes == data.size();
+                        });
+                    session.carrier->deliver(protected_wire(
+                        0U, 2U,
+                        credit_frame(ytp1::RecordType::ConnectionCredit, 0U,
+                                     data.size())));
+                    session.carrier->deliver(protected_wire(
+                        0U, 3U,
+                        credit_frame(ytp1::RecordType::StreamCredit, 1U,
+                                     data.size())));
+                } else {
+                    session.handler->responder->async_read(
+                        {}, [&](auto result) {
+                            ++replacement;
+                            replacement_ok =
+                                result.ok() &&
+                                result.value().payload().size() == data.size();
+                        });
+                    session.carrier->deliver(protected_wire(
+                        0U, 2U, frame(ytp1::RecordType::Data, 1U, data)));
+                }
+                CHECK(replacement == 1 && replacement_ok);
+                session.engine->stop();
+                CHECK(completions == 1 && replacement == 1);
+                if (!fired) {
+                    completed_sweep = true;
+                    break;
+                }
+                ++failures;
+            }
+            CHECK(completed_sweep && failures != 0U);
+        }
+    }
+}
+
+void test_stream_cancellation_under_allocation_failure() {
+    const std::array<std::byte, 4U> data{};
+    for (const bool sustained : {false, true}) {
+        for (std::size_t nth = 1U; nth <= 4U; ++nth) {
+            TestSession session;
+            session.start_to_active();
+            session.open_peer_stream();
+            CancellationSource cancellation;
+            std::array<int, 2U> completions{};
+            std::array<StatusCode, 2U> codes{};
+            std::size_t transferred = 99U;
+            session.handler->responder->async_read(
+                cancellation.token(), [&](auto result) {
+                    ++completions[0];
+                    codes[0] = result.status().code();
+                });
+            session.handler->responder->async_write(
+                copy_bytes(data), cancellation.token(),
+                [&](Status status, std::size_t bytes) {
+                    ++completions[1];
+                    codes[1] = status.code();
+                    transferred = bytes;
+                });
+            bool cancelled = false;
+            {
+                test_allocation_failure::Scope failure(nth, sustained);
+                cancelled = cancellation.cancel();
+            }
+            CHECK(cancelled);
+            CHECK((completions == std::array<int, 2U>{1, 1}));
+            CHECK(codes[0] == StatusCode::Cancelled &&
+                  codes[1] == StatusCode::Cancelled);
+            CHECK(transferred == 0U);
+            CHECK(session.engine->state() == SessionState::Active);
+            CHECK(!cancellation.cancel());
+            session.engine->stop();
+            CHECK((completions == std::array<int, 2U>{1, 1}));
+        }
+    }
+}
+
+void test_live_write_publication_allocation_failures() {
+    const std::array<std::byte, 4U> data{};
+    for (const bool sustained : {false, true}) {
+        bool completed_sweep = false;
+        std::size_t recoverable_failures = 0U;
+        std::size_t terminal_failures = 0U;
+        for (std::size_t nth = 1U; nth <= 64U; ++nth) {
+            SessionLimits limits;
+            limits.max_stream_queued_bytes = data.size();
+            TestSession session(true, false, limits);
+            session.start_to_active();
+            session.open_peer_stream();
+            session.carrier->deliver(
+                protected_wire(0U, 2U,
+                               credit_frame(ytp1::RecordType::ConnectionCredit,
+                                            0U, data.size())));
+            session.carrier->deliver(protected_wire(
+                0U, 3U,
+                credit_frame(ytp1::RecordType::StreamCredit, 1U, data.size())));
+            session.carrier->sent.reserve(32U);
+            session.trace->sealed.reserve(32U);
+            const std::size_t sent_before = session.carrier->sent.size();
+            Buffer payload = copy_bytes(data);
+            int completions = 0;
+            int closed = 0;
+            bool notice_after_write = false;
+            bool closed_before_completion = false;
+            SessionState completion_state = SessionState::Created;
+            StatusCode code = StatusCode::Ok;
+            std::size_t transferred = 99U;
+            StreamResponder::WriteCompletion completion =
+                [&](Status status, std::size_t bytes) {
+                    ++completions;
+                    closed_before_completion = closed != 0;
+                    completion_state = session.engine->state();
+                    code = status.code();
+                    transferred = bytes;
+                };
+            CHECK(session.engine
+                      ->notify_when_closed([&](Status) {
+                          ++closed;
+                          notice_after_write = completions == 1;
+                      })
+                      .ok());
+            bool fired = false;
+            {
+                test_allocation_failure::Scope failure(nth, sustained);
+                session.handler->responder->async_write(std::move(payload), {},
+                                                        std::move(completion));
+                fired = failure.fired();
+            }
+            CHECK(completions == 1);
+            CHECK(!closed_before_completion);
+            if (!fired) {
+                CHECK(code == StatusCode::Ok && transferred == data.size());
+                completed_sweep = true;
+            } else if (session.engine->state() == SessionState::Active) {
+                CHECK(code == StatusCode::ResourceExhausted &&
+                      transferred == 0U);
+                CHECK(session.carrier->sent.size() == sent_before);
+                ++recoverable_failures;
+                int replacement = 0;
+                bool replacement_ok = false;
+                // No new credit: rejection before publication must return
+                // both reservations and leave the publisher able to run.
+                session.handler->responder->async_write(
+                    copy_bytes(data), {},
+                    [&](Status status, std::size_t bytes) {
+                        ++replacement;
+                        replacement_ok = status.ok() && bytes == data.size();
+                    });
+                CHECK(replacement == 1 && replacement_ok);
+                CHECK(session.handler->responder->shutdown_write().ok());
+                CHECK(session.carrier->sent.size() == sent_before + 2U);
+                CHECK(
+                    protected_record_type(session.carrier->sent[sent_before]) ==
+                    ytp1::RecordType::Data);
+                CHECK(protected_record_type(
+                          session.carrier->sent[sent_before + 1U]) ==
+                      ytp1::RecordType::Close);
+            } else {
+                CHECK(session.engine->state() == SessionState::Failed);
+                CHECK(completion_state == SessionState::Failed);
+                CHECK(code != StatusCode::Ok && transferred == 0U);
+                CHECK(session.trace->cancelled && session.carrier->closed);
+                CHECK(closed == 1 && notice_after_write);
+                ++terminal_failures;
+            }
+            session.engine->stop();
+            CHECK(completions == 1);
+            CHECK(closed == 1 && notice_after_write);
+            if (!fired) break;
+        }
+        CHECK(completed_sweep);
+        CHECK(recoverable_failures != 0U && terminal_failures != 0U);
+    }
+}
+
+void test_queue_refusal_survives_diagnostic_allocation_failure() {
+    for (const bool fail_diagnostic : {false, true}) {
+        SessionLimits limits;
+        limits.max_security_overhead = 0U;
+        const std::size_t control_reserve = 2U * (ytp1::kFrameHeaderSize + 4U) +
+                                            16U + ytp1::kRekeyInitMessageBytes +
+                                            ytp1::kRekeyAckMessageBytes;
+        constexpr std::size_t kOrdinaryBudget = 512U;
+        constexpr std::size_t kPayloadBytes = 32U;
+        constexpr std::size_t kWireOverhead = ytp1::kFrameHeaderSize + 16U;
+        constexpr std::size_t kHeldPayloadBytes =
+            kOrdinaryBudget - kWireOverhead - kPayloadBytes;
+        limits.max_queued_bytes = control_reserve + kOrdinaryBudget;
+        limits.max_stream_queued_bytes = kOrdinaryBudget;
+        TestSession session(true, false, limits);
+        session.start_to_active();
+        session.open_peer_stream();
+        std::uint64_t sequence = 2U;
+        grant_competing_credit(session, sequence, 0U,
+                               kHeldPayloadBytes + kPayloadBytes);
+        grant_competing_credit(session, sequence, 1U,
+                               kHeldPayloadBytes + kPayloadBytes);
+        session.carrier->hold_sends = true;
+        int held_completions = 0;
+        bool held_ok = false;
+        session.handler->responder->async_write(
+            require(Buffer::allocate(kHeldPayloadBytes, kHeldPayloadBytes)), {},
+            [&](Status status, std::size_t bytes) {
+                ++held_completions;
+                held_ok = status.ok() && bytes == kHeldPayloadBytes;
+            });
+        CHECK(held_completions == 0);
+        const auto sealed_before = session.trace->sealed.size();
+        const auto token_before = session.trace->sealed.back();
+        auto payload = require(Buffer::allocate(kPayloadBytes, kPayloadBytes));
+        int refused = 0;
+        bool refusal_ok = false;
+        bool empty_diagnostic = false;
+        StreamResponder::WriteCompletion completion = [&](Status status,
+                                                          std::size_t bytes) {
+            ++refused;
+            refusal_ok =
+                status.code() == StatusCode::ResourceExhausted && bytes == 0U;
+            empty_diagnostic = status.message().empty();
+        };
+        // The payload fits admission, but its wire overhead cannot fit until
+        // the held send completes. Refusal consumes neither a token nor credit.
+        if (fail_diagnostic) {
+            constexpr std::string_view kRefusal =
+                "session outbound queue is full";
+            test_allocation_failure::fail_once_for_size(kRefusal.size() + 1U);
+        }
+        session.handler->responder->async_write(std::move(payload), {},
+                                                std::move(completion));
+        CHECK(!test_allocation_failure::armed());
+        CHECK(refused == 1 && refusal_ok);
+        CHECK(empty_diagnostic == fail_diagnostic);
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(held_completions == 0);
+        CHECK(session.trace->sealed.size() == sealed_before);
+
+        session.carrier->hold_sends = false;
+        session.carrier->complete_send();
+        CHECK(held_completions == 1 && held_ok);
+        int replacement = 0;
+        bool replacement_ok = false;
+        session.handler->responder->async_write(
+            require(Buffer::allocate(kPayloadBytes, kPayloadBytes)), {},
+            [&](Status status, std::size_t bytes) {
+                ++replacement;
+                replacement_ok = status.ok() && bytes == kPayloadBytes;
+            });
+        CHECK(replacement == 1 && replacement_ok);
+        CHECK((session.trace->sealed.back() ==
+               RecordKeyToken{token_before.epoch, token_before.sequence + 1U}));
+        CHECK(session.engine->traffic().payload_bytes_sent ==
+              kHeldPayloadBytes + kPayloadBytes);
+        session.engine->stop();
+        CHECK(refused == 1 && held_completions == 1 && replacement == 1);
+    }
+}
+
+void test_live_write_inline_completion_reentry() {
+    const std::array<std::byte, 4U> data{};
+    for (const bool stop_in_completion : {false, true}) {
+        TestSession session;
+        session.start_to_active();
+        session.open_peer_stream();
+        session.carrier->deliver(protected_wire(
+            0U, 2U,
+            credit_frame(ytp1::RecordType::ConnectionCredit, 0U, data.size())));
+        session.carrier->deliver(protected_wire(
+            0U, 3U,
+            credit_frame(ytp1::RecordType::StreamCredit, 1U, data.size())));
+        const std::size_t sent_before = session.carrier->sent.size();
+        const std::weak_ptr<SessionEngine> lifetime = session.engine;
+        int completions = 0;
+        bool completion_ok = false;
+        bool shutdown_ok = false;
+        bool fin_waited = false;
+        bool alive_in_completion = false;
+        bool callback_finished = false;
+        int closed = 0;
+        bool notice_after_callback = false;
+        CHECK(session.engine
+                  ->notify_when_closed([&](Status) {
+                      ++closed;
+                      notice_after_callback =
+                          callback_finished && completions == 1;
+                  })
+                  .ok());
+        session.handler->responder->async_write(
+            copy_bytes(data), {}, [&](Status status, std::size_t bytes) {
+                ++completions;
+                completion_ok = status.ok() && bytes == data.size();
+                shutdown_ok = session.handler->responder->shutdown_write().ok();
+                fin_waited = session.carrier->sent.size() == sent_before + 1U;
+                if (stop_in_completion) {
+                    session.engine->stop();
+                    session.engine.reset();
+                }
+                alive_in_completion = !lifetime.expired();
+                callback_finished = true;
+            });
+        CHECK(completions == 1 && completion_ok && shutdown_ok && fin_waited);
+        CHECK(alive_in_completion);
+        if (stop_in_completion) {
+            CHECK(lifetime.expired() && session.trace->cancelled);
+        } else {
+            CHECK(session.carrier->sent.size() == sent_before + 2U);
+            CHECK(protected_record_type(session.carrier->sent[sent_before]) ==
+                  ytp1::RecordType::Data);
+            CHECK(protected_record_type(
+                      session.carrier->sent[sent_before + 1U]) ==
+                  ytp1::RecordType::Close);
+            session.engine->stop();
+        }
+        CHECK(completions == 1);
+        CHECK(closed == 1 && notice_after_callback);
+    }
+}
+
+void test_terminal_responder_allocation_failures() {
+    const std::array<std::byte, 4U> data{};
+    for (const bool sustained : {false, true}) {
+        for (const bool expired : {false, true}) {
+            TestSession session;
+            session.start_to_active();
+            session.open_peer_stream();
+            session.engine->stop();
+            if (expired) session.engine.reset();
+            CancellationSource cancellation;
+            cancellation.cancel();
+            // A canceled token reaches the expired-owner fallback in read.
+            const auto token =
+                expired ? cancellation.token() : CancellationToken{};
+            Buffer payload = copy_bytes(data);
+            std::array<int, 2U> completions{};
+            std::array<StatusCode, 2U> codes{};
+            std::size_t transferred = 99U;
+            StreamResponder::ReadCompletion read = [&](auto result) {
+                ++completions[0];
+                codes[0] = result.status().code();
+            };
+            StreamResponder::WriteCompletion write = [&](Status status,
+                                                         std::size_t bytes) {
+                ++completions[1];
+                codes[1] = status.code();
+                transferred = bytes;
+            };
+            StatusCode shutdown_code = StatusCode::Ok;
+            {
+                test_allocation_failure::Scope failure(1U, sustained);
+                session.handler->responder->async_read(token, std::move(read));
+            }
+            {
+                test_allocation_failure::Scope failure(1U, sustained);
+                session.handler->responder->async_write(std::move(payload), {},
+                                                        std::move(write));
+            }
+            {
+                test_allocation_failure::Scope failure(1U, sustained);
+                shutdown_code =
+                    session.handler->responder->shutdown_write().code();
+            }
+            CHECK((completions == std::array<int, 2U>{1, 1}));
+            CHECK(codes[0] == StatusCode::Closed &&
+                  codes[1] == StatusCode::Closed);
+            CHECK(transferred == 0U && shutdown_code == StatusCode::Closed);
+        }
+    }
+}
+
+void test_carrier_failure_settles_write_before_close_notice() {
+    const std::array<std::byte, 4U> data{};
+    for (const bool sustained : {false, true}) {
+        TestSession session;
+        session.start_to_active();
+        session.open_peer_stream();
+        session.carrier->deliver(protected_wire(
+            0U, 2U,
+            credit_frame(ytp1::RecordType::ConnectionCredit, 0U, data.size())));
+        session.carrier->deliver(protected_wire(
+            0U, 3U,
+            credit_frame(ytp1::RecordType::StreamCredit, 1U, data.size())));
+        session.carrier->hold_sends = true;
+        int writes = 0;
+        int reentries = 0;
+        int notices = 0;
+        bool failed_before_callback = false;
+        bool callback_finished = false;
+        bool notice_after_callback = false;
+        StatusCode write_code = StatusCode::Ok;
+        StatusCode reentry_code = StatusCode::Ok;
+        StatusCode notice_code = StatusCode::Ok;
+        std::size_t transferred = 99U;
+        Buffer reentry_payload = copy_bytes(data);
+        StreamResponder::WriteCompletion reentry = [&](Status status,
+                                                       std::size_t) {
+            ++reentries;
+            reentry_code = status.code();
+        };
+        CHECK(session.engine
+                  ->notify_when_closed([&](Status status) {
+                      ++notices;
+                      notice_code = status.code();
+                      notice_after_callback =
+                          callback_finished && writes == 1 && reentries == 1;
+                  })
+                  .ok());
+        session.handler->responder->async_write(
+            copy_bytes(data), {}, [&](Status status, std::size_t bytes) {
+                ++writes;
+                write_code = status.code();
+                transferred = bytes;
+                failed_before_callback =
+                    session.engine->state() == SessionState::Failed;
+                session.handler->responder->async_write(
+                    std::move(reentry_payload), {}, std::move(reentry));
+                callback_finished = true;
+            });
+        CHECK(writes == 0 && notices == 0);
+        Status reason(StatusCode::Internal, std::string(512U, 'x'));
+        {
+            test_allocation_failure::Scope failure(1U, sustained);
+            session.carrier->complete_send(std::move(reason));
+        }
+        CHECK(writes == 1 && write_code == StatusCode::Internal &&
+              transferred == 0U);
+        CHECK(failed_before_callback);
+        CHECK(reentries == 1 && reentry_code == StatusCode::Closed);
+        CHECK(notices == 1 && notice_code == StatusCode::Internal &&
+              notice_after_callback);
+        session.engine->stop();
+        CHECK(writes == 1 && reentries == 1 && notices == 1);
+    }
 }
 
 void test_session_closed_notification() {
@@ -2740,6 +3385,8 @@ void run_test() {
     test_authenticated_peer_is_available_only_while_active();
     test_termination_overrides_an_earlier_fin();
     test_partial_credit_does_not_reorder_queued_writes();
+    test_pending_write_capacity_admission_and_release();
+    test_pending_write_capacity_is_shared_across_streams();
     test_competing_streams_rotate_across_credit_updates();
     test_competing_streams_skip_stalled_reader();
     test_competing_small_writes_cannot_take_reserved_connection_credit();
@@ -2748,6 +3395,13 @@ void run_test() {
     test_stop_retains_engine_through_owner_releasing_callbacks();
     test_session_closed_notification();
     test_pending_read_settled_after_allocation_failure();
+    test_stream_registration_allocation_failures();
+    test_stream_cancellation_under_allocation_failure();
+    test_live_write_publication_allocation_failures();
+    test_queue_refusal_survives_diagnostic_allocation_failure();
+    test_live_write_inline_completion_reentry();
+    test_terminal_responder_allocation_failures();
+    test_carrier_failure_settles_write_before_close_notice();
     test_stop_and_destruction_under_allocation_failure();
     test_start_completion_survives_long_failure_status();
     test_stream_cleanup_under_allocation_failure();

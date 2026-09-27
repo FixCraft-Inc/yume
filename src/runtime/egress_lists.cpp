@@ -40,25 +40,18 @@ public:
     throw ListError(message);
 }
 
-// The message is diagnostic. Losing it to allocation failure keeps the code.
-Status status_of(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 template <typename Body>
 Status guarded(Body&& body) noexcept {
     try {
         return body();
     } catch (const ListError& error) {
-        return status_of(StatusCode::InvalidArgument, error.what());
+        return Status::diagnostic(StatusCode::InvalidArgument, error.what());
     } catch (const std::bad_alloc&) {
-        return status_of(StatusCode::ResourceExhausted, "egress lists exceed available memory");
+        return Status::diagnostic(StatusCode::ResourceExhausted,
+                                  "egress lists exceed available memory");
     } catch (const std::length_error&) {
-        return status_of(StatusCode::ResourceExhausted, "egress lists exceed available memory");
+        return Status::diagnostic(StatusCode::ResourceExhausted,
+                                  "egress lists exceed available memory");
     }
 }
 
@@ -666,8 +659,9 @@ Status EgressListBuilder::add_json_list(std::string_view text, EgressListAction 
                                    network.prefix_length, action});
         }
         if (!reader.countries.empty() && country_database_added_) {
-            return status_of(StatusCode::FailedPrecondition,
-                             "a list that names countries must come before the country database");
+            return Status::diagnostic(StatusCode::FailedPrecondition,
+                                      "a list that names countries must come "
+                                      "before the country database");
         }
         std::vector<Country> countries;
         countries.reserve(reader.countries.size());
@@ -737,7 +731,8 @@ Status EgressListBuilder::add_vpdb(std::span<const std::uint8_t> data, EgressLis
 
 Status EgressListBuilder::add_country_database(std::span<const std::uint8_t> data) {
     if (country_database_added_) {
-        return status_of(StatusCode::FailedPrecondition, "a country database was already added");
+        return Status::diagnostic(StatusCode::FailedPrecondition,
+                                  "a country database was already added");
     }
     return guarded([&] {
         if (data.size() > kMaxCountryDatabaseBytes) fail("country database is larger than 128 MiB");
@@ -856,8 +851,9 @@ std::vector<EgressListRules::Segment> EgressListBuilder::flatten(std::vector<Ran
 engine::Result<std::shared_ptr<const EgressListRules>> EgressListBuilder::build() {
     using Built = engine::Result<std::shared_ptr<const EgressListRules>>;
     if (!countries_.empty() && !country_database_added_) {
-        return Built(status_of(StatusCode::FailedPrecondition,
-                               "a list names countries, so a country database is required"));
+        return Built(Status::diagnostic(
+            StatusCode::FailedPrecondition,
+            "a list names countries, so a country database is required"));
     }
     try {
         auto rules = std::make_shared<EgressListRules>();
@@ -865,9 +861,13 @@ engine::Result<std::shared_ptr<const EgressListRules>> EgressListBuilder::build(
         rules->v6_ = flatten(v6_, IpFamily::V6);
         return Built(std::shared_ptr<const EgressListRules>(std::move(rules)));
     } catch (const std::bad_alloc&) {
-        return Built(status_of(StatusCode::ResourceExhausted, "egress lists exceed available memory"));
+        return Built(
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "egress lists exceed available memory"));
     } catch (const std::length_error&) {
-        return Built(status_of(StatusCode::ResourceExhausted, "egress lists exceed available memory"));
+        return Built(
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "egress lists exceed available memory"));
     }
 }
 

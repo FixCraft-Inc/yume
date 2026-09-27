@@ -55,6 +55,19 @@ inline bool disarm_allocation_failure() {
     allocation_countdown = 0;
     return fired;
 }
+
+// Keeps a buffer's contents observable up to this call. Under Clang the
+// standard library allocates through __builtin_operator_new, so the optimizer
+// may drop stores that are never read before release, or the whole
+// allocation, and the hooks above would see unwritten memory or nothing at
+// all. A negative control that writes a buffer only to release it passes the
+// buffer here. The volatile pointer hides the callee, so the compiler must
+// assume the call reads the buffer.
+inline void keep_contents(const void* storage) noexcept {
+    static void (*volatile const sink)(const void*) noexcept =
+        [](const void*) noexcept {};
+    sink(storage);
+}
 }  // namespace yume::test
 
 #if defined(__GNUC__)

@@ -74,15 +74,15 @@ Implemented and covered by focused tests:
   within two seconds. The development programs are their own helper. The
   ABI names an installed `yume-resolver` through `resolver_program`, and
   without one a client that dials a name fails to start;
-- an independent OpenSSL 3.5 TLS 1.3 secure-channel foundation which
+- an OpenSSL 3.5 TLS 1.3 secure channel which
   wraps arbitrary engine byte channels through memory BIOs, enforces exact
   TLS 1.3 plus ALPN `h2`, verifies client-side hostname/trust, exposes bounded
   outer certificate evidence and exporter binding, and keeps its provider
   provenance immutable. Its client applies the shared browser profile through
   patched OpenSSL, while refusing negotiated TLS 1.2 or HTTP/1.1 before
   publication. The separate server-cover entry accepts ordinary TLS 1.2 and
-  HTTP/1.1 without granting strict YTP SecureChannel provenance. Neither path
-  establishes a complete endpoint or full-session stealth qualification;
+  HTTP/1.1 without granting strict YTP SecureChannel provenance. NativeEndpoint
+  composes both paths. Full-session stealth qualification remains open.
 - exporter-bound H2 admission helpers with a separate YTP domain, exact
   32-byte key, strict name/path encoding, and client-carrier proof generation.
   Shared replay reservations use monotonic expiry and refuse saturation or
@@ -164,10 +164,10 @@ FrontDoor separately bounds pre-promotion connections and work. An optional
 endpoint-owned accept loop keeps a sized number of starts pending on every
 listener and retries refused or immediately failed starts after a delay. When a
 listener stops, or a retry cannot be scheduled for a listener with nothing
-pending, it closes the endpoint and reports once. The native FrontDoor still
-closes its listener when an accept reports an OS error such as descriptor
-exhaustion, so even a transient error of that kind stops an automatically
-accepting endpoint. Listener publication follows credential, mapped-limit and
+pending, it closes the endpoint and reports once. Descriptor or memory
+exhaustion in the native FrontDoor pauses accepting for one second before
+retrying. Other accept failures, or failure to schedule that retry, close the
+listener. Listener publication follows credential, mapped-limit and
 static-cover validation. Static directory snapshots include nested assets and
 require the browser profile's priming paths. `loopback_http_fetch.*` fetches one
 GET or HEAD from a loopback web server within fixed header, body and time
@@ -275,7 +275,7 @@ ordered terminal acknowledgement; bootstrap allocation sweeps cover client and
 server startup and selected teardown paths. These checks are not comprehensive
 allocation-failure, application-adapter, sanitizer or security qualification.
 
-When the shared ABI and every native provider are enabled, the experimental
+Enabling the shared ABI builds every native provider. Its experimental
 `yume_embed` backend runs `NativeEndpoint` on its own execution thread
 behind the blocking C ABI. Schema-1 clients open, and servers accept,
 authenticated named byte streams and packet channels with the composite peer identity.
@@ -295,12 +295,12 @@ credentials, peer identity, refused opens, deadlines, half-close, stop, restart
 and stream handles that outlive their endpoint. `yume_native_backend_test` also
 pauses execution to check deadline handling, acceptance rollback, partial-read
 credit lifetime and cleanup after an escaped delivery exception.
-No standalone YTP/1 runtime uses
-this backend, and it has no production qualification.
+The standalone programs compose NativeEndpoint directly. This embedding
+backend has no production qualification.
 
 The native executables `yumed` and `yume` run schema-1 configurations.
-`YUME_BUILD_NATIVE_APPLICATION=ON` defaults all required providers on and refuses
-an incomplete cached provider selection. `--config`
+`YUME_BUILD_NATIVE_APPLICATION=ON` builds the complete provider graph, as does
+`YUME_BUILD_SHARED_ABI=ON`. Providers have no individual build switches. `--config`
 selects the file, `--validate` checks configuration and credentials, and
 network and security policy have no CLI override. The daemon serves configured
 `direct_tcp`/`direct_udp` adapters and refuses a service without one, because
@@ -380,7 +380,14 @@ fingerprints. Peer fingerprints are now YTP/1 identity fingerprints, the value
 `yume-setup` prints for a key. It also holds the relay's invite, endpoint and
 directory records with their strict JSON parsers, the message policy that
 decides which relay message may follow which, and the bounds on pending
-invites. `yume_module_files` adds relay file transfer:
+invites. History records require exactly `ts_ms`, `peer_id`, `peer_name`,
+`direction` and `text`, with no duplicate or nested fields. Timestamps fit
+signed 64-bit integers, the other fields are strings, peer IDs are nonempty,
+and direction is `in` or `out`.
+Invalid records make the list unavailable and return no items. YUME's guarded
+plaintext buffers are wiped on release as best effort. JSON-library parsing and
+serialization can retain ordinary-memory copies outside those guards.
+`yume_module_files` adds relay file transfer:
 a source pinned to one opened file that hashes and sends the same bytes, and a
 receiver that writes into a private staging file and publishes it without
 replacing anything, only after the declared size and SHA-256 match.

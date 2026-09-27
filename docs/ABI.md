@@ -324,6 +324,11 @@ server startup has no caller-bounded deadline. Success means the client
 completed authenticated establishment or the server is accepting work. Failure
 never publishes a partially started backend.
 
+Once `STARTING` is visible, allocation or startup exceptions still settle the
+state and deliver its terminal event. Allocation failure reports
+`YUME_STATUS_RESOURCE_EXHAUSTED` and enters `FAILED`, unless runtime shutdown
+has cancelled startup.
+
 Idle server accepts retain bounded queue slots without consuming
 an authentication deadline. Validated carrier promotion begins a separate
 30-second session-creation/AUTH budget. FrontDoor independently limits
@@ -334,8 +339,10 @@ identities by their authorized-keys `weight`.
 
 A server keeps up to four starts pending per listener, at most 32 in
 total, and retries a refused or immediately failed start after 100 ms. If a
-listener stops accepting, or such a retry cannot be scheduled while that
-listener has nothing pending, the backend closes the endpoint's sessions.
+listener runs out of descriptors or memory, its FrontDoor pauses OS accepts
+for one second and retries. If a listener stops accepting, or an endpoint
+start retry cannot be scheduled while that listener has nothing pending, the
+backend closes the endpoint's sessions.
 Accepts then report `YUME_STATUS_INVALID_STATE` until the application stops and
 restarts the endpoint. The state stays `RUNNING`, as for a client whose session
 ended.
@@ -393,7 +400,8 @@ adapters, so use the native daemon for direct egress. There is no generic JSON
 metadata channel.
 
 Open and accept publish an output handle only on success. A timeout before an
-OPEN is admitted sends nothing. The backend uses YTP/1's 31-bit odd/even
+OPEN is admitted sends nothing, including when the request waits for execution
+thread dispatch past its deadline. The backend uses YTP/1's 31-bit odd/even
 stream identifiers. A timed-out OPEN is cancelled on the endpoint's execution
 thread. An OPEN still held behind a rekey is dropped, a sent one is aborted,
 and a crossed acceptance is closed instead of published.

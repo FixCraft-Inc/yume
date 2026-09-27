@@ -42,25 +42,39 @@ namespace {
 using namespace engine;
 using Tcp = boost::asio::ip::tcp;
 using Error = boost::system::error_code;
+namespace errc = boost::system::errc;
+
+// An accept that fails for want of resources leaves its connection queued, so
+// the listener pauses this long and then accepts it.
+constexpr std::chrono::seconds kAcceptRetryDelay{1};
+
+bool is(const Error& error, errc::errc_t value) noexcept {
+    return error == errc::make_error_condition(value);
+}
+
+// Descriptor or kernel memory exhaustion, which passes once other work ends.
+bool resources_exhausted(const Error& error) noexcept {
+    return is(error, errc::too_many_files_open) ||
+           is(error, errc::too_many_files_open_in_system) ||
+           is(error, errc::no_buffer_space) ||
+           is(error, errc::not_enough_memory);
+}
 
 Status listener_error(const Error& error) noexcept {
-    namespace errc = boost::system::errc;
-    const auto is = [&error](errc::errc_t value) noexcept {
-        return error == errc::make_error_condition(value);
-    };
     StatusCode code = StatusCode::Internal;
     std::string_view message = "native listener socket setup failed";
-    if (is(errc::permission_denied) || is(errc::operation_not_permitted)) {
+    if (is(error, errc::permission_denied) ||
+        is(error, errc::operation_not_permitted)) {
         code = StatusCode::PermissionDenied;
         message = "native listener socket permission denied";
-    } else if (is(errc::address_in_use)) {
+    } else if (is(error, errc::address_in_use)) {
         code = StatusCode::AddressInUse;
         message = "native listener address is already in use";
-    } else if (is(errc::too_many_files_open) || is(errc::too_many_files_open_in_system) ||
-               is(errc::no_buffer_space) || is(errc::not_enough_memory)) {
+    } else if (resources_exhausted(error)) {
         code = StatusCode::ResourceExhausted;
         message = "native listener socket resources exhausted";
-    } else if (is(errc::address_not_available) || is(errc::invalid_argument)) {
+    } else if (is(error, errc::address_not_available) ||
+               is(error, errc::invalid_argument)) {
         code = StatusCode::InvalidArgument;
         message = "native listener address is unavailable or invalid";
     }
@@ -169,16 +183,23 @@ public:
     };
     class Connection;
 
-    State(std::shared_ptr<AsioExecutionContext> execution, H2WebFrontDoorConfig options,
+    State(std::shared_ptr<AsioExecutionContext> execution,
+          H2WebFrontDoorConfig options,
           std::shared_ptr<Tls13SecureChannelProvider> tls_provider,
           std::shared_ptr<const CoverSite> site,
           std::shared_ptr<admission::ReplayCache> replay_cache,
           std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp_owner,
           H2Dispatch dispatch)
-        : context(std::move(execution)), config(std::move(options)),
-          tls(std::move(tls_provider)), cover(std::move(site)), replay(std::move(replay_cache)),
-          tcp(std::move(tcp_owner)), post(std::move(dispatch)),
-          acceptor(context->executor()), budget(std::make_shared<PromotionBudget>()),
+        : context(std::move(execution)),
+          config(std::move(options)),
+          tls(std::move(tls_provider)),
+          cover(std::move(site)),
+          replay(std::move(replay_cache)),
+          tcp(std::move(tcp_owner)),
+          post(std::move(dispatch)),
+          acceptor(context->executor()),
+          retry(context->executor()),
+          budget(std::make_shared<PromotionBudget>()),
           control(&State::on_control) {}
 
     ~State() noexcept { OPENSSL_cleanse(key.data(), key.size()); }
@@ -208,6 +229,7 @@ public:
     }
     void settle_control() noexcept;
     void start_accept() noexcept;
+    void retry_accept() noexcept;
     void remove(Connection* connection) noexcept;
     void add_waiter(CancellationToken token, AcceptCompletion completion);
 
@@ -236,6 +258,7 @@ public:
     std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp;
     H2Dispatch post;
     boost::asio::basic_socket_acceptor<Tcp, AsioExecutionContext::Executor> acceptor;
+    boost::asio::steady_timer retry;
     Tcp::endpoint endpoint;
     std::shared_ptr<PromotionBudget> budget;
     std::array<std::byte, kYtp1H2AdmissionKeyBytes> key{};
@@ -246,6 +269,7 @@ public:
     std::atomic<bool> closing{false};
     std::atomic<std::uint64_t> cancel_epoch{0U};
     bool accepting{false};
+    bool retry_pending{false};
 };
 
 class H2WebFrontDoor::State::Connection final
@@ -533,23 +557,63 @@ private:
     bool reading_{false}, writing_{false}, http_done_{false}, pumping_{false}, repump_{false};
 };
 
+// Asio itself retries interrupted, aborted and EPROTO accepts. Descriptor or
+// memory exhaustion, including a failed allocation here, pauses accepting. Any
+// other accept failure closes the listener.
 void H2WebFrontDoor::State::start_accept() noexcept {
-    if (closing.load() || accepting || connections.size() >= config.limits.max_connections) return;
+    if (closing.load() || accepting || retry_pending ||
+        connections.size() >= config.limits.max_connections)
+        return;
     try {
         accepting = true;
         acceptor.async_accept(context->executor(),
             [self = shared_from_this()](Error error, AsioTcpSocket socket) noexcept {
                 self->accepting = false;
                 if (self->closing.load()) return;
-                if (error) { self->request_close(); return; }
+                if (error) {
+                    if (resources_exhausted(error))
+                        self->retry_accept();
+                    else
+                        self->request_close();
+                    return;
+                }
                 try {
                     auto connection = std::make_shared<Connection>(self);
                     self->connections.push_back(connection);
                     connection->start(std::move(socket));
                     self->start_accept();
-                } catch (...) { self->request_close(); }
+                } catch (const std::bad_alloc&) {
+                    self->retry_accept();
+                } catch (...) {
+                    self->request_close();
+                }
             });
-    } catch (...) { accepting = false; request_close(); }
+    } catch (const std::bad_alloc&) {
+        accepting = false;
+        retry_accept();
+    } catch (...) {
+        accepting = false;
+        request_close();
+    }
+}
+
+void H2WebFrontDoor::State::retry_accept() noexcept {
+    if (closing.load() || retry_pending) return;
+    try {
+        retry.expires_after(kAcceptRetryDelay);
+        retry.async_wait([self = shared_from_this()](Error error) noexcept {
+            self->retry_pending = false;
+            if (self->closing.load()) return;
+            if (error)
+                self->request_close();
+            else
+                self->start_accept();
+        });
+        retry_pending = true;
+    } catch (...) {
+        // Nothing would ever accept again, so close visibly instead.
+        request_close();
+    }
 }
 
 void H2WebFrontDoor::State::remove(Connection* connection) noexcept {
@@ -561,6 +625,7 @@ void H2WebFrontDoor::State::settle_control() noexcept {
     if (closing.load()) {
         Error ignored;
         acceptor.close(ignored);
+        retry.cancel(ignored);
         while (!connections.empty()) {
             const auto connection = connections.front();
             connection->stop();

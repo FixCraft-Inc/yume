@@ -172,8 +172,9 @@ std::optional<nlohmann::json> open_share(const std::vector<std::uint8_t>& blob,
     nlohmann::json document;
     try {
         document = nlohmann::json::parse(plaintext.bytes().begin(), plaintext.bytes().end());
-    } catch (const std::exception& ex) {
-        set_error(error, std::string("payload is not JSON: ") + ex.what());
+    } catch (const std::exception&) {
+        // Parser diagnostics can include the decrypted token that failed.
+        set_error(error, "payload is not JSON");
         return std::nullopt;
     }
     return document;

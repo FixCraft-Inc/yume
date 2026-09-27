@@ -9,6 +9,7 @@
 #include <basefwx/crypto.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -497,15 +498,22 @@ bool RelayFileReceiver::IsSafeBasename(std::string_view name) noexcept {
     }
     // Windows device names remain special even with extensions. Rejecting
     // them on every platform keeps received names portable.
-    std::string stem;
-    for (const unsigned char ch : name.substr(0, name.find('.'))) {
-        stem.push_back(static_cast<char>(
-            ch >= 'a' && ch <= 'z' ? ch - ('a' - 'A') : ch));
+    const std::string_view stem = name.substr(0, name.find('.'));
+    if (stem.size() != 3U && stem.size() != 4U) return true;
+    // The loop bound names the array size. Through std::transform, GCC 13 at
+    // -O3 cannot prove the stem fits and rejects the build.
+    std::array<char, 4> uppercase{};
+    for (std::size_t i = 0; i < uppercase.size() && i < stem.size(); ++i) {
+        const auto ch = static_cast<unsigned char>(stem[i]);
+        uppercase[i] =
+            static_cast<char>(ch >= 'a' && ch <= 'z' ? ch - ('a' - 'A') : ch);
     }
-    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
-        (stem.size() == 4 &&
-         (stem.rfind("COM", 0) == 0 || stem.rfind("LPT", 0) == 0) &&
-         stem[3] >= '1' && stem[3] <= '9')) {
+    const std::string_view device(uppercase.data(), stem.size());
+    if (device == "CON" || device == "PRN" || device == "AUX" ||
+        device == "NUL" ||
+        (device.size() == 4U &&
+         (device.starts_with("COM") || device.starts_with("LPT")) &&
+         device[3] >= '1' && device[3] <= '9')) {
         return false;
     }
     return true;

@@ -317,13 +317,14 @@ class ModuleOpen final : public std::enable_shared_from_this<ModuleOpen> {
 public:
     ModuleOpen(std::shared_ptr<ModuleSupervisor::State> state,
                std::shared_ptr<StreamResponder> stream,
-               engine::StreamHandler::AcceptanceCompletion completion, std::string header)
+               engine::StreamHandler::AcceptanceCompletion&& completion,
+               std::string header)
         : state_(std::move(state)),
           stream_(std::move(stream)),
-          completion_(std::move(completion)),
           header_(std::move(header)),
           socket_(state_->context->executor()),
-          timer_(state_->context->executor()) {}
+          timer_(state_->context->executor()),
+          completion_(std::move(completion)) {}
 
     void start() noexcept {
         try {
@@ -348,25 +349,30 @@ private:
             fail(diagnostic(StatusCode::FailedPrecondition, "the module refused the stream"));
             return;
         }
-        auto channel = state_->channels->adopt(std::move(socket_));
-        if (!channel.ok()) {
-            fail(channel.status());
-            return;
-        }
-        channel_ = std::move(channel).take_value();
-        auto header = Buffer::copy_from(
-            {reinterpret_cast<const std::byte*>(header_.data()), header_.size()}, header_.size());
-        if (!header.ok()) {
-            fail(header.status());
-            return;
-        }
+        // Reporting a failure copies its status, which can itself fail.
         try {
+            auto channel = state_->channels->adopt(std::move(socket_));
+            if (!channel.ok()) {
+                fail(channel.status());
+                return;
+            }
+            channel_ = std::move(channel).take_value();
+            auto header = Buffer::copy_from(
+                {reinterpret_cast<const std::byte*>(header_.data()),
+                 header_.size()},
+                header_.size());
+            if (!header.ok()) {
+                fail(header.status());
+                return;
+            }
             channel_->async_write(std::move(header).take_value(), cancellation_.token(),
                 [self = shared_from_this()](Status status, std::size_t written) noexcept {
                     self->written(std::move(status), written);
                 });
-        } catch (...) {
+        } catch (const std::bad_alloc&) {
             fail(Status(StatusCode::ResourceExhausted));
+        } catch (...) {
+            fail(Status(StatusCode::Internal));
         }
     }
 
@@ -406,13 +412,15 @@ private:
 
     std::shared_ptr<ModuleSupervisor::State> state_;
     std::shared_ptr<StreamResponder> stream_;
-    engine::StreamHandler::AcceptanceCompletion completion_;
     std::string header_;
     providers::AsioUnixSocket socket_;
     Timer timer_;
     engine::CancellationSource cancellation_;
     std::unique_ptr<ByteChannel> channel_;
     bool done_{false};
+    // Initialized last, so a constructor that throws leaves the caller's
+    // completion intact to refuse the OPEN.
+    engine::StreamHandler::AcceptanceCompletion completion_;
 };
 
 class ModuleHandler final : public engine::StreamHandler {

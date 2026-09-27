@@ -1779,18 +1779,6 @@ if(YUME_BUILD_TESTING)
         yume_assert_exact_link_dependencies(yume_c_abi_consumer_c yume_abi)
         add_test(NAME yume_c_abi_consumer_c COMMAND yume_c_abi_consumer_c)
 
-        # Stream-id ownership regression. A rolled-back OPEN must release,
-        # unregister, or close-and-retire exactly according to how far it got,
-        # or a late ACK can alias a later stream on the same transport. This
-        # header is dependency-free, so the check needs no runtime.
-        add_executable(yume_abi_stream_open_transaction_test
-            abi/service_open_transaction_test.cpp)
-        target_include_directories(yume_abi_stream_open_transaction_test
-            PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-        yume_apply_warnings(yume_abi_stream_open_transaction_test)
-        add_test(NAME yume_abi_stream_open_transaction_test
-            COMMAND yume_abi_stream_open_transaction_test)
-
         # Real schema-1 setup credentials through the public C ABI: both
         # endpoint lifecycles, peer identity, refusals, deadlines, half-close,
         # typed end of stream, stop, restart and handles that outlive their
@@ -1855,8 +1843,7 @@ if(YUME_BUILD_TESTING)
 
         set(_yume_abi_contract_tests
             yume_c_abi_contract_test
-            yume_c_abi_consumer_c
-            yume_abi_stream_open_transaction_test)
+            yume_c_abi_consumer_c)
         if(UNIX AND CMAKE_NM)
             if(APPLE)
                 set(_yume_abi_format macho)

@@ -2539,6 +2539,71 @@ void test_automatic_rekey_record_limit_and_crossed_rotation() {
     CHECK(session.trace->rekey_begun.size() == 1U);
 }
 
+// A DATA record published behind a pending rekey has taken its connection
+// credit. If its stream closes before the ACK, the record is dropped and
+// never reaches the peer, which still counts that credit as granted, so the
+// credit must come back. A soak lost one record of window per aborted round
+// until the peer could no longer reach its return point.
+void test_dropped_deferred_data_returns_connection_credit() {
+    TestSession session;
+    session.start_to_active();
+    session.open_peer_stream();
+    std::uint64_t sequence = 2U;
+    // Fill the epoch, so the next record starts a rotation and waits for
+    // its ACK after it has taken its connection credit. The connection
+    // credit covers exactly that data and the next record.
+    auto budget = ytp1::kMinEpochPayloadBytes -
+                  sent_epoch_payload_bytes(*session.carrier);
+    constexpr std::uint32_t kExtra = 16U;
+    const auto credit = static_cast<std::uint32_t>(budget) + kExtra;
+    grant_competing_credit(session, sequence, 0U, credit);
+    grant_competing_credit(session, sequence, 1U, credit);
+    CHECK(sent_epoch_payload_bytes(*session.carrier) ==
+          ytp1::kMinEpochPayloadBytes - budget);
+    while (budget != 0U) {
+        const auto size = std::min<std::size_t>(budget, 64U * 1024U);
+        session.handler->responder->async_write(
+            require(Buffer::allocate(size, size)), {},
+            [](Status status, std::size_t) { CHECK(status.ok()); });
+        budget -= size;
+    }
+    CHECK(session.trace->rekey_begun.empty());
+    int completions = 0;
+    StatusCode code = StatusCode::Ok;
+    const std::array<std::byte, kExtra> payload{};
+    session.handler->responder->async_write(copy_bytes(payload), {},
+                                            [&](Status status, std::size_t) {
+                                                code = status.code();
+                                                ++completions;
+                                            });
+    CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
+    CHECK(completions == 0);
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    session.carrier->deliver(protected_wire(
+        0U, sequence++, frame(ytp1::RecordType::Close, 1U, aborted)));
+    const auto acknowledgement = rekey_payload(1U, std::byte{2});
+    session.carrier->deliver(
+        frame(ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
+    CHECK(completions == 1 && code == StatusCode::Closed);
+    CHECK(session.engine->state() == SessionState::Active);
+
+    // All 16 bytes of connection credit carry a write on the next stream.
+    auto open = ytp1::EncodeOpen({ytp1::ServiceKind::ByteStream, "echo", {}});
+    CHECK(open.ok());
+    session.carrier->deliver(protected_wire(
+        0U, sequence++,
+        frame(ytp1::RecordType::Open, 3U,
+              {reinterpret_cast<const std::byte*>(open.value->data()),
+               open.value->size()})));
+    CHECK(session.handler->opened == 2);
+    grant_competing_credit(session, sequence, 3U, kExtra);
+    const std::size_t sent_before = session.carrier->sent.size();
+    session.handler->responder->async_write(copy_bytes(payload), {},
+                                            [&](Status, std::size_t) {});
+    CHECK((sent_data_streams(session, sent_before) ==
+           std::vector<std::uint32_t>{3U}));
+}
+
 void test_automatic_rekey_byte_limit_and_synchronous_ack() {
     for (const std::size_t remaining : {0U, 1U}) {
         TestSession session;
@@ -3912,6 +3977,7 @@ void run_test() {
     test_stop_and_destruction_under_allocation_failure();
     test_start_completion_survives_long_failure_status();
     test_stream_cleanup_under_allocation_failure();
+    test_dropped_deferred_data_returns_connection_credit();
     test_stop_drains_active_queued_and_rekey_deferred_writes();
     test_peer_stream_construction_allocation_failures();
     test_outer_channel_identity_and_exporter_boundary();

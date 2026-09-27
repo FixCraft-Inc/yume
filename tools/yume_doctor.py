@@ -811,7 +811,7 @@ def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
     bounds = {
         "max_frame_bytes": (1676, 1024 * 1024),
         "max_streams": (1, 65535),
-        "max_queued_bytes": (64 * 1024, 64 * 1024 * 1024),
+        "max_queued_bytes": (64 * 1024, 16 * 1024 * 1024),
         "max_pending_opens": (1, 1024),
         "max_rekey_jobs": (2, 64),
         "max_control_messages": (8, 4096),

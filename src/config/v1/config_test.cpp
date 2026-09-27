@@ -1177,7 +1177,7 @@ void TestResourceLimits() {
     constexpr std::array<Bound, 8> bounds{{
         {"max_frame_bytes", 1676, 1048576},
         {"max_streams", 1, 65535},
-        {"max_queued_bytes", 65536, 67108864},
+        {"max_queued_bytes", 65536, 16777216},
         {"max_pending_opens", 1, 1024},
         {"max_rekey_jobs", 2, 64},
         {"max_control_messages", 8, 4096},
@@ -1225,7 +1225,7 @@ void TestResourceLimits() {
     maximum["limits"] = {
         {"max_frame_bytes", 1048576},
         {"max_streams", 65535},
-        {"max_queued_bytes", 67108864},
+        {"max_queued_bytes", 16777216},
         {"max_pending_opens", 1024},
         {"max_rekey_jobs", 64},
         {"max_control_messages", 4096},

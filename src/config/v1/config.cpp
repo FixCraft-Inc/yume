@@ -36,7 +36,6 @@ constexpr std::uint32_t kMaxFrameBytes = 1024U * 1024U;
 constexpr std::uint32_t kMinStreams = 1;
 constexpr std::uint32_t kMaxStreams = 65535;
 constexpr std::uint32_t kMinQueuedBytes = 64U * 1024U;
-constexpr std::uint32_t kMaxQueuedBytes = 64U * 1024U * 1024U;
 constexpr std::uint32_t kMinPendingOpens = 1;
 constexpr std::uint32_t kMaxPendingOpens = 1024;
 constexpr std::uint32_t kMinRekeyJobs = 2;

@@ -365,6 +365,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Session queue budget.** `limits.max_queued_bytes` accepts 64 KiB to
+  16 MiB. The parser and `yume-doctor` accepted up to 64 MiB while the
+  session engine refuses more than 16 MiB, so a larger budget passed
+  `--validate` and doctor and then stopped `yumed` and `yume` at start. The
+  bound has one owner in the parser, and the runtime checks at compile time
+  that the engine accepts it.
 - **Native failure handling and memory bounds.** Expired ABI opens no longer
   enter the session while waiting for dispatch. Startup and stream operations
   settle their callbacks and state when allocation fails. Buffer growth stays

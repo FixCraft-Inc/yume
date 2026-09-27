@@ -16,6 +16,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 
+#include "engine/buffer.hpp"
 #include "runtime/accept_scheduler.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "runtime/native_credentials.hpp"
@@ -38,6 +39,8 @@ using Timer = boost::asio::basic_waitable_timer<
     AsioExecutionContext::Executor>;
 
 constexpr std::chrono::seconds kMaxAcceptRetryDelay{10};
+// A budget the parser accepts must be one the session engine accepts.
+static_assert(config::v1::kMaxQueuedBytes <= kAbsoluteMaxBufferBytes);
 
 template <typename T>
 T require(Result<T> result) {

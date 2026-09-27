@@ -505,12 +505,15 @@ void test_start_deadline_and_final_drain(const std::filesystem::path& kit) {
     options.max_sessions = 1U;
     options.max_pending_starts = 1U;
     options.start_timeout = 40ms;
-    const auto invalid_queue = load(kit / "server/invalid-queue.json");
-    runner.sync([&] {
-        const auto invalid = NativeEndpoint::create(runner.context, invalid_queue,
-            kit / "server", bindings(handler), options);
-        CHECK(!invalid.ok() && invalid.status().code() == StatusCode::InvalidArgument);
-    });
+    // The parser owns the session queue bound, so a budget the engine would
+    // refuse never reaches NativeEndpoint.
+    bool queue_refused = false;
+    try {
+        (void)load(kit / "server/invalid-queue.json");
+    } catch (const yume::config::v1::ValidationError& error) {
+        queue_refused = error.json_pointer() == "/limits/max_queued_bytes";
+    }
+    CHECK(queue_refused);
     const auto dual_config = load(kit / "client/dual-kind.json");
     auto packet_handler = std::make_shared<Handler>(ServiceKind::PacketChannel);
     // The kit's client dials its server by name, which needs a resolver.

@@ -682,7 +682,105 @@ void test_status_diagnostics_under_allocation_failure() {
     CHECK(detailed.message() == message);
 }
 
+std::size_t largest_buffer_allocation = 0U;
+
+void observe_buffer_allocation(std::size_t size) {
+    largest_buffer_allocation = std::max(largest_buffer_allocation, size);
+}
+
+void test_buffer_capacity_bound() {
+    Buffer aliased = make_buffer("abc", 10U);
+    CHECK(aliased.append(aliased.bytes()).ok());
+    CHECK(buffer_text(aliased) == "abcabc");
+    CHECK(aliased.resize(3U).ok());
+    CHECK(aliased.append(aliased.bytes()).ok());
+    CHECK(buffer_text(aliased) == "abcabc");
+
+    for (const bool append : {false, true}) {
+        Buffer buffer = make_buffer("abcdef", 10U);
+        const std::array<std::byte, 4U> suffix{};
+        largest_buffer_allocation = 0U;
+        yume::test::before_allocate = observe_buffer_allocation;
+        const Status status =
+            append ? buffer.append(suffix) : buffer.resize(10U);
+        yume::test::before_allocate = nullptr;
+        CHECK(status.ok());
+        CHECK(buffer.size() == 10U);
+        CHECK(largest_buffer_allocation <= buffer.max_size());
+        CHECK(buffer_text(buffer).substr(0U, 6U) == "abcdef");
+
+        // Shrinking and moving keep the same declared storage bound.
+        CHECK(buffer.resize(1U).ok());
+        Buffer moved = std::move(buffer);
+        largest_buffer_allocation = 0U;
+        yume::test::before_allocate = observe_buffer_allocation;
+        const Status regrown = moved.resize(10U);
+        yume::test::before_allocate = nullptr;
+        CHECK(regrown.ok());
+        CHECK(largest_buffer_allocation == 0U);
+        CHECK(moved.max_size() == 10U);
+    }
+
+    for (const bool append : {false, true}) {
+        Buffer buffer = make_buffer("abcdef", 10U);
+        const std::array<std::byte, 4U> suffix{};
+        yume::test::arm_allocation_failure(1U);
+        const Status status =
+            append ? buffer.append(suffix) : buffer.resize(10U);
+        const bool fired = yume::test::disarm_allocation_failure();
+        CHECK(fired);
+        check_code(status, StatusCode::ResourceExhausted);
+        CHECK(buffer_text(buffer) == "abcdef");
+    }
+}
+
+class SustainedAllocationFailure final {
+public:
+    SustainedAllocationFailure() noexcept {
+        yume::test::fail_allocations.store(true);
+    }
+    ~SustainedAllocationFailure() { yume::test::fail_allocations.store(false); }
+    SustainedAllocationFailure(const SustainedAllocationFailure&) = delete;
+    SustainedAllocationFailure& operator=(const SustainedAllocationFailure&) =
+        delete;
+};
+
+void test_buffer_failure_reporting() {
+    const std::array<std::byte, 8U> bytes{};
+    for (const bool copy : {false, true}) {
+        for (const std::size_t limit : {0U, 4U, 8U}) {
+            auto result = [&] {
+                SustainedAllocationFailure failure;
+                return copy ? Buffer::copy_from(bytes, limit)
+                            : Buffer::allocate(bytes.size(), limit);
+            }();
+            CHECK(!result.ok());
+            check_code(result.status(), limit == 0U
+                                            ? StatusCode::InvalidArgument
+                                            : StatusCode::ResourceExhausted);
+            CHECK(result.status().message().empty());
+        }
+    }
+
+    for (const bool append : {false, true}) {
+        for (const bool exceeds_bound : {false, true}) {
+            Buffer buffer = make_buffer("keep", 8U);
+            const Status result = [&] {
+                SustainedAllocationFailure failure;
+                return append ? buffer.append(std::span(bytes).first(
+                                    exceeds_bound ? bytes.size() : 4U))
+                              : buffer.resize(exceeds_bound ? 9U : 8U);
+            }();
+            check_code(result, StatusCode::ResourceExhausted);
+            CHECK(result.message().empty());
+            CHECK(buffer_text(buffer) == "keep");
+        }
+    }
+}
+
 void test_buffer_bounds() {
+    test_buffer_capacity_bound();
+    test_buffer_failure_reporting();
     check_code(Buffer::allocate(0U, 0U).status(),
                StatusCode::InvalidArgument);
     check_code(Buffer::allocate(0U, kAbsoluteMaxBufferBytes + 1U).status(),

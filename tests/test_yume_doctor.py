@@ -857,6 +857,29 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertIn("/limits/max_egress_mbps", result.stderr)
         self.assertIn("server-only", result.stderr)
 
+    def test_queued_bytes_bound_matches_the_parser(self) -> None:
+        # The parser's bound is the most a session engine accepts. A larger
+        # budget that doctor passed would validate and then fail at start.
+        source = (ROOT / "src/config/v1/config.hpp").read_text()
+        match = re.search(r"kMaxQueuedBytes\s*=\s*([0-9U *]+);", source)
+        self.assertIsNotNone(match)
+        maximum = 1
+        for factor in match[1].replace("U", "").split("*"):
+            maximum *= int(factor)
+        client_path = self.case / "client/yume.json"
+        original = client_path.read_text()
+        for value, accepted in ((maximum, True), (maximum + 1, False)):
+            config = json.loads(original)
+            config["limits"]["max_queued_bytes"] = value
+            client_path.write_text(json.dumps(config))
+            result = self.run_doctor(client_path)
+            if accepted:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            else:
+                self.assertEqual(result.returncode, 1, value)
+                self.assertIn("/limits/max_queued_bytes", result.stderr)
+        client_path.write_text(original)
+
     def test_authorized_identity_limit_matches_native_factory(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))
         source = (ROOT / "src/providers/openssl_security_provider.hpp").read_text()

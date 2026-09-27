@@ -35,6 +35,10 @@ inline constexpr std::size_t kMaxDestinationLists = 16;
 inline constexpr std::size_t kMaxUnixSocketPathBytes = 107;
 inline constexpr std::size_t kMaxModuleArguments = 32;
 inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
+// limits.max_queued_bytes bounds one session's queued bytes. The session
+// engine refuses a larger budget at start, and the runtime checks at compile
+// time that this bound stays within the engine's.
+inline constexpr std::uint32_t kMaxQueuedBytes = 16U * 1024U * 1024U;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";

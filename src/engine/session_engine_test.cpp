@@ -673,7 +673,6 @@ public:
         carrier = owned_carrier.get();
         limits.max_streams = 4U;
         limits.max_pending_opens = 2U;
-        limits.max_frame_payload = 64U * 1024U;
         auto selected_graph = graph(factory, handler);
         selected_route = selected_graph->route_provider();
         engine = require(SessionEngine::create(
@@ -682,12 +681,16 @@ public:
 
     std::shared_ptr<RouteProvider> selected_route;
 
-    void start_to_active() {
+    // `auth_round_trip` delays the peer's AUTH response, which the engine
+    // times as its first round-trip sample.
+    void start_to_active(std::chrono::milliseconds auth_round_trip =
+                             std::chrono::milliseconds(0)) {
         engine->async_start([this](Status status) {
             ++start_completions;
             start_status = std::move(status);
         });
         CHECK(carrier->sent.size() == 1U);
+        std::this_thread::sleep_for(auth_round_trip);
 
         Buffer response = auth_message(ytp1::AuthMessageType::Response,
                                        ytp1::EndpointRole::Client);
@@ -1189,6 +1192,16 @@ std::vector<std::uint32_t> sent_data_streams(
     return ids;
 }
 
+// A receive window may not exceed the session's queue budget, so tests that
+// shrink the budget to exercise outbound admission shrink the windows too.
+void fit_receive_windows(SessionLimits& limits) {
+    const auto budget = static_cast<std::uint32_t>(limits.max_queued_bytes);
+    limits.initial_connection_credit = budget;
+    limits.max_connection_credit = budget;
+    limits.initial_stream_credit = budget;
+    limits.max_stream_credit = budget;
+}
+
 Buffer shrunk_write_buffer(std::size_t capacity) {
     Buffer buffer = require(Buffer::allocate(capacity, capacity));
     buffer.mutable_bytes()[0] = std::byte{0x5a};
@@ -1286,6 +1299,7 @@ void test_pending_write_capacity_is_shared_across_streams() {
     constexpr std::size_t ordinary_budget = 512U;
     limits.max_queued_bytes = control_reserve + ordinary_budget;
     limits.max_stream_queued_bytes = ordinary_budget;
+    fit_receive_windows(limits);
     std::array<int, 4U> completions{};
     std::array<StatusCode, 4U> codes{};
     std::array<std::size_t, 4U> transferred{99U, 99U, 99U, 99U};
@@ -1823,6 +1837,7 @@ void test_queue_refusal_survives_diagnostic_allocation_failure() {
             kOrdinaryBudget - kWireOverhead - kPayloadBytes;
         limits.max_queued_bytes = control_reserve + kOrdinaryBudget;
         limits.max_stream_queued_bytes = kOrdinaryBudget;
+        fit_receive_windows(limits);
         TestSession session(true, false, limits);
         session.start_to_active();
         session.open_peer_stream();
@@ -2216,7 +2231,11 @@ void test_start_completion_survives_long_failure_status() {
 void test_stream_cleanup_under_allocation_failure() {
     for (const bool sustained : {false, true}) {
         for (const bool return_credit : {false, true}) {
-            TestSession session;
+            // A stream window of one frame returns credit on every release,
+            // so the release below must allocate a credit record.
+            SessionLimits limits;
+            limits.initial_stream_credit = 64U * 1024U;
+            TestSession session(true, false, limits);
             session.start_to_active();
             session.open_peer_stream();
             std::optional<ReceivedRecord> retained;
@@ -2556,6 +2575,7 @@ void test_rekey_controls_have_reserved_queue_capacity() {
     const std::size_t ordinary_budget = 512U;
     limits.max_queued_bytes = control_reserve + ordinary_budget;
     limits.max_stream_queued_bytes = ordinary_budget;
+    fit_receive_windows(limits);
     TestSession session(true, false, limits);
     session.trace->init_message_size = ytp1::kRekeyInitMessageBytes;
     session.trace->ack_message_size = ytp1::kRekeyAckMessageBytes;
@@ -2785,6 +2805,7 @@ void test_rekey_flush_preserves_unpublished_reservations() {
     const std::size_t ordinary_budget = 512U;
     limits.max_queued_bytes = control_reserve + ordinary_budget;
     limits.max_stream_queued_bytes = ordinary_budget;
+    fit_receive_windows(limits);
     TestSession session(true, false, limits);
     session.start_to_active();
     session.open_peer_stream();
@@ -3374,6 +3395,266 @@ void test_destination_policy_and_canonical_outbound_open() {
     CHECK(outbound_open.destination.port == 8443U);
 }
 
+// Receive windows small enough that a peer can fill and refill them many
+// times within one inbound epoch.
+SessionLimits small_window_limits() {
+    SessionLimits limits;
+    limits.max_frame_payload = 4U * 1024U;
+    limits.max_packet_size = 4U * 1024U;
+    limits.initial_stream_credit = 16U * 1024U;
+    limits.max_stream_credit = 64U * 1024U;
+    limits.initial_connection_credit = 32U * 1024U;
+    limits.max_connection_credit = 128U * 1024U;
+    return limits;
+}
+
+// Credit the engine has granted on the connection and on stream 1, read from
+// its sent records. Scanning starts after the two bare AUTH flights. An
+// outbound rekey is confirmed at once, as a peer would, so later grants are
+// not held behind the rekey barrier.
+struct GrantedCredit final {
+    std::size_t scanned{2U};
+    std::uint64_t connection{0U};
+    std::uint64_t stream{0U};
+    std::vector<std::uint32_t> connection_increments;
+    std::vector<std::uint32_t> stream_increments;
+};
+
+void scan_granted_credit(TestSession& session, GrantedCredit& granted) {
+    while (granted.scanned < session.carrier->sent.size()) {
+        const auto record =
+            protected_record(session.carrier->sent[granted.scanned++]);
+        const auto type = record.header.type;
+        if (type == ytp1::RecordType::RekeyInit) {
+            CHECK(record.payload.size() >= 4U);
+            const std::uint32_t epoch =
+                (std::uint32_t{record.payload[0]} << 24U) |
+                (std::uint32_t{record.payload[1]} << 16U) |
+                (std::uint32_t{record.payload[2]} << 8U) |
+                std::uint32_t{record.payload[3]};
+            const auto acknowledgement = rekey_payload(epoch, std::byte{2});
+            session.carrier->deliver(
+                frame(ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
+            CHECK(session.engine->state() == SessionState::Active);
+            continue;
+        }
+        if (type != ytp1::RecordType::ConnectionCredit &&
+            type != ytp1::RecordType::StreamCredit) {
+            continue;
+        }
+        const auto increment = ytp1::DecodeCreditUpdate(record.payload);
+        CHECK(increment.ok());
+        if (type == ytp1::RecordType::ConnectionCredit) {
+            granted.connection += *increment.value;
+            granted.connection_increments.push_back(*increment.value);
+        } else if (record.header.stream_id.value() == 1U) {
+            granted.stream += *increment.value;
+            granted.stream_increments.push_back(*increment.value);
+        }
+    }
+}
+
+// The peer sends one DATA record on stream 1 and the application consumes it
+// at once, releasing its credit.
+void deliver_consumed(TestSession& session, std::uint64_t& sequence,
+                      std::size_t size) {
+    std::optional<ReceivedRecord> received;
+    session.handler->responder->async_read(
+        {}, [&](Result<ReceivedRecord> result) {
+            if (result.ok()) received.emplace(std::move(result).take_value());
+        });
+    const std::vector<std::byte> payload(size, std::byte{0x5a});
+    session.carrier->deliver(protected_wire(
+        0U, sequence++, frame(ytp1::RecordType::Data, 1U, payload)));
+    CHECK(received.has_value());
+    received.reset();
+    CHECK(session.engine->state() == SessionState::Active);
+}
+
+void test_receive_credit_returns_after_half_a_window() {
+    const SessionLimits limits = small_window_limits();
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    session.open_peer_stream();
+    GrantedCredit granted;
+    scan_granted_credit(session, granted);
+    CHECK((granted.connection_increments ==
+           std::vector<std::uint32_t>{32U * 1024U}));
+    CHECK(
+        (granted.stream_increments == std::vector<std::uint32_t>{16U * 1024U}));
+
+    // Half the 16 KiB stream window goes back in one grant, not per record.
+    std::uint64_t sequence = 2U;
+    constexpr std::size_t kRecord = 4U * 1024U;
+    deliver_consumed(session, sequence, kRecord);
+    scan_granted_credit(session, granted);
+    CHECK(granted.stream_increments.size() == 1U);
+    deliver_consumed(session, sequence, kRecord);
+    scan_granted_credit(session, granted);
+    CHECK((granted.stream_increments ==
+           std::vector<std::uint32_t>{16U * 1024U, 8U * 1024U}));
+    CHECK(granted.connection_increments.size() == 1U);
+
+    // Returns further apart than two round trips leave the window alone.
+    // The connection returns half of its own 32 KiB window.
+    for (int record = 0; record < 2; ++record) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        deliver_consumed(session, sequence, kRecord);
+    }
+    scan_granted_credit(session, granted);
+    CHECK((granted.stream_increments ==
+           std::vector<std::uint32_t>{16U * 1024U, 8U * 1024U, 8U * 1024U}));
+    CHECK((granted.connection_increments ==
+           std::vector<std::uint32_t>{32U * 1024U, 16U * 1024U}));
+}
+
+void test_receive_credit_returns_before_a_blocked_peer_could_stall() {
+    // A 6 KiB window with 4 KiB frames. After spending 2.5 KiB the peer
+    // holds 3.5 KiB, less than a full frame. Waiting for half the window
+    // would strand it, so credit goes back once the window less one frame
+    // (2 KiB) is consumed.
+    SessionLimits limits = small_window_limits();
+    limits.initial_stream_credit = 6U * 1024U;
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    session.open_peer_stream();
+    std::uint64_t sequence = 2U;
+    deliver_consumed(session, sequence, 2560U);
+    GrantedCredit granted;
+    scan_granted_credit(session, granted);
+    CHECK((granted.stream_increments ==
+           std::vector<std::uint32_t>{6U * 1024U, 2560U}));
+
+    // A window no larger than one frame returns every record.
+    SessionLimits frame_window = small_window_limits();
+    frame_window.initial_stream_credit = 4U * 1024U;
+    TestSession single(true, false, frame_window);
+    single.start_to_active();
+    single.open_peer_stream();
+    std::uint64_t single_sequence = 2U;
+    deliver_consumed(single, single_sequence, 1024U);
+    GrantedCredit single_granted;
+    scan_granted_credit(single, single_granted);
+    CHECK((single_granted.stream_increments ==
+           std::vector<std::uint32_t>{4U * 1024U, 1024U}));
+}
+
+void test_receive_window_grows_to_its_bound_while_drained_quickly() {
+    const SessionLimits limits = small_window_limits();
+    TestSession session(true, false, limits);
+    // The engine times the delayed AUTH answer as a 20 ms round trip.
+    session.start_to_active(std::chrono::milliseconds(20));
+    session.open_peer_stream();
+    GrantedCredit granted;
+    std::uint64_t sequence = 2U;
+    std::uint64_t sent = 0U;
+    std::uint64_t largest_stream = 0U;
+    std::uint64_t largest_connection = 0U;
+    constexpr std::size_t kRecord = 4U * 1024U;
+    // Each burst spends the credit the peer held when it began, then waits
+    // one emulated round trip for the grants the burst released. The
+    // application consumes every record at once.
+    for (int burst = 0; burst < 8; ++burst) {
+        scan_granted_credit(session, granted);
+        const std::uint64_t stream = granted.stream - sent;
+        const std::uint64_t connection = granted.connection - sent;
+        CHECK(stream <= limits.max_stream_credit);
+        CHECK(connection <= limits.max_connection_credit);
+        largest_stream = std::max(largest_stream, stream);
+        largest_connection = std::max(largest_connection, connection);
+        const std::uint64_t usable = std::min(stream, connection);
+        for (std::uint64_t spent = 0U; spent + kRecord <= usable;
+             spent += kRecord) {
+            deliver_consumed(session, sequence, kRecord);
+            sent += kRecord;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(largest_stream == limits.max_stream_credit);
+    // The connection window keeps one and a half stream windows available.
+    CHECK(largest_connection >=
+          limits.max_stream_credit + limits.max_stream_credit / 2U);
+
+    // Growth does not let the peer make this side buffer more than the
+    // window. With the application no longer reading, the peer can send the
+    // credit it holds and not one byte more.
+    scan_granted_credit(session, granted);
+    const std::vector<std::byte> payload(kRecord);
+    auto held = [&] {
+        return std::min(granted.stream, granted.connection) - sent;
+    };
+    CHECK(held() <= limits.max_stream_credit);
+    while (held() >= kRecord) {
+        session.carrier->deliver(protected_wire(
+            0U, sequence++, frame(ytp1::RecordType::Data, 1U, payload)));
+        sent += kRecord;
+        CHECK(session.engine->state() == SessionState::Active);
+    }
+    scan_granted_credit(session, granted);
+    CHECK(held() < kRecord);
+    const std::vector<std::byte> excess(held() + 1U);
+    session.carrier->deliver(protected_wire(
+        0U, sequence, frame(ytp1::RecordType::Data, 1U, excess)));
+    CHECK(session.engine->state() == SessionState::Failed);
+}
+
+void test_receive_window_holds_while_the_application_is_slow() {
+    const SessionLimits limits = small_window_limits();
+    TestSession session(true, false, limits);
+    session.start_to_active(std::chrono::milliseconds(20));
+    session.open_peer_stream();
+    // The application drains half the window every 80 ms, slower than two
+    // 20 ms round trips, so the window was not what held the peer back.
+    std::uint64_t sequence = 2U;
+    constexpr std::size_t kRecord = 4U * 1024U;
+    for (int half = 0; half < 3; ++half) {
+        deliver_consumed(session, sequence, kRecord);
+        deliver_consumed(session, sequence, kRecord);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    }
+    GrantedCredit granted;
+    scan_granted_credit(session, granted);
+    CHECK((granted.stream_increments ==
+           std::vector<std::uint32_t>{16U * 1024U, 8U * 1024U, 8U * 1024U,
+                                      8U * 1024U}));
+    CHECK((granted.connection_increments ==
+           std::vector<std::uint32_t>{32U * 1024U, 16U * 1024U}));
+}
+
+void test_peer_grants_are_bounded_by_the_protocol_not_local_windows() {
+    const SessionLimits limits = small_window_limits();
+    for (const std::uint32_t stream : {0U, 1U}) {
+        TestSession session(true, false, limits);
+        session.start_to_active();
+        session.open_peer_stream();
+        // The peer sizes its own receive windows, so grants far above this
+        // side's 128 KiB and 64 KiB maxima are valid.
+        std::uint64_t sequence = 2U;
+        grant_competing_credit(session, sequence, stream, 16U * 1024U * 1024U);
+        // Holding more than 2^30 octets of credit is a protocol failure.
+        session.carrier->deliver(protected_wire(
+            0U, sequence,
+            credit_frame(stream == 0U ? ytp1::RecordType::ConnectionCredit
+                                      : ytp1::RecordType::StreamCredit,
+                         stream, ytp1::kMaxCreditIncrement)));
+        CHECK(session.engine->state() == SessionState::Failed);
+    }
+}
+
+void test_receive_windows_fit_the_queue_budget() {
+    SessionLimits limits;
+    CHECK(validate_session_limits(limits).ok());
+    limits.max_connection_credit =
+        static_cast<std::uint32_t>(limits.max_queued_bytes) + 1U;
+    CHECK(validate_session_limits(limits).code() ==
+          StatusCode::InvalidArgument);
+    limits = {};
+    limits.max_stream_credit = limits.max_connection_credit + 1U;
+    CHECK(validate_session_limits(limits).code() ==
+          StatusCode::InvalidArgument);
+    CHECK(validate_session_limits(small_window_limits()).ok());
+}
+
 void run_test() {
     test_scoped_byte_wipe();
     test_one_use_records_and_cancellation();
@@ -3431,6 +3712,12 @@ void run_test() {
     test_graceful_settlement_keeps_crossed_credit_ordered();
     test_unacknowledged_streams_remain_bounded();
     test_cancel_unpublished_open_behind_rekey();
+    test_receive_credit_returns_after_half_a_window();
+    test_receive_credit_returns_before_a_blocked_peer_could_stall();
+    test_receive_window_grows_to_its_bound_while_drained_quickly();
+    test_receive_window_holds_while_the_application_is_slow();
+    test_peer_grants_are_bounded_by_the_protocol_not_local_windows();
+    test_receive_windows_fit_the_queue_budget();
 }
 
 }  // namespace

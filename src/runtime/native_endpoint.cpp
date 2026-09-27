@@ -185,15 +185,19 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
                                               limits.max_queued_bytes);
     limits.max_packet_size = config.max_packet_bytes();
     limits.max_concurrent_rekeys = config.max_rekey_jobs();
-    // Never advertise more receive credit than the configured byte budget.
-    limits.initial_connection_credit = std::min(limits.initial_connection_credit,
-                                                config.max_queued_bytes());
-    limits.max_connection_credit = std::min(limits.max_connection_credit,
-                                            config.max_queued_bytes());
-    limits.initial_stream_credit = static_cast<std::uint32_t>(std::min(
-        static_cast<std::size_t>(limits.initial_stream_credit), limits.max_stream_queued_bytes));
-    limits.max_stream_credit = static_cast<std::uint32_t>(std::min(
-        static_cast<std::size_t>(limits.max_stream_credit), limits.max_stream_queued_bytes));
+    // Receive windows start small and grow while the application keeps up.
+    // The connection window may reach the whole byte budget. A stream may
+    // reach two thirds of it, the share Chromium allows, so one stalled
+    // reader leaves credit for the other streams, but never less than one
+    // frame, which the peer must be able to send.
+    const std::uint32_t budget = config.max_queued_bytes();
+    limits.max_connection_credit = budget;
+    limits.initial_connection_credit =
+        std::min(limits.initial_connection_credit, budget);
+    limits.max_stream_credit =
+        std::max(budget - budget / 3U, limits.max_frame_payload);
+    limits.initial_stream_credit =
+        std::min(limits.initial_stream_credit, limits.max_stream_credit);
     return limits;
 }
 }  // namespace

@@ -370,6 +370,63 @@ void test_egress_pacing(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+// Each side sizes its receive windows from its own byte budget, so a client
+// with a smaller budget than the server accepts the server's larger grants.
+// Enough records cross each way for several batched credit returns.
+void test_mismatched_queue_budgets(const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    constexpr std::uint32_t kClientBudget = 1024U * 1024U;
+    const auto server_config = load(kit / "server/yumed.json");
+    CHECK(server_config.limits().max_queued_bytes() > kClientBudget);
+    std::string text;
+    CHECK(read_text_file_bounded(kit / "client/yume.json",
+                                 v1::kMaxDocumentBytes, &text));
+    auto document = nlohmann::json::parse(text);
+    document["limits"]["max_queued_bytes"] = kClientBudget;
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 1U;
+    server_options.max_pending_starts = 1U;
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, server_config,
+                                           kit / "server", bindings(handler),
+                                           server_options));
+    });
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(runner.context, v1::Parse(document),
+                                           kit / "client", bindings(handler),
+                                           client_options));
+    });
+    auto accepting = start(runner, server);
+    auto connecting = start(runner, client);
+    auto accepted = take(await(accepting));
+    auto session = take(await(connecting));
+    auto served_promise =
+        std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+    auto served_future = served_promise->get_future();
+    runner.sync([&] { handler->accepted = served_promise; });
+    auto opened = open(runner, session, "echo");
+    auto served = await(served_future);
+    const std::string record(60'000U, 'w');
+    for (int index = 0; index < 40; ++index)
+        transfer(runner, served, opened, record);
+    for (int index = 0; index < 40; ++index)
+        transfer(runner, opened, served, record);
+    CHECK(session->state() == SessionState::Active);
+    CHECK(accepted->state() == SessionState::Active);
+    runner.sync([&] {
+        client->close();
+        server->close();
+        accepted.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
 // Reload applies new grants to an established session's next OPEN, refuses a
 // malformed store without changing anything, and ends a removed identity's
 // session while the endpoint keeps serving.
@@ -2735,6 +2792,7 @@ int main(int argc, char** argv) {
         test_stalled_lookup_close(argv[1]);
         test_identity_session_replacement(argv[1]);
         test_egress_pacing(argv[1]);
+        test_mismatched_queue_budgets(argv[1]);
         test_credential_reload(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);
         test_unanswered_rekey_watchdog(argv[1]);

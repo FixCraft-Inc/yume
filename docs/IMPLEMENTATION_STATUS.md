@@ -238,8 +238,13 @@ record and send-age thresholds, crossed rotation, synchronous ACK delivery,
 reserved queue capacity, peer overshoot refusal, deferred publication and ACK
 deadline expiry. The native endpoint also tests its unanswered-ACK watchdog.
 Competing-stream tests cover credit changes, stalled readers, callback reentry
-and release after rekey. These cases do not establish sustained real-carrier
-fairness or high-RTT behavior.
+and release after rekey. Receive windows return credit in half-window updates
+and grow while the application drains them within two round trips. Engine tests
+cover the return point, growth to the bound, a slow reader whose window stays,
+a peer that cannot buffer past its credit and grants above the local maxima. An
+endpoint test covers a client whose byte budget is smaller than the server's.
+These cases do not establish sustained real-carrier fairness or high-RTT
+behavior.
 Automatic rotation remains an open security-preservation gate despite the
 changed build default.
 Deterministic pacing tests cover accept refusal, unschedulable retries,

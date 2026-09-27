@@ -59,10 +59,17 @@ struct SessionLimits final {
     std::uint32_t max_pending_opens{32U};
     std::uint32_t max_control_messages{128U};
     std::size_t max_queued_bytes{8U * 1024U * 1024U};
+    // Bounds one stream's unsent writes. Inbound bytes are bounded by the
+    // stream's receive window instead.
     std::size_t max_stream_queued_bytes{512U * 1024U};
     std::uint32_t max_packet_size{64U * 1024U};
+    // Receive windows start at the initial credit and grow toward the maximum
+    // while the application drains them faster than the peer refills them.
+    // The connection maximum may not exceed max_queued_bytes, which bounds the
+    // received bytes the whole session holds, and a stream maximum may not
+    // exceed the connection maximum.
     std::uint32_t initial_connection_credit{4U * 1024U * 1024U};
-    std::uint32_t max_connection_credit{16U * 1024U * 1024U};
+    std::uint32_t max_connection_credit{8U * 1024U * 1024U};
     std::uint32_t initial_stream_credit{256U * 1024U};
     std::uint32_t max_stream_credit{4U * 1024U * 1024U};
     std::uint32_t max_concurrent_rekeys{2U};

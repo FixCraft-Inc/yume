@@ -648,6 +648,7 @@ private:
     std::size_t service_stream_count_locked(std::string_view name,
                                             ServiceKind kind) const noexcept;
     void fail(Status status) noexcept;
+    void notify_if_teardown_complete() noexcept;
     bool terminal_locked() const noexcept {
         return state_ == SessionState::Closing ||
                state_ == SessionState::Closed ||
@@ -678,7 +679,9 @@ private:
     Status terminal_status_{};
     StartCompletion start_completion_;
     ClosedCompletion closed_completion_;
+    Status deferred_closed_status_;
     bool closed_observer_registered_{false};
+    bool teardown_drained_{false};
     bool teardown_complete_{false};
     std::optional<AuthenticationMessageKind> expected_auth_kind_;
     std::optional<PeerEvidence> authenticated_peer_;
@@ -732,6 +735,7 @@ private:
     std::atomic<std::uint64_t> record_bytes_sent_{0U};
     std::atomic<std::uint64_t> record_bytes_received_{0U};
     bool send_in_progress_{false};
+    std::size_t send_completions_in_progress_{0U};
     bool send_pump_running_{false};
     bool send_pump_again_{false};
 
@@ -1084,8 +1088,8 @@ void EngineStreamResponder::async_read(CancellationToken cancellation,
                                    std::move(completion));
         return;
     }
-    auto result = Result<ReceivedRecord>(Status(
-        StatusCode::Closed, "session no longer exists"));
+    auto result = Result<ReceivedRecord>(
+        Status::diagnostic(StatusCode::Closed, "session no longer exists"));
     invoke_noexcept(completion, std::move(result));
 }
 
@@ -1098,17 +1102,16 @@ void EngineStreamResponder::async_write(Buffer payload,
                                     std::move(completion));
         return;
     }
-    invoke_noexcept(completion,
-                    Status(StatusCode::Closed,
-                           "session no longer exists"),
-                    0U);
+    invoke_noexcept(
+        completion,
+        Status::diagnostic(StatusCode::Closed, "session no longer exists"), 0U);
 }
 
 Status EngineStreamResponder::shutdown_write() noexcept {
     if (auto engine = engine_.lock()) {
         return engine->impl_->stream_shutdown(stream_id_);
     }
-    return Status(StatusCode::Closed, "session no longer exists");
+    return Status::diagnostic(StatusCode::Closed, "session no longer exists");
 }
 
 void EngineStreamResponder::close(Status reason) noexcept {
@@ -2059,12 +2062,23 @@ void SessionEngine::Impl::on_send_complete(
         completion = std::move(active.completion);
         completion_bytes = status.ok() ? active.completion_bytes : 0U;
         must_fail = !status.ok() && !terminal_locked();
+        ++send_completions_in_progress_;
     }
-    invoke_noexcept(completion, copy_failure(status), completion_bytes);
+    struct CompletionGuard final {
+        Impl& owner;
+        ~CompletionGuard() noexcept {
+            {
+                std::lock_guard<std::mutex> lock(owner.mutex_);
+                --owner.send_completions_in_progress_;
+            }
+            owner.notify_if_teardown_complete();
+        }
+    } settled{*this};
     if (must_fail) {
-        fail(std::move(status));
-        return;
+        fail(copy_failure(status));
     }
+    invoke_noexcept(completion, std::move(status), completion_bytes);
+    if (must_fail) return;
     request_send_pump();
 }
 
@@ -3067,7 +3081,7 @@ void SessionEngine::Impl::stream_read(
         return;
     }
     if (cancellation.is_cancelled()) {
-        auto result = Result<ReceivedRecord>(Status(
+        auto result = Result<ReceivedRecord>(Status::diagnostic(
             StatusCode::Cancelled, "stream read was cancelled"));
         invoke_noexcept(completion, std::move(result));
         return;
@@ -3080,10 +3094,10 @@ void SessionEngine::Impl::stream_read(
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = streams_.find(stream_id.value());
         if (it == streams_.end() || it->second->closed) {
-            status = Status(StatusCode::Closed, "stream is closed");
+            status = Status::diagnostic(StatusCode::Closed, "stream is closed");
         } else if (it->second->pending_read.has_value()) {
-            status = Status(StatusCode::FailedPrecondition,
-                            "stream already has a pending read");
+            status = Status::diagnostic(StatusCode::FailedPrecondition,
+                                        "stream already has a pending read");
         } else if (!it->second->inbound.empty()) {
             ready.emplace(std::move(it->second->inbound.front()));
             it->second->inbound.pop_front();
@@ -3099,17 +3113,17 @@ void SessionEngine::Impl::stream_read(
                                 it->second->local_write_closed &&
                                 it->second->inbound.empty();
         } else if (it->second->peer_write_closed) {
-            status = Status(
-                StatusCode::EndOfStream,
-                "peer shut down the stream write side");
+            status = Status::diagnostic(StatusCode::EndOfStream,
+                                        "peer shut down the stream write side");
             if (it->second->responder) {
                 it->second->responder->mark_end_of_stream();
             }
             retire_after_read = it->second->local_write_closed;
         } else {
             if (operation_ids_exhausted_) {
-                status = Status(StatusCode::ResourceExhausted,
-                                "stream operation IDs are exhausted");
+                status =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "stream operation IDs are exhausted");
             } else {
                 const std::uint64_t operation_id = next_operation_id_;
                 if (next_operation_id_ ==
@@ -3126,29 +3140,47 @@ void SessionEngine::Impl::stream_read(
     }
     if (retire_after_read) {
         remove_stream(stream_id, Status::diagnostic(StatusCode::Closed));
-        const auto settled = settle_handshake(stream_id);
-        if (!settled.ok()) fail(copy_failure(settled));
+        try {
+            const auto settled = settle_handshake(stream_id);
+            if (!settled.ok()) fail(copy_failure(settled));
+        } catch (const std::bad_alloc&) {
+            fail(Status::diagnostic(StatusCode::ResourceExhausted));
+        } catch (...) {
+            fail(Status::diagnostic(StatusCode::Internal));
+        }
     }
     if (!status.ok()) {
-        auto result = Result<ReceivedRecord>(status);
+        auto result = Result<ReceivedRecord>(std::move(status));
         invoke_noexcept(completion, std::move(result));
         return;
     }
     if (queued_operation.has_value()) {
         const std::weak_ptr<SessionEngine> weak = weak_owner();
-        auto registration = cancellation.register_callback(
-            [weak, stream_id,
-             operation_id = *queued_operation] {
-                if (auto engine = weak.lock()) {
-                    engine->impl_->cancel_pending_read(
-                        stream_id, operation_id,
-                        Status(StatusCode::Cancelled,
-                               "stream read was cancelled"));
-                }
-            });
+        Result<CancellationRegistration> registration(
+            Status::diagnostic(StatusCode::Internal));
+        try {
+            registration = cancellation.register_callback(
+                [weak, stream_id, operation_id = *queued_operation]() noexcept {
+                    if (auto engine = weak.lock()) {
+                        engine->impl_->cancel_pending_read(
+                            stream_id, operation_id,
+                            Status::diagnostic(StatusCode::Cancelled,
+                                               "stream read was cancelled"));
+                    }
+                });
+        } catch (const std::bad_alloc&) {
+            cancel_pending_read(
+                stream_id, *queued_operation,
+                Status::diagnostic(StatusCode::ResourceExhausted));
+            return;
+        } catch (...) {
+            cancel_pending_read(stream_id, *queued_operation,
+                                Status::diagnostic(StatusCode::Internal));
+            return;
+        }
         if (!registration.ok()) {
             cancel_pending_read(stream_id, *queued_operation,
-                                registration.status());
+                                copy_failure(registration.status()));
             return;
         }
         CancellationRegistration installed =
@@ -3173,8 +3205,10 @@ void SessionEngine::Impl::stream_write(
     StreamResponder::WriteCompletion completion) {
     if (!completion) return;
     if (cancellation.is_cancelled()) {
-        invoke_noexcept(completion, Status(
-            StatusCode::Cancelled, "stream write was cancelled"), 0U);
+        invoke_noexcept(completion,
+                        Status::diagnostic(StatusCode::Cancelled,
+                                           "stream write was cancelled"),
+                        0U);
         return;
     }
     Status status = Status::success();
@@ -3183,18 +3217,18 @@ void SessionEngine::Impl::stream_write(
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = streams_.find(stream_id.value());
         if (it == streams_.end() || it->second->closed) {
-            status = Status(StatusCode::Closed, "stream is closed");
+            status = Status::diagnostic(StatusCode::Closed, "stream is closed");
         } else if (it->second->local_write_shutdown_requested) {
-            status = Status(StatusCode::Closed,
-                            "stream write side is shut down");
+            status = Status::diagnostic(StatusCode::Closed,
+                                        "stream write side is shut down");
         } else if (payload.empty() ||
                    payload.size() > limits_.max_frame_payload ||
                    payload.size() > limits_.max_connection_credit ||
                    payload.size() > limits_.max_stream_credit ||
                    (it->second->kind == ServiceKind::PacketChannel &&
                     payload.size() > limits_.max_packet_size)) {
-            status = Status(StatusCode::InvalidArgument,
-                            "stream payload size is invalid");
+            status = Status::diagnostic(StatusCode::InvalidArgument,
+                                        "stream payload size is invalid");
         } else {
             auto& stream = *it->second;
             // Shrinking a payload does not release its backing allocation.
@@ -3209,8 +3243,9 @@ void SessionEngine::Impl::stream_write(
                 status = Status::diagnostic(StatusCode::ResourceExhausted,
                                             "stream write queue is full");
             } else if (operation_ids_exhausted_) {
-                status = Status(StatusCode::ResourceExhausted,
-                                "stream operation IDs are exhausted");
+                status =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "stream operation IDs are exhausted");
             } else {
                 try {
                     const std::uint64_t operation_id = next_operation_id_;
@@ -3227,29 +3262,42 @@ void SessionEngine::Impl::stream_write(
                     pending_write_bytes_ += storage_bytes;
                     queued_operation = operation_id;
                 } catch (const std::bad_alloc&) {
-                    status = Status(StatusCode::ResourceExhausted,
-                                    "stream write queue allocation failed");
+                    status = Status::diagnostic(
+                        StatusCode::ResourceExhausted,
+                        "stream write queue allocation failed");
                 }
             }
         }
     }
     if (!status.ok()) {
-        invoke_noexcept(completion, status, 0U);
+        invoke_noexcept(completion, std::move(status), 0U);
         return;
     }
     const std::weak_ptr<SessionEngine> weak = weak_owner();
-    auto registration = cancellation.register_callback(
-        [weak, stream_id, operation_id = *queued_operation] {
-            if (auto engine = weak.lock()) {
-                engine->impl_->cancel_pending_write(
-                    stream_id, operation_id,
-                    Status(StatusCode::Cancelled,
-                           "stream write was cancelled"));
-            }
-        });
+    Result<CancellationRegistration> registration(
+        Status::diagnostic(StatusCode::Internal));
+    try {
+        registration = cancellation.register_callback(
+            [weak, stream_id, operation_id = *queued_operation]() noexcept {
+                if (auto engine = weak.lock()) {
+                    engine->impl_->cancel_pending_write(
+                        stream_id, operation_id,
+                        Status::diagnostic(StatusCode::Cancelled,
+                                           "stream write was cancelled"));
+                }
+            });
+    } catch (const std::bad_alloc&) {
+        cancel_pending_write(stream_id, *queued_operation,
+                             Status::diagnostic(StatusCode::ResourceExhausted));
+        return;
+    } catch (...) {
+        cancel_pending_write(stream_id, *queued_operation,
+                             Status::diagnostic(StatusCode::Internal));
+        return;
+    }
     if (!registration.ok()) {
         cancel_pending_write(stream_id, *queued_operation,
-                             registration.status());
+                             copy_failure(registration.status()));
         return;
     }
     CancellationRegistration installed =
@@ -3278,6 +3326,10 @@ void SessionEngine::Impl::drain_pending_writes() noexcept {
         if (pending_writes_draining_) return;
         pending_writes_draining_ = true;
     }
+    struct DrainGuard final {
+        Impl& owner;
+        ~DrainGuard() noexcept { owner.notify_if_teardown_complete(); }
+    } drain{*this};
     for (;;) {
         std::optional<PendingWrite> pending;
         std::shared_ptr<StreamStateData> stream;
@@ -3330,36 +3382,33 @@ void SessionEngine::Impl::drain_pending_writes() noexcept {
             ? ytp1::RecordType::Data
             : ytp1::RecordType::Packet;
         std::shared_ptr<StreamResponder::WriteCompletion> completion_holder;
+        Status status;
+        bool publication_started = false;
+        bool publication_threw = false;
         try {
             completion_holder =
                 std::make_shared<StreamResponder::WriteCompletion>(
                     std::move(pending->completion));
+            // Creating the type-erased callback may allocate even though its
+            // capture is only a shared_ptr. Until enqueue begins, failure is
+            // local to this write and its credit can be restored safely.
+            Carrier::SendCompletion submitted =
+                [completion_holder](Status send_status,
+                                    std::size_t transferred) noexcept {
+                    auto completion = std::exchange(*completion_holder, {});
+                    invoke_noexcept(completion, std::move(send_status),
+                                    transferred);
+                };
+            publication_started = true;
+            status = enqueue_record(type, stream_id, pending->payload.bytes(),
+                                    true, false, size, std::move(submitted));
         } catch (const std::bad_alloc&) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                stream->outbound_credit += size;
-                outbound_connection_credit_ += size;
-                --stream->outbound_publications;
-            }
-            invoke_noexcept(pending->completion,
-                            Status::diagnostic(
-                                StatusCode::ResourceExhausted,
-                                "queued-write completion allocation failed"),
-                            0U);
-            const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
-            if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-                fail(shutdown);
-            }
-            continue;
+            status = Status::diagnostic(StatusCode::ResourceExhausted);
+            publication_threw = publication_started;
+        } catch (...) {
+            status = Status::diagnostic(StatusCode::Internal);
+            publication_threw = publication_started;
         }
-        const Status status = enqueue_record(
-            type, stream_id, pending->payload.bytes(), true, false, size,
-            [completion_holder](Status send_status,
-                                std::size_t transferred) noexcept {
-                invoke_noexcept(*completion_holder,
-                                std::move(send_status), transferred);
-                *completion_holder = {};
-            });
         {
             std::lock_guard<std::mutex> lock(mutex_);
             --stream->outbound_publications;
@@ -3368,13 +3417,21 @@ void SessionEngine::Impl::drain_pending_writes() noexcept {
                 outbound_connection_credit_ += size;
             }
         }
+        pending->cancellation.unregister();
+        if (publication_threw) {
+            // enqueue may already have consumed a one-use record token. Mark
+            // the session terminal before a failed completion can re-enter it.
+            fail(copy_failure(status));
+        }
         if (!status.ok()) {
-            invoke_noexcept(*completion_holder, status, 0U);
-            *completion_holder = {};
+            auto completion = completion_holder
+                                  ? std::exchange(*completion_holder, {})
+                                  : std::move(pending->completion);
+            invoke_noexcept(completion, copy_failure(status), 0U);
         }
         const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
         if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-            fail(shutdown);
+            fail(copy_failure(shutdown));
         }
     }
 }
@@ -3615,7 +3672,7 @@ void SessionEngine::Impl::cancel_pending_read(
         completion = std::move(it->second->pending_read->completion);
         it->second->pending_read.reset();
     }
-    auto result = Result<ReceivedRecord>(reason);
+    auto result = Result<ReceivedRecord>(std::move(reason));
     invoke_noexcept(completion, std::move(result));
 }
 
@@ -3648,7 +3705,7 @@ void SessionEngine::Impl::cancel_pending_write(
     invoke_noexcept(completion, std::move(reason), 0U);
     const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
     if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
-        fail(shutdown);
+        fail(copy_failure(shutdown));
     }
     drain_pending_writes();
 }
@@ -3983,11 +4040,28 @@ void SessionEngine::Impl::stop(Status reason, bool failed) noexcept {
     }
     retired_active.reset();
     retired_streams.clear();
-    ClosedCompletion closed;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        teardown_drained_ = true;
+        deferred_closed_status_ = std::move(reason);
+    }
+    notify_if_teardown_complete();
+}
+
+void SessionEngine::Impl::notify_if_teardown_complete() noexcept {
+    ClosedCompletion closed;
+    Status reason;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // A publisher or send completion can call stop while holding a write
+        // outside the queues stop owns. Let that owner settle its callback
+        // before notifying closure. Move the diagnostic without allocating.
+        if (!teardown_drained_ || pending_writes_draining_ ||
+            send_completions_in_progress_ != 0U || teardown_complete_)
+            return;
         teardown_complete_ = true;
         closed = std::move(closed_completion_);
+        reason = std::move(deferred_closed_status_);
     }
     invoke_noexcept(closed, std::move(reason));
 }

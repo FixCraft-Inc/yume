@@ -75,8 +75,9 @@ def generate() -> dict[str, bytes]:
     values = {
         "client_identity": b"PUBLIC SYNTHETIC CLIENT IDENTITY",
         "server_identity": b"PUBLIC SYNTHETIC SERVER IDENTITY",
-        "client_capabilities": bytes.fromhex("0100000101000004000000086563686f"),
-        "server_capabilities": bytes.fromhex("0100000101000004000000106563686f"),
+        # Schema 2 manifests: one echo service, 1 MiB epochs.
+        "client_capabilities": bytes.fromhex("020000010010000001000004000000086563686f"),
+        "server_capabilities": bytes.fromhex("020000010010000001000004000000106563686f"),
         "exporter": pattern(0x10),
         "access_contribution": pattern(0x30),
         "client_x_public": pattern(0x50),

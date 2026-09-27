@@ -1212,12 +1212,11 @@ ResourceLimits ParseLimits(const Json& limits) {
         "max_packet_bytes",
         "max_packet_batch",
     }};
-    CheckClosedObject(
-        limits, "/limits",
-        {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
-         keys[7], "max_egress_mbps"},
-        {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
-         keys[7]});
+    CheckClosedObject(limits, "/limits",
+                      {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
+                       keys[6], keys[7], "max_egress_mbps", "max_epoch_bytes"},
+                      {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
+                       keys[6], keys[7]});
 
     const auto read = [&](std::string_view key,
                           std::uint32_t minimum,
@@ -1257,10 +1256,18 @@ ResourceLimits ParseLimits(const Json& limits) {
         max_egress_mbps =
             read("max_egress_mbps", kMinEgressMbps, kMaxEgressMbps);
     }
+    std::uint32_t max_epoch_bytes = kMinEpochBytes;
+    if (limits.contains("max_epoch_bytes")) {
+        max_epoch_bytes =
+            read("max_epoch_bytes", kMinEpochBytes, kMaxEpochBytes);
+        if ((max_epoch_bytes & (max_epoch_bytes - 1U)) != 0U) {
+            Fail("/limits/max_epoch_bytes", "must be a power of two");
+        }
+    }
     return ResourceLimits(max_frame_bytes, max_streams, max_queued_bytes,
                           max_pending_opens, max_rekey_jobs,
                           max_control_messages, max_packet_bytes,
-                          max_packet_batch, max_egress_mbps);
+                          max_packet_batch, max_egress_mbps, max_epoch_bytes);
 }
 
 void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,

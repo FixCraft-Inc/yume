@@ -391,6 +391,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   time. The session's queued-byte count wrapped below zero, and the next
   record found the queue full and ended the session or refused its writes.
   Fast far-path downloads and a soak of repeated parallel downloads hit it.
+- **Negotiated epoch size.** `limits.max_epoch_bytes`, a power of two from
+  1 MiB, the default, through 64 MiB, sets how much protected payload one
+  directional key epoch may carry. The capability manifest, now schema 2,
+  signs it in the AUTH flight, and both directions use the smaller of the two
+  sides' values, so neither side can make the other rotate less often than it
+  allows. Rotation waits one round trip for REKEY_ACK, so on a far path a
+  session carries about one epoch per round trip. A larger epoch trades key
+  granularity for speed there. The record limit stays at one record per 2 KiB
+  of the epoch and the 500 ms age limit is unchanged. Schema-1 manifests are
+  rejected and the YTP/1 vectors changed with it.
 - **Session queue budget.** `limits.max_queued_bytes` accepts 64 KiB to
   16 MiB. The parser and `yume-doctor` accepted up to 64 MiB while the
   session engine refuses more than 16 MiB, so a larger budget passed

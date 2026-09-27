@@ -346,9 +346,10 @@ A canonical capability manifest is at most 64 KiB and contains at most 256
 entries:
 
 @code text
-u8  schema = 1
+u8  schema = 2
 u8  flags = 0
 u16 entry_count
+u32 max_epoch_bytes
 repeat entry_count:
     u8  service_kind
     u8  flags = 0
@@ -363,8 +364,15 @@ Service kinds and names have the same rules as OPEN.
 Entries are ordered first by unsigned service-name octets and then by numeric
 service kind. The encoder sorts entries into that order. The decoder rejects
 out-of-order entries and duplicate `(service_name, service_kind)` keys. The
-same name MAY appear once for each distinct service kind. An empty manifest is
-the four-octet value `01 00 00 00`.
+same name MAY appear once for each distinct service kind. An empty manifest
+that accepts 1 MiB epochs is the eight-octet value `02 00 00 00 00 10 00 00`.
+
+`max_epoch_bytes` is the most protected payload the sender accepts in one
+directional epoch, in either direction. It MUST be a power of two from 1 MiB
+(`1048576`) through 64 MiB (`67108864`). Each side advertises its own value in
+its AUTH flight, and both directions of the session use the smaller of the two
+values, so neither side sends or accepts a larger epoch than the other allows.
+Schema 1, which had no epoch field, is rejected.
 
 A capability is authenticated advertisement, not authorization. A runtime
 MUST still apply its resource and per-OPEN authorization policy.
@@ -650,9 +658,13 @@ a protected ACK, a bare non-ACK post-AUTH frame, component mutation, or
 post-failure reuse terminates the session. This design supports crossed
 opposite-direction rekeys without retaining old directional roots.
 
-The native engine rotates its outbound root before accepting protected payload
-past 1 MiB or 512 records in an epoch, and checks the 500 ms age threshold on
-the next protected send. INIT does not count toward these application thresholds.
+A directional epoch carries at most the session's epoch size in protected
+payload (the smaller `max_epoch_bytes` of the two manifests) and at most one
+record per 2 KiB of it, 512 records for 1 MiB. A receiver MUST treat a peer
+epoch that exceeds either limit as a protocol failure. The native engine
+rotates its outbound root before accepting protected payload past either limit,
+and checks a fixed 500 ms age threshold on the next protected send. INIT does
+not count toward these application thresholds.
 The native endpoint also rotates an epoch that has carried a record as soon as
 it is 500 ms old, so the next send does not wait a round trip for the ACK. An
 epoch that carried nothing is not rotated, so an idle session's root does not

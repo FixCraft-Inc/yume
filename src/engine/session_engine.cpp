@@ -273,7 +273,7 @@ Status validate_limits(const SessionLimits& limits) {
     if (limits.max_frame_payload <
             kRekeyEpochBytes + ytp1::kRekeyInitMessageBytes ||
         limits.max_frame_payload > ytp1::kDefaultMaxFramePayload ||
-        limits.max_frame_payload > ytp1::kEpochPayloadByteLimit) {
+        limits.max_frame_payload > ytp1::kMinEpochPayloadBytes) {
         return Status(StatusCode::InvalidArgument,
                       "session frame limit is outside the YTP/1 bound");
     }
@@ -306,6 +306,11 @@ Status validate_limits(const SessionLimits& limits) {
         limits.max_stream_credit > limits.max_connection_credit) {
         return Status(StatusCode::InvalidArgument,
                       "session flow-credit limits are invalid");
+    }
+    if (!ytp1::IsValidEpochPayloadBytes(limits.max_epoch_bytes)) {
+        return Status(StatusCode::InvalidArgument,
+                      "session epoch size is not a power of two from 1 MiB "
+                      "through 64 MiB");
     }
     if (limits.max_concurrent_rekeys < 2U ||
         limits.max_concurrent_rekeys > kMaxSessionConcurrentRekeys ||
@@ -433,6 +438,12 @@ public:
         counts.record_bytes_sent = record_bytes_sent_.load(std::memory_order_relaxed);
         counts.record_bytes_received = record_bytes_received_.load(std::memory_order_relaxed);
         return counts;
+    }
+
+    std::optional<std::uint32_t> epoch_bytes() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!epoch_negotiated_) return std::nullopt;
+        return epoch_payload_bytes_;
     }
 
     Status terminal_status() const {
@@ -755,6 +766,10 @@ private:
     std::uint64_t outbound_epoch_records_{0U};
     std::uint64_t inbound_epoch_bytes_{0U};
     std::uint64_t inbound_epoch_records_{0U};
+    std::uint32_t epoch_payload_bytes_{ytp1::kMinEpochPayloadBytes};
+    std::uint64_t epoch_record_limit_{
+        ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes)};
+    bool epoch_negotiated_{false};
     std::chrono::steady_clock::time_point outbound_epoch_first_send_{};
     std::uint32_t outbound_rekey_epoch_{0U};
     std::uint32_t rekey_work_{0U};
@@ -915,6 +930,7 @@ Result<std::shared_ptr<SessionEngine>> SessionEngine::create(
 
     try {
         ytp1::CapabilityManifest local_manifest;
+        local_manifest.max_epoch_bytes = limits.max_epoch_bytes;
         local_manifest.entries.reserve(graph->suite().services().size());
         for (const ServiceRequirement& service :
              graph->suite().services()) {
@@ -992,6 +1008,10 @@ SessionState SessionEngine::state() const noexcept {
 
 SessionTraffic SessionEngine::traffic() const noexcept {
     return impl_->traffic();
+}
+
+std::optional<std::uint32_t> SessionEngine::epoch_bytes() const noexcept {
+    return impl_->epoch_bytes();
 }
 
 Status SessionEngine::terminal_status() const {
@@ -1473,6 +1493,12 @@ Status SessionEngine::Impl::accept_established_output(
         authenticated_peer_capabilities_ =
             std::move(output.authenticated_peer_capability_manifest);
         peer_manifest_ = *decoded.value;
+        // Both directions use the smaller advertised epoch, set before the
+        // first protected record either side sends.
+        epoch_payload_bytes_ = std::min(local_manifest_.max_epoch_bytes,
+                                        peer_manifest_.max_epoch_bytes);
+        epoch_record_limit_ = ytp1::EpochRecordLimit(epoch_payload_bytes_);
+        epoch_negotiated_ = true;
         expected_auth_kind_.reset();
         state_ = SessionState::AwaitingCapabilities;
     }
@@ -1701,13 +1727,14 @@ Status SessionEngine::Impl::enqueue_record(
         {
             std::lock_guard<std::mutex> lock(mutex_);
             rotate = state_ == SessionState::Active &&
-                !outbound_rekey_pending_ &&
-                (payload.size() > ytp1::kEpochPayloadByteLimit -
-                                      outbound_epoch_bytes_ ||
-                 outbound_epoch_records_ == ytp1::kEpochRecordLimit ||
-                 (outbound_epoch_records_ != 0U &&
-                  std::chrono::steady_clock::now() - outbound_epoch_first_send_ >=
-                      ytp1::kEpochSendLifetime));
+                     !outbound_rekey_pending_ &&
+                     (payload.size() >
+                          epoch_payload_bytes_ - outbound_epoch_bytes_ ||
+                      outbound_epoch_records_ == epoch_record_limit_ ||
+                      (outbound_epoch_records_ != 0U &&
+                       std::chrono::steady_clock::now() -
+                               outbound_epoch_first_send_ >=
+                           ytp1::kEpochSendLifetime));
         }
         if (!rotate) break;
         ordering_lock.unlock();
@@ -2356,9 +2383,9 @@ Status SessionEngine::Impl::process_protected_record(
     }
     if (decoded.value->header.type != ytp1::RecordType::RekeyInit) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (decoded.value->payload.size() > ytp1::kEpochPayloadByteLimit -
-                                               inbound_epoch_bytes_ ||
-            inbound_epoch_records_ == ytp1::kEpochRecordLimit) {
+        if (decoded.value->payload.size() >
+                epoch_payload_bytes_ - inbound_epoch_bytes_ ||
+            inbound_epoch_records_ == epoch_record_limit_) {
             return protocol_failure("peer exceeded the directional epoch limit");
         }
         inbound_epoch_bytes_ += decoded.value->payload.size();

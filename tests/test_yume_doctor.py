@@ -880,6 +880,28 @@ class YumeDoctorTests(unittest.TestCase):
                 self.assertIn("/limits/max_queued_bytes", result.stderr)
         client_path.write_text(original)
 
+    def test_epoch_bytes_bounds_match_the_parser(self) -> None:
+        source = (ROOT / "src/config/v1/config.hpp").read_text()
+        bounds = {
+            name: 1 << int(re.search(rf"{name}\s*=\s*1U << (\d+);", source)[1])
+            for name in ("kMinEpochBytes", "kMaxEpochBytes")
+        }
+        minimum, maximum = bounds["kMinEpochBytes"], bounds["kMaxEpochBytes"]
+        client_path = self.case / "client/yume.json"
+        original = client_path.read_text()
+        for value, accepted in ((minimum, True), (maximum, True), (3 * minimum, False),
+                                (minimum // 2, False), (maximum * 2, False)):
+            config = json.loads(original)
+            config["limits"]["max_epoch_bytes"] = value
+            client_path.write_text(json.dumps(config))
+            result = self.run_doctor(client_path)
+            if accepted:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            else:
+                self.assertEqual(result.returncode, 1, value)
+                self.assertIn("/limits/max_epoch_bytes", result.stderr)
+        client_path.write_text(original)
+
     def test_authorized_identity_limit_matches_native_factory(self) -> None:
         doctor = runpy.run_path(str(DOCTOR))
         source = (ROOT / "src/providers/openssl_security_provider.hpp").read_text()

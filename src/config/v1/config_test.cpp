@@ -1235,6 +1235,25 @@ void TestResourceLimits() {
     Check(Parse(maximum).limits().max_rekey_jobs() == 64,
           "maximum resource bounds were rejected");
 
+    // max_epoch_bytes is optional, 1 MiB by default, and a power of two from
+    // 1 MiB through 64 MiB.
+    Check(Parse(ClientDocument()).limits().max_epoch_bytes() == kMinEpochBytes,
+          "the default epoch size is not 1 MiB");
+    for (const std::uint32_t epoch :
+         {kMinEpochBytes, 4U << 20, kMaxEpochBytes}) {
+        Json epochs = ClientDocument();
+        epochs["limits"]["max_epoch_bytes"] = epoch;
+        Check(Parse(epochs).limits().max_epoch_bytes() == epoch,
+              "a valid epoch size was rejected");
+    }
+    for (const std::uint64_t epoch :
+         {std::uint64_t{kMinEpochBytes} / 2U, std::uint64_t{3U << 20},
+          std::uint64_t{kMaxEpochBytes} * 2U}) {
+        Json epochs = ClientDocument();
+        epochs["limits"]["max_epoch_bytes"] = epoch;
+        ExpectError(epochs, "/limits/max_epoch_bytes");
+    }
+
     Json document = ClientDocument();
     document["limits"]["fallback"] = true;
     ExpectError(document, "/limits/fallback", "unknown key");

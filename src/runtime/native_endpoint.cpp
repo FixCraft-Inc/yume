@@ -41,6 +41,9 @@ using Timer = boost::asio::basic_waitable_timer<
 constexpr std::chrono::seconds kMaxAcceptRetryDelay{10};
 // A budget the parser accepts must be one the session engine accepts.
 static_assert(config::v1::kMaxQueuedBytes <= kAbsoluteMaxBufferBytes);
+// The configured epoch range is the one YTP/1 advertises and accepts.
+static_assert(config::v1::kMinEpochBytes == ytp1::kMinEpochPayloadBytes &&
+              config::v1::kMaxEpochBytes == ytp1::kMaxEpochPayloadBytes);
 
 template <typename T>
 T require(Result<T> result) {
@@ -185,6 +188,7 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
                                               limits.max_queued_bytes);
     limits.max_packet_size = config.max_packet_bytes();
     limits.max_concurrent_rekeys = config.max_rekey_jobs();
+    limits.max_epoch_bytes = config.max_epoch_bytes();
     // Receive windows start small and grow while the application keeps up.
     // The connection window may reach the whole byte budget. A stream may
     // reach two thirds of it, the share Chromium allows, so one stalled

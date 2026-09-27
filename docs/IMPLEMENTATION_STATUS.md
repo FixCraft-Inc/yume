@@ -231,8 +231,12 @@ notification, reentrant slot reuse, callback exceptions, client reconnect
 with SOCKS traffic through the replacement session, and backoff after a session
 that ends right after AUTH.
 The established endpoint rekey cases explicitly initiate rotation. The session
-engine also contains an automatic rotation candidate: one MiB of directional
-payload, 512 protected records, or 500 ms checked on the next protected send.
+engine also contains an automatic rotation candidate: the session's epoch size
+of directional payload, one protected record per 2 KiB of it, or 500 ms checked
+on the next protected send. The epoch size is the smaller
+`limits.max_epoch_bytes` of the two capability manifests, 1 MiB by default and
+at most 64 MiB, and engine and endpoint tests cover a pair of sides that
+advertise different sizes.
 The native endpoint's rekey timer also rotates a used epoch once it is 500 ms
 old, so a request after an idle moment does not wait for REKEY_ACK.
 It reserves outbound space for rekey controls. Focused engine tests cover byte,

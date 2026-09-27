@@ -18,11 +18,17 @@
 
 namespace yume::ytp1 {
 
-// Directional traffic limits are fixed, independent of application/product
-// versions. INIT has a separate fixed bound and is the last old-root record.
-inline constexpr std::uint64_t kEpochPayloadByteLimit = 1024U * 1024U;
-inline constexpr std::uint64_t kEpochRecordLimit = 512U;
+// Directional traffic limits. The payload limit is the session's epoch size,
+// the smaller manifest value (protocol.hpp), and the record limit follows it
+// at one record per 2 KiB. The send lifetime is fixed. INIT has a separate
+// fixed bound and is the last old-root record.
+inline constexpr std::uint64_t kEpochPayloadBytesPerRecord = 2048U;
 inline constexpr auto kEpochSendLifetime = std::chrono::milliseconds(500);
+
+[[nodiscard]] constexpr std::uint64_t EpochRecordLimit(
+    std::uint32_t epoch_payload_bytes) noexcept {
+    return epoch_payload_bytes / kEpochPayloadBytesPerRecord;
+}
 inline constexpr std::size_t kRekeyInitMessageBytes = 1672U;
 inline constexpr std::size_t kRekeyAckMessageBytes = 1640U;
 

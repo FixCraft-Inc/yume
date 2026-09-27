@@ -57,6 +57,9 @@ MAX_SESSIONS_PER_IDENTITY = 1024
 MIN_WEIGHT = 0.1
 MAX_WEIGHT = 100.0
 MAX_EGRESS_MBPS = 1_000_000
+# limits.max_epoch_bytes, as the parser bounds it (config.hpp).
+MIN_EPOCH_BYTES = 1 << 20
+MAX_EPOCH_BYTES = 1 << 26
 MAX_ADMIN_IDENTITIES = 4096
 # A UNIX socket path must fit sockaddr_un with its terminator.
 MAX_UNIX_SOCKET_PATH_BYTES = 107
@@ -819,12 +822,18 @@ def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
         "max_packet_batch": (1, 256),
     }
     limits = _closed_object(
-        value, "/limits", [*bounds.keys(), "max_egress_mbps"], bounds.keys()
+        value, "/limits", [*bounds.keys(), "max_egress_mbps", "max_epoch_bytes"],
+        bounds.keys()
     )
     parsed = {
         key: _integer(limits[key], f"/limits/{key}", minimum, maximum)
         for key, (minimum, maximum) in bounds.items()
     }
+    if "max_epoch_bytes" in limits:
+        epoch = _integer(limits["max_epoch_bytes"], "/limits/max_epoch_bytes",
+                         MIN_EPOCH_BYTES, MAX_EPOCH_BYTES)
+        if epoch & (epoch - 1):
+            _fail("/limits/max_epoch_bytes", "must be a power of two")
     if "max_egress_mbps" in limits:
         _integer(limits["max_egress_mbps"], "/limits/max_egress_mbps", 1, MAX_EGRESS_MBPS)
         if role != "server":

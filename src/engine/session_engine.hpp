@@ -72,6 +72,12 @@ struct SessionLimits final {
     std::uint32_t max_connection_credit{8U * 1024U * 1024U};
     std::uint32_t initial_stream_credit{256U * 1024U};
     std::uint32_t max_stream_credit{4U * 1024U * 1024U};
+    // The most protected payload one directional epoch may carry, a power of
+    // two from 1 MiB through 64 MiB. The capability manifest advertises it and
+    // the session uses the smaller of the two sides' values. Larger epochs
+    // rotate keys less often, so one round trip per rekey limits far paths
+    // less, and a compromised root exposes more traffic.
+    std::uint32_t max_epoch_bytes{1U << 20};
     std::uint32_t max_concurrent_rekeys{2U};
     std::size_t max_rekey_payload{kMaxSessionRekeyPayloadBytes};
     std::size_t max_security_overhead{256U};
@@ -196,6 +202,9 @@ public:
     Status terminal_status() const;
     // Callable from any thread, including after termination.
     SessionTraffic traffic() const noexcept;
+    // The session's epoch size, the smaller of the two advertised maxima,
+    // once AUTH has established. Empty before then.
+    std::optional<std::uint32_t> epoch_bytes() const noexcept;
 
     // Copy of the post-YTP peer evidence while the session is Active, so a
     // local opener can report who authenticated the stream without deriving

@@ -39,6 +39,12 @@ inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
 // engine refuses a larger budget at start, and the runtime checks at compile
 // time that this bound stays within the engine's.
 inline constexpr std::uint32_t kMaxQueuedBytes = 16U * 1024U * 1024U;
+// limits.max_epoch_bytes, a power of two: the most traffic one key epoch
+// carries in one direction. A session uses the smaller of the two sides'
+// values. YTP/1 fixes the range, and the runtime checks at compile time that
+// these bounds match it.
+inline constexpr std::uint32_t kMinEpochBytes = 1U << 20;
+inline constexpr std::uint32_t kMaxEpochBytes = 1U << 26;
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -584,15 +590,15 @@ using Adapter = std::variant<Socks5Adapter,
 
 class ResourceLimits final {
 public:
-    ResourceLimits(std::uint32_t max_frame_bytes,
-                   std::uint32_t max_streams,
+    ResourceLimits(std::uint32_t max_frame_bytes, std::uint32_t max_streams,
                    std::uint32_t max_queued_bytes,
                    std::uint32_t max_pending_opens,
                    std::uint32_t max_rekey_jobs,
                    std::uint32_t max_control_messages,
                    std::uint32_t max_packet_bytes,
                    std::uint32_t max_packet_batch,
-                   std::optional<std::uint32_t> max_egress_mbps = std::nullopt)
+                   std::optional<std::uint32_t> max_egress_mbps = std::nullopt,
+                   std::uint32_t max_epoch_bytes = kMinEpochBytes)
         : max_frame_bytes_(max_frame_bytes),
           max_streams_(max_streams),
           max_queued_bytes_(max_queued_bytes),
@@ -601,7 +607,8 @@ public:
           max_control_messages_(max_control_messages),
           max_packet_bytes_(max_packet_bytes),
           max_packet_batch_(max_packet_batch),
-          max_egress_mbps_(max_egress_mbps) {}
+          max_egress_mbps_(max_egress_mbps),
+          max_epoch_bytes_(max_epoch_bytes) {}
 
     std::uint32_t max_frame_bytes() const noexcept {
         return max_frame_bytes_;
@@ -631,6 +638,7 @@ public:
     const std::optional<std::uint32_t>& max_egress_mbps() const noexcept {
         return max_egress_mbps_;
     }
+    std::uint32_t max_epoch_bytes() const noexcept { return max_epoch_bytes_; }
 
 private:
     std::uint32_t max_frame_bytes_;
@@ -642,6 +650,7 @@ private:
     std::uint32_t max_packet_bytes_;
     std::uint32_t max_packet_batch_;
     std::optional<std::uint32_t> max_egress_mbps_;
+    std::uint32_t max_epoch_bytes_;
 };
 
 class Config final {

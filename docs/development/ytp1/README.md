@@ -396,7 +396,10 @@ Schema 1 is role tagged and contains these sections only:
   bytes. A stream service has at most one `direct_tcp` or `module` adapter;
 - `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
   packets. Frames allow 1676–1048576 bytes so hybrid rekey INIT fits;
-  concurrent rekey jobs allow 2–64 so crossed rotation has both slots. A
+  concurrent rekey jobs allow 2–64 so crossed rotation has both slots.
+  `max_epoch_bytes`, optional, is the most protected payload one directional
+  key epoch carries, a power of two from 1 MiB, the default, through 64 MiB.
+  The session uses the smaller of the client's and the server's values. A
   server may also set `max_egress_mbps`, from 1 to 1000000: the rate in
   megabits per second that stream payload shares between busy identities by
   their `weight`.

@@ -146,9 +146,10 @@ Buffer copy_bytes(std::span<const std::byte> bytes,
     return require(Buffer::copy_from(bytes, limit));
 }
 
-std::vector<std::byte> capability_bytes() {
-    ytp1::CapabilityManifest manifest{{
-        {"echo", ytp1::ServiceKind::ByteStream, 4U}}};
+std::vector<std::byte> capability_bytes(
+    std::uint32_t max_epoch_bytes = ytp1::kMinEpochPayloadBytes) {
+    ytp1::CapabilityManifest manifest{
+        {{"echo", ytp1::ServiceKind::ByteStream, 4U}}, max_epoch_bytes};
     auto encoded = ytp1::EncodeCapabilityManifest(manifest);
     CHECK(encoded.ok());
     std::vector<std::byte> bytes(encoded.value->size());
@@ -359,6 +360,8 @@ struct SecurityTrace final {
     std::vector<std::uint32_t> rekey_begun;
     std::vector<std::uint32_t> rekey_accepted;
     std::vector<std::uint32_t> rekey_finished;
+    // The epoch the fake peer advertises in its AUTH manifest.
+    std::uint32_t peer_epoch_bytes{ytp1::kMinEpochPayloadBytes};
     std::size_t init_message_size{1U};
     std::size_t ack_message_size{1U};
     std::chrono::milliseconds begin_rekey_delay{0};
@@ -370,7 +373,7 @@ struct SecurityTrace final {
 class FakeSecurity final : public SessionSecurityProvider {
 public:
     explicit FakeSecurity(std::shared_ptr<SecurityTrace> trace)
-        : trace_(std::move(trace)), capabilities_(capability_bytes()) {}
+        : trace_(std::move(trace)) {}
     std::string_view provider_id() const noexcept override { return "test.security"; }
     std::string_view suite_id() const noexcept override { return ytp1::kSuiteId; }
     std::span<const std::byte> security_parameters() const noexcept override {
@@ -405,7 +408,8 @@ public:
         output.authenticated_peer = require(PeerEvidence::create(
             EndpointRole::Client, "device-1", "composite-ed25519-mldsa87",
             std::vector<std::byte>{std::byte{1}}));
-        output.authenticated_peer_capability_manifest = capabilities_;
+        output.authenticated_peer_capability_manifest =
+            capability_bytes(trace_->peer_epoch_bytes);
         return Result<AuthenticationOutput>(std::move(output));
     }
     Result<Buffer> seal_record(RecordKeyToken token,
@@ -447,7 +451,6 @@ public:
     void cancel() noexcept override { trace_->cancelled = true; }
 private:
     std::shared_ptr<SecurityTrace> trace_;
-    std::vector<std::byte> capabilities_;
 };
 
 class FakeSecurityFactory final : public SessionSecurityProviderFactory {
@@ -2497,11 +2500,14 @@ void test_automatic_rekey_record_limit_and_crossed_rotation() {
     const std::array<std::byte, 8> ping{};
     const auto initial_records = session.trace->sealed.size();
     for (std::uint64_t sequence = 1U;
-         sequence <= ytp1::kEpochRecordLimit - initial_records; ++sequence) {
+         sequence <=
+         ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes) - initial_records;
+         ++sequence) {
         session.carrier->deliver(protected_wire(
             0U, sequence, frame(ytp1::RecordType::Ping, 0U, ping)));
     }
-    CHECK(session.trace->sealed.size() == ytp1::kEpochRecordLimit);
+    CHECK(session.trace->sealed.size() ==
+          ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes));
     CHECK(session.trace->rekey_begun.empty());
 
     // The next response waits behind INIT. The peer's last permitted record
@@ -2554,7 +2560,7 @@ void test_automatic_rekey_byte_limit_and_synchronous_ack() {
                     ++completions;
                 });
         };
-        auto budget = ytp1::kEpochPayloadByteLimit - remaining -
+        auto budget = ytp1::kMinEpochPayloadBytes - remaining -
                       sent_epoch_payload_bytes(*session.carrier);
         while (budget != 0U) {
             const auto size = std::min<std::size_t>(budget, 64U * 1024U);
@@ -2564,7 +2570,7 @@ void test_automatic_rekey_byte_limit_and_synchronous_ack() {
         CHECK(completions == writes);
         CHECK(session.trace->rekey_begun.empty());
         CHECK(sent_epoch_payload_bytes(*session.carrier) ==
-              ytp1::kEpochPayloadByteLimit - remaining);
+              ytp1::kMinEpochPayloadBytes - remaining);
         const auto last_sequence = session.trace->sealed.back().sequence;
         session.carrier->on_send = [&] {
             if (protected_record_type(session.carrier->sent.back()) !=
@@ -2675,13 +2681,15 @@ void test_peer_epoch_record_overshoot_fails_closed() {
     session.start_to_active();
     const std::array<std::byte, 8> pong{};
     for (std::uint64_t sequence = 1U;
-         sequence < ytp1::kEpochRecordLimit; ++sequence) {
+         sequence < ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes);
+         ++sequence) {
         session.carrier->deliver(protected_wire(
             0U, sequence, frame(ytp1::RecordType::Pong, 0U, pong)));
     }
     CHECK(session.engine->state() == SessionState::Active);
-    session.carrier->deliver(protected_wire(
-        0U, ytp1::kEpochRecordLimit, frame(ytp1::RecordType::Pong, 0U, pong)));
+    session.carrier->deliver(
+        protected_wire(0U, ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes),
+                       frame(ytp1::RecordType::Pong, 0U, pong)));
     CHECK(session.engine->state() == SessionState::Failed);
     CHECK(session.trace->cancelled);
 }
@@ -2694,7 +2702,7 @@ void test_peer_epoch_byte_overshoot_fails_closed() {
         const auto open = ytp1::EncodeOpen(
             {ytp1::ServiceKind::ByteStream, "echo", {}});
         CHECK(open.ok());
-        auto budget = ytp1::kEpochPayloadByteLimit - remaining -
+        auto budget = ytp1::kMinEpochPayloadBytes - remaining -
                       capability_bytes().size() - open.value->size();
         std::uint64_t sequence = 2U;
         std::size_t delivered = 0U;
@@ -2712,8 +2720,8 @@ void test_peer_epoch_byte_overshoot_fails_closed() {
             budget -= size;
         }
         CHECK(session.engine->state() == SessionState::Active);
-        CHECK(delivered == ytp1::kEpochPayloadByteLimit - remaining -
-                           capability_bytes().size() - open.value->size());
+        CHECK(delivered == ytp1::kMinEpochPayloadBytes - remaining -
+                               capability_bytes().size() - open.value->size());
         int rejected = 0;
         session.handler->responder->async_read({},
             [&](Result<ReceivedRecord> result) {
@@ -3740,6 +3748,59 @@ void test_aged_epoch_rotates_without_a_send() {
     CHECK(!stopped.engine->rotation_deadline().has_value());
 }
 
+void test_session_uses_the_smaller_advertised_epoch() {
+    constexpr std::uint32_t kMiB = 1024U * 1024U;
+    struct Case final {
+        std::uint32_t local;
+        std::uint32_t peer;
+        std::uint32_t used;
+    };
+    for (const Case epochs : {Case{4U * kMiB, 2U * kMiB, 2U * kMiB},
+                              Case{2U * kMiB, 64U * kMiB, 2U * kMiB}}) {
+        SessionLimits limits;
+        limits.max_epoch_bytes = epochs.local;
+        TestSession session(true, false, limits);
+        session.trace->peer_epoch_bytes = epochs.peer;
+        session.engine->async_start([](Status) {});
+        CHECK(!session.engine->epoch_bytes().has_value());
+        const Buffer response = auth_message(ytp1::AuthMessageType::Response,
+                                             ytp1::EndpointRole::Client);
+        session.carrier->deliver(
+            frame(ytp1::RecordType::Auth, 0U, response.bytes()));
+        CHECK(session.engine->epoch_bytes() == epochs.used);
+        // The peer repeats its own authenticated manifest.
+        const auto peer_manifest = capability_bytes(epochs.peer);
+        session.carrier->deliver(protected_wire(
+            0U, 0U, frame(ytp1::RecordType::Capabilities, 0U, peer_manifest)));
+        CHECK(session.engine->state() == SessionState::Active);
+
+        session.open_peer_stream();
+        session.carrier->deliver(protected_wire(
+            0U, 2U,
+            credit_frame(ytp1::RecordType::ConnectionCredit, 0U, 4U * kMiB)));
+        session.carrier->deliver(protected_wire(
+            0U, 3U,
+            credit_frame(ytp1::RecordType::StreamCredit, 1U, 4U * kMiB)));
+        const auto send = [&](std::size_t size) {
+            session.handler->responder->async_write(
+                require(Buffer::allocate(size, size)), {},
+                [](Status status, std::size_t) { CHECK(status.ok()); });
+        };
+        // Past the old fixed 1 MiB, the epoch still holds until its
+        // negotiated size.
+        auto budget = epochs.used - sent_epoch_payload_bytes(*session.carrier);
+        while (budget != 0U) {
+            const auto size = std::min<std::size_t>(budget, 64U * 1024U);
+            send(size);
+            budget -= size;
+        }
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(session.trace->rekey_begun.empty());
+        send(1U);
+        CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
+    }
+}
+
 void test_receive_windows_fit_the_queue_budget() {
     SessionLimits limits;
     CHECK(validate_session_limits(limits).ok());
@@ -3819,6 +3880,7 @@ void run_test() {
     test_peer_grants_are_bounded_by_the_protocol_not_local_windows();
     test_receive_windows_fit_the_queue_budget();
     test_aged_epoch_rotates_without_a_send();
+    test_session_uses_the_smaller_advertised_epoch();
 }
 
 }  // namespace

@@ -231,8 +231,12 @@ notification, reentrant slot reuse, callback exceptions, client reconnect
 with SOCKS traffic through the replacement session, and backoff after a session
 that ends right after AUTH.
 The established endpoint rekey cases explicitly initiate rotation. The session
-engine also contains an automatic rotation candidate: one MiB of directional
-payload, 512 protected records, or 500 ms checked on the next protected send.
+engine also contains an automatic rotation candidate: the session's epoch size
+of directional payload, one protected record per 2 KiB of it, or 500 ms checked
+on the next protected send. The epoch size is the smaller
+`limits.max_epoch_bytes` of the two capability manifests, 1 MiB by default and
+at most 64 MiB, and engine and endpoint tests cover a pair of sides that
+advertise different sizes.
 The native endpoint's rekey timer also rotates a used epoch once it is 500 ms
 old, so a request after an idle moment does not wait for REKEY_ACK.
 It reserves outbound space for rekey controls. Focused engine tests cover byte,
@@ -245,6 +249,9 @@ and grow while the application drains them within two round trips. Engine tests
 cover the return point, growth to the bound, a slow reader whose window stays,
 a peer that cannot buffer past its credit and grants above the local maxima. An
 endpoint test covers a client whose byte budget is smaller than the server's.
+The admitted H2 carrier's receive window is twice the budget, from 8 MiB to
+128 MiB. Carrier tests cover its bounds and a peer that may send the whole
+window before any credit returns.
 These cases do not establish sustained real-carrier fairness or high-RTT
 behavior.
 Automatic rotation remains an open security-preservation gate despite the

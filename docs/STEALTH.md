@@ -53,7 +53,13 @@ writes, and backpressure have explicit handling and bounded state.
 Both roles use manual receive credit for the admitted carrier. Control and
 cover bytes are credited when parsed. Tunnel bytes retain their matching credit
 until the destination or local sink consumes them. This preserves bounded
-backpressure without changing the captured opening SETTINGS.
+backpressure without changing the captured opening SETTINGS. Once admitted,
+each side's receive window is twice its session byte budget, at least 8 MiB
+and at most 128 MiB, so the carrier does not limit a session before YTP credit
+does. The default budget keeps 8 MiB. A larger window changes WINDOW_UPDATE
+timing and burst geometry, which has no capture or classifier evidence yet.
+`limits.credit_returns_per_window` above 2 adds small YTP credit records
+upstream during downloads, which also has no capture evidence.
 
 Idle carriers do not invent periodic traffic. Any active PING, close sequence,
 padding, or future cadence must come from a committed target capture.

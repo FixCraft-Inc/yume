@@ -341,9 +341,11 @@ void TestCapabilitiesAndCredit() {
     const auto encoded = EncodeCapabilityManifest(ExampleCapabilities());
     CHECK(encoded);
     CHECK_HEX(*encoded.value,
-              "0100000201000004000000086563686f0200000300000004756470");
+              "0200000200100000"
+              "01000004000000086563686f0200000300000004756470");
     const auto decoded = DecodeCapabilityManifest(*encoded.value);
     CHECK(decoded);
+    CHECK_EQ(decoded.value->max_epoch_bytes, kMinEpochPayloadBytes);
     CHECK_EQ(decoded.value->entries.size(), 2U);
     CHECK_EQ(decoded.value->entries[0].service_name, "echo");
     CHECK_EQ(decoded.value->entries[1].service_name, "udp");
@@ -382,7 +384,7 @@ void TestCapabilitiesAndCredit() {
     auto malformed = *encoded.value;
     // Change the first canonical name from "echo" to "zcho", placing it after
     // the following "udp" entry.
-    malformed[12] = 'z';
+    malformed[16] = 'z';
     CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
              ErrorCode::OutOfOrderField);
     malformed = *encoded.value;
@@ -393,6 +395,31 @@ void TestCapabilitiesAndCredit() {
     malformed[1] = 1;
     CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
              ErrorCode::InvalidFlags);
+    malformed = *encoded.value;
+    malformed[0] = 1;
+    CHECK_EQ(ValidateCapabilityManifestEncoding(malformed).code,
+             ErrorCode::UnsupportedVersion);
+
+    // Each side advertises a power-of-two epoch from 1 MiB through 64 MiB.
+    CapabilityManifest largest{{}, kMaxEpochPayloadBytes};
+    const auto largest_encoded = EncodeCapabilityManifest(largest);
+    CHECK(largest_encoded);
+    CHECK_HEX(*largest_encoded.value, "0200000004000000");
+    CHECK_EQ(
+        DecodeCapabilityManifest(*largest_encoded.value).value->max_epoch_bytes,
+        kMaxEpochPayloadBytes);
+    for (const std::uint32_t invalid :
+         {0U, kMinEpochPayloadBytes / 2U, 3U * kMinEpochPayloadBytes,
+          kMaxEpochPayloadBytes * 2U}) {
+        CapabilityManifest wrong{{}, invalid};
+        CHECK_EQ(EncodeCapabilityManifest(wrong).status.code,
+                 ErrorCode::InvalidField);
+        auto bytes = *largest_encoded.value;
+        WriteU32(bytes, 4, invalid);
+        CHECK_EQ(ValidateCapabilityManifestEncoding(bytes).code,
+                 ErrorCode::InvalidField);
+        CHECK_EQ(ValidateCapabilityManifestEncoding(bytes).offset, 4U);
+    }
 
     const auto credit = EncodeCreditUpdate(65'536);
     CHECK(credit);
@@ -634,8 +661,8 @@ void TestKeyScheduleInput() {
     const std::vector<std::uint8_t> baseline = EncodeKeyInput(input);
     CHECK(!baseline.empty());
     CHECK_EQ(ReadU16(baseline, 2), 18U);
-    CHECK_EQ(baseline.size(), 3657U);
-    CHECK_EQ(Fnv1a64(baseline), 0x6ab12ea0049e3c94ULL);
+    CHECK_EQ(baseline.size(), 3665U);
+    CHECK_EQ(Fnv1a64(baseline), 0xe5f96821b0256972ULL);
 
     const auto size = KeyScheduleInputEncodedSize(input);
     CHECK(size);

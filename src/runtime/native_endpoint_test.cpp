@@ -427,6 +427,69 @@ void test_mismatched_queue_budgets(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+// Each side's limits.max_epoch_bytes travels in its AUTH manifest, and both
+// sessions settle on the smaller value, whichever side sets it.
+void test_session_epoch_is_the_smaller_limit(const std::filesystem::path& kit) {
+    namespace v1 = yume::config::v1;
+    const auto document = [](const std::filesystem::path& path,
+                             std::uint32_t epoch) {
+        std::string text;
+        CHECK(read_text_file_bounded(path, v1::kMaxDocumentBytes, &text));
+        auto parsed = nlohmann::json::parse(text);
+        parsed["limits"]["max_epoch_bytes"] = epoch;
+        return v1::Parse(parsed);
+    };
+    constexpr std::uint32_t kMiB = 1U << 20;
+    struct Case final {
+        std::uint32_t client;
+        std::uint32_t server;
+    };
+    for (const Case epochs :
+         {Case{16U * kMiB, 4U * kMiB}, Case{2U * kMiB, 64U * kMiB}}) {
+        Runner runner;
+        auto handler = std::make_shared<Handler>();
+        NativeEndpointOptions server_options;
+        server_options.max_sessions = 1U;
+        server_options.max_pending_starts = 1U;
+        auto server = runner.sync([&] {
+            return take(NativeEndpoint::create(
+                runner.context,
+                document(kit / "server/yumed.json", epochs.server),
+                kit / "server", bindings(handler), server_options));
+        });
+        NativeEndpointOptions client_options;
+        client_options.max_sessions = client_options.max_pending_starts = 1U;
+        client_options.connection_address = "127.0.0.1";
+        auto client = runner.sync([&] {
+            return take(NativeEndpoint::create(
+                runner.context,
+                document(kit / "client/yume.json", epochs.client),
+                kit / "client", bindings(handler), client_options));
+        });
+        auto accepting = start(runner, server);
+        auto connecting = start(runner, client);
+        auto accepted = take(await(accepting));
+        auto session = take(await(connecting));
+        const std::uint32_t expected = std::min(epochs.client, epochs.server);
+        CHECK(session->epoch_bytes() == expected);
+        CHECK(accepted->epoch_bytes() == expected);
+        auto served_promise =
+            std::make_shared<std::promise<std::shared_ptr<StreamResponder>>>();
+        auto served_future = served_promise->get_future();
+        runner.sync([&] { handler->accepted = served_promise; });
+        auto opened = open(runner, session, "echo");
+        auto served = await(served_future);
+        transfer(runner, served, opened, "negotiated epoch");
+        runner.sync([&] {
+            client->close();
+            server->close();
+            accepted.reset();
+        });
+        runner.finish_and_join();
+        CHECK(runner.exceptions.load() == 0U);
+    }
+}
+
 // An epoch that carried records rotates at its 500 ms age limit without
 // waiting for another send, on both ends, so the next request after an idle
 // moment does not wait a round trip for REKEY_ACK.
@@ -2845,6 +2908,7 @@ int main(int argc, char** argv) {
         test_egress_pacing(argv[1]);
         test_mismatched_queue_budgets(argv[1]);
         test_idle_epochs_rotate(argv[1]);
+        test_session_epoch_is_the_smaller_limit(argv[1]);
         test_credential_reload(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);
         test_unanswered_rekey_watchdog(argv[1]);

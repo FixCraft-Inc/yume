@@ -28,12 +28,16 @@ enum class H2CarrierRole {
 };
 
 // Receive credit advertised in either direction after the caller admits the
-// carrier. This layer does not authenticate YUME sessions: callers must apply
-// their own secure-channel and carrier-path checks before enabling the window.
-// Providers that retain a complete private record before returning credit
-// must keep their maximum framed record within this window.
+// carrier, from kAdmittedH2ReceiveWindowBytes through
+// kMaxAdmittedH2ReceiveWindowBytes. This layer does not authenticate YUME
+// sessions: callers must apply their own secure-channel and carrier-path
+// checks before enabling the window. Providers that retain a complete private
+// record before returning credit must keep their maximum framed record within
+// the window they choose.
 inline constexpr std::size_t kAdmittedH2ReceiveWindowBytes =
     8U * 1024U * 1024U;
+inline constexpr std::size_t kMaxAdmittedH2ReceiveWindowBytes =
+    128U * 1024U * 1024U;
 
 struct H2Request {
     std::int32_t stream_id{-1};
@@ -130,11 +134,13 @@ public:
                      bool head_request = false);
     bool AcceptCarrier(std::int32_t stream_id,
                        const H2Headers& response_headers = {});
-    // Both roles. Expands an admitted carrier's receive credit so a maximum
-    // record does not require multiple reverse WINDOW_UPDATE turns. This is
-    // not an authentication operation; the caller owns admission policy. The
-    // window remains bounded and H2 flow control remains enabled.
-    bool EnableAdmittedReceiveWindow();
+    // Both roles. Expands an admitted carrier's connection and stream receive
+    // windows to `window_bytes` so a maximum record does not require multiple
+    // reverse WINDOW_UPDATE turns. This is not an authentication operation;
+    // the caller owns admission policy. The window remains bounded and H2 flow
+    // control remains enabled. A repeated call with the same size does
+    // nothing, and a different size fails the carrier.
+    bool EnableAdmittedReceiveWindow(std::size_t window_bytes);
     bool RejectCarrier(std::int32_t stream_id,
                        unsigned status,
                        const H2Headers& headers,

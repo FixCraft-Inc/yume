@@ -9,8 +9,21 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import re
 import sys
 import tempfile
+
+
+def max_queued_bytes(root: Path) -> int:
+    """The parser's budget bound, kMaxQueuedBytes in the configuration header."""
+    source = (root / "src/config/v1/config.hpp").read_text(encoding="utf-8")
+    match = re.search(r"kMaxQueuedBytes\s*=\s*([0-9U *]+);", source)
+    if match is None:
+        raise ValueError("kMaxQueuedBytes was not found in config.hpp")
+    maximum = 1
+    for factor in match[1].replace("U", "").split("*"):
+        maximum *= int(factor)
+    return maximum
 
 
 def run(binary: Path, openssl: Path) -> None:
@@ -117,7 +130,7 @@ def run(binary: Path, openssl: Path) -> None:
                     "destination": {"host": "127.0.0.1", "port": 2222}})
                 path.with_name("runtime-client.json").write_text(json.dumps(unsupported), encoding="utf-8")
             if config["role"] == "server":
-                config["limits"]["max_queued_bytes"] = 64 * 1024 * 1024
+                config["limits"]["max_queued_bytes"] = max_queued_bytes(root) + 1
                 variant = path.with_name("invalid-queue.json")
             else:
                 config["services"][1] = {"name": "echo", "kind": "packet",

@@ -273,7 +273,7 @@ Status validate_limits(const SessionLimits& limits) {
     if (limits.max_frame_payload <
             kRekeyEpochBytes + ytp1::kRekeyInitMessageBytes ||
         limits.max_frame_payload > ytp1::kDefaultMaxFramePayload ||
-        limits.max_frame_payload > ytp1::kEpochPayloadByteLimit) {
+        limits.max_frame_payload > ytp1::kMinEpochPayloadBytes) {
         return Status(StatusCode::InvalidArgument,
                       "session frame limit is outside the YTP/1 bound");
     }
@@ -284,9 +284,8 @@ Status validate_limits(const SessionLimits& limits) {
         return Status(StatusCode::InvalidArgument,
                       "session stream or pending-open limit is invalid");
     }
-    if (limits.max_control_messages < 3U ||
-        limits.max_queued_bytes == 0U ||
-        limits.max_queued_bytes > kAbsoluteMaxBufferBytes ||
+    if (limits.max_control_messages < 3U || limits.max_queued_bytes == 0U ||
+        limits.max_queued_bytes > kMaxSessionQueuedBytes ||
         limits.max_stream_queued_bytes == 0U ||
         limits.max_stream_queued_bytes > limits.max_queued_bytes) {
         return Status(StatusCode::InvalidArgument,
@@ -303,9 +302,18 @@ Status validate_limits(const SessionLimits& limits) {
         limits.max_connection_credit > limits.max_queued_bytes ||
         limits.initial_stream_credit == 0U ||
         limits.initial_stream_credit > limits.max_stream_credit ||
-        limits.max_stream_credit > limits.max_connection_credit) {
+        limits.max_stream_credit > limits.max_connection_credit ||
+        limits.credit_returns_per_window < 2U ||
+        limits.credit_returns_per_window > kMaxSessionCreditReturns ||
+        (limits.credit_returns_per_window &
+         (limits.credit_returns_per_window - 1U)) != 0U) {
         return Status(StatusCode::InvalidArgument,
                       "session flow-credit limits are invalid");
+    }
+    if (!ytp1::IsValidEpochPayloadBytes(limits.max_epoch_bytes)) {
+        return Status(StatusCode::InvalidArgument,
+                      "session epoch size is not a power of two from 1 MiB "
+                      "through 64 MiB");
     }
     if (limits.max_concurrent_rekeys < 2U ||
         limits.max_concurrent_rekeys > kMaxSessionConcurrentRekeys ||
@@ -433,6 +441,12 @@ public:
         counts.record_bytes_sent = record_bytes_sent_.load(std::memory_order_relaxed);
         counts.record_bytes_received = record_bytes_received_.load(std::memory_order_relaxed);
         return counts;
+    }
+
+    std::optional<std::uint32_t> epoch_bytes() const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!epoch_negotiated_) return std::nullopt;
+        return epoch_payload_bytes_;
     }
 
     Status terminal_status() const {
@@ -645,7 +659,8 @@ private:
 
     void return_receive_credit(StreamId stream_id,
                                std::size_t bytes) noexcept;
-    std::uint64_t return_threshold(std::uint64_t window) const noexcept;
+    std::uint64_t return_threshold(std::uint64_t window,
+                                   std::uint64_t maximum) const noexcept;
     std::uint64_t grow_window_locked(
         ReceiveWindow& window, std::uint64_t maximum,
         std::chrono::steady_clock::time_point now) const noexcept;
@@ -755,6 +770,10 @@ private:
     std::uint64_t outbound_epoch_records_{0U};
     std::uint64_t inbound_epoch_bytes_{0U};
     std::uint64_t inbound_epoch_records_{0U};
+    std::uint32_t epoch_payload_bytes_{ytp1::kMinEpochPayloadBytes};
+    std::uint64_t epoch_record_limit_{
+        ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes)};
+    bool epoch_negotiated_{false};
     std::chrono::steady_clock::time_point outbound_epoch_first_send_{};
     std::uint32_t outbound_rekey_epoch_{0U};
     std::uint32_t rekey_work_{0U};
@@ -915,6 +934,7 @@ Result<std::shared_ptr<SessionEngine>> SessionEngine::create(
 
     try {
         ytp1::CapabilityManifest local_manifest;
+        local_manifest.max_epoch_bytes = limits.max_epoch_bytes;
         local_manifest.entries.reserve(graph->suite().services().size());
         for (const ServiceRequirement& service :
              graph->suite().services()) {
@@ -992,6 +1012,10 @@ SessionState SessionEngine::state() const noexcept {
 
 SessionTraffic SessionEngine::traffic() const noexcept {
     return impl_->traffic();
+}
+
+std::optional<std::uint32_t> SessionEngine::epoch_bytes() const noexcept {
+    return impl_->epoch_bytes();
 }
 
 Status SessionEngine::terminal_status() const {
@@ -1473,6 +1497,12 @@ Status SessionEngine::Impl::accept_established_output(
         authenticated_peer_capabilities_ =
             std::move(output.authenticated_peer_capability_manifest);
         peer_manifest_ = *decoded.value;
+        // Both directions use the smaller advertised epoch, set before the
+        // first protected record either side sends.
+        epoch_payload_bytes_ = std::min(local_manifest_.max_epoch_bytes,
+                                        peer_manifest_.max_epoch_bytes);
+        epoch_record_limit_ = ytp1::EpochRecordLimit(epoch_payload_bytes_);
+        epoch_negotiated_ = true;
         expected_auth_kind_.reset();
         state_ = SessionState::AwaitingCapabilities;
     }
@@ -1701,13 +1731,14 @@ Status SessionEngine::Impl::enqueue_record(
         {
             std::lock_guard<std::mutex> lock(mutex_);
             rotate = state_ == SessionState::Active &&
-                !outbound_rekey_pending_ &&
-                (payload.size() > ytp1::kEpochPayloadByteLimit -
-                                      outbound_epoch_bytes_ ||
-                 outbound_epoch_records_ == ytp1::kEpochRecordLimit ||
-                 (outbound_epoch_records_ != 0U &&
-                  std::chrono::steady_clock::now() - outbound_epoch_first_send_ >=
-                      ytp1::kEpochSendLifetime));
+                     !outbound_rekey_pending_ &&
+                     (payload.size() >
+                          epoch_payload_bytes_ - outbound_epoch_bytes_ ||
+                      outbound_epoch_records_ == epoch_record_limit_ ||
+                      (outbound_epoch_records_ != 0U &&
+                       std::chrono::steady_clock::now() -
+                               outbound_epoch_first_send_ >=
+                           ytp1::kEpochSendLifetime));
         }
         if (!rotate) break;
         ordering_lock.unlock();
@@ -2356,9 +2387,9 @@ Status SessionEngine::Impl::process_protected_record(
     }
     if (decoded.value->header.type != ytp1::RecordType::RekeyInit) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (decoded.value->payload.size() > ytp1::kEpochPayloadByteLimit -
-                                               inbound_epoch_bytes_ ||
-            inbound_epoch_records_ == ytp1::kEpochRecordLimit) {
+        if (decoded.value->payload.size() >
+                epoch_payload_bytes_ - inbound_epoch_bytes_ ||
+            inbound_epoch_records_ == epoch_record_limit_) {
             return protocol_failure("peer exceeded the directional epoch limit");
         }
         inbound_epoch_bytes_ += decoded.value->payload.size();
@@ -3671,7 +3702,8 @@ void SessionEngine::Impl::return_receive_credit(
                 StreamStateData& stream = *it->second;
                 ReceiveWindow& window = stream.receive_window;
                 window.unreturned += bytes;
-                if (window.unreturned >= return_threshold(window.size)) {
+                if (window.unreturned >=
+                    return_threshold(window.size, limits_.max_stream_credit)) {
                     const std::uint64_t growth = grow_window_locked(
                         window, limits_.max_stream_credit, now);
                     stream_increment = window.unreturned + growth;
@@ -3680,8 +3712,9 @@ void SessionEngine::Impl::return_receive_credit(
                 }
             }
             connection.unreturned += bytes;
-            const bool due =
-                connection.unreturned >= return_threshold(connection.size);
+            const bool due = connection.unreturned >=
+                             return_threshold(connection.size,
+                                              limits_.max_connection_credit);
             std::uint64_t growth =
                 due ? grow_window_locked(connection,
                                          limits_.max_connection_credit, now)
@@ -3737,16 +3770,21 @@ void SessionEngine::Impl::return_receive_credit(
 }
 
 std::uint64_t SessionEngine::Impl::return_threshold(
-    std::uint64_t window) const noexcept {
+    std::uint64_t window, std::uint64_t maximum) const noexcept {
     // Credit goes back once half a window is consumed, as Chromium and
     // nghttp2 return it. A peer blocked on credit holds less than one frame
     // of it, so a receiver whose application keeps up has consumed more than
     // the window less one frame. Returning by then keeps the peer moving.
+    // Consumed credit below the threshold stays parked here, so a window
+    // that can no longer grow returns more often when configured to: a
+    // sender it holds back then moves more than half of it per round trip.
     const std::uint64_t frame = limits_.max_frame_payload;
     if (window <= frame) {
         return 1U;
     }
-    return std::min(window / 2U, window - frame);
+    const std::uint64_t updates =
+        window >= maximum ? limits_.credit_returns_per_window : 2U;
+    return std::min(window / updates, window - frame);
 }
 
 std::uint64_t SessionEngine::Impl::grow_window_locked(
@@ -3884,8 +3922,13 @@ void SessionEngine::Impl::cancel_pending_write(
         const std::size_t storage_bytes = write_it->payload.retained_capacity();
         completion = std::move(write_it->completion);
         pending.erase(write_it);
-        stream_it->second->outbound_queued_bytes -= storage_bytes;
-        pending_write_bytes_ -= storage_bytes;
+        // remove_stream releases a closed stream's queued bytes at once and
+        // then completes its writes one at a time, so a write cancelled in
+        // between, even from another write's completion, is no longer charged.
+        if (!stream_it->second->closed) {
+            stream_it->second->outbound_queued_bytes -= storage_bytes;
+            pending_write_bytes_ -= storage_bytes;
+        }
     }
     invoke_noexcept(completion, std::move(reason), 0U);
     const Status shutdown = finish_stream_shutdown_if_ready(stream_id);

@@ -14,7 +14,10 @@ loopback without delay. The delay lives in the router because netem on a
 sender's own interface holds that sender's packets, and TCP Small Queues
 then throttles the socket far below the path's capacity. Every interface
 sends one MTU-sized packet per buffer, so loss applies to packets as it
-would on a real link.
+would on a real link. New namespaces copy the host's TCP buffer ceilings,
+which cap one connection on a long path, direct or tunnelled, at a few MiB
+per round trip. `--tcp-buffer-mib` raises them in all three namespaces, as
+on a host tuned for long paths.
 
 For every condition the client starts a fresh session, so the report records
 how long a session takes to carry its first request. It then alternates timed
@@ -275,6 +278,13 @@ class Link:
             return argv
         return [self.nsenter, "-t", str(self.holders[side].pid), "-n", *argv]
 
+    def tune_tcp_buffers(self, maximum: int) -> None:
+        """Raises every namespace's TCP buffer ceilings, as on a host tuned for long paths."""
+        for side in ("client", "router", "server"):
+            for name, default in (("tcp_rmem", 131072), ("tcp_wmem", 16384)):
+                run(self.command(side, ["sh", "-c",
+                                        f"echo '4096 {default} {maximum}' > /proc/sys/net/ipv4/{name}"]))
+
     def shape(self, condition: dict[str, float]) -> list[str]:
         """The same netem settings on both router exits, one per direction."""
         qdisc = netem_arguments(condition)
@@ -289,12 +299,12 @@ class Link:
                 holder.wait(timeout=5)
 
 
-def set_queued_bytes(kit: Path, value: int) -> None:
-    """Sets limits.max_queued_bytes in both roles' configuration."""
+def set_limit(kit: Path, key: str, value: int) -> None:
+    """Sets one `limits` key in both roles' configuration."""
     for relative in ("server/yumed.json", "client/yume.json"):
         path = kit / relative
         document = json.loads(path.read_text(encoding="utf-8"))
-        document["limits"]["max_queued_bytes"] = value
+        document["limits"][key] = value
         path.write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
@@ -493,6 +503,8 @@ def run_inside(arguments: argparse.Namespace) -> int:
     processes: list[subprocess.Popen] = []
     code = 0
     try:
+        if arguments.tcp_buffer_mib:
+            link.tune_tcp_buffers(arguments.tcp_buffer_mib << 20)
         report["tcp"] = {name: Path(f"/proc/sys/net/ipv4/{name}").read_text().strip()
                          for name in ("tcp_congestion_control", "tcp_rmem", "tcp_wmem")}
         with tempfile.TemporaryDirectory(prefix="yume-wan-kit-") as temporary:
@@ -502,9 +514,15 @@ def run_inside(arguments: argparse.Namespace) -> int:
             session.configure_kit(kit, listen_address=SERVER_ADDRESS, networks=["127.0.0.1/32"],
                                   connect_address=SERVER_ADDRESS, socks_port=socks_port)
             if arguments.max_queued_bytes:
-                set_queued_bytes(kit, arguments.max_queued_bytes)
-            report["max_queued_bytes"] = json.loads(
-                (kit / "client/yume.json").read_text(encoding="utf-8"))["limits"]["max_queued_bytes"]
+                set_limit(kit, "max_queued_bytes", arguments.max_queued_bytes)
+            if arguments.max_epoch_bytes:
+                set_limit(kit, "max_epoch_bytes", arguments.max_epoch_bytes)
+            if arguments.credit_returns:
+                set_limit(kit, "credit_returns_per_window", arguments.credit_returns)
+            client_limits = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))["limits"]
+            report["max_queued_bytes"] = client_limits["max_queued_bytes"]
+            report["max_epoch_bytes"] = client_limits.get("max_epoch_bytes", 1 << 20)
+            report["credit_returns_per_window"] = client_limits.get("credit_returns_per_window", 2)
             logs = {name: (arguments.output / f"{name}.log").open("wb") for name in ("payload", "yumed")}
             processes.append(subprocess.Popen(
                 link.command("server", [sys.executable, "-c", PAYLOAD_SERVER, str(STREAM_BYTES),
@@ -574,6 +592,13 @@ def main() -> int:
     parser.add_argument("--requests", type=int, default=20, help="small requests per path and condition, 1..200")
     parser.add_argument("--max-queued-bytes", type=int,
                         help="limits.max_queued_bytes for both roles, default the kit's value")
+    parser.add_argument("--max-epoch-bytes", type=int,
+                        help="limits.max_epoch_bytes for both roles, a power of two, 1..64 MiB")
+    parser.add_argument("--credit-returns", type=int, choices=(2, 4, 8),
+                        help="limits.credit_returns_per_window for both roles")
+    parser.add_argument("--tcp-buffer-mib", type=int, default=0,
+                        help="raise every namespace's TCP buffer ceilings to this many MiB, 1..256, "
+                             "as on a host tuned for long paths. Default: the host's own settings")
     parser.add_argument("--streams", type=int, default=1,
                         help="parallel downloads per path after the single-stream samples, 1..64, "
                              "reported with Jain's fairness index. A soak uses them too")
@@ -592,13 +617,17 @@ def main() -> int:
         parser.error(str(error))
     if not 2 <= arguments.seconds <= 60 or not 1 <= arguments.repeats <= 20 or \
             not 1 <= arguments.requests <= 200 or not 1 <= arguments.port <= 65535 or \
-            (arguments.max_queued_bytes is not None and not 1 << 16 <= arguments.max_queued_bytes <= 16 << 20):
+            (arguments.max_queued_bytes is not None and not 1 << 16 <= arguments.max_queued_bytes <= 64 << 20):
         # The configuration parser owns the queue budget bound (kMaxQueuedBytes).
         parser.error("seconds must be 2..60, repeats 1..20, requests 1..200, port 1..65535 "
-                     "and max queued bytes 64 KiB..16 MiB")
+                     "and max queued bytes 64 KiB..64 MiB")
+    epoch = arguments.max_epoch_bytes
     if not 1 <= arguments.streams <= 64 or \
-            (arguments.soak and not 60 <= arguments.soak <= 86400):
-        parser.error("streams must be 1..64 and a soak 60..86400 seconds")
+            (arguments.soak and not 60 <= arguments.soak <= 86400) or \
+            not 0 <= arguments.tcp_buffer_mib <= 256 or \
+            (epoch is not None and (not 1 << 20 <= epoch <= 1 << 26 or epoch & (epoch - 1))):
+        parser.error("streams must be 1..64, a soak 60..86400 seconds, TCP buffers 0..256 MiB "
+                     "and the epoch a power of two from 1 MiB through 64 MiB")
     try:
         parse_condition(arguments.soak_condition)
     except ValueError as error:

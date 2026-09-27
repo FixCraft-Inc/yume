@@ -55,12 +55,28 @@ struct H2DuplexCarrierLimits final {
     // but excludes the carrier-private 12-byte record envelope.
     std::size_t max_record_bytes{2U * 1024U * 1024U};
     std::size_t max_buffered_records{64U};
+    // At least the admitted window, so a peer that respects H2 flow control
+    // never exceeds it.
     std::size_t max_retained_receive_bytes{16U * 1024U * 1024U};
     std::size_t max_pending_secure_write_bytes{4U * 1024U * 1024U};
     std::size_t secure_read_bytes{64U * 1024U};
+    std::size_t admitted_receive_window_bytes{
+        obfs::kAdmittedH2ReceiveWindowBytes};
 };
 
 engine::Status validate_h2_duplex_carrier_limits(const H2DuplexCarrierLimits& limits);
+
+// Limits for a session whose byte budget is `session_budget_bytes`. Received
+// records keep their H2 credit until their sink completes, so the carrier can
+// hold as much as the session's connection window, which is the budget. With
+// nghttp2 returning credit at half its window, twice the budget lets YTP
+// credit, not the carrier, bound the session. A budget of 4 MiB or less keeps
+// the default window, and a budget above kMaxH2DuplexSessionBudgetBytes gets
+// the largest window.
+inline constexpr std::size_t kMaxH2DuplexSessionBudgetBytes =
+    obfs::kMaxAdmittedH2ReceiveWindowBytes / 2U;
+H2DuplexCarrierLimits h2_duplex_limits_for_budget(
+    std::size_t session_budget_bytes) noexcept;
 
 struct H2DuplexClientConfig final {
     std::string server_name;

@@ -146,9 +146,10 @@ Buffer copy_bytes(std::span<const std::byte> bytes,
     return require(Buffer::copy_from(bytes, limit));
 }
 
-std::vector<std::byte> capability_bytes() {
-    ytp1::CapabilityManifest manifest{{
-        {"echo", ytp1::ServiceKind::ByteStream, 4U}}};
+std::vector<std::byte> capability_bytes(
+    std::uint32_t max_epoch_bytes = ytp1::kMinEpochPayloadBytes) {
+    ytp1::CapabilityManifest manifest{
+        {{"echo", ytp1::ServiceKind::ByteStream, 4U}}, max_epoch_bytes};
     auto encoded = ytp1::EncodeCapabilityManifest(manifest);
     CHECK(encoded.ok());
     std::vector<std::byte> bytes(encoded.value->size());
@@ -359,6 +360,8 @@ struct SecurityTrace final {
     std::vector<std::uint32_t> rekey_begun;
     std::vector<std::uint32_t> rekey_accepted;
     std::vector<std::uint32_t> rekey_finished;
+    // The epoch the fake peer advertises in its AUTH manifest.
+    std::uint32_t peer_epoch_bytes{ytp1::kMinEpochPayloadBytes};
     std::size_t init_message_size{1U};
     std::size_t ack_message_size{1U};
     std::chrono::milliseconds begin_rekey_delay{0};
@@ -370,7 +373,7 @@ struct SecurityTrace final {
 class FakeSecurity final : public SessionSecurityProvider {
 public:
     explicit FakeSecurity(std::shared_ptr<SecurityTrace> trace)
-        : trace_(std::move(trace)), capabilities_(capability_bytes()) {}
+        : trace_(std::move(trace)) {}
     std::string_view provider_id() const noexcept override { return "test.security"; }
     std::string_view suite_id() const noexcept override { return ytp1::kSuiteId; }
     std::span<const std::byte> security_parameters() const noexcept override {
@@ -405,7 +408,8 @@ public:
         output.authenticated_peer = require(PeerEvidence::create(
             EndpointRole::Client, "device-1", "composite-ed25519-mldsa87",
             std::vector<std::byte>{std::byte{1}}));
-        output.authenticated_peer_capability_manifest = capabilities_;
+        output.authenticated_peer_capability_manifest =
+            capability_bytes(trace_->peer_epoch_bytes);
         return Result<AuthenticationOutput>(std::move(output));
     }
     Result<Buffer> seal_record(RecordKeyToken token,
@@ -447,7 +451,6 @@ public:
     void cancel() noexcept override { trace_->cancelled = true; }
 private:
     std::shared_ptr<SecurityTrace> trace_;
-    std::vector<std::byte> capabilities_;
 };
 
 class FakeSecurityFactory final : public SessionSecurityProviderFactory {
@@ -1288,6 +1291,50 @@ void test_pending_write_capacity_admission_and_release() {
         session.engine->stop();
         CHECK((completions == std::array<int, 2U>{1, 1}));
     }
+}
+
+// remove_stream releases a closed stream's queued bytes at once and then
+// completes its writes one at a time. A write cancelled in between, here from
+// the first write's completion, must not be released again: that wrapped the
+// session's queued-byte count, and the next record found the queue full and
+// failed the session.
+void test_write_cancelled_during_stream_removal_is_released_once() {
+    TestSession session;
+    session.start_to_active();
+    session.open_peer_stream();
+    CancellationSource second;
+    std::array<StatusCode, 2U> codes{StatusCode::Ok, StatusCode::Ok};
+    int completions = 0;
+    // The peer has granted no stream credit, so both writes stay queued.
+    session.handler->responder->async_write(shrunk_write_buffer(4096U), {},
+                                            [&](Status status, std::size_t) {
+                                                codes[0] = status.code();
+                                                ++completions;
+                                                CHECK(second.cancel());
+                                            });
+    session.handler->responder->async_write(shrunk_write_buffer(4096U),
+                                            second.token(),
+                                            [&](Status status, std::size_t) {
+                                                codes[1] = status.code();
+                                                ++completions;
+                                            });
+    CHECK(completions == 0);
+    const std::array<std::byte, 1U> aborted{std::byte{4}};
+    session.carrier->deliver(
+        protected_wire(0U, 2U, frame(ytp1::RecordType::Close, 1U, aborted)));
+    CHECK(completions == 2);
+    CHECK(codes[0] != StatusCode::Ok && codes[1] == StatusCode::Cancelled);
+
+    const std::size_t sent_before = session.carrier->sent.size();
+    std::optional<StatusCode> opened;
+    session.engine->async_open(
+        "echo", ServiceKind::ByteStream,
+        [&](auto result) { opened = result.status().code(); });
+    CHECK(!opened.has_value());
+    CHECK(session.carrier->sent.size() == sent_before + 1U);
+    CHECK(protected_record(session.carrier->sent.back()).header.type ==
+          ytp1::RecordType::Open);
+    CHECK(session.engine->state() == SessionState::Active);
 }
 
 void test_pending_write_capacity_is_shared_across_streams() {
@@ -2453,11 +2500,14 @@ void test_automatic_rekey_record_limit_and_crossed_rotation() {
     const std::array<std::byte, 8> ping{};
     const auto initial_records = session.trace->sealed.size();
     for (std::uint64_t sequence = 1U;
-         sequence <= ytp1::kEpochRecordLimit - initial_records; ++sequence) {
+         sequence <=
+         ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes) - initial_records;
+         ++sequence) {
         session.carrier->deliver(protected_wire(
             0U, sequence, frame(ytp1::RecordType::Ping, 0U, ping)));
     }
-    CHECK(session.trace->sealed.size() == ytp1::kEpochRecordLimit);
+    CHECK(session.trace->sealed.size() ==
+          ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes));
     CHECK(session.trace->rekey_begun.empty());
 
     // The next response waits behind INIT. The peer's last permitted record
@@ -2510,7 +2560,7 @@ void test_automatic_rekey_byte_limit_and_synchronous_ack() {
                     ++completions;
                 });
         };
-        auto budget = ytp1::kEpochPayloadByteLimit - remaining -
+        auto budget = ytp1::kMinEpochPayloadBytes - remaining -
                       sent_epoch_payload_bytes(*session.carrier);
         while (budget != 0U) {
             const auto size = std::min<std::size_t>(budget, 64U * 1024U);
@@ -2520,7 +2570,7 @@ void test_automatic_rekey_byte_limit_and_synchronous_ack() {
         CHECK(completions == writes);
         CHECK(session.trace->rekey_begun.empty());
         CHECK(sent_epoch_payload_bytes(*session.carrier) ==
-              ytp1::kEpochPayloadByteLimit - remaining);
+              ytp1::kMinEpochPayloadBytes - remaining);
         const auto last_sequence = session.trace->sealed.back().sequence;
         session.carrier->on_send = [&] {
             if (protected_record_type(session.carrier->sent.back()) !=
@@ -2631,13 +2681,15 @@ void test_peer_epoch_record_overshoot_fails_closed() {
     session.start_to_active();
     const std::array<std::byte, 8> pong{};
     for (std::uint64_t sequence = 1U;
-         sequence < ytp1::kEpochRecordLimit; ++sequence) {
+         sequence < ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes);
+         ++sequence) {
         session.carrier->deliver(protected_wire(
             0U, sequence, frame(ytp1::RecordType::Pong, 0U, pong)));
     }
     CHECK(session.engine->state() == SessionState::Active);
-    session.carrier->deliver(protected_wire(
-        0U, ytp1::kEpochRecordLimit, frame(ytp1::RecordType::Pong, 0U, pong)));
+    session.carrier->deliver(
+        protected_wire(0U, ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes),
+                       frame(ytp1::RecordType::Pong, 0U, pong)));
     CHECK(session.engine->state() == SessionState::Failed);
     CHECK(session.trace->cancelled);
 }
@@ -2650,7 +2702,7 @@ void test_peer_epoch_byte_overshoot_fails_closed() {
         const auto open = ytp1::EncodeOpen(
             {ytp1::ServiceKind::ByteStream, "echo", {}});
         CHECK(open.ok());
-        auto budget = ytp1::kEpochPayloadByteLimit - remaining -
+        auto budget = ytp1::kMinEpochPayloadBytes - remaining -
                       capability_bytes().size() - open.value->size();
         std::uint64_t sequence = 2U;
         std::size_t delivered = 0U;
@@ -2668,8 +2720,8 @@ void test_peer_epoch_byte_overshoot_fails_closed() {
             budget -= size;
         }
         CHECK(session.engine->state() == SessionState::Active);
-        CHECK(delivered == ytp1::kEpochPayloadByteLimit - remaining -
-                           capability_bytes().size() - open.value->size());
+        CHECK(delivered == ytp1::kMinEpochPayloadBytes - remaining -
+                               capability_bytes().size() - open.value->size());
         int rejected = 0;
         session.handler->responder->async_read({},
             [&](Result<ReceivedRecord> result) {
@@ -2872,6 +2924,22 @@ void test_stop_during_rekey_flush_settles_remaining_records() {
     CHECK(session.trace->cancelled);
     session.engine->stop();
     CHECK(opens == 1);
+}
+
+// The byte budget bounds queued and held bytes, not one buffer, so it has
+// its own ceiling above the largest buffer.
+void test_session_budget_ceiling() {
+    static_assert(kMaxSessionQueuedBytes > kAbsoluteMaxBufferBytes);
+    SessionLimits limits;
+    limits.max_queued_bytes = kMaxSessionQueuedBytes;
+    fit_receive_windows(limits);
+    CHECK(validate_session_limits(limits).ok());
+    TestSession session(true, false, limits);
+    session.start_to_active();
+    CHECK(session.engine->state() == SessionState::Active);
+    limits.max_queued_bytes = kMaxSessionQueuedBytes + 1U;
+    CHECK(validate_session_limits(limits).code() ==
+          StatusCode::InvalidArgument);
 }
 
 void test_rekey_deadline_boundary_and_stale_timer() {
@@ -3508,6 +3576,55 @@ void test_receive_credit_returns_after_half_a_window() {
            std::vector<std::uint32_t>{32U * 1024U, 16U * 1024U}));
 }
 
+// The peer sends 1 KiB records, consumed at once, until stream 1 returns
+// credit, and the function reports how much was consumed by then.
+std::size_t consumed_before_stream_return(TestSession& session) {
+    std::uint64_t sequence = 2U;
+    GrantedCredit granted;
+    scan_granted_credit(session, granted);
+    CHECK(granted.stream_increments.size() == 1U);
+    std::size_t consumed = 0U;
+    while (granted.stream_increments.size() == 1U &&
+           consumed < granted.stream) {
+        deliver_consumed(session, sequence, 1024U);
+        consumed += 1024U;
+        scan_granted_credit(session, granted);
+    }
+    CHECK(granted.stream_increments.size() == 2U);
+    CHECK(granted.stream_increments.back() == consumed);
+    return consumed;
+}
+
+// A window at its maximum returns credit every 1/n of itself for n updates
+// per window. A window that can still grow returns at half whatever n is.
+void test_receive_credit_returns_per_window_at_the_maximum() {
+    for (const std::uint32_t updates : {2U, 4U, 8U}) {
+        SessionLimits limits = small_window_limits();
+        limits.initial_stream_credit = 32U * 1024U;
+        limits.max_stream_credit = 32U * 1024U;
+        limits.credit_returns_per_window = updates;
+        TestSession session(true, false, limits);
+        session.start_to_active();
+        session.open_peer_stream();
+        CHECK(consumed_before_stream_return(session) == 32U * 1024U / updates);
+    }
+
+    SessionLimits growing = small_window_limits();
+    growing.credit_returns_per_window = 8U;
+    TestSession session(true, false, growing);
+    session.start_to_active();
+    session.open_peer_stream();
+    CHECK(consumed_before_stream_return(session) ==
+          growing.initial_stream_credit / 2U);
+
+    for (const std::uint32_t invalid : {0U, 1U, 3U, 6U, 16U}) {
+        SessionLimits limits;
+        limits.credit_returns_per_window = invalid;
+        CHECK(validate_session_limits(limits).code() ==
+              StatusCode::InvalidArgument);
+    }
+}
+
 void test_receive_credit_returns_before_a_blocked_peer_could_stall() {
     // A 6 KiB window with 4 KiB frames. After spending 2.5 KiB the peer
     // holds 3.5 KiB, less than a full frame. Waiting for half the window
@@ -3696,6 +3813,59 @@ void test_aged_epoch_rotates_without_a_send() {
     CHECK(!stopped.engine->rotation_deadline().has_value());
 }
 
+void test_session_uses_the_smaller_advertised_epoch() {
+    constexpr std::uint32_t kMiB = 1024U * 1024U;
+    struct Case final {
+        std::uint32_t local;
+        std::uint32_t peer;
+        std::uint32_t used;
+    };
+    for (const Case epochs : {Case{4U * kMiB, 2U * kMiB, 2U * kMiB},
+                              Case{2U * kMiB, 64U * kMiB, 2U * kMiB}}) {
+        SessionLimits limits;
+        limits.max_epoch_bytes = epochs.local;
+        TestSession session(true, false, limits);
+        session.trace->peer_epoch_bytes = epochs.peer;
+        session.engine->async_start([](Status) {});
+        CHECK(!session.engine->epoch_bytes().has_value());
+        const Buffer response = auth_message(ytp1::AuthMessageType::Response,
+                                             ytp1::EndpointRole::Client);
+        session.carrier->deliver(
+            frame(ytp1::RecordType::Auth, 0U, response.bytes()));
+        CHECK(session.engine->epoch_bytes() == epochs.used);
+        // The peer repeats its own authenticated manifest.
+        const auto peer_manifest = capability_bytes(epochs.peer);
+        session.carrier->deliver(protected_wire(
+            0U, 0U, frame(ytp1::RecordType::Capabilities, 0U, peer_manifest)));
+        CHECK(session.engine->state() == SessionState::Active);
+
+        session.open_peer_stream();
+        session.carrier->deliver(protected_wire(
+            0U, 2U,
+            credit_frame(ytp1::RecordType::ConnectionCredit, 0U, 4U * kMiB)));
+        session.carrier->deliver(protected_wire(
+            0U, 3U,
+            credit_frame(ytp1::RecordType::StreamCredit, 1U, 4U * kMiB)));
+        const auto send = [&](std::size_t size) {
+            session.handler->responder->async_write(
+                require(Buffer::allocate(size, size)), {},
+                [](Status status, std::size_t) { CHECK(status.ok()); });
+        };
+        // Past the old fixed 1 MiB, the epoch still holds until its
+        // negotiated size.
+        auto budget = epochs.used - sent_epoch_payload_bytes(*session.carrier);
+        while (budget != 0U) {
+            const auto size = std::min<std::size_t>(budget, 64U * 1024U);
+            send(size);
+            budget -= size;
+        }
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(session.trace->rekey_begun.empty());
+        send(1U);
+        CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
+    }
+}
+
 void test_receive_windows_fit_the_queue_budget() {
     SessionLimits limits;
     CHECK(validate_session_limits(limits).ok());
@@ -3722,6 +3892,7 @@ void run_test() {
     test_termination_overrides_an_earlier_fin();
     test_partial_credit_does_not_reorder_queued_writes();
     test_pending_write_capacity_admission_and_release();
+    test_write_cancelled_during_stream_removal_is_released_once();
     test_pending_write_capacity_is_shared_across_streams();
     test_competing_streams_rotate_across_credit_updates();
     test_competing_streams_skip_stalled_reader();
@@ -3756,6 +3927,7 @@ void run_test() {
     test_rekey_ack_waits_for_deferred_publication();
     test_rekey_flush_preserves_unpublished_reservations();
     test_stop_during_rekey_flush_settles_remaining_records();
+    test_session_budget_ceiling();
     test_rekey_deadline_boundary_and_stale_timer();
     test_rekey_deadline_covers_provider_queue_and_late_ack();
     test_rekey_ack_wire_contract();
@@ -3768,12 +3940,14 @@ void run_test() {
     test_unacknowledged_streams_remain_bounded();
     test_cancel_unpublished_open_behind_rekey();
     test_receive_credit_returns_after_half_a_window();
+    test_receive_credit_returns_per_window_at_the_maximum();
     test_receive_credit_returns_before_a_blocked_peer_could_stall();
     test_receive_window_grows_to_its_bound_while_drained_quickly();
     test_receive_window_holds_while_the_application_is_slow();
     test_peer_grants_are_bounded_by_the_protocol_not_local_windows();
     test_receive_windows_fit_the_queue_budget();
     test_aged_epoch_rotates_without_a_send();
+    test_session_uses_the_smaller_advertised_epoch();
 }
 
 }  // namespace

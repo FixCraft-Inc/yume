@@ -333,9 +333,10 @@ A canonical capability manifest is at most 64 KiB and contains at most 256
 entries:
 
 ```text
-u8  schema = 1
+u8  schema = 2
 u8  flags = 0
 u16 entry_count
+u32 max_epoch_bytes
 repeat entry_count:
     u8  service_kind
     u8  flags = 0
@@ -350,8 +351,15 @@ Service kinds and names have the same rules as OPEN.
 Entries are ordered first by unsigned service-name octets and then by numeric
 service kind. The encoder sorts entries into that order. The decoder rejects
 out-of-order entries and duplicate `(service_name, service_kind)` keys. The
-same name MAY appear once for each distinct service kind. An empty manifest is
-the four-octet value `01 00 00 00`.
+same name MAY appear once for each distinct service kind. An empty manifest
+that accepts 1 MiB epochs is the eight-octet value `02 00 00 00 00 10 00 00`.
+
+`max_epoch_bytes` is the most protected payload the sender accepts in one
+directional epoch, in either direction. It MUST be a power of two from 1 MiB
+(`1048576`) through 64 MiB (`67108864`). Each side advertises its own value in
+its AUTH flight, and both directions of the session use the smaller of the two
+values, so neither side sends or accepts a larger epoch than the other allows.
+Schema 1, which had no epoch field, is rejected.
 
 A capability is authenticated advertisement, not authorization. A runtime
 MUST still apply its resource and per-OPEN authorization policy.
@@ -382,7 +390,13 @@ When two returns on a window come less than two round trips apart, the window
 was limiting the sender, and the engine doubles it, as Chromium does. A stream
 window can reach two thirds of the budget and the connection window the whole
 budget. The connection window stays at least one and a half times the largest
-stream window, and no window shrinks. The engine times round trips locally,
+stream window, and no window shrinks. Consumed credit below the return point
+waits at the receiver, so a sender held back by a window that can no longer
+grow moves about half of it per round trip. `limits.credit_returns_per_window`,
+2 by default, 4 or 8, makes such a window return credit every half, quarter or
+eighth of itself, so the sender moves about a half, three quarters or seven
+eighths of it per round trip and the receiver sends that many more credit
+records. The engine times round trips locally,
 from its AUTH flight to the peer's answer and from each REKEY_INIT to its ACK,
 keeps the smallest sample of the last ten seconds, and sends no record to take
 them.
@@ -629,9 +643,13 @@ a protected ACK, a bare non-ACK post-AUTH frame, component mutation, or
 post-failure reuse terminates the session. This design supports crossed
 opposite-direction rekeys without retaining old directional roots.
 
-The native engine rotates its outbound root before accepting protected payload
-past 1 MiB or 512 records in an epoch, and checks the 500 ms age threshold on
-the next protected send. INIT does not count toward these application thresholds.
+A directional epoch carries at most the session's epoch size in protected
+payload (the smaller `max_epoch_bytes` of the two manifests) and at most one
+record per 2 KiB of it, 512 records for 1 MiB. A receiver MUST treat a peer
+epoch that exceeds either limit as a protocol failure. The native engine
+rotates its outbound root before accepting protected payload past either limit,
+and checks a fixed 500 ms age threshold on the next protected send. INIT does
+not count toward these application thresholds.
 The native endpoint also rotates an epoch that has carried a record as soon as
 it is 500 ms old, so the next send does not wait a round trip for the ACK. An
 epoch that carried nothing is not rotated, so an idle session's root does not

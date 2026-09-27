@@ -384,12 +384,45 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   data for a round trip. The endpoint's rekey timer also rotates a used epoch
   as soon as it is 500 ms old, so a request after an idle moment no longer
   waits a round trip on each side for REKEY_ACK.
+- **H2 carrier window follows the session budget.** The admitted carrier's
+  receive window was a fixed 8 MiB. The carrier keeps each record's H2 credit
+  until its sink completes and nghttp2 returns credit at half its window, so a
+  session with a budget above 4 MiB moved at most 4 MiB per round trip whatever
+  its budget. The window is now twice `limits.max_queued_bytes`, at least
+  8 MiB and at most 128 MiB, and the carrier's retained-byte bound grows with
+  it. The default 4 MiB budget keeps 8 MiB.
+- **More frequent credit returns, on request.** A receive window returns
+  credit once half of it is consumed, so a window that can no longer grow
+  lets a far sender move about half of it per round trip.
+  `limits.credit_returns_per_window`, 2 by default, 4 or 8, returns credit
+  every quarter or eighth of such a window instead, for about three quarters
+  or seven eighths of it per round trip and that many more upstream credit
+  records.
+- **Cancelled writes on an aborted stream.** When the peer aborted a stream
+  with queued writes, the engine released the stream's queued bytes at once
+  and then failed the writes one at a time. A write cancelled in between, for
+  example by a handler reacting to the first failure, was released a second
+  time. The session's queued-byte count wrapped below zero, and the next
+  record found the queue full and ended the session or refused its writes.
+  Fast far-path downloads and a soak of repeated parallel downloads hit it.
+- **Negotiated epoch size.** `limits.max_epoch_bytes`, a power of two from
+  1 MiB, the default, through 64 MiB, sets how much protected payload one
+  directional key epoch may carry. The capability manifest, now schema 2,
+  signs it in the AUTH flight, and both directions use the smaller of the two
+  sides' values, so neither side can make the other rotate less often than it
+  allows. Rotation waits one round trip for REKEY_ACK, so on a far path a
+  session carries about one epoch per round trip. A larger epoch trades key
+  granularity for speed there. The record limit stays at one record per 2 KiB
+  of the epoch and the 500 ms age limit is unchanged. Schema-1 manifests are
+  rejected and the YTP/1 vectors changed with it.
 - **Session queue budget.** `limits.max_queued_bytes` accepts 64 KiB to
-  16 MiB. The parser and `yume-doctor` accepted up to 64 MiB while the
-  session engine refuses more than 16 MiB, so a larger budget passed
-  `--validate` and doctor and then stopped `yumed` and `yume` at start. The
-  bound has one owner in the parser, and the runtime checks at compile time
-  that the engine accepts it.
+  64 MiB. The parser and `yume-doctor` had accepted up to 64 MiB while the
+  session engine refused more than 16 MiB, its largest single buffer, so a
+  larger budget passed `--validate` and doctor and then stopped `yumed` and
+  `yume` at start. The engine now has its own 64 MiB bound for queued and
+  held bytes, the parser owns the configured bound, and the runtime checks at
+  compile time that the engine accepts it. A larger budget buys far-path
+  speed with memory, since a session's receive windows grow up to it.
 - **Native failure handling and memory bounds.** Expired ABI opens no longer
   enter the session while waiting for dispatch. Startup and stream operations
   settle their callbacks and state when allocation fails. Buffer growth stays

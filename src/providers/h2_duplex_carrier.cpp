@@ -73,22 +73,24 @@ void invoke_noexcept(Callback& callback, Args&&... args) noexcept {
 }
 
 Status validate_limits(const H2DuplexCarrierLimits& limits) {
+    const std::size_t window = limits.admitted_receive_window_bytes;
+    const bool window_fits = window >= obfs::kAdmittedH2ReceiveWindowBytes &&
+                             window <= obfs::kMaxAdmittedH2ReceiveWindowBytes;
     const bool framed_record_fits =
-        limits.max_record_bytes <=
-        obfs::kAdmittedH2ReceiveWindowBytes -
-            kH2DuplexEnvelopeBytes;
+        window_fits &&
+        limits.max_record_bytes <= window - kH2DuplexEnvelopeBytes;
     const bool retained_record_fits =
         limits.max_record_bytes <=
-        std::numeric_limits<std::size_t>::max() -
-            kH2DuplexEnvelopeBytes &&
+            std::numeric_limits<std::size_t>::max() - kH2DuplexEnvelopeBytes &&
         limits.max_retained_receive_bytes >=
-            limits.max_record_bytes + kH2DuplexEnvelopeBytes;
+            limits.max_record_bytes + kH2DuplexEnvelopeBytes &&
+        limits.max_retained_receive_bytes >= window;
     if (limits.max_record_bytes == 0U ||
         limits.max_record_bytes > engine::kAbsoluteMaxBufferBytes ||
-        !framed_record_fits ||
-        limits.max_buffered_records == 0U ||
+        !framed_record_fits || limits.max_buffered_records == 0U ||
         !retained_record_fits ||
-        limits.max_retained_receive_bytes > 32U * 1024U * 1024U ||
+        limits.max_retained_receive_bytes >
+            obfs::kMaxAdmittedH2ReceiveWindowBytes ||
         limits.max_pending_secure_write_bytes == 0U ||
         limits.max_pending_secure_write_bytes > 32U * 1024U * 1024U ||
         limits.secure_read_bytes == 0U ||
@@ -1270,7 +1272,8 @@ void H2DuplexCarrierState::finish_client_opening() {
     // peer has accepted the extended CONNECT, so admit bounded receive credit
     // before the YTP session handshake starts. This is carrier admission, not
     // YTP session authentication.
-    if (!h2_->EnableAdmittedReceiveWindow()) {
+    if (!h2_->EnableAdmittedReceiveWindow(
+            limits_.admitted_receive_window_bytes)) {
         fail(h2_failure("expand admitted client receive credit"));
         return;
     }
@@ -1588,10 +1591,11 @@ Result<std::unique_ptr<Carrier>> make_admitted_h2_duplex_server_carrier(
         }
         // YTP application records may exceed HTTP/2's 65,535-byte initial
         // per-stream window. Promotion expands the already-admitted carrier to
-        // a fixed 8-MiB receive window. Otherwise a record larger than the
-        // initial window could never reach ReceivedRecord and its move-owned
-        // credit could never be released.
-        if (!admitted_h2->EnableAdmittedReceiveWindow()) {
+        // the configured receive window, at least 8 MiB. Otherwise a record
+        // larger than the initial window could never reach ReceivedRecord and
+        // its move-owned credit could never be released.
+        if (!admitted_h2->EnableAdmittedReceiveWindow(
+                limits.admitted_receive_window_bytes)) {
             channel->close();
             return Result<std::unique_ptr<Carrier>>(Status::diagnostic(
                 StatusCode::FailedPrecondition,
@@ -1626,6 +1630,18 @@ Result<std::unique_ptr<Carrier>> make_admitted_h2_duplex_server_carrier(
 
 Status validate_h2_duplex_carrier_limits(const H2DuplexCarrierLimits& limits) {
     return validate_limits(limits);
+}
+
+H2DuplexCarrierLimits h2_duplex_limits_for_budget(
+    std::size_t session_budget_bytes) noexcept {
+    H2DuplexCarrierLimits limits;
+    const std::size_t window = std::max(
+        2U * std::min(session_budget_bytes, kMaxH2DuplexSessionBudgetBytes),
+        obfs::kAdmittedH2ReceiveWindowBytes);
+    limits.admitted_receive_window_bytes = window;
+    limits.max_retained_receive_bytes =
+        std::max(limits.max_retained_receive_bytes, window);
+    return limits;
 }
 
 }  // namespace yume::providers

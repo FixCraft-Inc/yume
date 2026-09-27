@@ -1859,8 +1859,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="yume-doctor",
         description=(
-            "Validate experimental YTP/1 schema-1 configuration and "
-            "credentials; this does not qualify the unwired runtime provider."
+            "Validate a YTP/1 schema-1 configuration and the credential, "
+            "cover and list files it names. It does not start a session."
         ),
     )
     parser.add_argument("--config", required=True, type=Path)
@@ -1884,7 +1884,7 @@ def main() -> int:
         return 1
     print(
         "yume-doctor: configuration and credentials valid; "
-        "runtime provider not qualified"
+        "no session was started"
     )
     return 0
 

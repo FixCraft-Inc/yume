@@ -6,6 +6,7 @@
 
 #include "modules/files/file_receiver.hpp"
 #include "modules/relay/identity.hpp"
+#include "test_support/allocation_failure.hpp"
 
 #include <array>
 #include <algorithm>
@@ -86,12 +87,37 @@ void CreatePrivateFile(const std::filesystem::path& path,
     assert(::chmod(path.c_str(), S_IRUSR | S_IWUSR) == 0);
 }
 
+void test_basename_validation_without_allocations() {
+    using yume::files::RelayFileReceiver;
+    const std::string maximum_name(128U, 'a');
+    const std::string long_stem = std::string(120U, 'a') + ".bin";
+
+    // Validation is noexcept and must keep working when allocations fail.
+    yume::test::arm_allocation_failure(1U);
+    bool accepted = RelayFileReceiver::IsSafeBasename(maximum_name) &&
+                    RelayFileReceiver::IsSafeBasename(long_stem);
+    for (const std::string_view name :
+         {"COM0.txt", "COM10.txt", "conx.txt", "auxiliary.txt", "LPT9x"}) {
+        accepted = RelayFileReceiver::IsSafeBasename(name) && accepted;
+    }
+    bool rejected = true;
+    for (const std::string_view name :
+         {"con", "PrN.txt", "aUx.tar", "nul", "cOm1.dat", "LpT9.txt"}) {
+        rejected = !RelayFileReceiver::IsSafeBasename(name) && rejected;
+    }
+    const bool allocated = yume::test::disarm_allocation_failure();
+
+    assert(accepted && rejected);
+    assert(!allocated);
+}
+
 }  // namespace
 
 int main() {
     using yume::files::RelayFileReceiver;
     using yume::files::RelayReceiveLimits;
 
+    test_basename_validation_without_allocations();
     assert(RelayFileReceiver::IsSafeBasename("archive.bin"));
     assert(RelayFileReceiver::IsSafeBasename("report-2026.dat"));
     assert(!RelayFileReceiver::IsSafeBasename(""));

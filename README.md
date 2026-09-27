@@ -71,8 +71,8 @@ CA key off the server.
 | `yume-doctor` | Checks configuration and credential files |
 | `libyume` | Optional C library for embedding the client or server in another program |
 
-The desktop GUI in `src/gui` does not build yet: it waits for a native
-interface. Relay chat and file transfer exist as libraries for planned
+There is no desktop GUI yet. A new one is planned for a later phase. Relay
+chat and file transfer exist as libraries for planned
 [modules](docs/MODULES.md). Transport v2, the protocol before YTP/1, has been
 removed.
 

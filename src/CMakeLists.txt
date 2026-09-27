@@ -46,7 +46,7 @@ endfunction()
 
 # The project warning set, applied to first-party targets only.
 #
-# Bundled dependencies (basefwx, imgui, implot, nlohmann, spdlog) are built as
+# Bundled dependencies (basefwx, nlohmann) are built as
 # their own targets and never call this, so a warning here is always about code
 # this tree owns and can fix.
 #

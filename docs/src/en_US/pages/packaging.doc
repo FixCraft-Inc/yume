@@ -23,8 +23,7 @@ tools remain experimental. Setup and doctor require Python 3 and an OpenSSL
 3.5 or newer command-line executable, including when the native binaries
 embed their own patched OpenSSL.
 
-The GUI source in `src/gui` does not build until it has a native interface,
-so no package carries it.
+There is no desktop GUI yet, so no package carries one.
 
 After activating the pinned patched OpenSSL described in
 [CONTRIBUTING.md](../CONTRIBUTING.md), a native development install is:
@@ -52,7 +51,7 @@ fixtures run when SDK installation and tests are enabled.
 ## Debian packages and service
 
 The Debian source metadata selects the native application and leaves out the
-shared ABI, the experimental SDK, the GUI and the BaseFWX modules. It declares
+shared ABI, the experimental SDK and the BaseFWX modules. It declares
 two packages:
 
 - `yume`: the native client, schema-1 setup and doctor, manuals and examples;
@@ -79,7 +78,7 @@ checks remain release gates.
 No `libyume1` or `libyume-dev` release package is emitted before ABI freeze
 and release qualification. Their eventual split will separate the frozen
 runtime library from the C header, discovery metadata and contract
-documentation. The planned replacement GUI will consume the public C ABI.
+documentation.
 
 ## Linux release archive
 

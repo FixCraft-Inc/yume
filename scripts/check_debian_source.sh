@@ -74,8 +74,6 @@ required=(
   "${prefix}/docs/PACKAGING.md"
   "${prefix}/scripts/make_debian_orig.sh"
   "${prefix}/scripts/check_source_archive_listing.py"
-  "${prefix}/src/gui/third_party/nanosvg/nanosvg.h"
-  "${prefix}/src/gui/third_party/stb/stb_image_write.h"
 )
 
 for path in "${required[@]}"; do

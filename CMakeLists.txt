@@ -248,10 +248,6 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     yume_configure_default_build_type()
 endif()
 
-# The desktop GUI in src/gui was built on the transport-v2 client runtime,
-# which YUME no longer contains. Its source waits for a native facade.
-option(YUME_BUILD_GUI "Build the yume-gui desktop app" OFF)
-
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.hpp" _yume_version_line
     REGEX "kVersion\\[\\][ \\t]*=[ \\t]*\"")
 string(REGEX MATCH "\"([^\"]+)\"" _yume_version_match "${_yume_version_line}")
@@ -319,11 +315,6 @@ endif()
 
 if(YUME_STATIC AND YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_BUILD_SHARED_ABI requires a dynamic build; disable YUME_STATIC")
-endif()
-if(YUME_BUILD_GUI)
-    message(FATAL_ERROR
-        "YUME_BUILD_GUI is not available: the GUI in src/gui needs a native "
-        "YTP/1 facade before it builds again")
 endif()
 
 # A static library absorbed into libyume must be PIC, hidden, and an ordinary

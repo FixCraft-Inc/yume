@@ -2821,8 +2821,7 @@ Status SessionEngine::Impl::process_close(const ytp1::RecordView& record) {
     }
     const auto code = static_cast<StreamCloseCode>(record.payload[0]);
     const auto value = record.header.stream_id.value();
-    auto id = StreamId::application(value, (value & 1U) ? EndpointRole::Client
-                                                       : EndpointRole::Server);
+    auto id = StreamId::wire_application(value);
     if (!id.ok()) return protocol_failure("CLOSE stream ID is invalid");
     StreamResponder::ReadCompletion read;
     bool fully_closed = false;

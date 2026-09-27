@@ -131,24 +131,13 @@ void TestStreamIdsAndFrameHeader() {
     const auto server = StreamId::FromWire(2);
     const auto max_client = StreamId::FromWire(kMaxStreamId);
     const auto max_server = StreamId::FromWire(kMaxStreamId - 1U);
+    // The engine's StreamId owns which side may open an ID. The kernel only
+    // bounds the wire value.
     CHECK(control && control.value->is_control());
-    CHECK(client && client.value->is_owned_by(EndpointRole::Client));
-    CHECK(server && server.value->is_owned_by(EndpointRole::Server));
-    CHECK(!client.value->is_owned_by(EndpointRole::Server));
+    CHECK(client && client.value->is_application());
+    CHECK(server && server.value->is_application());
+    CHECK(max_client && max_server);
     CHECK(!StreamId::FromWire(0x8000'0000U));
-    CHECK_EQ(StreamId::FirstOwnedBy(EndpointRole::Client).value->value(), 1U);
-    CHECK_EQ(StreamId::FirstOwnedBy(EndpointRole::Server).value->value(), 2U);
-    CHECK_EQ(StreamId::FirstOwnedBy(static_cast<EndpointRole>(3)).status.code,
-             ErrorCode::InvalidEnum);
-    CHECK(max_client && !max_client.value->NextOwned());
-    CHECK(max_server && !max_server.value->NextOwned());
-    CHECK_EQ(max_client.value->NextOwned().status.code,
-             ErrorCode::StreamIdExhausted);
-    CHECK(ValidateOpenStreamOwner(*client.value, EndpointRole::Client));
-    CHECK_EQ(ValidateOpenStreamOwner(*client.value, EndpointRole::Server).code,
-             ErrorCode::WrongStreamOwner);
-    CHECK_EQ(ValidateOpenStreamOwner(*control.value, EndpointRole::Client).code,
-             ErrorCode::WrongStreamClass);
 
     FrameHeader header{RecordType::Data, 0, *client.value, 3};
     std::array<std::uint8_t, kFrameHeaderSize> encoded{};

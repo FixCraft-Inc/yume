@@ -26,6 +26,9 @@ public:
                                         EndpointRole owner);
     static Result<StreamId> peer_application(std::uint32_t value,
                                              EndpointRole local_role);
+    // An application ID received on the wire, owned by whichever side its
+    // parity names.
+    static Result<StreamId> wire_application(std::uint32_t value);
 
     constexpr std::uint32_t value() const noexcept { return value_; }
     constexpr bool is_control() const noexcept { return value_ == 0U; }

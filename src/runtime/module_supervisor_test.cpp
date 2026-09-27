@@ -26,6 +26,8 @@
 
 #include <boost/asio/post.hpp>
 
+#include "test_support/allocation_failure.hpp"
+
 namespace {
 using namespace yume::engine;
 using yume::providers::AsioExecutionContext;
@@ -307,6 +309,88 @@ void test_programs_are_checked() {
           "a missing launcher was accepted");
 }
 
+// One failed allocation while a module OPEN starts still settles its
+// acceptance exactly once.
+void test_open_allocation_failure_settles_once() {
+    Harness harness(YUME_TEST_ECHO_MODULE);
+    check(harness.create_and_start().ok(), "the echo module did not start");
+    bool reached_success = false;
+    for (std::size_t failure = 1U; failure <= 256U && !reached_success;
+         ++failure) {
+        auto stream = std::make_shared<FakeStream>(harness.context->affinity());
+        auto context = harness.open_context();
+        auto handler = harness.supervisor->handler();
+        unsigned completions = 0U;
+        Status outcome;
+        StreamHandler::AcceptanceCompletion completion = [&](Status status) {
+            ++completions;
+            outcome = std::move(status);
+        };
+        harness.on_context([&] {
+            yume::test::arm_allocation_failure(failure);
+            handler->async_open(std::move(context), stream,
+                                std::move(completion));
+            return true;
+        });
+        check(harness.wait_for(
+                  [&] { return completions != 0U || stream->closed.load(); }),
+              "a module OPEN never settled");
+        const bool fired = yume::test::disarm_allocation_failure();
+        check(completions == 1U, "a module OPEN was not settled exactly once");
+        reached_success = !fired && outcome.ok();
+        harness.on_context([&] {
+            stream->close(Status(StatusCode::Closed));
+            return true;
+        });
+    }
+    check(reached_success, "no module OPEN succeeded");
+}
+
+// A module at its stream limit refuses a further OPEN once, even when copying
+// the refusal fails.
+void test_refusal_allocation_failure_settles_once() {
+    Harness harness(YUME_TEST_ECHO_MODULE);
+    ModuleSupervisorOptions options;
+    options.max_streams = 1U;
+    check(harness.create_and_start(options).ok(),
+          "the echo module did not start");
+    Status accepted;
+    auto held = harness.open(accepted);
+    check(accepted.ok(), "the module refused its only stream");
+    bool reached_end = false;
+    for (std::size_t failure = 1U; failure <= 64U && !reached_end; ++failure) {
+        auto stream = std::make_shared<FakeStream>(harness.context->affinity());
+        auto context = harness.open_context();
+        auto handler = harness.supervisor->handler();
+        unsigned completions = 0U;
+        Status outcome;
+        StreamHandler::AcceptanceCompletion completion = [&](Status status) {
+            ++completions;
+            outcome = std::move(status);
+        };
+        // The connection completes at once, so the refusal runs in this poll.
+        harness.on_context([&] {
+            handler->async_open(std::move(context), stream,
+                                std::move(completion));
+            yume::test::arm_allocation_failure(failure);
+            return true;
+        });
+        check(harness.wait_for(
+                  [&] { return completions != 0U || stream->closed.load(); }),
+              "a refused module OPEN never settled");
+        const bool fired = yume::test::disarm_allocation_failure();
+        check(completions == 1U &&
+                  outcome.code() == StatusCode::ResourceExhausted,
+              "an OPEN beyond the module stream limit was not refused once");
+        reached_end = !fired;
+    }
+    check(reached_end, "the refusal sweep did not finish");
+    harness.on_context([&] {
+        held->close(Status(StatusCode::Closed));
+        return true;
+    });
+}
+
 }  // namespace
 
 int main() {
@@ -316,6 +400,8 @@ int main() {
         test_stalled_module_and_forced_stop();
         test_graceful_stop_removes_the_socket();
         test_programs_are_checked();
+        test_open_allocation_failure_settles_once();
+        test_refusal_allocation_failure_settles_once();
         std::cout << "module supervisor tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

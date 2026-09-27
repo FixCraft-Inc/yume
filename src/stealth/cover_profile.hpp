@@ -165,7 +165,6 @@ struct Profile {
 // branches to TLS/HTTP/H2 consumers.
 std::span<const Profile> all();
 const Profile* find_by_id(std::string_view id);
-const Profile* find_by_registry_name(std::string_view name);
 const Profile& active();
 
 }  // namespace yume::cover_profile

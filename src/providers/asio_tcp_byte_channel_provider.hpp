@@ -82,8 +82,9 @@ public:
 
     // Consumes one already-connected, exclusively owned socket with no pending
     // operations. Closed, unconnected, or differently-executed sockets fail
-    // closed and are not published. Adoption is synchronous and may occur outside
-    // the execution context when the socket has no concurrent users.
+    // closed and are not published. Adoption is synchronous and may occur
+    // outside the execution context when the socket has no concurrent users.
+    // An adopted TCP socket gets TCP_NODELAY, as connected channels do.
     engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(
         AsioTcpSocket socket);
     engine::Result<std::unique_ptr<engine::ByteChannel>> adopt(

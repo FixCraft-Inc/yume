@@ -31,8 +31,6 @@ enum class ErrorCode {
     InvalidLength,
     InvalidStreamId,
     WrongStreamClass,
-    WrongStreamOwner,
-    StreamIdExhausted,
     InvalidEnum,
     InvalidUtf8,
     InvalidServiceName,
@@ -107,8 +105,8 @@ public:
         return StreamId(0);
     }
 
-    [[nodiscard]] static Result<StreamId> FromWire(std::uint32_t value) noexcept;
-    [[nodiscard]] static Result<StreamId> FirstOwnedBy(EndpointRole role) noexcept;
+    [[nodiscard]] static Result<StreamId> FromWire(
+        std::uint32_t value) noexcept;
 
     [[nodiscard]] constexpr std::uint32_t value() const noexcept {
         return value_;
@@ -122,14 +120,6 @@ public:
         return value_ != 0;
     }
 
-    [[nodiscard]] constexpr bool is_owned_by(EndpointRole role) const noexcept {
-        return is_application() &&
-               ((role == EndpointRole::Client && (value_ & 1U) == 1U) ||
-                (role == EndpointRole::Server && (value_ & 1U) == 0U));
-    }
-
-    [[nodiscard]] Result<StreamId> NextOwned() const noexcept;
-
     friend constexpr bool operator==(StreamId, StreamId) noexcept = default;
 
 private:
@@ -137,9 +127,6 @@ private:
 
     std::uint32_t value_;
 };
-
-[[nodiscard]] Status ValidateOpenStreamOwner(StreamId stream_id,
-                                             EndpointRole opener) noexcept;
 
 enum class RecordType : std::uint8_t {
     Auth = 1,

@@ -59,10 +59,17 @@ struct SessionLimits final {
     std::uint32_t max_pending_opens{32U};
     std::uint32_t max_control_messages{128U};
     std::size_t max_queued_bytes{8U * 1024U * 1024U};
+    // Bounds one stream's unsent writes. Inbound bytes are bounded by the
+    // stream's receive window instead.
     std::size_t max_stream_queued_bytes{512U * 1024U};
     std::uint32_t max_packet_size{64U * 1024U};
+    // Receive windows start at the initial credit and grow toward the maximum
+    // while the application drains them faster than the peer refills them.
+    // The connection maximum may not exceed max_queued_bytes, which bounds the
+    // received bytes the whole session holds, and a stream maximum may not
+    // exceed the connection maximum.
     std::uint32_t initial_connection_credit{4U * 1024U * 1024U};
-    std::uint32_t max_connection_credit{16U * 1024U * 1024U};
+    std::uint32_t max_connection_credit{8U * 1024U * 1024U};
     std::uint32_t initial_stream_credit{256U * 1024U};
     std::uint32_t max_stream_credit{4U * 1024U * 1024U};
     std::uint32_t max_concurrent_rekeys{2U};
@@ -235,6 +242,24 @@ public:
     // rejects expiration so a delayed timer cannot admit a late confirmation.
     std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const noexcept;
     bool expire_rekey(std::chrono::steady_clock::time_point now) noexcept;
+
+    // An outbound epoch that has carried a record rotates once it is 500 ms
+    // old. A send checks that age itself, but it must then wait a round trip
+    // for REKEY_ACK. An owner that also rotates at this deadline keeps that
+    // wait off the next send. Empty while inactive, while a rotation is
+    // pending and while the current epoch is unused.
+    std::optional<std::chrono::steady_clock::time_point> rotation_deadline()
+        const noexcept;
+    // Starts that rotation once `now` reaches the deadline, and does nothing
+    // earlier. A failure to start fails the session, as it does for a send.
+    Status rotate_aged_epoch(
+        std::chrono::steady_clock::time_point now) noexcept;
+    // One observer for the session's lifetime. Runs outside engine locks, on
+    // the sending thread, when a record starts a fresh outbound epoch, so the
+    // owner can schedule rotation_deadline(). Stop releases it, but a send
+    // that raced stop may still run it once. Exceptions are contained. Empty
+    // or duplicate registration and registration after stop are refused.
+    Status notify_on_epoch_start(std::function<void()> observer);
 
     // Idempotent terminal teardown. Unknown/provider callbacks are never
     // invoked while the engine lock is held and callback exceptions are

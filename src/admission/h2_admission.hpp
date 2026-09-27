@@ -35,10 +35,6 @@ struct ParsedPath final {
     Nonce nonce{};
 };
 
-std::optional<Token> parse_token_hex(std::string_view token) noexcept;
-std::optional<Nonce> parse_nonce_hex(std::string_view nonce) noexcept;
-std::string token_hex(const Token& token);
-std::string nonce_hex(const Nonce& nonce);
 std::optional<ParsedPath> parse_path(std::string_view path) noexcept;
 std::string build_path(const Token& token, const Nonce& nonce);
 

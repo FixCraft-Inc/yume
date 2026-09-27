@@ -42,6 +42,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.dont_write_bytecode = True
@@ -63,6 +64,11 @@ DEFAULT_CONDITIONS = [
     "rtt=2", "rtt=40", "rtt=100", "rtt=200",
     "rtt=100,loss=1", "rtt=200,loss=0.5,rate=50",
 ]
+# A soak samples both programs this often and needs at least eight samples.
+SOAK_SAMPLE_SECONDS = 5.0
+# A soak passes when the last quarter's peak stays within these bounds of the
+# second quarter's peak: (factor, added allowance). The first quarter warms up.
+PLATEAU_BOUNDS = {"rss_kib": (1.10, 1024), "fds": (1.0, 2)}
 DOES_NOT_PROVE = [
     "Behavior on real wide-area paths, whose loss, reordering and queues differ from netem.",
     "A speed comparison with other transports, which needs matched runs of each on the same path.",
@@ -302,28 +308,93 @@ def wait_for_text(path: Path, marker: str, process: subprocess.Popen, deadline: 
     raise session.SessionFailure(f"{path.stem} did not report '{marker}'")
 
 
+def fairness_index(rates: list[float]) -> float:
+    """Jain's index: 1.0 when every stream gets the same rate, 1/n when one gets everything."""
+    if not rates or any(not math.isfinite(rate) or rate < 0 for rate in rates):
+        raise ValueError("fairness needs finite, non-negative rates")
+    squares = sum(rate * rate for rate in rates)
+    return 1.0 if squares == 0 else sum(rates) ** 2 / (len(rates) * squares)
+
+
+def plateau(samples: list[int], factor: float, allowance: int) -> dict[str, object]:
+    """Compares the last quarter's peak with the second quarter's, after warm-up."""
+    if len(samples) < 8:
+        raise ValueError("a plateau check needs at least eight samples")
+    quarter = len(samples) // 4
+    baseline = max(samples[quarter:2 * quarter])
+    final = max(samples[-quarter:])
+    limit = baseline * factor + allowance
+    return {"baseline_peak": baseline, "final_peak": final, "limit": round(limit, 1), "flat": final <= limit}
+
+
+def process_resources(pid: int) -> dict[str, int]:
+    """Resident memory in KiB and open descriptors of one process."""
+    status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    rss = next((int(line.split()[1]) for line in status.splitlines() if line.startswith("VmRSS:")), None)
+    if rss is None:
+        raise session.SessionFailure(f"process {pid} reports no resident memory")
+    return {"rss_kib": rss, "fds": len(os.listdir(f"/proc/{pid}/fd"))}
+
+
+def parallel_downloads(socks_port: int | None, host: str, port: int, seconds: float,
+                       streams: int) -> dict[str, object]:
+    """Runs `streams` timed downloads at once. Over the tunnel they share one session."""
+    results: list[dict[str, float] | None] = [None] * streams
+    errors: list[str] = []
+
+    def worker(index: int) -> None:
+        try:
+            results[index] = timed_download(socks_port, host, port, seconds)
+        except (session.SessionFailure, OSError) as error:
+            errors.append(f"stream {index}: {error}")
+
+    threads = [threading.Thread(target=worker, args=(index,), daemon=True) for index in range(streams)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=seconds + 90)
+    if errors or any(thread.is_alive() for thread in threads) or any(result is None for result in results):
+        raise session.SessionFailure("parallel downloads failed: " + (", ".join(errors) or "a download did not finish"))
+    finished = [result for result in results if result is not None]
+    tails = [result["tail_mbit_s"] for result in finished]
+    return {"streams": finished, "aggregate_tail_mbit_s": round(sum(tails), 2),
+            "fairness": round(fairness_index(tails), 3)}
+
+
+def start_client(arguments: argparse.Namespace, kit: Path, environment: dict[str, str], socks_port: int,
+                 target_port: int, log: object) -> tuple[subprocess.Popen, float]:
+    """Starts yume and waits for its first tunnelled request. Returns the process and milliseconds."""
+    client = subprocess.Popen([str(arguments.yume), "--config", str(kit / "client/yume.json")],
+                              env=environment, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        started = time.monotonic()
+        session.wait_for_port("127.0.0.1", socks_port, client, started + 30)
+        deadline, last = started + 120, None
+        while True:
+            try:
+                small_request(socks_port, "127.0.0.1", target_port)
+                break
+            except (session.SessionFailure, OSError) as error:
+                last = error
+                if client.poll() is not None or time.monotonic() > deadline:
+                    raise session.SessionFailure(f"no tunnelled request succeeded: {last}") from None
+                time.sleep(0.05)
+        return client, round((time.monotonic() - started) * 1000, 1)
+    except BaseException:
+        client.kill()
+        client.wait(timeout=5)
+        raise
+
+
 def measure_condition(arguments: argparse.Namespace, link: Link, kit: Path, environment: dict[str, str],
                       socks_port: int, target_port: int, text: str, index: int) -> dict[str, object]:
     condition = parse_condition(text)
     result: dict[str, object] = {"condition": text, **condition, "netem": link.shape(condition)}
     log_path = arguments.output / f"yume-{index}.log"
     with log_path.open("wb") as log:
-        client = subprocess.Popen([str(arguments.yume), "--config", str(kit / "client/yume.json")],
-                                  env=environment, stdout=log, stderr=subprocess.STDOUT)
+        client, result["session_ready_ms"] = start_client(arguments, kit, environment, socks_port,
+                                                          target_port, log)
         try:
-            started = time.monotonic()
-            session.wait_for_port("127.0.0.1", socks_port, client, started + 30)
-            deadline, last = started + 120, None
-            while True:
-                try:
-                    small_request(socks_port, "127.0.0.1", target_port)
-                    break
-                except (session.SessionFailure, OSError) as error:
-                    last = error
-                    if client.poll() is not None or time.monotonic() > deadline:
-                        raise session.SessionFailure(f"no tunnelled request succeeded: {last}") from None
-                    time.sleep(0.05)
-            result["session_ready_ms"] = round((time.monotonic() - started) * 1000, 1)
             paths = {"direct": (None, SERVER_ADDRESS), "tunnel": (socks_port, "127.0.0.1")}
             downloads: dict[str, list[dict[str, float]]] = {name: [] for name in paths}
             requests: dict[str, list[float]] = {name: [] for name in paths}
@@ -333,6 +404,10 @@ def measure_condition(arguments: argparse.Namespace, link: Link, kit: Path, envi
             for _ in range(arguments.requests):
                 for name, (port, host) in paths.items():
                     requests[name].append(small_request(port, host, target_port))
+            if arguments.streams > 1:
+                result["parallel"] = {name: parallel_downloads(port, host, target_port, arguments.seconds,
+                                                               arguments.streams)
+                                      for name, (port, host) in paths.items()}
             session.stop_process(client, "yume")
         finally:
             if client.poll() is None:
@@ -351,6 +426,57 @@ def measure_condition(arguments: argparse.Namespace, link: Link, kit: Path, envi
     return result
 
 
+def run_soak(arguments: argparse.Namespace, link: Link, kit: Path, environment: dict[str, str],
+             socks_port: int, target_port: int, yumed: subprocess.Popen) -> dict[str, object]:
+    """Keeps parallel downloads running for the soak time and samples both programs."""
+    condition = parse_condition(arguments.soak_condition)
+    result: dict[str, object] = {"condition": arguments.soak_condition, "seconds": arguments.soak,
+                                 "streams": arguments.streams, "netem": link.shape(condition)}
+    samples: list[dict[str, object]] = []
+    rounds: list[dict[str, object]] = []
+    with (arguments.output / "yume-soak.log").open("wb") as log:
+        client, result["session_ready_ms"] = start_client(arguments, kit, environment, socks_port,
+                                                          target_port, log)
+        stop = threading.Event()
+        sampler_errors: list[str] = []
+        started = time.monotonic()
+
+        def sample() -> None:
+            while not stop.wait(SOAK_SAMPLE_SECONDS):
+                try:
+                    samples.append({"seconds": round(time.monotonic() - started, 1),
+                                    "yume": process_resources(client.pid),
+                                    "yumed": process_resources(yumed.pid)})
+                except (OSError, session.SessionFailure) as error:
+                    sampler_errors.append(str(error))
+                    return
+
+        sampler = threading.Thread(target=sample, daemon=True)
+        sampler.start()
+        try:
+            while (remaining := started + arguments.soak - time.monotonic()) >= 2:
+                outcome = parallel_downloads(socks_port, "127.0.0.1", target_port, min(30.0, remaining),
+                                             arguments.streams)
+                rounds.append({"aggregate_tail_mbit_s": outcome["aggregate_tail_mbit_s"],
+                               "fairness": outcome["fairness"],
+                               "bytes": sum(stream["bytes"] for stream in outcome["streams"])})
+        finally:
+            stop.set()
+            sampler.join(timeout=SOAK_SAMPLE_SECONDS + 5)
+            session.stop_process(client, "yume")
+    session.reject_secret_output(
+        "yume", (arguments.output / "yume-soak.log").read_text(encoding="utf-8", errors="replace"))
+    if sampler_errors:
+        raise session.SessionFailure("soak sampling failed: " + sampler_errors[0])
+    result["rounds"] = rounds
+    result["samples"] = samples
+    result["plateau"] = {
+        f"{program}_{metric}": plateau([sample_row[program][metric] for sample_row in samples], *bounds)
+        for program in ("yume", "yumed") for metric, bounds in PLATEAU_BOUNDS.items()}
+    result["flat"] = all(check["flat"] for check in result["plateau"].values())
+    return result
+
+
 def run_inside(arguments: argparse.Namespace) -> int:
     arguments.output.mkdir(parents=True, exist_ok=False)
     environment = session.openssl_environment(arguments.openssl)
@@ -360,6 +486,7 @@ def run_inside(arguments: argparse.Namespace) -> int:
         "host": {"name": os.uname().nodename, "kernel": os.uname().release, "cpus": os.cpu_count()},
         "binaries": {"yumed": session.file_digest(arguments.yumed), "yume": session.file_digest(arguments.yume)},
         "window_seconds": arguments.seconds, "repeats": arguments.repeats, "requests": arguments.requests,
+        "streams": arguments.streams,
         "conditions": [],
     }
     link = Link()
@@ -400,6 +527,17 @@ def run_inside(arguments: argparse.Namespace) -> int:
                 print(json.dumps({key: result.get(key) for key in
                                   ("condition", "session_ready_ms", "median_tail_mbit_s", "tunnel_to_direct",
                                    "median_request_ms", "error")}), flush=True)
+            if arguments.soak:
+                try:
+                    report["soak"] = run_soak(arguments, link, kit, environment, socks_port, target_port,
+                                              processes[1])
+                    if not report["soak"]["flat"]:
+                        code = 1
+                except (session.SessionFailure, OSError, subprocess.SubprocessError, ValueError) as error:
+                    report["soak"] = {"error": str(error)}
+                    code = 1
+                print(json.dumps({"soak_flat": report["soak"].get("flat"), "error": report["soak"].get("error")}),
+                      flush=True)
             session.stop_process(processes[1], "yumed")
             for handle in logs.values():
                 handle.close()
@@ -436,6 +574,13 @@ def main() -> int:
     parser.add_argument("--requests", type=int, default=20, help="small requests per path and condition, 1..200")
     parser.add_argument("--max-queued-bytes", type=int,
                         help="limits.max_queued_bytes for both roles, default the kit's value")
+    parser.add_argument("--streams", type=int, default=1,
+                        help="parallel downloads per path after the single-stream samples, 1..64, "
+                             "reported with Jain's fairness index. A soak uses them too")
+    parser.add_argument("--soak", type=float, default=0.0,
+                        help="seconds, 60..86400, of parallel downloads after the matrix while both programs' "
+                             "memory and descriptors are sampled. The run fails unless they level off")
+    parser.add_argument("--soak-condition", default="rtt=40", help="network condition for the soak")
     parser.add_argument("--server-name", default="cdn.example.test")
     parser.add_argument("--port", type=int, default=443, help="daemon port inside the namespace")
     arguments = parser.parse_args()
@@ -447,9 +592,17 @@ def main() -> int:
         parser.error(str(error))
     if not 2 <= arguments.seconds <= 60 or not 1 <= arguments.repeats <= 20 or \
             not 1 <= arguments.requests <= 200 or not 1 <= arguments.port <= 65535 or \
-            (arguments.max_queued_bytes is not None and not 1 << 16 <= arguments.max_queued_bytes <= 64 << 20):
+            (arguments.max_queued_bytes is not None and not 1 << 16 <= arguments.max_queued_bytes <= 16 << 20):
+        # The configuration parser owns the queue budget bound (kMaxQueuedBytes).
         parser.error("seconds must be 2..60, repeats 1..20, requests 1..200, port 1..65535 "
-                     "and max queued bytes 64 KiB..64 MiB")
+                     "and max queued bytes 64 KiB..16 MiB")
+    if not 1 <= arguments.streams <= 64 or \
+            (arguments.soak and not 60 <= arguments.soak <= 86400):
+        parser.error("streams must be 1..64 and a soak 60..86400 seconds")
+    try:
+        parse_condition(arguments.soak_condition)
+    except ValueError as error:
+        parser.error(str(error))
     for name in ("yumed", "yume", "openssl"):
         setattr(arguments, name, getattr(arguments, name).resolve(strict=True))
     arguments.output = arguments.output.resolve()

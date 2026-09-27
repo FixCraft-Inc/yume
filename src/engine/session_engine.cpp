@@ -35,6 +35,9 @@ constexpr std::uint8_t kProtectedEnvelopeVersion = 1U;
 constexpr std::size_t kClosePayloadBytes = 1U;
 constexpr std::size_t kRekeyEpochBytes = 4U;
 constexpr std::size_t kPingPayloadBytes = 8U;
+// The round-trip estimate is the smallest sample of this window, so it
+// follows a path that became slower. BBR keeps its minimum RTT the same way.
+constexpr auto kRoundTripWindow = std::chrono::seconds(10);
 
 std::size_t rekey_queue_reserve(const SessionLimits& limits) noexcept {
     return 2U * (ytp1::kFrameHeaderSize + kRekeyEpochBytes) +
@@ -297,9 +300,10 @@ Status validate_limits(const SessionLimits& limits) {
     if (limits.initial_connection_credit == 0U ||
         limits.initial_connection_credit > limits.max_connection_credit ||
         limits.max_connection_credit > ytp1::kMaxCreditIncrement ||
+        limits.max_connection_credit > limits.max_queued_bytes ||
         limits.initial_stream_credit == 0U ||
         limits.initial_stream_credit > limits.max_stream_credit ||
-        limits.max_stream_credit > ytp1::kMaxCreditIncrement) {
+        limits.max_stream_credit > limits.max_connection_credit) {
         return Status(StatusCode::InvalidArgument,
                       "session flow-credit limits are invalid");
     }
@@ -448,6 +452,11 @@ public:
     Status initiate_rekey();
     std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const noexcept;
     bool expire_rekey(std::chrono::steady_clock::time_point now) noexcept;
+    std::optional<std::chrono::steady_clock::time_point> rotation_deadline()
+        const noexcept;
+    Status rotate_aged_epoch(
+        std::chrono::steady_clock::time_point now) noexcept;
+    Status notify_on_epoch_start(std::function<void()> observer);
     void stop(Status reason, bool failed) noexcept;
 
     void stream_read(StreamId stream_id,
@@ -486,6 +495,14 @@ private:
         CancellationRegistration cancellation;
     };
 
+    // Receive credit for the connection or one stream. The peer may hold
+    // `size` less what this side holds or has consumed without returning.
+    struct ReceiveWindow final {
+        std::uint64_t size{0U};
+        std::uint64_t unreturned{0U};
+        std::optional<std::chrono::steady_clock::time_point> last_return;
+    };
+
     struct StreamStateData final {
         StreamStateData(StreamId value,
                         std::string name,
@@ -514,6 +531,7 @@ private:
         bool peer_write_closed{false};
         std::uint64_t outbound_credit{0U};
         std::uint64_t inbound_credit{0U};
+        ReceiveWindow receive_window;
         std::size_t inbound_queued_bytes{0U};
         std::size_t outbound_queued_bytes{0U};
         std::size_t outbound_publications{0U};
@@ -627,6 +645,13 @@ private:
 
     void return_receive_credit(StreamId stream_id,
                                std::size_t bytes) noexcept;
+    std::uint64_t return_threshold(std::uint64_t window) const noexcept;
+    std::uint64_t grow_window_locked(
+        ReceiveWindow& window, std::uint64_t maximum,
+        std::chrono::steady_clock::time_point now) const noexcept;
+    void sample_round_trip_locked(
+        std::chrono::steady_clock::time_point sent,
+        std::chrono::steady_clock::time_point now) noexcept;
     void drain_pending_writes() noexcept;
     Status send_stream_credit(StreamId stream_id, std::uint32_t increment);
     Status send_close(StreamId stream_id, StreamCloseCode code);
@@ -679,6 +704,10 @@ private:
     Status terminal_status_{};
     StartCompletion start_completion_;
     ClosedCompletion closed_completion_;
+    // Shared so a sender can take it under the lock without allocating and
+    // run it after releasing the lock.
+    std::shared_ptr<const std::function<void()>> epoch_observer_;
+    bool epoch_observer_registered_{false};
     Status deferred_closed_status_;
     bool closed_observer_registered_{false};
     bool teardown_drained_{false};
@@ -705,6 +734,12 @@ private:
 
     std::uint64_t outbound_connection_credit_{0U};
     std::uint64_t inbound_connection_credit_{0U};
+    ReceiveWindow connection_window_;
+    // Round trips timed locally from this side's AUTH flight to the peer's
+    // answer and from each REKEY_INIT to its ACK. Neither adds a record.
+    std::optional<std::chrono::steady_clock::duration> round_trip_;
+    std::chrono::steady_clock::time_point round_trip_expiry_{};
+    std::optional<std::chrono::steady_clock::time_point> auth_flight_sent_;
 
     std::uint32_t outbound_epoch_{0U};
     std::uint32_t inbound_epoch_{0U};
@@ -714,6 +749,7 @@ private:
     bool inbound_sequence_exhausted_{false};
     bool outbound_rekey_pending_{false};
     bool outbound_rekey_expired_{false};
+    std::chrono::steady_clock::time_point outbound_rekey_started_{};
     std::chrono::steady_clock::time_point outbound_rekey_deadline_{};
     std::uint64_t outbound_epoch_bytes_{0U};
     std::uint64_t outbound_epoch_records_{0U};
@@ -1048,6 +1084,22 @@ bool SessionEngine::expire_rekey(std::chrono::steady_clock::time_point now) noex
     return impl_->expire_rekey(now);
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+SessionEngine::rotation_deadline() const noexcept {
+    return impl_->rotation_deadline();
+}
+
+Status SessionEngine::rotate_aged_epoch(
+    std::chrono::steady_clock::time_point now) noexcept {
+    const auto keepalive = weak_from_this().lock();
+    return impl_->rotate_aged_epoch(now);
+}
+
+Status SessionEngine::notify_on_epoch_start(std::function<void()> observer) {
+    const auto keepalive = weak_from_this().lock();
+    return impl_->notify_on_epoch_start(std::move(observer));
+}
+
 void SessionEngine::stop(Status reason) noexcept {
     // A drained user callback may release the final external owner. Retain
     // the implementation until all queues and completion owners are settled.
@@ -1257,6 +1309,7 @@ Status SessionEngine::Impl::handle_start_output(
     }
     std::lock_guard<std::mutex> lock(mutex_);
     expected_auth_kind_ = AuthenticationMessageKind::Response;
+    auth_flight_sent_ = std::chrono::steady_clock::now();
     return Status::success();
 }
 
@@ -1293,6 +1346,11 @@ Status SessionEngine::Impl::handle_authentication_record(
             return protocol_failure("unexpected AUTH record");
         }
         expected = expected_auth_kind_;
+        if (auth_flight_sent_.has_value()) {
+            sample_round_trip_locked(*auth_flight_sent_,
+                                     std::chrono::steady_clock::now());
+            auth_flight_sent_.reset();
+        }
     }
     if (auth_record_type(*expected) != outer_type) {
         return protocol_failure("AUTH outer record type is wrong");
@@ -1346,6 +1404,7 @@ Status SessionEngine::Impl::handle_authentication_record(
         }
         std::lock_guard<std::mutex> lock(mutex_);
         expected_auth_kind_ = AuthenticationMessageKind::Accepted;
+        auth_flight_sent_ = std::chrono::steady_clock::now();
         return Status::success();
     }
 
@@ -1436,6 +1495,7 @@ Status SessionEngine::Impl::advertise_post_authentication_state() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         inbound_connection_credit_ = limits_.initial_connection_credit;
+        connection_window_.size = limits_.initial_connection_credit;
     }
     return enqueue_record(
         ytp1::RecordType::ConnectionCredit, StreamId::control(),
@@ -1683,6 +1743,9 @@ Status SessionEngine::Impl::enqueue_record(
                             completion_bytes, std::move(completion));
     }
 
+    // Taken when this record starts a fresh outbound epoch, and run once the
+    // record is queued and every lock is released.
+    std::shared_ptr<const std::function<void()>> epoch_observer;
     const std::size_t envelope = protect
         ? kProtectedEnvelopeBytes + security_->max_sealed_overhead()
         : 0U;
@@ -1713,8 +1776,11 @@ Status SessionEngine::Impl::enqueue_record(
             }
             if (type == ytp1::RecordType::StreamCredit) {
                 const auto increment = ytp1::DecodeCreditUpdate(as_u8(payload));
-                if (!increment.ok() || *increment.value >
-                    limits_.max_stream_credit - it->second->inbound_credit) {
+                if (!increment.ok() ||
+                    it->second->inbound_credit >
+                        it->second->receive_window.size ||
+                    *increment.value > it->second->receive_window.size -
+                                           it->second->inbound_credit) {
                     return Status::diagnostic(
                         StatusCode::Internal,
                         "local stream credit exceeds its bound");
@@ -1768,6 +1834,7 @@ Status SessionEngine::Impl::enqueue_record(
             if (type != ytp1::RecordType::RekeyInit) {
                 if (outbound_epoch_records_ == 0U) {
                     outbound_epoch_first_send_ = std::chrono::steady_clock::now();
+                    epoch_observer = epoch_observer_;
                 }
                 outbound_epoch_bytes_ += payload.size();
                 ++outbound_epoch_records_;
@@ -1886,6 +1953,9 @@ Status SessionEngine::Impl::enqueue_record(
         payload_bytes_sent_.fetch_add(payload.size(), std::memory_order_relaxed);
     }
     request_send_pump();
+    if (epoch_observer) {
+        invoke_noexcept(*epoch_observer);
+    }
     return Status::success();
 }
 
@@ -2562,6 +2632,7 @@ void SessionEngine::Impl::complete_peer_open(StreamId stream_id,
             if (status.ok()) {
                 it->second->opening = false;
                 --pending_opens_;
+                it->second->receive_window.size = limits_.initial_stream_credit;
             }
         }
         if (status.ok()) {
@@ -2635,11 +2706,15 @@ Status SessionEngine::Impl::process_application_data(
             stream->inbound_credit -= record.payload.size();
             inbound_connection_credit_ -= record.payload.size();
         }
+        // Credit already keeps a stream's queue within its receive window and
+        // the session's within max_queued_bytes. These checks stop a local
+        // accounting error from holding more.
         if (!discard_crossed_data && !stream->pending_read.has_value() &&
-            (record.payload.size() > limits_.max_stream_queued_bytes -
-                                         stream->inbound_queued_bytes ||
-             record.payload.size() > limits_.max_queued_bytes -
-                                         inbound_queued_bytes_)) {
+            (stream->inbound_queued_bytes > stream->receive_window.size ||
+             record.payload.size() >
+                 stream->receive_window.size - stream->inbound_queued_bytes ||
+             record.payload.size() >
+                 limits_.max_queued_bytes - inbound_queued_bytes_)) {
             return Status(StatusCode::ResourceExhausted,
                           "inbound application queue is full");
         }
@@ -2694,9 +2769,11 @@ Status SessionEngine::Impl::process_application_data(
         }
         discard_crossed_data = stream->closed;
         if (!discard_crossed_data && !stream->pending_read &&
-            (record.payload.size() > limits_.max_stream_queued_bytes -
-                                         stream->inbound_queued_bytes ||
-             record.payload.size() > limits_.max_queued_bytes - inbound_queued_bytes_)) {
+            (stream->inbound_queued_bytes > stream->receive_window.size ||
+             record.payload.size() >
+                 stream->receive_window.size - stream->inbound_queued_bytes ||
+             record.payload.size() >
+                 limits_.max_queued_bytes - inbound_queued_bytes_)) {
             return Status::diagnostic(StatusCode::ResourceExhausted,
                                       "inbound application queue is full");
         }
@@ -2744,8 +2821,7 @@ Status SessionEngine::Impl::process_close(const ytp1::RecordView& record) {
     }
     const auto code = static_cast<StreamCloseCode>(record.payload[0]);
     const auto value = record.header.stream_id.value();
-    auto id = StreamId::application(value, (value & 1U) ? EndpointRole::Client
-                                                       : EndpointRole::Server);
+    auto id = StreamId::wire_application(value);
     if (!id.ok()) return protocol_failure("CLOSE stream ID is invalid");
     StreamResponder::ReadCompletion read;
     bool fully_closed = false;
@@ -2872,10 +2948,10 @@ Status SessionEngine::Impl::process_connection_credit(
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (*decoded.value > limits_.max_connection_credit -
-                                 outbound_connection_credit_) {
+        if (*decoded.value >
+            ytp1::kMaxCreditIncrement - outbound_connection_credit_) {
             return protocol_failure(
-                "connection-credit update exceeds the configured bound");
+                "connection-credit update exceeds the YTP/1 bound");
         }
         outbound_connection_credit_ += *decoded.value;
     }
@@ -2899,14 +2975,19 @@ Status SessionEngine::Impl::process_stream_credit(const ytp1::RecordView& record
         if (stream->opening && stream->opened_by_peer) {
             return protocol_failure("opener granted credit before acceptance");
         }
-        if (*decoded.value > limits_.max_stream_credit - stream->outbound_credit) {
-            return protocol_failure("stream-credit update exceeds the configured bound");
+        // The peer sizes its own receive window, so only the protocol's bound
+        // on held credit applies here, not this side's configuration.
+        if (*decoded.value >
+            ytp1::kMaxCreditIncrement - stream->outbound_credit) {
+            return protocol_failure(
+                "stream-credit update exceeds the YTP/1 bound");
         }
         stream->outbound_credit += *decoded.value;
         if (!stream->closed && stream->opening) {
             stream->opening = false;
             --pending_opens_;
             accepted = true;
+            stream->receive_window.size = limits_.initial_stream_credit;
         }
         if (stream->closed) return Status::success();
     }
@@ -3555,26 +3636,69 @@ void SessionEngine::Impl::return_receive_credit(
                                 "application returned invalid receive credit"));
         return;
     }
-    bool stream_is_live = false;
+    std::uint64_t stream_increment = 0U;
+    std::uint64_t connection_increment = 0U;
     bool valid = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
             return;
         }
+        // The peer's credit, the bytes this side holds and the bytes it has
+        // consumed without returning never exceed the window. A stream grant
+        // on its way to the carrier is not yet in inbound_credit.
+        ReceiveWindow& connection = connection_window_;
+        valid = inbound_connection_credit_ <= connection.size &&
+                connection.unreturned <=
+                    connection.size - inbound_connection_credit_ &&
+                bytes <= connection.size - inbound_connection_credit_ -
+                             connection.unreturned;
         const auto it = streams_.find(stream_id.value());
-        if (bytes <= limits_.max_connection_credit -
-                         inbound_connection_credit_) {
-            inbound_connection_credit_ += bytes;
-            valid = true;
-            if (it != streams_.end() && !it->second->closed) {
-                if (bytes > limits_.max_stream_credit -
-                                it->second->inbound_credit) {
-                    valid = false;
-                    inbound_connection_credit_ -= bytes;
-                } else {
-                    stream_is_live = true;
+        const bool stream_is_live =
+            valid && it != streams_.end() && !it->second->closed;
+        if (stream_is_live) {
+            const StreamStateData& stream = *it->second;
+            const ReceiveWindow& window = stream.receive_window;
+            valid = stream.inbound_credit <= window.size &&
+                    window.unreturned <= window.size - stream.inbound_credit &&
+                    bytes <=
+                        window.size - stream.inbound_credit - window.unreturned;
+        }
+        if (valid) {
+            const auto now = std::chrono::steady_clock::now();
+            std::uint64_t connection_floor = 0U;
+            if (stream_is_live) {
+                StreamStateData& stream = *it->second;
+                ReceiveWindow& window = stream.receive_window;
+                window.unreturned += bytes;
+                if (window.unreturned >= return_threshold(window.size)) {
+                    const std::uint64_t growth = grow_window_locked(
+                        window, limits_.max_stream_credit, now);
+                    stream_increment = window.unreturned + growth;
+                    window.unreturned = 0U;
+                    connection_floor = window.size + window.size / 2U;
                 }
+            }
+            connection.unreturned += bytes;
+            const bool due =
+                connection.unreturned >= return_threshold(connection.size);
+            std::uint64_t growth =
+                due ? grow_window_locked(connection,
+                                         limits_.max_connection_credit, now)
+                    : 0U;
+            // Keep the connection window at one and a half times any stream
+            // window, as Chromium does, so a stream whose reader stalls
+            // leaves credit for the others.
+            const std::uint64_t floor = std::min<std::uint64_t>(
+                connection_floor, limits_.max_connection_credit);
+            if (floor > connection.size) {
+                growth += floor - connection.size;
+                connection.size = floor;
+            }
+            if (due || growth != 0U) {
+                connection_increment = connection.unreturned + growth;
+                connection.unreturned = 0U;
+                inbound_connection_credit_ += connection_increment;
             }
         }
     }
@@ -3582,19 +3706,25 @@ void SessionEngine::Impl::return_receive_credit(
         fail(protocol_failure("receive-credit accounting overflowed"));
         return;
     }
-    const Status stream_credit = stream_is_live
-        ? send_stream_credit(stream_id, static_cast<std::uint32_t>(bytes))
-        : Status::success();
-    const auto connection = ytp1::EncodeCreditUpdate(
-        static_cast<std::uint32_t>(bytes));
-    Status connection_status =
-        connection.ok()
-            ? enqueue_record(ytp1::RecordType::ConnectionCredit,
-                             StreamId::control(), as_bytes(*connection.value),
-                             true, true)
-            : Status::diagnostic(
-                  StatusCode::Internal,
-                  "returned connection credit could not be encoded");
+    // Windows never exceed their validated maxima, which are at most 2^30.
+    const Status stream_credit =
+        stream_increment != 0U
+            ? send_stream_credit(stream_id,
+                                 static_cast<std::uint32_t>(stream_increment))
+            : Status::success();
+    Status connection_status = Status::success();
+    if (connection_increment != 0U) {
+        const auto connection = ytp1::EncodeCreditUpdate(
+            static_cast<std::uint32_t>(connection_increment));
+        connection_status =
+            connection.ok()
+                ? enqueue_record(ytp1::RecordType::ConnectionCredit,
+                                 StreamId::control(),
+                                 as_bytes(*connection.value), true, true)
+                : Status::diagnostic(
+                      StatusCode::Internal,
+                      "returned connection credit could not be encoded");
+    }
     if (!stream_credit.ok() && stream_credit.code() != StatusCode::Closed) {
         fail(copy_failure(stream_credit));
     } else if (!connection_status.ok()) {
@@ -3604,6 +3734,51 @@ void SessionEngine::Impl::return_receive_credit(
     fail(Status::diagnostic(StatusCode::ResourceExhausted));
 } catch (...) {
     fail(Status::diagnostic(StatusCode::Internal));
+}
+
+std::uint64_t SessionEngine::Impl::return_threshold(
+    std::uint64_t window) const noexcept {
+    // Credit goes back once half a window is consumed, as Chromium and
+    // nghttp2 return it. A peer blocked on credit holds less than one frame
+    // of it, so a receiver whose application keeps up has consumed more than
+    // the window less one frame. Returning by then keeps the peer moving.
+    const std::uint64_t frame = limits_.max_frame_payload;
+    if (window <= frame) {
+        return 1U;
+    }
+    return std::min(window / 2U, window - frame);
+}
+
+std::uint64_t SessionEngine::Impl::grow_window_locked(
+    ReceiveWindow& window, std::uint64_t maximum,
+    std::chrono::steady_clock::time_point now) const noexcept {
+    // Two returns less than two round trips apart mean the application
+    // drained half a window faster than credit can travel, so the window,
+    // not the application or the path, held the peer back. Chromium doubles
+    // its receive window on the same signal. Windows never shrink, and a peer
+    // cannot grow one without this side's application consuming what it sent.
+    const auto previous = std::exchange(window.last_return, now);
+    if (!previous.has_value() || !round_trip_.has_value() ||
+        window.size >= maximum || now - *previous >= 2 * *round_trip_) {
+        return 0U;
+    }
+    const std::uint64_t grown = std::min(window.size * 2U, maximum);
+    const std::uint64_t growth = grown - window.size;
+    window.size = grown;
+    return growth;
+}
+
+void SessionEngine::Impl::sample_round_trip_locked(
+    std::chrono::steady_clock::time_point sent,
+    std::chrono::steady_clock::time_point now) noexcept {
+    // A sample includes the peer's processing and any queue ahead of its
+    // answer, so it never undercounts. The smallest recent one is kept.
+    const auto sample = now - sent;
+    if (!round_trip_.has_value() || sample <= *round_trip_ ||
+        now >= round_trip_expiry_) {
+        round_trip_ = sample;
+        round_trip_expiry_ = now + kRoundTripWindow;
+    }
 }
 
 void SessionEngine::Impl::remove_stream(StreamId stream_id,
@@ -3740,8 +3915,9 @@ Status SessionEngine::Impl::initiate_rekey() {
         next_epoch = outbound_epoch_ + 1U;
         outbound_rekey_pending_ = true;
         outbound_rekey_expired_ = false;
+        outbound_rekey_started_ = std::chrono::steady_clock::now();
         outbound_rekey_deadline_ =
-            std::chrono::steady_clock::now() + limits_.rekey_ack_timeout;
+            outbound_rekey_started_ + limits_.rekey_ack_timeout;
         outbound_rekey_epoch_ = next_epoch;
         ++rekey_work_;
     }
@@ -3802,6 +3978,60 @@ SessionEngine::Impl::rekey_deadline() const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     if (terminal_locked() || !outbound_rekey_pending_) return std::nullopt;
     return outbound_rekey_deadline_;
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+SessionEngine::Impl::rotation_deadline() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != SessionState::Active || outbound_rekey_pending_ ||
+        outbound_epoch_records_ == 0U) {
+        return std::nullopt;
+    }
+    return outbound_epoch_first_send_ + ytp1::kEpochSendLifetime;
+}
+
+Status SessionEngine::Impl::rotate_aged_epoch(
+    std::chrono::steady_clock::time_point now) noexcept try {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != SessionState::Active || outbound_rekey_pending_ ||
+            outbound_epoch_records_ == 0U ||
+            now - outbound_epoch_first_send_ < ytp1::kEpochSendLifetime) {
+            return Status::success();
+        }
+    }
+    // A send may start the same rotation first. Any other refusal fails the
+    // session, as the send path's rotation does.
+    const Status started = initiate_rekey();
+    if (started.ok() || started.code() == StatusCode::AlreadyExists) {
+        return Status::success();
+    }
+    fail(copy_failure(started));
+    return copy_failure(started);
+} catch (const std::bad_alloc&) {
+    fail(Status::diagnostic(StatusCode::ResourceExhausted));
+    return Status::diagnostic(StatusCode::ResourceExhausted);
+} catch (...) {
+    fail(Status::diagnostic(StatusCode::Internal));
+    return Status::diagnostic(StatusCode::Internal);
+}
+
+Status SessionEngine::Impl::notify_on_epoch_start(
+    std::function<void()> observer) {
+    if (!observer) return Status(StatusCode::InvalidArgument);
+    std::shared_ptr<const std::function<void()>> shared;
+    try {
+        shared =
+            std::make_shared<const std::function<void()>>(std::move(observer));
+    } catch (const std::bad_alloc&) {
+        return Status::diagnostic(StatusCode::ResourceExhausted);
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (epoch_observer_registered_) return Status(StatusCode::AlreadyExists);
+    if (terminal_locked()) return Status(StatusCode::Closed);
+    epoch_observer_registered_ = true;
+    epoch_observer_ = std::move(shared);
+    return Status::success();
 }
 
 bool SessionEngine::Impl::expire_rekey(
@@ -3946,6 +4176,8 @@ Status SessionEngine::Impl::process_rekey_ack(
         outbound_epoch_records_ = 0U;
         outbound_rekey_pending_ = false;
         --rekey_work_;
+        sample_round_trip_locked(outbound_rekey_started_,
+                                 std::chrono::steady_clock::now());
     }
     ordering_lock.unlock();
     const Status flushed = flush_deferred_records();
@@ -3972,12 +4204,14 @@ void SessionEngine::Impl::stop(Status reason, bool failed) noexcept {
     std::unordered_map<std::uint32_t, std::shared_ptr<StreamStateData>>
         retired_streams;
     std::optional<ActiveSend> retired_active;
+    std::shared_ptr<const std::function<void()>> retired_observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
             return;
         }
         state_ = SessionState::Closing;
+        retired_observer = std::move(epoch_observer_);
         terminal_status_ = copy_failure(reason);
         start = std::move(start_completion_);
         for (auto& [_, stream] : streams_) {

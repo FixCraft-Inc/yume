@@ -185,15 +185,19 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
                                               limits.max_queued_bytes);
     limits.max_packet_size = config.max_packet_bytes();
     limits.max_concurrent_rekeys = config.max_rekey_jobs();
-    // Never advertise more receive credit than the configured byte budget.
-    limits.initial_connection_credit = std::min(limits.initial_connection_credit,
-                                                config.max_queued_bytes());
-    limits.max_connection_credit = std::min(limits.max_connection_credit,
-                                            config.max_queued_bytes());
-    limits.initial_stream_credit = static_cast<std::uint32_t>(std::min(
-        static_cast<std::size_t>(limits.initial_stream_credit), limits.max_stream_queued_bytes));
-    limits.max_stream_credit = static_cast<std::uint32_t>(std::min(
-        static_cast<std::size_t>(limits.max_stream_credit), limits.max_stream_queued_bytes));
+    // Receive windows start small and grow while the application keeps up.
+    // The connection window may reach the whole byte budget. A stream may
+    // reach two thirds of it, the share Chromium allows, so one stalled
+    // reader leaves credit for the other streams, but never less than one
+    // frame, which the peer must be able to send.
+    const std::uint32_t budget = config.max_queued_bytes();
+    limits.max_connection_credit = budget;
+    limits.initial_connection_credit =
+        std::min(limits.initial_connection_credit, budget);
+    limits.max_stream_credit =
+        std::max(budget - budget / 3U, limits.max_frame_payload);
+    limits.initial_stream_credit =
+        std::min(limits.initial_stream_credit, limits.max_stream_credit);
     return limits;
 }
 }  // namespace
@@ -215,6 +219,29 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         std::size_t index;
         std::uint64_t generation;
         Status reason;
+        ControlTask delivery;
+    };
+
+    // The engine reports a fresh outbound epoch on its sending thread, so the
+    // re-arm of the rekey watchdog also travels in a reserved task.
+    struct EpochStart final {
+        EpochStart(std::shared_ptr<AsioExecutionContext> execution,
+                   std::weak_ptr<State> endpoint, std::size_t slot,
+                   std::uint64_t version)
+            : context(std::move(execution)),
+              owner(std::move(endpoint)),
+              index(slot),
+              generation(version),
+              delivery([](void* value) noexcept {
+                  auto& notice = *static_cast<EpochStart*>(value);
+                  if (const auto endpoint_owner = notice.owner.lock())
+                      endpoint_owner->epoch_started(notice.index,
+                                                    notice.generation);
+              }) {}
+        std::shared_ptr<AsioExecutionContext> context;
+        std::weak_ptr<State> owner;
+        std::size_t index;
+        std::uint64_t generation;
         ControlTask delivery;
     };
 
@@ -309,6 +336,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         }
         if (result.ok()) {
             auto status = observe_session(index, result.value());
+            if (status.ok()) status = observe_epochs(index, result.value());
             if (status.ok()) {
                 slot.session = result.value();
                 status = arm_rekey_watchdog(index, generation);
@@ -426,6 +454,31 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         }
     }
 
+    void epoch_started(std::size_t index, std::uint64_t generation) noexcept {
+        auto& slot = *slots[index];
+        if (slot.generation != generation || !slot.session ||
+            closing.load(std::memory_order_acquire))
+            return;
+        const auto armed = arm_rekey_watchdog(index, generation);
+        if (!armed.ok()) slot.session->stop(copy_status(armed));
+    }
+
+    Status observe_epochs(
+        std::size_t index,
+        const std::shared_ptr<SessionEngine>& session) noexcept {
+        try {
+            auto notice = std::make_shared<EpochStart>(
+                context, weak_from_this(), index, slots[index]->generation);
+            return session->notify_on_epoch_start([notice]() noexcept {
+                notice->context->submit(notice->delivery, notice);
+            });
+        } catch (const std::bad_alloc&) {
+            return Status(StatusCode::ResourceExhausted);
+        } catch (...) {
+            return Status(StatusCode::Internal);
+        }
+    }
+
     Status observe_session(std::size_t index, const std::shared_ptr<SessionEngine>& session) noexcept {
         try {
             auto notice = std::make_shared<SessionEnd>(context, weak_from_this(), index, slots[index]->generation);
@@ -460,6 +513,11 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             auto next = now + session_bounds.rekey_ack_timeout;
             if (const auto deadline = slot.session->rekey_deadline())
                 next = std::min(next, *deadline);
+            // An epoch that has carried records rotates at its age limit
+            // here, so the next send need not wait for REKEY_ACK. A later
+            // epoch re-arms this timer through epoch_started().
+            if (const auto rotation = slot.session->rotation_deadline())
+                next = std::min(next, *rotation);
             // A new INIT starts at or after this poll, so its deadline cannot
             // precede now + timeout. An existing earlier deadline is selected
             // above. Polling therefore adds no timeout interval to expiry.
@@ -480,6 +538,10 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                     }
                     if (session->expire_rekey(Timer::clock_type::now()) ||
                         session->state() != SessionState::Active) return;
+                    // A failed start has already failed the session.
+                    if (!session->rotate_aged_epoch(Timer::clock_type::now())
+                             .ok())
+                        return;
                     const auto armed = self->arm_rekey_watchdog(index, generation);
                     if (!armed.ok()) session->stop(copy_status(armed));
                 });

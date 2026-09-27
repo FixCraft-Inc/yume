@@ -130,40 +130,6 @@ Result<StreamId> StreamId::FromWire(std::uint32_t value) noexcept {
     return Result<StreamId>::Success(StreamId(value));
 }
 
-Result<StreamId> StreamId::FirstOwnedBy(EndpointRole role) noexcept {
-    if (role == EndpointRole::Client) {
-        return Result<StreamId>::Success(StreamId(1));
-    }
-    if (role == EndpointRole::Server) {
-        return Result<StreamId>::Success(StreamId(2));
-    }
-    return Result<StreamId>::Failure(ErrorCode::InvalidEnum);
-}
-
-Result<StreamId> StreamId::NextOwned() const noexcept {
-    if (is_control()) {
-        return Result<StreamId>::Failure(ErrorCode::InvalidStreamId);
-    }
-    if (value_ > kMaxStreamId - 2U) {
-        return Result<StreamId>::Failure(ErrorCode::StreamIdExhausted);
-    }
-    return Result<StreamId>::Success(StreamId(value_ + 2U));
-}
-
-Status ValidateOpenStreamOwner(StreamId stream_id,
-                               EndpointRole opener) noexcept {
-    if (opener != EndpointRole::Client && opener != EndpointRole::Server) {
-        return {ErrorCode::InvalidEnum, 0};
-    }
-    if (!stream_id.is_application()) {
-        return {ErrorCode::WrongStreamClass, 0};
-    }
-    if (!stream_id.is_owned_by(opener)) {
-        return {ErrorCode::WrongStreamOwner, 0};
-    }
-    return Status::Success();
-}
-
 Status ValidateFrameHeader(const FrameHeader& header,
                            std::uint32_t max_payload) noexcept {
     if (!IsKnownRecordType(header.type)) {

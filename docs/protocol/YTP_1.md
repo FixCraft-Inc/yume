@@ -363,9 +363,29 @@ Both connection-credit and stream-credit updates use exactly one big-endian
 inclusive. Zero, a larger value, a shorter payload, and a longer payload are
 rejected.
 
+A receiver MUST NOT let the credit it has granted and the peer has not yet
+used exceed 2^30 octets on one stream or on the connection. A sender that would
+hold more treats the update as a protocol failure. Each side sizes its own
+receive windows, so a sender does not compare a grant with its own
+configuration.
+
 The kernel encodes individual increments only. Window accounting, overflow
 handling, backpressure, and when credit is returned are runtime responsibilities
 and are not specified by this codec.
+
+The native engine starts each stream's receive window at 256 KiB and the
+connection's at 4 MiB, both capped by the byte budget
+(`limits.max_queued_bytes`). It returns consumed credit in one update once half
+a window is consumed, or once the window less one frame is consumed if that
+comes first, so a peer holding less than a frame of credit never waits for it.
+When two returns on a window come less than two round trips apart, the window
+was limiting the sender, and the engine doubles it, as Chromium does. A stream
+window can reach two thirds of the budget and the connection window the whole
+budget. The connection window stays at least one and a half times the largest
+stream window, and no window shrinks. The engine times round trips locally,
+from its AUTH flight to the peer's answer and from each REKEY_INIT to its ACK,
+keeps the smallest sample of the last ten seconds, and sends no record to take
+them.
 
 ## Fixed security composition
 
@@ -612,7 +632,10 @@ opposite-direction rekeys without retaining old directional roots.
 The native engine rotates its outbound root before accepting protected payload
 past 1 MiB or 512 records in an epoch, and checks the 500 ms age threshold on
 the next protected send. INIT does not count toward these application thresholds.
-These limits do not promise autonomous root expiry while idle.
+The native endpoint also rotates an epoch that has carried a record as soon as
+it is 500 ms old, so the next send does not wait a round trip for the ACK. An
+epoch that carried nothing is not rotated, so an idle session's root does not
+expire on its own.
 
 A pending outbound rekey has a separate local ACK deadline. The default is
 30 seconds; callers may select a positive duration up to 30 seconds. The deadline

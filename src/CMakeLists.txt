@@ -433,8 +433,9 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         yume_engine yume_asio_execution_context Boost::system)
 endif()
 
-# Profile data and fingerprint interpretation are shared by TLS and H2. Keep
-# the SSL_CTX emitter separate so the H2 carrier never acquires a TLS edge.
+# Profile data is shared by TLS and H2. Keep the SSL_CTX emitter separate so
+# the H2 carrier never acquires a TLS edge. ClientHello analysis is test
+# support and is compiled into the tests that use it.
 if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_cover_profile STATIC
         stealth/cover_profile.cpp
@@ -443,9 +444,8 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         stealth/tls_fingerprint.hpp
         stealth/transport_profiles.inc)
     target_include_directories(yume_cover_profile PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(yume_cover_profile PRIVATE OpenSSL::Crypto)
     yume_apply_perf_opts(yume_cover_profile)
-    yume_assert_exact_link_dependencies(yume_cover_profile OpenSSL::Crypto)
+    yume_assert_exact_link_dependencies(yume_cover_profile)
 endif()
 
 if(YUME_BUILD_NATIVE_PROVIDERS)
@@ -1204,8 +1204,10 @@ if(YUME_BUILD_TESTING)
         yume_apply_perf_opts(yume_cover_profile_test)
         add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
 
-        add_executable(yume_tls_fingerprint_test stealth/tls_fingerprint_test.cpp)
-        target_link_libraries(yume_tls_fingerprint_test PRIVATE yume_cover_profile)
+        add_executable(yume_tls_fingerprint_test stealth/tls_fingerprint_test.cpp
+            test_support/tls_fingerprint_analysis.cpp)
+        target_link_libraries(yume_tls_fingerprint_test
+            PRIVATE yume_cover_profile OpenSSL::Crypto)
         yume_apply_perf_opts(yume_tls_fingerprint_test)
         add_test(NAME yume_tls_fingerprint_test COMMAND yume_tls_fingerprint_test)
     endif()
@@ -1474,7 +1476,8 @@ if(YUME_BUILD_TESTING)
 
     if(YUME_BUILD_NATIVE_PROVIDERS)
         add_executable(yume_tls13_secure_channel_test
-            providers/tls13_secure_channel_test.cpp)
+            providers/tls13_secure_channel_test.cpp
+            test_support/tls_fingerprint_analysis.cpp)
         target_link_libraries(yume_tls13_secure_channel_test
             PRIVATE yume_tls13_secure_channel yume_tls_client_profile
                     yume_cover_profile OpenSSL::SSL OpenSSL::Crypto)

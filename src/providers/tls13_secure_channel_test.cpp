@@ -9,6 +9,7 @@
 #include "stealth/tls_client_profile.hpp"
 #include "stealth/tls_fingerprint.hpp"
 #include "test_support/allocation_failure.hpp"
+#include "test_support/tls_fingerprint_analysis.hpp"
 
 #include <algorithm>
 #include <array>

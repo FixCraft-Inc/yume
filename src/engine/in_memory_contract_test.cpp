@@ -830,6 +830,17 @@ void test_stream_ids() {
                    StreamId::kMaxApplicationValue + 1U,
                    EndpointRole::Server).status(),
                StatusCode::InvalidArgument);
+
+    // A wire ID's parity names its owner. Zero and values past 31 bits fail.
+    CHECK(require_value(StreamId::wire_application(3U)).owner() ==
+          EndpointRole::Client);
+    CHECK(require_value(StreamId::wire_application(4U)).owner() ==
+          EndpointRole::Server);
+    check_code(StreamId::wire_application(0U).status(),
+               StatusCode::InvalidArgument);
+    check_code(StreamId::wire_application(StreamId::kMaxApplicationValue + 1U)
+                   .status(),
+               StatusCode::InvalidArgument);
     CHECK(StreamId::peer_application(2U, EndpointRole::Client).ok());
     check_code(StreamId::peer_application(
                    1U, EndpointRole::Client).status(),

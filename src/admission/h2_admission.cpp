@@ -203,36 +203,6 @@ std::optional<ParsedAuthority> parse_authority(
 
 }  // namespace
 
-std::optional<Token> parse_token_hex(std::string_view token) noexcept {
-    Token parsed{};
-    if (!decode_lower_hex(token, &parsed)) {
-        return std::nullopt;
-    }
-    return parsed;
-}
-
-std::optional<Nonce> parse_nonce_hex(std::string_view nonce) noexcept {
-    Nonce parsed{};
-    if (!decode_lower_hex(nonce, &parsed)) {
-        return std::nullopt;
-    }
-    return parsed;
-}
-
-std::string token_hex(const Token& token) {
-    std::string encoded;
-    encoded.reserve(kH2TokenHexLength);
-    append_lower_hex(&encoded, token);
-    return encoded;
-}
-
-std::string nonce_hex(const Nonce& nonce) {
-    std::string encoded;
-    encoded.reserve(kH2NonceHexLength);
-    append_lower_hex(&encoded, nonce);
-    return encoded;
-}
-
 std::optional<ParsedPath> parse_path(std::string_view path) noexcept {
     if (path.size() != kH2PathLength || path.front() != '/' ||
         path[1U + kH2TokenHexLength] != '/') {

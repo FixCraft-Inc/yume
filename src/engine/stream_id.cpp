@@ -39,4 +39,9 @@ Result<StreamId> StreamId::peer_application(std::uint32_t value,
     return application(value, peer_role);
 }
 
+Result<StreamId> StreamId::wire_application(std::uint32_t value) {
+    return application(value, (value & 1U) != 0U ? EndpointRole::Client
+                                                 : EndpointRole::Server);
+}
+
 }  // namespace yume::engine

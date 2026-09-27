@@ -26,16 +26,8 @@
 namespace yume::engine {
 namespace {
 
-Status failure_status(StatusCode code, std::string_view message = {}) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 Status copy_failure(const Status& reason) noexcept {
-    return failure_status(reason.code(), reason.message());
+    return Status::diagnostic(reason.code(), reason.message());
 }
 
 constexpr std::size_t kProtectedEnvelopeBytes = 16U;
@@ -916,20 +908,19 @@ Result<std::shared_ptr<SessionEngine>> SessionEngine::create(
         engine->impl_->bind(engine.get());
         return Result<std::shared_ptr<SessionEngine>>(std::move(engine));
     } catch (const std::bad_alloc&) {
-        return Result<std::shared_ptr<SessionEngine>>(failure_status(
-            StatusCode::ResourceExhausted,
-            "session construction allocation failed"));
+        return Result<std::shared_ptr<SessionEngine>>(
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "session construction allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<SessionEngine>>(failure_status(
-            StatusCode::Internal,
-            "session construction failed unexpectedly"));
+        return Result<std::shared_ptr<SessionEngine>>(Status::diagnostic(
+            StatusCode::Internal, "session construction failed unexpectedly"));
     }
 } catch (const std::bad_alloc&) {
     return Result<std::shared_ptr<SessionEngine>>(
-        failure_status(StatusCode::ResourceExhausted));
+        Status::diagnostic(StatusCode::ResourceExhausted));
 } catch (...) {
     return Result<std::shared_ptr<SessionEngine>>(
-        failure_status(StatusCode::Internal));
+        Status::diagnostic(StatusCode::Internal));
 }
 
 SessionEngine::SessionEngine(std::unique_ptr<Impl> impl) noexcept
@@ -947,7 +938,7 @@ AuthorizedRouteRequest SessionEngine::make_authorized_route_request(
 
 SessionEngine::~SessionEngine() noexcept {
     if (impl_) {
-        impl_->stop(failure_status(StatusCode::Closed), false);
+        impl_->stop(Status::diagnostic(StatusCode::Closed), false);
     }
 }
 
@@ -980,7 +971,8 @@ Result<PeerEvidence> SessionEngine::Impl::authenticated_peer() const try {
     }
     return Result<PeerEvidence>(*authenticated_peer_);
 } catch (const std::bad_alloc&) {
-    return Result<PeerEvidence>(failure_status(StatusCode::ResourceExhausted));
+    return Result<PeerEvidence>(
+        Status::diagnostic(StatusCode::ResourceExhausted));
 }
 
 void SessionEngine::async_start(StartCompletion completion) {
@@ -1074,13 +1066,16 @@ void EngineStreamResponder::async_read(CancellationToken cancellation,
     // A later abort or session termination still takes precedence over it.
     if (completion && !cancellation.is_cancelled()) {
         if (terminated()) {
-            invoke_noexcept(completion, Result<ReceivedRecord>(
-                failure_status(StatusCode::Closed, "stream terminated")));
+            invoke_noexcept(completion,
+                            Result<ReceivedRecord>(Status::diagnostic(
+                                StatusCode::Closed, "stream terminated")));
             return;
         }
         if (end_of_stream_.load(std::memory_order_acquire)) {
-            invoke_noexcept(completion, Result<ReceivedRecord>(failure_status(
-                StatusCode::EndOfStream, "peer shut down the stream write side")));
+            invoke_noexcept(completion,
+                            Result<ReceivedRecord>(Status::diagnostic(
+                                StatusCode::EndOfStream,
+                                "peer shut down the stream write side")));
             return;
         }
     }
@@ -1662,7 +1657,8 @@ Status SessionEngine::Impl::enqueue_record(
         if (!stream_id.is_control() && type != ytp1::RecordType::Close) {
             const auto it = streams_.find(stream_id.value());
             if (it == streams_.end() || it->second->closed) {
-                return failure_status(StatusCode::Closed, "stream is closed");
+                return Status::diagnostic(StatusCode::Closed,
+                                          "stream is closed");
             }
         }
         if (protect && outbound_rekey_pending_ &&
@@ -1703,14 +1699,16 @@ Status SessionEngine::Impl::enqueue_record(
         if (!stream_id.is_control() && type != ytp1::RecordType::Close) {
             const auto it = streams_.find(stream_id.value());
             if (it == streams_.end() || it->second->closed) {
-                return failure_status(StatusCode::Closed, "stream is closed");
+                return Status::diagnostic(StatusCode::Closed,
+                                          "stream is closed");
             }
             if (type == ytp1::RecordType::StreamCredit) {
                 const auto increment = ytp1::DecodeCreditUpdate(as_u8(payload));
                 if (!increment.ok() || *increment.value >
                     limits_.max_stream_credit - it->second->inbound_credit) {
-                    return failure_status(StatusCode::Internal,
-                                          "local stream credit exceeds its bound");
+                    return Status::diagnostic(
+                        StatusCode::Internal,
+                        "local stream credit exceeds its bound");
                 }
                 it->second->inbound_credit += *increment.value;
             }
@@ -1886,7 +1884,7 @@ Status SessionEngine::Impl::flush_deferred_records() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (terminal_locked()) {
-            return failure_status(StatusCode::Closed);
+            return Status::diagnostic(StatusCode::Closed);
         }
         if (outbound_rekey_pending_) {
             return Status(StatusCode::FailedPrecondition,
@@ -1937,7 +1935,8 @@ Status SessionEngine::Impl::flush_deferred_records() {
             closed = it == streams_.end() || it->second->closed;
         }
         if (closed) {
-            invoke_noexcept(record.completion, failure_status(StatusCode::Closed), 0U);
+            invoke_noexcept(record.completion,
+                            Status::diagnostic(StatusCode::Closed), 0U);
             record.completion = {};
             continue;
         }
@@ -1959,9 +1958,9 @@ Status SessionEngine::Impl::flush_deferred_records() {
                 payload.bytes(), true, record.is_control,
                 record.completion_bytes, std::move(submitted));
         } catch (const std::bad_alloc&) {
-            status = failure_status(StatusCode::ResourceExhausted);
+            status = Status::diagnostic(StatusCode::ResourceExhausted);
         } catch (...) {
-            status = failure_status(StatusCode::Internal);
+            status = Status::diagnostic(StatusCode::Internal);
         }
         if (!status.ok()) {
             if (completion) {
@@ -2019,10 +2018,12 @@ void SessionEngine::Impl::request_send_pump() noexcept {
                     }
                 });
         } catch (const std::bad_alloc&) {
-            on_send_complete(failure_status(StatusCode::ResourceExhausted), 0U);
+            on_send_complete(Status::diagnostic(StatusCode::ResourceExhausted),
+                             0U);
         } catch (...) {
-            on_send_complete(failure_status(
-                StatusCode::Internal, "carrier threw while sending"), 0U);
+            on_send_complete(Status::diagnostic(StatusCode::Internal,
+                                                "carrier threw while sending"),
+                             0U);
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2052,8 +2053,8 @@ void SessionEngine::Impl::on_send_complete(
             --queued_control_messages_;
         }
         if (status.ok() && transferred != active.wire_bytes) {
-            status = failure_status(StatusCode::Internal,
-                                    "carrier reported a partial record send");
+            status = Status::diagnostic(
+                StatusCode::Internal, "carrier reported a partial record send");
         }
         completion = std::move(active.completion);
         completion_bytes = status.ok() ? active.completion_bytes : 0U;
@@ -2101,11 +2102,10 @@ void SessionEngine::Impl::request_receive_pump() noexcept {
                 });
         } catch (const std::bad_alloc&) {
             on_receive(Result<ReceivedRecord>(
-                failure_status(StatusCode::ResourceExhausted)));
+                Status::diagnostic(StatusCode::ResourceExhausted)));
         } catch (...) {
-            on_receive(Result<ReceivedRecord>(failure_status(
-                StatusCode::Internal,
-                "carrier threw while receiving")));
+            on_receive(Result<ReceivedRecord>(Status::diagnostic(
+                StatusCode::Internal, "carrier threw while receiving")));
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2125,11 +2125,11 @@ void SessionEngine::Impl::on_receive(
         try {
             status = process_received(std::move(result).take_value());
         } catch (const std::bad_alloc&) {
-            status = failure_status(StatusCode::ResourceExhausted,
-                                    "session receive allocation failed");
+            status = Status::diagnostic(StatusCode::ResourceExhausted,
+                                        "session receive allocation failed");
         } catch (...) {
-            status = failure_status(StatusCode::Internal,
-                                    "session receive processing threw");
+            status = Status::diagnostic(StatusCode::Internal,
+                                        "session receive processing threw");
         }
     }
 
@@ -2150,8 +2150,8 @@ void SessionEngine::Impl::on_receive(
 
 Status SessionEngine::Impl::process_received(ReceivedRecord record) {
     if (expire_rekey(std::chrono::steady_clock::now())) {
-        return failure_status(StatusCode::FailedPrecondition,
-                              "rekey acknowledgement deadline expired");
+        return Status::diagnostic(StatusCode::FailedPrecondition,
+                                  "rekey acknowledgement deadline expired");
     }
     SessionState current;
     {
@@ -2433,8 +2433,9 @@ Status SessionEngine::Impl::process_open(
         last_peer_stream_id_ = stream_id.value();
         if (streams_.size() >= limits_.max_streams ||
             pending_opens_ >= limits_.max_pending_opens) {
-            return failure_status(StatusCode::ResourceExhausted,
-                                  "peer OPEN exceeds the session stream bound");
+            return Status::diagnostic(
+                StatusCode::ResourceExhausted,
+                "peer OPEN exceeds the session stream bound");
         }
         const auto* advertised = local_capability(
             decoded.value->service_name, kind.value());
@@ -2443,8 +2444,8 @@ Status SessionEngine::Impl::process_open(
         } else if (service_stream_count_locked(decoded.value->service_name,
                                                kind.value()) >=
                    advertised->max_concurrent_streams) {
-            return failure_status(StatusCode::ResourceExhausted,
-                                  "peer OPEN exceeds the service bound");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "peer OPEN exceeds the service bound");
         } else {
             handler = graph_->stream_handler(decoded.value->service_name,
                                              kind.value());
@@ -2469,10 +2470,10 @@ Status SessionEngine::Impl::process_open(
     stream->responder = responder;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (terminal_locked()) return failure_status(StatusCode::Closed);
+        if (terminal_locked()) return Status::diagnostic(StatusCode::Closed);
         if (streams_.size() >= limits_.max_streams ||
             pending_opens_ >= limits_.max_pending_opens) {
-            return failure_status(StatusCode::ResourceExhausted);
+            return Status::diagnostic(StatusCode::ResourceExhausted);
         }
         const auto [_, inserted] = streams_.emplace(stream_id.value(), stream);
         if (!inserted) return protocol_failure("peer OPEN reused an active ID");
@@ -2480,13 +2481,13 @@ Status SessionEngine::Impl::process_open(
     }
     if (rejection) {
         return abort_stream(stream_id, *rejection,
-                            failure_status(StatusCode::NotFound));
+                            Status::diagnostic(StatusCode::NotFound));
     }
     Status authorization;
     try {
         authorization = handler->authorize(context);
     } catch (...) {
-        authorization = failure_status(StatusCode::Internal);
+        authorization = Status::diagnostic(StatusCode::Internal);
     }
     if (!authorization.ok()) {
         return abort_stream(stream_id, StreamCloseCode::Unauthorized,
@@ -2498,7 +2499,7 @@ Status SessionEngine::Impl::process_open(
             ? Capability::DirectTcp : Capability::DirectUdp;
         if (!handler->descriptor().capabilities().contains(required)) {
             return abort_stream(stream_id, StreamCloseCode::Unsupported,
-                                failure_status(StatusCode::NotFound));
+                                Status::diagnostic(StatusCode::NotFound));
         }
     }
     const auto weak = weak_owner();
@@ -2518,9 +2519,10 @@ Status SessionEngine::Impl::process_open(
             handler->async_open(std::move(context), responder, std::move(completion));
         }
     } catch (const std::bad_alloc&) {
-        complete_peer_open(stream_id, failure_status(StatusCode::ResourceExhausted));
+        complete_peer_open(stream_id,
+                           Status::diagnostic(StatusCode::ResourceExhausted));
     } catch (...) {
-        complete_peer_open(stream_id, failure_status(StatusCode::Internal));
+        complete_peer_open(stream_id, Status::diagnostic(StatusCode::Internal));
     }
     return Status::success();
 }
@@ -2553,9 +2555,9 @@ void SessionEngine::Impl::complete_peer_open(StreamId stream_id,
         }
         if (!status.ok()) fail(std::move(status));
     } catch (const std::bad_alloc&) {
-        fail(failure_status(StatusCode::ResourceExhausted));
+        fail(Status::diagnostic(StatusCode::ResourceExhausted));
     } catch (...) {
-        fail(failure_status(StatusCode::Internal));
+        fail(Status::diagnostic(StatusCode::Internal));
     }
 }
 
@@ -2671,8 +2673,8 @@ Status SessionEngine::Impl::process_application_data(
             (record.payload.size() > limits_.max_stream_queued_bytes -
                                          stream->inbound_queued_bytes ||
              record.payload.size() > limits_.max_queued_bytes - inbound_queued_bytes_)) {
-            return failure_status(StatusCode::ResourceExhausted,
-                                  "inbound application queue is full");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "inbound application queue is full");
         }
         stream->inbound_credit -= record.payload.size();
         inbound_connection_credit_ -= record.payload.size();
@@ -2689,7 +2691,8 @@ Status SessionEngine::Impl::process_application_data(
                     stream->inbound_queued_bytes += record.payload.size();
                     inbound_queued_bytes_ += record.payload.size();
                 } catch (const std::bad_alloc&) {
-                    publication = failure_status(StatusCode::ResourceExhausted,
+                    publication = Status::diagnostic(
+                        StatusCode::ResourceExhausted,
                         "inbound application queue allocation failed");
                 }
             }
@@ -2762,13 +2765,16 @@ Status SessionEngine::Impl::process_close(const ytp1::RecordView& record) {
             : code == StreamCloseCode::Unsupported ? StatusCode::NotFound
             : code == StreamCloseCode::HandlerFailure ? StatusCode::Internal
                                                        : StatusCode::Cancelled;
-        remove_stream(id.value(), failure_status(status, "peer refused or aborted the stream"));
+        remove_stream(
+            id.value(),
+            Status::diagnostic(status, "peer refused or aborted the stream"));
     } else if (fully_closed) {
-        remove_stream(id.value(), failure_status(StatusCode::Closed));
+        remove_stream(id.value(), Status::diagnostic(StatusCode::Closed));
     }
     if (read) {
-        invoke_noexcept(read, Result<ReceivedRecord>(failure_status(
-            StatusCode::EndOfStream, "peer shut down the stream write side")));
+        invoke_noexcept(read, Result<ReceivedRecord>(Status::diagnostic(
+                                  StatusCode::EndOfStream,
+                                  "peer shut down the stream write side")));
     }
     return settle_handshake(id.value());
 }
@@ -2912,11 +2918,12 @@ void SessionEngine::Impl::async_open(
             Result<std::shared_ptr<StreamResponder>>(std::move(status)));
     };
     if (cancellation.is_cancelled()) {
-        reject(failure_status(StatusCode::Cancelled));
+        reject(Status::diagnostic(StatusCode::Cancelled));
         return;
     }
     if (!valid_service_name(service_name)) {
-        reject(failure_status(StatusCode::InvalidArgument, "service name is invalid"));
+        reject(Status::diagnostic(StatusCode::InvalidArgument,
+                                  "service name is invalid"));
         return;
     }
     auto kind = to_ytp_service_kind(service_kind);
@@ -2926,8 +2933,9 @@ void SessionEngine::Impl::async_open(
           destination->protocol() != NetworkProtocol::Tcp) ||
          (service_kind == ServiceKind::PacketChannel &&
           destination->protocol() != NetworkProtocol::Udp))) {
-        reject(failure_status(StatusCode::InvalidArgument,
-                              "route protocol does not match the service kind"));
+        reject(Status::diagnostic(
+            StatusCode::InvalidArgument,
+            "route protocol does not match the service kind"));
         return;
     }
     std::shared_ptr<StreamStateData> stream;
@@ -2945,30 +2953,33 @@ void SessionEngine::Impl::async_open(
         }
         auto encoded = ytp1::EncodeOpen(request);
         if (!encoded.ok()) {
-            reject(failure_status(StatusCode::InvalidArgument,
-                                  "OPEN cannot be encoded canonically"));
+            reject(Status::diagnostic(StatusCode::InvalidArgument,
+                                      "OPEN cannot be encoded canonically"));
             return;
         }
         Status admission;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (state_ != SessionState::Active) {
-                admission = failure_status(StatusCode::FailedPrecondition,
-                                           "session is not active");
+                admission = Status::diagnostic(StatusCode::FailedPrecondition,
+                                               "session is not active");
             } else if (local_stream_ids_exhausted_ ||
                        streams_.size() >= limits_.max_streams ||
                        pending_opens_ >= limits_.max_pending_opens) {
-                admission = failure_status(StatusCode::ResourceExhausted,
-                                           "session stream capacity is exhausted");
+                admission =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "session stream capacity is exhausted");
             } else {
                 const auto* advertised = peer_capability(service_name, service_kind);
                 if (!advertised) {
-                    admission = failure_status(StatusCode::NotFound,
+                    admission = Status::diagnostic(
+                        StatusCode::NotFound,
                         "peer did not advertise this service and kind");
                 } else if (service_stream_count_locked(service_name, service_kind) >=
                            advertised->max_concurrent_streams) {
-                    admission = failure_status(StatusCode::ResourceExhausted,
-                                               "peer service stream limit is exhausted");
+                    admission = Status::diagnostic(
+                        StatusCode::ResourceExhausted,
+                        "peer service stream limit is exhausted");
                 } else {
                     auto id = StreamId::application(next_local_stream_id_,
                                                     graph_->local_role());
@@ -3016,15 +3027,15 @@ void SessionEngine::Impl::async_open(
         }
     } catch (const std::bad_alloc&) {
         if (stream && !completion) {
-            fail(failure_status(StatusCode::ResourceExhausted));
+            fail(Status::diagnostic(StatusCode::ResourceExhausted));
         } else {
-            reject(failure_status(StatusCode::ResourceExhausted));
+            reject(Status::diagnostic(StatusCode::ResourceExhausted));
         }
     } catch (...) {
         if (stream && !completion) {
-            fail(failure_status(StatusCode::Internal));
+            fail(Status::diagnostic(StatusCode::Internal));
         } else {
-            reject(failure_status(StatusCode::Internal));
+            reject(Status::diagnostic(StatusCode::Internal));
         }
     }
 }
@@ -3037,13 +3048,14 @@ void SessionEngine::Impl::cancel_open(StreamId stream_id) noexcept {
             if (it == streams_.end() || !it->second->opening ||
                 it->second->opened_by_peer || it->second->closed) return;
         }
-        const auto status = abort_stream(stream_id, StreamCloseCode::Aborted,
-                                         failure_status(StatusCode::Cancelled));
+        const auto status =
+            abort_stream(stream_id, StreamCloseCode::Aborted,
+                         Status::diagnostic(StatusCode::Cancelled));
         if (!status.ok()) fail(copy_failure(status));
     } catch (const std::bad_alloc&) {
-        fail(failure_status(StatusCode::ResourceExhausted));
+        fail(Status::diagnostic(StatusCode::ResourceExhausted));
     } catch (...) {
-        fail(failure_status(StatusCode::Internal));
+        fail(Status::diagnostic(StatusCode::Internal));
     }
 }
 
@@ -3113,7 +3125,7 @@ void SessionEngine::Impl::stream_read(
         }
     }
     if (retire_after_read) {
-        remove_stream(stream_id, failure_status(StatusCode::Closed));
+        remove_stream(stream_id, Status::diagnostic(StatusCode::Closed));
         const auto settled = settle_handshake(stream_id);
         if (!settled.ok()) fail(copy_failure(settled));
     }
@@ -3326,9 +3338,11 @@ void SessionEngine::Impl::drain_pending_writes() noexcept {
                 outbound_connection_credit_ += size;
                 --stream->outbound_publications;
             }
-            invoke_noexcept(pending->completion, failure_status(
-                StatusCode::ResourceExhausted,
-                "queued-write completion allocation failed"), 0U);
+            invoke_noexcept(pending->completion,
+                            Status::diagnostic(
+                                StatusCode::ResourceExhausted,
+                                "queued-write completion allocation failed"),
+                            0U);
             const Status shutdown = finish_stream_shutdown_if_ready(stream_id);
             if (!shutdown.ok() && shutdown.code() != StatusCode::Closed) {
                 fail(shutdown);
@@ -3367,7 +3381,7 @@ Status SessionEngine::Impl::stream_shutdown(StreamId stream_id) noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = streams_.find(stream_id.value());
         if (it == streams_.end() || it->second->closed) {
-            return failure_status(StatusCode::Closed, "stream is closed");
+            return Status::diagnostic(StatusCode::Closed, "stream is closed");
         }
         if (it->second->local_write_shutdown_requested) {
             return Status::success();
@@ -3385,9 +3399,9 @@ void SessionEngine::Impl::stream_close(
                                           std::move(reason));
         if (!status.ok()) fail(copy_failure(status));
     } catch (const std::bad_alloc&) {
-        fail(failure_status(StatusCode::ResourceExhausted));
+        fail(Status::diagnostic(StatusCode::ResourceExhausted));
     } catch (...) {
-        fail(failure_status(StatusCode::Internal));
+        fail(Status::diagnostic(StatusCode::Internal));
     }
 }
 
@@ -3419,7 +3433,7 @@ Status SessionEngine::Impl::finish_stream_shutdown_if_ready(
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = streams_.find(stream_id.value());
         if (it == streams_.end() || it->second->closed) {
-            return failure_status(StatusCode::Closed, "stream is closed");
+            return Status::diagnostic(StatusCode::Closed, "stream is closed");
         }
         if (it->second->opening ||
             !it->second->local_write_shutdown_requested ||
@@ -3450,25 +3464,25 @@ Status SessionEngine::Impl::finish_stream_shutdown_if_ready(
         }
     }
     if (fully_closed) {
-        remove_stream(stream_id, failure_status(
-            StatusCode::Closed, "stream is fully closed"));
+        remove_stream(stream_id, Status::diagnostic(StatusCode::Closed,
+                                                    "stream is fully closed"));
         return settle_handshake(stream_id);
     }
     return Status::success();
 } catch (const std::bad_alloc&) {
-    fail(failure_status(StatusCode::ResourceExhausted));
-    return failure_status(StatusCode::ResourceExhausted);
+    fail(Status::diagnostic(StatusCode::ResourceExhausted));
+    return Status::diagnostic(StatusCode::ResourceExhausted);
 } catch (...) {
-    fail(failure_status(StatusCode::Internal));
-    return failure_status(StatusCode::Internal);
+    fail(Status::diagnostic(StatusCode::Internal));
+    return Status::diagnostic(StatusCode::Internal);
 }
 
 void SessionEngine::Impl::return_receive_credit(
     StreamId stream_id,
     std::size_t bytes) noexcept try {
     if (bytes == 0U || bytes > ytp1::kMaxCreditIncrement) {
-        fail(failure_status(StatusCode::Internal,
-                    "application returned invalid receive credit"));
+        fail(Status::diagnostic(StatusCode::Internal,
+                                "application returned invalid receive credit"));
         return;
     }
     bool stream_is_live = false;
@@ -3503,21 +3517,23 @@ void SessionEngine::Impl::return_receive_credit(
         : Status::success();
     const auto connection = ytp1::EncodeCreditUpdate(
         static_cast<std::uint32_t>(bytes));
-    Status connection_status = connection.ok()
-        ? enqueue_record(ytp1::RecordType::ConnectionCredit,
-                         StreamId::control(),
-                         as_bytes(*connection.value), true, true)
-        : failure_status(StatusCode::Internal,
-                 "returned connection credit could not be encoded");
+    Status connection_status =
+        connection.ok()
+            ? enqueue_record(ytp1::RecordType::ConnectionCredit,
+                             StreamId::control(), as_bytes(*connection.value),
+                             true, true)
+            : Status::diagnostic(
+                  StatusCode::Internal,
+                  "returned connection credit could not be encoded");
     if (!stream_credit.ok() && stream_credit.code() != StatusCode::Closed) {
         fail(copy_failure(stream_credit));
     } else if (!connection_status.ok()) {
         fail(copy_failure(connection_status));
     }
 } catch (const std::bad_alloc&) {
-    fail(failure_status(StatusCode::ResourceExhausted));
+    fail(Status::diagnostic(StatusCode::ResourceExhausted));
 } catch (...) {
-    fail(failure_status(StatusCode::Internal));
+    fail(Status::diagnostic(StatusCode::Internal));
 }
 
 void SessionEngine::Impl::remove_stream(StreamId stream_id,
@@ -3700,8 +3716,8 @@ Status SessionEngine::Impl::initiate_rekey() {
                 initiation.value().bytes().data(),
                 initiation.value().size());
     if (expire_rekey(std::chrono::steady_clock::now())) {
-        return failure_status(StatusCode::FailedPrecondition,
-                              "rekey acknowledgement deadline expired");
+        return Status::diagnostic(StatusCode::FailedPrecondition,
+                                  "rekey acknowledgement deadline expired");
     }
     const Status sent = enqueue_record(
         ytp1::RecordType::RekeyInit, StreamId::control(), bytes.bytes(),
@@ -3735,8 +3751,8 @@ bool SessionEngine::Impl::expire_rekey(
             now < outbound_rekey_deadline_) return false;
         outbound_rekey_expired_ = true;
     }
-    fail(failure_status(StatusCode::FailedPrecondition,
-                        "rekey acknowledgement deadline expired"));
+    fail(Status::diagnostic(StatusCode::FailedPrecondition,
+                            "rekey acknowledgement deadline expired"));
     return true;
 }
 
@@ -3874,15 +3890,15 @@ Status SessionEngine::Impl::process_rekey_ack(
 
 void SessionEngine::Impl::fail(Status status) noexcept {
     if (status.ok()) {
-        status = failure_status(StatusCode::Internal,
-                                "session failed without an error status");
+        status = Status::diagnostic(StatusCode::Internal,
+                                    "session failed without an error status");
     }
     stop(std::move(status), true);
 }
 
 void SessionEngine::Impl::stop(Status reason, bool failed) noexcept {
     if (reason.ok()) {
-        reason = failure_status(StatusCode::Closed, "session closed");
+        reason = Status::diagnostic(StatusCode::Closed, "session closed");
     }
     StartCompletion start;
     std::unordered_map<std::uint32_t, std::shared_ptr<StreamStateData>>

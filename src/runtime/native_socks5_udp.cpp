@@ -47,14 +47,6 @@ using Error = boost::system::error_code;
 // Larger than any UDP datagram, so nothing a client sends is truncated.
 constexpr std::size_t kReceiveBufferBytes = 65'536U;
 
-Status diagnostic(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 bool same_destination(const RouteDestination& left, const RouteDestination& right) noexcept {
     const auto left_address = left.address_bytes();
     const auto right_address = right.address_bytes();
@@ -459,7 +451,9 @@ engine::Result<std::shared_ptr<NativeSocks5UdpAssociation>> NativeSocks5UdpAssoc
         if (!error) state->socket.bind(local, error);
         if (!error) state->relay = state->socket.local_endpoint(error);
         if (error) {
-            return Created(diagnostic(StatusCode::Internal, "SOCKS5 UDP relay socket could not open"));
+            return Created(
+                Status::diagnostic(StatusCode::Internal,
+                                   "SOCKS5 UDP relay socket could not open"));
         }
         state->receive();
         return Created(std::shared_ptr<NativeSocks5UdpAssociation>(

@@ -58,25 +58,18 @@ constexpr std::size_t kMaximumConnectAttempts = 256U;
 constexpr std::size_t kMaximumHostBytes = 253U;
 constexpr auto kMaximumPhaseTimeout = std::chrono::minutes(10);
 
-Status safe_status(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 Status cancelled_status() noexcept {
-    return safe_status(StatusCode::Cancelled,
-                       "Asio socket operation was cancelled");
+    return Status::diagnostic(StatusCode::Cancelled,
+                              "Asio socket operation was cancelled");
 }
 
 Status closed_status() noexcept {
-    return safe_status(StatusCode::Closed, "Asio socket channel is closed");
+    return Status::diagnostic(StatusCode::Closed,
+                              "Asio socket channel is closed");
 }
 
 Status allocation_status(std::string_view message) noexcept {
-    return safe_status(StatusCode::ResourceExhausted, message);
+    return Status::diagnostic(StatusCode::ResourceExhausted, message);
 }
 
 template <typename Completion, typename... Args>
@@ -164,8 +157,8 @@ Status protect_socket(AsioTcpSocket& socket,
     } catch (const std::bad_alloc&) {
         return allocation_status("socket-protection callback allocation failed");
     } catch (...) {
-        return safe_status(StatusCode::Internal,
-                           "socket-protection callback threw");
+        return Status::diagnostic(StatusCode::Internal,
+                                  "socket-protection callback threw");
     }
 }
 
@@ -199,13 +192,13 @@ public:
             active_channels_ + pending_creates_ >=
                 limits_.max_active_channels) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
-                safe_status(StatusCode::ResourceExhausted,
-                            "Asio TCP provider capacity exhausted"));
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "Asio TCP provider capacity exhausted"));
         }
         if (next_target_id_ == std::numeric_limits<std::uint64_t>::max()) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
-                safe_status(StatusCode::ResourceExhausted,
-                            "Asio TCP target identifier exhausted"));
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "Asio TCP target identifier exhausted"));
         }
         const std::uint64_t id = next_target_id_++;
         try {
@@ -224,13 +217,13 @@ public:
         if (active_channels_ + pending_creates_ >=
             limits_.max_active_channels) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
-                safe_status(StatusCode::ResourceExhausted,
-                            "Asio TCP channel capacity exhausted"));
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "Asio TCP channel capacity exhausted"));
         }
         if (next_target_id_ == std::numeric_limits<std::uint64_t>::max()) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
-                safe_status(StatusCode::ResourceExhausted,
-                            "Asio TCP target identifier exhausted"));
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "Asio TCP target identifier exhausted"));
         }
         const std::uint64_t id = next_target_id_++;
         try {
@@ -266,8 +259,8 @@ public:
             found->second.kind != TargetKind::PendingCreate ||
             pending_creates_ == 0U ||
             active_channels_ >= limits_.max_active_channels) {
-            return safe_status(StatusCode::ResourceExhausted,
-                               "TCP active-channel capacity exhausted");
+            return Status::diagnostic(StatusCode::ResourceExhausted,
+                                      "TCP active-channel capacity exhausted");
         }
         found->second.kind = TargetKind::ActiveChannel;
         found->second.target = target;
@@ -484,18 +477,21 @@ public:
             if (close_requested_) {
                 error = closed_status();
             } else if (max_bytes == 0U || max_bytes > max_read_size()) {
-                error = safe_status(StatusCode::InvalidArgument,
-                                    "stream read exceeds the provider bound");
+                error = Status::diagnostic(
+                    StatusCode::InvalidArgument,
+                    "stream read exceeds the provider bound");
             } else if (submitted_reads_ >=
                            channels_->limits().max_queued_read_operations ||
                        !add_fits(submitted_read_bytes_, max_bytes,
                                  channels_->limits().max_queued_read_bytes)) {
-                error = safe_status(StatusCode::ResourceExhausted,
-                                    "stream read queue capacity exhausted");
+                error =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "stream read queue capacity exhausted");
             } else if (next_operation_id_ ==
                        std::numeric_limits<std::uint64_t>::max()) {
-                error = safe_status(StatusCode::ResourceExhausted,
-                                    "stream operation identifier exhausted");
+                error =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "stream operation identifier exhausted");
             } else {
                 id = next_operation_id_++;
                 ++submitted_reads_;
@@ -526,18 +522,21 @@ public:
             if (close_requested_ || write_shutdown_requested_) {
                 error = closed_status();
             } else if (bytes > max_write_size()) {
-                error = safe_status(StatusCode::ResourceExhausted,
-                                    "stream write exceeds the provider bound");
+                error = Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "stream write exceeds the provider bound");
             } else if (submitted_writes_ >=
                            channels_->limits().max_queued_write_operations ||
                        !add_fits(submitted_write_bytes_, bytes,
                                  channels_->limits().max_queued_write_bytes)) {
-                error = safe_status(StatusCode::ResourceExhausted,
-                                    "stream write queue capacity exhausted");
+                error =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "stream write queue capacity exhausted");
             } else if (next_operation_id_ ==
                        std::numeric_limits<std::uint64_t>::max()) {
-                error = safe_status(StatusCode::ResourceExhausted,
-                                    "stream operation identifier exhausted");
+                error =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "stream operation identifier exhausted");
             } else {
                 id = next_operation_id_++;
                 ++submitted_writes_;
@@ -554,8 +553,9 @@ public:
 
     Status shutdown_write() noexcept {
         if (!channels_->context()->running_in_this_thread()) {
-            return safe_status(StatusCode::FailedPrecondition,
-                               "stream shutdown must start on its execution context");
+            return Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                "stream shutdown must start on its execution context");
         }
         const auto keep_alive = this->shared_from_this();
         {
@@ -675,11 +675,10 @@ private:
                 "stream read queue allocation failed"));
         } catch (...) {
             release_read_reservation(max_bytes);
-            complete_read(
-                operation ? std::move(operation->completion)
-                          : std::move(completion),
-                safe_status(StatusCode::Internal,
-                            "stream read queueing failed"));
+            complete_read(operation ? std::move(operation->completion)
+                                    : std::move(completion),
+                          Status::diagnostic(StatusCode::Internal,
+                                             "stream read queueing failed"));
         }
     }
 
@@ -705,8 +704,10 @@ private:
             release_write_reservation(bytes);
             auto& selected_completion =
                 operation ? operation->completion : completion;
-            invoke_noexcept(selected_completion, safe_status(
-                StatusCode::Internal, "stream write queueing failed"), 0U);
+            invoke_noexcept(selected_completion,
+                            Status::diagnostic(StatusCode::Internal,
+                                               "stream write queueing failed"),
+                            0U);
         }
     }
 
@@ -747,8 +748,9 @@ private:
                             }
                         });
                 if (!registration.ok()) {
-                    settle_front_read(safe_status(registration.status().code(),
-                                                  registration.status().message()));
+                    settle_front_read(
+                        Status::diagnostic(registration.status().code(),
+                                           registration.status().message()));
                     continue;
                 }
                 operation.cancellation =
@@ -756,8 +758,9 @@ private:
                 auto allocated = Buffer::allocate(
                     operation.requested, max_read_size());
                 if (!allocated.ok()) {
-                    settle_front_read(safe_status(allocated.status().code(),
-                                                  allocated.status().message()));
+                    settle_front_read(
+                        Status::diagnostic(allocated.status().code(),
+                                           allocated.status().message()));
                     continue;
                 }
                 operation.buffer.emplace(
@@ -788,7 +791,7 @@ private:
                 settle_front_read(allocation_status(
                     "stream read-operation allocation failed"));
             } catch (...) {
-                settle_front_read(safe_status(
+                settle_front_read(Status::diagnostic(
                     StatusCode::Internal, "stream read setup failed"));
             }
         }
@@ -818,8 +821,10 @@ private:
                             }
                         });
                 if (!registration.ok()) {
-                    settle_front_write(safe_status(registration.status().code(),
-                                                   registration.status().message()), 0U);
+                    settle_front_write(
+                        Status::diagnostic(registration.status().code(),
+                                           registration.status().message()),
+                        0U);
                     continue;
                 }
                 operation.cancellation =
@@ -833,8 +838,10 @@ private:
                 settle_front_write(allocation_status(
                     "stream write-operation allocation failed"), 0U);
             } catch (...) {
-                settle_front_write(safe_status(
-                    StatusCode::Internal, "stream write setup failed"), 0U);
+                settle_front_write(
+                    Status::diagnostic(StatusCode::Internal,
+                                       "stream write setup failed"),
+                    0U);
             }
         }
         if (shutdown_after_writes_ && writes_.empty()) {
@@ -922,8 +929,9 @@ private:
                 "stream write-operation allocation failed"), transferred);
         } catch (...) {
             const auto transferred = operation.transferred;
-            settle_front_write(safe_status(StatusCode::Internal,
-                "stream write setup failed"), transferred);
+            settle_front_write(Status::diagnostic(StatusCode::Internal,
+                                                  "stream write setup failed"),
+                               transferred);
         }
         return false;
     }
@@ -958,7 +966,7 @@ private:
             return;
         }
         if (!operation.buffer || transferred > operation.buffer->size()) {
-            settle_front_read(safe_status(
+            settle_front_read(Status::diagnostic(
                 StatusCode::Internal,
                 "stream read completion exceeded its buffer"));
             start_next_read();
@@ -986,8 +994,11 @@ private:
         if (writes_.empty() || writes_.front()->id != id) return;
         PendingWrite& operation = *writes_.front();
         if (transferred > operation.buffer.size() - operation.transferred) {
-            settle_front_write(safe_status(StatusCode::Internal,
-                "stream write completion exceeded its buffer"), operation.transferred);
+            settle_front_write(
+                Status::diagnostic(
+                    StatusCode::Internal,
+                    "stream write completion exceeded its buffer"),
+                operation.transferred);
             start_next_write();
             return;
         }
@@ -1210,8 +1221,9 @@ private:
                     }
                 });
             if (!registration.ok()) {
-                finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
-                    registration.status().code(), registration.status().message())));
+                finish(Result<std::unique_ptr<ByteChannel>>(
+                    Status::diagnostic(registration.status().code(),
+                                       registration.status().message())));
                 return;
             }
             cancellation_ = std::move(registration).take_value();
@@ -1247,8 +1259,8 @@ private:
             finish(Result<std::unique_ptr<ByteChannel>>(allocation_status(
                 "TCP create allocation failed")));
         } catch (...) {
-            finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
-                StatusCode::Internal, "TCP create failed")));
+            finish(Result<std::unique_ptr<ByteChannel>>(
+                Status::diagnostic(StatusCode::Internal, "TCP create failed")));
         }
     }
 
@@ -1261,8 +1273,8 @@ private:
         finish(Result<std::unique_ptr<ByteChannel>>(
             cancellation_requested_.load(std::memory_order_acquire)
                 ? cancelled_status()
-                : safe_status(StatusCode::NotFound,
-                              "TCP endpoint resolution timed out")));
+                : Status::diagnostic(StatusCode::NotFound,
+                                     "TCP endpoint resolution timed out")));
     }
 
     void complete_connect_timeout(
@@ -1276,16 +1288,16 @@ private:
         finish(Result<std::unique_ptr<ByteChannel>>(
             cancellation_requested_.load(std::memory_order_acquire)
                 ? cancelled_status()
-                : safe_status(StatusCode::Closed,
-                              "TCP endpoint connection timed out")));
+                : Status::diagnostic(StatusCode::Closed,
+                                     "TCP endpoint connection timed out")));
     }
 
     static Status resolution_failure(const Status& status) noexcept {
         return status.code() == StatusCode::ResourceExhausted ||
                        status.code() == StatusCode::Cancelled
-                   ? safe_status(status.code(), status.message())
-                   : safe_status(StatusCode::NotFound,
-                                 "TCP endpoint resolution failed");
+                   ? Status::diagnostic(status.code(), status.message())
+                   : Status::diagnostic(StatusCode::NotFound,
+                                        "TCP endpoint resolution failed");
     }
 
     void cancel_lookup() noexcept {
@@ -1315,7 +1327,7 @@ private:
                 endpoints_.emplace_back(address, provider_->port());
             }
             if (endpoints_.empty()) {
-                finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
+                finish(Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
                     StatusCode::NotFound,
                     "TCP endpoint resolution returned no endpoints")));
                 return;
@@ -1325,9 +1337,8 @@ private:
             finish(Result<std::unique_ptr<ByteChannel>>(allocation_status(
                 "TCP resolved-endpoint allocation failed")));
         } catch (...) {
-            finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
-                StatusCode::Internal,
-                "TCP resolution completion failed")));
+            finish(Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
+                StatusCode::Internal, "TCP resolution completion failed")));
         }
     }
 
@@ -1372,9 +1383,10 @@ private:
                 }
                 if (connect_timer_.expiry() <=
                     std::chrono::steady_clock::now()) {
-                    finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
-                        StatusCode::Closed,
-                        "TCP endpoint connection timed out")));
+                    finish(
+                        Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
+                            StatusCode::Closed,
+                            "TCP endpoint connection timed out")));
                     return;
                 }
                 socket_.async_connect(
@@ -1384,13 +1396,13 @@ private:
                     });
                 return;
             }
-            finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
+            finish(Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
                 StatusCode::NotFound, "TCP endpoint connection failed")));
         } catch (const std::bad_alloc&) {
             finish(Result<std::unique_ptr<ByteChannel>>(allocation_status(
                 "TCP connection allocation failed")));
         } catch (...) {
-            finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
+            finish(Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
                 StatusCode::Internal, "TCP connection setup failed")));
         }
     }
@@ -1437,9 +1449,8 @@ private:
             finish(Result<std::unique_ptr<ByteChannel>>(allocation_status(
                 "TCP channel allocation failed")));
         } catch (...) {
-            finish(Result<std::unique_ptr<ByteChannel>>(safe_status(
-                StatusCode::Internal,
-                "TCP channel construction failed")));
+            finish(Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
+                StatusCode::Internal, "TCP channel construction failed")));
         }
     }
 
@@ -1528,9 +1539,10 @@ AsioTcpByteChannelProvider::create(
     std::shared_ptr<SystemResolver> resolver) {
     if (!context || remote_port == 0U ||
         !valid_host(remote_host) || !valid_limits(limits)) {
-        return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(safe_status(
-            StatusCode::InvalidArgument,
-            "Asio TCP context, endpoint, or limits are invalid"));
+        return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(
+            Status::diagnostic(
+                StatusCode::InvalidArgument,
+                "Asio TCP context, endpoint, or limits are invalid"));
     }
     boost::system::error_code numeric_error;
     std::optional<boost::asio::ip::address> numeric_host =
@@ -1538,9 +1550,10 @@ AsioTcpByteChannelProvider::create(
     if (numeric_error) numeric_host.reset();
     if (!numeric_host &&
         (!resolver || resolver->executor_affinity() != context->affinity())) {
-        return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(safe_status(
-            StatusCode::InvalidArgument,
-            "a TCP hostname needs a system resolver on the same context"));
+        return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(
+            Status::diagnostic(
+                StatusCode::InvalidArgument,
+                "a TCP hostname needs a system resolver on the same context"));
     }
     try {
         auto descriptor = ProviderDescriptor::create(
@@ -1573,8 +1586,9 @@ AsioTcpByteChannelProvider::create(
         return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(
             allocation_status("Asio TCP provider allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(safe_status(
-            StatusCode::Internal, "Asio TCP provider construction failed"));
+        return Result<std::shared_ptr<AsioTcpByteChannelProvider>>(
+            Status::diagnostic(StatusCode::Internal,
+                               "Asio TCP provider construction failed"));
     }
 }
 
@@ -1593,14 +1607,17 @@ void AsioTcpByteChannelProvider::async_create(
     if (role != EndpointRole::Client) {
         complete_create_failure(
             std::move(completion),
-            safe_status(StatusCode::InvalidArgument,
-                        "asio-tcp is a client-only ByteChannel provider"));
+            Status::diagnostic(
+                StatusCode::InvalidArgument,
+                "asio-tcp is a client-only ByteChannel provider"));
         return;
     }
     auto reservation = state->reserve_create();
     if (!reservation.ok()) {
-        complete_create_failure(std::move(completion), safe_status(
-            reservation.status().code(), reservation.status().message()));
+        complete_create_failure(
+            std::move(completion),
+            Status::diagnostic(reservation.status().code(),
+                               reservation.status().message()));
         return;
     }
     const auto [target_id, epoch] =
@@ -1628,8 +1645,8 @@ void AsioTcpByteChannelProvider::async_create(
         complete_create_failure(
             completion_holder ? std::move(*completion_holder)
                               : std::move(completion),
-            safe_status(StatusCode::Internal,
-                        "TCP create-operation setup failed"));
+            Status::diagnostic(StatusCode::Internal,
+                               "TCP create-operation setup failed"));
     }
 }
 
@@ -1670,9 +1687,10 @@ AsioTcpAcceptedChannelOwner::create(
     std::shared_ptr<AsioExecutionContext> context,
     AsioTcpChannelLimits limits) {
     if (!context || !valid_channel_limits(limits)) {
-        return Result<std::shared_ptr<AsioTcpAcceptedChannelOwner>>(safe_status(
-            StatusCode::InvalidArgument,
-            "Asio accepted-channel context or limits are invalid"));
+        return Result<std::shared_ptr<AsioTcpAcceptedChannelOwner>>(
+            Status::diagnostic(
+                StatusCode::InvalidArgument,
+                "Asio accepted-channel context or limits are invalid"));
     }
     try {
         auto channels = std::make_shared<ChannelRegistry>(
@@ -1685,8 +1703,10 @@ AsioTcpAcceptedChannelOwner::create(
         return Result<std::shared_ptr<AsioTcpAcceptedChannelOwner>>(
             allocation_status("Asio accepted-channel owner allocation failed"));
     } catch (...) {
-        return Result<std::shared_ptr<AsioTcpAcceptedChannelOwner>>(safe_status(
-            StatusCode::Internal, "Asio accepted-channel owner construction failed"));
+        return Result<std::shared_ptr<AsioTcpAcceptedChannelOwner>>(
+            Status::diagnostic(
+                StatusCode::Internal,
+                "Asio accepted-channel owner construction failed"));
     }
 }
 
@@ -1698,31 +1718,29 @@ template <typename Socket>
 Result<std::unique_ptr<ByteChannel>> adopt_connected(
     const std::shared_ptr<ChannelRegistry>& channels, Socket socket) {
     if (!socket.is_open()) {
-        return Result<std::unique_ptr<ByteChannel>>(safe_status(
-            StatusCode::InvalidArgument,
-            "adopted socket is closed"));
+        return Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
+            StatusCode::InvalidArgument, "adopted socket is closed"));
     }
     boost::system::error_code endpoint_error;
     (void)socket.remote_endpoint(endpoint_error);
     if (endpoint_error) {
         boost::system::error_code ignored;
         socket.close(ignored);
-        return Result<std::unique_ptr<ByteChannel>>(safe_status(
-            StatusCode::InvalidArgument,
-            "adopted socket is not connected"));
+        return Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
+            StatusCode::InvalidArgument, "adopted socket is not connected"));
     }
     if (socket.get_executor() != channels->executor()) {
         boost::system::error_code ignored;
         socket.close(ignored);
-        return Result<std::unique_ptr<ByteChannel>>(safe_status(
-            StatusCode::ProviderMismatch,
-            "adopted socket uses a different executor"));
+        return Result<std::unique_ptr<ByteChannel>>(
+            Status::diagnostic(StatusCode::ProviderMismatch,
+                               "adopted socket uses a different executor"));
     }
     auto reservation = channels->reserve_active();
     if (!reservation.ok()) {
         boost::system::error_code ignored;
         socket.close(ignored);
-        return Result<std::unique_ptr<ByteChannel>>(safe_status(
+        return Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
             reservation.status().code(), reservation.status().message()));
     }
     const auto [target_id, epoch] =
@@ -1744,9 +1762,8 @@ Result<std::unique_ptr<ByteChannel>> adopt_connected(
             allocation_status("adopted channel allocation failed"));
     } catch (...) {
         channels->release(target_id);
-        return Result<std::unique_ptr<ByteChannel>>(safe_status(
-            StatusCode::Internal,
-            "adopted channel construction failed"));
+        return Result<std::unique_ptr<ByteChannel>>(Status::diagnostic(
+            StatusCode::Internal, "adopted channel construction failed"));
     }
 }
 

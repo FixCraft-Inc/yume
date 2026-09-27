@@ -23,6 +23,7 @@
 
 #include "engine/engine_builder.hpp"
 #include "engine/session_engine.hpp"
+#include "test_support/allocation_failure.hpp"
 
 namespace yume::engine {
 namespace {
@@ -657,6 +658,28 @@ void register_composition(EngineBuilder& builder,
     if (providers.route) {
         CHECK(builder.register_route_provider(providers.route).ok());
     }
+}
+
+void test_status_diagnostics_under_allocation_failure() {
+    constexpr std::string_view message =
+        "this diagnostic is long enough to require allocated string storage";
+    for (const bool sustained : {false, true}) {
+        if (sustained) {
+            yume::test::fail_allocations.store(true);
+        } else {
+            yume::test::arm_allocation_failure(1U);
+        }
+        const Status status =
+            Status::diagnostic(StatusCode::Cancelled, message);
+        yume::test::fail_allocations.store(false);
+        const bool fired = sustained || yume::test::disarm_allocation_failure();
+        CHECK(fired);
+        CHECK(status.code() == StatusCode::Cancelled);
+        CHECK(status.message().empty());
+    }
+    const Status detailed = Status::diagnostic(StatusCode::Closed, message);
+    CHECK(detailed.code() == StatusCode::Closed);
+    CHECK(detailed.message() == message);
 }
 
 void test_buffer_bounds() {
@@ -1319,6 +1342,7 @@ void test_engine_builder_route_requirements() {
 int main() {
     using namespace yume::engine;
     try {
+        test_status_diagnostics_under_allocation_failure();
         test_buffer_bounds();
         rethrow_callback_test_failure();
         test_stream_ids();

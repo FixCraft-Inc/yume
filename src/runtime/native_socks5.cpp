@@ -42,14 +42,6 @@ using Timer = boost::asio::basic_waitable_timer<
     Clock, boost::asio::wait_traits<Clock>, providers::AsioExecutionContext::Executor>;
 using Error = boost::system::error_code;
 
-Status diagnostic(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 // The relay socket as the BND field of a UDP ASSOCIATE reply.
 Result<RouteDestination> relay_destination(const boost::asio::ip::udp::endpoint& relay) {
     const auto address = relay.address();
@@ -496,8 +488,9 @@ engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create
         Error error;
         const auto address = boost::asio::ip::make_address(adapter.listen_address(), error);
         if (error || !address.is_loopback()) {
-            return Created(diagnostic(StatusCode::InvalidArgument,
-                                      "SOCKS5 listeners are loopback-only"));
+            return Created(
+                Status::diagnostic(StatusCode::InvalidArgument,
+                                   "SOCKS5 listeners are loopback-only"));
         }
         providers::AsioTcpChannelLimits channel_limits;
         channel_limits.max_active_channels = limits.max_connections;

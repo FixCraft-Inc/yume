@@ -63,25 +63,18 @@ constexpr std::array<unsigned char, 12> kCoverAlpn{
     2U, 'h', '2', 8U, 'h', 't', 't', 'p', '/', '1', '.', '1'};
 int kCoverConnectionMarker;
 
-Status safe_status(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
-Status safe_status(const Status& status) noexcept {
-    return safe_status(status.code(), status.message());
+Status copy_status(const Status& status) noexcept {
+    return Status::diagnostic(status.code(), status.message());
 }
 
 Status cancelled_status() noexcept {
-    return safe_status(StatusCode::Cancelled,
-                       "TLS secure-channel operation cancelled");
+    return Status::diagnostic(StatusCode::Cancelled,
+                              "TLS secure-channel operation cancelled");
 }
 
 Status closed_status() noexcept {
-    return safe_status(StatusCode::Closed, "TLS secure channel is closed");
+    return Status::diagnostic(StatusCode::Closed,
+                              "TLS secure channel is closed");
 }
 
 template <typename Callback, typename... Args>
@@ -220,14 +213,14 @@ Result<SecureChannelPeerEvidence> certificate_evidence(
     SSL* ssl, EndpointRole peer_role, std::string identity) {
     X509Ptr certificate(SSL_get1_peer_certificate(ssl), X509_free);
     if (!certificate) {
-        return Result<SecureChannelPeerEvidence>(safe_status(
+        return Result<SecureChannelPeerEvidence>(Status::diagnostic(
             StatusCode::FailedPrecondition,
             "TLS peer did not provide the required certificate"));
     }
     const int length = i2d_X509(certificate.get(), nullptr);
     if (length <= 0 ||
         static_cast<std::size_t>(length) > engine::kMaxPeerEvidenceBytes) {
-        return Result<SecureChannelPeerEvidence>(safe_status(
+        return Result<SecureChannelPeerEvidence>(Status::diagnostic(
             StatusCode::ResourceExhausted,
             "TLS peer certificate evidence exceeds its bound"));
     }
@@ -235,13 +228,13 @@ Result<SecureChannelPeerEvidence> certificate_evidence(
     try {
         der.resize(static_cast<std::size_t>(length));
     } catch (...) {
-        return Result<SecureChannelPeerEvidence>(safe_status(
+        return Result<SecureChannelPeerEvidence>(Status::diagnostic(
             StatusCode::ResourceExhausted,
             "TLS peer certificate evidence allocation failed"));
     }
     auto* cursor = reinterpret_cast<unsigned char*>(der.data());
     if (i2d_X509(certificate.get(), &cursor) != length) {
-        return Result<SecureChannelPeerEvidence>(safe_status(
+        return Result<SecureChannelPeerEvidence>(Status::diagnostic(
             StatusCode::Internal, "TLS peer certificate encoding failed"));
     }
     if (identity.empty()) {
@@ -249,7 +242,7 @@ Result<SecureChannelPeerEvidence> certificate_evidence(
         unsigned int digest_length = 0U;
         if (X509_digest(certificate.get(), EVP_sha256(), digest.data(),
                         &digest_length) != 1 || digest_length != SHA256_DIGEST_LENGTH) {
-            return Result<SecureChannelPeerEvidence>(safe_status(
+            return Result<SecureChannelPeerEvidence>(Status::diagnostic(
                 StatusCode::Internal, "TLS peer certificate digest failed"));
         }
         static constexpr char kHex[] = "0123456789abcdef";
@@ -389,12 +382,14 @@ public:
                 handshake_cancellation_ = std::move(registration).take_value();
             }
         } catch (const std::bad_alloc&) {
-            fail(safe_status(StatusCode::ResourceExhausted,
-                             "TLS handshake cancellation registration failed"));
+            fail(Status::diagnostic(
+                StatusCode::ResourceExhausted,
+                "TLS handshake cancellation registration failed"));
             return;
         } catch (...) {
-            fail(safe_status(StatusCode::Internal,
-                             "TLS handshake cancellation registration threw"));
+            fail(Status::diagnostic(
+                StatusCode::Internal,
+                "TLS handshake cancellation registration threw"));
             return;
         }
         drive();
@@ -418,14 +413,14 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (!cover_mode_ || promoted_ || phase_ != Phase::Active ||
             tls_version_ != TLS1_3_VERSION || protocol_ != "h2") {
-            return Result<std::unique_ptr<SecureChannel>>(safe_status(
+            return Result<std::unique_ptr<SecureChannel>>(Status::diagnostic(
                 StatusCode::FailedPrecondition,
                 "cover connection is not an unpromoted TLS 1.3/H2 channel"));
         }
         if (read_ || write_ || transport_read_pending_ ||
             transport_write_pending_ || immediate_head_ ||
             shutdown_requested_ || remote_closed_) {
-            return Result<std::unique_ptr<SecureChannel>>(safe_status(
+            return Result<std::unique_ptr<SecureChannel>>(Status::diagnostic(
                 StatusCode::FailedPrecondition,
                 "cover operations must settle before TLS promotion"));
         }
@@ -435,9 +430,9 @@ public:
             promoted_ = true;
             return Result<std::unique_ptr<SecureChannel>>(std::move(channel));
         } catch (...) {
-            return Result<std::unique_ptr<SecureChannel>>(safe_status(
-                StatusCode::ResourceExhausted,
-                "TLS promotion allocation failed"));
+            return Result<std::unique_ptr<SecureChannel>>(
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "TLS promotion allocation failed"));
         }
     }
 
@@ -451,13 +446,13 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (maximum == 0U || maximum > owner_->limits.max_plaintext_bytes) {
-                immediate = safe_status(StatusCode::InvalidArgument,
-                                        "TLS read exceeds its bound");
+                immediate = Status::diagnostic(StatusCode::InvalidArgument,
+                                               "TLS read exceeds its bound");
             } else if (phase_ != Phase::Active || remote_closed_) {
                 immediate = closed_status();
             } else if (read_) {
-                immediate = safe_status(StatusCode::ResourceExhausted,
-                                        "TLS read already pending");
+                immediate = Status::diagnostic(StatusCode::ResourceExhausted,
+                                               "TLS read already pending");
             } else {
                 id = next_id_++;
                 read_.emplace(PendingRead{id, maximum, std::move(completion),
@@ -484,17 +479,20 @@ public:
                             read_->cancellation =
                                 std::move(registration).take_value();
                         } else {
-                            read_->terminal = safe_status(registration.status());
+                            read_->terminal =
+                                copy_status(registration.status());
                         }
                     }
                 }
             } catch (const std::bad_alloc&) {
-                fail(safe_status(StatusCode::ResourceExhausted,
-                                 "TLS read cancellation registration failed"));
+                fail(Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "TLS read cancellation registration failed"));
                 return;
             } catch (...) {
-                fail(safe_status(StatusCode::Internal,
-                                 "TLS read cancellation registration threw"));
+                fail(Status::diagnostic(
+                    StatusCode::Internal,
+                    "TLS read cancellation registration threw"));
                 return;
             }
         }
@@ -511,13 +509,13 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (buffer.size() > owner_->limits.max_plaintext_bytes) {
-                immediate = safe_status(StatusCode::ResourceExhausted,
-                                        "TLS write exceeds its bound");
+                immediate = Status::diagnostic(StatusCode::ResourceExhausted,
+                                               "TLS write exceeds its bound");
             } else if (phase_ != Phase::Active || shutdown_requested_) {
                 immediate = closed_status();
             } else if (write_) {
-                immediate = safe_status(StatusCode::ResourceExhausted,
-                                        "TLS write already pending");
+                immediate = Status::diagnostic(StatusCode::ResourceExhausted,
+                                               "TLS write already pending");
             } else {
                 id = next_id_++;
                 write_.emplace(PendingWrite{id, std::move(buffer), 0U,
@@ -544,17 +542,20 @@ public:
                             write_->cancellation =
                                 std::move(registration).take_value();
                         } else {
-                            write_->terminal = safe_status(registration.status());
+                            write_->terminal =
+                                copy_status(registration.status());
                         }
                     }
                 }
             } catch (const std::bad_alloc&) {
-                fail(safe_status(StatusCode::ResourceExhausted,
-                                 "TLS write cancellation registration failed"));
+                fail(Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "TLS write cancellation registration failed"));
                 return;
             } catch (...) {
-                fail(safe_status(StatusCode::Internal,
-                                 "TLS write cancellation registration threw"));
+                fail(Status::diagnostic(
+                    StatusCode::Internal,
+                    "TLS write cancellation registration threw"));
                 return;
             }
         }
@@ -573,8 +574,8 @@ public:
             drive();
             return Status::success();
         } catch (...) {
-            return safe_status(StatusCode::Internal,
-                               "TLS write shutdown failed");
+            return Status::diagnostic(StatusCode::Internal,
+                                      "TLS write shutdown failed");
         }
     }
 
@@ -613,8 +614,9 @@ public:
         if (label.empty() || label.size() > engine::kMaxExporterLabelBytes ||
             context.size() > engine::kMaxExporterContextBytes ||
             output_size == 0U || output_size > engine::kMaxExporterOutputBytes) {
-            return Result<Buffer>(safe_status(
-                StatusCode::InvalidArgument, "TLS exporter input exceeds its bound"));
+            return Result<Buffer>(
+                Status::diagnostic(StatusCode::InvalidArgument,
+                                   "TLS exporter input exceeds its bound"));
         }
         auto output = Buffer::allocate(output_size,
                                        engine::kMaxExporterOutputBytes);
@@ -630,7 +632,7 @@ public:
                 ssl_.get(), reinterpret_cast<unsigned char*>(
                     buffer.mutable_bytes().data()), output_size,
                 label.data(), label.size(), context_data, context.size(), 1) != 1) {
-            return Result<Buffer>(safe_status(
+            return Result<Buffer>(Status::diagnostic(
                 StatusCode::Internal, "TLS exporter derivation failed"));
         }
         return Result<Buffer>(std::move(buffer));
@@ -723,7 +725,7 @@ private:
             std::lock_guard<std::mutex> lock(mutex_);
             if (phase_ == Phase::Failed || phase_ == Phase::Closed) return;
             phase_ = Phase::Failed;
-            terminal_ = safe_status(status);
+            terminal_ = copy_status(status);
             need_transport_close_ = true;
         }
         drive();
@@ -754,15 +756,15 @@ private:
             } catch (const std::bad_alloc&) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 phase_ = Phase::Failed;
-                terminal_ = safe_status(StatusCode::ResourceExhausted,
-                                        "TLS state allocation failed");
+                terminal_ = Status::diagnostic(StatusCode::ResourceExhausted,
+                                               "TLS state allocation failed");
                 need_transport_close_ = true;
                 continue;
             } catch (...) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 phase_ = Phase::Failed;
-                terminal_ = safe_status(StatusCode::Internal,
-                                        "TLS state transition failed");
+                terminal_ = Status::diagnostic(StatusCode::Internal,
+                                               "TLS state transition failed");
                 need_transport_close_ = true;
                 continue;
             }
@@ -789,14 +791,16 @@ private:
         if ((phase_ == Phase::Failed || phase_ == Phase::Closed) &&
             (handshake_completion_ || cover_completion_)) {
             action.kind = ActionKind::HandshakeFailure;
-            action.status = safe_status(terminal_);
+            action.status = copy_status(terminal_);
             action.handshake = std::move(handshake_completion_);
             action.cover = std::move(cover_completion_);
             return action;
         }
         if (phase_ == Phase::Failed || phase_ == Phase::Closed) {
-            if (read_ && !read_->terminal) read_->terminal = safe_status(terminal_);
-            if (write_ && !write_->terminal) write_->terminal = safe_status(terminal_);
+            if (read_ && !read_->terminal)
+                read_->terminal = copy_status(terminal_);
+            if (write_ && !write_->terminal)
+                write_->terminal = copy_status(terminal_);
         }
         if (read_ && read_->terminal) {
             action.kind = ActionKind::ReadFailure;
@@ -833,7 +837,8 @@ private:
                                                transport_->max_write_size())),
                 owner_->limits.max_encrypted_chunk_bytes);
             if (!allocated.ok()) {
-                phase_ = Phase::Failed; terminal_ = safe_status(allocated.status());
+                phase_ = Phase::Failed;
+                terminal_ = copy_status(allocated.status());
                 need_transport_close_ = true; return next_action_locked();
             }
             Buffer buffer = std::move(allocated).take_value();
@@ -842,8 +847,8 @@ private:
                             buffer.size(), &consumed) != 1 || consumed == 0U ||
                 !buffer.resize(consumed).ok()) {
                 phase_ = Phase::Failed;
-                terminal_ = safe_status(StatusCode::Internal,
-                                        "TLS ciphertext drain failed");
+                terminal_ = Status::diagnostic(StatusCode::Internal,
+                                               "TLS ciphertext drain failed");
                 need_transport_close_ = true; return next_action_locked();
             }
             action.kind = ActionKind::TransportWrite;
@@ -859,8 +864,9 @@ private:
                 tls_version_ = static_cast<std::uint16_t>(SSL_version(ssl_.get()));
                 if (!cover_mode_ && tls_version_ != TLS1_3_VERSION) {
                     phase_ = Phase::Failed;
-                    terminal_ = safe_status(StatusCode::ProviderMismatch,
-                                            "TLS peer negotiated a non-TLS-1.3 version");
+                    terminal_ = Status::diagnostic(
+                        StatusCode::ProviderMismatch,
+                        "TLS peer negotiated a non-TLS-1.3 version");
                     need_transport_close_ = true; return next_action_locked();
                 }
                 const unsigned char* selected = nullptr;
@@ -870,8 +876,9 @@ private:
                                       selected[0] != 'h' || selected[1] != '2')) ||
                     selected_length > 255U) {
                     phase_ = Phase::Failed;
-                    terminal_ = safe_status(StatusCode::ProviderMismatch,
-                                            "TLS peer did not negotiate exact ALPN h2");
+                    terminal_ = Status::diagnostic(
+                        StatusCode::ProviderMismatch,
+                        "TLS peer did not negotiate exact ALPN h2");
                     need_transport_close_ = true; return next_action_locked();
                 }
                 if (selected_length != 0U) {
@@ -883,8 +890,9 @@ private:
                     const std::string_view received(name);
                     if (received.size() > kMaxServerNameBytes) {
                         phase_ = Phase::Failed;
-                        terminal_ = safe_status(StatusCode::ResourceExhausted,
-                                                "TLS server name exceeds its bound");
+                        terminal_ = Status::diagnostic(
+                            StatusCode::ResourceExhausted,
+                            "TLS server name exceeds its bound");
                         need_transport_close_ = true;
                         return next_action_locked();
                     }
@@ -899,7 +907,8 @@ private:
                                : Result<SecureChannelPeerEvidence>(
                                      SecureChannelPeerEvidence::anonymous_client()));
                 if (!made.ok()) {
-                    phase_ = Phase::Failed; terminal_ = safe_status(made.status());
+                    phase_ = Phase::Failed;
+                    terminal_ = copy_status(made.status());
                     need_transport_close_ = true; return next_action_locked();
                 }
                 evidence_.emplace(std::move(made).take_value());
@@ -942,7 +951,8 @@ private:
         if (read_) {
             auto allocated = Buffer::allocate(read_->maximum, read_->maximum);
             if (!allocated.ok()) {
-                read_->terminal = safe_status(allocated.status()); return next_action_locked();
+                read_->terminal = copy_status(allocated.status());
+                return next_action_locked();
             }
             Buffer buffer = std::move(allocated).take_value();
             std::size_t received = 0U;
@@ -976,8 +986,9 @@ private:
                                                  transport_->max_read_size());
             if (maximum == 0U) {
                 phase_ = Phase::Failed;
-                terminal_ = safe_status(StatusCode::FailedPrecondition,
-                                        "underlying channel has no read capacity");
+                terminal_ = Status::diagnostic(
+                    StatusCode::FailedPrecondition,
+                    "underlying channel has no read capacity");
                 need_transport_close_ = true; return next_action_locked();
             }
             action.kind = ActionKind::TransportRead;
@@ -987,7 +998,7 @@ private:
         }
         if (error == SSL_ERROR_WANT_WRITE) return action;
         phase_ = Phase::Failed;
-        terminal_ = safe_status(StatusCode::FailedPrecondition, message);
+        terminal_ = Status::diagnostic(StatusCode::FailedPrecondition, message);
         need_transport_close_ = true;
         ERR_clear_error();
         return next_action_locked();
@@ -1030,8 +1041,9 @@ private:
                     invoke_noexcept(action.cover, std::move(result));
                 } catch (...) {
                     Result<std::unique_ptr<TlsServerConnection>> failure(
-                        safe_status(StatusCode::ResourceExhausted,
-                                    "TLS cover connection allocation failed"));
+                        Status::diagnostic(
+                            StatusCode::ResourceExhausted,
+                            "TLS cover connection allocation failed"));
                     invoke_noexcept(action.cover, std::move(failure));
                     close();
                 }
@@ -1040,8 +1052,9 @@ private:
             std::unique_ptr<SecureChannel> channel;
             try { channel = std::make_unique<TlsChannel>(shared_from_this()); }
             catch (...) {
-                Result<std::unique_ptr<SecureChannel>> failure(safe_status(
-                    StatusCode::ResourceExhausted, "TLS channel allocation failed"));
+                Result<std::unique_ptr<SecureChannel>> failure(
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "TLS channel allocation failed"));
                 invoke_noexcept(action.handshake, std::move(failure));
                 close();
                 break;
@@ -1080,11 +1093,11 @@ private:
             break;
         }
         } catch (const std::bad_alloc&) {
-            fail(safe_status(StatusCode::ResourceExhausted,
-                             "TLS callback dispatch allocation failed"));
+            fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                    "TLS callback dispatch allocation failed"));
         } catch (...) {
-            fail(safe_status(StatusCode::Internal,
-                             "TLS transport callback threw"));
+            fail(Status::diagnostic(StatusCode::Internal,
+                                    "TLS transport callback threw"));
         }
     }
 
@@ -1096,7 +1109,8 @@ private:
             // Retain the original failure and do not feed late bytes into TLS.
             if (phase_ != Phase::Failed && phase_ != Phase::Closed) {
                 if (!result.ok()) {
-                    phase_ = Phase::Failed; terminal_ = safe_status(result.status());
+                    phase_ = Phase::Failed;
+                    terminal_ = copy_status(result.status());
                     need_transport_close_ = true;
                 } else {
                     Buffer buffer = std::move(result).take_value();
@@ -1105,7 +1119,7 @@ private:
                          handshake_ciphertext_bytes_ >
                              kMaxHandshakeCiphertextBytes - buffer.size())) {
                         phase_ = Phase::Failed;
-                        terminal_ = safe_status(
+                        terminal_ = Status::diagnostic(
                             StatusCode::ResourceExhausted,
                             "TLS handshake input budget exhausted");
                         need_transport_close_ = true;
@@ -1116,7 +1130,7 @@ private:
                                          buffer.size(), &written) != 1 ||
                             written != buffer.size()) {
                             phase_ = Phase::Failed;
-                            terminal_ = safe_status(
+                            terminal_ = Status::diagnostic(
                                 StatusCode::Internal,
                                 "TLS ciphertext input failed");
                             need_transport_close_ = true;
@@ -1136,10 +1150,11 @@ private:
             if (phase_ != Phase::Failed && phase_ != Phase::Closed &&
                 (!status.ok() || count != io_expected_)) {
                 phase_ = Phase::Failed;
-                terminal_ = status.ok()
-                    ? safe_status(StatusCode::Internal,
-                                  "underlying channel partially wrote TLS ciphertext")
-                    : std::move(status);
+                terminal_ = status.ok() ? Status::diagnostic(
+                                              StatusCode::Internal,
+                                              "underlying channel partially "
+                                              "wrote TLS ciphertext")
+                                        : std::move(status);
                 need_transport_close_ = true;
             }
         }
@@ -1284,7 +1299,8 @@ Tls13SecureChannelProvider::create_client(
         config.private_key_pem.size() >
             config.limits.max_credential_pem_bytes) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::InvalidArgument, "invalid TLS client configuration"));
+            Status::diagnostic(StatusCode::InvalidArgument,
+                               "invalid TLS client configuration"));
     }
     SslCtxPtr context(SSL_CTX_new(TLS_client_method()), SSL_CTX_free);
     if (!context ||
@@ -1293,15 +1309,17 @@ Tls13SecureChannelProvider::create_client(
          !install_server_identity(context.get(), config.certificate_chain_pem,
                                   config.private_key_pem))) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::FailedPrecondition, "TLS client context initialization failed"));
+            Status::diagnostic(StatusCode::FailedPrecondition,
+                               "TLS client context initialization failed"));
     }
     SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER, nullptr);
     try {
         const auto& profile = cover_profile::active();
         if (profile.tls_required_version != TLS1_3_VERSION) {
             return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-                safe_status(StatusCode::ProviderMismatch,
-                            "TLS cover profile does not require TLS 1.3"));
+                Status::diagnostic(
+                    StatusCode::ProviderMismatch,
+                    "TLS cover profile does not require TLS 1.3"));
         }
         // The browser-shaped offer includes TLS 1.2 and HTTP/1.1. Publication
         // still requires negotiated TLS 1.3 and h2 in TlsChannelState.
@@ -1309,17 +1327,19 @@ Tls13SecureChannelProvider::create_client(
             context.get(), profile.tls_profile, true);
         if (!warnings.empty()) {
             return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-                safe_status(StatusCode::FailedPrecondition,
-                            "TLS browser profile could not be applied exactly"));
+                Status::diagnostic(
+                    StatusCode::FailedPrecondition,
+                    "TLS browser profile could not be applied exactly"));
         }
     } catch (const std::bad_alloc&) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::ResourceExhausted,
-                        "TLS browser profile allocation failed"));
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "TLS browser profile allocation failed"));
     } catch (...) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::FailedPrecondition,
-                        "TLS browser profile requires supported patched OpenSSL"));
+            Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                "TLS browser profile requires supported patched OpenSSL"));
     }
     auto descriptor = make_descriptor();
     if (!descriptor.ok()) return Result<std::shared_ptr<Tls13SecureChannelProvider>>(descriptor.status());
@@ -1334,7 +1354,8 @@ Tls13SecureChannelProvider::create_client(
                                                     std::move(impl))));
     } catch (...) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::ResourceExhausted, "TLS provider allocation failed"));
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "TLS provider allocation failed"));
     }
 }
 
@@ -1347,7 +1368,8 @@ Tls13SecureChannelProvider::create_server(
         config.private_key_pem.size() > config.limits.max_credential_pem_bytes ||
         config.client_trust_anchors_pem.size() > config.limits.max_credential_pem_bytes) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::InvalidArgument, "invalid TLS server configuration"));
+            Status::diagnostic(StatusCode::InvalidArgument,
+                               "invalid TLS server configuration"));
     }
     SslCtxPtr context(SSL_CTX_new(TLS_server_method()), SSL_CTX_free);
     const bool mutual = !config.client_trust_anchors_pem.empty();
@@ -1358,7 +1380,8 @@ Tls13SecureChannelProvider::create_server(
         (mutual && !add_trust_anchors(context.get(),
                                      config.client_trust_anchors_pem))) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::FailedPrecondition, "TLS server context initialization failed"));
+            Status::diagnostic(StatusCode::FailedPrecondition,
+                               "TLS server context initialization failed"));
     }
     SSL_CTX_set_alpn_select_cb(context.get(), select_h2, nullptr);
     SSL_CTX_set_verify(context.get(), mutual ? SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
@@ -1376,7 +1399,8 @@ Tls13SecureChannelProvider::create_server(
                                                     std::move(impl))));
     } catch (...) {
         return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
-            safe_status(StatusCode::ResourceExhausted, "TLS provider allocation failed"));
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "TLS provider allocation failed"));
     }
 }
 
@@ -1420,7 +1444,7 @@ void Tls13SecureChannelProvider::async_wrap_impl(
     if (!channel || local_role != impl_->configured_role ||
         !channel->executor_affinity().valid() || channel->max_read_size() == 0U ||
         channel->max_write_size() == 0U) {
-        fail(safe_status(
+        fail(Status::diagnostic(
             local_role != impl_->configured_role ? StatusCode::ProviderMismatch
                                                  : StatusCode::InvalidArgument,
             "TLS provider role or byte channel is invalid"));
@@ -1434,8 +1458,8 @@ void Tls13SecureChannelProvider::async_wrap_impl(
         if (read_bio) BIO_free(read_bio);
         if (write_bio) BIO_free(write_bio);
         channel->close();
-        fail(safe_status(
-            StatusCode::ResourceExhausted, "TLS session allocation failed"));
+        fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                "TLS session allocation failed"));
         return;
     }
     BIO_set_mem_eof_return(read_bio, -1);
@@ -1446,8 +1470,8 @@ void Tls13SecureChannelProvider::async_wrap_impl(
         if (SSL_set_tlsext_host_name(ssl.get(), impl_->server_name.c_str()) != 1 ||
             SSL_set1_host(ssl.get(), impl_->server_name.c_str()) != 1) {
             channel->close();
-            fail(safe_status(
-                StatusCode::FailedPrecondition, "TLS client verification setup failed"));
+            fail(Status::diagnostic(StatusCode::FailedPrecondition,
+                                    "TLS client verification setup failed"));
             return;
         }
     } else {
@@ -1456,8 +1480,8 @@ void Tls13SecureChannelProvider::async_wrap_impl(
             if (SSL_set_min_proto_version(ssl.get(), TLS1_2_VERSION) != 1 ||
                 SSL_set_app_data(ssl.get(), &kCoverConnectionMarker) != 1) {
                 channel->close();
-                fail(safe_status(StatusCode::FailedPrecondition,
-                                 "TLS cover negotiation setup failed"));
+                fail(Status::diagnostic(StatusCode::FailedPrecondition,
+                                        "TLS cover negotiation setup failed"));
                 return;
             }
         }
@@ -1473,8 +1497,8 @@ void Tls13SecureChannelProvider::async_wrap_impl(
         // construction releases its moved channel/SSL through their owners;
         // failure before that move still leaves channel with this scope.
         if (channel) channel->close();
-        fail(safe_status(
-            StatusCode::ResourceExhausted, "TLS state allocation failed"));
+        fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                "TLS state allocation failed"));
     }
 }
 

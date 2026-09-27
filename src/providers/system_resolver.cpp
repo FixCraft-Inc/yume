@@ -46,14 +46,6 @@ using Addresses = std::vector<boost::asio::ip::address>;
 using Socket = boost::asio::basic_seq_packet_socket<
     boost::asio::local::seq_packet_protocol, AsioExecutionContext::Executor>;
 
-Status safe_status(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 template <typename Callback, typename... Args>
 void invoke_contained(Callback& callback, Args&&... args) noexcept {
     if (!callback) return;
@@ -69,17 +61,17 @@ Result<Addresses> lookup_result(const protocol::Response& response) noexcept {
     case protocol::LookupStatus::Ok:
         break;
     case protocol::LookupStatus::NotFound:
-        return Result<Addresses>(safe_status(StatusCode::NotFound,
-                                             "name has no addresses"));
+        return Result<Addresses>(
+            Status::diagnostic(StatusCode::NotFound, "name has no addresses"));
     case protocol::LookupStatus::TemporaryFailure:
-        return Result<Addresses>(safe_status(StatusCode::NotFound,
-                                             "temporary name resolution failure"));
+        return Result<Addresses>(Status::diagnostic(
+            StatusCode::NotFound, "temporary name resolution failure"));
     case protocol::LookupStatus::Failure:
-        return Result<Addresses>(safe_status(StatusCode::NotFound,
-                                             "system name resolution failed"));
+        return Result<Addresses>(Status::diagnostic(
+            StatusCode::NotFound, "system name resolution failed"));
     case protocol::LookupStatus::Busy:
-        return Result<Addresses>(safe_status(StatusCode::ResourceExhausted,
-                                             "system resolver helper is busy"));
+        return Result<Addresses>(Status::diagnostic(
+            StatusCode::ResourceExhausted, "system resolver helper is busy"));
     }
     try {
         Addresses addresses;
@@ -142,25 +134,28 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
                                   Completion completion) {
         context->require_context();
         if (closed || close_requested.load(std::memory_order_acquire)) {
-            return Result<std::uint64_t>(safe_status(StatusCode::Closed,
-                                                     "system resolver is closed"));
+            return Result<std::uint64_t>(Status::diagnostic(
+                StatusCode::Closed, "system resolver is closed"));
         }
         if (!completion || max_addresses == 0U ||
             !protocol::valid_host(host)) {
-            return Result<std::uint64_t>(safe_status(StatusCode::InvalidArgument,
-                                                     "invalid system lookup"));
+            return Result<std::uint64_t>(Status::diagnostic(
+                StatusCode::InvalidArgument, "invalid system lookup"));
         }
         if (options.program.empty()) {
-            return Result<std::uint64_t>(safe_status(StatusCode::FailedPrecondition,
-                "hostname resolution needs a resolver program or a numeric address"));
+            return Result<std::uint64_t>(
+                Status::diagnostic(StatusCode::FailedPrecondition,
+                                   "hostname resolution needs a resolver "
+                                   "program or a numeric address"));
         }
         if (lookups.size() >= options.max_outstanding) {
             // Every slot is in use. Abandoned lookups may never return, and
             // only a new helper reclaims them. Replace it outside this call
             // so other lookups never complete inside a caller's resolve().
             if (cancelled_lookups != 0U) request_replacement();
-            return Result<std::uint64_t>(safe_status(StatusCode::ResourceExhausted,
-                                                     "too many outstanding system lookups"));
+            return Result<std::uint64_t>(
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "too many outstanding system lookups"));
         }
         if (!helper) {
             Status started = start_helper();
@@ -173,8 +168,8 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
              host},
             message);
         if (size == 0U) {
-            return Result<std::uint64_t>(safe_status(StatusCode::InvalidArgument,
-                                                     "invalid system lookup"));
+            return Result<std::uint64_t>(Status::diagnostic(
+                StatusCode::InvalidArgument, "invalid system lookup"));
         }
         const auto inserted = lookups.try_emplace(id, Lookup{std::move(completion), false});
         boost::system::error_code error;
@@ -186,7 +181,7 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         // Refusal invokes nothing. A helper that exited is replaced when its
         // receive observes the end of the socket.
         lookups.erase(inserted.first);
-        return Result<std::uint64_t>(safe_status(
+        return Result<std::uint64_t>(Status::diagnostic(
             error == boost::asio::error::would_block ||
                     error == boost::asio::error::no_buffer_space
                 ? StatusCode::ResourceExhausted
@@ -216,8 +211,9 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         if (closed || lookups.size() < options.max_outstanding || cancelled_lookups == 0U) {
             return;
         }
-        replace_helper(safe_status(StatusCode::ResourceExhausted,
-                                   "system resolver was replaced after stalled lookups"));
+        replace_helper(Status::diagnostic(
+            StatusCode::ResourceExhausted,
+            "system resolver was replaced after stalled lookups"));
     }
 
     void request_close() noexcept {
@@ -228,7 +224,8 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
     void close_on_context() noexcept {
         if (closed) return;
         closed = true;
-        replace_helper(safe_status(StatusCode::Closed, "system resolver is closed"));
+        replace_helper(Status::diagnostic(StatusCode::Closed,
+                                          "system resolver is closed"));
     }
 
     std::uint32_t next_id() noexcept {
@@ -244,8 +241,9 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         try {
             int pair[2] = {-1, -1};
             if (::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, pair) != 0) {
-                return safe_status(StatusCode::ResourceExhausted,
-                                   "resolver helper socket creation failed");
+                return Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "resolver helper socket creation failed");
             }
             Descriptor parent(pair[0]);
             Descriptor child(pair[1]);
@@ -253,10 +251,11 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
             const std::string arguments[] = {std::string(protocol::kHelperArgv0)};
             auto spawned = ChildProcess::spawn(options.program, arguments, child.get());
             if (!spawned.ok()) {
-                return safe_status(spawned.status().code(),
-                                   spawned.status().message().empty()
-                                       ? std::string_view("resolver helper could not start")
-                                       : std::string_view(spawned.status().message()));
+                return Status::diagnostic(
+                    spawned.status().code(),
+                    spawned.status().message().empty()
+                        ? std::string_view("resolver helper could not start")
+                        : std::string_view(spawned.status().message()));
             }
             started->child = std::move(spawned).take_value();
             child.reset();
@@ -264,20 +263,23 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
             started->socket.assign(boost::asio::local::seq_packet_protocol(),
                                    parent.get(), error);
             if (error) {
-                return safe_status(StatusCode::Internal,
-                                   "resolver helper socket adoption failed");
+                return Status::diagnostic(
+                    StatusCode::Internal,
+                    "resolver helper socket adoption failed");
             }
             parent.release();
             started->socket.non_blocking(true, error);
             if (error) {
-                return safe_status(StatusCode::Internal,
-                                   "resolver helper socket setup failed");
+                return Status::diagnostic(
+                    StatusCode::Internal,
+                    "resolver helper socket setup failed");
             }
             helper = std::move(started);
             receive(helper);
-            return helper ? Status::success()
-                          : safe_status(StatusCode::ResourceExhausted,
-                                        "resolver helper receive failed");
+            return helper
+                       ? Status::success()
+                       : Status::diagnostic(StatusCode::ResourceExhausted,
+                                            "resolver helper receive failed");
         } catch (...) {
             return Status(StatusCode::ResourceExhausted);
         }
@@ -301,19 +303,22 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         if (helper != current) return;
         // Every valid message is nonempty, so size zero is the helper's EOF.
         if (error || size == 0U) {
-            replace_helper(safe_status(StatusCode::NotFound, "system resolver helper exited"));
+            replace_helper(Status::diagnostic(StatusCode::NotFound,
+                                              "system resolver helper exited"));
             return;
         }
         const std::span<const std::uint8_t> message(current->buffer.data(), size);
         if ((current->flags & MSG_TRUNC) != 0 || size > protocol::kMaxResponseBytes) {
-            replace_helper(safe_status(StatusCode::Internal,
-                                       "system resolver helper sent an oversize message"));
+            replace_helper(Status::diagnostic(
+                StatusCode::Internal,
+                "system resolver helper sent an oversize message"));
             return;
         }
         if (!current->hello) {
             if (!protocol::valid_hello(message)) {
-                replace_helper(safe_status(StatusCode::FailedPrecondition,
-                                           "resolver helper protocol mismatch"));
+                replace_helper(
+                    Status::diagnostic(StatusCode::FailedPrecondition,
+                                       "resolver helper protocol mismatch"));
                 return;
             }
             current->hello = true;
@@ -323,8 +328,9 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         const auto response = protocol::decode_response(message);
         const auto found = response ? lookups.find(response->id) : lookups.end();
         if (found == lookups.end()) {
-            replace_helper(safe_status(StatusCode::Internal,
-                                       "system resolver helper sent an invalid response"));
+            replace_helper(Status::diagnostic(
+                StatusCode::Internal,
+                "system resolver helper sent an invalid response"));
             return;
         }
         auto node = lookups.extract(found);
@@ -345,7 +351,7 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         cancelled_lookups = 0U;
         for (auto& [id, lookup] : failed) {
             if (lookup.cancelled) continue;
-            Status copy = safe_status(status.code(), status.message());
+            Status copy = Status::diagnostic(status.code(), status.message());
             invoke_contained(lookup.completion, Result<Addresses>(std::move(copy)));
         }
     }
@@ -375,7 +381,7 @@ Result<std::shared_ptr<SystemResolver>> SystemResolver::create(
     std::shared_ptr<AsioExecutionContext> context, SystemResolverOptions options) {
     if (!context || options.max_outstanding == 0U ||
         options.max_outstanding > protocol::kMaxOutstanding) {
-        return Result<std::shared_ptr<SystemResolver>>(safe_status(
+        return Result<std::shared_ptr<SystemResolver>>(Status::diagnostic(
             StatusCode::InvalidArgument, "invalid system resolver options"));
     }
     if (!options.program.empty()) {

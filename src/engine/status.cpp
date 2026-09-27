@@ -20,4 +20,14 @@ Status::Status(StatusCode code, std::string_view message)
     message_.assign(message.data(), retained);
 }
 
+Status Status::diagnostic(StatusCode code, std::string_view message) noexcept {
+    try {
+        return Status(code, message);
+    } catch (...) {
+        Status result;
+        result.code_ = code;
+        return result;
+    }
+}
+
 }  // namespace yume::engine

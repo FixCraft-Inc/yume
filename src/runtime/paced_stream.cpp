@@ -40,14 +40,6 @@ constexpr Clock::duration kMaxWait = std::chrono::milliseconds(250);
 // The route bridge and the C ABI stream keep one write in flight.
 constexpr std::size_t kMaxHeldWrites = 16U;
 
-Status failure(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 template <typename Completion, typename... Args>
 void complete(Completion& completion, Args&&... args) noexcept {
     try {
@@ -82,8 +74,9 @@ public:
             return;
         }
         if (read_pending_) {
-            complete(completion, Result<ReceivedRecord>(failure(
-                StatusCode::FailedPrecondition, "stream already has a pending read")));
+            complete(completion, Result<ReceivedRecord>(Status::diagnostic(
+                                     StatusCode::FailedPrecondition,
+                                     "stream already has a pending read")));
             return;
         }
         // Build the callback before claiming the read: allocation failure
@@ -112,20 +105,27 @@ public:
             return;
         }
         if (shutdown_requested_) {
-            complete(completion, failure(StatusCode::Closed, "stream write side is shut down"), 0U);
+            complete(completion,
+                     Status::diagnostic(StatusCode::Closed,
+                                        "stream write side is shut down"),
+                     0U);
             return;
         }
         if (held_writes_.size() >= kMaxHeldWrites) {
-            complete(completion, failure(StatusCode::ResourceExhausted,
-                                         "paced stream write queue is full"), 0U);
+            complete(completion,
+                     Status::diagnostic(StatusCode::ResourceExhausted,
+                                        "paced stream write queue is full"),
+                     0U);
             return;
         }
         Clock::time_point due;
         try {
             due = reservation_start(payload.size());
         } catch (...) {
-            complete(completion, failure(StatusCode::ResourceExhausted,
-                                         "egress reservation failed"), 0U);
+            complete(completion,
+                     Status::diagnostic(StatusCode::ResourceExhausted,
+                                        "egress reservation failed"),
+                     0U);
             return;
         }
         if (held_writes_.empty() && due <= Clock::now()) {
@@ -138,8 +138,10 @@ public:
             held_writes_.push_back(std::move(held));
         } catch (...) {
             // A failed push leaves the element where it was.
-            complete(held.completion, failure(StatusCode::ResourceExhausted,
-                                              "paced stream write allocation failed"), 0U);
+            complete(held.completion,
+                     Status::diagnostic(StatusCode::ResourceExhausted,
+                                        "paced stream write allocation failed"),
+                     0U);
             return;
         }
         if (!write_timer_armed_ && !arm_write_timer(due)) fail_held_writes();
@@ -208,8 +210,9 @@ private:
             due = reservation_start(result.value().payload().size());
         } catch (...) {
             read_pending_ = false;
-            complete(completion, Result<ReceivedRecord>(failure(
-                StatusCode::ResourceExhausted, "egress reservation failed")));
+            complete(completion, Result<ReceivedRecord>(Status::diagnostic(
+                                     StatusCode::ResourceExhausted,
+                                     "egress reservation failed")));
             return;
         }
         if (due <= Clock::now()) {
@@ -220,8 +223,9 @@ private:
         held_read_.emplace(HeldRead{std::move(result).take_value(), std::move(completion),
                                     std::move(cancellation), due});
         if (!arm_read_timer(due))
-            settle_read(Result<ReceivedRecord>(failure(
-                StatusCode::ResourceExhausted, "paced stream timer allocation failed")));
+            settle_read(Result<ReceivedRecord>(
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "paced stream timer allocation failed")));
     }
 
     bool arm_read_timer(Clock::time_point due) noexcept {
@@ -262,8 +266,9 @@ private:
             settle_read(Result<ReceivedRecord>(std::move(reason)));
         } else if (Clock::now() < held_read_->due) {
             if (!read_timer_armed_ && !arm_read_timer(held_read_->due))
-                settle_read(Result<ReceivedRecord>(failure(
-                    StatusCode::ResourceExhausted, "paced stream timer allocation failed")));
+                settle_read(Result<ReceivedRecord>(Status::diagnostic(
+                    StatusCode::ResourceExhausted,
+                    "paced stream timer allocation failed")));
         } else {
             settle_read(Result<ReceivedRecord>(std::move(held_read_->record)));
         }
@@ -306,8 +311,10 @@ private:
         try {
             guard = std::make_shared<StreamResponder::WriteCompletion>(std::move(write.completion));
         } catch (...) {
-            complete(write.completion, failure(StatusCode::ResourceExhausted,
-                                               "paced stream write allocation failed"), 0U);
+            complete(write.completion,
+                     Status::diagnostic(StatusCode::ResourceExhausted,
+                                        "paced stream write allocation failed"),
+                     0U);
             return;
         }
         try {
@@ -318,7 +325,10 @@ private:
                 });
         } catch (...) {
             auto completion = std::exchange(*guard, {});
-            complete(completion, failure(StatusCode::Internal, "stream write failed to start"), 0U);
+            complete(completion,
+                     Status::diagnostic(StatusCode::Internal,
+                                        "stream write failed to start"),
+                     0U);
         }
     }
 
@@ -326,8 +336,10 @@ private:
         while (!held_writes_.empty()) {
             auto completion = std::move(held_writes_.front().completion);
             held_writes_.pop_front();
-            complete(completion, failure(StatusCode::ResourceExhausted,
-                                         "paced stream timer allocation failed"), 0U);
+            complete(completion,
+                     Status::diagnostic(StatusCode::ResourceExhausted,
+                                        "paced stream timer allocation failed"),
+                     0U);
         }
         finish_shutdown();
     }

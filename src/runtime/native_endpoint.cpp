@@ -49,13 +49,8 @@ void require(Status status) {
     if (!status.ok()) throw std::move(status);
 }
 
-Status diagnostic(StatusCode code, std::string_view message) noexcept {
-    try { return Status(code, message); }
-    catch (...) { return Status(code); }
-}
-
 Status copy_status(const Status& status) noexcept {
-    return diagnostic(status.code(), status.message());
+    return Status::diagnostic(status.code(), status.message());
 }
 
 void complete_noexcept(NativeEndpoint::Completion completion,
@@ -304,9 +299,10 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             (slot.deadline_armed && Timer::clock_type::now() >= slot.deadline);
         if (closing.load(std::memory_order_acquire) || slot.timed_out) {
             if (result.ok()) result.value()->stop(Status(StatusCode::Cancelled));
-            result = Result<std::shared_ptr<SessionEngine>>(diagnostic(
+            result = Result<std::shared_ptr<SessionEngine>>(Status::diagnostic(
                 slot.timed_out ? StatusCode::Cancelled : StatusCode::Closed,
-                slot.timed_out ? "native session start deadline expired" : "native endpoint closed"));
+                slot.timed_out ? "native session start deadline expired"
+                               : "native endpoint closed"));
         }
         if (result.ok()) {
             auto status = observe_session(index, result.value());
@@ -351,7 +347,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         // A session that authenticated against the previous graph while a
         // reload removed its identity must not survive the reload.
         if (!current->recognizes(slot.peer_identity))
-            return diagnostic(StatusCode::PermissionDenied, "credential was revoked");
+            return Status::diagnostic(StatusCode::PermissionDenied,
+                                      "credential was revoked");
         evict_beyond_limit(slot.peer_identity, current->max_sessions(slot.peer_identity));
         return Status::success();
     }
@@ -370,7 +367,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             }
             if (count <= limit || !oldest) return;
             oldest->evicted = true;
-            oldest->session->stop(diagnostic(StatusCode::ResourceExhausted,
+            oldest->session->stop(Status::diagnostic(
+                StatusCode::ResourceExhausted,
                 "a newer session for this identity replaced it"));
         }
     }
@@ -406,7 +404,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             for (const auto& slot : slots) {
                 if (!slot->session || slot->evicted || current->recognizes(slot->peer_identity)) continue;
                 slot->evicted = true;
-                slot->session->stop(diagnostic(StatusCode::PermissionDenied, "credential was revoked"));
+                slot->session->stop(Status::diagnostic(
+                    StatusCode::PermissionDenied, "credential was revoked"));
             }
             for (const auto& slot : slots) {
                 if (slot->session && !slot->evicted)
@@ -469,7 +468,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                     auto session = current.session;
                     if (error) {
                         if (error != boost::asio::error::operation_aborted)
-                            session->stop(diagnostic(StatusCode::Internal,
+                            session->stop(Status::diagnostic(
+                                StatusCode::Internal,
                                 "native rekey watchdog failed"));
                         return;
                     }
@@ -607,7 +607,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         try {
             return begin_start({}, lane, true, armed_at);
         } catch (...) {
-            return diagnostic(StatusCode::Internal, "automatic native accept could not start");
+            return Status::diagnostic(
+                StatusCode::Internal,
+                "automatic native accept could not start");
         }
     }
     bool schedule_retry(std::size_t lane, std::chrono::milliseconds delay) noexcept override {

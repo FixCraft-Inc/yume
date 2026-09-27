@@ -41,15 +41,6 @@ constexpr std::uint8_t kName = 0x03U;
 constexpr std::uint8_t kIpv6 = 0x04U;
 constexpr std::size_t kMaxField = 255U;
 
-// The message is diagnostic. Losing it to allocation failure keeps the code.
-Status status_of(StatusCode code, std::string_view message) noexcept {
-    try {
-        return Status(code, message);
-    } catch (...) {
-        return Status(code);
-    }
-}
-
 std::string_view refusal(std::uint8_t code) noexcept {
     switch (code) {
     case 0x01U: return "general SOCKS server failure";
@@ -151,7 +142,9 @@ private:
     void send(std::vector<std::uint8_t> bytes, Step next, std::size_t reply_bytes) {
         const security::ScopedErase wipe(bytes);
         if (bytes.size() > channel_->max_write_size()) {
-            return fail(status_of(StatusCode::InvalidArgument, "SOCKS5 request exceeds the channel's writes"));
+            return fail(Status::diagnostic(
+                StatusCode::InvalidArgument,
+                "SOCKS5 request exceeds the channel's writes"));
         }
         auto buffer = Buffer::copy_from(std::as_bytes(std::span(bytes)), bytes.size());
         if (!buffer.ok()) return fail(buffer.status());
@@ -160,7 +153,8 @@ private:
             [self = shared_from_this(), size, next, reply_bytes](Status status, std::size_t written) {
                 if (!status.ok()) return self->fail(std::move(status));
                 if (written != size) {
-                    return self->fail(status_of(StatusCode::Closed, "SOCKS5 request was cut short"));
+                    return self->fail(Status::diagnostic(
+                        StatusCode::Closed, "SOCKS5 request was cut short"));
                 }
                 self->expect(next, reply_bytes);
             });
@@ -184,7 +178,8 @@ private:
         if (!received.ok()) return fail(received.status());
         const auto bytes = received.value().bytes();
         if (bytes.empty() || bytes.size() > wanted_ - input_.size()) {
-            return fail(status_of(StatusCode::Closed, "proxy ended the SOCKS5 exchange"));
+            return fail(Status::diagnostic(StatusCode::Closed,
+                                           "proxy ended the SOCKS5 exchange"));
         }
         for (const std::byte byte : bytes) input_.push_back(static_cast<std::uint8_t>(byte));
         if (input_.size() < wanted_) return read();
@@ -197,9 +192,10 @@ private:
             const bool password = settings_->credentials.has_value();
             if (input_[0] != kVersion) return protocol_error();
             if (input_[1] == kNoAcceptableMethod) {
-                return fail(status_of(StatusCode::PermissionDenied,
-                                      password ? "proxy does not accept username and password"
-                                               : "proxy requires authentication"));
+                return fail(Status::diagnostic(
+                    StatusCode::PermissionDenied,
+                    password ? "proxy does not accept username and password"
+                             : "proxy requires authentication"));
             }
             if (input_[1] != (password ? kUsernamePassword : kNoAuthentication)) return protocol_error();
             if (!password) return send(settings_->connect, Step::ReplyHead, 4U);
@@ -217,7 +213,9 @@ private:
         case Step::Password:
             if (input_[0] != kPasswordVersion) return protocol_error();
             if (input_[1] != 0x00U) {
-                return fail(status_of(StatusCode::PermissionDenied, "proxy refused the SOCKS5 credentials"));
+                return fail(
+                    Status::diagnostic(StatusCode::PermissionDenied,
+                                       "proxy refused the SOCKS5 credentials"));
             }
             return send(settings_->connect, Step::ReplyHead, 4U);
         case Step::ReplyHead:
@@ -241,7 +239,10 @@ private:
         }
     }
 
-    void protocol_error() { fail(status_of(StatusCode::Closed, "proxy did not answer as SOCKS5")); }
+    void protocol_error() {
+        fail(Status::diagnostic(StatusCode::Closed,
+                                "proxy did not answer as SOCKS5"));
+    }
 
     void settle() noexcept {
         timer_.cancel();
@@ -261,7 +262,9 @@ private:
 
     void fail(Status status) {
         if (!completion_) return;
-        if (timed_out_) status = status_of(StatusCode::Closed, "proxy handshake timed out");
+        if (timed_out_)
+            status = Status::diagnostic(StatusCode::Closed,
+                                        "proxy handshake timed out");
         settle();
         if (channel_) {
             channel_->close();
@@ -305,14 +308,20 @@ Result<std::shared_ptr<Socks5UpstreamProvider>> Socks5UpstreamProvider::create(
     Socks5UpstreamLimits limits) {
     using Created = Result<std::shared_ptr<Socks5UpstreamProvider>>;
     if (!context || !proxy) {
-        return Created(status_of(StatusCode::InvalidArgument, "SOCKS5 upstream needs a context and a proxy"));
+        return Created(
+            Status::diagnostic(StatusCode::InvalidArgument,
+                               "SOCKS5 upstream needs a context and a proxy"));
     }
     if (target_host.empty() || target_host.size() > kMaxField) {
-        return Created(status_of(StatusCode::InvalidArgument, "SOCKS5 target needs 1 to 255 bytes"));
+        return Created(Status::diagnostic(
+            StatusCode::InvalidArgument, "SOCKS5 target needs 1 to 255 bytes"));
     }
-    if (target_port == 0U) return Created(status_of(StatusCode::InvalidArgument, "SOCKS5 target port is 0"));
+    if (target_port == 0U)
+        return Created(Status::diagnostic(StatusCode::InvalidArgument,
+                                          "SOCKS5 target port is 0"));
     if (limits.handshake_timeout <= std::chrono::milliseconds::zero()) {
-        return Created(status_of(StatusCode::InvalidArgument, "SOCKS5 handshake needs a deadline"));
+        return Created(Status::diagnostic(StatusCode::InvalidArgument,
+                                          "SOCKS5 handshake needs a deadline"));
     }
     try {
         auto settings = std::make_shared<Settings>(

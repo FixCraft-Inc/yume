@@ -1148,8 +1148,8 @@ void SessionEngine::Impl::async_start(StartCompletion completion) {
         return;
     }
 
-    Result<AuthenticationOutput> output(Status(
-        StatusCode::Internal, "authentication provider did not run"));
+    Result<AuthenticationOutput> output(
+        Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
         output = security_->start_authentication();
@@ -1176,8 +1176,7 @@ void SessionEngine::Impl::async_start(StartCompletion completion) {
 }
 
 Status SessionEngine::Impl::initialize_security() {
-    Result<Buffer> exporter(Status(
-        StatusCode::Internal, "secure-channel exporter did not run"));
+    Result<Buffer> exporter(Status::diagnostic(StatusCode::Internal));
     try {
         exporter = carrier_->secure_channel().export_keying_material(
             ytp1::kExporterLabel, text_bytes(ytp1::kSuiteId),
@@ -1304,8 +1303,8 @@ Status SessionEngine::Impl::handle_authentication_record(
         return validation;
     }
 
-    Result<AuthenticationOutput> provider_result(Status(
-        StatusCode::Internal, "authentication provider did not run"));
+    Result<AuthenticationOutput> provider_result(
+        Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
         provider_result = security_->process_authentication(*expected,
@@ -1489,8 +1488,7 @@ Result<Buffer> SessionEngine::Impl::encode_frame(
 Result<Buffer> SessionEngine::Impl::protect_frame(
     Buffer plaintext,
     RecordKeyToken token) {
-    Result<Buffer> sealed(Status(
-        StatusCode::Internal, "security provider did not seal the record"));
+    Result<Buffer> sealed(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
         sealed = security_->seal_record(token, plaintext.bytes());
@@ -2259,8 +2257,7 @@ Status SessionEngine::Impl::process_protected_record(
         }
     }
 
-    Result<Buffer> opened(Status(
-        StatusCode::Internal, "security provider did not open the record"));
+    Result<Buffer> opened(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
         opened = security_->open_record(
@@ -3749,8 +3746,7 @@ Status SessionEngine::Impl::initiate_rekey() {
         ++rekey_work_;
     }
 
-    Result<Buffer> initiation(Status(
-        StatusCode::Internal, "security provider did not begin rekey"));
+    Result<Buffer> initiation(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
         initiation = security_->begin_outbound_rekey(next_epoch);
@@ -3846,8 +3842,7 @@ Status SessionEngine::Impl::process_rekey_init(
         }
         ++rekey_work_;
     }
-    Result<Buffer> acknowledgement(Status(
-        StatusCode::Internal, "security provider did not accept rekey"));
+    Result<Buffer> acknowledgement(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
         acknowledgement = security_->accept_inbound_rekey(

@@ -162,8 +162,4 @@ bool CancellationSource::cancel() noexcept {
     return true;
 }
 
-bool CancellationSource::is_cancelled() const noexcept {
-    return token().is_cancelled();
-}
-
 }  // namespace yume::engine

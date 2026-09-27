@@ -77,7 +77,6 @@ public:
         return CancellationToken(state_);
     }
     bool cancel() noexcept;
-    bool is_cancelled() const noexcept;
 
 private:
     std::shared_ptr<detail::CancellationState> state_;

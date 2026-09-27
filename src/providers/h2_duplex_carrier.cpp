@@ -1558,11 +1558,6 @@ H2DuplexCarrierProvider::executor_affinity() const noexcept {
     return executor_affinity_;
 }
 
-const H2DuplexClientConfig&
-H2DuplexCarrierProvider::config() const noexcept {
-    return config_;
-}
-
 Result<std::unique_ptr<Carrier>> make_admitted_h2_duplex_server_carrier(
     std::unique_ptr<SecureChannel> channel,
     std::unique_ptr<obfs::H2Carrier> admitted_h2,

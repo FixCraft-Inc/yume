@@ -253,7 +253,9 @@ gets the same rate. Over the tunnel they share one session. `--soak SECONDS`
 then keeps those downloads running under `--soak-condition` while it samples
 the resident memory and open descriptors of `yume` and `yumed` every five
 seconds. The run fails unless the peaks of the last quarter stay within 10 %
-plus 1 MiB of memory and two descriptors of the second quarter's.
+plus 1 MiB of memory and two descriptors of the second quarter's. A failed
+download round ends the soak, and the report keeps the rounds and samples
+before it.
 
 New namespaces copy the host's TCP buffer ceilings, and those cap one
 connection on a long path, direct or tunnelled, at a few MiB per round trip.

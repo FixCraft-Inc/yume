@@ -26,8 +26,8 @@ import yume_native_session as session  # noqa: E402
 PAYLOAD_BYTES = 1024 * 1024
 
 
-def validate(program: Path, config: Path, environment: dict[str, str]) -> None:
-    result = subprocess.run([str(program), "--config", str(config), "--validate"],
+def validate(program: Path, config: Path, environment: dict[str, str], *flags: str) -> None:
+    result = subprocess.run([str(program), "--config", str(config), "--validate", *flags],
                             env=environment, capture_output=True, text=True, timeout=30, check=False)
     if result.returncode:
         raise session.SessionFailure(f"{program.name} --validate failed: {result.stderr.strip()}")
@@ -383,6 +383,8 @@ def check_socks5_upstream(yume: Path, kit: Path, environment: dict[str, str], ro
                           server_port: int, target_port: int) -> None:
     # A second client reaches the same server through an authenticating
     # SOCKS5 proxy. connect_address makes the proxy connect to that address.
+    # The file names an unused address and the kit's SOCKS5 port, and the run
+    # settings replace both, so the proxy's request shows --connect took effect.
     relay = Socks5Relay()
     try:
         credentials = kit / "client/socks5-proxy"
@@ -391,16 +393,16 @@ def check_socks5_upstream(yume: Path, kit: Path, environment: dict[str, str], ro
         config = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))
         config["endpoint"]["socks5_proxy"] = {
             "address": "127.0.0.1", "port": relay.port, "credentials": {"file": "socks5-proxy"}}
+        config["endpoint"]["connect_address"] = "192.0.2.1"
         socks_port = session.free_port()
-        for adapter in config["adapters"]:
-            if adapter["kind"] == "socks5":
-                adapter["listen_port"] = socks_port
+        run_settings = ["--connect", "127.0.0.1", "--socks-port", str(socks_port)]
         variant = kit / "client/through-proxy.json"
         variant.write_text(json.dumps(config), encoding="utf-8")
-        validate(yume, variant, environment)
+        validate(yume, variant, environment, *run_settings)
         log_path = root / "yume-proxy.log"
         with log_path.open("wb") as log:
-            client = subprocess.Popen([str(yume), "--config", str(variant)], env=environment,
+            client = subprocess.Popen([str(yume), "--config", str(variant), *run_settings],
+                                      env=environment,
                                       stdout=log, stderr=subprocess.STDOUT)
             try:
                 deadline = time.monotonic() + 30

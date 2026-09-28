@@ -714,8 +714,26 @@ private:
 // validated typed values; it retains no JSON representation.
 Config Parse(const nlohmann::json& document);
 
-// Bounds input and nesting before delegating to Parse. No path is opened and
-// no credential material is read by either entry point.
-Config ParseJson(std::string_view text);
+// Values a client takes from its command line for one run. Each replaces one
+// key before Parse validates the document, so it meets the same checks as a
+// value in the file, and an error at its JSON pointer says the value came
+// from the command line. Only keys whose values cannot change the wire image,
+// authentication, encryption, admission, destination policy or leak
+// protection are here: the numeric address dialled instead of resolving the
+// host, which TLS and admission still authenticate, and the loopback SOCKS5
+// listener. The SOCKS5 values need exactly one socks5 adapter. A server
+// document, or one too malformed to hold a key, keeps its own content, so
+// Parse and the caller report the file's error.
+struct RunSettings final {
+    std::optional<std::string> connect_address;
+    std::optional<std::string> socks5_listen_address;
+    // Decimal text. Anything else reaches Parse as a string and fails there.
+    std::optional<std::string> socks5_listen_port;
+};
+
+// Bounds input and nesting, applies the run settings and delegates to Parse.
+// No path is opened and no credential material is read by either entry
+// point.
+Config ParseJson(std::string_view text, const RunSettings& run = {});
 
 }  // namespace yume::config::v1

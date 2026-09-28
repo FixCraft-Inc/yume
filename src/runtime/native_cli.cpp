@@ -7,6 +7,7 @@
 #include "runtime/native_cli.hpp"
 
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -51,9 +52,24 @@ constexpr std::string_view kSelfHelperProgram = "/proc/self/exe";
 
 struct Arguments final {
     std::optional<std::filesystem::path> config;
+    config::v1::RunSettings run;
     bool validate{false};
     bool version{false};
     bool help{false};
+};
+
+// The client's per-run flags. Each sets one schema-1 key through
+// config::v1::RunSettings, whose comment says why these keys are safe.
+struct RunFlag final {
+    std::string_view flag;
+    std::string_view value;
+    std::optional<std::string> config::v1::RunSettings::* setting;
+};
+constexpr RunFlag kRunFlags[] = {
+    {"--connect", "IP address", &config::v1::RunSettings::connect_address},
+    {"--socks-address", "IP address",
+     &config::v1::RunSettings::socks5_listen_address},
+    {"--socks-port", "port", &config::v1::RunSettings::socks5_listen_port},
 };
 
 std::string_view program(NativeCliRole role) noexcept {
@@ -100,11 +116,29 @@ void usage(NativeCliRole role, std::FILE* out) noexcept {
     std::fputs(role == NativeCliRole::Server ? yumed_cli::kHelpBody : yume_cli::kHelpBody, out);
 }
 
-std::optional<Arguments> parse(int argc, char** argv, std::string& error) {
+const RunFlag* find_run_flag(NativeCliRole role,
+                             std::string_view argument) noexcept {
+    if (role != NativeCliRole::Client) return nullptr;
+    for (const auto& flag : kRunFlags) {
+        if (flag.flag == argument) return &flag;
+    }
+    return nullptr;
+}
+
+std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
+                               std::string& error) {
     Arguments arguments;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
-        if (argument == "--config") {
+        if (const auto* flag = find_run_flag(role, argument)) {
+            auto& setting = arguments.run.*(flag->setting);
+            if (index + 1 >= argc || setting) {
+                error = std::string(flag->flag) + " needs exactly one " +
+                        std::string(flag->value);
+                return std::nullopt;
+            }
+            setting = std::string(argv[++index]);
+        } else if (argument == "--config") {
             if (index + 1 >= argc || arguments.config) {
                 error = "--config needs exactly one path";
                 return std::nullopt;
@@ -144,7 +178,9 @@ void print_version(NativeCliRole role) {
     std::printf("development runtime, not qualified for production use\n");
 }
 
-std::optional<config::v1::Config> load(const std::filesystem::path& path, NativeCliRole role,
+std::optional<config::v1::Config> load(const std::filesystem::path& path,
+                                       NativeCliRole role,
+                                       const config::v1::RunSettings& run,
                                        std::string& error) {
     std::string text;
     if (!read_text_file_bounded(path, config::v1::kMaxDocumentBytes, &text)) {
@@ -152,7 +188,7 @@ std::optional<config::v1::Config> load(const std::filesystem::path& path, Native
         return std::nullopt;
     }
     try {
-        auto config = config::v1::ParseJson(text);
+        auto config = config::v1::ParseJson(text, run);
         const bool server = config.role() == config::v1::Role::Server;
         if (server != (role == NativeCliRole::Server)) {
             error = server ? "a server configuration runs with yumed"
@@ -166,8 +202,47 @@ std::optional<config::v1::Config> load(const std::filesystem::path& path, Native
     }
 }
 
+std::string origin(const std::optional<std::string>& setting,
+                   std::string_view flag) {
+    return setting ? " (from " + std::string(flag) + ")"
+                   : std::string(" (from the configuration)");
+}
+
+// Every key a per-run flag can set, with its value and where it came from, so
+// a service manager's validation step shows what the command line changed.
+void report_run_settings(NativeCliRole role, const config::v1::Config& config,
+                         const config::v1::RunSettings& run) {
+    const auto* endpoint =
+        std::get_if<config::v1::ClientEndpoint>(&config.endpoint());
+    if (!endpoint) return;
+    if (endpoint->connect_address()) {
+        say(role, "/endpoint/connect_address " + *endpoint->connect_address() +
+                      origin(run.connect_address, "--connect"));
+    }
+    const config::v1::Socks5Adapter* socks5 = nullptr;
+    std::size_t socks5_index = 0;
+    std::size_t socks5_count = 0;
+    for (std::size_t index = 0; index < config.adapters().size(); ++index) {
+        if (const auto* adapter = std::get_if<config::v1::Socks5Adapter>(
+                &config.adapters()[index])) {
+            socks5 = adapter;
+            socks5_index = index;
+            ++socks5_count;
+        }
+    }
+    if (socks5_count != 1U) return;
+    const std::string pointer = "/adapters/" + std::to_string(socks5_index);
+    say(role, pointer + "/listen_address " + socks5->listen_address() +
+                  origin(run.socks5_listen_address, "--socks-address"));
+    say(role, pointer + "/listen_port " +
+                  std::to_string(socks5->listen_port()) +
+                  origin(run.socks5_listen_port, "--socks-port"));
+}
+
 int validate(NativeCliRole role, const config::v1::Config& config,
+             const config::v1::RunSettings& run,
              const std::filesystem::path& base) {
+    report_run_settings(role, config, run);
     const std::string_view server_name = role == NativeCliRole::Client
         ? std::string_view(std::get<config::v1::ClientEndpoint>(config.endpoint()).host())
         : std::string_view{};
@@ -339,7 +414,7 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
     try {
         std::signal(SIGPIPE, SIG_IGN);
         std::string error;
-        const auto arguments = parse(argc, argv, error);
+        const auto arguments = parse(role, argc, argv, error);
         if (!arguments) {
             say(role, error);
             usage(role, stderr);
@@ -353,13 +428,16 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
             print_version(role);
             return kExitStopped;
         }
-        const auto config = load(*arguments->config, role, error);
+        const auto config =
+            load(*arguments->config, role, arguments->run, error);
         if (!config) {
             say(role, error);
             return kExitUsage;
         }
         const auto base = std::filesystem::absolute(*arguments->config).parent_path();
-        return arguments->validate ? validate(role, *config, base) : serve(role, *config, base);
+        return arguments->validate
+                   ? validate(role, *config, arguments->run, base)
+                   : serve(role, *config, base);
     } catch (const std::exception& thrown) {
         say(role, thrown.what());
     } catch (...) {

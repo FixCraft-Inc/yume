@@ -8,6 +8,17 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 .I path
 [
 .B --validate
+] [
+.B --connect
+.I ip
+]
+.PP
+[
+.B --socks-address
+.I ip
+] [
+.B --socks-port
+.I port
 ]
 .PP
 .B yume
@@ -47,7 +58,7 @@ Required unless
 or
 .B --version
 is requested.
-Network and security policy have no command-line overrides.
+Security policy has no command-line overrides.
 .TP
 .B --validate
 Check schema, role, referenced credentials, direct-adapter destination
@@ -69,6 +80,33 @@ Unknown arguments still fail parsing when combined with
 .B --help
 or
 .BR --version .
+.PP
+Each run setting replaces one configuration key for this run only and
+passes the same checks as the file's value.
+An error names the key's JSON pointer and says that the value came from
+the command line.
+No run setting can change the wire image, authentication, encryption,
+admission, destination policy or leak protection.
+.B --validate
+prints every key a run setting can replace, with its value and whether
+it came from the configuration or a flag.
+.TP
+.BI "--connect " ip
+Dial this IP literal instead of resolving the configured host, as
+.B endpoint.connect_address
+does.
+The TLS server name stays the configured host, and TLS and admission
+still authenticate it.
+Through a configured SOCKS5 upstream proxy, the proxy connects to this
+address.
+.TP
+.BI "--socks-address " ip
+Set the listen address of the configuration's only SOCKS5 adapter.
+The configuration's rule applies: 127.0.0.1 or ::1.
+.TP
+.BI "--socks-port " port
+Set the listen port of the configuration's only SOCKS5 adapter, 1 to
+65535.
 .SH CONFIGURATION
 The configuration owns endpoint addresses, exact suite, credential file
 references, cover profile, services, adapters and resource limits.

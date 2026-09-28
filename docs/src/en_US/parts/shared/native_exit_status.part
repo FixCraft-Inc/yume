@@ -1,0 +1,7 @@
+## EXIT STATUS
+
+Zero indicates successful help, version or validation output, or shutdown
+requested by a handled signal with successful cleanup. Exit status 1 indicates a runtime or internal
+failure. Exit status 2 indicates invalid arguments, configuration or startup
+prerequisites. Diagnostics go to standard error; help and version output go
+to standard output. Argument errors also print usage on standard error.

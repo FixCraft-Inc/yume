@@ -319,7 +319,9 @@ The native executables `yumed` and `yume` run schema-1 configurations.
 `YUME_BUILD_NATIVE_APPLICATION=ON` builds the complete provider graph, as does
 `YUME_BUILD_SHARED_ABI=ON`. Providers have no individual build switches. `--config`
 selects the file, `--validate` checks configuration and credentials, and
-network and security policy have no CLI override. The daemon serves configured
+security policy has no CLI override. The client's `--connect`,
+`--socks-address` and `--socks-port` each replace one configuration key for a
+run and pass that key's checks. The daemon serves configured
 `direct_tcp`/`direct_udp` adapters and refuses a service without one, because
 only an embedding application can supply a named-service handler. The client
 keeps one authenticated session and starts a replacement when the endpoint

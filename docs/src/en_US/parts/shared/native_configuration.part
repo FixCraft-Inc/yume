@@ -1,0 +1,7 @@
+## CONFIGURATION
+
+The configuration owns endpoint addresses, exact suite, credential file
+references, cover profile, services, adapters and resource limits. The schema
+rejects unknown fields, wrong types and unsupported values. Credential paths
+are relative to the configuration file's directory unless absolute. Credential
+loading rejects unsafe file types and permissions; inline secrets are forbidden.

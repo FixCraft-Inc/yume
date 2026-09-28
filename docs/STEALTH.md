@@ -124,6 +124,15 @@ assets the active browser profile loads, or startup fails. Requests select
 preloaded routes, so serving cover reads no file and resolves no name. By
 default a file is at most 1 MiB and the whole site at most 16 MiB.
 
+`yumed` picks its TLS cipher the way the captured Node server does, from its
+own order and not from the client's: AES-256-GCM, ChaCha20-Poly1305, then
+AES-128-GCM under TLS 1.3, and Node 24's cipher string under TLS 1.2. The
+ServerHello is not encrypted, and OpenSSL's default would answer Chrome with
+AES-128-GCM where Node answers with AES-256-GCM. The order comes from the
+registry's `cover_server_tls`. The TLS 1.3 half is checked against the
+capture. No capture shows a TLS 1.2 connection, so that half copies Node's
+configuration.
+
 Tunnel payloads, client identities, admission values and session secrets never
 reach cover handling. One connection may hold at most 64 open cover streams
 and make 256 requests, and a response is served only while it fits under
@@ -156,8 +165,6 @@ period. So did the upload record count, the largest record size and the
 single long gap. These differences remain, all visible from TLS record
 sizes and timing alone:
 
-- The ServerHello names AES-128-GCM, which `yumed` takes from Chrome's
-  order, where the Node server answers with AES-256-GCM from its own.
 - The session carries about 14 KB more upstream and 17 KB more downstream
   than the browser's. Most of it is YTP/1 AUTH: the server speaks first
   after the upgrade with about 9.3 KB, the client answers with about 9.3 KB

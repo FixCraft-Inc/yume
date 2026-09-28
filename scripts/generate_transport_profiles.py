@@ -253,6 +253,43 @@ def code_point_list(value: Any, field: str, *, maximum: int = 64) -> list[int]:
     return parsed
 
 
+def cover_server_ciphers(entry: dict[str, Any], tls_wire_profile: pathlib.Path,
+                         profile_id: str) -> tuple[list[int], str]:
+    """The cover server's own cipher preference, bound to its captured choice.
+
+    The captured server applies its order over the browser's, so the first of
+    its TLS 1.3 suites that the captured ClientHello offers must be the suite
+    its ServerHello chose. The TLS 1.2 list is an OpenSSL cipher string, as
+    the cover runtime configures it, and has no capture of its own.
+    """
+    field = f"{profile_id}.cover_server_tls"
+    section = entry.get("cover_server_tls")
+    require(isinstance(section, dict), f"{field} must be an object")
+    suites = code_point_list(section.get("tls13_cipher_suites"),
+                             f"{field}.tls13_cipher_suites", maximum=5)
+    require(all(0x1301 <= suite <= 0x1305 for suite in suites),
+            f"{field}.tls13_cipher_suites must hold TLS 1.3 suites only")
+    cipher_list = text(section.get("tls12_cipher_list"), f"{field}.tls12_cipher_list",
+                       maximum=1024)
+    require(re.fullmatch(r"[A-Za-z0-9!+:_-]+", cipher_list) is not None,
+            f"{field}.tls12_cipher_list must be an OpenSSL cipher string")
+    document = read_json(tls_wire_profile)
+    hello = document.get("client_hello")
+    server_hello = document.get("server_hello")
+    require(isinstance(hello, dict) and isinstance(server_hello, dict),
+            f"{profile_id}: capture has no client_hello or server_hello")
+    offered = hello.get("cipher_suites")
+    require(isinstance(offered, list), f"{profile_id}: capture has no cipher_suites")
+    offered_ids = {hex16(value, f"{profile_id}.capture.cipher_suites")
+                   for value in offered if value != "GREASE"}
+    chosen = hex16(server_hello.get("cipher_suite"), f"{profile_id}.capture.server_hello")
+    picked = next((suite for suite in suites if suite in offered_ids), None)
+    require(picked == chosen,
+            f"{field}: the captured server chose 0x{chosen:04x}, this order picks "
+            + ("nothing" if picked is None else f"0x{picked:04x}"))
+    return suites, cipher_list
+
+
 def captured_client_hello(path: pathlib.Path, profile_id: str) -> dict[str, list[str]]:
     """The real browser ClientHello recorded in the committed capture.
 
@@ -617,6 +654,9 @@ def emit_profile(entry: dict[str, Any], index: int,
     emit_code_point_array(lines, f"{prefix}TlsCertCompression", tls_cert_comp,
                           kind="std::uint16_t")
     emit_code_point_array(lines, f"{prefix}TlsEchGreaseLengths", tls_ech_lengths)
+    server_suites, server_cipher_list = cover_server_ciphers(
+        entry, artifacts["tls_wire_profile"], profile_id)
+    emit_code_point_array(lines, f"{prefix}ServerTls13Ciphers", server_suites)
     lines.append(
         f"constexpr std::array<InjectedExtension, {len(tls_injected)}> "
         f"{prefix}TlsInjectedExtensions{{{{")
@@ -672,6 +712,8 @@ def emit_profile(entry: dict[str, Any], index: int,
         f"    {'true' if status_request == 'ocsp' else 'false'},",
         f"    {cpp_string(text(server.get('runtime'), f'{profile_id}.server.runtime', maximum=128))},",
         f"    {cpp_string(text(server.get('version'), f'{profile_id}.server.version', maximum=128))},",
+        f"    {prefix}ServerTls13Ciphers,",
+        f"    {cpp_string(server_cipher_list)},",
         f"    {prefix}ClientSettings,",
         f"    {prefix}ServerSettings,",
         f"    {window_delta}U,",

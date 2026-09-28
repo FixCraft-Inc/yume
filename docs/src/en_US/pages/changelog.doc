@@ -447,6 +447,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `/favicon.ico` once the WebSocket is open, with the headers and priority of
   the captured stream-9 request. `scripts/generate_transport_profiles.py`
   takes that request from the fixture's observations.
+- **The server picks the cover server's cipher.** OpenSSL's default made
+  `yumed` follow the client's order and answer Chrome with AES-128-GCM,
+  where the captured Node server answers with AES-256-GCM. The ServerHello
+  is not encrypted, and the first native stealth capture showed the
+  difference. `yumed` now applies Node 24's own order over the client's:
+  AES-256-GCM, ChaCha20-Poly1305 and AES-128-GCM under TLS 1.3, and Node's
+  cipher string under TLS 1.2. The registry's new `cover_server_tls` holds
+  both, and the generator refuses a TLS 1.3 order that would not pick the
+  captured ServerHello's suite from the captured ClientHello.
 - **Connection credit of dropped data.** A DATA or PACKET record that started
   a key rotation waited behind it with its connection credit already taken.
   If its stream closed before REKEY_ACK arrived, the record was dropped

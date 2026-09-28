@@ -914,8 +914,14 @@ void test_mutual_tls_outer_client_evidence() {
     assert(server->peer_evidence().authentication_scheme() == "tls13-x509");
 }
 
+// The peer ranks first suites the server ranks lower. The server's own
+// order, the captured Node server's, still picks AES-256-GCM under TLS 1.3
+// and ECDHE-ECDSA-AES128-GCM under TLS 1.2 for this ECDSA certificate. A peer
+// that offers only AES-128-GCM under TLS 1.3 still connects, as it would to
+// Node.
 void test_server_cover_negotiation_and_promotion(int version,
-                                                std::string_view protocol) {
+                                                 std::string_view protocol,
+                                                 bool only_aes128 = false) {
     const PemIdentity identity = make_identity();
     auto provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
@@ -936,6 +942,15 @@ void test_server_cover_negotiation_and_promotion(int version,
     assert(context);
     assert(SSL_CTX_set_min_proto_version(context.get(), version) == 1);
     assert(SSL_CTX_set_max_proto_version(context.get(), version) == 1);
+    assert(SSL_CTX_set_ciphersuites(
+               context.get(),
+               only_aes128 ? "TLS_AES_128_GCM_SHA256"
+                           : "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:"
+                             "TLS_CHACHA20_POLY1305_SHA256") == 1);
+    assert(SSL_CTX_set_cipher_list(
+               context.get(),
+               "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256") ==
+           1);
     std::unique_ptr<SSL, decltype(&SSL_free)> peer(SSL_new(context.get()), SSL_free);
     assert(peer);
     assert(SSL_set_tlsext_host_name(peer.get(), "actual.example") == 1);
@@ -979,6 +994,10 @@ void test_server_cover_negotiation_and_promotion(int version,
     }
     assert(cover && SSL_is_init_finished(peer.get()));
     assert(cover->tls_version() == version);
+    assert(SSL_CIPHER_get_protocol_id(SSL_get_current_cipher(peer.get())) ==
+           (version != TLS1_3_VERSION ? 0xc02bU
+            : only_aes128             ? 0x1301U
+                                      : 0x1302U));
     assert(cover->negotiated_protocol() == protocol);
     assert(cover->server_name() == "actual.example");
     assert(cover->executor_affinity() == ExecutorAffinity(91U));
@@ -1141,6 +1160,8 @@ int main() {
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_2_VERSION, "h2");
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_3_VERSION, "http/1.1");
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_3_VERSION, "h2");
+    yume::providers::test_server_cover_negotiation_and_promotion(TLS1_3_VERSION,
+                                                                 "h2", true);
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_2_VERSION, "");
     yume::providers::test_server_cover_cancellation_and_teardown();
     yume::providers::test_simultaneous_read_and_write();

@@ -143,6 +143,10 @@ constexpr std::array<std::uint16_t, 4> kProfile0TlsEchGreaseLengths{
     0x00ba, 0x00da, 0x00fa, 0x011a,
 };
 
+constexpr std::array<std::uint16_t, 3> kProfile0ServerTls13Ciphers{
+    0x1302, 0x1303, 0x1301,
+};
+
 constexpr std::array<InjectedExtension, 5> kProfile0TlsInjectedExtensions{{
     InjectedExtension{0x0000, InjectedExtensionPayload::GreaseEmpty},
     InjectedExtension{0x0000, InjectedExtensionPayload::GreaseOneByte},
@@ -186,6 +190,8 @@ const Profile kProfile0Value{
     true,
     "Node.js",
     "24.18.0",
+    kProfile0ServerTls13Ciphers,
+    "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-SHA256:DHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:DHE-RSA-AES256-SHA384:ECDHE-RSA-AES256-SHA256:DHE-RSA-AES256-SHA256:HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA",
     kProfile0ClientSettings,
     kProfile0ServerSettings,
     15663105U,

@@ -127,7 +127,13 @@ flattened evidence files that installed diagnostics consume.
    context, plus exact capture-selected fields and JA4. This is a ClientHello
    structure gate, not a six-test-method count or a whole-session parity claim.
 
-5. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
+5. Fill in `cover_server_tls`, the cover server's own cipher preference:
+   `tls13_cipher_suites` in its order and `tls12_cipher_list` as its OpenSSL
+   cipher string. `yumed` applies both over the client's order, as a server
+   with Node's default `honorCipherOrder` does. The generator refuses a
+   TLS 1.3 order that does not pick the suite the captured ServerHello chose
+   from the captured ClientHello.
+6. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
    `scripts/generate_transport_profiles.py` compares the four declared
    *set* fields against the capture, and `tests/test_yume_native_tls_wire.py`
    re-derives those plus the `ec_point_formats` and `key_share` geometry from
@@ -135,7 +141,7 @@ flattened evidence files that installed diagnostics consume.
    fails to match. Both fail if the gap widens, so a divergence cannot be
    introduced silently. Closing all four set fields buys an
    exact JA4 and nothing wider, because sets are all JA4 hashes.
-6. Regenerate and validate:
+7. Regenerate and validate:
 
    ```sh
    python3 scripts/generate_transport_profiles.py
@@ -143,7 +149,7 @@ flattened evidence files that installed diagnostics consume.
    python3 tests/test_project_metadata.py
    ```
 
-7. Bind the new ID only in a deliberate development protocol revision, update
+8. Bind the new ID only in a deliberate development protocol revision, update
    KATs and wire documentation, then run same-session capture, matched
    performance, sanitizer, classifier/active-probe, soak, packaging, and
    independent-review gates.

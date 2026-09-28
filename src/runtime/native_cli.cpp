@@ -58,6 +58,7 @@ struct Arguments final {
     bool validate{false};
     bool version{false};
     bool help{false};
+    bool completion{false};
 };
 
 // The client's per-run flags. Each sets one schema-1 key through
@@ -158,6 +159,14 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             arguments.validate = true;
         } else if (argument == "--version") {
             arguments.version = true;
+        } else if (argument == "--completion") {
+            if (index + 1 >= argc || arguments.completion ||
+                std::string_view(argv[index + 1]) != "bash") {
+                error = "--completion needs bash";
+                return std::nullopt;
+            }
+            ++index;
+            arguments.completion = true;
         } else if (argument == "--help" || argument == "-h") {
             arguments.help = true;
         } else {
@@ -165,7 +174,8 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             return std::nullopt;
         }
     }
-    if (!arguments.help && !arguments.version && !arguments.config) {
+    if (!arguments.help && !arguments.version && !arguments.completion &&
+        !arguments.config) {
         error = "--config is required";
         return std::nullopt;
     }
@@ -461,6 +471,13 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
         }
         if (arguments->version) {
             print_version(role);
+            return kExitStopped;
+        }
+        if (arguments->completion) {
+            std::fputs(role == NativeCliRole::Server
+                           ? yumed_cli::kBashCompletion
+                           : yume_cli::kBashCompletion,
+                       stdout);
             return kExitStopped;
         }
         const auto config =

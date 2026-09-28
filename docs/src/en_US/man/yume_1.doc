@@ -14,6 +14,7 @@ man-manual:  YUME Manual
 [ **--socks-address** *ip* ] [ **--socks-port** *port* ]
 [ **--outer-carrier-evidence** *path* ]
 **yume** **--version**
+**yume** **--completion** **bash**
 **yume** **--help**
 @end
 

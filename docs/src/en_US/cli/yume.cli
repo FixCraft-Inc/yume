@@ -8,6 +8,7 @@ output-kind: static-help
 @usage
 yume --config <path> [--validate] [run settings] [evidence]
 yume --version
+yume --completion bash
 yume --help
 @end
 
@@ -15,6 +16,7 @@ yume --help
 --config
 --validate
 --version
+--completion
 -h
 
 @section Run settings

@@ -68,6 +68,39 @@ class NativeCli(unittest.TestCase):
                 self.assertIn("evidence profile ", result.stdout)
                 self.assertNotIn("unwired", result.stdout)
 
+    def test_completion_prints_the_generated_script(self) -> None:
+        for layout in yume_cli.load_layouts():
+            if layout.binary not in PROGRAMS:
+                continue
+            _, completed = yume_cli.resolve(layout)
+            expected = "\n".join(yume_cli.render_completion(layout, completed)) + "\n"
+            with self.subTest(binary=layout.binary):
+                result = self.invoke(layout.binary, "--completion", "bash")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(result.stdout, expected)
+                syntax = subprocess.run(["bash", "-n"], input=result.stdout, text=True,
+                                        capture_output=True, timeout=5, check=False)
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
+
+    def test_completion_completes_in_bash(self) -> None:
+        # Bash loads the script and completes an option, then its value.
+        script = self.invoke("yume", "--completion", "bash").stdout
+        probe = (script + "\nCOMP_WORDS=(yume --comp)\nCOMP_CWORD=1\n_yume_complete\n"
+                 "echo \"${COMPREPLY[*]}\"\nCOMP_WORDS=(yume --completion b)\n"
+                 "COMP_CWORD=2\n_yume_complete\necho \"${COMPREPLY[*]}\"\n")
+        result = subprocess.run(["bash", "--norc", "--noprofile"], input=probe, text=True,
+                                capture_output=True, timeout=5, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "--completion\nbash\n")
+
+    def test_completion_needs_bash(self) -> None:
+        for name in PROGRAMS:
+            for arguments in (["--completion"], ["--completion", "zsh"],
+                              ["--completion", "bash", "--completion", "bash"]):
+                with self.subTest(binary=name, arguments=arguments):
+                    self.assert_usage_failure(name, arguments, "--completion needs bash")
+
     def test_config_is_required_for_run_and_validation(self) -> None:
         for name in PROGRAMS:
             for arguments in ([], ["--validate"]):
@@ -83,7 +116,7 @@ class NativeCli(unittest.TestCase):
     def test_reference_and_unimplemented_options_are_rejected(self) -> None:
         arguments = [
             ["--diagnostic-level", "debug"], ["setup"], ["doctor"],
-            ["completion", "bash"], ["--completion", "bash"], ["--credits"],
+            ["completion", "bash"], ["--credits"],
             ["--server", "localhost"], ["--listen", "443"], ["--socks", "1080"],
         ]
         for name in PROGRAMS:
@@ -137,17 +170,18 @@ class NativeCli(unittest.TestCase):
 
     def test_metadata_flags_do_not_hide_unknown_arguments(self) -> None:
         for name in PROGRAMS:
-            for flag in ("--help", "--version"):
-                with self.subTest(binary=name, flag=flag):
-                    self.assert_usage_failure(name, [flag, "--unknown"], "unknown argument: --unknown")
+            for flags in (["--help"], ["--version"], ["--completion", "bash"]):
+                with self.subTest(binary=name, flags=flags):
+                    self.assert_usage_failure(name, [*flags, "--unknown"],
+                                              "unknown argument: --unknown")
 
     def test_metadata_does_not_read_the_configuration(self) -> None:
         with tempfile.TemporaryDirectory(prefix="yume-cli-") as temporary:
             missing = str(Path(temporary) / "absent.json")
             for name in PROGRAMS:
-                for flag in ("--help", "--version"):
-                    with self.subTest(binary=name, flag=flag):
-                        result = self.invoke(name, "--config", missing, flag)
+                for flags in (["--help"], ["--version"], ["--completion", "bash"]):
+                    with self.subTest(binary=name, flags=flags):
+                        result = self.invoke(name, "--config", missing, *flags)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(result.stderr, "")
 

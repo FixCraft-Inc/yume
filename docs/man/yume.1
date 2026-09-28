@@ -30,6 +30,10 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 .B --version
 .PP
 .B yume
+.B --completion
+.B bash
+.PP
+.B yume
 .B --help
 .SH DESCRIPTION
 .B yume
@@ -79,12 +83,25 @@ suite, session-security provider, crypto backend and evidence profile.
 This operation uses local information and does not read a configuration
 or contact a server.
 .TP
+.BI "--completion " shell
+Print the completion script for
+.IR shell ,
+which must be
+.BR bash ,
+and exit.
+The script completes this program's options, their fixed values and file
+arguments.
+To load it for one user, save it under the program's name in
+.IR ~/\:.local/\:share/\:bash-completion/\:completions/ .
+This operation reads no configuration.
+.TP
 .B -h, --help
 Print the supported options and exit.
 Unknown arguments still fail parsing when combined with
-.B --help
+.BR --help ,
+.B --version
 or
-.BR --version .
+.BR --completion .
 .PP
 Each run setting replaces one configuration key for this run only and
 passes the same checks as the file's value.

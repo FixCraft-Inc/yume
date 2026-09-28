@@ -773,6 +773,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             runtime/native_session_source.hpp
             runtime/native_socks5.cpp runtime/native_socks5.hpp
             runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
+            runtime/session_keeper.cpp runtime/session_keeper.hpp
             runtime/socks5_request.cpp runtime/socks5_request.hpp)
         target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(yume_native_runtime

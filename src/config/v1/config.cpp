@@ -1215,7 +1215,8 @@ ResourceLimits ParseLimits(const Json& limits) {
     CheckClosedObject(
         limits, "/limits",
         {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6], keys[7],
-         "max_egress_mbps", "max_epoch_bytes", "credit_returns_per_window"},
+         "max_egress_mbps", "max_epoch_bytes", "credit_returns_per_window",
+         "idle_epoch_rotation"},
         {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
          keys[7]});
 
@@ -1273,10 +1274,15 @@ ResourceLimits ParseLimits(const Json& limits) {
             Fail("/limits/credit_returns_per_window", "must be 2, 4 or 8");
         }
     }
+    const bool idle_epoch_rotation =
+        limits.contains("idle_epoch_rotation") &&
+        ReadBoolean(limits.at("idle_epoch_rotation"),
+                    "/limits/idle_epoch_rotation");
     return ResourceLimits(
         max_frame_bytes, max_streams, max_queued_bytes, max_pending_opens,
         max_rekey_jobs, max_control_messages, max_packet_bytes,
-        max_packet_batch, max_egress_mbps, max_epoch_bytes, credit_returns);
+        max_packet_batch, max_egress_mbps, max_epoch_bytes, credit_returns,
+        idle_epoch_rotation);
 }
 
 void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,

@@ -418,6 +418,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   does not show and Chrome sends only on errors. The server used to close the
   connection before its echo was written. The endpoint no longer cancels the
   client's TCP I/O on close, so the CLOSE is not cut off.
+- **Idle keys rotate only on request.** The endpoint's timer rotated every
+  key epoch that had carried records once it was 250 ms old, so each burst
+  of traffic ended with a rekey exchange of about 1.7 KB each way. The
+  matched stealth capture shows the browser session sends nothing there. The
+  timer now runs only with the new `limits.idle_epoch_rotation`, which the
+  `fast` and `max` presets set. Without it the next send rotates the epoch
+  and a request after more than half a second of quiet waits a round trip
+  for the new key. The measured preset rates were taken with the timer on in
+  every preset.
 - **More of Chrome's page load.** The client now sends its preface PING in a
   TLS record of its own, as the captured Chrome session does, and fetches
   `/favicon.ico` once the WebSocket is open, with the headers and priority of

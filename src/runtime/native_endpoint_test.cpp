@@ -183,6 +183,15 @@ yume::config::v1::Config load(const std::filesystem::path& file) {
     return yume::config::v1::ParseJson(text);
 }
 
+yume::config::v1::Config load_with_idle_rotation(const std::filesystem::path& file,
+                                                 bool enabled) {
+    std::string text;
+    CHECK(read_text_file_bounded(file, yume::config::v1::kMaxDocumentBytes, &text));
+    auto document = nlohmann::json::parse(text);
+    document["limits"]["idle_epoch_rotation"] = enabled;
+    return yume::config::v1::ParseJson(document.dump());
+}
+
 std::vector<NativeServiceBinding> bindings(const std::shared_ptr<Handler>& handler) {
     return {{"echo", handler}, {"denied", handler}};
 }
@@ -490,10 +499,12 @@ void test_session_epoch_is_the_smaller_limit(const std::filesystem::path& kit) {
     }
 }
 
-// An epoch that carried records rotates at its 500 ms age limit without
-// waiting for another send, on both ends, so the next request after an idle
-// moment does not wait a round trip for REKEY_ACK.
-void test_idle_epochs_rotate(const std::filesystem::path& kit) {
+// With limits.idle_epoch_rotation, an epoch that carried records rotates at
+// its age limit without waiting for another send, on both ends, so the next
+// request after an idle moment does not wait a round trip for REKEY_ACK.
+// Without it, the default, nothing is sent until the next request, which
+// then rotates the epoch itself.
+void test_idle_epochs_rotate(const std::filesystem::path& kit, bool enabled) {
     Runner runner;
     auto handler = std::make_shared<Handler>();
     NativeEndpointOptions server_options;
@@ -501,16 +512,16 @@ void test_idle_epochs_rotate(const std::filesystem::path& kit) {
     server_options.max_pending_starts = 1U;
     auto server = runner.sync([&] {
         return take(NativeEndpoint::create(
-            runner.context, load(kit / "server/yumed.json"), kit / "server",
-            bindings(handler), server_options));
+            runner.context, load_with_idle_rotation(kit / "server/yumed.json", enabled),
+            kit / "server", bindings(handler), server_options));
     });
     NativeEndpointOptions client_options;
     client_options.max_sessions = client_options.max_pending_starts = 1U;
     client_options.connection_address = "127.0.0.1";
     auto client = runner.sync([&] {
         return take(NativeEndpoint::create(
-            runner.context, load(kit / "client/yume.json"), kit / "client",
-            bindings(handler), client_options));
+            runner.context, load_with_idle_rotation(kit / "client/yume.json", enabled),
+            kit / "client", bindings(handler), client_options));
     });
     auto accepting = start(runner, server);
     auto connecting = start(runner, client);
@@ -527,8 +538,9 @@ void test_idle_epochs_rotate(const std::filesystem::path& kit) {
     CHECK(session->rotation_deadline().has_value());
     CHECK(accepted->rotation_deadline().has_value());
     std::this_thread::sleep_for(900ms);
-    CHECK(!session->rotation_deadline().has_value());
-    CHECK(!accepted->rotation_deadline().has_value());
+    // The deadline stays while the aged epoch is still current.
+    CHECK(session->rotation_deadline().has_value() != enabled);
+    CHECK(accepted->rotation_deadline().has_value() != enabled);
     transfer(runner, opened, served, "after rotation");
     CHECK(session->state() == SessionState::Active);
     CHECK(accepted->state() == SessionState::Active);
@@ -2907,7 +2919,8 @@ int main(int argc, char** argv) {
         test_identity_session_replacement(argv[1]);
         test_egress_pacing(argv[1]);
         test_mismatched_queue_budgets(argv[1]);
-        test_idle_epochs_rotate(argv[1]);
+        test_idle_epochs_rotate(argv[1], true);
+        test_idle_epochs_rotate(argv[1], false);
         test_session_epoch_is_the_smaller_limit(argv[1]);
         test_credential_reload(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);

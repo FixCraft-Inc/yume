@@ -663,9 +663,12 @@ epoch has room, so a path on which half an epoch lasts longer than a round trip
 never pauses for the ACK. Once a limit or the 500 ms lifetime is reached,
 later records wait for the new epoch and keep their order. INIT does not count
 toward these application thresholds.
-The native endpoint also starts the rotation of an epoch that has carried a
-record once it is 250 ms old, without waiting for a send. An epoch that carried
-nothing is not rotated, so an idle session's root does not expire on its own.
+With `limits.idle_epoch_rotation`, the native endpoint also starts the
+rotation of an epoch that has carried a record once it is 250 ms old, without
+waiting for a send. It is off by default: that exchange follows every burst of
+traffic, which a browser session does not show, and the next send then
+rotates the epoch itself. Either way an epoch that carried nothing is not
+rotated, so an idle session's root does not expire on its own.
 
 A pending outbound rekey has a separate local ACK deadline. The default is
 30 seconds; callers may select a positive duration up to 30 seconds. The deadline

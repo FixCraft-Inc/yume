@@ -1347,6 +1347,21 @@ void TestResourceLimits() {
         ExpectError(credit, "/limits/credit_returns_per_window");
     }
 
+    // idle_epoch_rotation is optional, off by default, and a Boolean.
+    Check(!Parse(ClientDocument()).limits().idle_epoch_rotation(),
+          "idle epoch rotation is on by default");
+    for (const bool enabled : {false, true}) {
+        Json rotation = ClientDocument();
+        rotation["limits"]["idle_epoch_rotation"] = enabled;
+        Check(Parse(rotation).limits().idle_epoch_rotation() == enabled,
+              "a valid idle epoch rotation setting was rejected");
+    }
+    for (const Json& value : {Json(1), Json("true"), Json(nullptr)}) {
+        Json rotation = ClientDocument();
+        rotation["limits"]["idle_epoch_rotation"] = value;
+        ExpectError(rotation, "/limits/idle_epoch_rotation");
+    }
+
     Json document = ClientDocument();
     document["limits"]["fallback"] = true;
     ExpectError(document, "/limits/fallback", "unknown key");

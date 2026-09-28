@@ -61,13 +61,13 @@ MAX_EGRESS_MBPS = 1_000_000
 # lists them. Doctor names the one a configuration's limits match.
 TUNING_PRESETS = {
     "stealth": {"max_queued_bytes": 4_194_304, "max_epoch_bytes": 1_048_576,
-                "credit_returns_per_window": 2},
+                "credit_returns_per_window": 2, "idle_epoch_rotation": False},
     "balanced": {"max_queued_bytes": 16_777_216, "max_epoch_bytes": 4_194_304,
-                 "credit_returns_per_window": 2},
+                 "credit_returns_per_window": 2, "idle_epoch_rotation": False},
     "fast": {"max_queued_bytes": 33_554_432, "max_epoch_bytes": 16_777_216,
-             "credit_returns_per_window": 4},
+             "credit_returns_per_window": 4, "idle_epoch_rotation": True},
     "max": {"max_queued_bytes": 67_108_864, "max_epoch_bytes": 67_108_864,
-            "credit_returns_per_window": 8},
+            "credit_returns_per_window": 8, "idle_epoch_rotation": True},
 }
 # limits.max_epoch_bytes and limits.credit_returns_per_window, as the parser
 # bounds them (config.hpp).
@@ -837,7 +837,8 @@ def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
     }
     limits = _closed_object(
         value, "/limits",
-        [*bounds.keys(), "max_egress_mbps", "max_epoch_bytes", "credit_returns_per_window"],
+        [*bounds.keys(), "max_egress_mbps", "max_epoch_bytes", "credit_returns_per_window",
+         "idle_epoch_rotation"],
         bounds.keys()
     )
     parsed = {
@@ -858,6 +859,8 @@ def _validate_limits(value: Any, adapters: list[Any], role: str) -> None:
                            CREDIT_RETURNS[0], CREDIT_RETURNS[-1])
         if returns not in CREDIT_RETURNS:
             _fail("/limits/credit_returns_per_window", "must be 2, 4 or 8")
+    if "idle_epoch_rotation" in limits:
+        _boolean(limits["idle_epoch_rotation"], "/limits/idle_epoch_rotation")
     if parsed["max_frame_bytes"] > parsed["max_queued_bytes"]:
         _fail("/limits/max_frame_bytes", "must not exceed max_queued_bytes")
     if parsed["max_pending_opens"] > parsed["max_streams"]:
@@ -1903,6 +1906,7 @@ def tuning_preset(config_path: Path) -> str:
         "max_queued_bytes": limits.get("max_queued_bytes"),
         "max_epoch_bytes": limits.get("max_epoch_bytes", MIN_EPOCH_BYTES),
         "credit_returns_per_window": limits.get("credit_returns_per_window", CREDIT_RETURNS[0]),
+        "idle_epoch_rotation": limits.get("idle_epoch_rotation", False),
     }
     for name, preset in TUNING_PRESETS.items():
         if preset == tuning:

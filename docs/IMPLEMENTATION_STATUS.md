@@ -239,9 +239,11 @@ receiver keeps the old inbound root only until the peer's first record of the
 new epoch. The epoch size is the smaller `limits.max_epoch_bytes` of the two
 capability manifests, 1 MiB by default and at most 64 MiB, and engine and
 endpoint tests cover a pair of sides that advertise different sizes.
-The native endpoint's rekey timer also starts the rotation of a used epoch
+With `limits.idle_epoch_rotation`, which the `fast` and `max` presets set,
+the native endpoint's rekey timer also starts the rotation of a used epoch
 once it is 250 ms old, so a request after an idle moment does not wait for
-REKEY_ACK.
+REKEY_ACK. It is off by default, because that exchange after every burst of
+traffic is visible in the stealth captures.
 It reserves outbound space for rekey controls. Focused engine tests cover byte,
 record and send-age thresholds, idle rotation, crossed rotation, synchronous ACK delivery,
 reserved queue capacity, peer overshoot refusal, deferred publication and ACK

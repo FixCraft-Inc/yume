@@ -240,14 +240,17 @@ notification, reentrant slot reuse, callback exceptions, client reconnect
 with SOCKS traffic through the replacement session, and backoff after a session
 that ends right after AUTH.
 The established endpoint rekey cases explicitly initiate rotation. The session
-engine also contains an automatic rotation candidate: the session's epoch size
-of directional payload, one protected record per 2 KiB of it, or 500 ms checked
-on the next protected send. The epoch size is the smaller
-`limits.max_epoch_bytes` of the two capability manifests, 1 MiB by default and
-at most 64 MiB, and engine and endpoint tests cover a pair of sides that
-advertise different sizes.
-The native endpoint's rekey timer also rotates a used epoch once it is 500 ms
-old, so a request after an idle moment does not wait for REKEY_ACK.
+engine also rotates on its own. An epoch ends at the session's epoch size of
+directional payload, one protected record per 2 KiB of it, or 500 ms of
+sending. Its rotation starts at half of any of these, and the epoch keeps
+carrying records while REKEY_ACK is outstanding until a limit is reached. The
+receiver keeps the old inbound root only until the peer's first record of the
+new epoch. The epoch size is the smaller `limits.max_epoch_bytes` of the two
+capability manifests, 1 MiB by default and at most 64 MiB, and engine and
+endpoint tests cover a pair of sides that advertise different sizes.
+The native endpoint's rekey timer also starts the rotation of a used epoch
+once it is 250 ms old, so a request after an idle moment does not wait for
+REKEY_ACK.
 It reserves outbound space for rekey controls. Focused engine tests cover byte,
 record and send-age thresholds, idle rotation, crossed rotation, synchronous ACK delivery,
 reserved queue capacity, peer overshoot refusal, deferred publication and ACK

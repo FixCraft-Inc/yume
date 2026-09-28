@@ -639,6 +639,40 @@ void test_bidirectional_rekey(const Fixture& fixture) {
           "mutated new-root rekey acknowledgement was accepted");
 }
 
+// After accepting INIT the receiver still opens records the sender seals in
+// the old epoch until it processes ACK. The first record of the new epoch
+// retires the old root, so an old-epoch record after it is refused, and no
+// further INIT is accepted while the old epoch is still open.
+void test_old_epoch_open_until_the_first_new_record(const Fixture& fixture) {
+    auto pair = make_pair(fixture, default_options(fixture));
+    (void)complete_handshake(pair);
+    auto init = require(pair.client->begin_outbound_rekey(1U),
+                        "make-before-break rekey begin");
+    auto init_wire = require(pair.client->seal_record({0U, 0U}, init.bytes()),
+                             "make-before-break INIT seal");
+    auto opened_init =
+        require(pair.server->open_record({0U, 0U}, init_wire.bytes()),
+                "make-before-break INIT open");
+    auto ack =
+        require(pair.server->accept_inbound_rekey(1U, opened_init.bytes()),
+                "make-before-break rekey accept");
+    check(!pair.server->accept_inbound_rekey(2U, opened_init.bytes()).ok(),
+          "a second INIT was accepted while the old epoch was open");
+    check_record_round_trip(*pair.client, *pair.server, {0U, 1U},
+                            "old-epoch-after-init");
+    check(pair.client->finish_outbound_rekey(1U, ack.bytes()).ok(),
+          "make-before-break rekey finish failed");
+    const std::string_view text = "first-new-epoch";
+    const auto plaintext = as_bytes(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
+    auto first_new = require(pair.client->seal_record({1U, 2U}, plaintext),
+                             "new-epoch seal");
+    (void)require(pair.server->open_record({1U, 2U}, first_new.bytes()),
+                  "new-epoch open");
+    check(!pair.server->open_record({0U, 3U}, first_new.bytes()).ok(),
+          "an old-epoch record was opened after the new epoch began");
+}
+
 void test_authentication_failures(const Fixture& fixture) {
     {
         PairOptions options = default_options(fixture);
@@ -1138,6 +1172,7 @@ int main() {
         test_full_handshake_and_records(fixture);
         test_record_fail_closed(fixture);
         test_bidirectional_rekey(fixture);
+        test_old_epoch_open_until_the_first_new_record(fixture);
         test_authentication_failures(fixture);
         test_component_mutation_and_stripping(fixture);
         test_factory_bounds_and_cancellation(fixture);

@@ -57,7 +57,9 @@ There is one suite and no negotiation or fallback.
 
 After authentication every record is sealed with AES-256-GCM under a key that
 is used once. Each direction has its own key epoch and rotates it on its own
-after one MiB of data, 512 records or 500 ms, whichever comes first. Both sides
+after one MiB of data, 512 records or 500 ms, whichever comes first. A
+rotation starts halfway to those limits, and the old key keeps sending until
+the peer confirms the new one, so rotating does not pause the connection. Both sides
 may allow a larger epoch, up to 64 MiB. The session then uses the smaller
 of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.

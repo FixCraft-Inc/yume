@@ -41,6 +41,34 @@ LIMITS = {
     "max_packet_bytes": 65_535,
     "max_packet_batch": 64,
 }
+# Tuning presets trade far-path speed against how much data one key
+# protects and how close the carrier stays to the captured browser behavior.
+# They match config/tuning_presets.json, which a test compares, and the YTP/1
+# guide's "Tuning presets" describes them. A preset sets these keys in both
+# the server's and the client's limits.
+TUNING_PRESETS = {
+    "stealth": {
+        "max_queued_bytes": 4_194_304,
+        "max_epoch_bytes": 1_048_576,
+        "credit_returns_per_window": 2,
+    },
+    "balanced": {
+        "max_queued_bytes": 16_777_216,
+        "max_epoch_bytes": 4_194_304,
+        "credit_returns_per_window": 2,
+    },
+    "fast": {
+        "max_queued_bytes": 33_554_432,
+        "max_epoch_bytes": 16_777_216,
+        "credit_returns_per_window": 4,
+    },
+    "max": {
+        "max_queued_bytes": 67_108_864,
+        "max_epoch_bytes": 67_108_864,
+        "credit_returns_per_window": 8,
+    },
+}
+DEFAULT_PRESET = "stealth"
 # The default kit exposes SOCKS TCP/UDP. Managed TUN is configured explicitly
 # because its addresses, routes, DNS and directional policy belong to the
 # operator; provisioning must not invent host-networking settings.
@@ -429,8 +457,16 @@ def _is_ip(value: str) -> bool:
         return False
 
 
-def _server_config(port: int, max_egress_mbps: int | None = None) -> dict[str, object]:
+def _limits(tuning: dict[str, int]) -> dict[str, object]:
     limits: dict[str, object] = dict(LIMITS)
+    limits.update(tuning)
+    return limits
+
+
+def _server_config(
+    port: int, tuning: dict[str, int], max_egress_mbps: int | None = None
+) -> dict[str, object]:
+    limits = _limits(tuning)
     if max_egress_mbps is not None:
         limits["max_egress_mbps"] = max_egress_mbps
     return {
@@ -467,7 +503,7 @@ def _server_config(port: int, max_egress_mbps: int | None = None) -> dict[str, o
     }
 
 
-def _client_config(host: str, port: int) -> dict[str, object]:
+def _client_config(host: str, port: int, tuning: dict[str, int]) -> dict[str, object]:
     return {
         "schema": 1,
         "role": "client",
@@ -494,7 +530,7 @@ def _client_config(host: str, port: int) -> dict[str, object]:
                 "udp_service": "udp",
             },
         ],
-        "limits": dict(LIMITS),
+        "limits": _limits(tuning),
     }
 
 
@@ -634,6 +670,7 @@ def _write_client_bundle(
     server_credentials: Path,
     host: str,
     port: int,
+    tuning: dict[str, int],
 ) -> tuple[str, Path, Path]:
     """Write a complete client directory for one new identity.
 
@@ -653,7 +690,7 @@ def _write_client_bundle(
     _generate_random_file(openssl, client_psk, 32)
     for source, destination in CLIENT_SERVER_MATERIAL:
         _copy_stream(server_credentials / source, client_credentials / destination)
-    _write_json(client / "yume.json", _client_config(host, port))
+    _write_json(client / "yume.json", _client_config(host, port, tuning))
     client_adapters = client / "adapters"
     _mkdir_private(client_adapters)
     _write_json(
@@ -844,9 +881,13 @@ def init_kit(
     max_sessions: int | None = None,
     weight: float | None = None,
     max_egress_mbps: int | None = None,
+    preset: str = DEFAULT_PRESET,
 ) -> Path:
     host = _require_host(host)
     client_name = _require_client_name(client_name)
+    if preset not in TUNING_PRESETS:
+        raise SetupError(f"unknown tuning preset: {preset}")
+    tuning = dict(TUNING_PRESETS[preset])
     max_sessions = _require_max_sessions(max_sessions)
     weight = _require_weight(weight)
     max_egress_mbps = _require_max_egress_mbps(max_egress_mbps)
@@ -898,7 +939,8 @@ def init_kit(
         _generate_random_file(openssl, server_admission, 32)
 
         client_fingerprint, client_public, client_psk = _write_client_bundle(
-            openssl, client, work / "client-identity", server_credentials, host, port
+            openssl, client, work / "client-identity", server_credentials, host, port,
+            tuning,
         )
         _copy_stream(client_psk, authorized / f"{client_name}-access.psk")
         _copy_stream(
@@ -910,7 +952,7 @@ def init_kit(
         )
         _write_admin_keys(server_credentials)
 
-        _write_json(server / "yumed.json", _server_config(port, max_egress_mbps))
+        _write_json(server / "yumed.json", _server_config(port, tuning, max_egress_mbps))
         _write_cover_site(server / "cover-site")
         _write_service_manifests(server)
         _write_server_launcher(server)
@@ -1033,6 +1075,14 @@ def add_client(
     }
     if any((service["name"], service["kind"]) not in declared for service in SERVICES):
         raise SetupError("server configuration does not declare the standard tcp and udp services")
+    # A new client takes the server's tuning, so both sides of the kit match.
+    server_limits = config.get("limits")
+    tuning = dict(TUNING_PRESETS[DEFAULT_PRESET])
+    if isinstance(server_limits, dict):
+        for key in tuning:
+            value = server_limits.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                tuning[key] = value
 
     store_path = _server_reference(server, config, "authorized_keys")
     admission_path = _server_reference(server, config, "admission_key")
@@ -1070,7 +1120,8 @@ def add_client(
         _mkdir_private(client)
         openssl = _openssl_path()
         fingerprint, client_public, client_psk = _write_client_bundle(
-            openssl, client, work / "client-identity", server_credentials, host, port
+            openssl, client, work / "client-identity", server_credentials, host, port,
+            tuning,
         )
         if any(
             isinstance(entry, dict)
@@ -1213,6 +1264,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="the rate in Mbit/s that clients share by weight; unlimited when omitted",
     )
+    init.add_argument(
+        "--preset",
+        choices=tuple(TUNING_PRESETS),
+        default=DEFAULT_PRESET,
+        help="tuning for both sides: stealth (default), balanced, fast or max trade "
+        "far-path speed against data per key and closeness to browser traffic",
+    )
     add = commands.add_parser(
         "add-client",
         help="issue another client bundle for an existing server directory",
@@ -1281,6 +1339,7 @@ def main() -> int:
                 arguments.max_sessions,
                 arguments.weight,
                 arguments.max_egress_mbps,
+                arguments.preset,
             )
     except (SetupError, OSError, ValueError) as exc:
         print(f"yume-setup: {exc}", file=sys.stderr)
@@ -1293,6 +1352,7 @@ def main() -> int:
     print(f"Created YUME server kit and client bundle: {output}")
     print(f"Server config: {output / 'server' / 'yumed.json'}")
     print(f"Client config: {output / 'client' / 'yume.json'}")
+    print(f"Tuning preset: {arguments.preset}")
     return 0
 
 

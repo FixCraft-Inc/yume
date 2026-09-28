@@ -38,7 +38,9 @@ grants the kit's standard `tcp` and `udp` services. It changes nothing unless
 every step succeeds, and files it adds to the server tree keep the store's
 owner. `--host` must be the name the server certificate was issued for.
 `--max-sessions` and `--weight` are optional, and `init` accepts both, as well
-as `--max-egress-mbps` for the server.
+as `--max-egress-mbps` for the server and `--preset` for the kit's tuning
+(the [native guide](development/ytp1/README.md#tuning-presets) lists the
+presets).
 
 To revoke a device, remove it and reload. Its sessions end at once:
 

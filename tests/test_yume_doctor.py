@@ -77,9 +77,12 @@ class YumeDoctorTests(unittest.TestCase):
             result = self.run_doctor(config)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(
-                result.stdout.strip(),
-                "yume-doctor: configuration and credentials valid; "
-                "no session was started",
+                result.stdout.strip().splitlines(),
+                [
+                    "yume-doctor: configuration and credentials valid; "
+                    "no session was started",
+                    "yume-doctor: tuning preset stealth",
+                ],
             )
             self.assertEqual(result.stderr, "")
 
@@ -901,6 +904,54 @@ class YumeDoctorTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, value)
                 self.assertIn("/limits/max_epoch_bytes", result.stderr)
         client_path.write_text(original)
+
+    def test_names_the_tuning_preset_a_configuration_matches(self) -> None:
+        doctor = runpy.run_path(str(DOCTOR))
+        client_path = self.case / "client/yume.json"
+        original = client_path.read_text()
+        for tuning, expected in ((doctor["TUNING_PRESETS"]["fast"], "fast"),
+                                 ({"max_epoch_bytes": 2 * 1024 * 1024}, "custom")):
+            config = json.loads(original)
+            config["limits"].update(tuning)
+            client_path.write_text(json.dumps(config))
+            result = self.run_doctor(client_path)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(f"yume-doctor: tuning preset {expected}", result.stdout)
+        client_path.write_text(original)
+
+    def test_tuning_presets_agree_and_fit_the_parser(self) -> None:
+        # One table for setup, doctor and the future GUI's sliders. Every
+        # preset must be a configuration the parser accepts, and moving along
+        # the table trades speed against security and stealth in step.
+        table = json.loads((ROOT / "config/tuning_presets.json").read_text())
+        self.assertEqual(table["schema"], 1)
+        presets = {entry["id"]: entry for entry in table["presets"]}
+        doctor = runpy.run_path(str(DOCTOR))
+        setup = runpy.run_path(str(ROOT / "tools/yume_setup.py"))
+        expected = {name: entry["limits"] for name, entry in presets.items()}
+        self.assertEqual(doctor["TUNING_PRESETS"], expected)
+        self.assertEqual(setup["TUNING_PRESETS"], expected)
+        self.assertEqual(setup["DEFAULT_PRESET"], table["default"])
+        source = (ROOT / "src/config/v1/config.hpp").read_text()
+        maximum = 1
+        for factor in re.search(r"kMaxQueuedBytes\s*=\s*([0-9U *]+);", source)[1] \
+                .replace("U", "").split("*"):
+            maximum *= int(factor)
+        epochs = {name: 1 << int(re.search(rf"{name}\s*=\s*1U << (\d+);", source)[1])
+                  for name in ("kMinEpochBytes", "kMaxEpochBytes")}
+        returns = int(re.search(r"kMaxCreditReturns\s*=\s*(\d+)U;", source)[1])
+        for name, entry in presets.items():
+            limits = entry["limits"]
+            self.assertLessEqual(limits["max_queued_bytes"], maximum, name)
+            epoch = limits["max_epoch_bytes"]
+            self.assertTrue(epochs["kMinEpochBytes"] <= epoch <= epochs["kMaxEpochBytes"], name)
+            self.assertEqual(epoch & (epoch - 1), 0, name)
+            self.assertIn(limits["credit_returns_per_window"], (2, 4, returns), name)
+        ordered = sorted(presets.values(), key=lambda entry: entry["levels"]["speed"])
+        self.assertEqual([entry["levels"]["speed"] for entry in ordered], [1, 2, 3, 4])
+        for axis in ("security", "stealth"):
+            self.assertEqual([entry["levels"][axis] for entry in ordered], [4, 3, 2, 1])
+        self.assertEqual(presets[table["default"]]["levels"]["stealth"], 4)
 
     def test_credit_returns_match_the_parser(self) -> None:
         source = (ROOT / "src/config/v1/config.hpp").read_text()

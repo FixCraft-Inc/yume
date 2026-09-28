@@ -439,6 +439,38 @@ unprivileged identity, prefer a high port or grant only
 `CAP_NET_BIND_SERVICE`, and restrict filesystem access to the generated
 server tree and the cover root.
 
+### Tuning presets
+
+`yume-setup init --preset NAME` writes one of four settings for
+`max_queued_bytes`, `max_epoch_bytes` and `credit_returns_per_window` into
+both configurations, and `add-client` gives a new client the server's
+settings. `yume-doctor` names the preset a configuration matches, or reports
+`custom`. `config/tuning_presets.json` holds the same table for other tools.
+
+| Preset | Budget | Epoch | Credit returns | Speed | Security | Stealth |
+| --- | --- | --- | --- | --- | --- | --- |
+| `stealth`, the default | 4 MiB | 1 MiB | 2 | 1 | 4 | 4 |
+| `balanced` | 16 MiB | 4 MiB | 2 | 2 | 3 | 3 |
+| `fast` | 32 MiB | 16 MiB | 4 | 3 | 2 | 2 |
+| `max` | 64 MiB | 64 MiB | 8 | 4 | 1 | 1 |
+
+Each level, 1 to 4, stands for a measured or stated effect. Speed ranks
+far-path throughput in emulator runs. Security follows how much data one key
+epoch protects: 1, 4, 16 or 64 MiB, and never more than 500 ms of sending.
+Stealth is 4 for the settings the browser captures describe. Lower levels use
+a larger HTTP/2 receive window or send more small credit records upstream,
+changes that have no capture or classifier evidence yet. Moving along the
+table trades one against the others, so a later interface can offer three
+coupled sliders over these four points.
+
+Some limits hold for every preset. Keys always rotate, a session uses the
+smaller epoch that either side allows, and a server can therefore hold its
+clients to a stricter setting than theirs. A larger budget needs memory: a
+session can hold its budget of outbound data and twice the budget, at least
+8 MiB, of received records. Far-path speed above a few MiB per round trip also
+needs the host's TCP buffer ceilings raised, for the tunnel as for any other
+single TCP connection.
+
 ## Identity and authorization
 
 Authentication, advertised capabilities, and authorization are separate

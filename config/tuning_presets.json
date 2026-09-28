@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "default": "stealth",
+  "levels": {
+    "speed": "far-path throughput rank, from measured emulator runs",
+    "security": "data one key protects: 4 for a 1 MiB epoch, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB",
+    "stealth": "distance from the kit defaults that the browser captures describe: 4 is the defaults, lower levels add a larger H2 window or more upstream credit records, which have no classifier evidence"
+  },
+  "presets": [
+    {
+      "id": "stealth",
+      "limits": {
+        "max_queued_bytes": 4194304,
+        "max_epoch_bytes": 1048576,
+        "credit_returns_per_window": 2
+      },
+      "levels": {"speed": 1, "security": 4, "stealth": 4}
+    },
+    {
+      "id": "balanced",
+      "limits": {
+        "max_queued_bytes": 16777216,
+        "max_epoch_bytes": 4194304,
+        "credit_returns_per_window": 2
+      },
+      "levels": {"speed": 2, "security": 3, "stealth": 3}
+    },
+    {
+      "id": "fast",
+      "limits": {
+        "max_queued_bytes": 33554432,
+        "max_epoch_bytes": 16777216,
+        "credit_returns_per_window": 4
+      },
+      "levels": {"speed": 3, "security": 2, "stealth": 2}
+    },
+    {
+      "id": "max",
+      "limits": {
+        "max_queued_bytes": 67108864,
+        "max_epoch_bytes": 67108864,
+        "credit_returns_per_window": 8
+      },
+      "levels": {"speed": 4, "security": 1, "stealth": 1}
+    }
+  ]
+}

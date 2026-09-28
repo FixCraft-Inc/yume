@@ -633,27 +633,39 @@ domain, exact suite, direction, epoch, session/transcript binding, the full
 canonical INIT context excluding its old-root authenticator, ML-KEM
 ciphertext, and responder X25519 key. The initiator commits its outbound root
 only after that confirmation succeeds. The responder commits its inbound root
-only after INIT succeeds. INIT consumes the next old-epoch record sequence;
-ACK consumes none; the first subsequent protected record uses the new epoch
-and the next global directional sequence.
+only after INIT succeeds. INIT consumes the next old-epoch record sequence and
+ACK consumes none.
+
+Until the initiator has processed ACK, it MAY keep sending protected records
+in the old epoch, within that epoch's limits, each with the next global
+directional sequence. Its first protected record after ACK uses the new epoch.
+The responder keeps the old inbound root after accepting INIT and opens
+old-epoch records with it until the first record of the new epoch opens. It
+then wipes the old root and MUST treat any later old-epoch record as a
+protocol failure. INIT MUST travel in the current epoch: an INIT in the epoch
+it replaces terminates the session. A direction therefore retains at most one
+old inbound root, and only until the peer's first record of the new epoch.
 
 At most the configured bounded number of directional rekeys may be in flight.
 Skipped epochs, repeated INIT or ACK, an ACK without a pending outbound rekey,
 a protected ACK, a bare non-ACK post-AUTH frame, component mutation, or
-post-failure reuse terminates the session. This design supports crossed
-opposite-direction rekeys without retaining old directional roots.
+post-failure reuse terminates the session. Crossed opposite-direction rekeys
+need no further roots.
 
 A directional epoch carries at most the session's epoch size in protected
 payload (the smaller `max_epoch_bytes` of the two manifests) and at most one
 record per 2 KiB of it, 512 records for 1 MiB. A receiver MUST treat a peer
-epoch that exceeds either limit as a protocol failure. The native engine
-rotates its outbound root before accepting protected payload past either limit,
-and checks a fixed 500 ms age threshold on the next protected send. INIT does
-not count toward these application thresholds.
-The native endpoint also rotates an epoch that has carried a record as soon as
-it is 500 ms old, so the next send does not wait a round trip for the ACK. An
-epoch that carried nothing is not rotated, so an idle session's root does not
-expire on its own.
+epoch that exceeds either limit as a protocol failure, counting the old
+epoch's records after INIT. The native engine starts a rotation once an epoch
+has used half its payload, half its records or half its fixed 500 ms send
+lifetime. It keeps sending in that epoch while REKEY_ACK is on its way and the
+epoch has room, so a path on which half an epoch lasts longer than a round trip
+never pauses for the ACK. Once a limit or the 500 ms lifetime is reached,
+later records wait for the new epoch and keep their order. INIT does not count
+toward these application thresholds.
+The native endpoint also starts the rotation of an epoch that has carried a
+record once it is 250 ms old, without waiting for a send. An epoch that carried
+nothing is not rotated, so an idle session's root does not expire on its own.
 
 A pending outbound rekey has a separate local ACK deadline. The default is
 30 seconds; callers may select a positive duration up to 30 seconds. The deadline

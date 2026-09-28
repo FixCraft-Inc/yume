@@ -21,16 +21,18 @@
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
 #include "runtime/native_client_runtime.hpp"
+#include "runtime/native_server_runtime.hpp"
 
 namespace yume::runtime {
 
-// Local control protocol 1, served on the client's control.socket.
+// Local control protocol 1, served on the control.socket of yume or yumed.
 //
 // A connection sends one request line, the JSON object
 // {"control":1,"request":"status"} and a newline, of at most
 // kControlRequestBytes, within kControlRequestTimeout. The server answers
 // with one JSON object and a newline, then closes the connection. The status
-// reply carries "control":1 and the fields client_status_reply writes. Any
+// reply carries "control":1, "program" and the fields client_status_reply or
+// server_status_reply writes. Any
 // other request, or a malformed one, gets {"control":1,"error":TEXT}. Replies
 // hold no key, credential or payload.
 inline constexpr std::uint32_t kControlProtocol = 1U;
@@ -43,7 +45,7 @@ inline constexpr std::chrono::milliseconds kControlRequestTimeout{2'000};
 // the server's context for each status request.
 using ControlStatusSource = std::function<std::string()>;
 
-// The client's control socket. LocalListener's UNIX rules apply: the socket's
+// A control socket. LocalListener's UNIX rules apply: the socket's
 // directory must belong to this user and be closed to writes by group and
 // others, the socket is mode 0600, and a peer of another user is closed. At
 // most kControlConnections connections are open, and each ends after one
@@ -84,14 +86,20 @@ std::string client_status_reply(const NativeClientStatus& status,
                                 const ClientControlView& view,
                                 std::chrono::steady_clock::time_point now);
 
+// The status reply for a server runtime at time now: listeners, client
+// sessions and, with a cluster, the list's serial and expiry and each peer's
+// outbound link and inbound sessions.
+std::string server_status_reply(const NativeServerStatus& status,
+                                std::chrono::steady_clock::time_point now);
+
 // Sends a status request to the control socket at path and returns the reply
 // without its newline. Refuses a socket whose peer runs as another user.
 // Blocks for at most timeout. NotFound means no process listens there.
 engine::Result<std::string> query_control_status(
     const std::filesystem::path& path, std::chrono::milliseconds timeout);
 
-// The lines yume --status prints for a status reply, or an error for a reply
-// that is not one.
+// The lines yume --status or yumed --status prints for a status reply, or an
+// error for a reply that is not one.
 engine::Result<std::string> status_reply_text(std::string_view reply);
 
 }  // namespace yume::runtime

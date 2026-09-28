@@ -78,6 +78,19 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   and answers one JSON request line with one JSON line (control protocol 1,
   in yume(1)). The planned GUI reads it. `yume-doctor` checks the key, and
   the embedding ABI refuses a configuration that names one.
+- **Cluster links.** Servers of one operator form a cluster from a list the
+  operator signs with a composite Ed25519 and ML-DSA-87 key
+  ([cluster 1](../protocol/CLUSTER_1.md)). A server's `cluster` section names
+  the list, its signature, the operator key and a peer store with a PSK for
+  each direction of each pair. `yumed` refuses a list that fails its
+  signature, has expired or does not name it, keeps an authenticated YTP/1
+  link to every peer and closes them when the list expires. SIGHUP reloads
+  the list and restarts the links, and a list with a lower serial is refused.
+  `yume-setup cluster-init`, `cluster-add`, `cluster-remove` and
+  `cluster-sign` provision it, `yume-doctor` checks the section, and the
+  embedding ABI refuses it. The links carry no traffic yet.
+- **`yumed --status`.** `control.socket` is now available to the daemon, which
+  reports its listeners, client sessions and cluster links there.
 - **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
   into one file and prints a 25-character code, and `yume --import-kit FILE
   --into DIR` opens it on the client's device with that code. The file is

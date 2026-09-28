@@ -667,5 +667,144 @@ class YumeSetupTests(unittest.TestCase):
             self.assertFalse(any(parent.iterdir()))
 
 
+
+class ClusterSetupTests(unittest.TestCase):
+    """cluster-init, cluster-add, cluster-sign and cluster-remove on three kits."""
+
+    HOSTS = {"north": "north.example.test", "south": "south.example.test",
+             "west": "west.example.test"}
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.servers: dict[str, Path] = {}
+        for name, host in self.HOSTS.items():
+            kit = self.base / name
+            self.tool("init", "--host", host, "--output", str(kit))
+            self.servers[name] = kit / "server"
+        self.operator = self.base / "operator"
+        self.tool("cluster-init", "--output", str(self.operator))
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def tool(self, *arguments: str, code: int = 0) -> subprocess.CompletedProcess[str]:
+        result = YumeSetupTests.run_tool(*arguments)
+        self.assertEqual(result.returncode, code, result.stderr)
+        return result
+
+    def add(self, name: str, code: int = 0, host: str | None = None) -> subprocess.CompletedProcess[str]:
+        return self.tool("cluster-add", "--cluster", str(self.operator), "--server",
+                         str(self.servers[name]), "--name", name, "--host",
+                         host or self.HOSTS[name], code=code)
+
+    def peers(self, name: str) -> Path:
+        return self.servers[name] / "credentials/cluster/peers"
+
+    def test_operator_directory_keeps_the_key_private(self) -> None:
+        state = json.loads((self.operator / "cluster.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(state), {"schema", "cluster", "serial", "nodes"})
+        self.assertEqual((state["serial"], state["nodes"]), (0, []))
+        self.assertRegex(state["cluster"], r"\A[0-9a-f]{64}\Z")
+        for path in (self.operator, self.operator / "operator-composite.pem"):
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode) & 0o077, 0)
+        self.assertEqual(len(PEM_BLOCK.findall(
+            (self.operator / "operator-composite.pem").read_bytes())), 2)
+
+    def test_add_writes_pairwise_secrets_and_the_cluster_section(self) -> None:
+        for name in self.HOSTS:
+            self.add(name)
+        admission = {name: (server / "credentials/admission.key").read_bytes()
+                     for name, server in self.servers.items()}
+        secrets: list[bytes] = []
+        for name in self.HOSTS:
+            config = json.loads((self.servers[name] / "yumed.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["cluster"]["peers"],
+                             {"file": "credentials/cluster/peers.json"})
+            store = json.loads((self.servers[name] / "credentials/cluster/peers.json")
+                               .read_text(encoding="utf-8"))
+            self.assertEqual(len(store["keys"]), 2)
+            for other in self.HOSTS:
+                if other == name:
+                    continue
+                outbound = (self.peers(name) / f"{other}-outbound.psk").read_bytes()
+                self.assertEqual(len(outbound), 32)
+                self.assertEqual(outbound, (self.peers(other) / f"{name}-inbound.psk").read_bytes())
+                self.assertEqual((self.peers(name) / f"{other}-admission.key").read_bytes(),
+                                 admission[other])
+                secrets.append(outbound)
+        # Six directed links, six different PSKs, none an admission key.
+        self.assertEqual(len(set(secrets)), 6)
+        self.assertFalse(set(secrets) & set(admission.values()))
+
+    def test_add_refuses_a_wrong_host_a_repeated_name_and_a_member(self) -> None:
+        self.add("north")
+        before = (self.operator / "cluster.json").read_bytes()
+        self.add("south", code=1, host="other.example.test")
+        self.assertFalse((self.servers["south"] / "credentials/cluster").exists())
+        self.tool("cluster-add", "--cluster", str(self.operator), "--server",
+                  str(self.servers["south"]), "--name", "north", "--host",
+                  self.HOSTS["south"], code=1)
+        self.tool("cluster-add", "--cluster", str(self.operator), "--server",
+                  str(self.servers["north"]), "--name", "again", "--host",
+                  self.HOSTS["north"], code=1)
+        self.assertEqual((self.operator / "cluster.json").read_bytes(), before)
+
+    def test_sign_produces_a_verifiable_composite_signature(self) -> None:
+        self.tool("cluster-sign", "--cluster", str(self.operator), code=1)
+        self.add("north")
+        self.add("south")
+        self.tool("cluster-sign", "--cluster", str(self.operator), "--days", "0", code=1)
+        signed = self.tool("cluster-sign", "--cluster", str(self.operator), "--days", "7")
+        self.assertIn("serial 1", signed.stdout)
+        self.tool("cluster-sign", "--cluster", str(self.operator))
+        listing = (self.operator / "cluster-list.json").read_bytes()
+        signature = (self.operator / "cluster-list.sig").read_bytes()
+        document = json.loads(listing)
+        self.assertEqual(document["serial"], 2)
+        self.assertEqual([node["name"] for node in document["nodes"]], ["north", "south"])
+        self.assertEqual(len(signature), 64 + 4627)
+        for name in ("north", "south"):
+            cluster = self.servers[name] / "credentials/cluster"
+            self.assertEqual((cluster / "cluster-list.json").read_bytes(), listing)
+            self.assertEqual((cluster / "cluster-list.sig").read_bytes(), signature)
+        message = self.base / "message"
+        message.write_bytes(b"yume-cluster-list/1\0" + listing)
+        blocks = [match.group(0) + b"\n" for match in
+                  PEM_BLOCK.finditer((self.operator / "operator-composite.pub.pem").read_bytes())]
+        self.assertEqual(len(blocks), 2)
+        for index, (block, part) in enumerate(((blocks[0], signature[:64]),
+                                               (blocks[1], signature[64:]))):
+            key = self.base / f"key-{index}.pem"
+            key.write_bytes(block)
+            sig = self.base / f"sig-{index}"
+            sig.write_bytes(part)
+            verified = subprocess.run(
+                ["openssl", "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(key),
+                 "-in", str(message), "-sigfile", str(sig)],
+                capture_output=True, check=False)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_remove_detaches_the_node_from_the_others(self) -> None:
+        for name in self.HOSTS:
+            self.add(name)
+        self.tool("cluster-remove", "--cluster", str(self.operator), "--name", "south")
+        self.tool("cluster-remove", "--cluster", str(self.operator), "--name", "south", code=1)
+        state = json.loads((self.operator / "cluster.json").read_text(encoding="utf-8"))
+        self.assertEqual([node["name"] for node in state["nodes"]], ["north", "west"])
+        config = json.loads((self.servers["south"] / "yumed.json").read_text(encoding="utf-8"))
+        self.assertNotIn("cluster", config)
+        self.assertFalse((self.servers["south"] / "credentials/cluster").exists())
+        for name in ("north", "west"):
+            store = json.loads((self.servers[name] / "credentials/cluster/peers.json")
+                               .read_text(encoding="utf-8"))
+            self.assertEqual(len(store["keys"]), 1)
+            self.assertEqual(sorted(path.name for path in self.peers(name).iterdir()),
+                             sorted(f"{other}-{kind}" for other in ("north", "west") if other != name
+                                    for kind in ("admission.key", "inbound.psk", "outbound.psk")))
+        # The removed node can join again.
+        self.add("south")
+
+
 if __name__ == "__main__":
     unittest.main()

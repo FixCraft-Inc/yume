@@ -17,17 +17,16 @@
 #include <utility>
 
 #include <nlohmann/json.hpp>
-#include <openssl/bio.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/provider.h>
 #include <openssl/x509.h>
 
 #include "common/secure_erase.hpp"
 #include "fs/secret_file.hpp"
 #include "providers/openssl_security_provider.hpp"
 #include "providers/tls13_secure_channel.hpp"
+#include "runtime/cluster_list.hpp"
+#include "runtime/composite_keys.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
 
@@ -41,26 +40,14 @@ using engine::StatusCode;
 constexpr std::size_t kMaxPemBytes = 256U * 1024U;
 constexpr std::size_t kMaxStoreBytes = 1024U * 1024U;
 constexpr std::size_t kMaxAdminIdentities = 4096U;
-constexpr const char* kProperties = "provider=default";
 
-class CredentialError final : public std::exception {
-public:
-    explicit CredentialError(
-        const char* message,
-        StatusCode code = StatusCode::InvalidArgument) noexcept
-        : message_(message), code_(code) {}
-    const char* what() const noexcept override { return message_; }
-    StatusCode code() const noexcept { return code_; }
-
-private:
-    const char* message_;
-    StatusCode code_;
-};
-
-void require(bool condition, const char* message,
-             StatusCode code = StatusCode::InvalidArgument) {
-    if (!condition) throw CredentialError(message, code);
-}
+using CredentialError = keys::KeyError;
+using keys::require;
+using CredentialCrypto = keys::KeyContext;
+using CompositePublic = keys::CompositePublic;
+using keys::parse_key;
+using keys::pem_blocks;
+using keys::public_der;
 
 class SecretBytes final {
 public:
@@ -92,14 +79,6 @@ private:
     std::vector<std::uint8_t> bytes_;
 };
 
-using LibCtxPtr = std::unique_ptr<OSSL_LIB_CTX, decltype(&OSSL_LIB_CTX_free)>;
-using ProviderPtr =
-    std::unique_ptr<OSSL_PROVIDER, decltype(&OSSL_PROVIDER_unload)>;
-using MdPtr = std::unique_ptr<EVP_MD, decltype(&EVP_MD_free)>;
-using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
-using PkeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
-using BioPtr = std::unique_ptr<BIO, decltype(&BIO_free)>;
-
 struct Pkcs8Deleter final {
     void operator()(PKCS8_PRIV_KEY_INFO* value) const noexcept {
         if (!value) return;
@@ -112,69 +91,6 @@ struct Pkcs8Deleter final {
         }
         PKCS8_PRIV_KEY_INFO_free(value);
     }
-};
-
-// PEM decoding, canonicalization and fingerprints have their own private
-// context. Only DER bytes cross into the independently owned session factory.
-class CredentialCrypto final {
-public:
-    CredentialCrypto()
-        : context_(OSSL_LIB_CTX_new(), OSSL_LIB_CTX_free),
-          provider_(context_ ? OSSL_PROVIDER_load(context_.get(), "default")
-                             : nullptr,
-                    OSSL_PROVIDER_unload),
-          sha256_(context_ ? EVP_MD_fetch(context_.get(), "SHA256", kProperties)
-                           : nullptr,
-                  EVP_MD_free) {
-        require(context_ && provider_ && sha256_,
-                "credential OpenSSL default provider is unavailable",
-                StatusCode::ProviderMismatch);
-    }
-    OSSL_LIB_CTX* context() const noexcept { return context_.get(); }
-
-    std::string fingerprint(std::span<const std::byte> classical,
-                            std::span<const std::byte> post_quantum) const {
-        MdCtxPtr digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-        require(
-            digest &&
-                EVP_DigestInit_ex2(digest.get(), sha256_.get(), nullptr) == 1 &&
-                EVP_DigestUpdate(digest.get(),
-                                 ytp1::kCompositeIdentityDomain.data(),
-                                 ytp1::kCompositeIdentityDomain.size()) == 1,
-            "composite fingerprint initialization failed");
-        for (const auto bytes : {classical, post_quantum}) {
-            require(bytes.size() <= std::numeric_limits<std::uint32_t>::max(),
-                    "composite identity exceeds its size bound");
-            const auto size = static_cast<std::uint32_t>(bytes.size());
-            const std::array<unsigned char, 4> length{
-                static_cast<unsigned char>(size >> 24U),
-                static_cast<unsigned char>(size >> 16U),
-                static_cast<unsigned char>(size >> 8U),
-                static_cast<unsigned char>(size)};
-            require(EVP_DigestUpdate(digest.get(), length.data(),
-                                     length.size()) == 1 &&
-                        EVP_DigestUpdate(digest.get(), bytes.data(),
-                                         bytes.size()) == 1,
-                    "composite fingerprint update failed");
-        }
-        std::array<unsigned char, 32> hash{};
-        unsigned int size = 0;
-        require(EVP_DigestFinal_ex(digest.get(), hash.data(), &size) == 1 &&
-                    size == hash.size(),
-                "composite fingerprint failed");
-        constexpr char kHex[] = "0123456789abcdef";
-        std::string output(64, '0');
-        for (std::size_t i = 0; i < hash.size(); ++i) {
-            output[i * 2] = kHex[hash[i] >> 4U];
-            output[i * 2 + 1] = kHex[hash[i] & 15U];
-        }
-        return output;
-    }
-
-private:
-    LibCtxPtr context_;
-    ProviderPtr provider_;
-    MdPtr sha256_;
 };
 
 bool ascii_space(char value) noexcept {
@@ -270,69 +186,6 @@ common::Socks5Credentials read_socks5_credentials(const std::filesystem::path& b
     return std::move(*credentials);
 }
 
-std::vector<std::string_view> pem_blocks(std::string_view text,
-                                         bool private_key, std::size_t count) {
-    const std::string_view begin = private_key ? "-----BEGIN PRIVATE KEY-----"
-                                               : "-----BEGIN PUBLIC KEY-----";
-    const std::string_view end =
-        private_key ? "-----END PRIVATE KEY-----" : "-----END PUBLIC KEY-----";
-    std::vector<std::string_view> output;
-    output.reserve(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        while (!text.empty() && ascii_space(text.front()))
-            text.remove_prefix(1);
-        require(text.starts_with(begin),
-                "credential PEM block type or order is invalid");
-        const auto boundary = text.find(end, begin.size());
-        require(boundary != std::string_view::npos,
-                "credential PEM block is unterminated");
-        const auto body = text.substr(begin.size(), boundary - begin.size());
-        require(std::all_of(body.begin(), body.end(), [](unsigned char value) {
-                    return ascii_space(static_cast<char>(value)) ||
-                           (value >= 'a' && value <= 'z') ||
-                           (value >= 'A' && value <= 'Z') ||
-                           (value >= '0' && value <= '9') || value == '+' ||
-                           value == '/' || value == '=';
-                }),
-                "credential PEM contains headers or invalid encoding");
-        const auto size = boundary + end.size();
-        output.push_back(text.substr(0, size));
-        text.remove_prefix(size);
-    }
-    require(std::all_of(text.begin(), text.end(), ascii_space),
-            "credential PEM contains trailing data or extra keys");
-    return output;
-}
-
-int refuse_password(char*, int, int, void*) noexcept {
-    return 0;
-}
-
-PkeyPtr parse_key(const CredentialCrypto& crypto, std::string_view pem,
-                  bool private_key, const char* algorithm) {
-    require(
-        pem.size() <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
-        "credential PEM exceeds parser bounds");
-    BioPtr input(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())),
-                 BIO_free);
-    require(static_cast<bool>(input),
-            "credential PEM reader allocation failed");
-    PkeyPtr key(
-        private_key
-            ? PEM_read_bio_PrivateKey_ex(input.get(), nullptr, refuse_password,
-                                         nullptr, crypto.context(), kProperties)
-            : PEM_read_bio_PUBKEY_ex(input.get(), nullptr, refuse_password,
-                                     nullptr, crypto.context(), kProperties),
-        EVP_PKEY_free);
-    require(key && EVP_PKEY_is_a(key.get(), algorithm) == 1,
-            "credential key does not match the required algorithm");
-    const auto* provider = EVP_PKEY_get0_provider(key.get());
-    require(provider && std::string_view(OSSL_PROVIDER_get0_name(provider)) ==
-                            "default",
-            "credential key uses an unexpected provider");
-    return key;
-}
-
 SecretBytes private_der(EVP_PKEY* key) {
     std::unique_ptr<PKCS8_PRIV_KEY_INFO, Pkcs8Deleter> encoded(
         EVP_PKEY2PKCS8(key));
@@ -349,45 +202,17 @@ SecretBytes private_der(EVP_PKEY* key) {
     return result;
 }
 
-std::vector<std::byte> public_der(EVP_PKEY* key) {
-    const int size = i2d_PUBKEY(key, nullptr);
-    require(size > 0 && static_cast<std::size_t>(size) <=
-                            security::kMaxPrivateKeyFileBytes,
-            "credential public DER encoding size is invalid");
-    std::vector<std::byte> result(static_cast<std::size_t>(size));
-    auto* cursor = reinterpret_cast<unsigned char*>(result.data());
-    require(i2d_PUBKEY(key, &cursor) == size &&
-                cursor == reinterpret_cast<unsigned char*>(result.data()) +
-                              result.size(),
-            "credential public DER encoding failed");
-    return result;
-}
-
-struct CompositePublic final {
-    std::vector<std::byte> classical;
-    std::vector<std::byte> post_quantum;
-    std::string fingerprint;
-    providers::CompositePublicIdentityView view() const noexcept {
-        return {classical, post_quantum};
-    }
-};
-
 CompositePublic read_public_identity(const CredentialCrypto& crypto,
                                      const std::filesystem::path& path) {
     auto pem = read_file(path, kMaxPemBytes);
-    auto blocks = pem_blocks(pem.text(), false, 2);
-    auto classical = parse_key(crypto, blocks[0], false, "ED25519");
-    auto pq = parse_key(crypto, blocks[1], false, "ML-DSA-87");
-    CompositePublic identity{
-        public_der(classical.get()), public_der(pq.get()), {}};
-    identity.fingerprint =
-        crypto.fingerprint(identity.classical, identity.post_quantum);
-    return identity;
+    return keys::composite_public_from_pem(crypto, pem.text());
 }
 
 struct CompositePrivate final {
     SecretBytes classical;
     SecretBytes post_quantum;
+    // The fingerprint of the matching public identity.
+    std::string fingerprint;
     providers::CompositePrivateIdentityView view() const noexcept {
         return {classical.bytes(), post_quantum.bytes()};
     }
@@ -399,7 +224,10 @@ CompositePrivate read_private_identity(const CredentialCrypto& crypto,
     auto blocks = pem_blocks(pem.text(), true, 2);
     auto classical = parse_key(crypto, blocks[0], true, "ED25519");
     auto pq = parse_key(crypto, blocks[1], true, "ML-DSA-87");
-    return {private_der(classical.get()), private_der(pq.get())};
+    auto fingerprint =
+        crypto.fingerprint(public_der(classical.get()), public_der(pq.get()));
+    return {private_der(classical.get()), private_der(pq.get()),
+            std::move(fingerprint)};
 }
 
 const Json& closed_object(const Json& value,
@@ -557,6 +385,124 @@ struct AuthorizedIdentity final {
     SecretBytes access_psk;
 };
 
+bool same_secret(std::span<const std::byte> left,
+                 std::span<const std::byte> right) noexcept {
+    return left.size() == right.size() &&
+           CRYPTO_memcmp(left.data(), right.data(), left.size()) == 0;
+}
+
+// Verifies the operator-signed cluster list and this node's peer store, and
+// builds each outbound link's providers. A peer's inbound identity and PSK go
+// to the server factory through inbound. Every secret must differ from every
+// other: the link PSKs in both directions, every admission key and every
+// client access PSK. A node identity is never also a client or admin.
+NativeClusterCredentials load_cluster(
+    const config::v1::ClusterSettings& refs, const std::filesystem::path& base,
+    const CompositePrivate& local, std::span<const std::byte> own_admission,
+    const std::vector<AuthorizedIdentity>& clients,
+    const std::set<std::string>& reserved,
+    std::vector<AuthorizedIdentity>& inbound) {
+    auto operator_key = read_file(base, refs.operator_key);
+    auto list_bytes = read_file(base, refs.list, cluster::kMaxListBytes);
+    auto signature =
+        read_file(base, refs.signature, ytp1::kCompositeSignatureSize);
+    auto verified = cluster::verify_list(list_bytes.bytes(), signature.bytes(),
+                                         operator_key.text(),
+                                         std::chrono::system_clock::now());
+    if (!verified.ok()) throw verified.status();
+    const auto& list = verified.value();
+    const auto* self = list.find(local.fingerprint);
+    require(self != nullptr, "the cluster list does not name this node");
+    NativeClusterCredentials result;
+    result.cluster = list.cluster;
+    result.serial = list.serial;
+    result.not_after = list.not_after;
+    result.self_name = self->name;
+
+    const auto store_path = resolve_reference(base, refs.peers.path());
+    auto store = read_store(store_path, cluster::kMaxNodes - 1U, true);
+    std::vector<SecretBytes> secrets;
+    std::vector<SecretBytes> admissions;
+    std::set<std::string> peers;
+    const auto distinct = [&](const SecretBytes& secret) {
+        require(!same_secret(secret.bytes(), own_admission),
+                "a cluster link PSK equals an admission key");
+        for (const auto& other : admissions) {
+            require(!same_secret(secret.bytes(), other.bytes()),
+                    "a cluster link PSK equals an admission key");
+        }
+        for (const auto& other : secrets) {
+            require(!same_secret(secret.bytes(), other.bytes()),
+                    "a cluster link PSK is used twice");
+        }
+        for (const auto& client : clients) {
+            require(!same_secret(secret.bytes(), client.access_psk.bytes()),
+                    "a cluster link PSK equals a client access PSK");
+        }
+    };
+    const auto peer_file = [&](const Json& entry, const char* key) {
+        const auto& reference = closed_object(entry.at(key), {"file"});
+        return read_psk(resolve_reference(
+            store_path.parent_path(),
+            string_field(reference.at("file"),
+                         config::v1::kMaxFileReferenceBytes)));
+    };
+    for (const auto& entry : store.at("keys")) {
+        closed_object(entry, {"identity", "outbound_psk", "inbound_psk",
+                              "admission_key"});
+        const auto& identity = string_field(entry.at("identity"), 64);
+        const auto* node = list.find(identity);
+        require(node != nullptr, "a cluster peer is not in the cluster list");
+        require(identity != local.fingerprint,
+                "a node cannot be its own cluster peer");
+        require(peers.insert(identity).second,
+                "the cluster peer store repeats a peer");
+        require(!reserved.contains(identity),
+                "a cluster peer is also a client or admin identity");
+        auto admission = peer_file(entry, "admission_key");
+        for (const auto& secret : secrets) {
+            require(!same_secret(admission.bytes(), secret.bytes()),
+                    "a cluster link PSK equals an admission key");
+        }
+        admissions.push_back(std::move(admission));
+        auto outbound = peer_file(entry, "outbound_psk");
+        distinct(outbound);
+        secrets.push_back(std::move(outbound));
+        auto incoming = peer_file(entry, "inbound_psk");
+        distinct(incoming);
+        secrets.push_back(std::move(incoming));
+        const auto& outbound_psk = secrets[secrets.size() - 2U];
+
+        auto factory = providers::OpenSslSecurityProviderFactory::create_client(
+            {local.view(), node->identity.view(), node->mlkem_key,
+             outbound_psk.bytes(), node->identity.fingerprint});
+        require(factory.ok(),
+                "cluster link security credential validation failed",
+                factory.status().code());
+        auto tls = providers::Tls13SecureChannelProvider::create_client(
+            {node->host,
+             std::as_bytes(std::span(node->tls_trust)),
+             {},
+             {},
+             {}});
+        require(tls.ok(), "cluster link TLS credential validation failed",
+                tls.status().code());
+        result.links.push_back(NativeLinkCredentials{
+            node->name, identity, node->host,
+            node->address.empty() ? node->host : node->address, node->port,
+            std::move(factory).take_value(), std::move(tls).take_value(),
+            NativeAdmissionKey(std::span<const std::byte, 32>(
+                admissions.back().bytes().data(), 32))});
+        result.inbound.emplace_back(identity, node->name);
+        inbound.push_back(
+            {node->identity,
+             SecretBytes(std::vector<std::uint8_t>(
+                 secrets.back().data(),
+                 secrets.back().data() + secrets.back().size()))});
+    }
+    return result;
+}
+
 LoadedNativeCredentials load_server(const config::v1::Config& config,
                                     const std::filesystem::path& base,
                                     const CredentialCrypto& crypto) {
@@ -648,11 +594,35 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
                 "admin store contains a duplicate identity");
     }
 
+    // Cluster peers authenticate like clients, with their own inbound PSKs,
+    // hold at most kMaxPeerSessions sessions and are granted no service.
+    std::optional<NativeClusterCredentials> cluster;
+    std::vector<AuthorizedIdentity> peers;
+    NativeAuthorizationPolicy::Peers recognized_peers;
+    if (config.cluster()) {
+        std::set<std::string> reserved = identities;
+        reserved.insert(admin_identities.begin(), admin_identities.end());
+        cluster = load_cluster(*config.cluster(), base, local,
+                               admission.bytes(), authorized, reserved, peers);
+        require(authorized.size() + peers.size() <=
+                    providers::kMaxAuthorizedIdentities,
+                "clients and cluster peers exceed the identity limit");
+        recognized_peers.not_after = cluster->not_after;
+        for (const auto& peer : peers) {
+            session_limits.push_back(
+                {peer.identity.fingerprint, kMaxPeerSessions});
+            recognized_peers.identities.push_back(peer.identity.fingerprint);
+        }
+    }
+
     std::vector<providers::AuthorizedIdentityView> views;
-    views.reserve(authorized.size());
-    for (const auto& identity : authorized) {
-        views.push_back({identity.identity.view(), identity.access_psk.bytes(),
-                         identity.identity.fingerprint});
+    views.reserve(authorized.size() + peers.size());
+    for (const auto* list : {&authorized, &peers}) {
+        for (const auto& identity : *list) {
+            views.push_back({identity.identity.view(),
+                             identity.access_psk.bytes(),
+                             identity.identity.fingerprint});
+        }
     }
     auto factory = providers::OpenSslSecurityProviderFactory::create_server(
         {local.view(), kem.bytes(), views});
@@ -668,13 +638,16 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
         {certificate.bytes(), tls_key.bytes(), {}, {}});
     require(tls.ok(), "native TLS credential validation failed",
             tls.status().code());
-    return {std::move(factory).take_value(), std::move(tls).take_value(),
+    return {std::move(factory).take_value(),
+            std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
                 engine::EndpointRole::Client, std::move(grants),
-                std::move(session_limits), std::move(egress_weights)),
+                std::move(session_limits), std::move(egress_weights),
+                std::move(recognized_peers)),
             NativeAdmissionKey(
                 std::span<const std::byte, 32>(admission.bytes().data(), 32)),
-            std::nullopt};
+            std::nullopt,
+            std::move(cluster)};
 }
 
 LoadedNativeCredentials load_client(const config::v1::Config& config,
@@ -719,12 +692,14 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
     if (proxy && proxy->credentials()) {
         socks5.emplace(read_socks5_credentials(base, *proxy->credentials()));
     }
-    return {std::move(factory).take_value(), std::move(tls).take_value(),
+    return {std::move(factory).take_value(),
+            std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
                 engine::EndpointRole::Server, std::move(grants)),
             NativeAdmissionKey(
                 std::span<const std::byte, 32>(admission.bytes().data(), 32)),
-            std::move(socks5)};
+            std::move(socks5),
+            std::nullopt};
 }
 
 }  // namespace
@@ -756,17 +731,25 @@ NativeAdmissionKey::~NativeAdmissionKey() {
 NativeAuthorizationPolicy::NativeAuthorizationPolicy(
     engine::EndpointRole peer_role, std::vector<Grant> grants,
     std::vector<SessionLimit> session_limits,
-    std::vector<EgressWeight> egress_weights) noexcept
+    std::vector<EgressWeight> egress_weights, Peers peers) noexcept
     : peer_role_(peer_role),
       grants_(std::move(grants)),
       session_limits_(std::move(session_limits)),
-      egress_weights_(std::move(egress_weights)) {}
+      egress_weights_(std::move(egress_weights)),
+      peers_(std::move(peers)) {}
 
 bool NativeAuthorizationPolicy::recognizes(
     std::string_view peer_identity) const noexcept {
-    return std::any_of(grants_.begin(), grants_.end(), [&](const auto& grant) {
-        return grant.peer_identity == peer_identity;
-    });
+    const auto matches = [&](const auto& identity) {
+        return identity == peer_identity;
+    };
+    if (std::any_of(grants_.begin(), grants_.end(), [&](const auto& grant) {
+            return matches(grant.peer_identity);
+        }))
+        return true;
+    return std::any_of(peers_.identities.begin(), peers_.identities.end(),
+                       matches) &&
+           std::chrono::system_clock::now() < peers_.not_after;
 }
 
 std::size_t NativeAuthorizationPolicy::max_sessions(
@@ -820,6 +803,8 @@ Result<LoadedNativeCredentials> load_native_credentials(
             return Result<LoadedNativeCredentials>(
                 Status(StatusCode::ResourceExhausted));
         }
+    } catch (const Status& status) {
+        return Result<LoadedNativeCredentials>(status);
     } catch (...) {
         return Result<LoadedNativeCredentials>(Status(StatusCode::Internal));
     }

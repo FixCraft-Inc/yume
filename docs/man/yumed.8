@@ -11,6 +11,11 @@ yumed \- native YTP/1 daemon with configured TCP and UDP egress
 ]
 .PP
 .B yumed
+.B --config
+.I path
+.B --status
+.PP
+.B yumed
 .B --version
 .PP
 .B yumed
@@ -38,8 +43,14 @@ The daemon restarts it with backoff when it exits.
 See
 .BR docs/MODULES.md .
 .PP
-The daemon is not yet qualified for production, and relay and federation
-are not yet available.
+With a
+.B cluster
+section the daemon is a member of its operator's cluster and keeps an
+authenticated link to every other member it holds secrets for.
+The links carry no traffic yet.
+.PP
+The daemon is not yet qualified for production, and routes over several
+servers are not yet available.
 Check
 .B docs/IMPLEMENTATION_STATUS.md
 before deployment.
@@ -91,14 +102,74 @@ Unknown arguments still fail parsing when combined with
 .B --version
 or
 .BR --completion .
+.PP
+The status option asks the running daemon of the same configuration for
+its state.
+.TP
+.B --status
+Connect to the control socket that
+.B control.socket
+names, print the running daemon's state and exit.
+The report names the listeners, the number of client sessions and, for a
+cluster member, the list's serial and expiry and each peer's links: the
+outbound link's state, how long it has lasted or when the next attempt
+starts and its last failure, and the peer's inbound sessions.
+The exit status is 2 when the configuration names no control socket and
+1 when no daemon answers on it.
+.B --status
+takes no option besides
+.BR --config .
 .SH CONFIGURATION
 The configuration owns endpoint addresses, exact suite, credential file
-references, cover profile, services, adapters and resource limits.
+references, cover profile, services, adapters and resource limits, and
+optionally a control socket and a server's cluster membership.
 The schema rejects unknown fields, wrong types and unsupported values.
 Credential paths are relative to the configuration file's directory
 unless absolute.
 Credential loading rejects unsafe file types and permissions; inline
 secrets are forbidden.
+.SH CLUSTER
+A server's
+.B cluster
+object names four files:
+.BR operator_key ,
+the operator's composite public key,
+.BR list ,
+the cluster list,
+.BR signature ,
+its composite signature, and
+.BR peers ,
+the peer store.
+The list names at most 64 servers with their addresses and public keys,
+and the operator signs it with a key that stays off the servers.
+The daemon refuses to start with a list whose signature does not verify,
+whose
+.B not_after
+has passed or that does not name the daemon itself.
+The peer store gives each peer an outbound PSK, an inbound PSK and the
+peer's admission key.
+Every PSK differs from every other PSK, admission key and client PSK,
+and a peer is never also a client or administrator.
+All four files are owner-only like the other credential files.
+.B yume-setup
+writes all of it:
+.BR cluster-init ,
+.BR cluster-add ,
+.B cluster-remove
+and
+.BR cluster-sign .
+The format is in
+.BR docs/protocol/CLUSTER_1.md .
+.PP
+Once its listeners accept, the daemon keeps one outbound link to each
+peer, a YTP/1 session like a client's that offers no service, and
+reconnects with backoff when it ends.
+Each peer's own link arrives like a client's session: the peer may hold
+two at once and may open no stream.
+When the list's
+.B not_after
+passes, the daemon closes its links and ends the peers' sessions until a
+reload loads a newer list.
 .SH COVER AND ADMISSION
 The daemon loads an operator-provided static site with explicit index
 and not-found files.
@@ -144,11 +215,80 @@ Established sessions apply changed grants to their next stream and a
 changed
 .B weight
 to their next transfer.
-An invalid store is refused and the previous credentials stay in force.
+A cluster member also reads its list and peer store again and restarts
+every link.
+An invalid store, a list naming another operator or a list with a lower
+serial is refused and the previous credentials stay in force.
 TLS material, the admission key and egress lists are read only at
 startup, and a changed admission key is refused.
 .B SIGPIPE
 is ignored.
+.SH CONTROL SOCKET
+With
+.B control.socket
+set, the running program listens on that UNIX socket for processes of
+its own user.
+The directory must belong to that user and be closed to writes by group
+and others, the socket is mode 0600, and a connection from another user
+is closed.
+At most four connections are open at once.
+.PP
+A connection sends one line, the JSON object
+.BR {"control":1,"request":"status"} ,
+within two seconds and in at most 512 bytes.
+The program answers with one JSON object on one line and closes the
+connection, and
+.B --status
+refuses an answer over 64 KiB.
+Any other request gets an object that holds
+.B control
+and an
+.B error
+text.
+No answer holds a key, credential or payload.
+.PP
+The daemon's answer holds
+.B control
+(1),
+.BR program ,
+.BR version ,
+.BR listeners ,
+.B client_sessions
+and
+.BR cluster ,
+null outside a cluster.
+A member's
+.B cluster
+holds
+.BR id ,
+.BR serial ,
+.BR not_after ,
+.BR expired ,
+.B self
+and
+.BR links ,
+one per peer with
+.BR peer ,
+.BR identity ,
+.B outbound
+and
+.BR inbound .
+.B outbound
+holds
+.BR state ,
+.BR sessions ,
+.BR failed_attempts ,
+.B last_failure
+and, as for a client,
+.B connected_ms
+or
+.BR retry_ms .
+.B inbound
+holds
+.B sessions
+and, while there is one,
+.B connected_ms
+of the oldest.
 .SH EXIT STATUS
 Zero indicates successful help, version or validation output, or
 shutdown requested by a handled signal with successful cleanup.

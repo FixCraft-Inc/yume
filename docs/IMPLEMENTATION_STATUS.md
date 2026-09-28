@@ -206,6 +206,18 @@ fails validation or a changed admission key. The endpoint test covers grant
 changes, refusal of a malformed store, revocation of a live session and a
 client added while an accept was armed.
 
+Servers of one operator form a cluster ([cluster 1](protocol/CLUSTER_1.md)).
+A server with a `cluster` section verifies the operator's signed list and its
+peer store, keeps one outbound link to every peer with the client's backoff,
+and admits peers' links without granting them a service. An expired list
+closes the links and ends the peers' sessions, and a reload restarts every
+link. `yumed --status` reports the list and each link over the control socket.
+`yume_cluster_list_test` and the credential test cover the list and store
+refusals, and `yume_native_cluster_test` runs three daemons from
+`yume-setup`'s cluster commands: links in both directions, recovery after a
+stop, a refused wrong PSK and a reload. The links carry no traffic. Circuits,
+route choice and exits are the next phases.
+
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every
 service, through one limiter that splits the rate between busy identities by
@@ -481,6 +493,8 @@ must not be advertised as working:
   and can read its credential files, so modules are trusted programs until each
   runs as a user of its own;
 - production qualification of module adapters and managed TUN;
+- traffic over cluster links: circuits, route choice, consent to a shorter
+  route and exits, and decentralized server lists;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native
   `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;

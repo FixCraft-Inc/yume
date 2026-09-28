@@ -30,6 +30,7 @@
 #include <openssl/x509.h>
 
 #include "providers/openssl_security_provider.hpp"
+#include "runtime/cluster_list.hpp"
 #include "test_support/tls_identity.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
@@ -648,6 +649,335 @@ void test_socks5_credentials(Fixture& fixture) {
     check(load(config).ok(), "SOCKS5 proxy credentials did not recover");
 }
 
+// A composite signature over the cluster list domain, a zero byte and bytes.
+std::string cluster_signature(const Identity& signer,
+                              const std::string& bytes) {
+    std::vector<unsigned char> message(
+        yume::runtime::cluster::kListDomain.begin(),
+        yume::runtime::cluster::kListDomain.end());
+    message.push_back(0U);
+    message.insert(message.end(), bytes.begin(), bytes.end());
+    std::string signature;
+    for (auto* key : {signer.classical.get(), signer.pq.get()}) {
+        std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(
+            EVP_MD_CTX_new(), EVP_MD_CTX_free);
+        std::size_t size = 0;
+        check(context &&
+                  EVP_DigestSignInit_ex(context.get(), nullptr, nullptr,
+                                        nullptr, nullptr, key, nullptr) == 1 &&
+                  EVP_DigestSign(context.get(), nullptr, &size, message.data(),
+                                 message.size()) == 1,
+              "test cluster signing setup failed");
+        std::string part(size, '\0');
+        check(EVP_DigestSign(context.get(),
+                             reinterpret_cast<unsigned char*>(part.data()),
+                             &size, message.data(), message.size()) == 1,
+              "test cluster signing failed");
+        signature += part.substr(0, size);
+    }
+    return signature;
+}
+
+// Establishes one YTP/1 AUTH between a client and a server factory and
+// returns the identity each side verified.
+std::pair<std::string, std::string> authenticate(
+    const std::shared_ptr<yume::providers::OpenSslSecurityProviderFactory>&
+        client_factory,
+    const std::shared_ptr<yume::providers::OpenSslSecurityProviderFactory>&
+        server_factory) {
+    auto client_provider = take(client_factory->create(EndpointRole::Client));
+    auto server_provider = take(server_factory->create(EndpointRole::Server));
+    yume::ytp1::CapabilityManifest capabilities;
+    const auto encoded = yume::ytp1::EncodeCapabilityManifest(capabilities);
+    check(encoded.ok(), "fixture capability encoding failed");
+    const auto manifest = std::as_bytes(std::span(*encoded.value));
+    const auto parameters = yume::ytp1::RequiredSecurityParameters();
+    std::array<std::byte, 32> exporter{};
+    exporter.fill(std::byte{0x23});
+    const auto client_peer = take(SecureChannelPeerEvidence::authenticated(
+        EndpointRole::Server, "node.cluster.test", "TLS1.3", {std::byte{1}}));
+    check(client_provider
+                  ->initialize({EndpointRole::Client, yume::ytp1::kSuiteId,
+                                std::as_bytes(std::span(parameters)), exporter,
+                                client_peer, manifest})
+                  .ok() &&
+              server_provider
+                  ->initialize({EndpointRole::Server, yume::ytp1::kSuiteId,
+                                std::as_bytes(std::span(parameters)), exporter,
+                                SecureChannelPeerEvidence::anonymous_client(),
+                                manifest})
+                  .ok(),
+          "cluster AUTH initialization failed");
+    (void)take(client_provider->start_authentication());
+    auto challenge = take(server_provider->start_authentication());
+    auto response = take(client_provider->process_authentication(
+        AuthenticationMessageKind::Challenge,
+        challenge.outbound_message->bytes()));
+    auto accepted = take(server_provider->process_authentication(
+        AuthenticationMessageKind::Response,
+        response.outbound_message->bytes()));
+    auto established = take(client_provider->process_authentication(
+        AuthenticationMessageKind::Accepted,
+        accepted.outbound_message->bytes()));
+    check(accepted.established && established.established,
+          "cluster AUTH did not establish");
+    return {established.authenticated_peer->identity(),
+            accepted.authenticated_peer->identity()};
+}
+
+// Two nodes of one operator's cluster: this server and a peer with its own
+// credentials. Each loads the signed list and a peer store that mirrors the
+// other's, and the peer's outbound link authenticates to this server.
+void test_cluster_membership(Fixture& fixture) {
+    const Identity operator_key;
+    const Identity peer;
+    const auto peer_kem = generate_key("ML-KEM-1024");
+    const auto root = fixture.directory.path();
+    std::filesystem::create_directories(root / "credentials/cluster");
+    std::filesystem::create_directories(root / "peer/credentials/cluster");
+    std::filesystem::create_directories(root / "peer/credentials/authorized");
+    const auto read_text = [](const std::filesystem::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), {});
+    };
+    fixture.write("peer/credentials/server.pem", peer.private_pem);
+    fixture.write("peer/credentials/kem.pem", pem(peer_kem.get(), true));
+    fixture.write("peer/credentials/admission.key", std::string(32, '\x3b'));
+    fixture.write("peer/credentials/authorized/client.pub.pem",
+                  fixture.client.public_pem);
+    fixture.write("peer/credentials/authorized/access.psk",
+                  std::string(32, '\x4c'));
+    yume::test::write_tls_identity(root / "peer/credentials/tls.pem",
+                                   root / "peer/credentials/tls.key");
+    for (const auto* name :
+         {"peer/credentials/tls.pem", "peer/credentials/tls.key"}) {
+        std::filesystem::permissions(root / name,
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write);
+    }
+    auto peer_authorized = fixture.authorized;
+    peer_authorized["keys"][0]["access_psk"] =
+        reference("authorized/access.psk");
+    fixture.write("peer/credentials/authorized.json", peer_authorized.dump());
+    fixture.write("peer/credentials/admins.json", fixture.admins.dump());
+
+    const auto node = [&](const Identity& identity, const std::string& name,
+                          EVP_PKEY* kem, const std::filesystem::path& trust) {
+        return Json{{"name", name},
+                    {"identity", identity.id},
+                    {"host", "node.cluster.test"},
+                    {"address", "127.0.0.1"},
+                    {"port", 443},
+                    {"identity_key", identity.public_pem},
+                    {"mlkem_key", pem(kem, false)},
+                    {"tls_trust", read_text(trust)}};
+    };
+    Json list = {
+        {"schema", 1},
+        {"cluster", operator_key.id},
+        {"serial", 3},
+        {"not_after", "2099-01-01T00:00:00Z"},
+        {"nodes",
+         Json::array({node(fixture.server, "large-sky", fixture.kem.get(),
+                           root / "credentials/tls.pem"),
+                      node(peer, "sweet-fox", peer_kem.get(),
+                           root / "peer/credentials/tls.pem")})}};
+    const auto publish = [&](const Json& value, const Identity& signer) {
+        const auto bytes = value.dump();
+        const auto signature = cluster_signature(signer, bytes);
+        for (const auto* directory :
+             {"credentials/cluster/", "peer/credentials/cluster/"}) {
+            fixture.write(std::string(directory) + "cluster-list.json", bytes);
+            fixture.write(std::string(directory) + "cluster-list.sig",
+                          signature);
+            fixture.write(std::string(directory) + "operator.pub.pem",
+                          operator_key.public_pem);
+        }
+    };
+    publish(list, operator_key);
+    // This node's link to the peer and the peer's link to it use different
+    // PSKs.
+    fixture.write("credentials/cluster/to-peer.psk", std::string(32, '\x51'));
+    fixture.write("credentials/cluster/from-peer.psk", std::string(32, '\x52'));
+    fixture.write("credentials/cluster/peer-admission.key",
+                  std::string(32, '\x3b'));
+    fixture.write("peer/credentials/cluster/to-peer.psk",
+                  std::string(32, '\x52'));
+    fixture.write("peer/credentials/cluster/from-peer.psk",
+                  std::string(32, '\x51'));
+    fixture.write("peer/credentials/cluster/peer-admission.key",
+                  std::string(32, '\x2a'));
+    const auto peers = [&](const std::string& identity) {
+        return Json{
+            {"schema", 1},
+            {"keys", Json::array({{{"identity", identity},
+                                   {"outbound_psk", reference("to-peer.psk")},
+                                   {"inbound_psk", reference("from-peer.psk")},
+                                   {"admission_key",
+                                    reference("peer-admission.key")}}})}};
+    };
+    const auto own_peers = peers(peer.id);
+    fixture.write("credentials/cluster/peers.json", own_peers.dump());
+    fixture.write("peer/credentials/cluster/peers.json",
+                  peers(fixture.server.id).dump());
+    const Json cluster_refs = {
+        {"operator_key", reference("credentials/cluster/operator.pub.pem")},
+        {"list", reference("credentials/cluster/cluster-list.json")},
+        {"signature", reference("credentials/cluster/cluster-list.sig")},
+        {"peers", reference("credentials/cluster/peers.json")}};
+    auto config = fixture.server_config;
+    config["cluster"] = cluster_refs;
+    auto peer_config = config;
+    peer_config["credentials"]["composite_key"] =
+        reference("peer/credentials/server.pem");
+    peer_config["credentials"]["authorized_keys"] =
+        reference("peer/credentials/authorized.json");
+    peer_config["credentials"]["admin_keys"] =
+        reference("peer/credentials/admins.json");
+    peer_config["credentials"]["tls_certificate"] =
+        reference("peer/credentials/tls.pem");
+    peer_config["credentials"]["tls_key"] =
+        reference("peer/credentials/tls.key");
+    peer_config["credentials"]["admission_key"] =
+        reference("peer/credentials/admission.key");
+    peer_config["credentials"]["mlkem_key"] =
+        reference("peer/credentials/kem.pem");
+    for (const char* key : {"operator_key", "list", "signature", "peers"}) {
+        peer_config["cluster"][key] =
+            reference("peer/" + cluster_refs[key]["file"].get<std::string>());
+    }
+    const auto load = [&](const Json& value) {
+        return load_native_credentials(yume::config::v1::Parse(value), root);
+    };
+
+    auto own = take(load(config));
+    check(own.cluster.has_value() && own.cluster->self_name == "large-sky" &&
+              own.cluster->serial == 3U &&
+              own.cluster->cluster == operator_key.id &&
+              own.cluster->links.size() == 1U &&
+              own.cluster->inbound.size() == 1U,
+          "the cluster membership was not loaded");
+    const auto& link = own.cluster->links.front();
+    check(link.peer_name == "sweet-fox" && link.peer_identity == peer.id &&
+              link.host == "node.cluster.test" && link.dial == "127.0.0.1" &&
+              link.port == 443U &&
+              link.admission_key.bytes()[0] == std::byte{0x3b},
+          "the link credentials are wrong");
+    check(own.authorization->max_sessions(peer.id) == kMaxPeerSessions &&
+              own.authorization->recognizes(peer.id),
+          "a peer is not recognized or not limited to its link sessions");
+    check(!own.authorization
+               ->authorize(open_context(peer.id, EndpointRole::Client, "echo",
+                                        ServiceKind::ByteStream))
+               .ok(),
+          "a cluster peer gained a service");
+    const NativeAuthorizationPolicy lapsed(
+        EndpointRole::Client, {}, {}, {},
+        {{peer.id},
+         std::chrono::system_clock::now() - std::chrono::seconds(1)});
+    check(!lapsed.recognizes(peer.id),
+          "a peer stayed recognized after its list expired");
+    auto remote = take(load(peer_config));
+    check(remote.cluster && remote.cluster->self_name == "sweet-fox",
+          "the peer's membership was not loaded");
+    // The peer's outbound link authenticates to this server as the peer, and
+    // this server's link authenticates to the peer.
+    const auto inbound = authenticate(
+        remote.cluster->links.front().security_factory, own.security_factory);
+    check(inbound.first == fixture.server.id && inbound.second == peer.id,
+          "the peer's link did not authenticate to this server");
+    const auto outbound =
+        authenticate(link.security_factory, remote.security_factory);
+    check(outbound.first == peer.id && outbound.second == fixture.server.id,
+          "this server's link did not authenticate to the peer");
+
+    const auto refused = [&](const char* description) {
+        check(!load(config).ok(), description);
+        publish(list, operator_key);
+        fixture.write("credentials/cluster/peers.json", own_peers.dump());
+        fixture.write("credentials/cluster/to-peer.psk",
+                      std::string(32, '\x51'));
+        fixture.write("credentials/cluster/from-peer.psk",
+                      std::string(32, '\x52'));
+    };
+    publish(list, peer);
+    refused("a list signed by another key was accepted");
+    fixture.write("credentials/cluster/cluster-list.json", list.dump() + " ");
+    refused("a list changed after signing was accepted");
+    auto without_self = list;
+    without_self["nodes"].erase(0);
+    publish(without_self, operator_key);
+    refused("a list that does not name this node was accepted");
+    auto expired = list;
+    expired["not_after"] = "2020-01-01T00:00:00Z";
+    publish(expired, operator_key);
+    check(load(config).status().code() == StatusCode::FailedPrecondition,
+          "an expired list was not refused as expired");
+    refused("an expired list was accepted");
+    const std::pair<const char*, Json> bad_stores[] = {
+        {"a peer outside the list was accepted", peers(std::string(64, 'a'))},
+        {"this node as its own peer was accepted", peers(fixture.server.id)},
+        {"a repeated peer was accepted",
+         Json{{"schema", 1},
+              {"keys",
+               Json::array({own_peers["keys"][0], own_peers["keys"][0]})}}},
+        {"a peer entry with an unknown field was accepted",
+         Json{{"schema", 1}, {"keys", Json::array({[&] {
+                                  auto entry = own_peers["keys"][0];
+                                  entry["weight"] = 2;
+                                  return entry;
+                              }()})}}},
+    };
+    for (const auto& [description, store] : bad_stores) {
+        fixture.write("credentials/cluster/peers.json", store.dump());
+        refused(description);
+    }
+    // The client identity is a listed node here, so only the rule that a node
+    // is never also a client refuses it.
+    auto with_client = list;
+    with_client["nodes"].push_back(node(fixture.client, "gloomy-data",
+                                        fixture.kem.get(),
+                                        root / "credentials/tls.pem"));
+    publish(with_client, operator_key);
+    fixture.write("credentials/cluster/peers.json",
+                  peers(fixture.client.id).dump());
+    refused("a client identity as a peer was accepted");
+    // An admin identity is not in the session factory's list, so only the rule
+    // that a node is never also an admin refuses it.
+    auto with_admin = list;
+    with_admin["nodes"].push_back(node(fixture.admin, "gloomy-data",
+                                       fixture.kem.get(),
+                                       root / "credentials/tls.pem"));
+    publish(with_admin, operator_key);
+    Json admins = fixture.admins;
+    admins["keys"].push_back({{"name", "admin"},
+                              {"identity",
+                               {{"file", "authorized/admin.pub.pem"},
+                                {"sha256", fixture.admin.id}}}});
+    fixture.write("credentials/admins.json", admins.dump());
+    fixture.write("credentials/cluster/peers.json",
+                  peers(fixture.admin.id).dump());
+    check(!load(config).ok(), "an admin identity as a peer was accepted");
+    fixture.restore_stores();
+    publish(list, operator_key);
+    fixture.write("credentials/cluster/peers.json", own_peers.dump());
+    const std::pair<const char*, std::string> reused[] = {
+        {"one PSK for both directions was accepted", std::string(32, '\x52')},
+        {"a link PSK equal to the admission key was accepted",
+         std::string(32, '\x2a')},
+        {"a link PSK equal to the peer's admission key was accepted",
+         std::string(32, '\x3b')},
+        {"a link PSK equal to a client access PSK was accepted",
+         std::string(32, '\x7a')},
+    };
+    for (const auto& [description, secret] : reused) {
+        fixture.write("credentials/cluster/to-peer.psk", secret);
+        refused(description);
+    }
+    check(take(load(config)).cluster.has_value(),
+          "the restored cluster was refused");
+}
+
 int main() {
     try {
         test_admission_ownership();
@@ -658,6 +988,7 @@ int main() {
         test_egress_weights(fixture);
         test_file_boundaries(fixture);
         test_socks5_credentials(fixture);
+        test_cluster_membership(fixture);
         std::cout << "native credential tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

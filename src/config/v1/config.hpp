@@ -672,9 +672,21 @@ private:
     bool idle_epoch_rotation_;
 };
 
-// control.socket: the client's owner-only control socket, a normalized
-// absolute UNIX socket path. Only processes of the same user can connect,
-// and they can read the client's status. Absent means no control socket.
+// cluster: a server's membership in its operator's cluster. The list names
+// the cluster's nodes and the operator signs it with the key in
+// operator_key. peers is the node's private store of pairwise link secrets.
+// yumed verifies the list and the store when it starts.
+struct ClusterSettings final {
+    FileReference operator_key;
+    FileReference list;
+    FileReference signature;
+    FileReference peers;
+};
+
+// control.socket: the owner-only control socket of yume or yumed, a
+// normalized absolute UNIX socket path. Only processes of the same user can
+// connect, and they can read the program's status. Absent means no control
+// socket.
 struct ControlSettings final {
     std::string socket_path;
 };
@@ -698,12 +710,16 @@ public:
     const std::optional<ControlSettings>& control() const noexcept {
         return control_;
     }
+    const std::optional<ClusterSettings>& cluster() const noexcept {
+        return cluster_;
+    }
 
 private:
     Config(Role role, Endpoint endpoint, Suite suite, Credentials credentials,
            Cover cover, std::vector<Service> services,
            std::vector<Adapter> adapters, ResourceLimits limits,
-           std::optional<ControlSettings> control)
+           std::optional<ControlSettings> control,
+           std::optional<ClusterSettings> cluster)
         : role_(role),
           endpoint_(std::move(endpoint)),
           suite_(std::move(suite)),
@@ -712,7 +728,8 @@ private:
           services_(std::move(services)),
           adapters_(std::move(adapters)),
           limits_(std::move(limits)),
-          control_(std::move(control)) {}
+          control_(std::move(control)),
+          cluster_(std::move(cluster)) {}
 
     Role role_;
     Endpoint endpoint_;
@@ -723,6 +740,7 @@ private:
     std::vector<Adapter> adapters_;
     ResourceLimits limits_;
     std::optional<ControlSettings> control_;
+    std::optional<ClusterSettings> cluster_;
 
     friend Config Parse(const nlohmann::json& document);
 };
@@ -747,6 +765,12 @@ struct RunSettings final {
     // Decimal text. Anything else reaches Parse as a string and fails there.
     std::optional<std::string> socks5_listen_port;
 };
+
+// A host a client endpoint may name: an IP literal or a DNS name of at most
+// 253 bytes. Cluster lists name their nodes' hosts by the same rule.
+bool IsEndpointHost(std::string_view value);
+// An IPv4 or IPv6 literal, as endpoint.connect_address takes.
+bool IsIpAddressLiteral(std::string_view value);
 
 // Bounds input and nesting, applies the run settings and delegates to Parse.
 // No path is opened and no credential material is read by either entry

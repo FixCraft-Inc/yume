@@ -6,9 +6,14 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -17,8 +22,36 @@
 #include "config/v1/config.hpp"
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "runtime/native_client_runtime.hpp"
 
 namespace yume::runtime {
+
+// One cluster peer as this node sees it: its outbound link's keeper status
+// and the sessions the peer holds to this node.
+struct NativeLinkStatus final {
+    std::string peer_name;
+    std::string peer_identity;
+    NativeClientStatus outbound;
+    std::size_t inbound_sessions{0U};
+    // When the oldest inbound session was admitted.
+    std::chrono::steady_clock::time_point inbound_since{};
+};
+
+struct NativeClusterStatus final {
+    std::string cluster;
+    std::uint64_t serial{0U};
+    std::chrono::system_clock::time_point not_after;
+    std::string self_name;
+    bool expired{false};
+    std::vector<NativeLinkStatus> links;
+};
+
+struct NativeServerStatus final {
+    std::vector<boost::asio::ip::tcp::endpoint> listeners;
+    // Authenticated sessions other than cluster peers'.
+    std::size_t client_sessions{0U};
+    std::optional<NativeClusterStatus> cluster;
+};
 
 struct NativeServerRuntimeOptions final {
     // The SystemResolver helper for destination names of direct adapters.
@@ -37,10 +70,14 @@ struct NativeServerRuntimeOptions final {
 // adapter. Other named services need application handlers from an embedder.
 // Each module adapter runs its program under a ModuleSupervisor, which starts
 // before the listeners accept and stops with the runtime.
+// With a cluster section, the runtime keeps one outbound link to every peer
+// once the listeners accept, reconnecting with SessionKeeper's backoff. When
+// the list's not_after passes, the links close and the peers' sessions end
+// until a reload loads a newer list.
 // Destinations are enforced by NativeEgressPolicy for the request and for
 // every resolved address. Each packet adapter admits one authenticated stream
-// across all sessions and enforces local/peer address policy in both directions.
-// The endpoint's accept loop serves every listener.
+// across all sessions and enforces local/peer address policy in both
+// directions. The endpoint's accept loop serves every listener.
 //
 // All calls run on the supplied single-runner context. on_stopped runs once if
 // the endpoint stops accepting or managed network cleanup fails. The caller
@@ -63,8 +100,11 @@ public:
     engine::Status start();
     std::vector<boost::asio::ip::tcp::endpoint> listener_endpoints() const;
     // Applies changed credential stores without dropping other sessions. See
-    // NativeEndpoint::reload_credentials.
+    // NativeEndpoint::reload_credentials. With a cluster, every link then
+    // restarts with the reloaded list and peer store.
     engine::Status reload();
+    // On the context: listeners, sessions and cluster links.
+    NativeServerStatus status() const;
     void close() noexcept;
 
 private:

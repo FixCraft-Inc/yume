@@ -1,0 +1,13 @@
+With **control.socket** set, the running program listens on that UNIX socket
+for processes of its own user. The directory must belong to that user and be
+closed to writes by group and others, the socket is mode 0600, and a
+connection from another user is closed. At most four connections are open at
+once.
+
+A connection sends one line, the JSON object
+**{"control":1,"request":"status"}**, within two seconds and in at most 512
+bytes. The program answers with one JSON object on one line and closes the
+connection, and **--status** refuses an answer over 64 KiB. Any other request
+gets an object that holds
+**control** and an **error** text. No answer holds a key, credential or
+payload.

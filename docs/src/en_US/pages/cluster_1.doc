@@ -1,0 +1,186 @@
+#!yume-doc 1
+name:     cluster_1
+kind:     page
+title:    Cluster 1
+summary:  The signed server list, the peer store and the links that make one operator's yumed servers a cluster.
+markdown: docs/protocol/CLUSTER_1.md
+web:      yes
+catalog-title: Cluster links
+catalog-group: Security and transport
+catalog-home: Internals and status
+catalog-order: 158
+---
+Status: normative contract for `runtime/cluster_list.*`, the cluster part of
+`runtime/native_credentials.*` and the links in `runtime/native_server_runtime.*`,
+which `yume-setup`'s cluster commands write for. It is the first phase of
+clusters: servers know and authenticate each other, and their links carry no
+traffic yet. This page is not a cryptographic proof.
+
+## Purpose
+
+One operator runs several `yumed` servers and wants them to act as one
+network. Each server has to know which other servers belong to it, how to
+reach them and how to prove itself to them, without a central service and
+without trusting whoever can answer at an address. The operator signs a list
+of its servers once, and every server checks that list and keeps an
+authenticated YTP/1 session, a link, to each of the others. Later phases route
+client traffic over these links.
+
+## Operator key and cluster ID
+
+The operator key is a composite Ed25519 and ML-DSA-87 key pair, like a YTP/1
+identity. `yume-setup cluster-init` makes it in an operator directory that
+stays off the servers. The cluster ID is the key's composite fingerprint,
+computed as for YTP/1 identities: SHA-256 over
+`yume/ytp/1/composite-identity/v1` and each public key's DER encoding with a
+four-byte big-endian length.
+
+## Cluster list
+
+`cluster-list.json` is one JSON object of at most 1 MiB with exactly these
+members:
+
+@table
+| Member | Value |
+| --- | --- |
+| `schema` | 1 |
+| `cluster` | The cluster ID, 64 lowercase hexadecimal characters |
+| `serial` | A positive integer that grows with every signing |
+| `not_after` | The UTC time the list stops being valid, as `YYYY-MM-DDTHH:MM:SSZ` |
+| `nodes` | 1 to 64 servers |
+@end
+
+Each server in `nodes` has exactly these members, and an optional `address`:
+
+@table
+| Member | Value |
+| --- | --- |
+| `name` | 1 to 63 letters, digits, `.`, `_` or `-`, starting and ending with a letter or digit |
+| `identity` | The server's composite fingerprint |
+| `host` | The DNS name or IP literal its TLS certificate names |
+| `address` | Optional: an IP literal other servers dial instead of resolving `host` |
+| `port` | Its listener port, 1 to 65535 |
+| `identity_key` | Its composite public key, the Ed25519 and ML-DSA-87 PEM blocks |
+| `mlkem_key` | Its ML-KEM-1024 public key as one PEM block |
+| `tls_trust` | 1 to 8 PEM certificates that anchor its TLS certificate, at most 16 KiB |
+@end
+
+Names and identities are unique within a list, and `identity` must be the
+fingerprint of `identity_key`. Every key and certificate is parsed when the
+list is checked, so a bad entry fails when a server starts, not when a link
+does.
+
+## Signature
+
+`cluster-list.sig` is 4691 bytes: an Ed25519 signature of 64 bytes, then an
+ML-DSA-87 signature of 4627 bytes, both over the same message:
+
+@code text
+"yume-cluster-list/1" || 0x00 || the exact bytes of cluster-list.json
+@end
+
+A server verifies both halves with the operator's public key before it parses
+the list, and neither half stands in for the other. It then refuses the list
+unless its `cluster` is the fingerprint of that key, its `not_after` has not
+passed and it names the server's own identity.
+
+## Peer store
+
+`peers.json` is a schema-1 store, owner-only like the other credential stores,
+with up to 63 entries under `keys`. Each entry holds exactly `identity`, a
+peer's fingerprint, and three file references, resolved from the store's
+directory: `outbound_psk`, the 32-byte PSK this server proves itself to the
+peer with, `inbound_psk`, the one the peer proves itself with, and
+`admission_key`, the peer's 32-byte admission key.
+
+Each ordered pair of servers has its own PSK. A server refuses a store in
+which a peer is missing from the list, is the server itself, appears twice,
+or is also a client or administrator identity. It also refuses one where any
+PSK equals another PSK, the server's own or a peer's admission key, or a
+client's access PSK.
+
+## Configuration
+
+A server's schema-1 configuration names the four files in its `cluster`
+object:
+
+@code json
+"cluster": {
+  "operator_key": {"file": "credentials/cluster/operator.pub.pem"},
+  "list": {"file": "credentials/cluster/cluster-list.json"},
+  "signature": {"file": "credentials/cluster/cluster-list.sig"},
+  "peers": {"file": "credentials/cluster/peers.json"}
+}
+@end
+
+All four are read like the other credential files: regular files owned by
+the daemon's user and closed to group and others, even the public ones.
+`yumed --validate` checks all of it without dialing, and `yume-doctor` checks
+that each file is one the daemon would open. A client configuration and the
+embedding interface refuse the section.
+
+## Links
+
+After its listeners accept, a server keeps one outbound link to each peer in
+its store: a YTP/1 client session to the peer's `address`, or `host` when the
+list gives none, and `port`. TLS authenticates `host` against `tls_trust`,
+admission uses the peer's admission key, and AUTH uses the server's own
+composite key, the peer's composite and ML-KEM keys from the list and the
+outbound PSK. The link offers no service. A link that ends or fails is
+started again with the client's backoff: one second, doubling to thirty.
+
+A server accepts a peer's link as it accepts a client, by verified identity
+and inbound PSK. The peer is granted no service, so any stream it opens is
+refused, and it may hold two sessions at once, so a restarted link is
+admitted while the old one is still ending. One link per ordered pair means
+that a later phase sending from A to B always uses A's outbound link, and no
+link needs streams opened by the side that accepted it.
+
+When the list's `not_after` passes, the server closes its links and ends the
+peers' sessions, and it recognizes no peer until it loads a newer list. On
+SIGHUP it reads the list and peer store again with its other credentials and
+restarts every link. A reload refuses a list naming another operator or with a
+lower serial than the loaded one, and the previous credentials stay in force.
+
+`yumed --status` reports the list's serial and expiry and, for each peer, the
+outbound link's state and the peer's inbound sessions. yumed(8) gives the
+fields.
+
+## Tools
+
+`yume-setup` provisions a cluster from the operator's copies of the server
+directories that `init` writes:
+
+@code bash
+yume-setup cluster-init --output "$PWD/operator"
+yume-setup cluster-add --cluster operator --server north/server \
+  --name north --host north.example.net
+yume-setup cluster-add --cluster operator --server south/server \
+  --name south --host south.example.net --address 192.0.2.20
+yume-setup cluster-sign --cluster operator --days 30
+@end
+
+`cluster-add` checks that the server's TLS certificate names `--host`, writes
+fresh PSKs for both directions between the new server and each earlier one,
+copies each side's admission key to the other, and gives the new server the
+operator's public key and a `cluster` section. `cluster-remove` takes a server
+out: the others drop its peer entry and files, and it loses its section and
+cluster files. `cluster-sign` builds the list from the servers' public
+material, raises the serial, sets `not_after` from 1 to 366 days ahead (30 by
+default) and copies the list and signature to every server. Each command
+changes files only after all of its new files are written. Deploy each
+server's `credentials/cluster` directory, then restart a server that joined
+and reload the others.
+
+## Limits
+
+- Links carry no traffic. Circuits, route choice and exits come in later
+  phases.
+- The serial is compared only within one run of the daemon. A restarted
+  server accepts any valid list the operator signed, including an older one
+  that has not expired, so removing a server is complete only when every list
+  that still names it has expired.
+- A server that holds an old list keeps dialing until the list expires, and
+  the servers that dropped it refuse its links.
+- The operator key signs the whole list, so whoever holds it can add servers.
+  The operator directory holds it unencrypted and must stay off the servers.

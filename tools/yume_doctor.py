@@ -887,13 +887,31 @@ class CheckedConfig:
     # (pointer, reference, byte bound) for each egress list file.
     list_files: list[tuple[str, str, int]]
     socks5_credentials: str | None
+    # The cluster section's file references by key, for a server in one.
+    cluster: dict[str, str]
 
 
-def _validate_control(control: Any, adapters: list[Any], role: str) -> None:
+# The cluster files' byte bounds, as yumed reads them: the list, its
+# composite signature, and the operator key and peer store as documents.
+CLUSTER_FILE_BYTES = {
+    "operator_key": MAX_DOCUMENT_BYTES,
+    "list": 1024 * 1024,
+    "signature": 64 + 4627,
+    "peers": MAX_DOCUMENT_BYTES,
+}
+
+
+def _validate_cluster(value: Any, role: str) -> dict[str, str]:
+    """cluster, as config::v1 checks it: four file references, server-only."""
+    cluster = _closed_object(value, "/cluster", set(CLUSTER_FILE_BYTES))
+    if role != "server":
+        _fail("/cluster", "is server-only")
+    return {key: _file_reference(cluster[key], f"/cluster/{key}") for key in CLUSTER_FILE_BYTES}
+
+
+def _validate_control(control: Any, adapters: list[Any]) -> None:
     """control.socket, as config::v1 checks it."""
     _closed_object(control, "/control", {"socket"})
-    if role != "client":
-        _fail("/control", "is client-only")
     path = _string(control["socket"], "/control/socket", MAX_UNIX_SOCKET_PATH_BYTES)
     if not _normalized_absolute_path(path):
         _fail("/control/socket", "must be a normalized absolute path")
@@ -917,6 +935,7 @@ def _validate_config(document: Any) -> CheckedConfig:
             "adapters",
             "limits",
             "control",
+            "cluster",
         },
         {
             "schema",
@@ -942,8 +961,9 @@ def _validate_config(document: Any) -> CheckedConfig:
     list_files = _validate_adapters(top["adapters"], role, services)
     _validate_limits(top["limits"], top["adapters"], role)
     if "control" in top:
-        _validate_control(top["control"], top["adapters"], role)
-    return CheckedConfig(role, credentials, cover_root, list_files, socks5_credentials)
+        _validate_control(top["control"], top["adapters"])
+    cluster = _validate_cluster(top["cluster"], role) if "cluster" in top else {}
+    return CheckedConfig(role, credentials, cover_root, list_files, socks5_credentials, cluster)
 
 
 def _checked_bytes(
@@ -1732,6 +1752,19 @@ def diagnose(config_path: Path) -> list[DoctorError]:
                     _check_socks5_credentials(payload, pointer)
                 finally:
                     payload[:] = b"\0" * len(payload)
+            except DoctorError as error:
+                diagnostics.append(error)
+        # yumed verifies the list's signature and the peer store when it
+        # starts or validates. The doctor checks that each file is one the
+        # loader would open.
+        for name, reference in checked.cluster.items():
+            try:
+                payload = _checked_bytes(
+                    _resolve_reference(base, reference),
+                    f"/cluster/{name}",
+                    maximum=CLUSTER_FILE_BYTES[name],
+                )
+                payload[:] = b"\0" * len(payload)
             except DoctorError as error:
                 diagnostics.append(error)
         paths = {

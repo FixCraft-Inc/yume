@@ -12,10 +12,13 @@
 #include <utility>
 #include <variant>
 
+#include <boost/asio/basic_waitable_timer.hpp>
+
 #include "engine/route_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
 #include "runtime/native_egress_policy.hpp"
 #include "runtime/native_endpoint.hpp"
+#include "runtime/session_keeper.hpp"
 #ifdef __linux__
 #include "runtime/linux_tun_network.hpp"
 #endif
@@ -26,6 +29,14 @@ namespace yume::runtime {
 namespace {
 using engine::Status;
 using engine::StatusCode;
+using Timer = boost::asio::basic_waitable_timer<
+    std::chrono::steady_clock,
+    boost::asio::wait_traits<std::chrono::steady_clock>,
+    providers::AsioExecutionContext::Executor>;
+
+// The expiry timer wakes at least this often, so a changed wall clock is
+// noticed without waiting out the whole remaining time.
+constexpr std::chrono::hours kExpiryRecheck{1};
 
 bool has_runtime_adapter(const config::v1::Config& config, const config::v1::Service& service) {
     return std::any_of(config.adapters().begin(), config.adapters().end(), [&](const auto& adapter) {
@@ -78,20 +89,148 @@ Status validate_packet_routes(const config::v1::PacketAdapter& adapter,
 
 }  // namespace
 
-struct NativeServerRuntime::State final {
+struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
+    // One outbound cluster link and the keeper that holds its session up.
+    struct Link final {
+        std::string peer_name;
+        std::string peer_identity;
+        std::shared_ptr<NativeEndpoint> endpoint;
+        std::shared_ptr<SessionKeeper> keeper;
+    };
+
+    State(std::shared_ptr<providers::AsioExecutionContext> runner,
+          const config::v1::Config& node)
+        : context(std::move(runner)),
+          config(node),
+          expiry(context->executor()) {}
+
     std::shared_ptr<providers::AsioExecutionContext> context;
+    config::v1::Config config;
     std::shared_ptr<NativeEndpoint> endpoint;
     std::vector<std::pair<config::v1::PacketAdapter, std::shared_ptr<NativePacketAdapter>>> packets;
     std::vector<std::shared_ptr<ModuleSupervisor>> modules;
     // Shared through managed-network drain, without retaining this runtime.
     std::shared_ptr<Stopped> on_stopped;
+    std::function<void(std::string_view)> report;
     NativeAcceptOptions accept;
+    // Cluster links share one resolver, which the runtime closes.
+    std::shared_ptr<providers::SystemResolver> link_resolver;
+    std::vector<Link> links;
+    Timer expiry;
+    bool cluster_expired{false};
     bool started{false};
     bool closing{false};
+
+    void say(std::string_view text) noexcept {
+        if (!report) return;
+        try {
+            report(text);
+        } catch (...) {
+        }
+    }
+
+    void stop(Status status) noexcept {
+        auto completion = std::exchange(*on_stopped, {});
+        if (!completion) return;
+        try {
+            completion(std::move(status));
+        } catch (...) {
+        }
+    }
+
+    // Builds a link endpoint and keeper for every peer of the membership,
+    // without starting them.
+    std::vector<Link> make_links(const NativeClusterCredentials& cluster) {
+        std::vector<Link> made;
+        made.reserve(cluster.links.size());
+        for (const auto& credentials : cluster.links) {
+            SessionKeeperOptions keeper_options;
+            keeper_options.report = [weak = weak_from_this(),
+                                     prefix = "cluster link to " +
+                                              credentials.peer_name +
+                                              ": "](std::string_view text) {
+                if (const auto self = weak.lock())
+                    self->say(prefix + std::string(text));
+            };
+            auto keeper = std::make_shared<SessionKeeper>(
+                context, std::move(keeper_options),
+                [weak = weak_from_this()](Status status) {
+                    if (const auto self = weak.lock())
+                        self->stop(std::move(status));
+                });
+            NativeEndpointOptions options;
+            options.max_sessions = 1U;
+            options.max_pending_starts = 1U;
+            options.resolver = link_resolver;
+            options.session_ended = keeper->session_ended();
+            auto endpoint = NativeEndpoint::create_link(
+                context, config, credentials, std::move(options));
+            if (!endpoint.ok()) {
+                close_links(made);
+                throw Status(endpoint.status().code(),
+                             "cluster link to " + credentials.peer_name + ": " +
+                                 endpoint.status().message());
+            }
+            keeper->attach(endpoint.value());
+            made.push_back({credentials.peer_name, credentials.peer_identity,
+                            std::move(endpoint).take_value(),
+                            std::move(keeper)});
+        }
+        return made;
+    }
+
+    static void close_links(std::vector<Link>& closing_links) noexcept {
+        for (const auto& link : closing_links) {
+            link.keeper->close();
+            link.endpoint->close();
+        }
+    }
+
+    // Waits for the list's not_after. When it has passed, every link closes
+    // and the endpoint ends the peers' sessions, which it no longer
+    // recognizes, until a reload loads a newer list.
+    void arm_expiry() noexcept {
+        const auto* cluster = endpoint ? endpoint->cluster() : nullptr;
+        if (closing || !cluster) return;
+        const auto left = cluster->not_after - std::chrono::system_clock::now();
+        if (left <= std::chrono::system_clock::duration::zero()) {
+            expire();
+            return;
+        }
+        try {
+            expiry.expires_after(std::min<std::chrono::steady_clock::duration>(
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    left),
+                kExpiryRecheck));
+            expiry.async_wait([weak = weak_from_this()](
+                                  const boost::system::error_code& error) {
+                const auto self = weak.lock();
+                if (!self || self->closing || error) return;
+                self->arm_expiry();
+            });
+        } catch (const std::bad_alloc&) {
+            stop(Status(StatusCode::ResourceExhausted));
+        } catch (...) {
+            stop(Status(StatusCode::Internal));
+        }
+    }
+
+    void expire() noexcept {
+        if (cluster_expired) return;
+        cluster_expired = true;
+        close_links(links);
+        endpoint->end_unrecognized_sessions();
+        say("the cluster list has expired, links stay closed until a newer "
+            "list is loaded");
+    }
 
     void close() noexcept {
         if (closing) return;
         closing = true;
+        boost::system::error_code ignored;
+        expiry.cancel(ignored);
+        close_links(links);
+        if (link_resolver) link_resolver->close();
         if (endpoint) endpoint->close();
         for (const auto& packet : packets) packet.second->close();
         for (const auto& module : modules) module->close();
@@ -117,9 +256,9 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                     "' needs a direct, module or packet adapter, or an application embedding it through the C ABI"));
             }
         }
-        auto state = std::make_shared<State>();
-        state->context = context;
+        auto state = std::make_shared<State>(context, config);
         state->on_stopped = std::make_shared<Stopped>(std::move(on_stopped));
+        state->report = runtime_options.report;
 
         const auto& endpoint = std::get<config::v1::ServerEndpoint>(config.endpoint());
         std::vector<NativeServiceBinding> bindings;
@@ -168,7 +307,7 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
             options.egress_policy = std::move(egress).take_value();
             if (!runtime_options.resolver_program.empty()) {
                 providers::SystemResolverOptions resolver_options;
-                resolver_options.program = std::move(runtime_options.resolver_program);
+                resolver_options.program = runtime_options.resolver_program;
                 auto resolver = providers::SystemResolver::create(context, std::move(resolver_options));
                 if (!resolver.ok()) return Created(resolver.status());
                 options.resolver = std::move(resolver).take_value();
@@ -188,7 +327,28 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                                               std::move(options));
         if (!created.ok()) return Created(created.status());
         state->endpoint = std::move(created).take_value();
+        if (const auto* cluster = state->endpoint->cluster()) {
+            if (!runtime_options.resolver_program.empty()) {
+                providers::SystemResolverOptions resolver_options;
+                resolver_options.program = runtime_options.resolver_program;
+                auto resolver = providers::SystemResolver::create(
+                    context, std::move(resolver_options));
+                if (!resolver.ok()) {
+                    state->close();
+                    return Created(resolver.status());
+                }
+                state->link_resolver = std::move(resolver).take_value();
+            }
+            try {
+                state->links = state->make_links(*cluster);
+            } catch (...) {
+                state->close();
+                throw;
+            }
+        }
         return Created(std::shared_ptr<NativeServerRuntime>(new NativeServerRuntime(std::move(state))));
+    } catch (const Status& status) {
+        return Created(Status::diagnostic(status.code(), status.message()));
     } catch (const std::bad_alloc&) {
         return Created(Status(StatusCode::ResourceExhausted));
     }
@@ -261,7 +421,12 @@ engine::Status NativeServerRuntime::start() {
                 if (completion) completion(std::move(status));
             }
         });
-    if (!status.ok()) state->close();
+    if (!status.ok()) {
+        state->close();
+        return status;
+    }
+    for (const auto& link : state->links) link.keeper->start();
+    state->arm_expiry();
     return status;
 }
 
@@ -274,9 +439,76 @@ std::vector<boost::asio::ip::tcp::endpoint> NativeServerRuntime::listener_endpoi
 }
 
 engine::Status NativeServerRuntime::reload() {
-    state_->context->require_context();
-    if (state_->closing || !state_->endpoint) return Status(StatusCode::Closed);
-    return state_->endpoint->reload_credentials();
+    const auto state = state_;
+    state->context->require_context();
+    if (state->closing || !state->endpoint) return Status(StatusCode::Closed);
+    auto status = state->endpoint->reload_credentials();
+    const auto* cluster = state->endpoint->cluster();
+    if (!status.ok() || !cluster) return status;
+    // Every link restarts with the reloaded list and peer store. A peer holds
+    // up to kMaxPeerSessions sessions, so the new link is admitted while the
+    // old session is still ending.
+    std::vector<State::Link> links;
+    try {
+        links = state->make_links(*cluster);
+    } catch (const Status& failure) {
+        return Status::diagnostic(failure.code(), failure.message());
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted);
+    }
+    State::close_links(state->links);
+    state->links = std::move(links);
+    state->cluster_expired = false;
+    if (state->started) {
+        for (const auto& link : state->links) link.keeper->start();
+        boost::system::error_code ignored;
+        state->expiry.cancel(ignored);
+        state->arm_expiry();
+    }
+    return status;
+}
+
+NativeServerStatus NativeServerRuntime::status() const {
+    const auto& state = *state_;
+    state.context->require_context();
+    NativeServerStatus result;
+    if (!state.endpoint) return result;
+    result.listeners = listener_endpoints();
+    const auto sessions = state.endpoint->authenticated_sessions();
+    const auto* cluster = state.endpoint->cluster();
+    const auto is_peer = [&](const std::string& identity) {
+        return cluster &&
+               std::any_of(
+                   cluster->inbound.begin(), cluster->inbound.end(),
+                   [&](const auto& peer) { return peer.first == identity; });
+    };
+    result.client_sessions = static_cast<std::size_t>(std::count_if(
+        sessions.begin(), sessions.end(),
+        [&](const auto& session) { return !is_peer(session.identity); }));
+    if (!cluster) return result;
+    auto& view = result.cluster.emplace();
+    view.cluster = cluster->cluster;
+    view.serial = cluster->serial;
+    view.not_after = cluster->not_after;
+    view.self_name = cluster->self_name;
+    view.expired = state.cluster_expired;
+    for (const auto& [identity, name] : cluster->inbound) {
+        NativeLinkStatus link;
+        link.peer_name = name;
+        link.peer_identity = identity;
+        for (const auto& outbound : state.links) {
+            if (outbound.peer_identity == identity)
+                link.outbound = outbound.keeper->status();
+        }
+        for (const auto& session : sessions) {
+            if (session.identity != identity) continue;
+            if (link.inbound_sessions++ == 0U ||
+                session.admitted_at < link.inbound_since)
+                link.inbound_since = session.admitted_at;
+        }
+        view.links.push_back(std::move(link));
+    }
+    return result;
 }
 
 void NativeServerRuntime::close() noexcept {

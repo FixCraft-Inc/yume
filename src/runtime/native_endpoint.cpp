@@ -230,6 +230,50 @@ ProviderRequirement requirement(ProviderKind kind, std::string_view id) {
     return require(ProviderRequirement::create(kind, std::string(id), 1U, capabilities));
 }
 
+// The one provider of each engine layer that every native endpoint composes.
+std::vector<ProviderRequirement> composition_requirements() {
+    std::vector<ProviderRequirement> requirements;
+    requirements.push_back(
+        requirement(ProviderKind::ByteChannel, kAsioTcpByteChannelProviderId));
+    requirements.push_back(requirement(ProviderKind::SecureChannel,
+                                       kTls13SecureChannelProviderId));
+    requirements.push_back(
+        requirement(ProviderKind::FrontDoor, config::v1::kFrontDoorProvider));
+    requirements.push_back(
+        requirement(ProviderKind::Carrier, kH2DuplexCarrierProviderId));
+    requirements.push_back(
+        requirement(ProviderKind::SessionSecurity, kOpenSslSecurityProviderId));
+    requirements.push_back(
+        requirement(ProviderKind::RouteProvider, kAsioDirectRouteProviderId));
+    return requirements;
+}
+
+bool valid_options(const NativeEndpointOptions& options) noexcept {
+    return options.max_sessions != 0U && options.max_sessions <= 1024U &&
+           options.max_pending_starts != 0U &&
+           options.max_pending_starts <= 32U &&
+           options.max_pending_starts <= options.max_sessions &&
+           options.start_timeout > std::chrono::milliseconds::zero() &&
+           options.start_timeout <= std::chrono::minutes(5) &&
+           options.rekey_ack_timeout > std::chrono::milliseconds::zero() &&
+           options.rekey_ack_timeout <= kMaxRekeyAckTimeout;
+}
+
+// How a client endpoint reaches its server: the name TLS and the carrier
+// authenticate, the port, the address dialed, an optional SOCKS5 proxy with
+// its credentials, the TLS provider, the admission key and the byte budget
+// the carrier's windows follow.
+struct ClientTransport final {
+    std::string_view host;
+    std::uint16_t port;
+    std::string_view dial;
+    const config::v1::Socks5Proxy* proxy;
+    std::optional<common::Socks5Credentials>* proxy_credentials;
+    std::shared_ptr<Tls13SecureChannelProvider> tls;
+    std::span<const std::byte, 32> admission;
+    std::uint32_t max_queued_bytes;
+};
+
 SessionLimits session_limits(const config::v1::ResourceLimits& config) {
     SessionLimits limits;
     limits.max_frame_payload = config.max_frame_bytes();
@@ -316,6 +360,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         // whether a newer session of that identity already replaced this one.
         std::string peer_identity;
         std::uint64_t admitted{0U};
+        std::chrono::steady_clock::time_point admitted_at{};
         bool evicted{false};
         bool starting{false};
         bool timed_out{false};
@@ -347,6 +392,35 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     void request_close() noexcept {
         if (closing.exchange(true, std::memory_order_acq_rel)) return;
         context->submit(close_task, shared_from_this());
+    }
+
+    // Registers a client endpoint's byte channel, secure channel and carrier.
+    void register_client_transport(EngineBuilder& builder,
+                                   const ClientTransport& transport) {
+        if (transport.proxy) {
+            // The proxy reaches the server, so only the proxy's own numeric
+            // address is dialed here and nothing is resolved.
+            tcp = require(AsioTcpByteChannelProvider::create(
+                context, transport.proxy->address(), transport.proxy->port(),
+                {}, options.socket_protector));
+            require(builder.register_byte_channel_provider(
+                require(Socks5UpstreamProvider::create(
+                    context, tcp, std::string(transport.dial), transport.port,
+                    std::move(*transport.proxy_credentials)))));
+        } else {
+            tcp = require(AsioTcpByteChannelProvider::create(
+                context, std::string(transport.dial), transport.port, {},
+                options.socket_protector, options.resolver));
+            require(builder.register_byte_channel_provider(tcp));
+        }
+        require(builder.register_secure_channel_provider(transport.tls));
+        require(builder.register_carrier_provider(
+            require(H2DuplexCarrierProvider::create(
+                context->affinity(), make_asio_h2_dispatch(context),
+                {std::string(transport.host), transport.port,
+                 h2_duplex_limits_for_budget(transport.max_queued_bytes),
+                 options.outer_carrier_trace},
+                transport.admission))));
     }
 
     void close_on_context() noexcept {
@@ -422,6 +496,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     Status admit_identity(std::size_t index) noexcept {
         auto& slot = *slots[index];
         slot.admitted = ++admissions;
+        slot.admitted_at = std::chrono::steady_clock::now();
         slot.evicted = false;
         slot.peer_identity.clear();
         if (role != EndpointRole::Server || !policy) return Status::success();
@@ -485,19 +560,20 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             if (!std::equal(next.begin(), next.end(), loaded.begin()))
                 throw Status(StatusCode::FailedPrecondition,
                     "the admission key changed; restart the daemon to apply it");
+            if (cluster && credentials.cluster) {
+                if (credentials.cluster->cluster != cluster->cluster)
+                    throw Status(StatusCode::FailedPrecondition,
+                                 "the cluster list names another operator; "
+                                 "restart the daemon to apply it");
+                if (credentials.cluster->serial < cluster->serial)
+                    throw Status(StatusCode::FailedPrecondition,
+                                 "the cluster list's serial is older than the "
+                                 "loaded list's");
+            }
             require(inputs.security->set(credentials.security_factory));
             policy->set(credentials.authorization);
-            const auto current = policy->get();
-            for (const auto& slot : slots) {
-                if (!slot->session || slot->evicted || current->recognizes(slot->peer_identity)) continue;
-                slot->evicted = true;
-                slot->session->stop(Status::diagnostic(
-                    StatusCode::PermissionDenied, "credential was revoked"));
-            }
-            for (const auto& slot : slots) {
-                if (slot->session && !slot->evicted)
-                    evict_beyond_limit(slot->peer_identity, current->max_sessions(slot->peer_identity));
-            }
+            cluster = std::move(credentials.cluster);
+            end_unrecognized();
             return Status::success();
         } catch (const Status& status) {
             return copy_status(status);
@@ -505,6 +581,26 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             return Status(StatusCode::ResourceExhausted);
         } catch (...) {
             return Status(StatusCode::Internal);
+        }
+    }
+
+    // Ends sessions whose identity the current policy no longer recognizes,
+    // then the oldest beyond each identity's limit.
+    void end_unrecognized() noexcept {
+        if (role != EndpointRole::Server || !policy) return;
+        const auto current = policy->get();
+        for (const auto& slot : slots) {
+            if (!slot->session || slot->evicted ||
+                current->recognizes(slot->peer_identity))
+                continue;
+            slot->evicted = true;
+            slot->session->stop(Status::diagnostic(StatusCode::PermissionDenied,
+                                                   "credential was revoked"));
+        }
+        for (const auto& slot : slots) {
+            if (slot->session && !slot->evicted)
+                evict_beyond_limit(slot->peer_identity,
+                                   current->max_sessions(slot->peer_identity));
         }
     }
 
@@ -797,6 +893,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         NativeAdmissionKey admission_key;
     };
     std::optional<ReloadInputs> reload_inputs;
+    // A server's verified cluster membership, replaced by a reload.
+    std::optional<NativeClusterCredentials> cluster;
     ControlTask close_task;
 };
 
@@ -804,13 +902,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
     std::shared_ptr<AsioExecutionContext> context, const config::v1::Config& config,
     const std::filesystem::path& base_directory, std::vector<NativeServiceBinding> services,
     NativeEndpointOptions options) {
-    if (!context || options.max_sessions == 0U || options.max_sessions > 1024U ||
-        options.max_pending_starts == 0U || options.max_pending_starts > 32U ||
-        options.max_pending_starts > options.max_sessions ||
-        options.start_timeout <= std::chrono::milliseconds::zero() ||
-        options.start_timeout > std::chrono::minutes(5) ||
-        options.rekey_ack_timeout <= std::chrono::milliseconds::zero() ||
-        options.rekey_ack_timeout > kMaxRekeyAckTimeout)
+    if (!context || !valid_options(options))
         return Result<std::shared_ptr<NativeEndpoint>>(Status(StatusCode::InvalidArgument));
     context->require_context();
     if (services.size() > config.services().size())
@@ -915,13 +1007,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             mbps && role == EndpointRole::Server)
             pacing.emplace(EgressPacing{context, std::make_shared<EgressLimiter>(
                 static_cast<std::uint64_t>(*mbps) * 125'000U)});
-        std::vector<ProviderRequirement> requirements;
-        requirements.push_back(requirement(ProviderKind::ByteChannel, kAsioTcpByteChannelProviderId));
-        requirements.push_back(requirement(ProviderKind::SecureChannel, kTls13SecureChannelProviderId));
-        requirements.push_back(requirement(ProviderKind::FrontDoor, config::v1::kFrontDoorProvider));
-        requirements.push_back(requirement(ProviderKind::Carrier, kH2DuplexCarrierProviderId));
-        requirements.push_back(requirement(ProviderKind::SessionSecurity, kOpenSslSecurityProviderId));
-        requirements.push_back(requirement(ProviderKind::RouteProvider, kAsioDirectRouteProviderId));
+        auto requirements = composition_requirements();
         std::vector<ServiceRequirement> service_requirements;
         std::vector<NativeServiceBinding> handlers;
         for (const auto& service : config.services()) {
@@ -955,6 +1041,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             state->reload_inputs.emplace(State::ReloadInputs{
                 config, base_directory, std::move(current),
                 NativeAdmissionKey(credentials.admission_key.bytes())});
+            state->cluster = std::move(credentials.cluster);
         }
         EngineBuilder builder(role, std::move(suite));
         require(builder.register_session_security_provider_factory(
@@ -973,29 +1060,13 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             const std::string& dial = !state->options.connection_address.empty()
                 ? state->options.connection_address
                 : configured_dial ? *configured_dial : endpoint.host();
-            if (const auto& proxy = endpoint.socks5_proxy()) {
-                // The proxy reaches the server, so only the proxy's own
-                // numeric address is dialed here and nothing is resolved.
-                state->tcp = require(AsioTcpByteChannelProvider::create(context,
-                    proxy->address(), proxy->port(), {}, state->options.socket_protector));
-                require(builder.register_byte_channel_provider(require(Socks5UpstreamProvider::create(
-                    context, state->tcp, dial, endpoint.port(), std::move(credentials.socks5_credentials)))));
-            } else {
-                state->tcp = require(AsioTcpByteChannelProvider::create(context,
-                    dial, endpoint.port(), {}, state->options.socket_protector,
-                    state->options.resolver));
-                require(builder.register_byte_channel_provider(state->tcp));
-            }
-            require(builder.register_secure_channel_provider(
-                credentials.tls_provider));
-            require(builder.register_carrier_provider(
-                require(H2DuplexCarrierProvider::create(
-                    context->affinity(), make_asio_h2_dispatch(context),
-                    {endpoint.host(), endpoint.port(),
-                     h2_duplex_limits_for_budget(
-                         config.limits().max_queued_bytes()),
-                     state->options.outer_carrier_trace},
-                    credentials.admission_key.bytes()))));
+            const auto& proxy = endpoint.socks5_proxy();
+            state->register_client_transport(
+                builder,
+                {endpoint.host(), endpoint.port(), dial,
+                 proxy ? &*proxy : nullptr, &credentials.socks5_credentials,
+                 credentials.tls_provider, credentials.admission_key.bytes(),
+                 config.limits().max_queued_bytes()});
         }
         state->graph = require(builder.build());
         if (role == EndpointRole::Server) {
@@ -1054,6 +1125,64 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
     }
 }
 
+Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create_link(
+    std::shared_ptr<AsioExecutionContext> context,
+    const config::v1::Config& node_config, const NativeLinkCredentials& link,
+    NativeEndpointOptions options) {
+    if (!context || !valid_options(options) ||
+        node_config.role() != config::v1::Role::Server ||
+        !link.security_factory || !link.tls_provider ||
+        !options.connection_address.empty() || options.outer_carrier_trace ||
+        options.route_provider || options.egress_policy ||
+        options.caller_runs_socks5_adapters ||
+        options.caller_runs_forward_adapters ||
+        options.caller_runs_module_adapters ||
+        options.caller_runs_packet_adapters)
+        return Result<std::shared_ptr<NativeEndpoint>>(
+            Status(StatusCode::InvalidArgument));
+    context->require_context();
+    std::shared_ptr<State> state;
+    try {
+        auto limits = session_limits(node_config.limits());
+        limits.rekey_ack_timeout = options.rekey_ack_timeout;
+        require(validate_session_limits(limits));
+        state = std::make_shared<State>(context, EndpointRole::Client,
+                                        std::move(options), limits);
+        state->rotate_idle_epochs = node_config.limits().idle_epoch_rotation();
+        // A link grants the peer nothing: it opens no stream toward this node.
+        state->policy = std::make_shared<PolicyHolder>(
+            std::make_shared<const NativeAuthorizationPolicy>(
+                EndpointRole::Server,
+                std::vector<NativeAuthorizationPolicy::Grant>{}));
+        auto suite = require(TransportSuiteDescriptor::create(
+            std::string(node_config.suite().id()), "YTP/1",
+            composition_requirements(), {}));
+        EngineBuilder builder(EndpointRole::Client, std::move(suite));
+        require(builder.register_session_security_provider_factory(
+            link.security_factory));
+        std::optional<common::Socks5Credentials> no_proxy;
+        state->register_client_transport(
+            builder, {link.host, link.port, link.dial, nullptr, &no_proxy,
+                      link.tls_provider, link.admission_key.bytes(),
+                      node_config.limits().max_queued_bytes()});
+        state->graph = require(builder.build());
+        // Links share one resolver, so it stays the caller's to close.
+        return Result<std::shared_ptr<NativeEndpoint>>(
+            std::shared_ptr<NativeEndpoint>(new NativeEndpoint(state)));
+    } catch (const Status& status) {
+        if (state) state->request_close();
+        return Result<std::shared_ptr<NativeEndpoint>>(copy_status(status));
+    } catch (const std::bad_alloc&) {
+        if (state) state->request_close();
+        return Result<std::shared_ptr<NativeEndpoint>>(
+            Status(StatusCode::ResourceExhausted));
+    } catch (...) {
+        if (state) state->request_close();
+        return Result<std::shared_ptr<NativeEndpoint>>(
+            Status(StatusCode::Internal));
+    }
+}
+
 NativeEndpoint::NativeEndpoint(std::shared_ptr<State> state) noexcept : state_(std::move(state)) {}
 NativeEndpoint::~NativeEndpoint() noexcept { close(); }
 Status NativeEndpoint::async_start_session(Completion completion, std::size_t listener_index) {
@@ -1072,6 +1201,23 @@ void NativeEndpoint::close() noexcept { state_->request_close(); }
 engine::Status NativeEndpoint::reload_credentials() {
     state_->context->require_context();
     return state_->reload();
+}
+const NativeClusterCredentials* NativeEndpoint::cluster() const noexcept {
+    return state_->cluster ? &*state_->cluster : nullptr;
+}
+std::vector<NativePeerSession> NativeEndpoint::authenticated_sessions() const {
+    state_->context->require_context();
+    std::vector<NativePeerSession> sessions;
+    for (const auto& slot : state_->slots) {
+        if (slot->session && !slot->evicted && !slot->peer_identity.empty() &&
+            slot->session->state() == SessionState::Active)
+            sessions.push_back({slot->peer_identity, slot->admitted_at});
+    }
+    return sessions;
+}
+void NativeEndpoint::end_unrecognized_sessions() noexcept {
+    if (state_->closing.load(std::memory_order_acquire)) return;
+    state_->end_unrecognized();
 }
 
 }  // namespace yume::runtime

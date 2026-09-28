@@ -40,6 +40,8 @@ using yume::runtime::ClientControlView;
 using yume::runtime::ControlServer;
 using yume::runtime::NativeClientState;
 using yume::runtime::NativeClientStatus;
+using yume::runtime::NativeLinkStatus;
+using yume::runtime::NativeServerStatus;
 using Json = nlohmann::json;
 
 void check(bool condition, const char* description) {
@@ -236,6 +238,94 @@ void test_status_text() {
     }
 }
 
+// A server reply names its listeners and client sessions, and with a cluster
+// the list's serial and expiry and each peer's outbound link and inbound
+// sessions.
+void test_server_status() {
+    const auto now = std::chrono::steady_clock::now();
+    NativeServerStatus status;
+    status.listeners.emplace_back(boost::asio::ip::make_address("192.0.2.1"),
+                                  443U);
+    status.listeners.emplace_back(boost::asio::ip::make_address("2001:db8::1"),
+                                  443U);
+    status.client_sessions = 5U;
+    const Json plain =
+        Json::parse(yume::runtime::server_status_reply(status, now));
+    check(plain.at("program") == "yumed" && plain.at("client_sessions") == 5 &&
+              plain.at("listeners") ==
+                  Json::array({"192.0.2.1:443", "[2001:db8::1]:443"}) &&
+              plain.at("cluster").is_null(),
+          "the server reply without a cluster is wrong");
+    const std::string expected_plain = std::string("yumed ") + yume::kVersion +
+                                       "\n"
+                                       "listening: 192.0.2.1:443\n"
+                                       "listening: [2001:db8::1]:443\n"
+                                       "client sessions: 5\n";
+    check(
+        require(yume::runtime::status_reply_text(
+            yume::runtime::server_status_reply(status, now))) == expected_plain,
+        "the server status text without a cluster is wrong");
+
+    auto& cluster = status.cluster.emplace();
+    cluster.cluster = std::string(64, 'c');
+    cluster.serial = 7U;
+    cluster.not_after = std::chrono::system_clock::from_time_t(4102444800);
+    cluster.self_name = "gloomy-data";
+    NativeLinkStatus up;
+    up.peer_name = "sweet-fox";
+    up.peer_identity = std::string(64, 'a');
+    up.outbound = connected_status(now);
+    up.inbound_sessions = 2U;
+    up.inbound_since = now - 65s;
+    NativeLinkStatus down;
+    down.peer_name = "far-owl";
+    down.peer_identity = std::string(64, 'b');
+    down.outbound.state = NativeClientState::Waiting;
+    down.outbound.retry_delay = 4000ms;
+    down.outbound.failed_attempts = 2U;
+    down.outbound.last_failure =
+        Status(StatusCode::Closed, std::string(400, 'x'));
+    cluster.links = {up, down};
+    const Json reply =
+        Json::parse(yume::runtime::server_status_reply(status, now));
+    const auto& links = reply.at("cluster").at("links");
+    check(reply.at("cluster").at("serial") == 7 &&
+              reply.at("cluster").at("not_after") == "2100-01-01T00:00:00Z" &&
+              reply.at("cluster").at("expired") == false &&
+              reply.at("cluster").at("self") == "gloomy-data" &&
+              links.size() == 2U,
+          "the cluster header is wrong");
+    check(links[0].at("peer") == "sweet-fox" &&
+              links[0].at("outbound").at("state") == "connected" &&
+              links[0].at("outbound").at("connected_ms") == 3723000 &&
+              links[0].at("inbound") ==
+                  Json({{"sessions", 2}, {"connected_ms", 65000}}),
+          "the connected link is wrong");
+    check(links[1].at("outbound").at("state") == "waiting" &&
+              links[1].at("outbound").at("retry_ms") == 4000 &&
+              links[1].at("outbound")
+                      .at("last_failure")
+                      .at("message")
+                      .get<std::string>()
+                      .size() == 160U &&
+              links[1].at("inbound") == Json({{"sessions", 0}}),
+          "the waiting link is wrong");
+    down.outbound.last_failure = Status(StatusCode::Closed, "peer closed");
+    cluster.links = {up, down};
+    cluster.expired = true;
+    const std::string expected =
+        expected_plain + "cluster: " + std::string(64, 'c') +
+        " serial 7, expired at 2100-01-01T00:00:00Z\n"
+        "this node: gloomy-data\n"
+        "link sweet-fox: outbound connected for 1 h 2 min 3 s, "
+        "inbound 2 sessions, the oldest for 1 min 5 s\n"
+        "link far-owl: outbound waiting, next attempt in 4 s "
+        "(last failure: closed, peer closed), inbound none\n";
+    check(require(yume::runtime::status_reply_text(
+              yume::runtime::server_status_reply(status, now))) == expected,
+          "the cluster status text is wrong");
+}
+
 // A status request gets the source's reply and nothing else answers it.
 void test_requests_and_errors() {
     Directory directory;
@@ -346,6 +436,7 @@ int main() {
     try {
         test_status_reply_fields();
         test_status_text();
+        test_server_status();
         test_requests_and_errors();
         test_deadline_and_limit();
         test_open_refusals();

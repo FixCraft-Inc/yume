@@ -435,11 +435,15 @@ Schema 1 is role tagged and contains these sections only:
   server may also set `max_egress_mbps`, from 1 to 1000000: the rate in
   megabits per second that stream payload shares between busy identities by
   their `weight`;
-- `control`, optional and client-only: `socket`, an absolute, normalized path
-  of at most 107 bytes that no forward uses. The running client serves its
-  status there to processes of its own user, and `yume --status` reads it.
-  The socket's directory must belong to that user and be closed to writes by
-  group and others. yume(1) describes the protocol.
+- `control`, optional: `socket`, an absolute, normalized path of at most 107
+  bytes that no forward uses. The running `yume` or `yumed` serves its status
+  there to processes of its own user, and `--status` reads it. The socket's
+  directory must belong to that user and be closed to writes by group and
+  others. yume(1) and yumed(8) describe the protocol;
+- `cluster`, optional and server-only: `operator_key`, `list`, `signature`
+  and `peers`, the file references of a cluster membership. `yume-setup`'s
+  cluster commands write them, and [cluster 1](../../protocol/CLUSTER_1.md)
+  gives their format and what the daemon checks.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
 and unsafe combinations. The CLIs accept config selection, validation, the

@@ -38,6 +38,12 @@ constexpr std::size_t kPingPayloadBytes = 8U;
 // The round-trip estimate is the smallest sample of this window, so it
 // follows a path that became slower. BBR keeps its minimum RTT the same way.
 constexpr auto kRoundTripWindow = std::chrono::seconds(10);
+// An outbound rotation starts once the epoch has used half of any of its
+// limits: its bytes, its records or its send lifetime. The epoch keeps
+// carrying records while REKEY_ACK is on its way, so on a path where half an
+// epoch lasts longer than a round trip the sender never pauses. The limits
+// themselves are unchanged and still end the epoch.
+constexpr auto kRotationStartAge = ytp1::kEpochSendLifetime / 2;
 
 std::size_t rekey_queue_reserve(const SessionLimits& limits) noexcept {
     return 2U * (ytp1::kFrameHeaderSize + kRekeyEpochBytes) +
@@ -770,6 +776,11 @@ private:
     std::uint64_t outbound_epoch_records_{0U};
     std::uint64_t inbound_epoch_bytes_{0U};
     std::uint64_t inbound_epoch_records_{0U};
+    // After the peer's REKEY_INIT the peer may keep sending in the epoch it
+    // is leaving until its first record of the new one, which closes it.
+    bool inbound_previous_open_{false};
+    std::uint64_t inbound_previous_bytes_{0U};
+    std::uint64_t inbound_previous_records_{0U};
     std::uint32_t epoch_payload_bytes_{ytp1::kMinEpochPayloadBytes};
     std::uint64_t epoch_record_limit_{
         ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes)};
@@ -1732,13 +1743,13 @@ Status SessionEngine::Impl::enqueue_record(
             std::lock_guard<std::mutex> lock(mutex_);
             rotate = state_ == SessionState::Active &&
                      !outbound_rekey_pending_ &&
-                     (payload.size() >
-                          epoch_payload_bytes_ - outbound_epoch_bytes_ ||
-                      outbound_epoch_records_ == epoch_record_limit_ ||
-                      (outbound_epoch_records_ != 0U &&
-                       std::chrono::steady_clock::now() -
-                               outbound_epoch_first_send_ >=
-                           ytp1::kEpochSendLifetime));
+                     outbound_epoch_records_ != 0U &&
+                     (payload.size() + outbound_epoch_bytes_ >
+                          epoch_payload_bytes_ / 2U ||
+                      outbound_epoch_records_ >= epoch_record_limit_ / 2U ||
+                      std::chrono::steady_clock::now() -
+                              outbound_epoch_first_send_ >=
+                          kRotationStartAge);
         }
         if (!rotate) break;
         ordering_lock.unlock();
@@ -1761,8 +1772,19 @@ Status SessionEngine::Impl::enqueue_record(
                                           "stream is closed");
             }
         }
-        if (protect && outbound_rekey_pending_ &&
-            !bypass_rekey_barrier) {
+        // While REKEY_ACK is outstanding, a record still goes out in the old
+        // epoch if that epoch has room for it and nothing is waiting ahead of
+        // it. Otherwise it waits for the new epoch, and so does every later
+        // record, so records keep their order.
+        const bool fits_old_epoch =
+            deferred_records_.empty() &&
+            payload.size() <= epoch_payload_bytes_ - outbound_epoch_bytes_ &&
+            outbound_epoch_records_ < epoch_record_limit_ &&
+            (outbound_epoch_records_ == 0U ||
+             std::chrono::steady_clock::now() - outbound_epoch_first_send_ <
+                 ytp1::kEpochSendLifetime);
+        if (protect && outbound_rekey_pending_ && !bypass_rekey_barrier &&
+            !fits_old_epoch) {
             // Copying happens after the state check. defer_record repeats all
             // resource checks while holding the lock it owns.
         } else {
@@ -2352,13 +2374,20 @@ Status SessionEngine::Impl::process_protected_record(
     }
     const RecordKeyToken token{
         read_u32(wire, 4U), read_u64(wire, 8U)};
+    bool previous_epoch = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (inbound_sequence_exhausted_ || token.epoch != inbound_epoch_ ||
+        previous_epoch = inbound_previous_open_ && inbound_epoch_ != 0U &&
+                         token.epoch == inbound_epoch_ - 1U;
+        if (inbound_sequence_exhausted_ ||
+            (token.epoch != inbound_epoch_ && !previous_epoch) ||
             token.sequence != next_inbound_sequence_) {
             return protocol_failure(
                 "protected record is replayed, out of order, or in the wrong epoch");
         }
+        // The peer's first record of the new epoch closes the old one for
+        // good. Records are ordered, so no old-epoch record may follow it.
+        if (!previous_epoch) inbound_previous_open_ = false;
         if (next_inbound_sequence_ ==
             std::numeric_limits<std::uint64_t>::max()) {
             inbound_sequence_exhausted_ = true;
@@ -2394,15 +2423,22 @@ Status SessionEngine::Impl::process_protected_record(
     if (!decoded.ok()) {
         return protocol_failure("protected YTP/1 record is malformed");
     }
+    if (decoded.value->header.type == ytp1::RecordType::RekeyInit &&
+        previous_epoch) {
+        return protocol_failure("REKEY_INIT arrived in the epoch it replaces");
+    }
     if (decoded.value->header.type != ytp1::RecordType::RekeyInit) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (decoded.value->payload.size() >
-                epoch_payload_bytes_ - inbound_epoch_bytes_ ||
-            inbound_epoch_records_ == epoch_record_limit_) {
+        std::uint64_t& bytes =
+            previous_epoch ? inbound_previous_bytes_ : inbound_epoch_bytes_;
+        std::uint64_t& records =
+            previous_epoch ? inbound_previous_records_ : inbound_epoch_records_;
+        if (decoded.value->payload.size() > epoch_payload_bytes_ - bytes ||
+            records == epoch_record_limit_) {
             return protocol_failure("peer exceeded the directional epoch limit");
         }
-        inbound_epoch_bytes_ += decoded.value->payload.size();
-        ++inbound_epoch_records_;
+        bytes += decoded.value->payload.size();
+        ++records;
     }
     CarrierCredit outer_credit = record.take_credit();
     return process_decoded_record(*decoded.value,
@@ -3466,7 +3502,10 @@ void SessionEngine::Impl::drain_pending_writes() noexcept {
         std::shared_ptr<StreamStateData> stream;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!terminal_locked() && !outbound_rekey_pending_) {
+            // A pending rotation holds publication only once records have
+            // started waiting for the new epoch.
+            if (!terminal_locked() &&
+                (!outbound_rekey_pending_ || deferred_records_.empty())) {
                 std::shared_ptr<StreamStateData> wrapped;
                 // The stream limit bounds this allocation-free scan. Skip a
                 // stream waiting on its own reader, never one waiting only
@@ -4039,7 +4078,7 @@ SessionEngine::Impl::rotation_deadline() const noexcept {
         outbound_epoch_records_ == 0U) {
         return std::nullopt;
     }
-    return outbound_epoch_first_send_ + ytp1::kEpochSendLifetime;
+    return outbound_epoch_first_send_ + kRotationStartAge;
 }
 
 Status SessionEngine::Impl::rotate_aged_epoch(
@@ -4048,7 +4087,7 @@ Status SessionEngine::Impl::rotate_aged_epoch(
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_ != SessionState::Active || outbound_rekey_pending_ ||
             outbound_epoch_records_ == 0U ||
-            now - outbound_epoch_first_send_ < ytp1::kEpochSendLifetime) {
+            now - outbound_epoch_first_send_ < kRotationStartAge) {
             return Status::success();
         }
     }
@@ -4166,12 +4205,17 @@ Status SessionEngine::Impl::process_rekey_init(
                 acknowledgement.value().size());
 
     // Provider acceptance authenticates INIT under the old inbound root and
-    // commits the candidate new inbound root. Mirror that epoch transition in
-    // the engine before the peer can send its first protected record under the
-    // new root. ACK itself travels in the explicitly authenticated raw form
-    // described in process_received() and consumes no directional record key.
+    // commits the candidate new inbound root, keeping the old one until the
+    // peer's first record of the new epoch. Mirror that transition here: the
+    // old epoch stays open, with its own counts toward its limits, for the
+    // records the peer sends before it switches. ACK itself travels in the
+    // explicitly authenticated raw form described in process_received() and
+    // consumes no directional record key.
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        inbound_previous_open_ = true;
+        inbound_previous_bytes_ = inbound_epoch_bytes_;
+        inbound_previous_records_ = inbound_epoch_records_;
         inbound_epoch_ = next_epoch;
         inbound_epoch_bytes_ = 0U;
         inbound_epoch_records_ = 0U;

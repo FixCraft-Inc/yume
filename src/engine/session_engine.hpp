@@ -151,8 +151,10 @@ public:
     // sole bare post-AUTH YTP record: accept_inbound_rekey() must authenticate
     // its returned payload under the candidate new root, and
     // finish_outbound_rekey() must verify that confirmation before committing
-    // the outbound root. This avoids retaining an old root when opposite
-    // directions rekey simultaneously.
+    // the outbound root. Until then the sender still seals in the old epoch.
+    // After accept_inbound_rekey(), open_record() must accept the old epoch
+    // until the first record of the new epoch opens, and then wipe the old
+    // inbound root and refuse the old epoch.
     virtual Result<Buffer> begin_outbound_rekey(
         std::uint32_t next_epoch) = 0;
     virtual Result<Buffer> accept_inbound_rekey(

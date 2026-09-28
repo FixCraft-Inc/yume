@@ -1183,6 +1183,14 @@ void grant_competing_credit(TestSession& session, std::uint64_t& sequence,
     CHECK(session.engine->state() == SessionState::Active);
 }
 
+// The old epoch keeps carrying records while REKEY_ACK is outstanding unless
+// one of its limits is spent. Waiting out its send lifetime spends one, so
+// records sent after that wait for the new epoch.
+void expire_outbound_epoch() {
+    std::this_thread::sleep_for(ytp1::kEpochSendLifetime +
+                                std::chrono::milliseconds(20));
+}
+
 std::vector<std::uint32_t> sent_data_streams(
     const TestSession& session, std::size_t begin) {
     std::vector<std::uint32_t> ids;
@@ -1542,7 +1550,9 @@ void test_reentrant_write_cannot_bypass_competing_stream() {
     CHECK(writes_ok);
 }
 
-void test_competing_streams_rotate_after_rekey_barrier() {
+// While REKEY_ACK is outstanding the old epoch still has room, so competing
+// streams keep their turns in it instead of waiting for the new epoch.
+void test_competing_streams_keep_turns_while_a_rekey_is_pending() {
     TestSession session;
     session.start_to_active();
     std::uint64_t sequence = 1U;
@@ -1562,15 +1572,16 @@ void test_competing_streams_rotate_after_rekey_barrier() {
     };
     for (int i = 0; i < 2; ++i) first->async_write(copy_bytes(data), {}, completion);
     for (int i = 0; i < 2; ++i) second->async_write(copy_bytes(data), {}, completion);
-    CHECK(completed == 0U);
+    CHECK((sent_data_streams(session, before) ==
+           std::vector<std::uint32_t>{1U, 1U, 3U, 3U}));
+    CHECK(completed == 4U);
+    CHECK(writes_ok);
+    const std::size_t sent_before_ack = session.carrier->sent.size();
     Buffer acknowledgement = rekey_payload(1U, std::byte{2});
     session.carrier->deliver(frame(
         ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
     CHECK(session.engine->state() == SessionState::Active);
-    CHECK((sent_data_streams(session, before) ==
-           std::vector<std::uint32_t>{1U, 3U, 1U, 3U}));
-    CHECK(completed == 4U);
-    CHECK(writes_ok);
+    CHECK(session.carrier->sent.size() == sent_before_ack);
 }
 
 void test_stop_retains_engine_through_owner_releasing_callbacks() {
@@ -2334,7 +2345,10 @@ void test_stop_drains_active_queued_and_rekey_deferred_writes() {
         std::array<StatusCode, 3U> codes{};
         const std::array<std::byte, 4U> payload{};
         for (std::size_t i = 0U; i < completions.size(); ++i) {
-            if (i == 2U) CHECK(session.engine->initiate_rekey().ok());
+            if (i == 2U) {
+                expire_outbound_epoch();
+                CHECK(session.engine->initiate_rekey().ok());
+            }
             session.handler->responder->async_write(
                 copy_bytes(payload), {}, [&, i](Status status, std::size_t bytes) {
                     ++completions[i];
@@ -2494,34 +2508,43 @@ std::size_t sent_epoch_payload_bytes(const FakeCarrier& carrier) {
     return total;
 }
 
+// The rotation starts once half the epoch's records are used, and replies
+// keep going out in the old epoch until its record limit. The next reply
+// waits for REKEY_ACK and leaves in the new epoch after a crossed rotation.
 void test_automatic_rekey_record_limit_and_crossed_rotation() {
     TestSession session;
     session.start_to_active();
     const std::array<std::byte, 8> ping{};
+    const std::uint64_t limit =
+        ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes);
     const auto initial_records = session.trace->sealed.size();
-    for (std::uint64_t sequence = 1U;
-         sequence <=
-         ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes) - initial_records;
-         ++sequence) {
+    std::uint64_t sequence = 1U;
+    while (sequence <= limit - initial_records) {
         session.carrier->deliver(protected_wire(
-            0U, sequence, frame(ytp1::RecordType::Ping, 0U, ping)));
+            0U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
     }
-    CHECK(session.trace->sealed.size() ==
-          ytp1::EpochRecordLimit(ytp1::kMinEpochPayloadBytes));
-    CHECK(session.trace->rekey_begun.empty());
-
-    // The next response waits behind INIT. The peer's last permitted record
-    // has been received, so its crossed INIT also proves the separate reserve.
-    session.carrier->deliver(protected_wire(
-        0U, 511U, frame(ytp1::RecordType::Ping, 0U, ping)));
-    CHECK(session.engine->state() == SessionState::Active);
+    // Every reply fit the old epoch, and INIT went out halfway through.
+    CHECK(session.trace->sealed.size() == limit + 1U);
     CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
-    CHECK(protected_record_type(session.carrier->sent.back()) ==
-          ytp1::RecordType::RekeyInit);
-    CHECK((session.trace->sealed.back() == RecordKeyToken{0U, 512U}));
+    std::size_t inits = 0U;
+    for (const auto& token : session.trace->sealed) CHECK(token.epoch == 0U);
+    for (const auto& wire : session.carrier->sent) {
+        if (wire.bytes()[1] == std::byte{0} &&
+            protected_record_type(wire) == ytp1::RecordType::RekeyInit) {
+            ++inits;
+        }
+    }
+    CHECK(inits == 1U);
+
+    // The old epoch is full, so the next reply waits for the ACK.
+    session.carrier->deliver(protected_wire(
+        0U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
+    CHECK(session.engine->state() == SessionState::Active);
+    CHECK(session.trace->sealed.size() == limit + 1U);
     const auto peer_init = rekey_payload(1U, std::byte{1});
     session.carrier->deliver(protected_wire(
-        0U, 512U, frame(ytp1::RecordType::RekeyInit, 0U, peer_init.bytes())));
+        0U, sequence++,
+        frame(ytp1::RecordType::RekeyInit, 0U, peer_init.bytes())));
     CHECK(session.engine->state() == SessionState::Active);
     CHECK(raw_record(session.carrier->sent.back()).header.type ==
           ytp1::RecordType::RekeyAck);
@@ -2529,14 +2552,53 @@ void test_automatic_rekey_record_limit_and_crossed_rotation() {
     session.carrier->deliver(frame(
         ytp1::RecordType::RekeyAck, 0U, peer_ack.bytes()));
     CHECK(session.engine->state() == SessionState::Active);
-    CHECK((session.trace->sealed.back() == RecordKeyToken{1U, 513U}));
+    CHECK((session.trace->sealed.back() == RecordKeyToken{1U, limit + 1U}));
     CHECK(protected_record_type(session.carrier->sent.back()) ==
           ytp1::RecordType::Pong);
     session.carrier->deliver(protected_wire(
-        1U, 513U, frame(ytp1::RecordType::Ping, 0U, ping)));
+        1U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
     CHECK(session.engine->state() == SessionState::Active);
-    CHECK((session.trace->sealed.back() == RecordKeyToken{1U, 514U}));
+    CHECK((session.trace->sealed.back() == RecordKeyToken{1U, limit + 2U}));
     CHECK(session.trace->rekey_begun.size() == 1U);
+}
+
+// After the peer's REKEY_INIT its old epoch stays open, still bounded by its
+// own limits, until the peer's first record of the new epoch. An old-epoch
+// record after that is refused, and so is an INIT in the epoch it replaces.
+void test_peer_epoch_stays_open_until_its_first_new_record() {
+    for (const bool late_old_record : {false, true}) {
+        TestSession session;
+        session.start_to_active();
+        const std::array<std::byte, 8> ping{};
+        std::uint64_t sequence = 1U;
+        const auto peer_init = rekey_payload(1U, std::byte{1});
+        session.carrier->deliver(protected_wire(
+            0U, sequence++,
+            frame(ytp1::RecordType::RekeyInit, 0U, peer_init.bytes())));
+        CHECK(raw_record(session.carrier->sent.back()).header.type ==
+              ytp1::RecordType::RekeyAck);
+        // Records the peer sent before it saw the ACK.
+        for (int i = 0; i < 2; ++i) {
+            session.carrier->deliver(protected_wire(
+                0U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
+            CHECK(session.engine->state() == SessionState::Active);
+        }
+        // A second INIT for the next epoch may not travel in the old one.
+        if (!late_old_record) {
+            const auto early = rekey_payload(2U, std::byte{1});
+            session.carrier->deliver(protected_wire(
+                0U, sequence++,
+                frame(ytp1::RecordType::RekeyInit, 0U, early.bytes())));
+            CHECK(session.engine->state() == SessionState::Failed);
+            continue;
+        }
+        session.carrier->deliver(protected_wire(
+            1U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
+        CHECK(session.engine->state() == SessionState::Active);
+        session.carrier->deliver(protected_wire(
+            0U, sequence++, frame(ytp1::RecordType::Ping, 0U, ping)));
+        CHECK(session.engine->state() == SessionState::Failed);
+    }
 }
 
 // A DATA record published behind a pending rekey has taken its connection
@@ -2549,9 +2611,10 @@ void test_dropped_deferred_data_returns_connection_credit() {
     session.start_to_active();
     session.open_peer_stream();
     std::uint64_t sequence = 2U;
-    // Fill the epoch, so the next record starts a rotation and waits for
-    // its ACK after it has taken its connection credit. The connection
-    // credit covers exactly that data and the next record.
+    // Fill the epoch. Its rotation starts halfway, and once the epoch is
+    // full the next record waits for the ACK after it has taken its
+    // connection credit. The connection credit covers exactly that data and
+    // the next record.
     auto budget = ytp1::kMinEpochPayloadBytes -
                   sent_epoch_payload_bytes(*session.carrier);
     constexpr std::uint32_t kExtra = 16U;
@@ -2567,7 +2630,8 @@ void test_dropped_deferred_data_returns_connection_credit() {
             [](Status status, std::size_t) { CHECK(status.ok()); });
         budget -= size;
     }
-    CHECK(session.trace->rekey_begun.empty());
+    // The rotation started halfway through, and the old epoch is now full.
+    CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
     int completions = 0;
     StatusCode code = StatusCode::Ok;
     const std::array<std::byte, kExtra> payload{};
@@ -2604,80 +2668,95 @@ void test_dropped_deferred_data_returns_connection_credit() {
            std::vector<std::uint32_t>{3U}));
 }
 
+// A record that takes the epoch past half its bytes starts the rotation. At
+// exactly half nothing rotates. A carrier that completes REKEY_ACK
+// synchronously puts that record in the new epoch.
 void test_automatic_rekey_byte_limit_and_synchronous_ack() {
-    for (const std::size_t remaining : {0U, 1U}) {
-        TestSession session;
-        session.start_to_active();
-        session.open_peer_stream();
-        session.carrier->deliver(protected_wire(0U, 2U, credit_frame(
-            ytp1::RecordType::ConnectionCredit, 0U, 2U * 1024U * 1024U)));
-        session.carrier->deliver(protected_wire(0U, 3U, credit_frame(
-            ytp1::RecordType::StreamCredit, 1U, 2U * 1024U * 1024U)));
-        std::size_t completions = 0U;
-        std::size_t writes = 0U;
-        const auto send = [&](std::size_t size) {
-            ++writes;
-            session.handler->responder->async_write(
-                require(Buffer::allocate(size, size)), {},
-                [&, size](Status status, std::size_t bytes) {
-                    CHECK(status.ok());
-                    CHECK(bytes == size);
-                    ++completions;
-                });
-        };
-        auto budget = ytp1::kMinEpochPayloadBytes - remaining -
-                      sent_epoch_payload_bytes(*session.carrier);
-        while (budget != 0U) {
-            const auto size = std::min<std::size_t>(budget, 64U * 1024U);
-            send(size);
-            budget -= size;
-        }
-        CHECK(completions == writes);
-        CHECK(session.trace->rekey_begun.empty());
-        CHECK(sent_epoch_payload_bytes(*session.carrier) ==
-              ytp1::kMinEpochPayloadBytes - remaining);
-        const auto last_sequence = session.trace->sealed.back().sequence;
-        session.carrier->on_send = [&] {
-            if (protected_record_type(session.carrier->sent.back()) !=
-                ytp1::RecordType::RekeyInit) return;
-            const auto acknowledgement = rekey_payload(1U, std::byte{2});
-            session.carrier->deliver(frame(
-                ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
-        };
-        send(remaining + 1U);
-        CHECK(completions == writes);
-        CHECK(session.engine->state() == SessionState::Active);
-        CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
-        CHECK(session.trace->rekey_finished == std::vector<std::uint32_t>{1U});
-        CHECK((session.trace->sealed.back() ==
-               RecordKeyToken{1U, last_sequence + 2U}));
-        CHECK(protected_record_type(session.carrier->sent.back()) ==
-              ytp1::RecordType::Data);
-        CHECK(protected_record(session.carrier->sent.back()).payload.size() ==
-              remaining + 1U);
-        session.carrier->on_send = {};
-    }
-}
-
-void test_automatic_rekey_send_lifetime() {
     TestSession session;
     session.start_to_active();
-    const auto sent_before_wait = session.carrier->sent.size();
-    std::this_thread::sleep_for(
-        ytp1::kEpochSendLifetime + std::chrono::milliseconds(20));
-    CHECK(session.carrier->sent.size() == sent_before_wait);
-    const std::array<std::byte, 8> ping{};
+    session.open_peer_stream();
+    session.carrier->deliver(
+        protected_wire(0U, 2U,
+                       credit_frame(ytp1::RecordType::ConnectionCredit, 0U,
+                                    2U * 1024U * 1024U)));
     session.carrier->deliver(protected_wire(
-        0U, 1U, frame(ytp1::RecordType::Ping, 0U, ping)));
+        0U, 3U,
+        credit_frame(ytp1::RecordType::StreamCredit, 1U, 2U * 1024U * 1024U)));
+    std::size_t completions = 0U;
+    std::size_t writes = 0U;
+    const auto send = [&](std::size_t size) {
+        ++writes;
+        session.handler->responder->async_write(
+            require(Buffer::allocate(size, size)), {},
+            [&, size](Status status, std::size_t bytes) {
+                CHECK(status.ok());
+                CHECK(bytes == size);
+                ++completions;
+            });
+    };
+    const std::size_t half = ytp1::kMinEpochPayloadBytes / 2U;
+    auto budget = half - sent_epoch_payload_bytes(*session.carrier);
+    while (budget != 0U) {
+        const auto size = std::min<std::size_t>(budget, 64U * 1024U);
+        send(size);
+        budget -= size;
+    }
+    CHECK(completions == writes);
+    CHECK(session.trace->rekey_begun.empty());
+    CHECK(sent_epoch_payload_bytes(*session.carrier) == half);
+    const auto last_sequence = session.trace->sealed.back().sequence;
+    session.carrier->on_send = [&] {
+        if (protected_record_type(session.carrier->sent.back()) !=
+            ytp1::RecordType::RekeyInit)
+            return;
+        const auto acknowledgement = rekey_payload(1U, std::byte{2});
+        session.carrier->deliver(
+            frame(ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
+    };
+    send(1U);
+    CHECK(completions == writes);
     CHECK(session.engine->state() == SessionState::Active);
     CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
+    CHECK(session.trace->rekey_finished == std::vector<std::uint32_t>{1U});
+    CHECK((session.trace->sealed.back() ==
+           RecordKeyToken{1U, last_sequence + 2U}));
     CHECK(protected_record_type(session.carrier->sent.back()) ==
-          ytp1::RecordType::RekeyInit);
-    const auto acknowledgement = rekey_payload(1U, std::byte{2});
-    session.carrier->deliver(frame(
-        ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
-    CHECK(session.engine->state() == SessionState::Active);
-    CHECK((session.trace->sealed.back() == RecordKeyToken{1U, 3U}));
+          ytp1::RecordType::Data);
+    CHECK(protected_record(session.carrier->sent.back()).payload.size() == 1U);
+    session.carrier->on_send = {};
+}
+
+// An epoch that has been sending for half its lifetime starts the rotation
+// and still carries the reply. Past the whole lifetime the reply waits for
+// the new epoch.
+void test_automatic_rekey_send_lifetime() {
+    for (const bool expired : {false, true}) {
+        TestSession session;
+        session.start_to_active();
+        const auto sent_before_wait = session.carrier->sent.size();
+        const auto age =
+            expired ? ytp1::kEpochSendLifetime : ytp1::kEpochSendLifetime / 2;
+        std::this_thread::sleep_for(age + std::chrono::milliseconds(20));
+        CHECK(session.carrier->sent.size() == sent_before_wait);
+        const auto sealed_before = session.trace->sealed.size();
+        const auto next_sequence = session.trace->sealed.back().sequence + 1U;
+        const std::array<std::byte, 8> ping{};
+        session.carrier->deliver(
+            protected_wire(0U, 1U, frame(ytp1::RecordType::Ping, 0U, ping)));
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
+        // INIT, and the reply unless the epoch has expired.
+        CHECK(session.trace->sealed.size() ==
+              sealed_before + (expired ? 1U : 2U));
+        CHECK(protected_record_type(session.carrier->sent.back()) ==
+              (expired ? ytp1::RecordType::RekeyInit : ytp1::RecordType::Pong));
+        const auto acknowledgement = rekey_payload(1U, std::byte{2});
+        session.carrier->deliver(
+            frame(ytp1::RecordType::RekeyAck, 0U, acknowledgement.bytes()));
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK((session.trace->sealed.back() ==
+               RecordKeyToken{expired ? 1U : 0U, next_sequence + 1U}));
+    }
 }
 
 void test_rekey_controls_have_reserved_queue_capacity() {
@@ -2848,6 +2927,7 @@ void pause_deferred_allocation(std::size_t size) {
 void test_rekey_ack_waits_for_deferred_publication() {
     TestSession session;
     session.start_to_active();
+    expire_outbound_epoch();
     CHECK(session.engine->initiate_rekey().ok());
     const auto open = ytp1::EncodeOpen(
         {ytp1::ServiceKind::ByteStream, "echo", {}});
@@ -2926,6 +3006,7 @@ void test_rekey_flush_preserves_unpublished_reservations() {
     TestSession session(true, false, limits);
     session.start_to_active();
     session.open_peer_stream();
+    expire_outbound_epoch();
     CHECK(session.engine->initiate_rekey().ok());
     const std::array<std::byte, 8> ping{};
     session.carrier->deliver(protected_wire(
@@ -2967,6 +3048,7 @@ void test_rekey_flush_preserves_unpublished_reservations() {
 void test_stop_during_rekey_flush_settles_remaining_records() {
     TestSession session;
     session.start_to_active();
+    expire_outbound_epoch();
     CHECK(session.engine->initiate_rekey().ok());
     const std::array<std::byte, 8> ping{};
     session.carrier->deliver(protected_wire(
@@ -3403,6 +3485,7 @@ void test_unacknowledged_streams_remain_bounded() {
 void test_cancel_unpublished_open_behind_rekey() {
     TestSession session;
     session.start_to_active();
+    expire_outbound_epoch();
     CHECK(session.engine->initiate_rekey().ok());
     const auto before_open = session.carrier->sent.size();
     CancellationSource cancellation;
@@ -3916,9 +3999,10 @@ void test_session_uses_the_smaller_advertised_epoch() {
                 require(Buffer::allocate(size, size)), {},
                 [](Status status, std::size_t) { CHECK(status.ok()); });
         };
-        // Past the old fixed 1 MiB, the epoch still holds until its
-        // negotiated size.
-        auto budget = epochs.used - sent_epoch_payload_bytes(*session.carrier);
+        // Rotation starts past half the negotiated epoch, which for 2 MiB is
+        // already past the whole of the old fixed 1 MiB.
+        auto budget =
+            epochs.used / 2U - sent_epoch_payload_bytes(*session.carrier);
         while (budget != 0U) {
             const auto size = std::min<std::size_t>(budget, 64U * 1024U);
             send(size);
@@ -3963,7 +4047,7 @@ void run_test() {
     test_competing_streams_skip_stalled_reader();
     test_competing_small_writes_cannot_take_reserved_connection_credit();
     test_reentrant_write_cannot_bypass_competing_stream();
-    test_competing_streams_rotate_after_rekey_barrier();
+    test_competing_streams_keep_turns_while_a_rekey_is_pending();
     test_stop_retains_engine_through_owner_releasing_callbacks();
     test_session_closed_notification();
     test_pending_read_settled_after_allocation_failure();
@@ -3984,6 +4068,7 @@ void run_test() {
     test_transport_instance_provenance();
     test_rekey_resource_limit_contract();
     test_automatic_rekey_record_limit_and_crossed_rotation();
+    test_peer_epoch_stays_open_until_its_first_new_record();
     test_automatic_rekey_byte_limit_and_synchronous_ack();
     test_automatic_rekey_send_lifetime();
     test_rekey_controls_have_reserved_queue_capacity();

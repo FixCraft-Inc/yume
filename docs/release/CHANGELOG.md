@@ -377,8 +377,18 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   connections it accepts, as `yume` already did on its own. Nagle had held
   small records such as AUTH, credit and REKEY_INIT behind unacknowledged
   data for a round trip. The endpoint's rekey timer also rotates a used epoch
-  as soon as it is 500 ms old, so a request after an idle moment no longer
+  without waiting for a send, so a request after an idle moment no longer
   waits a round trip on each side for REKEY_ACK.
+- **Key rotation without a pause.** A sender sent nothing protected between
+  REKEY_INIT and REKEY_ACK, so every rotation cost a round trip, about 29 % of
+  the time at 200 ms with 500 ms epochs, and a request that met a rotation
+  took an extra round trip. A rotation now starts once an epoch has used half
+  its payload, half its records or half its 500 ms send lifetime, and the
+  sender keeps using the old epoch, within its limits, until the ACK arrives.
+  The receiver keeps the old inbound root after accepting INIT and wipes it
+  at the peer's first record of the new epoch. Epoch limits are unchanged, a
+  direction holds at most one old root, and an INIT in the epoch it replaces
+  now ends the session.
 - **Connection credit of dropped data.** A DATA or PACKET record that started
   a key rotation waited behind it with its connection credit already taken.
   If its stream closed before REKEY_ACK arrived, the record was dropped

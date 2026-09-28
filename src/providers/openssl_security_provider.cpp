@@ -929,9 +929,11 @@ public:
         if (!valid_inbound_token(token)) {
             return fail_record("inbound record key token is not exact");
         }
+        const bool previous = is_previous_inbound_epoch(token.epoch);
         try {
             SecretBytes material = derive_record_material(
-                *credentials_->crypto, inbound_root_.span(),
+                *credentials_->crypto,
+                previous ? previous_inbound_root_.span() : inbound_root_.span(),
                 peer_role(role_), token, session_binding_);
             const auto aad = record_aad(peer_role(role_), token);
             std::vector<std::uint8_t> plaintext = open_aes_gcm(
@@ -947,6 +949,11 @@ public:
                 return buffer;
             }
             consume_inbound_sequence();
+            // The peer's first record of the new epoch retires the old root.
+            if (!previous && previous_inbound_open_) {
+                previous_inbound_root_.wipe();
+                previous_inbound_open_ = false;
+            }
             return buffer;
         } catch (const std::bad_alloc&) {
             mark_failed();
@@ -1044,9 +1051,11 @@ public:
         if (state_ == ProviderState::Cancelled) {
             return Result<Buffer>(cancelled_status());
         }
+        // An INIT travels in the current epoch, so opening it has already
+        // retired any older root: two old epochs are never open at once.
         if (state_ != ProviderState::Established ||
             inbound_epoch_ == std::numeric_limits<std::uint32_t>::max() ||
-            next_epoch != inbound_epoch_ + 1U) {
+            next_epoch != inbound_epoch_ + 1U || previous_inbound_open_) {
             return Result<Buffer>(Status(
                 StatusCode::FailedPrecondition,
                 "inbound rekey epoch or state is invalid"));
@@ -1133,6 +1142,8 @@ public:
             if (!buffer.ok()) {
                 return buffer;
             }
+            previous_inbound_root_ = std::move(inbound_root_);
+            previous_inbound_open_ = true;
             inbound_root_ = std::move(new_root);
             inbound_epoch_ = next_epoch;
             return buffer;
@@ -1272,6 +1283,8 @@ private:
         outbound_rekey_.reset();
         outbound_root_.wipe();
         inbound_root_.wipe();
+        previous_inbound_root_.wipe();
+        previous_inbound_open_ = false;
         OPENSSL_cleanse(session_binding_.data(), session_binding_.size());
         session_binding_.fill(0U);
         outbound_epoch_ = 0U;
@@ -1291,8 +1304,14 @@ private:
 
     bool valid_inbound_token(RecordKeyToken token) const noexcept {
         return !inbound_sequence_exhausted_ &&
-               token.epoch == inbound_epoch_ &&
+               (token.epoch == inbound_epoch_ ||
+                is_previous_inbound_epoch(token.epoch)) &&
                token.sequence == next_inbound_sequence_;
+    }
+
+    bool is_previous_inbound_epoch(std::uint32_t epoch) const noexcept {
+        return previous_inbound_open_ && inbound_epoch_ != 0U &&
+               epoch == inbound_epoch_ - 1U;
     }
 
     void consume_outbound_sequence() noexcept {
@@ -1337,6 +1356,10 @@ private:
         session_binding_{};
     SecretBytes outbound_root_;
     SecretBytes inbound_root_;
+    // The peer may keep sending in the epoch its REKEY_INIT replaces until
+    // its first record of the new epoch. That root stays here until then.
+    SecretBytes previous_inbound_root_;
+    bool previous_inbound_open_{false};
     std::uint32_t outbound_epoch_{0U};
     std::uint32_t inbound_epoch_{0U};
     std::uint64_t next_outbound_sequence_{0U};

@@ -44,6 +44,18 @@ def check_payload(socks_port: int, host: str, target_port: int) -> None:
         raise session.SessionFailure("destination payload differs")
 
 
+def check_first_payload(socks_port: int, target_port: int) -> None:
+    """A new client's first request, retried until its session is up.
+
+    The SOCKS5 port opens before the session authenticates, and a request
+    without a session is refused rather than queued.
+    """
+    length, digest, _ = session.get_through_socks(socks_port, "127.0.0.1", target_port,
+                                                  time.monotonic() + 30)
+    if length != PAYLOAD_BYTES or digest != session.payload_digest(PAYLOAD_BYTES):
+        raise session.SessionFailure(f"tunnelled payload differs: {length} of {PAYLOAD_BYTES} bytes")
+
+
 def check_dns_destinations(socks_port: int, target_port: int) -> None:
     # A successful named route proves that resolution and configured policy are
     # composed. Each mixed set must fail even when its first answer is allowed.
@@ -484,7 +496,7 @@ def check_outer_carrier_evidence(yume: Path, kit: Path, environment: dict[str, s
             session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
             if report_path.stat().st_mode & 0o777 != 0o600:
                 raise session.SessionFailure("the evidence file is not reserved with mode 0600")
-            check_payload(socks_port, "127.0.0.1", target_port)
+            check_first_payload(socks_port, target_port)
             # Exit status 0 requires a complete report, so the WebSocket CLOSE
             # was echoed and the connection ended.
             session.stop_process(client, "yume with outer-carrier evidence")
@@ -529,7 +541,7 @@ def check_control_status(yume: Path, kit: Path, environment: dict[str, str],
                                   stdout=log, stderr=subprocess.STDOUT)
         try:
             session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
-            check_payload(socks_port, "127.0.0.1", target_port)
+            check_first_payload(socks_port, target_port)
             if socket_path.stat().st_mode & 0o777 != 0o600:
                 raise session.SessionFailure("the control socket is not mode 0600")
             result = status()

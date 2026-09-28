@@ -121,6 +121,9 @@ and
 .B SIGTERM
 request shutdown of listeners and sessions, followed by removal of owned
 TUN networking.
+The session closes its WebSocket the way the captured browser does and
+waits up to three seconds for the server's answer before it ends the
+connection.
 .B SIGPIPE
 is ignored.
 .SH EXIT STATUS

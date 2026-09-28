@@ -316,7 +316,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             if (slot->bootstrap) slot->bootstrap->cancel();
             if (slot->session) slot->session->stop(Status(StatusCode::Closed));
         }
-        if (tcp) tcp->cancel();
+        // Bootstraps cancel their pending connects, and each session ends its
+        // own connection. The client's I/O is not cancelled here, so a
+        // graceful carrier close still reaches the server.
         if (owns_route_provider) options.route_provider->cancel();
         if (owns_resolver) options.resolver->close();
     }
@@ -930,15 +932,11 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                     state->options.resolver));
                 require(builder.register_byte_channel_provider(state->tcp));
             }
-            require(builder.register_secure_channel_provider(credentials.tls_provider));
-            H2Dispatch dispatch{
-                [context](std::function<void()> task) { boost::asio::post(context->executor(), std::move(task)); },
-                [context](ControlTask& task, std::shared_ptr<void> owner) noexcept {
-                    context->submit(task, std::move(owner));
-                }};
+            require(builder.register_secure_channel_provider(
+                credentials.tls_provider));
             require(builder.register_carrier_provider(
                 require(H2DuplexCarrierProvider::create(
-                    context->affinity(), std::move(dispatch),
+                    context->affinity(), make_asio_h2_dispatch(context),
                     {endpoint.host(), endpoint.port(),
                      h2_duplex_limits_for_budget(
                          config.limits().max_queued_bytes())},

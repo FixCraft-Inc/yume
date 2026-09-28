@@ -403,6 +403,21 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   at the peer's first record of the new epoch. Epoch limits are unchanged, a
   direction holds at most one old root, and an INIT in the epoch it replaces
   now ends the session.
+- **The carrier closes like the captured browser.** A stopping `yume` used to
+  drop its TLS connection. Its carrier now sends one HTTP/2 PING when it has
+  read nothing for more than ten seconds, then a masked WebSocket CLOSE of the
+  captured 18 bytes. The server echoes it and ends the stream, as the
+  captured Node server did, and the client ends the connection when the echo
+  arrives or after three seconds. The same PING rule, Chromium's, applies to
+  any write after such an idle. Neither side sends GOAWAY, which the capture
+  does not show and Chrome sends only on errors. The server used to close the
+  connection before its echo was written. The endpoint no longer cancels the
+  client's TCP I/O on close, so the CLOSE is not cut off.
+- **More of Chrome's page load.** The client now sends its preface PING in a
+  TLS record of its own, as the captured Chrome session does, and fetches
+  `/favicon.ico` once the WebSocket is open, with the headers and priority of
+  the captured stream-9 request. `scripts/generate_transport_profiles.py`
+  takes that request from the fixture's observations.
 - **Connection credit of dropped data.** A DATA or PACKET record that started
   a key rotation waited behind it with its connection credit already taken.
   If its stream closed before REKEY_ACK arrived, the record was dropped

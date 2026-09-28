@@ -69,7 +69,9 @@ Set the listen port of the configuration's only SOCKS5 adapter, 1 to 65535.
 ## SIGNALS
 
 **SIGINT** and **SIGTERM** request shutdown of listeners and sessions, followed
-by removal of owned TUN networking.
+by removal of owned TUN networking. The session closes its WebSocket the way
+the captured browser does and waits up to three seconds for the server's
+answer before it ends the connection.
 **SIGPIPE** is ignored.
 
 @include shared/native_exit_status.part

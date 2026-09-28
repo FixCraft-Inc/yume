@@ -126,12 +126,18 @@ WebSocketBytes WebSocketCodec::EncodePing(const std::uint8_t* data,
     return EncodeFrame(0x9, data, size);
 }
 
-WebSocketBytes WebSocketCodec::EncodeClose(std::uint16_t code) {
-    std::array<std::uint8_t, 2> payload{
+WebSocketBytes WebSocketCodec::EncodeClose(std::uint16_t code,
+                                           std::string_view reason) {
+    if (reason.size() > 123) {
+        throw std::runtime_error("WebSocket close reason exceeds 123 bytes");
+    }
+    std::array<std::uint8_t, 125> payload{
         static_cast<std::uint8_t>((code >> 8) & 0xffU),
         static_cast<std::uint8_t>(code & 0xffU)};
+    std::copy(reason.begin(), reason.end(), payload.begin() + 2);
+    auto frame = EncodeFrame(0x8, payload.data(), 2 + reason.size());
     close_sent_ = true;
-    return EncodeFrame(0x8, payload.data(), payload.size());
+    return frame;
 }
 
 void WebSocketCodec::Feed(const std::uint8_t* data, std::size_t size) {

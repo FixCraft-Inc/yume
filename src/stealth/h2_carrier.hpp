@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -38,6 +39,17 @@ inline constexpr std::size_t kAdmittedH2ReceiveWindowBytes =
     8U * 1024U * 1024U;
 inline constexpr std::size_t kMaxAdmittedH2ReceiveWindowBytes =
     128U * 1024U * 1024U;
+
+// Chrome sends one PING before it writes to a session that has read nothing
+// for longer than this, and sends no second one until the first is answered
+// and this long has passed (Chromium's SpdySession "connection at risk of
+// loss" and hung intervals, both 10 seconds). The chrome151-node24-v1 capture
+// shows it once: after 42 idle seconds, immediately before the WebSocket
+// CLOSE.
+inline constexpr std::chrono::seconds kH2PrefacePingIdle{10};
+
+// Monotonic time for idle decisions. Null selects std::chrono::steady_clock.
+using H2CarrierClock = std::chrono::steady_clock::time_point (*)() noexcept;
 
 struct H2Request {
     std::int32_t stream_id{-1};
@@ -98,9 +110,9 @@ std::string FormatH2CarrierStats(const H2CarrierStats& stats);
 // (RFC 8441), never raw YUME bytes.
 class H2Carrier {
 public:
-    explicit H2Carrier(
-        H2CarrierRole role,
-        std::shared_ptr<OuterCarrierTrace> outer_trace = {});
+    explicit H2Carrier(H2CarrierRole role,
+                       std::shared_ptr<OuterCarrierTrace> outer_trace = {},
+                       H2CarrierClock clock = nullptr);
     H2Carrier(const H2Carrier&) = delete;
     H2Carrier& operator=(const H2Carrier&) = delete;
     H2Carrier(H2Carrier&&) noexcept;
@@ -149,6 +161,10 @@ public:
     void Feed(const std::uint8_t* data, std::size_t size);
     void Feed(const H2Bytes& data) { Feed(data.data(), data.size()); }
     H2Bytes TakeOutbound();
+    // The same bytes as TakeOutbound(), cut where the profiled browser starts
+    // a new socket write. Chrome writes its preface PING alone, so a caller
+    // that sends each part as its own write gives it a TLS record of its own.
+    std::vector<H2Bytes> TakeOutboundWrites();
 
     bool SendBinary(const std::uint8_t* data, std::size_t size);
     bool SendBinary(const H2Bytes& data) { return SendBinary(data.data(), data.size()); }
@@ -173,7 +189,15 @@ public:
     H2CarrierStats stats() const noexcept;
 #endif
 
-    void GracefulClose(std::uint16_t websocket_code = 1000);
+    // Client only. Queues the captured browser's close: the preface PING when
+    // the session has been idle (see kH2PrefacePingIdle), then a masked
+    // WebSocket CLOSE of the profile's payload length. No GOAWAY follows: the
+    // capture records none, and Chrome sends GOAWAY only when it closes a
+    // session on an error. The server's echo ends the carrier stream. Returns
+    // false when nothing was queued because the carrier is not open.
+    bool GracefulClose(std::uint16_t websocket_code = 1000);
+    bool websocket_close_received() const noexcept;
+
     void RecordCloseWireResult(bool completed) noexcept;
     bool capture_observer_active() const noexcept;
 

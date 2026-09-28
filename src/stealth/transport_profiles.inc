@@ -50,6 +50,25 @@ constexpr std::array<HeaderTemplate, 13> kProfile0ConnectHeaders{
     HeaderTemplate{"sec-websocket-extensions", Source::Literal, "permessage-deflate; client_max_window_bits"},
 };
 
+constexpr std::array<HeaderTemplate, 16> kProfile0FaviconHeaders{
+    HeaderTemplate{":method", Source::Literal, "GET"},
+    HeaderTemplate{":authority", Source::Authority, ""},
+    HeaderTemplate{":scheme", Source::Literal, "https"},
+    HeaderTemplate{":path", Source::Literal, "/favicon.ico"},
+    HeaderTemplate{"sec-ch-ua-platform", Source::ClientHintPlatform, ""},
+    HeaderTemplate{"user-agent", Source::UserAgent, ""},
+    HeaderTemplate{"sec-ch-ua", Source::ClientHintBrand, ""},
+    HeaderTemplate{"sec-ch-ua-mobile", Source::ClientHintMobile, ""},
+    HeaderTemplate{"accept", Source::Literal, "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"},
+    HeaderTemplate{"sec-fetch-site", Source::Literal, "same-origin"},
+    HeaderTemplate{"sec-fetch-mode", Source::Literal, "no-cors"},
+    HeaderTemplate{"sec-fetch-dest", Source::Literal, "image"},
+    HeaderTemplate{"referer", Source::RootReferer, ""},
+    HeaderTemplate{"accept-encoding", Source::Literal, "gzip, deflate, br, zstd"},
+    HeaderTemplate{"accept-language", Source::Literal, "en-US,en;q=0.9"},
+    HeaderTemplate{"priority", Source::Literal, "u=1, i"},
+};
+
 constexpr std::array<HeaderTemplate, 16> kProfile0Asset0Headers{
     HeaderTemplate{":method", Source::Literal, "GET"},
     HeaderTemplate{":authority", Source::Authority, ""},
@@ -173,7 +192,9 @@ const Profile kProfile0Value{
     RequestTemplate{kProfile0PrimingHeaders, H2Priority{0, 256, true}},
     RequestTemplate{kProfile0ConnectHeaders, H2Priority{0, 147, true}},
     kProfile0Assets,
+    RequestTemplate{kProfile0FaviconHeaders, H2Priority{0, 220, true}},
     16384U,
+    18U,
 };
 
 inline constexpr std::string_view kActiveProfileId = "chrome151-node24-v1";

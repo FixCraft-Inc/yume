@@ -456,15 +456,7 @@ public:
         if (door) door->close();
         door.reset();
     }
-    H2Dispatch post() const {
-        return {
-            [context = runtime.context()](std::function<void()> task) {
-                boost::asio::post(context->executor(), std::move(task));
-            },
-            [context = runtime.context()](ControlTask& task, std::shared_ptr<void> owner) noexcept {
-                context->submit(task, std::move(owner));
-            }};
-    }
+    H2Dispatch post() const { return make_asio_h2_dispatch(runtime.context()); }
     std::uint16_t port() const { return door->local_endpoint().port(); }
     std::future<Result<AcceptedCarrier>> accept(CancellationToken token = {}) {
         auto promise = std::make_shared<std::promise<Result<AcceptedCarrier>>>();

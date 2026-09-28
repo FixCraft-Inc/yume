@@ -355,9 +355,9 @@ public:
             requested = requested_terminal_;
             credit = std::exchange(returned_credit_, 0U);
         }
-        if (terminal_) return;
+        if (terminal_ || closing_) return;
         if (requested != StatusCode::Ok) {
-            fail(Status::diagnostic(requested));
+            if (!begin_graceful_close()) fail(Status::diagnostic(requested));
             return;
         }
         if (opening_ && create_token_.is_cancelled()) {
@@ -462,6 +462,12 @@ private:
                 invoke_noexcept(completion, std::move(result));
                 return;
             }
+            if (closing_) {
+                Result<ReceivedRecord> result(Status::diagnostic(
+                    StatusCode::Closed, "H2 carrier is closing"));
+                invoke_noexcept(completion, std::move(result));
+                return;
+            }
             if (pending_receive_.has_value()) {
                 Result<ReceivedRecord> result(Status::diagnostic(
                     StatusCode::AlreadyExists,
@@ -553,7 +559,7 @@ private:
                 invoke_noexcept(completion, terminal_status_, 0U);
                 return;
             }
-            if (peer_closed_ || !h2_->carrier_active()) {
+            if (closing_ || peer_closed_ || !h2_->carrier_active()) {
                 invoke_noexcept(
                     completion,
                     Status::diagnostic(StatusCode::Closed,
@@ -818,6 +824,14 @@ private:
         if (decoded.empty()) {
             return;
         }
+        if (closing_) {
+            // Nothing reads records any more. Retire their credit at once so
+            // a peer still sending can reach its close.
+            if (!h2_->ConsumeTunnelBytes(decoded.size())) {
+                fail(h2_failure("retire HTTP/2 credit while closing"));
+            }
+            return;
+        }
         if (owned_credit_bytes_ > limits_.max_retained_receive_bytes ||
             decoded.size() > limits_.max_retained_receive_bytes -
                                  owned_credit_bytes_) {
@@ -840,9 +854,11 @@ private:
     }
 
     bool can_read() const noexcept {
-        return !terminal_ && !peer_closed_ && !read_in_flight_ &&
-            records_.size() < limits_.max_buffered_records &&
-            owned_credit_bytes_ < limits_.max_retained_receive_bytes;
+        if (terminal_ || read_in_flight_) return false;
+        if (closing_) return true;
+        return !peer_closed_ &&
+               records_.size() < limits_.max_buffered_records &&
+               owned_credit_bytes_ < limits_.max_retained_receive_bytes;
     }
 
     void start_read() {
@@ -895,16 +911,21 @@ private:
         if (terminal_) {
             return;
         }
-        if (!result.ok()) {
-            fail(result.status());
-            return;
-        }
-        Buffer plaintext = std::move(result).take_value();
-        if (plaintext.empty()) {
-            fail(Status::diagnostic(StatusCode::Closed,
+        if (!result.ok() || result.value().empty()) {
+            if (closing_) {
+                // The peer ended the connection. That completes a server's
+                // wait, and a client's once the echo has arrived.
+                finish_graceful_close(!close_initiated_ ||
+                                      h2_->websocket_close_received());
+                return;
+            }
+            fail(!result.ok() ? result.status()
+                              : Status::diagnostic(
+                                    StatusCode::Closed,
                                     "secure channel returned an empty read"));
             return;
         }
+        Buffer plaintext = std::move(result).take_value();
         const auto bytes = plaintext.bytes();
         h2_->Feed(reinterpret_cast<const std::uint8_t*>(bytes.data()),
                   bytes.size());
@@ -949,18 +970,22 @@ private:
         if (terminal_) {
             return;
         }
-        obfs::H2Bytes wire = h2_->TakeOutbound();
+        // Each part the H2 carrier hands over stays a write of its own, so
+        // the TLS records follow the profiled browser's write boundaries.
+        std::vector<obfs::H2Bytes> writes = h2_->TakeOutboundWrites();
         if (h2_->failed()) {
             fail(h2_failure("serialize HTTP/2 output"));
             return;
         }
-        if (wire.empty()) {
+        std::size_t total = 0U;
+        for (const auto& write : writes) total += write.size();
+        if (total == 0U) {
             return;
         }
         if (pending_secure_write_bytes_ >
                 limits_.max_pending_secure_write_bytes ||
-            wire.size() > limits_.max_pending_secure_write_bytes -
-                              pending_secure_write_bytes_) {
+            total > limits_.max_pending_secure_write_bytes -
+                        pending_secure_write_bytes_) {
             fail(Status::diagnostic(
                 StatusCode::ResourceExhausted,
                 "H2 secure-write queue exceeded its byte bound"));
@@ -974,26 +999,28 @@ private:
             return;
         }
         std::deque<Buffer> admitted;
-        std::size_t offset = 0U;
-        while (offset < wire.size()) {
-            const std::size_t count =
-                std::min(channel_limit, wire.size() - offset);
-            auto copy = Buffer::copy_from(
-                std::as_bytes(std::span<const std::uint8_t>(
-                    wire.data() + offset, count)),
-                channel_limit);
-            if (!copy.ok()) {
-                fail(copy.status());
-                return;
+        for (const auto& wire : writes) {
+            std::size_t offset = 0U;
+            while (offset < wire.size()) {
+                const std::size_t count =
+                    std::min(channel_limit, wire.size() - offset);
+                auto copy = Buffer::copy_from(
+                    std::as_bytes(std::span<const std::uint8_t>(
+                        wire.data() + offset, count)),
+                    channel_limit);
+                if (!copy.ok()) {
+                    fail(copy.status());
+                    return;
+                }
+                admitted.push_back(std::move(copy).take_value());
+                offset += count;
             }
-            admitted.push_back(std::move(copy).take_value());
-            offset += count;
         }
         while (!admitted.empty()) {
             secure_writes_.push_back(std::move(admitted.front()));
             admitted.pop_front();
         }
-        pending_secure_write_bytes_ += wire.size();
+        pending_secure_write_bytes_ += total;
     }
 
     void start_write() {
@@ -1073,7 +1100,7 @@ private:
         if (terminal_) {
             return;
         }
-        parse_records();
+        if (!closing_) parse_records();
         if (terminal_) {
             return;
         }
@@ -1085,10 +1112,16 @@ private:
         start_write();
         maybe_complete_send();
         start_read();
+        maybe_finish_graceful_close();
     }
 
     void handle_peer_close() {
         if (terminal_ || peer_closed_) {
+            return;
+        }
+        if (closing_) {
+            peer_closed_ = true;
+            pump();
             return;
         }
         compact_input();
@@ -1117,7 +1150,100 @@ private:
                 StatusCode::Closed, "HTTP/2 carrier peer closed"));
             invoke_noexcept(completion, std::move(result));
         }
-        channel_->close();
+        // The connection stays open so queued output, such as the echo of the
+        // peer's WebSocket CLOSE, still reaches it. The session's close ends
+        // it.
+        pump();
+    }
+
+    // Starts the close described at H2DuplexCarrierProvider. False means this
+    // carrier cannot close gracefully and must end the connection at once.
+    bool begin_graceful_close() {
+        if (terminal_ || opening_ || closing_ || !dispatch_.defer ||
+            h2_->failed()) {
+            return false;
+        }
+        const bool client = h2_->role() == obfs::H2CarrierRole::Client;
+        const bool initiate = client && !peer_closed_;
+        if (initiate ? !h2_->carrier_active() || h2_->carrier_closed()
+                     : !peer_closed_) {
+            return false;
+        }
+        closing_ = true;
+        close_initiated_ = initiate;
+        create_cancellation_.unregister();
+        Carrier::ReceiveCompletion receive;
+        Carrier::SendCompletion send;
+        if (pending_receive_.has_value()) {
+            receive = std::move(pending_receive_->completion);
+            pending_receive_.reset();
+        }
+        if (pending_send_.has_value()) {
+            send = std::move(pending_send_->completion);
+            pending_send_.reset();
+        }
+        records_.clear();
+        queued_record_bytes_ = 0U;
+        input_.clear();
+        input_offset_ = 0U;
+        expected_payload_bytes_.reset();
+        const Status closed =
+            Status::diagnostic(StatusCode::Closed, "H2 carrier is closing");
+        if (receive) {
+            Result<ReceivedRecord> result(closed);
+            invoke_noexcept(receive, std::move(result));
+        }
+        if (send) invoke_noexcept(send, closed, 0U);
+        if (terminal_) return true;
+        // Credit the session still holds returns no more. Retire it now so
+        // the peer's window cannot hold back its close.
+        if (owned_credit_bytes_ != 0U) {
+            if (!h2_->ConsumeTunnelBytes(owned_credit_bytes_)) {
+                fail(h2_failure("retire HTTP/2 credit for close"));
+                return true;
+            }
+            owned_credit_bytes_ = 0U;
+        }
+        if (initiate && !h2_->GracefulClose()) {
+            fail(h2_failure("queue HTTP/2 carrier close"));
+            return true;
+        }
+        try {
+            const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
+            close_deadline_ = dispatch_.defer(kH2GracefulCloseDeadline, [weak] {
+                if (auto self = weak.lock()) self->finish_graceful_close(false);
+            });
+        } catch (...) {
+            close_deadline_.reset();
+        }
+        if (!close_deadline_) {
+            fail(Status::diagnostic(StatusCode::ResourceExhausted,
+                                    "H2 carrier close deadline unavailable"));
+            return true;
+        }
+        pump();
+        return true;
+    }
+
+    void maybe_finish_graceful_close() {
+        if (!closing_ || terminal_ || write_in_flight_ ||
+            !secure_writes_.empty() || h2_->queued_output_bytes() != 0U) {
+            return;
+        }
+        // A client ends the connection once its CLOSE is answered, as the
+        // captured browser did. A server leaves that to its client.
+        if (close_initiated_ && h2_->websocket_close_received()) {
+            finish_graceful_close(true);
+        } else if (!close_initiated_ &&
+                   h2_->role() == obfs::H2CarrierRole::Client) {
+            finish_graceful_close(true);
+        }
+    }
+
+    void finish_graceful_close(bool completed) noexcept {
+        if (!closing_ || terminal_) return;
+        close_completed_ = completed;
+        fail(Status::diagnostic(StatusCode::Closed, "HTTP/2 carrier closed"));
     }
 
     void fail(const Status& status) noexcept {
@@ -1125,6 +1251,8 @@ private:
             return;
         }
         terminal_ = true;
+        if (closing_) h2_->RecordCloseWireResult(close_completed_);
+        close_deadline_.reset();
         {
             std::lock_guard lock(control_mutex_);
             control_closed_ = true;
@@ -1217,6 +1345,10 @@ private:
     bool write_in_flight_{false};
     bool peer_closed_{false};
     bool terminal_{false};
+    bool closing_{false};
+    bool close_initiated_{false};
+    bool close_completed_{false};
+    std::shared_ptr<void> close_deadline_;
 };
 
 H2DuplexCarrier::~H2DuplexCarrier() noexcept {
@@ -1396,7 +1528,10 @@ void H2DuplexCarrierProvider::async_create(
         const ProviderDescriptor descriptor = descriptor_;
         const ExecutorAffinity executor_affinity = executor_affinity_;
         const H2Dispatch post = dispatch_;
-        const H2DuplexClientConfig config = config_;
+        H2DuplexClientConfig config = config_;
+        if (trace_claimed_.exchange(true, std::memory_order_acq_rel)) {
+            config.outer_trace.reset();
+        }
         const auto admission_key = admission_key_;
         dispatch_.post([descriptor, executor_affinity, post, config, admission_key, owned_channel,
                local_role,
@@ -1500,8 +1635,11 @@ void H2DuplexCarrierProvider::async_create(
                 if (config.server_port != 443U) {
                     authority += ":" + std::to_string(config.server_port);
                 }
+                // The client TLS provider publishes a channel only after it
+                // negotiated exactly h2.
+                if (config.outer_trace) config.outer_trace->SetTlsAlpn("h2");
                 auto h2 = std::make_unique<obfs::H2Carrier>(
-                    obfs::H2CarrierRole::Client);
+                    obfs::H2CarrierRole::Client, config.outer_trace);
                 auto state = std::make_shared<H2DuplexCarrierState>(
                     descriptor, executor_affinity, post, config.limits,
                     std::move(*owned_channel), std::move(h2));

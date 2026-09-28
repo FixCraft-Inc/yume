@@ -44,7 +44,7 @@ The connection remains valid HTTP/2 for its full lifetime:
 3. Encrypted YUME records travel as WebSocket binary messages inside HTTP/2
    DATA frames.
 4. HTTP/2 and WebSocket control frames close the session without switching to a
-   proprietary outer syntax.
+   proprietary outer syntax, in the order the captured session used (below).
 
 Client WebSocket frames are masked and server frames are not. SETTINGS, ACK,
 WINDOW_UPDATE, fragmentation, PING/PONG, CLOSE, RST_STREAM, GOAWAY, partial
@@ -63,6 +63,31 @@ upstream during downloads, which also has no capture evidence.
 
 Idle carriers do not invent periodic traffic. Any active PING, close sequence,
 padding, or future cadence must come from a committed target capture.
+
+When `yume` stops, its carrier closes the way the captured Chrome session
+closed its WebSocket after the 42-second hold:
+
+1. If the client has read nothing for more than ten seconds, it sends one
+   HTTP/2 PING in a TLS record of its own, as Chrome does, and the server
+   acknowledges it.
+2. The client sends a masked WebSocket CLOSE with the captured 18-byte
+   payload.
+3. The server echoes the CLOSE unmasked and ends the stream, as the Node
+   server did.
+4. The client ends the connection once the echo arrives, or after three
+   seconds without one.
+
+Neither side sends GOAWAY. The capture records none, and Chrome sends GOAWAY
+only when it closes a session on an error. The PING follows Chromium's rule of
+one PING before any write to a session that has read nothing for ten seconds,
+with no second PING until ten seconds after the last. The capture shows that
+rule once, before the close. A write that resumes an idle session is covered by
+the same rule but has no capture of its own yet. A server that closes first
+still ends the connection at once, because no capture shows that case.
+
+Once the WebSocket is open the client also fetches `/favicon.ico`, as the
+captured Chrome session did on stream 9, with the headers and priority the
+profile records. The cover answers it like any other request.
 
 ## Admission and failure behavior
 

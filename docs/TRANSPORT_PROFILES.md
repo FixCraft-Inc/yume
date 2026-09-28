@@ -30,7 +30,10 @@ registry consumed through `cover_profile::active()`. TLS/HTTP/H2 consumers
 contain no browser-version branches.
 
 The H2 carrier currently requires exactly two assets and the
-captured stream sequence 1/3/5/7 (priming, CSS, JavaScript, extended CONNECT).
+captured stream sequence 1/3/5/7/9 (priming, CSS, JavaScript, extended CONNECT
+and the favicon request Chrome sends once the WebSocket is open). The
+generator takes the favicon request's headers and priority from the stream-9
+entry of the fixture's observations.
 The generator rejects any other geometry instead of admitting metadata that
 `H2Carrier` cannot execute. Generalizing that carrier is a separate reviewed
 change.
@@ -57,9 +60,10 @@ stay the same for that path. The behavior summary comes from bounded live
 carrier events, and the registry only validates and redacts expected
 metadata, never fabricating observed events. The observer reports the actual
 outer WebSocket geometry, so the classifier may correctly return `DRIFT`. The
-stable classifier projection keeps ordered request and WebSocket lifecycle, and
-normal Chrome's stream-9 favicon request and its PING-before-first-fragment
-relationship are compared even though the YUME carrier does not reproduce them.
+stable classifier projection keeps ordered request and WebSocket lifecycle.
+The YUME carrier reproduces normal Chrome's stream-9 favicon request, while the
+server's PING-before-first-fragment relationship is compared even though the
+YUME server does not reproduce it.
 
 The transport and dependency registries are source/build metadata and are not
 installed as runtime examples. The transport registry contains

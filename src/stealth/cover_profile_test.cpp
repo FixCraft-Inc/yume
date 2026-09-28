@@ -134,6 +134,32 @@ int main() {
     assert(profile.websocket_message_bytes ==
            captured["shaping_policy"]["bulk_websocket_message_bytes"]
                .get<std::size_t>());
+    assert(profile.websocket_close_payload_bytes ==
+           captured["websocket_fixture"]["close"]["payload_bytes"]
+               .get<std::size_t>());
+
+    // The favicon request is the captured stream-9 request, header for header.
+    const Json* favicon = nullptr;
+    for (const auto& entry : captured["observations"]["headers"]) {
+        if (entry["direction"] == "sent" && entry["stream_id"] == 9) {
+            assert(favicon == nullptr);
+            favicon = &entry;
+        }
+    }
+    assert(favicon != nullptr);
+    const auto rendered =
+        profile.render_headers(profile.favicon_request, "<cover-authority>");
+    assert(rendered.size() == (*favicon)["headers"].size());
+    for (std::size_t i = 0; i < rendered.size(); ++i) {
+        assert(rendered[i].first + ": " + rendered[i].second ==
+               (*favicon)["headers"][i].get<std::string>());
+    }
+    assert(profile.favicon_request.priority.parent_stream_id ==
+           (*favicon)["parent_stream_id"].get<std::int32_t>());
+    assert(profile.favicon_request.priority.weight ==
+           (*favicon)["weight"].get<std::int32_t>());
+    assert(profile.favicon_request.priority.exclusive ==
+           (*favicon)["exclusive"].get<bool>());
     assert(!captured["shaping_policy"]["random_padding"].get<bool>());
     assert(!captured["shaping_policy"]["random_timing_jitter"].get<bool>());
 

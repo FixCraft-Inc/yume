@@ -165,6 +165,16 @@ final owner release. Asio and deterministic provider tests share the same
 intrusive control mailbox. Allocation failure retains typed errors and
 exactly-once completion even when diagnostic text cannot be retained.
 
+`close()` and `cancel()` both end a carrier, and pending operations settle
+when the close starts. A live `h2-duplex` client carrier first sends the
+captured browser's close and waits for the server's echo, and a server carrier
+whose client closed writes its echo and waits for the client to end the
+connection. [STEALTH](STEALTH.md#carrier-lifecycle) describes the sequence.
+The optional `H2Dispatch::defer` timer bounds either wait to three seconds.
+Without it, and for every other close, the carrier ends the connection at
+once. The native endpoint therefore does not cancel the client's TCP I/O when
+it closes: each session ends its own connection.
+
 ### SessionBootstrap
 
 `SessionBootstrap` is a dependency-pure, one-session orchestration seam. A

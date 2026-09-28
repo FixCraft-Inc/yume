@@ -153,7 +153,12 @@ struct Profile {
     RequestTemplate priming_request;
     RequestTemplate extended_connect;
     std::span<const AssetTemplate> assets;
+    // The browser's own GET /favicon.ico, sent once the WebSocket opened.
+    RequestTemplate favicon_request;
     std::size_t websocket_message_bytes;
+    // Payload length of the client's WebSocket CLOSE: a 2-byte status code
+    // plus reason text. TLS leaves only this length visible.
+    std::size_t websocket_close_payload_bytes;
 
     Headers render_headers(const RequestTemplate& request,
                            std::string_view authority,

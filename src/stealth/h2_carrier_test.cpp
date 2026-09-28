@@ -11,6 +11,7 @@
 #include <new>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nghttp2/nghttp2.h>
 
@@ -49,6 +50,48 @@ using yume::obfs::OuterCarrierDirection;
 using yume::obfs::OuterCarrierEvent;
 using yume::obfs::OuterCarrierEventKind;
 using yume::obfs::OuterCarrierStreamClass;
+
+std::chrono::steady_clock::time_point manual_now{};
+
+std::chrono::steady_clock::time_point ManualClock() noexcept {
+    return manual_now;
+}
+
+struct WireFrame {
+    std::uint8_t type{0};
+    std::uint8_t flags{0};
+    std::uint32_t stream_id{0};
+    std::size_t length{0};
+};
+
+std::vector<WireFrame> WireFrames(const H2Bytes& wire) {
+    std::vector<WireFrame> frames;
+    for (std::size_t offset = 0; offset < wire.size();) {
+        assert(wire.size() - offset >= 9);
+        WireFrame frame;
+        frame.length = (static_cast<std::size_t>(wire[offset]) << 16U) |
+                       (static_cast<std::size_t>(wire[offset + 1]) << 8U) |
+                       static_cast<std::size_t>(wire[offset + 2]);
+        frame.type = wire[offset + 3];
+        frame.flags = wire[offset + 4];
+        frame.stream_id =
+            (static_cast<std::uint32_t>(wire[offset + 5] & 0x7fU) << 24U) |
+            (static_cast<std::uint32_t>(wire[offset + 6]) << 16U) |
+            (static_cast<std::uint32_t>(wire[offset + 7]) << 8U) |
+            static_cast<std::uint32_t>(wire[offset + 8]);
+        assert(frame.length + 9 <= wire.size() - offset);
+        frames.push_back(frame);
+        offset += 9 + frame.length;
+    }
+    return frames;
+}
+
+std::size_t CountFrames(const std::vector<WireFrame>& frames,
+                        std::uint8_t type) {
+    return static_cast<std::size_t>(std::count_if(
+        frames.begin(), frames.end(),
+        [type](const WireFrame& frame) { return frame.type == type; }));
+}
 
 void Pump(H2Carrier& from, H2Carrier& to) {
     for (int i = 0; i < 16; ++i) {
@@ -256,7 +299,8 @@ void FullSessionRoundTrip() {
     const std::string secret_header = "trace-secret-authorization";
     const std::string secret_origin = "https://trace-secret.invalid";
     auto trace = std::make_shared<yume::obfs::OuterCarrierTrace>();
-    H2Carrier client(H2CarrierRole::Client, trace);
+    manual_now = std::chrono::steady_clock::time_point{};
+    H2Carrier client(H2CarrierRole::Client, trace, &ManualClock);
     H2Carrier server(H2CarrierRole::Server);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     client.set_timing_enabled(true);
@@ -363,15 +407,51 @@ void FullSessionRoundTrip() {
                "carrier_credit_bytes=") != std::string::npos);
 #endif
 
-    // The captured Chrome role originates one H2 PING immediately before its
-    // masked WebSocket close. nghttp2 makes the Node/server role ACK it while
-    // the WebSocket codec returns the unmasked close response.
-    client.GracefulClose();
+    // After the captured 42-second hold the Chrome role originates one H2
+    // PING immediately before its masked WebSocket close. nghttp2 makes the
+    // Node/server role ACK it, and the server echoes the close and ends the
+    // stream. Nothing else follows, GOAWAY included.
+    // Drain credit returns and the pong so the close starts on a quiet wire.
     Pump(client, server);
     Pump(server, client);
+    assert(client.TakeOutbound().empty());
+    manual_now += std::chrono::seconds(42);
+    assert(client.GracefulClose());
+    assert(!client.GracefulClose());
+    const H2Bytes close_bytes = client.TakeOutbound();
+    const auto close_wire = WireFrames(close_bytes);
+    assert(close_wire.size() == 2);
+    assert(close_wire[0].type == 0x06 && close_wire[0].flags == 0 &&
+           close_wire[0].stream_id == 0);
+    assert(close_wire[1].type == 0x00 && close_wire[1].stream_id == 7 &&
+           close_wire[1].flags == 0 &&
+           close_wire[1].length == 6U + profile.websocket_close_payload_bytes);
+    server.Feed(close_bytes);
+    assert(!server.failed() && server.carrier_closed());
+    const H2Bytes echo_bytes = server.TakeOutbound();
+    const auto echo_wire = WireFrames(echo_bytes);
+    assert(CountFrames(echo_wire, 0x07) == 0 &&
+           CountFrames(echo_wire, 0x03) == 0);
+    assert(std::count_if(echo_wire.begin(), echo_wire.end(),
+                         [](const WireFrame& frame) {
+                             return frame.type == 0x06 && frame.flags == 0x01;
+                         }) == 1);
+    assert(std::count_if(
+               echo_wire.begin(), echo_wire.end(), [&](const WireFrame& frame) {
+                   return frame.type == 0x00 && frame.stream_id == 7 &&
+                          frame.flags == 0x01 &&
+                          frame.length ==
+                              2U + profile.websocket_close_payload_bytes;
+               }) == 1);
+    assert(CountFrames(echo_wire, 0x00) == 1);
+    client.Feed(echo_bytes);
+    assert(!client.failed() && client.websocket_close_received() &&
+           client.carrier_closed());
+    const auto after_echo = WireFrames(client.TakeOutbound());
+    assert(CountFrames(after_echo, 0x00) == 0 &&
+           CountFrames(after_echo, 0x03) == 0 &&
+           CountFrames(after_echo, 0x07) == 0);
     client.RecordCloseWireResult(true);
-    assert(client.carrier_closed());
-    assert(server.carrier_closed());
 
     bool saw_client_settings = false;
     bool saw_server_settings = false;
@@ -386,6 +466,7 @@ void FullSessionRoundTrip() {
     bool saw_sent_goaway = false;
     bool saw_sent_close = false;
     bool saw_close_wire = false;
+    bool saw_idle = false;
     std::uint64_t sent_ping_id = 0;
     std::uint64_t received_ping_id = 0;
     const auto snapshot = trace->Snapshot();
@@ -466,10 +547,15 @@ void FullSessionRoundTrip() {
                 saw_sent_close = true;
                 sent_close_index = event_index;
                 assert(event.h2_ping_immediately_before);
-                assert(event.websocket_payload_bytes == 2);
+                assert(event.websocket_payload_bytes ==
+                       profile.websocket_close_payload_bytes);
             }
         } else if (event.kind == OuterCarrierEventKind::CloseWire) {
             saw_close_wire |= event.completed;
+        } else if (event.kind == OuterCarrierEventKind::IdleInterval) {
+            assert(!saw_idle && sent_ping_index == no_event);
+            assert(event.value == 42000U && event.completed);
+            saw_idle = true;
         }
     }
     assert(!trace->truncated());
@@ -477,12 +563,94 @@ void FullSessionRoundTrip() {
     assert(saw_connection_window && saw_connect_headers &&
            saw_unexpected_origin && saw_redacted_authorization);
     assert(saw_sent_binary && saw_received_binary);
-    assert(saw_sent_ping && saw_received_ping_ack && saw_sent_goaway);
+    assert(saw_sent_ping && saw_received_ping_ack && !saw_sent_goaway);
+    assert(sent_goaway_index == no_event);
     assert(sent_ping_id != 0 && received_ping_id == sent_ping_id);
-    assert(saw_sent_close && saw_close_wire);
+    assert(saw_sent_close && saw_close_wire && saw_idle);
     assert(sent_ping_index < sent_carrier_data_after_ping_index);
     assert(sent_carrier_data_after_ping_index < sent_close_index);
-    assert(sent_close_index < sent_goaway_index);
+}
+
+// Chrome's preface PING: one before the first write after more than ten
+// seconds without reading, none while it is unanswered or within ten seconds
+// of the last one, and never from the server.
+// Taken on its own, the PING leaves the next write without it, so a caller
+// can give it a TLS record of its own, as Chrome does.
+void PrefacePingCanLeaveAlone() {
+    manual_now = std::chrono::steady_clock::time_point{};
+    H2Carrier client(H2CarrierRole::Client, {}, &ManualClock);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+    Pump(client, server);
+    Pump(server, client);
+    assert(client.TakeOutbound().empty());
+    manual_now += std::chrono::seconds(11);
+    const H2Bytes record(512, 0x5a);
+    assert(client.SendBinary(record));
+    const auto writes = client.TakeOutboundWrites();
+    assert(writes.size() == 2);
+    const auto alone = WireFrames(writes[0]);
+    assert(alone.size() == 1 && alone.front().type == 0x06 &&
+           alone.front().flags == 0);
+    const auto after = WireFrames(writes[1]);
+    assert(CountFrames(after, 0x06) == 0 && CountFrames(after, 0x00) >= 1);
+    // Without a PING the output stays one write.
+    assert(client.SendBinary(record));
+    assert(client.TakeOutboundWrites().size() == 1);
+    manual_now += std::chrono::seconds(60);
+    assert(server.SendBinary(record));
+    const auto server_writes = server.TakeOutboundWrites();
+    assert(server_writes.size() == 1 &&
+           CountFrames(WireFrames(server_writes[0]), 0x06) == 0);
+}
+
+void PrefacePingFollowsReadIdleness() {
+    manual_now = std::chrono::steady_clock::time_point{};
+    H2Carrier client(H2CarrierRole::Client, {}, &ManualClock);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+    const H2Bytes record(512, 0x5a);
+
+    manual_now += std::chrono::seconds(10);
+    assert(client.SendBinary(record));
+    assert(CountFrames(WireFrames(client.TakeOutbound()), 0x06) == 0);
+
+    manual_now += std::chrono::seconds(11);
+    assert(client.SendBinary(record));
+    const H2Bytes first = client.TakeOutbound();
+    const auto first_frames = WireFrames(first);
+    assert(!first_frames.empty() && first_frames.front().type == 0x06);
+    assert(CountFrames(first_frames, 0x06) == 1);
+    // Unanswered: the next idle write sends no second PING.
+    manual_now += std::chrono::seconds(30);
+    assert(client.SendBinary(record));
+    auto pending = client.TakeOutbound();
+    assert(CountFrames(WireFrames(pending), 0x06) == 0);
+
+    H2Bytes to_server = first;
+    to_server.insert(to_server.end(), pending.begin(), pending.end());
+    server.Feed(to_server);
+    assert(!server.failed());
+    (void)server.TakeTunnelBytes();
+    const H2Bytes ack = server.TakeOutbound();
+    assert(CountFrames(WireFrames(ack), 0x06) == 1);
+    client.Feed(ack);
+    assert(!client.failed());
+
+    // Answered, but the reply was a read: no PING until idle again.
+    manual_now += std::chrono::seconds(5);
+    assert(client.SendBinary(record));
+    assert(CountFrames(WireFrames(client.TakeOutbound()), 0x06) == 0);
+    manual_now += std::chrono::seconds(11);
+    assert(client.SendBinary(record));
+    const auto second = WireFrames(client.TakeOutbound());
+    assert(!second.empty() && second.front().type == 0x06);
+
+    // The server never originates one, and cannot start a client close.
+    manual_now += std::chrono::seconds(60);
+    assert(server.SendBinary(record));
+    assert(CountFrames(WireFrames(server.TakeOutbound()), 0x06) == 0);
+    assert(!server.GracefulClose() && server.failed());
 }
 
 void InboundContinuationIsObservedWithoutPayloadRetention() {
@@ -927,6 +1095,8 @@ int main() {
 
     test_callback_allocation_failure_is_contained();
     FullSessionRoundTrip();
+    PrefacePingFollowsReadIdleness();
+    PrefacePingCanLeaveAlone();
     InboundContinuationIsObservedWithoutPayloadRetention();
     ObserverDoesNotChangeOpeningWire();
     ObserverCapIsFailOpenAndBounded();

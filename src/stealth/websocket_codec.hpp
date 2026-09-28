@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace yume::obfs {
@@ -78,7 +79,9 @@ public:
     WebSocketBytes EncodePing(const WebSocketBytes& data) {
         return EncodePing(data.data(), data.size());
     }
-    WebSocketBytes EncodeClose(std::uint16_t code = 1000);
+    // RFC 6455 allows at most 123 bytes of UTF-8 reason after the code.
+    WebSocketBytes EncodeClose(std::uint16_t code = 1000,
+                               std::string_view reason = {});
 
     void Feed(const std::uint8_t* data, std::size_t size);
     void Feed(const WebSocketBytes& data) { Feed(data.data(), data.size()); }

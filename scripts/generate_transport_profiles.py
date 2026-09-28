@@ -192,6 +192,33 @@ def carrier_sections(captured: dict[str, Any], profile_id: str) -> tuple[
     return priming, connect, assets, shaping
 
 
+def favicon_request(captured: dict[str, Any], profile_id: str) -> tuple[
+        list[tuple[str, str]], tuple[int, int, bool]]:
+    """Chrome's own /favicon.ico request on stream 9, after the WebSocket opened."""
+    observations = captured.get("observations")
+    entries = observations.get("headers") if isinstance(observations, dict) else None
+    require(isinstance(entries, list), f"{profile_id}.observations.headers missing")
+    matches = [entry for entry in entries
+               if isinstance(entry, dict) and entry.get("direction") == "sent"
+               and entry.get("stream_id") == 9]
+    require(len(matches) == 1, f"{profile_id} must record one sent stream-9 request")
+    entry = matches[0]
+    raw = entry.get("headers")
+    require(isinstance(raw, list) and 1 <= len(raw) <= 64,
+            f"{profile_id}.favicon headers must be an array of 1..64 lines")
+    pairs: list[tuple[str, str]] = []
+    for index, line in enumerate(raw):
+        field = f"{profile_id}.favicon.headers[{index}]"
+        line = text(line, field, maximum=8192)
+        separator = line.find(": ", 1)
+        require(separator > 0, f"{field} must be 'name: value'")
+        pairs.append((line[:separator], line[separator + 2:]))
+    require(header_value(pairs, ":method", f"{profile_id}.favicon") == "GET" and
+            header_value(pairs, ":path", f"{profile_id}.favicon") == "/favicon.ico",
+            f"{profile_id} stream-9 request must be GET /favicon.ico")
+    return pairs, priority(entry, f"{profile_id}.favicon")
+
+
 def source_for(name: str, value: str, identity: dict[str, str]) -> tuple[str, str]:
     fixed = {
         "<cover-authority>": "Authority",
@@ -424,6 +451,8 @@ def emit_profile(entry: dict[str, Any], index: int,
 
     emit_header_array(lines, f"{prefix}PrimingHeaders", priming_headers, identity)
     emit_header_array(lines, f"{prefix}ConnectHeaders", connect_headers, identity)
+    favicon_headers, favicon_priority = favicon_request(captured, profile_id)
+    emit_header_array(lines, f"{prefix}FaviconHeaders", favicon_headers, identity)
 
     asset_records: list[tuple[str, str, tuple[int, int, bool]]] = []
     previous_stream: int | None = None
@@ -462,6 +491,15 @@ def emit_profile(entry: dict[str, Any], index: int,
     websocket_bytes = integer(shaping.get("bulk_websocket_message_bytes"),
                               f"{profile_id}.websocket_message_bytes", minimum=1,
                               maximum=16 * 1024 * 1024)
+    # The close frame's payload is a 2-byte status code plus an optional
+    # reason, at most 125 bytes. TLS hides everything about it but its length,
+    # so the capture's length is what the client reproduces.
+    websocket = captured.get("websocket_fixture")
+    require(isinstance(websocket, dict) and isinstance(websocket.get("close"), dict),
+            f"{profile_id}.websocket_fixture.close missing")
+    close_bytes = integer(websocket["close"].get("payload_bytes"),
+                          f"{profile_id}.websocket_close_payload_bytes",
+                          minimum=2, maximum=125)
 
     # TLS selection policy for the openssl-diagnostic backend. It used to be
     # free literals inside tls_fingerprint.cpp, keyed only by the BrowserProfile
@@ -640,7 +678,9 @@ def emit_profile(entry: dict[str, Any], index: int,
         f"    RequestTemplate{{{prefix}PrimingHeaders, {priority_cpp(priming_priority)}}},",
         f"    RequestTemplate{{{prefix}ConnectHeaders, {priority_cpp(connect_priority)}}},",
         f"    {prefix}Assets,",
+        f"    RequestTemplate{{{prefix}FaviconHeaders, {priority_cpp(favicon_priority)}}},",
         f"    {websocket_bytes}U,",
+        f"    {close_bytes}U,",
         "};",
         "",
     ])

@@ -8,6 +8,7 @@
 #include "runtime/native_egress_policy.hpp"
 #include "fs/bounded_file.hpp"
 #include "providers/h2_duplex_carrier.hpp"
+#include "providers/h2_web_front_door.hpp"
 #include "providers/tls13_secure_channel.hpp"
 #include "providers/system_resolver.hpp"
 
@@ -241,18 +242,17 @@ public:
     AdmissionOnlyClient(Runner& runner, const yume::config::v1::Config& config,
                         const std::filesystem::path& base)
         : runner_(runner),
-          endpoint_(std::get<yume::config::v1::ClientEndpoint>(config.endpoint())),
-          credentials_(take(load_native_credentials(config, base, endpoint_.host()))),
-          tcp_(take(yume::providers::AsioTcpAcceptedChannelOwner::create(runner.context))),
-          h2_(take(yume::providers::H2DuplexCarrierProvider::create(runner.context->affinity(),
-              {[context = runner.context](std::function<void()> task) {
-                   boost::asio::post(context->executor(), std::move(task));
-               },
-               [context = runner.context](yume::providers::ControlTask& task,
-                                          std::shared_ptr<void> owner) noexcept {
-                   context->submit(task, std::move(owner));
-               }},
-              {endpoint_.host(), endpoint_.port(), {}}, credentials_.admission_key.bytes()))) {}
+          endpoint_(
+              std::get<yume::config::v1::ClientEndpoint>(config.endpoint())),
+          credentials_(
+              take(load_native_credentials(config, base, endpoint_.host()))),
+          tcp_(take(yume::providers::AsioTcpAcceptedChannelOwner::create(
+              runner.context))),
+          h2_(take(yume::providers::H2DuplexCarrierProvider::create(
+              runner.context->affinity(),
+              yume::providers::make_asio_h2_dispatch(runner.context),
+              {endpoint_.host(), endpoint_.port(), {}},
+              credentials_.admission_key.bytes()))) {}
 
     std::future<Result<std::unique_ptr<Carrier>>> promote() {
         auto promise = std::make_shared<std::promise<Result<std::unique_ptr<Carrier>>>>();

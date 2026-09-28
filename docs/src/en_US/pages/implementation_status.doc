@@ -248,9 +248,11 @@ receiver keeps the old inbound root only until the peer's first record of the
 new epoch. The epoch size is the smaller `limits.max_epoch_bytes` of the two
 capability manifests, 1 MiB by default and at most 64 MiB, and engine and
 endpoint tests cover a pair of sides that advertise different sizes.
-The native endpoint's rekey timer also starts the rotation of a used epoch
+With `limits.idle_epoch_rotation`, which the `fast` and `max` presets set,
+the native endpoint's rekey timer also starts the rotation of a used epoch
 once it is 250 ms old, so a request after an idle moment does not wait for
-REKEY_ACK.
+REKEY_ACK. It is off by default, because that exchange after every burst of
+traffic is visible in the stealth captures.
 It reserves outbound space for rekey controls. Focused engine tests cover byte,
 record and send-age thresholds, idle rotation, crossed rotation, synchronous ACK delivery,
 reserved queue capacity, peer overshoot refusal, deferred publication and ACK
@@ -421,14 +423,10 @@ receiver that writes into a private staging file and publishes it without
 replacing anything, only after the declared size and SHA-256 match.
 `yume_module_codecs` holds the application codec core without BaseFWX: the
 HTTP request and response envelope, backend dialing rules and the Monero RPC
-descriptor with its request allow-list. `yume_module_share` holds the `.yss`
-container that transport v2 kept its client settings in: a 12-byte header over
-a JSON document that BaseFWX seals with AES-GCM under an Argon2id key from a
-password of at least 12 characters, with a 16 MiB bound, bounded reads and
-exclusive owner-only writes. It refuses passwords that start with `file://` or
-`password://`, which BaseFWX would otherwise resolve. Its headers are
-plaintext, so a file shows that it is a YUME bundle. A kit import format has
-yet to define its document. No module uses these libraries yet.
+descriptor with its request allow-list. No module uses these libraries yet.
+Client kits move between devices as [sealed kits](protocol/SEALED_KIT_1.md),
+which need only the core's OpenSSL 3.5 and replaced the BaseFWX `.yss`
+container library.
 UDP ASSOCIATE uses the SOCKS5 adapter's configured `udp_service`. A loopback
 relay accepts datagrams only from the requesting client and gives each
 destination its own authenticated packet OPEN, so identity grants and

@@ -236,6 +236,8 @@ runtime_sources=(
     scripts/yume_capture_binary_provenance.py
     scripts/yume_capture_manifest.py
     scripts/yume_capture_finalize.py
+    scripts/yume_carrier_workload.py
+    scripts/yume_native_session.py
     scripts/release_preflight.py
     scripts/generate_transport_profiles.py
     scripts/yume_dependencies.py

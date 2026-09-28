@@ -1881,6 +1881,14 @@ BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
                         "and are not composed by the embedding backend");
         return BackendIo::Unsupported;
     }
+    // The control socket serves the standalone client's status, which an
+    // embedder reports through the ABI instead.
+    if (config_.control()) {
+        describe(error,
+                 "the schema-1 control socket belongs to the standalone "
+                 "client and is not composed by the embedding backend");
+        return BackendIo::Unsupported;
+    }
     if (std::holds_alternative<v1::ReverseProxyCover>(config_.cover())) {
         describe(error, "native reverse-proxy cover is not implemented");
         return BackendIo::Unsupported;

@@ -51,6 +51,11 @@ inline constexpr std::uint32_t kMaxEpochBytes = 1U << 26;
 // records upstream. The session engine accepts the same values.
 inline constexpr std::uint32_t kDefaultCreditReturns = 2U;
 inline constexpr std::uint32_t kMaxCreditReturns = 8U;
+// limits.idle_epoch_rotation, false by default: whether this side rotates a
+// key epoch that has carried records once it is 250 ms old, without waiting
+// for its next send. That saves the first send after a pause a round trip,
+// and sends a rekey exchange after every burst of traffic, which a browser
+// session does not show.
 
 inline constexpr std::string_view kSuiteId = "ytp1-tls13-h2";
 inline constexpr std::string_view kSecureChannelProvider = "tls13-native";
@@ -603,7 +608,8 @@ public:
         std::uint32_t max_packet_bytes, std::uint32_t max_packet_batch,
         std::optional<std::uint32_t> max_egress_mbps = std::nullopt,
         std::uint32_t max_epoch_bytes = kMinEpochBytes,
-        std::uint32_t credit_returns_per_window = kDefaultCreditReturns)
+        std::uint32_t credit_returns_per_window = kDefaultCreditReturns,
+        bool idle_epoch_rotation = false)
         : max_frame_bytes_(max_frame_bytes),
           max_streams_(max_streams),
           max_queued_bytes_(max_queued_bytes),
@@ -614,7 +620,8 @@ public:
           max_packet_batch_(max_packet_batch),
           max_egress_mbps_(max_egress_mbps),
           max_epoch_bytes_(max_epoch_bytes),
-          credit_returns_per_window_(credit_returns_per_window) {}
+          credit_returns_per_window_(credit_returns_per_window),
+          idle_epoch_rotation_(idle_epoch_rotation) {}
 
     std::uint32_t max_frame_bytes() const noexcept {
         return max_frame_bytes_;
@@ -648,6 +655,7 @@ public:
     std::uint32_t credit_returns_per_window() const noexcept {
         return credit_returns_per_window_;
     }
+    bool idle_epoch_rotation() const noexcept { return idle_epoch_rotation_; }
 
 private:
     std::uint32_t max_frame_bytes_;
@@ -661,6 +669,14 @@ private:
     std::optional<std::uint32_t> max_egress_mbps_;
     std::uint32_t max_epoch_bytes_;
     std::uint32_t credit_returns_per_window_;
+    bool idle_epoch_rotation_;
+};
+
+// control.socket: the client's owner-only control socket, a normalized
+// absolute UNIX socket path. Only processes of the same user can connect,
+// and they can read the client's status. Absent means no control socket.
+struct ControlSettings final {
+    std::string socket_path;
 };
 
 class Config final {
@@ -679,16 +695,15 @@ public:
     const std::vector<Service>& services() const noexcept { return services_; }
     const std::vector<Adapter>& adapters() const noexcept { return adapters_; }
     const ResourceLimits& limits() const noexcept { return limits_; }
+    const std::optional<ControlSettings>& control() const noexcept {
+        return control_;
+    }
 
 private:
-    Config(Role role,
-           Endpoint endpoint,
-           Suite suite,
-           Credentials credentials,
-           Cover cover,
-           std::vector<Service> services,
-           std::vector<Adapter> adapters,
-           ResourceLimits limits)
+    Config(Role role, Endpoint endpoint, Suite suite, Credentials credentials,
+           Cover cover, std::vector<Service> services,
+           std::vector<Adapter> adapters, ResourceLimits limits,
+           std::optional<ControlSettings> control)
         : role_(role),
           endpoint_(std::move(endpoint)),
           suite_(std::move(suite)),
@@ -696,7 +711,8 @@ private:
           cover_(std::move(cover)),
           services_(std::move(services)),
           adapters_(std::move(adapters)),
-          limits_(std::move(limits)) {}
+          limits_(std::move(limits)),
+          control_(std::move(control)) {}
 
     Role role_;
     Endpoint endpoint_;
@@ -706,6 +722,7 @@ private:
     std::vector<Service> services_;
     std::vector<Adapter> adapters_;
     ResourceLimits limits_;
+    std::optional<ControlSettings> control_;
 
     friend Config Parse(const nlohmann::json& document);
 };

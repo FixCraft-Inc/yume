@@ -34,6 +34,8 @@ from yume_chrome_evidence import validate_run  # noqa: E402
 from yume_capture_finalize import (  # noqa: E402
     EXPECTED_RUNTIME_FILES,
     MAX_OPAQUE_BYTES,
+    YUME_ARM_HASH_FIELDS,
+    YUME_RUN_FILES,
     FinalizeError,
     parse_checksum_manifest,
 )
@@ -86,6 +88,9 @@ class ArmEvidence:
     behavior_runs: list[dict[str, Any]]
     tls_runs: list[dict[str, Any]]
     certificate_sha256: str | None
+    # The YUME arm's driver results. yume carries whatever its applications
+    # send, so the driver, not the carrier report, binds application volume.
+    workload_runs: list[dict[str, Any]] | None = None
 
 
 class EvidenceReader:
@@ -375,7 +380,7 @@ def _verify_completion(
             if tls_wire:
                 expected.add("tls-wire.json")
         else:
-            expected = {"behavior.json", "tls-wire.json"}
+            expected = set(YUME_RUN_FILES)
         if set(entries) != expected:
             raise EvidenceError(f"{name} checksum paths are incomplete or unexpected")
         if _string_hash_mapping(
@@ -402,12 +407,7 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
                 f"{environment.get('arm')!r}"
             )
         if not normal:
-            for field in (
-                "yume_binary_sha256",
-                "release_bundle_sha256",
-                "client_config_sha256",
-                "tls_leaf_sha256",
-            ):
+            for field in YUME_ARM_HASH_FIELDS:
                 value = environment.get(field)
                 if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
                     raise EvidenceError(f"YUME {field} must be lowercase SHA-256")
@@ -424,10 +424,13 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
         behavior_name = "sanitized.json" if normal else "behavior.json"
         behavior_runs: list[dict[str, Any]] = []
         tls_runs: list[dict[str, Any]] = []
+        workload_runs: list[dict[str, Any]] | None = None if normal else []
         for index in range(1, runs + 1):
             run = Path(f"run-{index:02d}")
             behavior_runs.append(reader.json_object(run / behavior_name))
             tls_runs.append(reader.json_object(run / "tls-wire.json"))
+            if workload_runs is not None:
+                workload_runs.append(reader.json_object(run / "workload.json"))
         declared_certificate = environment.get("certificate_sha256")
         if declared_certificate is not None and (
             not isinstance(declared_certificate, str)
@@ -439,7 +442,8 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
                 "declared certificate SHA-256 does not match server.crt"
             )
         return ArmEvidence(
-            reader.path, environment, behavior_runs, tls_runs, certificate
+            reader.path, environment, behavior_runs, tls_runs, certificate,
+            workload_runs,
         )
 
 
@@ -1235,17 +1239,12 @@ def _validate_live_outer_events(run: dict[str, Any]) -> None:
         and event.get("h2_type") == 0x00
         and event.get("stream_id") == 7
     )), None)
-    terminal_goaway_index = next((index for index, event in enumerate(events) if (
-        index > sent_close_index
-        and event.get("kind") == "h2-frame"
-        and event.get("direction") == "sent"
-        and event.get("h2_type") == 0x07
-        and event.get("stream_id") == 0
-    )), None)
+    # The browser capture records no GOAWAY, so none is required. The server's
+    # echo must follow the client's CLOSE.
     if (
         terminal_ping_index is None or terminal_data_index is None
-        or terminal_goaway_index is None
         or sent_close.get("h2_ping_immediately_before") is not True
+        or events.index(received_close) <= sent_close_index
     ):
         raise ValueError("YUME live terminal H2/WebSocket sequence is inconsistent")
     expected_close = {
@@ -1270,19 +1269,18 @@ def _validate_live_outer_events(run: dict[str, Any]) -> None:
         raise ValueError("YUME live one-shot terminal events are inconsistent")
     idle_event = idle_events[0]
     close_wire = close_wires[0]
-    sent_goaway = first_h2("sent", 0x07, 0)
     recovered = any(
         event.get("kind") == "h2-frame"
         and event.get("direction") == "received"
         and event.get("h2_type") == 0x08
         for event in events
     )
+    # The close is complete once the echo arrived and the connection ended.
     if (
         idle_event is None or idle_event.get("completed") is not True
         or close_wire is None or close_wire.get("completed") is not True
-        or sent_goaway is None
         or events.index(idle_event) >= terminal_ping_index
-        or events.index(close_wire) <= terminal_goaway_index
+        or events.index(close_wire) <= events.index(received_close)
     ):
         raise ValueError("YUME live idle/terminal observations are incomplete")
     flow = run.get("flow_control_fixture")
@@ -1325,6 +1323,37 @@ def _validate_live_outer_events(run: dict[str, Any]) -> None:
         )
     ):
         raise ValueError("YUME live idle/close summary is inconsistent")
+
+
+def _bind_driver_workload(run: dict[str, Any], workload: object) -> None:
+    """Take the YUME arm's application volume from its driver's result."""
+    contract = EXPECTED_WORKLOAD
+    client = contract["client_binary_messages"]
+    if (
+        not isinstance(workload, dict)
+        or workload.get("schema") != 1
+        or workload.get("workload_id") != EXPECTED_WORKLOAD_MANIFEST["id"]
+        or workload.get("workload_sha256") != EXPECTED_WORKLOAD_MANIFEST["sha256"]
+        or workload.get("client_messages") != client["count"]
+        or workload.get("message_bytes") != client["payload_bytes"]
+        or workload.get("idle_ms") != contract["idle_ms"]
+        or workload.get("stream_closed_before_idle") is not True
+    ):
+        raise ValueError("YUME workload driver result does not bind the frozen workload")
+    sent = workload.get("application_bytes_each_direction")
+    echoed = workload.get("echoed_bytes")
+    if (
+        not isinstance(sent, int) or isinstance(sent, bool)
+        or sent != contract["websocket_bytes_each_direction"]
+        or echoed != sent
+    ):
+        raise ValueError("YUME workload driver did not move the frozen volume")
+    websocket = run.get("websocket_fixture")
+    if not isinstance(websocket, dict) or websocket.get(
+        "application_bytes_each_direction"
+    ) is not None:
+        raise ValueError("YUME carrier report claims an application volume")
+    websocket["application_bytes_each_direction"] = sent
 
 
 def _behavior_findings(arm: ArmEvidence, label: str) -> list[Finding]:
@@ -1569,6 +1598,17 @@ def analyze(normal: ArmEvidence, yume: ArmEvidence) -> dict[str, Any]:
         detail="browser and YUME arms must execute the same frozen workload",
     )
 
+    # Bind each YUME run's application volume before any comparison reads it.
+    for index, run in enumerate(yume.behavior_runs, start=1):
+        try:
+            if yume.workload_runs is None:
+                raise ValueError("YUME arm has no workload driver results")
+            _bind_driver_workload(run, yume.workload_runs[index - 1])
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            findings.append(Finding(
+                "DRIFT", f"workload.yume.run-{index:02d}",
+                "chrome151-node24-v1", "invalid", str(exc),
+            ))
     normal_behavior = _stable_projection(normal.behavior_runs)
     yume_behavior = _stable_projection(yume.behavior_runs)
     findings.extend(_behavior_findings(normal, "normal"))

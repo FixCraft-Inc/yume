@@ -23,6 +23,7 @@
 #include "providers/asio_execution_context.hpp"
 #include "runtime/native_forward.hpp"
 #include "runtime/native_socks5.hpp"
+#include "stealth/outer_carrier_observer.hpp"
 
 namespace yume::runtime {
 
@@ -69,6 +70,8 @@ struct NativeClientRuntimeOptions final {
     // Runs on the context after each state change, with the new status.
     // Exceptions are contained. Traffic changes do not call it; poll status().
     std::function<void(const NativeClientStatus&)> on_status;
+    // Observes the first session's outer carrier, for outer-carrier evidence.
+    std::shared_ptr<obfs::OuterCarrierTrace> outer_carrier_trace;
 };
 
 // Runs one schema-1 client configuration: one authenticated session, replaced

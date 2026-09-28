@@ -739,9 +739,31 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     yume_prepare_static_for_shared_abi(yume_module_launcher)
     yume_assert_exact_link_dependencies(yume_module_launcher yume_process_privileges)
 
+    # Sealed client kits, for yume --seal-kit and --import-kit. Only the core's
+    # OpenSSL 3.5 primitives, so the ABI can reuse it without BaseFWX.
+    add_library(yume_sealed_kit STATIC
+        runtime/sealed_kit.cpp runtime/sealed_kit.hpp)
+    target_include_directories(yume_sealed_kit PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_sealed_kit
+        PUBLIC yume_engine PRIVATE yume_bounded_files OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_sealed_kit)
+    yume_assert_exact_link_dependencies(yume_sealed_kit
+        yume_engine yume_bounded_files OpenSSL::Crypto)
+
+    # yume --outer-carrier-evidence writes this report about its carrier.
+    add_library(yume_outer_carrier_evidence STATIC
+        runtime/outer_carrier_evidence.cpp runtime/outer_carrier_evidence.hpp)
+    target_include_directories(yume_outer_carrier_evidence PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_outer_carrier_evidence
+        PUBLIC yume_h2_carrier PRIVATE yume_cover_profile nlohmann_json::nlohmann_json)
+    yume_apply_perf_opts(yume_outer_carrier_evidence)
+    yume_assert_exact_link_dependencies(yume_outer_carrier_evidence
+        yume_h2_carrier yume_cover_profile nlohmann_json::nlohmann_json)
+
     # One application composition owns the normal client and daemon.
     if(TARGET yume_asio_direct_route_provider)
         add_library(yume_native_runtime STATIC
+            runtime/control_socket.cpp runtime/control_socket.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp
             runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
             runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
@@ -760,7 +782,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
                 yume_system_resolver yume_system_resolver_helper
                 yume_child_process yume_module_launcher
                 yume_direct_route_handler yume_openssl_security_provider yume_bounded_files ${_yume_native_network_libraries}
-                Boost::system)
+                yume_outer_carrier_evidence yume_sealed_kit Boost::system)
         yume_apply_perf_opts(yume_native_runtime)
         yume_assert_exact_link_dependencies(yume_native_runtime
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context
@@ -769,7 +791,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             yume_system_resolver yume_system_resolver_helper
             yume_child_process yume_module_launcher
             yume_direct_route_handler yume_openssl_security_provider yume_bounded_files ${_yume_native_network_libraries}
-            Boost::system)
+            yume_outer_carrier_evidence yume_sealed_kit Boost::system)
         # The example module. It links nothing of YUME.
         add_executable(yume-echo-module modules/echo/echo_module.cpp)
         target_link_libraries(yume-echo-module PRIVATE Threads::Threads)
@@ -864,16 +886,6 @@ if(YUME_BUILD_BASEFWX_MODULES)
     yume_apply_perf_opts(yume_module_files)
     yume_assert_exact_link_dependencies(yume_module_files yume_module_relay basefwxcpp)
 
-    # The password-sealed .yss container, for a planned kit import format.
-    # Public edges for the same non-LTO reason as the relay library.
-    add_library(yume_module_share STATIC
-        modules/share/bundle_file.cpp modules/share/bundle_file.hpp)
-    target_include_directories(yume_module_share PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(yume_module_share PUBLIC
-        basefwxcpp nlohmann_json::nlohmann_json yume_bounded_files yume_private_files)
-    yume_apply_perf_opts(yume_module_share)
-    yume_assert_exact_link_dependencies(yume_module_share
-        basefwxcpp nlohmann_json::nlohmann_json yume_bounded_files yume_private_files)
 endif()
 
 # The application codec core for the planned codec module: the HTTP request
@@ -1093,23 +1105,6 @@ if(YUME_BUILD_TESTING)
             add_test(NAME ${_yume_files_target} COMMAND ${_yume_files_target})
             set_tests_properties(${_yume_files_target} PROPERTIES
                 TIMEOUT 120 LABELS "module;files")
-        endforeach()
-    endif()
-    if(TARGET yume_module_share)
-        foreach(_yume_share_test IN ITEMS bundle_file bundle_file_lifetime)
-            set(_yume_share_target yume_module_share_${_yume_share_test}_test)
-            add_executable(${_yume_share_target} modules/share/${_yume_share_test}_test.cpp)
-            target_link_libraries(${_yume_share_target} PRIVATE yume_module_share)
-            yume_apply_perf_opts(${_yume_share_target})
-            # These tests check with assert, which must stay on in release builds.
-            if(MSVC)
-                target_compile_options(${_yume_share_target} PRIVATE /UNDEBUG)
-            else()
-                target_compile_options(${_yume_share_target} PRIVATE -UNDEBUG)
-            endif()
-            add_test(NAME ${_yume_share_target} COMMAND ${_yume_share_target})
-            set_tests_properties(${_yume_share_target} PROPERTIES
-                TIMEOUT 120 LABELS "module;share")
         endforeach()
     endif()
     if(YUME_BUILD_NATIVE_APPLICATION)
@@ -1568,8 +1563,8 @@ if(YUME_BUILD_TESTING)
         add_executable(yume_native_endpoint_test runtime/native_endpoint_test.cpp)
         target_link_libraries(yume_native_endpoint_test PRIVATE
             yume_native_endpoint yume_asio_execution_context yume_cover_site
-            yume_native_credentials yume_h2_duplex_carrier yume_tls13_secure_channel
-            yume_system_resolver)
+            yume_native_credentials yume_h2_duplex_carrier yume_h2_web_front_door
+            yume_tls13_secure_channel yume_system_resolver)
         target_compile_definitions(yume_native_endpoint_test PRIVATE ${YUME_TEST_RESOLVER_DEFINITIONS})
         add_dependencies(yume_native_endpoint_test yume-resolver yume_resolver_stall_helper)
         if(TARGET yume_asio_direct_route_provider)
@@ -1597,6 +1592,14 @@ if(YUME_BUILD_TESTING)
             TIMEOUT 120 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_native_runtime)
+        add_executable(yume_outer_carrier_evidence_test runtime/outer_carrier_evidence_test.cpp)
+        target_link_libraries(yume_outer_carrier_evidence_test PRIVATE
+            yume_outer_carrier_evidence yume_h2_carrier yume_cover_profile
+            nlohmann_json::nlohmann_json)
+        yume_apply_perf_opts(yume_outer_carrier_evidence_test)
+        add_test(NAME yume_outer_carrier_evidence_test COMMAND yume_outer_carrier_evidence_test)
+        set_tests_properties(yume_outer_carrier_evidence_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_run_loop_test runtime/native_run_loop_test.cpp)
         target_link_libraries(yume_native_run_loop_test PRIVATE yume_asio_execution_context)
         yume_apply_perf_opts(yume_native_run_loop_test)
@@ -1626,6 +1629,19 @@ if(YUME_BUILD_TESTING)
         yume_apply_perf_opts(yume_native_local_listener_test)
         add_test(NAME yume_native_local_listener_test COMMAND yume_native_local_listener_test)
         set_tests_properties(yume_native_local_listener_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_sealed_kit_test runtime/sealed_kit_test.cpp)
+        target_link_libraries(yume_sealed_kit_test PRIVATE yume_sealed_kit OpenSSL::Crypto)
+        yume_apply_perf_opts(yume_sealed_kit_test)
+        add_test(NAME yume_sealed_kit_test COMMAND yume_sealed_kit_test)
+        set_tests_properties(yume_sealed_kit_test PROPERTIES
+            TIMEOUT 120 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_native_control_socket_test runtime/control_socket_test.cpp)
+        target_link_libraries(yume_native_control_socket_test PRIVATE
+            yume_native_runtime yume_asio_execution_context Boost::system)
+        yume_apply_perf_opts(yume_native_control_socket_test)
+        add_test(NAME yume_native_control_socket_test COMMAND yume_native_control_socket_test)
+        set_tests_properties(yume_native_control_socket_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_socks5_request_test runtime/socks5_request_test.cpp)
         target_link_libraries(yume_native_socks5_request_test PRIVATE yume_native_runtime)
@@ -1955,10 +1971,12 @@ if(YUME_BUILD_TESTING)
             "yume_bench_resources_test;scripts/test_yume_bench_resources.py"
             "yume_classifier_evidence_test;scripts/test_yume_classifier_evidence.py"
             "yume_classifier_gate_test;scripts/test_yume_classifier_gate.py"
+            "yume_classifier_features_test;scripts/test_yume_classifier_features.py"
             "yume_constrained_host_test;scripts/test_yume_constrained_host.py"
             "yume_capture_manifest_test;scripts/test_yume_capture_manifest.py"
             "yume_capture_binary_provenance_test;scripts/test_yume_capture_binary_provenance.py"
             "yume_capture_finalize_test;scripts/test_yume_capture_finalize.py"
+            "yume_carrier_workload_test;scripts/test_yume_carrier_workload.py"
             "yume_diagrams_test;scripts/test_yume_diagrams.py")
         list(GET _yume_tool_test 0 _yume_tool_test_name)
         list(GET _yume_tool_test 1 _yume_tool_test_script)

@@ -192,6 +192,33 @@ def carrier_sections(captured: dict[str, Any], profile_id: str) -> tuple[
     return priming, connect, assets, shaping
 
 
+def favicon_request(captured: dict[str, Any], profile_id: str) -> tuple[
+        list[tuple[str, str]], tuple[int, int, bool]]:
+    """Chrome's own /favicon.ico request on stream 9, after the WebSocket opened."""
+    observations = captured.get("observations")
+    entries = observations.get("headers") if isinstance(observations, dict) else None
+    require(isinstance(entries, list), f"{profile_id}.observations.headers missing")
+    matches = [entry for entry in entries
+               if isinstance(entry, dict) and entry.get("direction") == "sent"
+               and entry.get("stream_id") == 9]
+    require(len(matches) == 1, f"{profile_id} must record one sent stream-9 request")
+    entry = matches[0]
+    raw = entry.get("headers")
+    require(isinstance(raw, list) and 1 <= len(raw) <= 64,
+            f"{profile_id}.favicon headers must be an array of 1..64 lines")
+    pairs: list[tuple[str, str]] = []
+    for index, line in enumerate(raw):
+        field = f"{profile_id}.favicon.headers[{index}]"
+        line = text(line, field, maximum=8192)
+        separator = line.find(": ", 1)
+        require(separator > 0, f"{field} must be 'name: value'")
+        pairs.append((line[:separator], line[separator + 2:]))
+    require(header_value(pairs, ":method", f"{profile_id}.favicon") == "GET" and
+            header_value(pairs, ":path", f"{profile_id}.favicon") == "/favicon.ico",
+            f"{profile_id} stream-9 request must be GET /favicon.ico")
+    return pairs, priority(entry, f"{profile_id}.favicon")
+
+
 def source_for(name: str, value: str, identity: dict[str, str]) -> tuple[str, str]:
     fixed = {
         "<cover-authority>": "Authority",
@@ -224,6 +251,43 @@ def code_point_list(value: Any, field: str, *, maximum: int = 64) -> list[int]:
     parsed = [hex16(item, f"{field}[{i}]") for i, item in enumerate(value)]
     require(len(set(parsed)) == len(parsed), f"{field} contains duplicates")
     return parsed
+
+
+def cover_server_ciphers(entry: dict[str, Any], tls_wire_profile: pathlib.Path,
+                         profile_id: str) -> tuple[list[int], str]:
+    """The cover server's own cipher preference, bound to its captured choice.
+
+    The captured server applies its order over the browser's, so the first of
+    its TLS 1.3 suites that the captured ClientHello offers must be the suite
+    its ServerHello chose. The TLS 1.2 list is an OpenSSL cipher string, as
+    the cover runtime configures it, and has no capture of its own.
+    """
+    field = f"{profile_id}.cover_server_tls"
+    section = entry.get("cover_server_tls")
+    require(isinstance(section, dict), f"{field} must be an object")
+    suites = code_point_list(section.get("tls13_cipher_suites"),
+                             f"{field}.tls13_cipher_suites", maximum=5)
+    require(all(0x1301 <= suite <= 0x1305 for suite in suites),
+            f"{field}.tls13_cipher_suites must hold TLS 1.3 suites only")
+    cipher_list = text(section.get("tls12_cipher_list"), f"{field}.tls12_cipher_list",
+                       maximum=1024)
+    require(re.fullmatch(r"[A-Za-z0-9!+:_-]+", cipher_list) is not None,
+            f"{field}.tls12_cipher_list must be an OpenSSL cipher string")
+    document = read_json(tls_wire_profile)
+    hello = document.get("client_hello")
+    server_hello = document.get("server_hello")
+    require(isinstance(hello, dict) and isinstance(server_hello, dict),
+            f"{profile_id}: capture has no client_hello or server_hello")
+    offered = hello.get("cipher_suites")
+    require(isinstance(offered, list), f"{profile_id}: capture has no cipher_suites")
+    offered_ids = {hex16(value, f"{profile_id}.capture.cipher_suites")
+                   for value in offered if value != "GREASE"}
+    chosen = hex16(server_hello.get("cipher_suite"), f"{profile_id}.capture.server_hello")
+    picked = next((suite for suite in suites if suite in offered_ids), None)
+    require(picked == chosen,
+            f"{field}: the captured server chose 0x{chosen:04x}, this order picks "
+            + ("nothing" if picked is None else f"0x{picked:04x}"))
+    return suites, cipher_list
 
 
 def captured_client_hello(path: pathlib.Path, profile_id: str) -> dict[str, list[str]]:
@@ -424,6 +488,8 @@ def emit_profile(entry: dict[str, Any], index: int,
 
     emit_header_array(lines, f"{prefix}PrimingHeaders", priming_headers, identity)
     emit_header_array(lines, f"{prefix}ConnectHeaders", connect_headers, identity)
+    favicon_headers, favicon_priority = favicon_request(captured, profile_id)
+    emit_header_array(lines, f"{prefix}FaviconHeaders", favicon_headers, identity)
 
     asset_records: list[tuple[str, str, tuple[int, int, bool]]] = []
     previous_stream: int | None = None
@@ -462,6 +528,15 @@ def emit_profile(entry: dict[str, Any], index: int,
     websocket_bytes = integer(shaping.get("bulk_websocket_message_bytes"),
                               f"{profile_id}.websocket_message_bytes", minimum=1,
                               maximum=16 * 1024 * 1024)
+    # The close frame's payload is a 2-byte status code plus an optional
+    # reason, at most 125 bytes. TLS hides everything about it but its length,
+    # so the capture's length is what the client reproduces.
+    websocket = captured.get("websocket_fixture")
+    require(isinstance(websocket, dict) and isinstance(websocket.get("close"), dict),
+            f"{profile_id}.websocket_fixture.close missing")
+    close_bytes = integer(websocket["close"].get("payload_bytes"),
+                          f"{profile_id}.websocket_close_payload_bytes",
+                          minimum=2, maximum=125)
 
     # TLS selection policy for the openssl-diagnostic backend. It used to be
     # free literals inside tls_fingerprint.cpp, keyed only by the BrowserProfile
@@ -579,6 +654,9 @@ def emit_profile(entry: dict[str, Any], index: int,
     emit_code_point_array(lines, f"{prefix}TlsCertCompression", tls_cert_comp,
                           kind="std::uint16_t")
     emit_code_point_array(lines, f"{prefix}TlsEchGreaseLengths", tls_ech_lengths)
+    server_suites, server_cipher_list = cover_server_ciphers(
+        entry, artifacts["tls_wire_profile"], profile_id)
+    emit_code_point_array(lines, f"{prefix}ServerTls13Ciphers", server_suites)
     lines.append(
         f"constexpr std::array<InjectedExtension, {len(tls_injected)}> "
         f"{prefix}TlsInjectedExtensions{{{{")
@@ -634,13 +712,17 @@ def emit_profile(entry: dict[str, Any], index: int,
         f"    {'true' if status_request == 'ocsp' else 'false'},",
         f"    {cpp_string(text(server.get('runtime'), f'{profile_id}.server.runtime', maximum=128))},",
         f"    {cpp_string(text(server.get('version'), f'{profile_id}.server.version', maximum=128))},",
+        f"    {prefix}ServerTls13Ciphers,",
+        f"    {cpp_string(server_cipher_list)},",
         f"    {prefix}ClientSettings,",
         f"    {prefix}ServerSettings,",
         f"    {window_delta}U,",
         f"    RequestTemplate{{{prefix}PrimingHeaders, {priority_cpp(priming_priority)}}},",
         f"    RequestTemplate{{{prefix}ConnectHeaders, {priority_cpp(connect_priority)}}},",
         f"    {prefix}Assets,",
+        f"    RequestTemplate{{{prefix}FaviconHeaders, {priority_cpp(favicon_priority)}}},",
         f"    {websocket_bytes}U,",
+        f"    {close_bytes}U,",
         "};",
         "",
     ])

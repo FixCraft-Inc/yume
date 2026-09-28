@@ -81,6 +81,14 @@ bool IsHopByHop(std::string_view name) {
            name == "upgrade";
 }
 
+std::chrono::steady_clock::time_point SteadyNow() noexcept {
+    return std::chrono::steady_clock::now();
+}
+
+// The close reason only reaches the server. Its length comes from the
+// profile, and this text is repeated or cut to fit it.
+constexpr std::string_view kCloseReason = "session-complete";
+
 std::string NodeDateHeader() {
     const std::time_t now = std::chrono::system_clock::to_time_t(
         std::chrono::system_clock::now());
@@ -102,12 +110,16 @@ std::string NodeDateHeader() {
 class H2Carrier::Impl {
 public:
     explicit Impl(H2CarrierRole role,
-                  std::shared_ptr<OuterCarrierTrace> outer_trace)
+                  std::shared_ptr<OuterCarrierTrace> outer_trace,
+                  H2CarrierClock clock)
         : role_(role),
           websocket_(role == H2CarrierRole::Client ? WebSocketRole::Client
                                                    : WebSocketRole::Server,
                      cover_profile::active().websocket_message_bytes),
           outer_trace_(std::move(outer_trace)),
+          clock_(clock ? clock : &SteadyNow),
+          last_inbound_at_(clock_()),
+          last_wire_activity_at_(last_inbound_at_),
           inbound_preface_pending_(role == H2CarrierRole::Server) {
         if (outer_trace_) {
             websocket_.set_inbound_frame_observer(
@@ -396,6 +408,8 @@ public:
 
     void Feed(const std::uint8_t* data, std::size_t size) {
         if (failed() || size == 0) return;
+        last_inbound_at_ = clock_();
+        last_wire_activity_at_ = last_inbound_at_;
         ObserveInboundH2Wire(data, size);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch feed_timer(collect_timing_);
@@ -427,7 +441,40 @@ public:
         Flush();
         H2Bytes out;
         out.swap(serialized_output_);
+        write_boundaries_.clear();
         return out;
+    }
+
+    std::vector<H2Bytes> TakeOutboundWrites() {
+        Flush();
+        std::vector<H2Bytes> writes;
+        if (write_boundaries_.empty()) {
+            if (!serialized_output_.empty()) {
+                writes.push_back(std::move(serialized_output_));
+                serialized_output_.clear();
+            }
+            return writes;
+        }
+        writes.reserve(write_boundaries_.size() + 1U);
+        std::size_t start = 0;
+        for (const std::size_t boundary : write_boundaries_) {
+            if (boundary > start && boundary <= serialized_output_.size()) {
+                writes.emplace_back(
+                    serialized_output_.begin() +
+                        static_cast<std::ptrdiff_t>(start),
+                    serialized_output_.begin() +
+                        static_cast<std::ptrdiff_t>(boundary));
+                start = boundary;
+            }
+        }
+        if (start < serialized_output_.size()) {
+            writes.emplace_back(
+                serialized_output_.begin() + static_cast<std::ptrdiff_t>(start),
+                serialized_output_.end());
+        }
+        serialized_output_.clear();
+        write_boundaries_.clear();
+        return writes;
     }
 
     bool SendBinary(const std::uint8_t* data, std::size_t size) {
@@ -474,6 +521,7 @@ public:
                 stats_.websocket_encode_ns += encode_timer.elapsed_ns();
             }
 #endif
+            if (!MaybeSendPrefacePing()) return false;
             return QueueStreamBytes(carrier_stream_id_, std::move(wire));
         } catch (const std::exception& ex) {
             return Fail(std::string("encode WebSocket binary: ") + ex.what());
@@ -517,32 +565,96 @@ public:
         return unconsumed_tunnel_bytes_;
     }
 
-    void GracefulClose(std::uint16_t websocket_code) {
-        if (failed() || graceful_close_started_) return;
-        graceful_close_started_ = true;
-        if (carrier_active_ && !carrier_closed_) {
-            try {
-                // The Chrome 151 active-WebSocket close fixture sends one H2
-                // PING immediately before the masked WebSocket CLOSE. It does
-                // not show a periodic idle keepalive cadence. The server only
-                // acknowledges this PING; it does not originate a matching one.
-                if (role_ == H2CarrierRole::Client) {
-                    const std::uint8_t opaque[8] = {0, 0, 0, 0, 0, 0, 0, 1};
-                    Check(nghttp2_submit_ping(session_.get(), NGHTTP2_FLAG_NONE,
-                                              opaque),
-                          "submit captured close PING");
-                }
-                QueueStreamBytes(
-                    carrier_stream_id_, websocket_.EncodeClose(websocket_code));
-            } catch (const std::exception& ex) {
-                Fail(std::string("encode WebSocket close: ") + ex.what());
-                return;
-            }
+    bool GracefulClose(std::uint16_t websocket_code) {
+        if (role_ != H2CarrierRole::Client) {
+            return Fail("graceful close is a client operation");
         }
-        nghttp2_submit_goaway(session_.get(), NGHTTP2_FLAG_NONE,
-                              nghttp2_session_get_last_proc_stream_id(session_.get()),
-                              NGHTTP2_NO_ERROR, nullptr, 0);
+        if (failed() || graceful_close_started_ || !carrier_active_ ||
+            carrier_closed_) {
+            return false;
+        }
+        graceful_close_started_ = true;
+        try {
+            const std::size_t reason_bytes =
+                cover_profile::active().websocket_close_payload_bytes - 2U;
+            std::string reason;
+            reason.reserve(reason_bytes);
+            while (reason.size() < reason_bytes) {
+                reason.append(kCloseReason.substr(
+                    0, std::min(kCloseReason.size(),
+                                reason_bytes - reason.size())));
+            }
+            auto close = websocket_.EncodeClose(websocket_code, reason);
+            RecordIdleBeforeClose();
+            if (!MaybeSendPrefacePing()) return false;
+            return QueueStreamBytes(carrier_stream_id_, std::move(close));
+        } catch (const std::exception& ex) {
+            return Fail(std::string("encode WebSocket close: ") + ex.what());
+        }
+    }
+
+    bool websocket_close_received() const noexcept {
+        return websocket_.closed();
+    }
+
+    // Chrome's preface PING carries its ping ID, odd and counting from 1, as
+    // the 8-byte opaque data.
+    bool MaybeSendPrefacePing() {
+        if (role_ != H2CarrierRole::Client) return true;
+        const auto now = clock_();
+        if (preface_ping_in_flight_ || now < preface_ping_quiet_until_ ||
+            now - last_inbound_at_ <= kH2PrefacePingIdle) {
+            return true;
+        }
+        // Chrome writes this PING alone: close the write before it and after.
         Flush();
+        MarkWriteBoundary();
+        std::array<std::uint8_t, 8> opaque{};
+        for (std::size_t index = 0; index < opaque.size(); ++index) {
+            opaque[index] = static_cast<std::uint8_t>(
+                (next_preface_ping_id_ >> (8U * (7U - index))) & 0xffU);
+        }
+        if (!CheckBool(nghttp2_submit_ping(session_.get(), NGHTTP2_FLAG_NONE,
+                                           opaque.data()),
+                       "submit preface PING")) {
+            return false;
+        }
+        preface_ping_opaque_ = opaque;
+        preface_ping_in_flight_ = true;
+        preface_ping_quiet_until_ = now + kH2PrefacePingIdle;
+        next_preface_ping_id_ += 2U;
+        Flush();
+        MarkWriteBoundary();
+        return !failed();
+    }
+
+    void MarkWriteBoundary() {
+        const std::size_t offset = serialized_output_.size();
+        if (offset != 0U && (write_boundaries_.empty() ||
+                             write_boundaries_.back() != offset)) {
+            write_boundaries_.push_back(offset);
+        }
+    }
+
+    // The evidence trace notes how long the carrier had been quiet in both
+    // directions when the close began. Native yume runs no workload of its
+    // own, so this is the observed interval, not a requested one.
+    void RecordIdleBeforeClose() noexcept {
+        if (!outer_trace_) return;
+        const auto quiet =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                clock_() - last_wire_activity_at_)
+                .count();
+        OuterCarrierEvent event;
+        event.kind = OuterCarrierEventKind::IdleInterval;
+        event.direction = OuterCarrierDirection::Sent;
+        event.stream_class = OuterCarrierStreamClass::Carrier;
+        event.value =
+            quiet <= 0 ? 0U
+                       : static_cast<std::uint32_t>(std::min<std::int64_t>(
+                             quiet, std::numeric_limits<std::uint32_t>::max()));
+        event.completed = true;
+        outer_trace_->Record(std::move(event));
     }
 
     void RecordCloseWireResult(bool completed) noexcept {
@@ -650,7 +762,8 @@ private:
                 });
         };
         if (contains(profile.priming_request) ||
-            contains(profile.extended_connect, "/capture")) {
+            contains(profile.extended_connect, "/capture") ||
+            contains(profile.favicon_request)) {
             return true;
         }
         return std::any_of(
@@ -729,7 +842,11 @@ private:
                             value == expected_carrier_path
                         ? "<authenticated-carrier-path>"
                         : "<unexpected-carrier-path>";
-                default: return "<unexpected-path>";
+                default:
+                    // The favicon request's path is a pinned literal.
+                    return !expected_carrier_path.empty() &&
+                            value == expected_carrier_path
+                        ? std::string(value) : "<unexpected-path>";
             }
             return value == expected
                 ? std::string(expected) : "<unexpected-path>";
@@ -850,8 +967,10 @@ private:
             static constexpr std::string_view kClientPreface =
                 "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
             std::size_t offset = 0;
-            std::uint8_t previous_type = 0xffU;
-            std::uint8_t previous_flags = 0;
+            // The previous frame may have left in an earlier write, as the
+            // preface PING does.
+            std::uint8_t& previous_type = last_outbound_frame_type_;
+            std::uint8_t& previous_flags = last_outbound_frame_flags_;
             if (size >= kClientPreface.size() &&
                 std::equal(kClientPreface.begin(), kClientPreface.end(), data)) {
                 offset = kClientPreface.size();
@@ -1611,6 +1730,16 @@ private:
     }
 
     void HandleFrame(const nghttp2_frame& frame) {
+        if (frame.hd.type == NGHTTP2_PING &&
+            (frame.hd.flags & NGHTTP2_FLAG_ACK) != 0) {
+            if (preface_ping_in_flight_ &&
+                std::equal(preface_ping_opaque_.begin(),
+                           preface_ping_opaque_.end(),
+                           frame.ping.opaque_data)) {
+                preface_ping_in_flight_ = false;
+            }
+            return;
+        }
         if (frame.hd.type == NGHTTP2_SETTINGS &&
             (frame.hd.flags & NGHTTP2_FLAG_ACK) == 0) {
             for (std::size_t i = 0; i < frame.settings.niv; ++i) {
@@ -1671,6 +1800,7 @@ private:
             } else if (frame.hd.stream_id == carrier_stream_id_) {
                 if (status == 200) {
                     carrier_active_ = true;
+                    SubmitFaviconRequest();
                 } else {
                     carrier_closed_ = true;
                 }
@@ -1764,6 +1894,17 @@ private:
             tunnel_bytes_.insert(tunnel_bytes_.end(), decoded.begin(), decoded.end());
         }
         auto replies = websocket_.TakeWireReplies();
+        if (role_ == H2CarrierRole::Server && websocket_.closed() &&
+            !server_close_finished_) {
+            // The captured Node server ends the stream with its echoed CLOSE.
+            // Nothing follows it, so the fixture PING below is not sent.
+            server_close_finished_ = true;
+            server_active_ping_sent_ = true;
+            auto stream = outbound_streams_.find(stream_id);
+            if (stream != outbound_streams_.end()) {
+                stream->second.finish_when_empty = true;
+            }
+        }
         if (!replies.empty()) {
             QueueStreamBytes(stream_id, std::move(replies));
         }
@@ -1889,11 +2030,41 @@ private:
         Flush();
     }
 
+    // Chrome fetches /favicon.ico once the page has loaded. The captured
+    // session sends it on stream 9 after the WebSocket opened, and the cover
+    // answers it like any other request.
+    void SubmitFaviconRequest() {
+        if (role_ != H2CarrierRole::Client || favicon_stream_id_ >= 0) return;
+        const auto& profile = cover_profile::active();
+        H2Headers headers =
+            profile.render_headers(profile.favicon_request, authority_);
+        auto nva = MakeNva(headers);
+        nghttp2_priority_spec priority{};
+        nghttp2_priority_spec_init(
+            &priority, profile.favicon_request.priority.parent_stream_id,
+            profile.favicon_request.priority.weight,
+            profile.favicon_request.priority.exclusive ? 1 : 0);
+        favicon_stream_id_ = nghttp2_submit_request2(
+            session_.get(), &priority, nva.data(), nva.size(), nullptr,
+            nullptr);
+        if (favicon_stream_id_ < 0) {
+            throw std::runtime_error(
+                "submit Chrome favicon request: " +
+                std::string(nghttp2_strerror(favicon_stream_id_)));
+        }
+        if (!wire_profile_.QueuePriority(
+                favicon_stream_id_, profile.favicon_request.priority,
+                error_)) {
+            throw std::runtime_error(error_);
+        }
+        QueueTraceHeaders(favicon_stream_id_, headers,
+                          HeaderValue(headers, ":path"));
+    }
+
     void Flush() {
         if (failed()) return;
         ObserveCarrierWindowState();
-        const std::size_t trace_output_before =
-            outer_trace_ ? serialized_output_.size() : 0;
+        const std::size_t trace_output_before = serialized_output_.size();
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch flush_timer(collect_timing_);
         const std::size_t output_before = serialized_output_.size();
@@ -1922,6 +2093,9 @@ private:
         if (!failed() && !batch.empty()) {
             wire_profile_.AppendSerializedBatch(
                 batch, kMaxQueuedOutput, serialized_output_, error_);
+        }
+        if (!failed() && serialized_output_.size() > trace_output_before) {
+            last_wire_activity_at_ = clock_();
         }
         if (!failed() && outer_trace_ &&
             serialized_output_.size() > trace_output_before) {
@@ -1967,6 +2141,16 @@ private:
     H2CarrierRole role_;
     WebSocketCodec websocket_;
     std::shared_ptr<OuterCarrierTrace> outer_trace_;
+    H2CarrierClock clock_;
+    std::chrono::steady_clock::time_point last_inbound_at_;
+    std::chrono::steady_clock::time_point last_wire_activity_at_;
+    std::chrono::steady_clock::time_point preface_ping_quiet_until_{};
+    std::array<std::uint8_t, 8> preface_ping_opaque_{};
+    std::uint64_t next_preface_ping_id_{1};
+    bool preface_ping_in_flight_{false};
+    bool server_close_finished_{false};
+    std::uint8_t last_outbound_frame_type_{0xffU};
+    std::uint8_t last_outbound_frame_flags_{0U};
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     H2CarrierStats stats_;
     bool collect_timing_{false};
@@ -1985,6 +2169,8 @@ private:
     std::vector<H2Request> requests_;
     std::vector<H2StreamClose> stream_closes_;
     H2Bytes serialized_output_;
+    // Offsets in serialized_output_ where a new socket write starts.
+    std::vector<std::size_t> write_boundaries_;
     H2Bytes tunnel_bytes_;
     std::size_t received_unconsumed_carrier_bytes_{0};
     std::size_t unconsumed_tunnel_bytes_{0};
@@ -1995,6 +2181,7 @@ private:
     std::int32_t css_stream_id_{-1};
     std::int32_t js_stream_id_{-1};
     std::int32_t carrier_stream_id_{-1};
+    std::int32_t favicon_stream_id_{-1};
     unsigned priming_status_{0};
     unsigned css_status_{0};
     unsigned js_status_{0};
@@ -2103,9 +2290,10 @@ std::string FormatH2CarrierStats(const H2CarrierStats& stats) {
 }
 #endif
 
-H2Carrier::H2Carrier(
-    H2CarrierRole role, std::shared_ptr<OuterCarrierTrace> outer_trace)
-    : impl_(std::make_unique<Impl>(role, std::move(outer_trace))) {}
+H2Carrier::H2Carrier(H2CarrierRole role,
+                     std::shared_ptr<OuterCarrierTrace> outer_trace,
+                     H2CarrierClock clock)
+    : impl_(std::make_unique<Impl>(role, std::move(outer_trace), clock)) {}
 H2Carrier::H2Carrier(H2Carrier&&) noexcept = default;
 H2Carrier& H2Carrier::operator=(H2Carrier&&) noexcept = default;
 H2Carrier::~H2Carrier() = default;
@@ -2149,6 +2337,9 @@ void H2Carrier::Feed(const std::uint8_t* data, std::size_t size) {
     impl_->Feed(data, size);
 }
 H2Bytes H2Carrier::TakeOutbound() { return impl_->TakeOutbound(); }
+std::vector<H2Bytes> H2Carrier::TakeOutboundWrites() {
+    return impl_->TakeOutboundWrites();
+}
 bool H2Carrier::SendBinary(const std::uint8_t* data, std::size_t size) {
     return impl_->SendBinary(data, size);
 }
@@ -2175,9 +2366,13 @@ std::size_t H2Carrier::queued_output_bytes() const noexcept {
 #if YUME_ENABLE_DEV_DIAGNOSTICS
 H2CarrierStats H2Carrier::stats() const noexcept { return impl_->stats(); }
 #endif
-void H2Carrier::GracefulClose(std::uint16_t websocket_code) {
-    impl_->GracefulClose(websocket_code);
+bool H2Carrier::GracefulClose(std::uint16_t websocket_code) {
+    return impl_->GracefulClose(websocket_code);
 }
+bool H2Carrier::websocket_close_received() const noexcept {
+    return impl_->websocket_close_received();
+}
+
 void H2Carrier::RecordCloseWireResult(bool completed) noexcept {
     impl_->RecordCloseWireResult(completed);
 }

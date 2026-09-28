@@ -316,6 +316,9 @@ class StaticHelp(Harness):
         self.assertIn("inline constexpr char kHelpBody[] =", text)
         self.assertNotIn("#include", text)
         self.assertNotIn("write_bash_completion", text)
+        # The completion is a literal too, which --completion bash prints.
+        self.assertIn("inline constexpr char kBashCompletion[] =", text)
+        self.assertIn('"complete -F _sample_complete sample\\n";', text)
 
     def test_static_help_escapes_quotes_and_backslashes(self) -> None:
         layout = self.layout(MANUAL.replace("fast or slow", 'read "C:\\sample"'))
@@ -340,9 +343,12 @@ class Tracked(unittest.TestCase):
         self.assertEqual(sorted(item.binary for item in self.layouts), ["yume", "yumed"])
 
     def test_native_help_has_exactly_the_parser_options(self) -> None:
-        # native_cli.cpp's parser and kRunFlags, which only the client accepts.
-        shared = {"--config", "--validate", "--version", "--help", "-h"}
-        expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port"},
+        # native_cli.cpp's parser, kRunFlags and the evidence option, which
+        # only the client accepts.
+        shared = {"--config", "--validate", "--version", "--completion", "--help", "-h"}
+        expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port",
+                                      "--outer-carrier-evidence", "--status",
+                                      "--seal-kit", "--output", "--import-kit", "--into"},
                     "yumed": shared}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):

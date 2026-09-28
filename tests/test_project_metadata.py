@@ -484,6 +484,27 @@ class MetadataTests(unittest.TestCase):
         with self.assertRaises(ProfileError):
             carrier_sections(profile, document["profiles"][0]["id"])
 
+    def test_cover_server_order_must_reproduce_the_captured_choice(self) -> None:
+        # The captured server chose 0x1302 from Chrome's offer, which lists
+        # 0x1301 first, so the client's order or another order is refused.
+        broken = [("tls13_cipher_suites", ["0x1301", "0x1302", "0x1303"]),
+                  ("tls13_cipher_suites", ["0x1303", "0x1302"]),
+                  ("tls13_cipher_suites", ["0x1304"]),
+                  ("tls13_cipher_suites", ["0x1302", "0xc02b"]),
+                  ("tls12_cipher_list", "HIGH rm"),
+                  ("tls12_cipher_list", None)]
+        for key, value in broken:
+            document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
+            section = document["profiles"][0]["cover_server_tls"]
+            if value is None:
+                del section[key]
+            else:
+                section[key] = value
+            with tempfile.TemporaryDirectory() as temporary:
+                path = self.write_json(pathlib.Path(temporary), "profiles.json", document)
+                with self.subTest(key=key, value=value), self.assertRaises(ProfileError):
+                    generate(path)
+
     def test_profile_artifact_cannot_escape_fixture(self) -> None:
         document = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
         document["profiles"][0]["artifacts"]["http2_profile"] = "../manifest.json"

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "stealth/cover_profile.hpp"
 #include "stealth/tls_fingerprint.hpp"
 
 #include <openssl/types.h>
@@ -29,5 +30,13 @@ namespace yume::tls_stealth {
 std::vector<std::string> configure_client_profile(
     SSL_CTX* context, tls_fingerprint::BrowserProfile profile,
     bool native_chrome_client_hello);
+
+// Configures a fresh caller-owned server SSL_CTX with the cover server's
+// cipher preference from the registry: its TLS 1.3 suites in order, its
+// TLS 1.2 cipher string, and its order applied over the client's, as the
+// captured cover server does. Throws if OpenSSL rejects either list. On
+// failure discard the partially configured context.
+void configure_server_profile(SSL_CTX* context,
+                              const cover_profile::Profile& profile);
 
 }  // namespace yume::tls_stealth

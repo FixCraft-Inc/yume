@@ -12,6 +12,7 @@ man-manual:  YUME Manual
 @synopsis
 **yumed** **--config** *path* [ **--validate** ]
 **yumed** **--version**
+**yumed** **--completion** **bash**
 **yumed** **--help**
 @end
 

@@ -299,7 +299,7 @@ class Link:
                 holder.wait(timeout=5)
 
 
-def set_limit(kit: Path, key: str, value: int) -> None:
+def set_limit(kit: Path, key: str, value: int | bool) -> None:
     """Sets one `limits` key in both roles' configuration."""
     for relative in ("server/yumed.json", "client/yume.json"):
         path = kit / relative
@@ -531,10 +531,13 @@ def run_inside(arguments: argparse.Namespace) -> int:
                 set_limit(kit, "max_epoch_bytes", arguments.max_epoch_bytes)
             if arguments.credit_returns:
                 set_limit(kit, "credit_returns_per_window", arguments.credit_returns)
+            if arguments.idle_epoch_rotation:
+                set_limit(kit, "idle_epoch_rotation", True)
             client_limits = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))["limits"]
             report["max_queued_bytes"] = client_limits["max_queued_bytes"]
             report["max_epoch_bytes"] = client_limits.get("max_epoch_bytes", 1 << 20)
             report["credit_returns_per_window"] = client_limits.get("credit_returns_per_window", 2)
+            report["idle_epoch_rotation"] = client_limits.get("idle_epoch_rotation", False)
             logs = {name: (arguments.output / f"{name}.log").open("wb") for name in ("payload", "yumed")}
             processes.append(subprocess.Popen(
                 link.command("server", [sys.executable, "-c", PAYLOAD_SERVER, str(STREAM_BYTES),
@@ -608,6 +611,8 @@ def main() -> int:
                         help="limits.max_epoch_bytes for both roles, a power of two, 1..64 MiB")
     parser.add_argument("--credit-returns", type=int, choices=(2, 4, 8),
                         help="limits.credit_returns_per_window for both roles")
+    parser.add_argument("--idle-epoch-rotation", action="store_true",
+                        help="set limits.idle_epoch_rotation for both roles, as the fast and max presets do")
     parser.add_argument("--tcp-buffer-mib", type=int, default=0,
                         help="raise every namespace's TCP buffer ceilings to this many MiB, 1..256, "
                              "as on a host tuned for long paths. Default: the host's own settings")

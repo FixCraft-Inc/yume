@@ -147,13 +147,24 @@ struct Profile {
 
     std::string_view cover_runtime;
     std::string_view cover_runtime_version;
+    // The cover server's own cipher preference, which a server applies over
+    // the client's order: its TLS 1.3 suites in order and its TLS 1.2 OpenSSL
+    // cipher string. The generator checks the TLS 1.3 order against the
+    // captured ServerHello.
+    std::span<const std::uint16_t> server_tls13_cipher_suites;
+    std::string_view server_tls12_cipher_list;
     std::span<const H2Setting> client_settings;
     std::span<const H2Setting> server_settings;
     std::uint32_t connection_window_update;
     RequestTemplate priming_request;
     RequestTemplate extended_connect;
     std::span<const AssetTemplate> assets;
+    // The browser's own GET /favicon.ico, sent once the WebSocket opened.
+    RequestTemplate favicon_request;
     std::size_t websocket_message_bytes;
+    // Payload length of the client's WebSocket CLOSE: a 2-byte status code
+    // plus reason text. TLS leaves only this length visible.
+    std::size_t websocket_close_payload_bytes;
 
     Headers render_headers(const RequestTemplate& request,
                            std::string_view authority,

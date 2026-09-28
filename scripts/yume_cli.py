@@ -12,9 +12,10 @@ that complete after it. A layout source under `docs/src/<language>/cli/` says
 what order the help prints them in and under which headings, because the help
 groups options by task while the manual groups them by subject.
 
-The native CLI uses a static help string without an output-stream dependency.
-Stream writers with runtime interpolation and Bash completion stay available
-for a CLI that needs them, and no current layout uses them.
+The native CLI uses static help and bash completion strings without an
+output-stream dependency, and prints the completion for `--completion bash`.
+Stream writers with runtime interpolation stay available for a CLI that needs
+them, and no current layout uses them.
 The generated headers are tracked so a clone builds without Python. `check`
 fails when a tracked header no longer matches its source.
 
@@ -528,6 +529,12 @@ def render_header(layout: Layout, ordered: list[Entry], completed: list[spec.Opt
             "",
             "inline constexpr char kHelpBody[] =",
             *[f"    {_cxx_literal(line)}" for line in help_lines],
+        ])
+        out[-1] += ";"
+        out.extend([
+            "",
+            "inline constexpr char kBashCompletion[] =",
+            *[f"    {_cxx_literal(line)}" for line in render_completion(layout, completed)],
         ])
         out[-1] += ";"
         out.extend(["", f"}}  // namespace {layout.namespace}", ""])

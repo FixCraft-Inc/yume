@@ -50,11 +50,43 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   brings transport v2's egress filter to the native daemon without archive
   unpacking or the compact country format, and it fixes v2's reading of
   28-bit MaxMind records.
-- **Share container library.** `yume_module_share` holds the password-sealed
-  `.yss` container from transport v2 for a planned kit import format. It keeps
-  the file layout and always derives the key with Argon2id. Passwords that
-  start with `file://` or `password://` are now refused, where transport v2
-  let BaseFWX read the first from a file.
+- **Outer-carrier evidence.** `yume --outer-carrier-evidence PATH` writes a
+  payload-free report on its first connection's HTTP/2 and WebSocket carrier
+  when the run ends: frame types and sizes, pinned or redacted header
+  values, timing, the quiet interval before the close and the close itself.
+  It is the YUME arm's input to the classifier comparison with the captured
+  browser, ported from transport v2 without its benchmark mode.
+- **Native YUME capture arm.** `tools/cover-node/capture_yume151_runs.sh`
+  captures native `yume` and `yumed` from one release bundle, and
+  `scripts/yume_carrier_workload.py` runs the frozen workload through yume's
+  SOCKS5 port where the browser arm runs a page script. The classifier-input
+  validator takes the YUME arm's application volume from the driver's
+  measured result and no longer requires a GOAWAY that the browser capture
+  never recorded. The TLS relay now also records each record's time, type and
+  length, and `scripts/yume_classifier_features.py` turns that timeline into
+  the classifier gate's feature document.
+- **Shell completion.** `yume --completion bash` and `yumed --completion bash`
+  print a bash completion script for the program's options, their fixed
+  values and file arguments. `scripts/yume_cli.py` generates it from the
+  manual sources with the help text, so the two cannot drift apart.
+- **Control socket and `yume --status`.** A client configuration may name
+  `control.socket`, a UNIX socket where the running client serves its state
+  to processes of its own user: the connection state, the server and its
+  verified identity, session counts, traffic, local listeners and the last
+  failure. `yume --config PATH --status` prints it. The socket follows the
+  owner-only rules of local UNIX listeners, serves at most four connections,
+  and answers one JSON request line with one JSON line (control protocol 1,
+  in yume(1)). The planned GUI reads it. `yume-doctor` checks the key, and
+  the embedding ABI refuses a configuration that names one.
+- **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
+  into one file and prints a 25-character code, and `yume --import-kit FILE
+  --into DIR` opens it on the client's device with that code. The file is
+  Argon2id and AES-256-GCM from the core's OpenSSL 3.5, with no plaintext
+  header and fixed parameters ([sealed kit 1](../protocol/SEALED_KIT_1.md)).
+  Only a client configuration is sealed, and the import writes a new
+  owner-only directory. `yume-setup` names the command after it writes a
+  client. The format replaces the BaseFWX `.yss` container library that
+  transport v2 kept client settings in, and that library is removed.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,
@@ -403,6 +435,39 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   at the peer's first record of the new epoch. Epoch limits are unchanged, a
   direction holds at most one old root, and an INIT in the epoch it replaces
   now ends the session.
+- **The carrier closes like the captured browser.** A stopping `yume` used to
+  drop its TLS connection. Its carrier now sends one HTTP/2 PING when it has
+  read nothing for more than ten seconds, then a masked WebSocket CLOSE of the
+  captured 18 bytes. The server echoes it and ends the stream, as the
+  captured Node server did, and the client ends the connection when the echo
+  arrives or after three seconds. The same PING rule, Chromium's, applies to
+  any write after such an idle. Neither side sends GOAWAY, which the capture
+  does not show and Chrome sends only on errors. The server used to close the
+  connection before its echo was written. The endpoint no longer cancels the
+  client's TCP I/O on close, so the CLOSE is not cut off.
+- **Idle keys rotate only on request.** The endpoint's timer rotated every
+  key epoch that had carried records once it was 250 ms old, so each burst
+  of traffic ended with a rekey exchange of about 1.7 KB each way. The
+  matched stealth capture shows the browser session sends nothing there. The
+  timer now runs only with the new `limits.idle_epoch_rotation`, which the
+  `fast` and `max` presets set. Without it the next send rotates the epoch
+  and a request after more than half a second of quiet waits a round trip
+  for the new key. The measured preset rates were taken with the timer on in
+  every preset.
+- **More of Chrome's page load.** The client now sends its preface PING in a
+  TLS record of its own, as the captured Chrome session does, and fetches
+  `/favicon.ico` once the WebSocket is open, with the headers and priority of
+  the captured stream-9 request. `scripts/generate_transport_profiles.py`
+  takes that request from the fixture's observations.
+- **The server picks the cover server's cipher.** OpenSSL's default made
+  `yumed` follow the client's order and answer Chrome with AES-128-GCM,
+  where the captured Node server answers with AES-256-GCM. The ServerHello
+  is not encrypted, and the first native stealth capture showed the
+  difference. `yumed` now applies Node 24's own order over the client's:
+  AES-256-GCM, ChaCha20-Poly1305 and AES-128-GCM under TLS 1.3, and Node's
+  cipher string under TLS 1.2. The registry's new `cover_server_tls` holds
+  both, and the generator refuses a TLS 1.3 order that would not pick the
+  captured ServerHello's suite from the captured ClientHello.
 - **Connection credit of dropped data.** A DATA or PACKET record that started
   a key rotation waited behind it with its connection credit already taken.
   If its stream closed before REKEY_ACK arrived, the record was dropped

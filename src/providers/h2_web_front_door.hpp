@@ -56,6 +56,10 @@ struct H2WebFrontDoorConfig final {
 // A waiter is consumed only by a successful promotion, never by a probe.
 // ReplayCache ticks and TTL must use monotonic seconds; share the cache across
 // listeners accepting the same admission credential.
+// The dispatch every carrier on an Asio context uses, in either role: posts,
+// reserved control delivery and a cancellable timer for graceful close.
+H2Dispatch make_asio_h2_dispatch(std::shared_ptr<AsioExecutionContext> context);
+
 class H2WebFrontDoor final : public engine::FrontDoor {
 public:
     // Socket setup preserves permission, address conflict, invalid-address and

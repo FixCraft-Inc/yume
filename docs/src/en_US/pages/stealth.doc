@@ -53,7 +53,7 @@ The connection remains valid HTTP/2 for its full lifetime:
 3. Encrypted YUME records travel as WebSocket binary messages inside HTTP/2
    DATA frames.
 4. HTTP/2 and WebSocket control frames close the session without switching to a
-   proprietary outer syntax.
+   proprietary outer syntax, in the order the captured session used (below).
 
 Client WebSocket frames are masked and server frames are not. SETTINGS, ACK,
 WINDOW_UPDATE, fragmentation, PING/PONG, CLOSE, RST_STREAM, GOAWAY, partial
@@ -72,6 +72,31 @@ upstream during downloads, which also has no capture evidence.
 
 Idle carriers do not invent periodic traffic. Any active PING, close sequence,
 padding, or future cadence must come from a committed target capture.
+
+When `yume` stops, its carrier closes the way the captured Chrome session
+closed its WebSocket after the 42-second hold:
+
+1. If the client has read nothing for more than ten seconds, it sends one
+   HTTP/2 PING in a TLS record of its own, as Chrome does, and the server
+   acknowledges it.
+2. The client sends a masked WebSocket CLOSE with the captured 18-byte
+   payload.
+3. The server echoes the CLOSE unmasked and ends the stream, as the Node
+   server did.
+4. The client ends the connection once the echo arrives, or after three
+   seconds without one.
+
+Neither side sends GOAWAY. The capture records none, and Chrome sends GOAWAY
+only when it closes a session on an error. The PING follows Chromium's rule of
+one PING before any write to a session that has read nothing for ten seconds,
+with no second PING until ten seconds after the last. The capture shows that
+rule once, before the close. A write that resumes an idle session is covered by
+the same rule but has no capture of its own yet. A server that closes first
+still ends the connection at once, because no capture shows that case.
+
+Once the WebSocket is open the client also fetches `/favicon.ico`, as the
+captured Chrome session did on stream 9, with the headers and priority the
+profile records. The cover answers it like any other request.
 
 ## Admission and failure behavior
 
@@ -108,6 +133,15 @@ assets the active browser profile loads, or startup fails. Requests select
 preloaded routes, so serving cover reads no file and resolves no name. By
 default a file is at most 1 MiB and the whole site at most 16 MiB.
 
+`yumed` picks its TLS cipher the way the captured Node server does, from its
+own order and not from the client's: AES-256-GCM, ChaCha20-Poly1305, then
+AES-128-GCM under TLS 1.3, and Node 24's cipher string under TLS 1.2. The
+ServerHello is not encrypted, and OpenSSL's default would answer Chrome with
+AES-128-GCM where Node answers with AES-256-GCM. The order comes from the
+registry's `cover_server_tls`. The TLS 1.3 half is checked against the
+capture. No capture shows a TLS 1.2 connection, so that half copies Node's
+configuration.
+
 Tunnel payloads, client identities, admission values and session secrets never
 reach cover handling. One connection may hold at most 64 open cover streams
 and make 256 requests, and a response is served only while it fits under
@@ -132,6 +166,35 @@ bytes unless an application protocol such as HTTPS protects them end to end.
 Valid HTTP/2 removes a proprietary post-handshake grammar. Keyed admission and
 the cover path make simple probes less informative. Neither property provides
 anonymity or prevents statistical traffic analysis.
+
+The first matched capture of native `yume` against the captured Chrome
+session ran the same workload five times per arm on one host (2026-09-28).
+The close matched: one 34-byte client record after the 42-second quiet
+period. So did the upload record count, the largest record size and the
+single long gap. These differences remain, all visible from TLS record
+sizes and timing alone:
+
+- The session carries about 14 KB more upstream and 17 KB more downstream
+  than the browser's. Most of it is YTP/1 AUTH: the server speaks first
+  after the upgrade with about 9.3 KB, the client answers with about 9.3 KB
+  and the server adds 4.9 KB.
+- Node sends 39 to 47 small download records, mostly HTTP/2 flow control,
+  where the YUME server sends 10, so YUME's download records are fewer and
+  fuller. Chrome sends 12 to 15 small upload records, `yume` sends 7.
+- Chrome and Node write each request and control frame in a TLS record of
+  its own. YUME writes one flush as one record, except the preface PING.
+- `yumed` answers the ClientHello in about 0.5 ms where Node takes 1.3 to
+  2 ms, and the direction changes 45 to 63 times per session against 73 to
+  83.
+- Node sends a WebSocket PING right before its first fragmented echo. The
+  YUME server does not.
+- Without `limits.idle_epoch_rotation`, the first send after more than half
+  a second of quiet starts a key rotation, an exchange of about 1.7 KB each
+  way at the start of the next burst. The workload sends one burst, so the
+  capture does not show this.
+
+Each needs its own change and a new capture. One campaign is one group, and
+the classifier gate needs four, so its verdict is INSUFFICIENT.
 
 ## Native TLS evidence
 
@@ -192,6 +255,16 @@ Freeze the target profile, workload, feature extraction, overhead budget, and
 acceptance threshold before evaluating a candidate. Split data by complete
 session and hold out capture day, host, network, and provider. A packet-random
 split leaks session identity into both sets.
+
+The capture relay records, for each TLS record in each direction, its
+arrival time, content type and length, and never its bytes.
+`scripts/yume_classifier_features.py` turns those timelines into per-session
+features (record counts, sizes and their shares, gaps and direction changes)
+in the document `scripts/yume_classifier_gate.py` scores under
+`config/classifier_gate_v1.json`. One capture campaign is one group, and the
+gate needs at least four groups and 40 sessions per arm, so a single campaign
+reports INSUFFICIENT. Its `--describe` output lists each feature's range per
+arm, which shows where to look but is not a classifier result.
 
 Report sample counts, confidence intervals, ROC-AUC, PR-AUC, and true-positive
 rate at low false-positive rates across more than one classifier family. Include

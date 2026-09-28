@@ -316,7 +316,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             if (slot->bootstrap) slot->bootstrap->cancel();
             if (slot->session) slot->session->stop(Status(StatusCode::Closed));
         }
-        if (tcp) tcp->cancel();
+        // Bootstraps cancel their pending connects, and each session ends its
+        // own connection. The client's I/O is not cancelled here, so a
+        // graceful carrier close still reaches the server.
         if (owns_route_provider) options.route_provider->cancel();
         if (owns_resolver) options.resolver->close();
     }
@@ -525,10 +527,12 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             auto next = now + session_bounds.rekey_ack_timeout;
             if (const auto deadline = slot.session->rekey_deadline())
                 next = std::min(next, *deadline);
-            // An epoch that has carried records rotates at its age limit
-            // here, so the next send need not wait for REKEY_ACK. A later
-            // epoch re-arms this timer through epoch_started().
-            if (const auto rotation = slot.session->rotation_deadline())
+            // With limits.idle_epoch_rotation, an epoch that has carried
+            // records rotates at its age limit here, so the next send need not
+            // wait for REKEY_ACK. A later epoch re-arms this timer through
+            // epoch_started(). Without it the next send rotates the epoch.
+            if (const auto rotation = slot.session->rotation_deadline();
+                rotation && rotate_idle_epochs)
                 next = std::min(next, *rotation);
             // A new INIT starts at or after this poll, so its deadline cannot
             // precede now + timeout. An existing earlier deadline is selected
@@ -551,7 +555,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                     if (session->expire_rekey(Timer::clock_type::now()) ||
                         session->state() != SessionState::Active) return;
                     // A failed start has already failed the session.
-                    if (!session->rotate_aged_epoch(Timer::clock_type::now())
+                    if (self->rotate_idle_epochs &&
+                        !session->rotate_aged_epoch(Timer::clock_type::now())
                              .ok())
                         return;
                     const auto armed = self->arm_rekey_watchdog(index, generation);
@@ -726,6 +731,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     EndpointRole role;
     NativeEndpointOptions options;
     SessionLimits session_bounds;
+    // limits.idle_epoch_rotation of this endpoint's configuration.
+    bool rotate_idle_epochs{false};
     std::shared_ptr<const EngineGraph> graph;
     std::shared_ptr<AsioTcpByteChannelProvider> tcp;
     std::vector<std::shared_ptr<H2WebFrontDoor>> listeners;
@@ -861,6 +868,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             throw Status(StatusCode::InvalidArgument,
                 "native session frame limit must fit the complete YTP/1 AUTH envelope");
         state = std::make_shared<State>(context, role, std::move(options), limits);
+        state->rotate_idle_epochs = config.limits().idle_epoch_rotation();
         state->policy = std::make_shared<PolicyHolder>(credentials.authorization);
         std::optional<EgressPacing> pacing;
         if (const auto& mbps = config.limits().max_egress_mbps();
@@ -930,23 +938,22 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                     state->options.resolver));
                 require(builder.register_byte_channel_provider(state->tcp));
             }
-            require(builder.register_secure_channel_provider(credentials.tls_provider));
-            H2Dispatch dispatch{
-                [context](std::function<void()> task) { boost::asio::post(context->executor(), std::move(task)); },
-                [context](ControlTask& task, std::shared_ptr<void> owner) noexcept {
-                    context->submit(task, std::move(owner));
-                }};
+            require(builder.register_secure_channel_provider(
+                credentials.tls_provider));
             require(builder.register_carrier_provider(
                 require(H2DuplexCarrierProvider::create(
-                    context->affinity(), std::move(dispatch),
+                    context->affinity(), make_asio_h2_dispatch(context),
                     {endpoint.host(), endpoint.port(),
                      h2_duplex_limits_for_budget(
-                         config.limits().max_queued_bytes())},
+                         config.limits().max_queued_bytes()),
+                     state->options.outer_carrier_trace},
                     credentials.admission_key.bytes()))));
         }
         state->graph = require(builder.build());
         if (role == EndpointRole::Server) {
-            if (!state->options.connection_address.empty() || state->options.socket_protector)
+            if (!state->options.connection_address.empty() ||
+                state->options.socket_protector ||
+                state->options.outer_carrier_trace)
                 throw Status(StatusCode::InvalidArgument);
             const auto* cover_config = std::get_if<config::v1::StaticCover>(&config.cover());
             if (!cover_config) throw Status(StatusCode::FailedPrecondition,

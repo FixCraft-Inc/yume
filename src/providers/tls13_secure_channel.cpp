@@ -1386,6 +1386,20 @@ Tls13SecureChannelProvider::create_server(
     SSL_CTX_set_alpn_select_cb(context.get(), select_h2, nullptr);
     SSL_CTX_set_verify(context.get(), mutual ? SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT
                                              : SSL_VERIFY_NONE, nullptr);
+    // The server picks its cipher as the captured cover server does, from its
+    // own order, where OpenSSL's default would follow the browser's.
+    try {
+        tls_stealth::configure_server_profile(context.get(),
+                                              cover_profile::active());
+    } catch (const std::bad_alloc&) {
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
+            Status::diagnostic(StatusCode::ResourceExhausted,
+                               "TLS cover cipher allocation failed"));
+    } catch (...) {
+        return Result<std::shared_ptr<Tls13SecureChannelProvider>>(
+            Status::diagnostic(StatusCode::FailedPrecondition,
+                               "TLS cover cipher preference was rejected"));
+    }
     auto descriptor = make_descriptor();
     if (!descriptor.ok()) return Result<std::shared_ptr<Tls13SecureChannelProvider>>(descriptor.status());
     try {

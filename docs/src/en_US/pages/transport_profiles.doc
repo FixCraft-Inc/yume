@@ -41,7 +41,10 @@ registry consumed through `cover_profile::active()`. TLS/HTTP/H2 consumers
 contain no browser-version branches.
 
 The H2 carrier currently requires exactly two assets and the
-captured stream sequence 1/3/5/7 (priming, CSS, JavaScript, extended CONNECT).
+captured stream sequence 1/3/5/7/9 (priming, CSS, JavaScript, extended CONNECT
+and the favicon request Chrome sends once the WebSocket is open). The
+generator takes the favicon request's headers and priority from the stream-9
+entry of the fixture's observations.
 The generator rejects any other geometry instead of admitting metadata that
 `H2Carrier` cannot execute. Generalizing that carrier is a separate reviewed
 change.
@@ -58,19 +61,28 @@ the installed production HTTP/1 cover backend. Changing it requires new
 matched captures and must not silently rewrite the existing
 `chrome151-node24-v1` evidence claim.
 
-The capture script for the YUME arm, `tools/cover-node/capture_yume151_runs.sh`,
-still drives the transport-v2 client and its `--outer-carrier-evidence`
-option with a one-tunnel workload of 64 ordered 16-KiB messages echoed
-byte-for-byte. Native `yume` has no evidence option yet. The H2 carrier can
-record an `OuterCarrierTrace`, but no runtime passes it one, so the YUME arm
-cannot be captured until a native evidence path exists. The comparison rules
-stay the same for that path. The behavior summary comes from bounded live
-carrier events, and the registry only validates and redacts expected
-metadata, never fabricating observed events. The observer reports the actual
-outer WebSocket geometry, so the classifier may correctly return `DRIFT`. The
-stable classifier projection keeps ordered request and WebSocket lifecycle, and
-normal Chrome's stream-9 favicon request and its PING-before-first-fragment
-relationship are compared even though the YUME carrier does not reproduce them.
+`yume --outer-carrier-evidence PATH` writes the YUME arm's behavior report
+from its first carrier's `OuterCarrierTrace` when the run ends
+(`runtime/outer_carrier_evidence.*`). The capture script for the YUME arm,
+`tools/cover-node/capture_yume151_runs.sh`, starts `yumed` and `yume` from
+one exact-commit release bundle with a kit that
+`scripts/yume_carrier_workload.py configure-kit` prepared, puts the TLS wire
+relay between them, and has that script drive the workload through yume's
+SOCKS5 port: 64 16-KiB messages to an echo target behind `yumed`, echoed
+byte for byte, then the stream closes, the tunnel idles 42 seconds and a
+SIGTERM closes `yume`. Each run keeps `behavior.json`, `tls-wire.json` and
+the driver's `workload.json`. `yume` carries whatever its applications send,
+so the driver's result, not the carrier report, binds the application
+volume. The browser arm must use the kit's server certificate and key so both
+arms terminate with the same certificate. The behavior summary comes from
+bounded live carrier events, and the registry only validates and redacts
+expected metadata, never fabricating observed events. The observer reports
+the actual outer WebSocket geometry, so the classifier may correctly return
+`DRIFT`. The stable classifier projection keeps ordered request and WebSocket
+lifecycle.
+The YUME carrier reproduces normal Chrome's stream-9 favicon request, while the
+server's PING-before-first-fragment relationship is compared even though the
+YUME server does not reproduce it.
 
 The transport and dependency registries are source/build metadata and are not
 installed as runtime examples. The transport registry contains
@@ -128,7 +140,13 @@ flattened evidence files that installed diagnostics consume.
    context, plus exact capture-selected fields and JA4. This is a ClientHello
    structure gate, not a six-test-method count or a whole-session parity claim.
 
-5. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
+5. Fill in `cover_server_tls`, the cover server's own cipher preference:
+   `tls13_cipher_suites` in its order and `tls12_cipher_list` as its OpenSSL
+   cipher string. `yumed` applies both over the client's order, as a server
+   with Node's default `honorCipherOrder` does. The generator refuses a
+   TLS 1.3 order that does not pick the suite the captured ServerHello chose
+   from the captured ClientHello.
+6. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
    `scripts/generate_transport_profiles.py` compares the four declared
    *set* fields against the capture, and `tests/test_yume_native_tls_wire.py`
    re-derives those plus the `ec_point_formats` and `key_share` geometry from
@@ -136,7 +154,7 @@ flattened evidence files that installed diagnostics consume.
    fails to match. Both fail if the gap widens, so a divergence cannot be
    introduced silently. Closing all four set fields buys an
    exact JA4 and nothing wider, because sets are all JA4 hashes.
-6. Regenerate and validate:
+7. Regenerate and validate:
 
    @code sh
    python3 scripts/generate_transport_profiles.py
@@ -144,7 +162,7 @@ flattened evidence files that installed diagnostics consume.
    python3 tests/test_project_metadata.py
    @end
 
-7. Bind the new ID only in a deliberate development protocol revision, update
+8. Bind the new ID only in a deliberate development protocol revision, update
    KATs and wire documentation, then run same-session capture, matched
    performance, sanitizer, classifier/active-probe, soak, packaging, and
    independent-review gates.

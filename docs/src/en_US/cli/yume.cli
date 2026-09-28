@@ -6,21 +6,36 @@ namespace: yume::runtime::yume_cli
 output-kind: static-help
 ---
 @usage
-yume --config <path> [--validate] [run settings]
+yume --config <path> [--validate] [run settings] [evidence]
+yume --config <path> --status
+yume --seal-kit <directory> --output <file>
+yume --import-kit <file> --into <directory>
 yume --version
+yume --completion bash
 yume --help
 @end
 
 @section Options
 --config
 --validate
+--status
 --version
+--completion
 -h
 
 @section Run settings
 --connect
 --socks-address
 --socks-port
+
+@section Kits
+--seal-kit
+--output
+--import-kit
+--into
+
+@section Evidence
+--outer-carrier-evidence
 
 @gap
 @note

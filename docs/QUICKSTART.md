@@ -43,6 +43,19 @@ server and client configurations, and a static cover site. Admission, access,
 TLS and composite identity credentials have distinct purposes. Do not replace
 them with one shared key or expose them in logs or source control.
 
+To move the client directory to another device, seal it into one file and
+import it there with the code the seal prints:
+
+```bash
+build/bin/yume --seal-kit yume-kit/client --output laptop.kit
+# on the other device, type the code when asked
+yume --import-kit laptop.kit --into ~/.config/yume
+```
+
+Send the code by another channel than the file. The sealed file has no
+readable header and holds the client's private key, access PSK and admission
+key, so treat it like the directory.
+
 The local kit uses a development CA and static cover content. A public
 endpoint needs deliberately chosen cover content and TLS trust; this kit does
 not establish public HTTPS credibility or production readiness. Use a DNS name

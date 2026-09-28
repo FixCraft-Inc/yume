@@ -21,8 +21,34 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 .I port
 ]
 .PP
+[
+.B --outer-carrier-evidence
+.I path
+]
+.PP
+.B yume
+.B --config
+.I path
+.B --status
+.PP
+.B yume
+.B --seal-kit
+.I directory
+.B --output
+.I file
+.PP
+.B yume
+.B --import-kit
+.I file
+.B --into
+.I directory
+.PP
 .B yume
 .B --version
+.PP
+.B yume
+.B --completion
+.B bash
 .PP
 .B yume
 .B --help
@@ -74,12 +100,25 @@ suite, session-security provider, crypto backend and evidence profile.
 This operation uses local information and does not read a configuration
 or contact a server.
 .TP
+.BI "--completion " shell
+Print the completion script for
+.IR shell ,
+which must be
+.BR bash ,
+and exit.
+The script completes this program's options, their fixed values and file
+arguments.
+To load it for one user, save it under the program's name in
+.IR ~/\:.local/\:share/\:bash-completion/\:completions/ .
+This operation reads no configuration.
+.TP
 .B -h, --help
 Print the supported options and exit.
 Unknown arguments still fail parsing when combined with
-.B --help
+.BR --help ,
+.B --version
 or
-.BR --version .
+.BR --completion .
 .PP
 Each run setting replaces one configuration key for this run only and
 passes the same checks as the file's value.
@@ -107,6 +146,86 @@ The configuration's rule applies: 127.0.0.1 or ::1.
 .BI "--socks-port " port
 Set the listen port of the configuration's only SOCKS5 adapter, 1 to
 65535.
+.PP
+The status option asks the running client of the same configuration for
+its state.
+.TP
+.B --status
+Connect to the control socket that
+.B control.socket
+names, print the running client's state and exit.
+The report names the connection state, how long it has lasted or when
+the next attempt starts, the server and its verified identity, the
+sessions and failed attempts, payload and record bytes in each
+direction, the local listeners and the last failure.
+The exit status is 2 when the configuration names no control socket and
+1 when no client answers on it.
+.B --status
+takes no option besides
+.BR --config .
+.PP
+The kit options move a client kit to another device in one file, a
+sealed kit.
+Each pair stands alone.
+.TP
+.BI "--seal-kit " directory
+Seal the client kit in
+.I directory
+into the file that
+.B --output
+names, and print a new code in five groups of five characters.
+The kit is the directory's regular files and those one level below it,
+at most 32 files of up to 256 KiB each, and its
+.I yume.json
+must be a client configuration.
+The file is Argon2id and AES-256-GCM output with no plaintext header, so
+it reads as random bytes.
+Pass the code to the user by another channel than the file.
+.TP
+.BI "--output " file
+Write the sealed kit to
+.I file
+with mode 0600.
+An existing file is not replaced.
+.TP
+.BI "--import-kit " file
+Open the sealed kit in
+.I file
+with the code read from standard input, echo off on a terminal, and
+write it to the new directory that
+.B --into
+names.
+Case, dashes and spaces in the code do not matter.
+A wrong code and a file that is not a sealed kit fail the same way.
+The directory is written under a private temporary name beside it and
+renamed into place, with mode 0700 for directories and programs and 0600
+for other files.
+It must not exist.
+.TP
+.BI "--into " directory
+The directory
+.B --import-kit
+creates.
+Its parent must exist.
+.PP
+The evidence option observes the run and changes nothing on the wire.
+.TP
+.BI "--outer-carrier-evidence " path
+When the run ends, write a report on the first connection's HTTP/2 and
+WebSocket carrier to
+.IR path ,
+for comparison with the captured browser session.
+The report holds frame types, sizes, header names with pinned or
+redacted values, and timing.
+It holds no payload, key, address or admission value.
+.I path
+must be absolute, in a directory this user owns that is not group or
+world writable and not inside a Git worktree, and must not exist.
+The file is created with mode 0600 when the run starts.
+The exit status is 1 when the report is incomplete, for example when the
+session never closed gracefully.
+.B --validate
+does not accept this option.
 .SH CONFIGURATION
 The configuration owns endpoint addresses, exact suite, credential file
 references, cover profile, services, adapters and resource limits.
@@ -115,12 +234,72 @@ Credential paths are relative to the configuration file's directory
 unless absolute.
 Credential loading rejects unsafe file types and permissions; inline
 secrets are forbidden.
+.SH CONTROL SOCKET
+With
+.B control.socket
+set, the running client listens on that UNIX socket for processes of its
+own user.
+The directory must belong to that user and be closed to writes by group
+and others, the socket is mode 0600, and a connection from another user
+is closed.
+At most four connections are open at once.
+.PP
+A connection sends one line, the JSON object
+.BR {"control":1,"request":"status"} ,
+within two seconds and in at most 512 bytes.
+The client answers with one JSON object on one line and closes the
+connection.
+The answer holds
+.B control
+(1),
+.BR program ,
+.BR version ,
+.B state
+.RB ( idle ,
+.BR connecting ,
+.BR connected ,
+.B waiting
+or
+.BR closed ),
+.B server
+with
+.B host
+and
+.BR port ,
+.BR sessions ,
+.BR failed_attempts ,
+.B traffic
+with payload and record bytes sent and received,
+.B socks5
+and
+.B forwards
+(the local listeners) and
+.B last_failure
+(null, or
+.B code
+and
+.BR message ).
+A connected client adds
+.B server_identity
+and
+.BR connected_ms ,
+and a waiting one adds
+.BR retry_ms .
+Any other request gets an object that holds
+.B control
+and an
+.B error
+text.
+No answer holds a key, credential or payload.
 .SH SIGNALS
 .B SIGINT
 and
 .B SIGTERM
 request shutdown of listeners and sessions, followed by removal of owned
 TUN networking.
+The session closes its WebSocket the way the captured browser does and
+waits up to three seconds for the server's answer before it ends the
+connection.
 .B SIGPIPE
 is ignored.
 .SH EXIT STATUS

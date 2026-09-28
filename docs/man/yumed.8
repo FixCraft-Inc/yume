@@ -14,6 +14,10 @@ yumed \- native YTP/1 daemon with configured TCP and UDP egress
 .B --version
 .PP
 .B yumed
+.B --completion
+.B bash
+.PP
+.B yumed
 .B --help
 .SH DESCRIPTION
 .B yumed
@@ -68,12 +72,25 @@ suite, session-security provider, crypto backend and evidence profile.
 This operation uses local information and does not read a configuration
 or contact a server.
 .TP
+.BI "--completion " shell
+Print the completion script for
+.IR shell ,
+which must be
+.BR bash ,
+and exit.
+The script completes this program's options, their fixed values and file
+arguments.
+To load it for one user, save it under the program's name in
+.IR ~/\:.local/\:share/\:bash-completion/\:completions/ .
+This operation reads no configuration.
+.TP
 .B -h, --help
 Print the supported options and exit.
 Unknown arguments still fail parsing when combined with
-.B --help
+.BR --help ,
+.B --version
 or
-.BR --version .
+.BR --completion .
 .SH CONFIGURATION
 The configuration owns endpoint addresses, exact suite, credential file
 references, cover profile, services, adapters and resource limits.

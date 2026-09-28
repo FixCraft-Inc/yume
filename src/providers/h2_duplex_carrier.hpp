@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -34,11 +36,25 @@ inline constexpr std::size_t kH2DuplexEnvelopeBytes = 12U;
 // retains and drains the executor after releasing the last open carrier handle.
 // Repeated close/cancel, credit return and destruction of a carrier that has
 // already closed and drained enqueue no further control work.
+//
+// defer is optional. It runs a task once on the declared affinity after a
+// delay and returns a handle. Releasing the handle on that affinity before the
+// delay ends cancels the task. It bounds a graceful close, and without it a
+// carrier closes at once.
 struct H2Dispatch final {
     std::function<void(std::function<void()>)> post;
     std::function<void(ControlTask&, std::shared_ptr<void>)> submit;
+    std::function<std::shared_ptr<void>(std::chrono::milliseconds,
+                                        std::function<void()>)>
+        defer;
     explicit operator bool() const noexcept { return post && submit; }
 };
+
+// How long a graceful close waits for the peer. A client waits for the
+// server's echo of its WebSocket CLOSE, and a server that echoed a client's
+// CLOSE waits for the client to end the connection. The carrier then closes
+// the connection whether or not the peer answered.
+inline constexpr std::chrono::milliseconds kH2GracefulCloseDeadline{3000};
 
 // A promoted server keeps serving ordinary streams on the same connection.
 // This handler must be bounded, synchronous and retain its cover source. It
@@ -82,11 +98,23 @@ struct H2DuplexClientConfig final {
     std::string server_name;
     std::uint16_t server_port{443U};
     H2DuplexCarrierLimits limits{};
+    // Optional payload-free observation of the first carrier this provider
+    // creates. Later carriers are not observed, so one trace describes one
+    // connection.
+    std::shared_ptr<obfs::OuterCarrierTrace> outer_trace{};
 };
 
 // Client-side provider. Creation performs the genuine profile priming GET and
 // asset exchange, waits for SETTINGS_ENABLE_CONNECT_PROTOCOL, submits RFC 8441
 // extended CONNECT, and returns only after the peer accepts it with 200.
+//
+// Carrier close() and cancel() both end the carrier. A live client carrier
+// closes as the captured browser does (H2Carrier::GracefulClose) and then
+// ends the connection once the server echoes the CLOSE or
+// kH2GracefulCloseDeadline passes. A server carrier whose client sent the
+// CLOSE writes its echo and waits the same way for the client to end the
+// connection. Every other close, and any close without H2Dispatch::defer, ends
+// the connection at once. Pending operations settle when the close starts.
 // The intended server name must match the name authenticated by the TLS
 // provider. Each create consumes its SecureChannel once, derives its own
 // exporter-bound admission path, and closes on failure without retrying it.
@@ -128,6 +156,7 @@ private:
     H2Dispatch dispatch_;
     H2DuplexClientConfig config_;
     std::shared_ptr<const AdmissionKey> admission_key_;
+    std::atomic<bool> trace_claimed_{false};
 };
 
 // Typed promotion seam used by the native h2-web FrontDoor. The front door retains

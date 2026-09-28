@@ -676,6 +676,34 @@ void H2WebFrontDoor::State::add_waiter(CancellationToken token, AcceptCompletion
     }
 }
 
+H2Dispatch make_asio_h2_dispatch(
+    std::shared_ptr<AsioExecutionContext> context) {
+    H2Dispatch dispatch;
+    dispatch.post = [context](std::function<void()> task) {
+        boost::asio::post(context->executor(), std::move(task));
+    };
+    dispatch.submit = [context](ControlTask& task,
+                                std::shared_ptr<void> owner) noexcept {
+        context->submit(task, std::move(owner));
+    };
+    dispatch.defer = [context](
+                         std::chrono::milliseconds delay,
+                         std::function<void()> task) -> std::shared_ptr<void> {
+        auto timer = std::make_shared<boost::asio::steady_timer>(
+            context->executor(), delay);
+        timer->async_wait(
+            [timer, task = std::move(task)](const Error& error) mutable {
+                if (!error && task) task();
+            });
+        // The handle's last release cancels a wait that has not finished.
+        return std::shared_ptr<void>(timer.get(), [timer](void*) noexcept {
+            Error ignored;
+            timer->cancel(ignored);
+        });
+    };
+    return dispatch;
+}
+
 Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create(
     std::shared_ptr<AsioExecutionContext> context, H2WebFrontDoorConfig config,
     std::shared_ptr<Tls13SecureChannelProvider> tls,
@@ -703,13 +731,7 @@ Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create(
         tcp_limits.max_active_channels = limits.max_connections + limits.max_promoted_carriers;
         auto tcp = AsioTcpAcceptedChannelOwner::create(context, tcp_limits);
         if (!tcp.ok()) return Result<std::shared_ptr<H2WebFrontDoor>>(tcp.status());
-        H2Dispatch post{
-            [context](std::function<void()> task) {
-                boost::asio::post(context->executor(), std::move(task));
-            },
-            [context](ControlTask& task, std::shared_ptr<void> owner) noexcept {
-                context->submit(task, std::move(owner));
-            }};
+        H2Dispatch post = make_asio_h2_dispatch(context);
         auto state = std::make_shared<State>(context, std::move(config), std::move(tls),
             std::move(cover), std::move(replay), std::move(tcp).take_value(), std::move(post));
         std::copy(admission_key.begin(), admission_key.end(), state->key.begin());

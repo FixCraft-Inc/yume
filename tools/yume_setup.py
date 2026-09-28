@@ -51,21 +51,25 @@ TUNING_PRESETS = {
         "max_queued_bytes": 4_194_304,
         "max_epoch_bytes": 1_048_576,
         "credit_returns_per_window": 2,
+        "idle_epoch_rotation": False,
     },
     "balanced": {
         "max_queued_bytes": 16_777_216,
         "max_epoch_bytes": 4_194_304,
         "credit_returns_per_window": 2,
+        "idle_epoch_rotation": False,
     },
     "fast": {
         "max_queued_bytes": 33_554_432,
         "max_epoch_bytes": 16_777_216,
         "credit_returns_per_window": 4,
+        "idle_epoch_rotation": True,
     },
     "max": {
         "max_queued_bytes": 67_108_864,
         "max_epoch_bytes": 67_108_864,
         "credit_returns_per_window": 8,
+        "idle_epoch_rotation": True,
     },
 }
 DEFAULT_PRESET = "stealth"
@@ -1081,7 +1085,7 @@ def add_client(
     if isinstance(server_limits, dict):
         for key in tuning:
             value = server_limits.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
+            if type(value) is type(tuning[key]):
                 tuning[key] = value
 
     store_path = _server_reference(server, config, "authorized_keys")
@@ -1348,11 +1352,13 @@ def main() -> int:
         print(f"Created YUME client bundle: {output}")
         print(f"Client config: {output / 'yume.json'}")
         print("Reload yumed (SIGHUP, or systemctl reload yumed) to accept the new client.")
+        print(f"To move it to the client's device: yume --seal-kit {output} --output FILE")
         return 0
     print(f"Created YUME server kit and client bundle: {output}")
     print(f"Server config: {output / 'server' / 'yumed.json'}")
     print(f"Client config: {output / 'client' / 'yume.json'}")
     print(f"Tuning preset: {arguments.preset}")
+    print(f"To move the client to its device: yume --seal-kit {output / 'client'} --output FILE")
     return 0
 
 

@@ -270,7 +270,8 @@ New namespaces copy the host's TCP buffer ceilings, and those cap one
 connection on a long path, direct or tunnelled, at a few MiB per round trip.
 `--tcp-buffer-mib N` raises them in all three namespaces, as on a host tuned
 for long paths. `--max-queued-bytes`, `--max-epoch-bytes` and
-`--credit-returns` set those `limits` keys for both roles.
+`--credit-returns` set those `limits` keys for both roles, and
+`--idle-epoch-rotation` sets `limits.idle_epoch_rotation`.
 
 ## Managed Linux TUN networking
 
@@ -423,17 +424,27 @@ Schema 1 is role tagged and contains these sections only:
   receive window that has reached its maximum returns credit: a far sender
   then uses more of the window each round trip, and the receiver sends more
   small records upstream.
+  `idle_epoch_rotation`, optional, false by default, lets this side rotate a
+  key epoch that has carried records once it is 250 ms old, without waiting
+  for its next send. The first send after a pause then needs no extra round
+  trip, but every burst of traffic ends with a rekey exchange of about 1.7 KB
+  each way, which the browser captures do not show.
   `max_epoch_bytes`, optional, is the most protected payload one directional
   key epoch carries, a power of two from 1 MiB, the default, through 64 MiB.
   The session uses the smaller of the client's and the server's values. A
   server may also set `max_egress_mbps`, from 1 to 1000000: the rate in
   megabits per second that stream payload shares between busy identities by
-  their `weight`.
+  their `weight`;
+- `control`, optional and client-only: `socket`, an absolute, normalized path
+  of at most 107 bytes that no forward uses. The running client serves its
+  status there to processes of its own user, and `yume --status` reads it.
+  The socket's directory must belong to that user and be closed to writes by
+  group and others. yume(1) describes the protocol.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
-and unsafe combinations. The development CLIs accept config selection,
-validation, version, and help only; network and security
-policy have no CLI override. Once the runtime gate closes, a service manager
+and unsafe combinations. The CLIs accept config selection, validation, the
+client's run settings and status, shell completion, version and help.
+Network and security policy have no CLI override. Once the runtime gate closes, a service manager
 should invoke only `yumed --config /etc/yume/yumed.json` as a dedicated
 unprivileged identity, prefer a high port or grant only
 `CAP_NET_BIND_SERVICE`, and restrict filesystem access to the generated
@@ -442,40 +453,47 @@ server tree and the cover root.
 ### Tuning presets
 
 `yume-setup init --preset NAME` writes one of four settings for
-`max_queued_bytes`, `max_epoch_bytes` and `credit_returns_per_window` into
-both configurations, and `add-client` gives a new client the server's
-settings. `yume-doctor` names the preset a configuration matches, or reports
-`custom`. `config/tuning_presets.json` holds the same table for other tools.
+`max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window` and
+`idle_epoch_rotation` into both configurations, and `add-client` gives a new
+client the server's settings. `yume-doctor` names the preset a configuration
+matches, or reports `custom`. `config/tuning_presets.json` holds the same
+table for other tools.
 
-| Preset | Budget | Epoch | Credit returns | Speed | Security | Stealth |
-| --- | --- | --- | --- | --- | --- | --- |
-| `stealth`, the default | 4 MiB | 1 MiB | 2 | 1 | 4 | 4 |
-| `balanced` | 16 MiB | 4 MiB | 2 | 2 | 3 | 3 |
-| `fast` | 32 MiB | 16 MiB | 4 | 3 | 2 | 2 |
-| `max` | 64 MiB | 64 MiB | 8 | 4 | 1 | 1 |
+| Preset | Budget | Epoch | Credit returns | Idle rotation | Speed | Security | Stealth |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `stealth`, the default | 4 MiB | 1 MiB | 2 | off | 1 | 4 | 4 |
+| `balanced` | 16 MiB | 4 MiB | 2 | off | 2 | 3 | 3 |
+| `fast` | 32 MiB | 16 MiB | 4 | on | 3 | 2 | 2 |
+| `max` | 64 MiB | 64 MiB | 8 | on | 4 | 1 | 1 |
 
 Each level, 1 to 4, stands for a measured or stated effect. Speed ranks
 far-path throughput in emulator runs. Security follows how much data one key
 epoch protects: 1, 4, 16 or 64 MiB, and never more than 500 ms of sending.
 Stealth is 4 for the settings the browser captures describe. Lower levels use
 a larger HTTP/2 receive window or send more small credit records upstream,
-changes that have no capture or classifier evidence yet. Moving along the
+changes that have no capture or classifier evidence yet. `fast` and `max`
+also rotate idle keys, whose rekey exchange after each burst the captures
+show a browser session does not send. Without it a request after more than
+half a second of quiet waits one round trip for the new key. Moving along the
 table trades one against the others, so a later interface can offer three
 coupled sliders over these four points.
 
 One emulator run on one host measured these rates for a single download, in
-Mbit/s at 40, 100 and 200 ms round trips without loss:
+Mbit/s at 40, 100 and 200 ms round trips without loss, each preset with its
+own idle rotation setting:
 
 | Preset | Default host TCP buffers | 64 MiB host TCP buffers |
 | --- | --- | --- |
-| `stealth` | 176, 77, 41 | 181, 79, 41 |
-| `balanced` | 423, 177, 92 | 679, 285, 155 |
-| `fast` | 424, 178, 93 | 2373, 1102, 582 |
-| `max` | 414, 178, 92 | 2969, 2737, 1326 |
+| `stealth` | 176, 78, 39 | 180, 78, 40 |
+| `balanced` | 423, 176, 94 | 653, 284, 155 |
+| `fast` | 417, 179, 93 | 2384, 1095, 579 |
+| `max` | 415, 177, 92 | 3038, 2499, 1333 |
 
-With Linux's default 6 MiB ceilings, one TCP connection holds about 2 MiB per
-round trip whether it is tunnelled or not, and the untunnelled download moved
-436 to 441, 186 to 188 and 98 Mbit/s. `balanced` already reaches about 95 % of
+An earlier run with idle rotation on in every preset measured rates within
+10 % of these, and a small request took the same time. With Linux's
+default 6 MiB ceilings, one TCP connection holds about 2 MiB per round trip
+whether it is tunnelled or not, and the untunnelled download moved 434 to
+437, 186 to 189 and 98 Mbit/s. `balanced` already reaches about 95 % of
 that, so `fast` and `max` are faster only on a host with raised ceilings. The
 emulator handles packets in software, which caps its rates below a real
 network card, and none of these rates is a claim about a real path.

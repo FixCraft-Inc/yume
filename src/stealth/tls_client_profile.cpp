@@ -187,6 +187,24 @@ const std::map<uint16_t, std::string> group_name_map = {
     {0x001e, "X448"},
 };
 
+// OpenSSL's name for a TLS 1.3 suite, or nullptr for any other code.
+const char* tls13_cipher_suite_name(std::uint16_t id) noexcept {
+    switch (id) {
+        case 0x1301:
+            return "TLS_AES_128_GCM_SHA256";
+        case 0x1302:
+            return "TLS_AES_256_GCM_SHA384";
+        case 0x1303:
+            return "TLS_CHACHA20_POLY1305_SHA256";
+        case 0x1304:
+            return "TLS_AES_128_CCM_SHA256";
+        case 0x1305:
+            return "TLS_AES_128_CCM_8_SHA256";
+        default:
+            return nullptr;
+    }
+}
+
 std::string cipher_suite_name(uint16_t code) {
     auto it = cipher_name_map.find(code);
     if (it != cipher_name_map.end()) {
@@ -416,19 +434,9 @@ void ClientProfileConfigurator::configure_cipher_suites(const std::vector<uint16
         else                            tls12_ids.push_back(s);
     }
 
-    auto tls13_name = [](std::uint16_t id) -> const char* {
-        switch (id) {
-            case 0x1301: return "TLS_AES_128_GCM_SHA256";
-            case 0x1302: return "TLS_AES_256_GCM_SHA384";
-            case 0x1303: return "TLS_CHACHA20_POLY1305_SHA256";
-            case 0x1304: return "TLS_AES_128_CCM_SHA256";
-            case 0x1305: return "TLS_AES_128_CCM_8_SHA256";
-            default:     return nullptr;
-        }
-    };
     std::string tls13_str;
     for (std::uint16_t id : tls13_ids) {
-        const char* n = tls13_name(id);
+        const char* n = tls13_cipher_suite_name(id);
         if (!n) continue;
         if (!tls13_str.empty()) tls13_str += ":";
         tls13_str += n;
@@ -723,6 +731,31 @@ std::vector<std::string> configure_client_profile(
     ClientProfileConfigurator configurator(context, native_chrome_client_hello);
     configurator.apply_stealth_profile(profile);
     return std::move(configurator).take_warnings();
+}
+
+void configure_server_profile(SSL_CTX* context,
+                              const cover_profile::Profile& profile) {
+    if (context == nullptr) {
+        throw std::invalid_argument("TLS profile context must not be null");
+    }
+    std::string suites;
+    for (const std::uint16_t id : profile.server_tls13_cipher_suites) {
+        const char* const name = tls13_cipher_suite_name(id);
+        if (name == nullptr) {
+            throw std::runtime_error(
+                "cover server lists an unknown TLS 1.3 suite");
+        }
+        if (!suites.empty()) suites += ':';
+        suites += name;
+    }
+    const std::string cipher_list(profile.server_tls12_cipher_list);
+    if (suites.empty() || cipher_list.empty() ||
+        SSL_CTX_set_ciphersuites(context, suites.c_str()) != 1 ||
+        SSL_CTX_set_cipher_list(context, cipher_list.c_str()) != 1) {
+        throw std::runtime_error(
+            "cover server cipher preference was rejected by OpenSSL");
+    }
+    SSL_CTX_set_options(context, SSL_OP_CIPHER_SERVER_PREFERENCE);
 }
 
 }  // namespace yume::tls_stealth

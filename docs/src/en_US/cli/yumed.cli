@@ -8,6 +8,7 @@ output-kind: static-help
 @usage
 yumed --config <path> [--validate]
 yumed --version
+yumed --completion bash
 yumed --help
 @end
 
@@ -15,6 +16,7 @@ yumed --help
 --config
 --validate
 --version
+--completion
 -h
 
 @gap

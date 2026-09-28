@@ -98,7 +98,7 @@ jobs:
         run: |
           cmake --build build-codeql \
             --target yume yumed yume-resolver yume_abi \
-              yume_module_relay yume_module_files yume_module_share \
+              yume_module_relay yume_module_files \
               yume_module_codecs \
             --parallel "${CODEQL_BUILD_JOBS}"
 

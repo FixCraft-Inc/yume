@@ -85,8 +85,10 @@ class CaptureFinalizeTest(unittest.TestCase):
                 "tls_wire_evidence": True,
                 "tls_backend": "openssl-chrome151",
                 "yume_binary_sha256": digest,
+                "yumed_binary_sha256": "e" * 64,
                 "release_bundle_sha256": "b" * 64,
                 "client_config_sha256": "d" * 64,
+                "server_config_sha256": "f" * 64,
                 "tls_leaf_sha256": "c" * 64,
             })
             (root / "environment.json").write_text(json.dumps(environment))
@@ -95,7 +97,8 @@ class CaptureFinalizeTest(unittest.TestCase):
             (run / "sanitized.json").unlink()
             (run / "tls-wire.json").write_text("{}\n")
             (run / "behavior.json").write_text("{}\n")
-            self._write_checksums(run, ["tls-wire.json", "behavior.json"])
+            (run / "workload.json").write_text("{}\n")
+            self._write_checksums(run, ["tls-wire.json", "behavior.json", "workload.json"])
             self._write_checksums(
                 root,
                 [
@@ -108,6 +111,28 @@ class CaptureFinalizeTest(unittest.TestCase):
             result = finalize_capture(root)
             self.assertEqual(result["arm"], "yume")
 
+    def test_yume_arm_requires_both_program_hashes(self) -> None:
+        for field in ("yumed_binary_sha256", "server_config_sha256"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self._prepare(root)
+                environment = json.loads((root / "environment.json").read_text())
+                environment.update({
+                    "arm": "yume",
+                    "tls_wire_evidence": True,
+                    "tls_backend": "openssl-chrome151",
+                    "yume_binary_sha256": "a" * 64,
+                    "yumed_binary_sha256": "e" * 64,
+                    "release_bundle_sha256": "b" * 64,
+                    "client_config_sha256": "d" * 64,
+                    "server_config_sha256": "f" * 64,
+                    "tls_leaf_sha256": "c" * 64,
+                })
+                del environment[field]
+                (root / "environment.json").write_text(json.dumps(environment))
+                with self.assertRaisesRegex(FinalizeError, field):
+                    finalize_capture(root)
+
     def test_yume_arm_requires_behavior_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -118,8 +143,10 @@ class CaptureFinalizeTest(unittest.TestCase):
                 "tls_wire_evidence": True,
                 "tls_backend": "openssl-chrome151",
                 "yume_binary_sha256": "a" * 64,
+                "yumed_binary_sha256": "e" * 64,
                 "release_bundle_sha256": "b" * 64,
                 "client_config_sha256": "d" * 64,
+                "server_config_sha256": "f" * 64,
                 "tls_leaf_sha256": "c" * 64,
             })
             (root / "environment.json").write_text(json.dumps(environment))
@@ -127,7 +154,8 @@ class CaptureFinalizeTest(unittest.TestCase):
             (run / "netlog.json").unlink()
             (run / "sanitized.json").unlink()
             (run / "tls-wire.json").write_text("{}\n")
-            self._write_checksums(run, ["tls-wire.json"])
+            (run / "workload.json").write_text("{}\n")
+            self._write_checksums(run, ["tls-wire.json", "workload.json"])
             self._write_checksums(
                 root,
                 [

@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <new>
 #include <cstddef>
@@ -31,6 +32,7 @@
 
 #include "providers/h2_duplex_carrier.hpp"
 #include "providers/ytp1_h2_admission.hpp"
+#include "stealth/cover_profile.hpp"
 
 namespace test_allocation_failure {
 
@@ -155,12 +157,46 @@ public:
     }
 
     H2Dispatch dispatch() {
-        return {
-            [this](std::function<void()> task) { post(std::move(task)); },
-            [this](ControlTask& task, std::shared_ptr<void> owner) noexcept {
-                controls_.push(task, std::move(owner));
-            }};
+        H2Dispatch result;
+        result.post = [this](std::function<void()> task) {
+            post(std::move(task));
+        };
+        result.submit = [this](ControlTask& task,
+                               std::shared_ptr<void> owner) noexcept {
+            controls_.push(task, std::move(owner));
+        };
+        if (with_timers) {
+            result.defer = [this](std::chrono::milliseconds delay,
+                                  std::function<void()> task) {
+                CHECK(delay == kH2GracefulCloseDeadline);
+                auto timer = std::make_shared<Timer>();
+                timer->task = std::move(task);
+                timers_.push_back(timer);
+                return std::shared_ptr<void>(
+                    timer.get(),
+                    [timer](void*) noexcept { timer->released = true; });
+            };
+        }
+        return result;
     }
+
+    // Timers only fire when a test says their delay has passed.
+    std::size_t armed_timers() const noexcept {
+        return static_cast<std::size_t>(std::count_if(
+            timers_.begin(), timers_.end(), [](const auto& timer) {
+                return !timer->released && !timer->fired;
+            }));
+    }
+
+    void fire_timers() {
+        for (const auto& timer : timers_) {
+            if (timer->released || timer->fired) continue;
+            timer->fired = true;
+            post(timer->task);
+        }
+    }
+
+    bool with_timers{false};
 
     void run() {
         std::size_t turns = 0U;
@@ -184,8 +220,15 @@ public:
     void accept_new_tasks() noexcept { reject_ = false; }
 
 private:
+    struct Timer {
+        std::function<void()> task;
+        bool released{false};
+        bool fired{false};
+    };
+
     ControlTaskQueue controls_;
     std::deque<std::function<void()>> tasks_;
+    std::vector<std::shared_ptr<Timer>> timers_;
     bool running_{false};
     bool reject_{false};
 };
@@ -207,10 +250,14 @@ struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
         std::deque<std::vector<std::byte>> inbound;
         std::optional<PendingRead> pending;
         bool closed{false};
+        bool peer_closed{false};
         bool write_shutdown{false};
     };
 
-    explicit TestPipe(TestExecutor& executor) : executor(executor) {}
+    // close_order must not allocate inside a noexcept close.
+    explicit TestPipe(TestExecutor& executor) : executor(executor) {
+        close_order.reserve(4U);
+    }
 
     void fulfill(std::size_t side) {
         Endpoint& endpoint = endpoints[side];
@@ -218,7 +265,7 @@ struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
             return;
         }
         if (endpoint.inbound.empty()) {
-            if (!endpoint.closed) {
+            if (!endpoint.closed && !endpoint.peer_closed) {
                 return;
             }
             auto completion = std::move(endpoint.pending->completion);
@@ -249,6 +296,7 @@ struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
     std::size_t fragment_bytes{7U};
     std::array<bool, 2> partial_next_write{false, false};
     std::array<unsigned int, 2> destroyed{};
+    std::vector<std::size_t> close_order;
     std::size_t callback_count{0U};
     std::size_t write_calls{0U};
     std::size_t exporter_calls{0U};
@@ -402,7 +450,18 @@ public:
         }
         closed_ = true;
         pipe_->endpoints[side_].closed = true;
+        if (pipe_->close_order.size() < pipe_->close_order.capacity()) {
+            pipe_->close_order.push_back(side_);
+        }
+        // The peer reads end of stream once it has drained what was sent.
+        const std::size_t peer = 1U - side_;
+        pipe_->endpoints[peer].peer_closed = true;
         cancel();
+        try {
+            const auto shared = pipe_;
+            pipe_->executor.post([shared, peer] { shared->fulfill(peer); });
+        } catch (...) {
+        }
     }
 
     const SecureChannelPeerEvidence& peer_evidence() const noexcept override {
@@ -446,6 +505,22 @@ private:
     bool closed_{false};
 };
 
+// A promoted server keeps answering ordinary requests, such as the client's
+// favicon fetch, from its cover. This one answers every GET with a 404.
+class NotFoundCover final : public H2CoverHandler {
+public:
+    bool respond(obfs::H2Carrier& h2, const obfs::H2Request& request) override {
+        ++requests;
+        return request.method == "GET" &&
+               h2.RespondHttp(request.stream_id, 404U,
+                              {{"content-type", "text/plain"}},
+                              obfs::H2Bytes(10U, 0x4e));
+    }
+    void stream_closed(std::int32_t) noexcept override {}
+
+    std::size_t requests{0U};
+};
+
 class ServerOpening final
     : public std::enable_shared_from_this<ServerOpening> {
 public:
@@ -467,6 +542,7 @@ public:
     }
 
     const std::string& admission_path() const noexcept { return admission_path_; }
+    std::size_t cover_requests() const noexcept { return cover_->requests; }
 
 private:
     void collect_output() {
@@ -550,7 +626,7 @@ private:
         }
         auto promoted = make_admitted_h2_duplex_server_carrier(
             std::move(channel_), std::move(h2_), ExecutorAffinity(77U),
-            executor_.dispatch());
+            executor_.dispatch(), {}, cover_);
         CHECK(promoted.ok());
         carrier_ = std::move(promoted).take_value();
         promoted_ = true;
@@ -571,6 +647,7 @@ private:
     std::unique_ptr<Carrier> carrier_;
     std::deque<Buffer> writes_;
     std::vector<std::uint8_t> injected_binary_;
+    std::shared_ptr<NotFoundCover> cover_ = std::make_shared<NotFoundCover>();
     std::string admission_path_;
     bool reading_{false};
     bool writing_{false};
@@ -668,6 +745,130 @@ OpenedPair open_pair(std::vector<std::uint8_t> injected_binary = {},
               kH2DuplexCarrierProviderId);
     }
     return pair;
+}
+
+struct CloseTrace {
+    std::size_t sent_close_bytes{0U};
+    bool received_close{false};
+    bool sent_goaway{false};
+    std::optional<bool> close_wire;
+    std::size_t close_wires{0U};
+};
+
+CloseTrace inspect_close(const obfs::OuterCarrierTrace& trace) {
+    CloseTrace result;
+    for (const auto& event : trace.Snapshot().events) {
+        if (event.kind == obfs::OuterCarrierEventKind::WebSocketFrame &&
+            event.websocket_opcode == 0x8) {
+            if (event.direction == obfs::OuterCarrierDirection::Sent) {
+                result.sent_close_bytes = event.websocket_payload_bytes;
+            } else {
+                result.received_close = true;
+            }
+        } else if (event.kind == obfs::OuterCarrierEventKind::H2Frame &&
+                   event.direction == obfs::OuterCarrierDirection::Sent &&
+                   event.h2_type == 0x07) {
+            result.sent_goaway = true;
+        } else if (event.kind == obfs::OuterCarrierEventKind::CloseWire) {
+            result.close_wire = event.completed;
+            ++result.close_wires;
+        }
+    }
+    return result;
+}
+
+OpenedPair open_traced_pair(std::shared_ptr<obfs::OuterCarrierTrace> trace) {
+    auto executor = std::make_shared<TestExecutor>();
+    executor->with_timers = true;
+    auto key = kTestAdmissionKey;
+    H2DuplexClientConfig config{"COVER.EXAMPLE", 443U, {}};
+    config.outer_trace = std::move(trace);
+    auto provider = require(H2DuplexCarrierProvider::create(
+        ExecutorAffinity(77U), executor->dispatch(), std::move(config), key));
+    return open_pair({}, true, executor, std::move(provider));
+}
+
+// The client sends the captured CLOSE, the server echoes it, and the client
+// ends the connection first. The server, told to close by its session after
+// the peer's CLOSE, waits for that end of stream instead of racing it.
+void test_client_graceful_close_waits_for_the_echo() {
+    auto trace = std::make_shared<obfs::OuterCarrierTrace>();
+    OpenedPair pair = open_traced_pair(trace);
+    bool server_settled = false;
+    pair.server->async_receive({}, [&](Result<ReceivedRecord> result) {
+        CHECK(!result.ok() && result.status().code() == StatusCode::Closed);
+        server_settled = true;
+        pair.server->close();
+    });
+    unsigned int client_settled = 0U;
+    pair.client->async_receive({}, [&](Result<ReceivedRecord> result) {
+        CHECK(!result.ok() && result.status().code() == StatusCode::Closed);
+        ++client_settled;
+    });
+    pair.executor->run();
+    CHECK(pair.pipe->close_order.empty());
+    pair.client->close();
+    pair.client->cancel();
+    pair.executor->run();
+    CHECK(server_settled && client_settled == 1U);
+    CHECK(pair.pipe->close_order == (std::vector<std::size_t>{0U, 1U}));
+    CHECK(pair.executor->armed_timers() == 0U);
+    const auto observed = inspect_close(*trace);
+    CHECK(observed.sent_close_bytes ==
+          cover_profile::active().websocket_close_payload_bytes);
+    CHECK(observed.received_close && !observed.sent_goaway);
+    CHECK(observed.close_wires == 1U && observed.close_wire == true);
+
+    bool late = false;
+    pair.client->async_send(make_buffer("late"), {},
+                            [&late](Status status, std::size_t bytes) {
+                                CHECK(status.code() == StatusCode::Closed);
+                                CHECK(bytes == 0U);
+                                late = true;
+                            });
+    pair.executor->run();
+    CHECK(late);
+}
+
+// A server that never echoes cannot hold the client open past its deadline.
+void test_client_graceful_close_deadline() {
+    auto trace = std::make_shared<obfs::OuterCarrierTrace>();
+    OpenedPair pair = open_traced_pair(trace);
+    pair.executor->run();
+    pair.pipe->endpoints[1].hold_writes = true;
+    pair.client->close();
+    pair.executor->run();
+    CHECK(!pair.pipe->endpoints[0].closed);
+    CHECK(pair.executor->armed_timers() == 1U);
+    pair.executor->fire_timers();
+    pair.executor->run();
+    CHECK(pair.pipe->endpoints[0].closed);
+    CHECK(pair.executor->armed_timers() == 0U);
+    const auto observed = inspect_close(*trace);
+    CHECK(observed.sent_close_bytes != 0U && !observed.received_close);
+    CHECK(observed.close_wires == 1U && observed.close_wire == false);
+}
+
+// No capture shows a server closing first, so that close stays immediate, as
+// does any close without a deadline to bound it.
+void test_other_closes_end_the_connection_at_once() {
+    {
+        OpenedPair pair = open_traced_pair(nullptr);
+        pair.executor->run();
+        pair.server->close();
+        pair.executor->run();
+        CHECK(!pair.pipe->close_order.empty() &&
+              pair.pipe->close_order.front() == 1U);
+        CHECK(pair.executor->armed_timers() == 0U);
+    }
+    {
+        OpenedPair pair = open_pair();
+        pair.executor->run();
+        pair.client->close();
+        pair.executor->run();
+        CHECK(!pair.pipe->close_order.empty() &&
+              pair.pipe->close_order.front() == 0U);
+    }
 }
 
 void test_limits_cover_envelope_and_receive_window() {
@@ -840,6 +1041,8 @@ void test_admission_uses_fresh_nonce_and_exporter_binding() {
 void test_opening_fragmentation_and_bidirectional_records() {
     OpenedPair pair = open_pair();
     CHECK(pair.pipe->callback_count > 20U);
+    // The client fetched /favicon.ico once the carrier opened, as Chrome does.
+    CHECK(pair.server_opening->cover_requests() == 1U);
 
     bool send_done = false;
     bool receive_done = false;
@@ -1306,6 +1509,9 @@ int main() {
         yume::providers::test_malformed_carrier_envelope_fails_closed();
         yume::providers::test_oversized_carrier_length_fails_before_payload();
         yume::providers::test_limits_cover_envelope_and_receive_window();
+        yume::providers::test_client_graceful_close_waits_for_the_echo();
+        yume::providers::test_client_graceful_close_deadline();
+        yume::providers::test_other_closes_end_the_connection_at_once();
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << exception.what() << '\n';

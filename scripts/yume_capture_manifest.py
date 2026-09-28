@@ -290,8 +290,10 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
     if args.arm == "yume":
         for field, value in (
             ("YUME binary SHA-256", args.yume_binary_sha256),
+            ("yumed binary SHA-256", args.yumed_binary_sha256),
             ("release bundle SHA-256", args.release_bundle_sha256),
             ("client config SHA-256", args.client_config_sha256),
+            ("server config SHA-256", args.server_config_sha256),
             ("TLS leaf SHA-256", args.tls_leaf_sha256),
         ):
             if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
@@ -300,8 +302,10 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
             raise ManifestError("YUME arm must name its Chrome TLS backend")
     elif (
         args.yume_binary_sha256
+        or args.yumed_binary_sha256
         or args.release_bundle_sha256
         or args.client_config_sha256
+        or args.server_config_sha256
         or args.tls_leaf_sha256
         or args.tls_backend
     ):
@@ -337,9 +341,11 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
     }
     if args.arm == "yume":
         environment["yume_binary_sha256"] = args.yume_binary_sha256
+        environment["yumed_binary_sha256"] = args.yumed_binary_sha256
         environment["tls_backend"] = args.tls_backend
         environment["release_bundle_sha256"] = args.release_bundle_sha256
         environment["client_config_sha256"] = args.client_config_sha256
+        environment["server_config_sha256"] = args.server_config_sha256
         environment["tls_leaf_sha256"] = args.tls_leaf_sha256
     return environment
 
@@ -381,9 +387,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--node-binary-sha256", required=True)
     result.add_argument("--display", required=True)
     result.add_argument("--yume-binary-sha256", default="")
+    result.add_argument("--yumed-binary-sha256", default="")
     result.add_argument("--tls-backend", default="")
     result.add_argument("--release-bundle-sha256", default="")
     result.add_argument("--client-config-sha256", default="")
+    result.add_argument("--server-config-sha256", default="")
     result.add_argument("--tls-leaf-sha256", default="")
     result.add_argument(
         "--tls-wire-evidence", required=True, type=int, choices=(0, 1)

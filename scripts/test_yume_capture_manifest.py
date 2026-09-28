@@ -85,9 +85,11 @@ class CaptureManifestTest(unittest.TestCase):
             "node_binary_sha256": PINNED_NODE_BINARY_SHA256,
             "display": ":99",
             "yume_binary_sha256": "",
+            "yumed_binary_sha256": "",
             "tls_backend": "",
             "release_bundle_sha256": "",
             "client_config_sha256": "",
+            "server_config_sha256": "",
             "tls_leaf_sha256": "",
             "tls_wire_evidence": 1,
         }
@@ -147,9 +149,11 @@ class CaptureManifestTest(unittest.TestCase):
         environment = build_environment(self.args(
             arm="yume",
             yume_binary_sha256=digest,
+            yumed_binary_sha256=digest,
             tls_backend="openssl-chrome151",
             release_bundle_sha256=digest,
             client_config_sha256=digest,
+            server_config_sha256=digest,
             tls_leaf_sha256=digest,
         ))
         self.assertEqual(environment["yume_binary_sha256"], digest)
@@ -158,26 +162,44 @@ class CaptureManifestTest(unittest.TestCase):
         self.assertEqual(environment["release_bundle_sha256"], digest)
         self.assertEqual(environment["client_config_sha256"], digest)
         self.assertEqual(environment["tls_leaf_sha256"], digest)
-        with self.assertRaisesRegex(ManifestError, "TLS leaf SHA-256"):
+        self.assertEqual(environment["yumed_binary_sha256"], digest)
+        self.assertEqual(environment["server_config_sha256"], digest)
+        with self.assertRaisesRegex(ManifestError, "yumed binary SHA-256"):
             build_environment(self.args(
                 arm="yume",
                 yume_binary_sha256=digest,
                 tls_backend="openssl-chrome151",
                 release_bundle_sha256=digest,
                 client_config_sha256=digest,
+                server_config_sha256=digest,
+                tls_leaf_sha256=digest,
+            ))
+        with self.assertRaisesRegex(ManifestError, "TLS leaf SHA-256"):
+            build_environment(self.args(
+                arm="yume",
+                yume_binary_sha256=digest,
+                yumed_binary_sha256=digest,
+                tls_backend="openssl-chrome151",
+                release_bundle_sha256=digest,
+                client_config_sha256=digest,
+                server_config_sha256=digest,
                 tls_leaf_sha256="BAD",
             ))
         with self.assertRaisesRegex(ManifestError, "Chrome TLS backend"):
             build_environment(self.args(
                 arm="yume",
                 yume_binary_sha256=digest,
+                yumed_binary_sha256=digest,
                 tls_backend="chrome151",
                 release_bundle_sha256=digest,
                 client_config_sha256=digest,
+                server_config_sha256=digest,
                 tls_leaf_sha256=digest,
             ))
         with self.assertRaisesRegex(ManifestError, "normal arm"):
             build_environment(self.args(tls_leaf_sha256=digest))
+        with self.assertRaisesRegex(ManifestError, "normal arm"):
+            build_environment(self.args(yumed_binary_sha256=digest))
 
     def test_workload_asset_order_is_validated(self) -> None:
         document, _digest = load_workload()

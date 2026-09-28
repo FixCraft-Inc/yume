@@ -32,6 +32,8 @@ EXPECTED_RUNTIME_FILES = (
     "scripts/yume_capture_binary_provenance.py",
     "scripts/yume_capture_manifest.py",
     "scripts/yume_capture_finalize.py",
+    "scripts/yume_carrier_workload.py",
+    "scripts/yume_native_session.py",
     "scripts/release_preflight.py",
     "scripts/generate_transport_profiles.py",
     "scripts/yume_dependencies.py",
@@ -40,6 +42,21 @@ EXPECTED_RUNTIME_FILES = (
     "scripts/yume_tls_wire.py",
     "tests/fixtures/chrome151-node24/manifest.json",
 )
+
+
+# The YUME arm binds both native programs from one release bundle and both
+# configurations it ran.
+YUME_ARM_HASH_FIELDS = (
+    "yume_binary_sha256",
+    "yumed_binary_sha256",
+    "release_bundle_sha256",
+    "client_config_sha256",
+    "server_config_sha256",
+    "tls_leaf_sha256",
+)
+# yume's carrier report, the TLS first flights and the workload driver's
+# measured result.
+YUME_RUN_FILES = ("behavior.json", "tls-wire.json", "workload.json")
 
 
 class FinalizeError(ValueError):
@@ -268,12 +285,7 @@ def finalize_capture(root: Path) -> dict[str, Any]:
         if not isinstance(tls_wire, bool):
             raise FinalizeError("tls_wire_evidence must be Boolean")
         if arm == "yume":
-            for field in (
-                "yume_binary_sha256",
-                "release_bundle_sha256",
-                "client_config_sha256",
-                "tls_leaf_sha256",
-            ):
+            for field in YUME_ARM_HASH_FIELDS:
                 value = environment.get(field)
                 if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
                     raise FinalizeError(f"{field} must be lowercase SHA-256")
@@ -316,7 +328,7 @@ def finalize_capture(root: Path) -> dict[str, Any]:
                 if tls_wire:
                     expected.add("tls-wire.json")
             else:
-                expected = {"behavior.json", "tls-wire.json"}
+                expected = set(YUME_RUN_FILES)
             _require_names(entries, expected, f"{name} checksum")
             _verify_entries(reader, entries, prefix=Path(name))
             completed_runs.append(

@@ -21,6 +21,11 @@ PEM_BLOCK = re.compile(
 )
 
 
+def runpy_tool() -> dict:
+    import runpy
+    return runpy.run_path(str(TOOL))
+
+
 class YumeSetupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -502,6 +507,39 @@ class YumeSetupTests(unittest.TestCase):
                 self.assertEqual(refused.returncode, 1, refused.stdout)
                 self.assertIn(message, refused.stderr.lower())
                 self.assertFalse((base / "refused").exists())
+
+    def test_tuning_presets_reach_both_sides_and_new_clients(self) -> None:
+        tool = runpy_tool()
+        default = tool["TUNING_PRESETS"][tool["DEFAULT_PRESET"]]
+        for relative in ("server/yumed.json", "client/yume.json"):
+            limits = json.loads((self.kit / relative).read_text())["limits"]
+            self.assertEqual({key: limits[key] for key in default}, default)
+        self.assertIn("Tuning preset: stealth", self.setup_output)
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            kit = base / "kit"
+            created = self.run_tool(
+                "init", "--host", "setup.example.test", "--output", str(kit),
+                "--client-name", "phone", "--preset", "fast",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            fast = tool["TUNING_PRESETS"]["fast"]
+            for relative in ("server/yumed.json", "client/yume.json"):
+                limits = json.loads((kit / relative).read_text())["limits"]
+                self.assertEqual({key: limits[key] for key in fast}, fast)
+            added = self.run_tool(
+                "add-client", "--server", str(kit / "server"), "--host", "setup.example.test",
+                "--output", str(base / "tablet"), "--client-name", "tablet",
+            )
+            self.assertEqual(added.returncode, 0, added.stderr)
+            limits = json.loads((base / "tablet/yume.json").read_text())["limits"]
+            self.assertEqual({key: limits[key] for key in fast}, fast)
+            refused = self.run_tool(
+                "init", "--host", "setup.example.test", "--output", str(base / "refused"),
+                "--preset", "unlimited",
+            )
+            self.assertEqual(refused.returncode, 2, refused.stdout)
+            self.assertFalse((base / "refused").exists())
 
     def test_remove_client_reverses_add_client(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

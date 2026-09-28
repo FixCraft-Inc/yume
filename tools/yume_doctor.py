@@ -57,6 +57,18 @@ MAX_SESSIONS_PER_IDENTITY = 1024
 MIN_WEIGHT = 0.1
 MAX_WEIGHT = 100.0
 MAX_EGRESS_MBPS = 1_000_000
+# Tuning presets, as yume-setup writes them and config/tuning_presets.json
+# lists them. Doctor names the one a configuration's limits match.
+TUNING_PRESETS = {
+    "stealth": {"max_queued_bytes": 4_194_304, "max_epoch_bytes": 1_048_576,
+                "credit_returns_per_window": 2},
+    "balanced": {"max_queued_bytes": 16_777_216, "max_epoch_bytes": 4_194_304,
+                 "credit_returns_per_window": 2},
+    "fast": {"max_queued_bytes": 33_554_432, "max_epoch_bytes": 16_777_216,
+             "credit_returns_per_window": 4},
+    "max": {"max_queued_bytes": 67_108_864, "max_epoch_bytes": 67_108_864,
+            "credit_returns_per_window": 8},
+}
 # limits.max_epoch_bytes and limits.credit_returns_per_window, as the parser
 # bounds them (config.hpp).
 MIN_EPOCH_BYTES = 1 << 20
@@ -1884,6 +1896,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def tuning_preset(config_path: Path) -> str:
+    """The preset whose settings a valid configuration's limits hold, or custom."""
+    limits = json.loads(Path(config_path).read_text(encoding="utf-8")).get("limits", {})
+    tuning = {
+        "max_queued_bytes": limits.get("max_queued_bytes"),
+        "max_epoch_bytes": limits.get("max_epoch_bytes", MIN_EPOCH_BYTES),
+        "credit_returns_per_window": limits.get("credit_returns_per_window", CREDIT_RETURNS[0]),
+    }
+    for name, preset in TUNING_PRESETS.items():
+        if preset == tuning:
+            return name
+    return "custom"
+
+
 def main() -> int:
     os.umask(0o077)
     arguments = build_parser().parse_args()
@@ -1903,6 +1929,10 @@ def main() -> int:
         "yume-doctor: configuration and credentials valid; "
         "no session was started"
     )
+    try:
+        print(f"yume-doctor: tuning preset {tuning_preset(arguments.config)}")
+    except (OSError, ValueError):
+        print("yume-doctor: tuning preset custom")
     return 0
 
 

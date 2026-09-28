@@ -379,6 +379,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   data for a round trip. The endpoint's rekey timer also rotates a used epoch
   without waiting for a send, so a request after an idle moment no longer
   waits a round trip on each side for REKEY_ACK.
+- **Tuning presets.** `yume-setup init --preset` selects `stealth`, the
+  default, `balanced`, `fast` or `max`, which set the session budget, the
+  epoch size and the credit returns on both sides of a kit. `add-client`
+  copies the server's settings and `yume-doctor` names the preset a
+  configuration matches. `config/tuning_presets.json` lists the presets with
+  a speed, security and stealth level each, for a later interface.
 - **Key rotation without a pause.** A sender sent nothing protected between
   REKEY_INIT and REKEY_ACK, so every rotation cost a round trip, about 29 % of
   the time at 200 ms with 500 ms epochs, and a request that met a rotation

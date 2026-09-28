@@ -536,6 +536,45 @@ int main(int argc, char** argv) {
                 std::string::npos,
             "schema-1 start diagnostic omitted the uncomposed adapters");
 
+    // Without adapters, a control socket is refused the same way.
+    std::string control_text = config_text;
+    const std::size_t adapters_key = control_text.find("\"adapters\"");
+    const std::size_t adapters_open = control_text.find('[', adapters_key);
+    const std::size_t adapters_close = control_text.find(']', adapters_open);
+    require(adapters_key != std::string::npos &&
+                adapters_open != std::string::npos &&
+                adapters_close != std::string::npos,
+            "config fixture omitted its adapter array");
+    control_text.replace(adapters_open, adapters_close - adapters_open + 1U,
+                         "[]");
+    control_text.insert(
+        adapters_key,
+        R"("control":{"socket":"/run/user/1000/yume/control.sock"},)");
+    yume_config* control_config = nullptr;
+    require(
+        yume_config_parse_json(first, control_text.data(), control_text.size(),
+                               &control_config) == YUME_STATUS_OK,
+        "control socket config fixture was rejected");
+    yume_endpoint* control_endpoint = nullptr;
+    require(yume_endpoint_create(first, control_config, &control_endpoint) ==
+                YUME_STATUS_OK,
+            "control socket endpoint creation failed");
+    require(
+        yume_endpoint_start(control_endpoint, 0U) == YUME_STATUS_UNSUPPORTED,
+        "an embedded endpoint started without its control socket");
+    yume_diagnostic control_diagnostic{};
+    control_diagnostic.struct_size = sizeof(control_diagnostic);
+    control_diagnostic.abi_version = YUME_ABI_VERSION;
+    require(
+        yume_handle_get_diagnostic(control_endpoint, &control_diagnostic,
+                                   sizeof(control_diagnostic)) ==
+                YUME_STATUS_OK &&
+            std::string(control_diagnostic.message).find("control socket") !=
+                std::string::npos,
+        "the control socket refusal diagnostic did not name it");
+    yume_endpoint_destroy(control_endpoint);
+    yume_config_destroy(control_config);
+
     yume_open_options open{};
     open.struct_size = YUME_OPEN_OPTIONS_MIN_SIZE + 1U;
     open.abi_version = YUME_ABI_VERSION;

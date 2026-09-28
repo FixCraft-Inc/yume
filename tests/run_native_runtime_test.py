@@ -509,6 +509,51 @@ def check_outer_carrier_evidence(yume: Path, kit: Path, environment: dict[str, s
     print(f"outer-carrier evidence verified: {len(events)} events, graceful close echoed")
 
 
+def check_control_status(yume: Path, kit: Path, environment: dict[str, str],
+                         root: Path, socks_port: int, target_port: int) -> None:
+    """yume --status reads the running client's owner-only control socket."""
+    control_dir = root / "control"
+    control_dir.mkdir(mode=0o700)
+    socket_path = control_dir / "control.sock"
+    config = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))
+    config["control"] = {"socket": str(socket_path)}
+    variant = kit / "client/yume-control.json"
+    variant.write_text(json.dumps(config), encoding="utf-8")
+
+    def status() -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(yume), "--config", str(variant), "--status"], env=environment,
+                              capture_output=True, text=True, timeout=10, check=False)
+
+    with (root / "yume-control.log").open("wb") as log:
+        client = subprocess.Popen([str(yume), "--config", str(variant)], env=environment,
+                                  stdout=log, stderr=subprocess.STDOUT)
+        try:
+            session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
+            check_payload(socks_port, "127.0.0.1", target_port)
+            if socket_path.stat().st_mode & 0o777 != 0o600:
+                raise session.SessionFailure("the control socket is not mode 0600")
+            result = status()
+            lines = result.stdout.splitlines()
+            if (result.returncode != 0 or result.stderr or len(lines) < 4 or
+                    not lines[1].startswith("state: connected for ") or
+                    "sessions: 1, failed attempts since the last: 0" not in lines or
+                    f"SOCKS5: 127.0.0.1:{socks_port}" not in lines or
+                    "sent: 0 bytes of payload" in result.stdout):
+                raise session.SessionFailure(f"yume --status reported {result!r}")
+            session.stop_process(client, "yume with a control socket")
+            client = None
+        finally:
+            if client is not None and client.poll() is None:
+                client.kill()
+                client.wait(timeout=5)
+    if socket_path.exists():
+        raise session.SessionFailure("yume left its control socket behind")
+    result = status()
+    if result.returncode != 1 or "no yume is running on the control socket" not in result.stderr:
+        raise session.SessionFailure(f"--status without a client reported {result!r}")
+    print("control socket verified: yume --status showed the connected session")
+
+
 def process_gone(pid: int) -> bool:
     # A dead child of init can stay a zombie briefly until it is reaped. A
     # process that exits between opening and reading its stat file makes the
@@ -624,6 +669,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             session.stop_process(client, "yume")
             client = None
             check_outer_carrier_evidence(yume, kit, environment, root, socks_port, target_port)
+            check_control_status(yume, kit, environment, root, socks_port, target_port)
             check_socks5_upstream(yume, kit, environment, root, server_port, target_port)
             session.stop_process(server, "yumed")
             if module is not None and any(module_root.iterdir()):

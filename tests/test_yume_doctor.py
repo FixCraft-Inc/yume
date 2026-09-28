@@ -563,6 +563,46 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("client-only", result.stderr)
 
+    def test_control_socket_matches_the_native_parser(self) -> None:
+        config_path = self.case / "client/yume.json"
+        original = config_path.read_text()
+        client = json.loads(original)
+        client["control"] = {"socket": "/run/user/1000/yume/control.sock"}
+        config_path.write_text(json.dumps(client))
+        os.chmod(config_path, 0o600)
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        invalid = (
+            ("/run/../control.sock", "/control/socket", "normalized absolute path"),
+            ("/" + "a" * 107, "/control/socket", ""),
+            (7, "/control/socket", "string"),
+            ("/run/user/1000/yume/chat.sock", "/control/socket", "duplicate local listen path"),
+        )
+        for value, pointer, message in invalid:
+            client = json.loads(original)
+            client["adapters"].append({"kind": "forward", "service": "tcp",
+                                       "listen_path": "/run/user/1000/yume/chat.sock"})
+            client["control"] = {"socket": value}
+            config_path.write_text(json.dumps(client))
+            result = self.run_doctor(config_path)
+            self.assertEqual(result.returncode, 1, value)
+            self.assertIn(pointer, result.stderr)
+            self.assertIn(message, result.stderr)
+        client = json.loads(original)
+        client["control"] = {"socket": "/run/c.sock", "commands": True}
+        config_path.write_text(json.dumps(client))
+        result = self.run_doctor(config_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/control/commands", result.stderr)
+        config_path.write_text(original)
+        server_path = self.case / "server/yumed.json"
+        server = json.loads(server_path.read_text())
+        server["control"] = {"socket": "/run/yume/control.sock"}
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("client-only", result.stderr)
+
     def test_module_adapters_match_the_native_parser(self) -> None:
         server_path = self.case / "server/yumed.json"
         original = json.loads(server_path.read_text())

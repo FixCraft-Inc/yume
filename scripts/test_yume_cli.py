@@ -347,7 +347,7 @@ class Tracked(unittest.TestCase):
         # only the client accepts.
         shared = {"--config", "--validate", "--version", "--completion", "--help", "-h"}
         expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port",
-                                      "--outer-carrier-evidence"},
+                                      "--outer-carrier-evidence", "--status"},
                     "yumed": shared}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):

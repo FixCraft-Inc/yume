@@ -672,6 +672,13 @@ private:
     bool idle_epoch_rotation_;
 };
 
+// control.socket: the client's owner-only control socket, a normalized
+// absolute UNIX socket path. Only processes of the same user can connect,
+// and they can read the client's status. Absent means no control socket.
+struct ControlSettings final {
+    std::string socket_path;
+};
+
 class Config final {
 public:
     Config(const Config&) = default;
@@ -688,16 +695,15 @@ public:
     const std::vector<Service>& services() const noexcept { return services_; }
     const std::vector<Adapter>& adapters() const noexcept { return adapters_; }
     const ResourceLimits& limits() const noexcept { return limits_; }
+    const std::optional<ControlSettings>& control() const noexcept {
+        return control_;
+    }
 
 private:
-    Config(Role role,
-           Endpoint endpoint,
-           Suite suite,
-           Credentials credentials,
-           Cover cover,
-           std::vector<Service> services,
-           std::vector<Adapter> adapters,
-           ResourceLimits limits)
+    Config(Role role, Endpoint endpoint, Suite suite, Credentials credentials,
+           Cover cover, std::vector<Service> services,
+           std::vector<Adapter> adapters, ResourceLimits limits,
+           std::optional<ControlSettings> control)
         : role_(role),
           endpoint_(std::move(endpoint)),
           suite_(std::move(suite)),
@@ -705,7 +711,8 @@ private:
           cover_(std::move(cover)),
           services_(std::move(services)),
           adapters_(std::move(adapters)),
-          limits_(std::move(limits)) {}
+          limits_(std::move(limits)),
+          control_(std::move(control)) {}
 
     Role role_;
     Endpoint endpoint_;
@@ -715,6 +722,7 @@ private:
     std::vector<Service> services_;
     std::vector<Adapter> adapters_;
     ResourceLimits limits_;
+    std::optional<ControlSettings> control_;
 
     friend Config Parse(const nlohmann::json& document);
 };

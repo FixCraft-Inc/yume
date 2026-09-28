@@ -889,10 +889,35 @@ class CheckedConfig:
     socks5_credentials: str | None
 
 
+def _validate_control(control: Any, adapters: list[Any], role: str) -> None:
+    """control.socket, as config::v1 checks it."""
+    _closed_object(control, "/control", {"socket"})
+    if role != "client":
+        _fail("/control", "is client-only")
+    path = _string(control["socket"], "/control/socket", MAX_UNIX_SOCKET_PATH_BYTES)
+    if not _normalized_absolute_path(path):
+        _fail("/control/socket", "must be a normalized absolute path")
+    for adapter in adapters:
+        if adapter.get("kind") == "forward" and adapter.get("listen_path") == path:
+            _fail("/control/socket", "duplicate local listen path")
+
+
 def _validate_config(document: Any) -> CheckedConfig:
     top = _closed_object(
         document,
         "",
+        {
+            "schema",
+            "role",
+            "endpoint",
+            "suite",
+            "credentials",
+            "cover",
+            "services",
+            "adapters",
+            "limits",
+            "control",
+        },
         {
             "schema",
             "role",
@@ -916,6 +941,8 @@ def _validate_config(document: Any) -> CheckedConfig:
     services = _validate_services(top["services"])
     list_files = _validate_adapters(top["adapters"], role, services)
     _validate_limits(top["limits"], top["adapters"], role)
+    if "control" in top:
+        _validate_control(top["control"], top["adapters"], role)
     return CheckedConfig(role, credentials, cover_root, list_files, socks5_credentials)
 
 

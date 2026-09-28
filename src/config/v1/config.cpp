@@ -1212,13 +1212,12 @@ ResourceLimits ParseLimits(const Json& limits) {
         "max_packet_bytes",
         "max_packet_batch",
     }};
-    CheckClosedObject(
-        limits, "/limits",
-        {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6], keys[7],
-         "max_egress_mbps", "max_epoch_bytes", "credit_returns_per_window",
-         "idle_epoch_rotation"},
-        {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5], keys[6],
-         keys[7]});
+    CheckClosedObject(limits, "/limits",
+                      {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
+                       keys[6], keys[7], "max_egress_mbps", "max_epoch_bytes",
+                       "credit_returns_per_window", "idle_epoch_rotation"},
+                      {keys[0], keys[1], keys[2], keys[3], keys[4], keys[5],
+                       keys[6], keys[7]});
 
     const auto read = [&](std::string_view key,
                           std::uint32_t minimum,
@@ -1278,11 +1277,33 @@ ResourceLimits ParseLimits(const Json& limits) {
         limits.contains("idle_epoch_rotation") &&
         ReadBoolean(limits.at("idle_epoch_rotation"),
                     "/limits/idle_epoch_rotation");
-    return ResourceLimits(
-        max_frame_bytes, max_streams, max_queued_bytes, max_pending_opens,
-        max_rekey_jobs, max_control_messages, max_packet_bytes,
-        max_packet_batch, max_egress_mbps, max_epoch_bytes, credit_returns,
-        idle_epoch_rotation);
+    return ResourceLimits(max_frame_bytes, max_streams, max_queued_bytes,
+                          max_pending_opens, max_rekey_jobs,
+                          max_control_messages, max_packet_bytes,
+                          max_packet_batch, max_egress_mbps, max_epoch_bytes,
+                          credit_returns, idle_epoch_rotation);
+}
+
+std::optional<ControlSettings> ParseControl(
+    const Json& document, Role role, const std::vector<Adapter>& adapters) {
+    if (!document.contains("control")) return std::nullopt;
+    const Json& control = document.at("control");
+    CheckClosedObject(control, "/control", {"socket"}, {"socket"});
+    if (role != Role::Client) Fail("/control", "is client-only");
+    const auto& path = ReadString(control.at("socket"), "/control/socket",
+                                  kMaxUnixSocketPathBytes);
+    if (!IsNormalizedAbsolutePath(path)) {
+        Fail("/control/socket", "must be a normalized absolute path");
+    }
+    for (const auto& adapter : adapters) {
+        const auto* forward = std::get_if<ForwardAdapter>(&adapter);
+        if (!forward) continue;
+        const auto* listener = std::get_if<UnixListener>(&forward->listener());
+        if (listener && listener->path == path) {
+            Fail("/control/socket", "duplicate local listen path");
+        }
+    }
+    return ControlSettings{path};
 }
 
 void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,
@@ -1304,12 +1325,11 @@ ValidationError::ValidationError(std::string json_pointer, std::string detail)
       detail_(std::move(detail)) {}
 
 Config Parse(const nlohmann::json& document) {
-    CheckClosedObject(
-        document, "",
-        {"schema", "role", "endpoint", "suite", "credentials", "cover",
-         "services", "adapters", "limits"},
-        {"schema", "role", "endpoint", "suite", "credentials", "cover",
-         "services", "adapters", "limits"});
+    CheckClosedObject(document, "",
+                      {"schema", "role", "endpoint", "suite", "credentials",
+                       "cover", "services", "adapters", "limits", "control"},
+                      {"schema", "role", "endpoint", "suite", "credentials",
+                       "cover", "services", "adapters", "limits"});
 
     const std::uint32_t schema =
         ReadBoundedUnsigned(document.at("schema"), "/schema", kSchema, kSchema);
@@ -1332,10 +1352,12 @@ Config Parse(const nlohmann::json& document) {
     if (role == Role::Client && limits.max_egress_mbps()) {
         Fail("/limits/max_egress_mbps", "is server-only");
     }
+    std::optional<ControlSettings> control =
+        ParseControl(document, role, adapters);
 
     return Config(role, std::move(endpoint), std::move(suite),
-                  std::move(credentials), std::move(cover),
-                  std::move(services), std::move(adapters), std::move(limits));
+                  std::move(credentials), std::move(cover), std::move(services),
+                  std::move(adapters), std::move(limits), std::move(control));
 }
 
 namespace {

@@ -6,6 +6,7 @@
 
 #include "runtime/native_cli.hpp"
 
+#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -28,6 +30,7 @@
 #include "providers/child_process.hpp"
 #include "providers/system_resolver_helper.hpp"
 #include "providers/openssl_security_provider.hpp"
+#include "runtime/control_socket.hpp"
 #include "runtime/module_launcher.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
@@ -59,6 +62,7 @@ struct Arguments final {
     bool version{false};
     bool help{false};
     bool completion{false};
+    bool status{false};
 };
 
 // The client's per-run flags. Each sets one schema-1 key through
@@ -157,6 +161,8 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
                 std::filesystem::path(argv[++index]);
         } else if (argument == "--validate") {
             arguments.validate = true;
+        } else if (role == NativeCliRole::Client && argument == "--status") {
+            arguments.status = true;
         } else if (argument == "--version") {
             arguments.version = true;
         } else if (argument == "--completion") {
@@ -181,6 +187,13 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
     }
     if (arguments.validate && arguments.outer_carrier_evidence) {
         error = "--outer-carrier-evidence needs a run, not --validate";
+        return std::nullopt;
+    }
+    if (arguments.status &&
+        (arguments.validate || arguments.outer_carrier_evidence ||
+         arguments.run.connect_address || arguments.run.socks5_listen_address ||
+         arguments.run.socks5_listen_port)) {
+        error = "--status takes only --config";
         return std::nullopt;
     }
     return arguments;
@@ -295,6 +308,29 @@ int validate(NativeCliRole role, const config::v1::Config& config,
     return kExitStopped;
 }
 
+// yume --status: one request to the running client's control socket.
+int print_status(NativeCliRole role, const config::v1::Config& config) {
+    if (!config.control()) {
+        say(role, "the configuration has no control socket (control.socket)");
+        return kExitUsage;
+    }
+    const auto& path = config.control()->socket_path;
+    const auto reply = query_control_status(path, std::chrono::seconds(5));
+    if (!reply.ok()) {
+        say(role, reply.status().code() == StatusCode::NotFound
+                      ? "no yume is running on the control socket " + path
+                      : describe("status request failed", reply.status()));
+        return kExitFailure;
+    }
+    const auto text = status_reply_text(reply.value());
+    if (!text.ok()) {
+        say(role, describe("status reply refused", text.status()));
+        return kExitFailure;
+    }
+    std::fputs(text.value().c_str(), stdout);
+    return kExitStopped;
+}
+
 int serve(NativeCliRole role, const config::v1::Config& config,
           const std::filesystem::path& base,
           const std::optional<std::filesystem::path>& evidence_path) {
@@ -320,6 +356,7 @@ int serve(NativeCliRole role, const config::v1::Config& config,
     if (role == NativeCliRole::Server) signals.add(SIGHUP);
     std::shared_ptr<NativeServerRuntime> server;
     std::shared_ptr<NativeClientRuntime> client;
+    std::shared_ptr<ControlServer> control;
     int exit_code = kExitStopped;
     bool stopping = false;
 
@@ -332,6 +369,7 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         exit_code = code;
         boost::system::error_code ignored;
         signals.cancel(ignored);
+        if (control) control->close();
         if (server) server->close();
         if (client) client->close();
         context->finish();
@@ -420,11 +458,44 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                 say(role, "forward on " + endpoint.address().to_string() + " port " +
                               std::to_string(endpoint.port()));
             }
+            ClientControlView view;
+            const auto& endpoint =
+                std::get<config::v1::ClientEndpoint>(config.endpoint());
+            view.server_host = endpoint.host();
+            view.server_port = endpoint.port();
+            view.socks5 = client->socks5_endpoints();
+            view.forwards = client->forward_endpoints();
             for (const auto& adapter : config.adapters()) {
                 const auto* forward = std::get_if<config::v1::ForwardAdapter>(&adapter);
                 const auto* local = forward
                     ? std::get_if<config::v1::UnixListener>(&forward->listener()) : nullptr;
-                if (local) say(role, "forward on " + local->path);
+                if (!local) continue;
+                say(role, "forward on " + local->path);
+                view.unix_forwards.push_back(local->path);
+            }
+            if (config.control()) {
+                const std::weak_ptr<NativeClientRuntime> weak = client;
+                auto opened = ControlServer::open(
+                    context, config.control()->socket_path,
+                    [weak, view = std::move(view)] {
+                        const auto runtime = weak.lock();
+                        if (!runtime)
+                            throw std::runtime_error("the client has stopped");
+                        return client_status_reply(
+                            runtime->status(), view,
+                            std::chrono::steady_clock::now());
+                    },
+                    [role](Status status) noexcept {
+                        say(role, describe("control socket stopped", status));
+                    });
+                if (!opened.ok()) {
+                    say(role, describe("cannot open the control socket",
+                                       opened.status()));
+                    stop(exit_for(opened.status()));
+                    return;
+                }
+                control = std::move(opened).take_value();
+                say(role, "control socket on " + config.control()->socket_path);
             }
         } catch (...) {
             say(role, "startup failed");
@@ -486,6 +557,7 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
             say(role, error);
             return kExitUsage;
         }
+        if (arguments->status) return print_status(role, *config);
         const auto base = std::filesystem::absolute(*arguments->config).parent_path();
         return arguments->validate
                    ? validate(role, *config, arguments->run, base)

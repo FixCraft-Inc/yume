@@ -752,6 +752,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     # One application composition owns the normal client and daemon.
     if(TARGET yume_asio_direct_route_provider)
         add_library(yume_native_runtime STATIC
+            runtime/control_socket.cpp runtime/control_socket.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp
             runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
             runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
@@ -1644,6 +1645,13 @@ if(YUME_BUILD_TESTING)
         yume_apply_perf_opts(yume_native_local_listener_test)
         add_test(NAME yume_native_local_listener_test COMMAND yume_native_local_listener_test)
         set_tests_properties(yume_native_local_listener_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_native_control_socket_test runtime/control_socket_test.cpp)
+        target_link_libraries(yume_native_control_socket_test PRIVATE
+            yume_native_runtime yume_asio_execution_context Boost::system)
+        yume_apply_perf_opts(yume_native_control_socket_test)
+        add_test(NAME yume_native_control_socket_test COMMAND yume_native_control_socket_test)
+        set_tests_properties(yume_native_control_socket_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_socks5_request_test runtime/socks5_request_test.cpp)
         target_link_libraries(yume_native_socks5_request_test PRIVATE yume_native_runtime)

@@ -79,6 +79,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   print a bash completion script for the program's options, their fixed
   values and file arguments. `scripts/yume_cli.py` generates it from the
   manual sources with the help text, so the two cannot drift apart.
+- **Control socket and `yume --status`.** A client configuration may name
+  `control.socket`, a UNIX socket where the running client serves its state
+  to processes of its own user: the connection state, the server and its
+  verified identity, session counts, traffic, local listeners and the last
+  failure. `yume --config PATH --status` prints it. The socket follows the
+  owner-only rules of local UNIX listeners, serves at most four connections,
+  and answers one JSON request line with one JSON line (control protocol 1,
+  in yume(1)). The planned GUI reads it. `yume-doctor` checks the key, and
+  the embedding ABI refuses a configuration that names one.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

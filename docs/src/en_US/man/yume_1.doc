@@ -13,6 +13,7 @@ man-manual:  YUME Manual
 **yume** **--config** *path* [ **--validate** ] [ **--connect** *ip* ]
 [ **--socks-address** *ip* ] [ **--socks-port** *port* ]
 [ **--outer-carrier-evidence** *path* ]
+**yume** **--config** *path* **--status**
 **yume** **--version**
 **yume** **--completion** **bash**
 **yume** **--help**
@@ -66,6 +67,23 @@ configuration's rule applies: 127.0.0.1 or ::1.
 Set the listen port of the configuration's only SOCKS5 adapter, 1 to 65535.
 @end
 
+The status option asks the running client of the same configuration for
+its state.
+
+@options
+@opt **--status**
+@cli spell: --status
+@cli help: Print the running client's state from its control socket
+
+Connect to the control socket that **control.socket** names, print the
+running client's state and exit. The report names the connection state, how
+long it has lasted or when the next attempt starts, the server and its
+verified identity, the sessions and failed attempts, payload and record bytes
+in each direction, the local listeners and the last failure. The exit status
+is 2 when the configuration names no control socket and 1 when no client
+answers on it. **--status** takes no option besides **--config**.
+@end
+
 The evidence option observes the run and changes nothing on the wire.
 
 @options
@@ -86,6 +104,27 @@ gracefully. **--validate** does not accept this option.
 @end
 
 @include shared/native_configuration.part
+
+## CONTROL SOCKET
+
+With **control.socket** set, the running client listens on that UNIX socket
+for processes of its own user. The directory must belong to that user and be
+closed to writes by group and others, the socket is mode 0600, and a
+connection from another user is closed. At most four connections are open at
+once.
+
+A connection sends one line, the JSON object
+**{"control":1,"request":"status"}**, within two seconds and in at most 512
+bytes. The client answers with one JSON object on one line and closes the
+connection. The answer holds **control** (1), **program**, **version**,
+**state** (**idle**, **connecting**, **connected**, **waiting** or
+**closed**), **server** with **host** and **port**, **sessions**,
+**failed_attempts**, **traffic** with payload and record bytes sent and
+received, **socks5** and **forwards** (the local listeners) and
+**last_failure** (null, or **code** and **message**). A connected client adds
+**server_identity** and **connected_ms**, and a waiting one adds
+**retry_ms**. Any other request gets an object that holds **control** and
+an **error** text. No answer holds a key, credential or payload.
 
 ## SIGNALS
 

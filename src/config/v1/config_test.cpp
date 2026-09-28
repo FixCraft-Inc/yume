@@ -1155,6 +1155,43 @@ void TestForwardAdapters() {
 
 // A server module runs one program for a stream service, with optional
 // arguments, and no other adapter may serve that service.
+// control.socket is an optional, client-only absolute UNIX socket path that
+// no forward listens on.
+void TestControlSocket() {
+    Check(!Parse(ClientDocument()).control(),
+          "a control socket appeared unasked");
+    Json document = ClientDocument();
+    document["control"] = {{"socket", "/run/user/1000/yume/control.sock"}};
+    const auto control = Parse(document).control();
+    Check(control && control->socket_path == "/run/user/1000/yume/control.sock",
+          "the control socket path was not retained");
+    for (const Json& path :
+         {Json("relative/control.sock"), Json("/run/user/1000/../x.sock"),
+          Json("/run/user/1000/yume/"), Json(""), Json(7),
+          Json("/" + std::string(107, 'a'))}) {
+        document = ClientDocument();
+        document["control"] = {{"socket", path}};
+        ExpectError(document, "/control/socket");
+    }
+    document = ClientDocument();
+    document["control"] = Json::object();
+    ExpectError(document, "/control/socket", "required key");
+    document = ClientDocument();
+    document["control"] = {{"socket", "/run/yume.sock"}, {"commands", true}};
+    ExpectError(document, "/control/commands", "unknown key");
+    document = ClientDocument();
+    document["control"] = "/run/yume.sock";
+    ExpectError(document, "/control", "object");
+    document = ServerDocument();
+    document["control"] = {{"socket", "/run/yume/control.sock"}};
+    ExpectError(document, "/control", "client-only");
+    document = ClientDocument();
+    document["adapters"].push_back(ForwardAdapterDocument(
+        {{"listen_path", "/run/user/1000/yume/chat.sock"}}));
+    document["control"] = {{"socket", "/run/user/1000/yume/chat.sock"}};
+    ExpectError(document, "/control/socket", "duplicate local listen path");
+}
+
 void TestModuleAdapters() {
     Json document = ServerDocument();
     document["services"].push_back(
@@ -1474,6 +1511,7 @@ int main(int argc, char** argv) {
     TestDestinationLists();
         TestResourceLimits();
         TestForwardAdapters();
+        TestControlSocket();
         TestModuleAdapters();
         TestEgressRate();
         test_managed_tun_network();

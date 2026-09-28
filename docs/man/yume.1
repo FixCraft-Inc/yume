@@ -27,6 +27,11 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 ]
 .PP
 .B yume
+.B --config
+.I path
+.B --status
+.PP
+.B yume
 .B --version
 .PP
 .B yume
@@ -130,6 +135,23 @@ The configuration's rule applies: 127.0.0.1 or ::1.
 Set the listen port of the configuration's only SOCKS5 adapter, 1 to
 65535.
 .PP
+The status option asks the running client of the same configuration for
+its state.
+.TP
+.B --status
+Connect to the control socket that
+.B control.socket
+names, print the running client's state and exit.
+The report names the connection state, how long it has lasted or when
+the next attempt starts, the server and its verified identity, the
+sessions and failed attempts, payload and record bytes in each
+direction, the local listeners and the last failure.
+The exit status is 2 when the configuration names no control socket and
+1 when no client answers on it.
+.B --status
+takes no option besides
+.BR --config .
+.PP
 The evidence option observes the run and changes nothing on the wire.
 .TP
 .BI "--outer-carrier-evidence " path
@@ -156,6 +178,63 @@ Credential paths are relative to the configuration file's directory
 unless absolute.
 Credential loading rejects unsafe file types and permissions; inline
 secrets are forbidden.
+.SH CONTROL SOCKET
+With
+.B control.socket
+set, the running client listens on that UNIX socket for processes of its
+own user.
+The directory must belong to that user and be closed to writes by group
+and others, the socket is mode 0600, and a connection from another user
+is closed.
+At most four connections are open at once.
+.PP
+A connection sends one line, the JSON object
+.BR {"control":1,"request":"status"} ,
+within two seconds and in at most 512 bytes.
+The client answers with one JSON object on one line and closes the
+connection.
+The answer holds
+.B control
+(1),
+.BR program ,
+.BR version ,
+.B state
+.RB ( idle ,
+.BR connecting ,
+.BR connected ,
+.B waiting
+or
+.BR closed ),
+.B server
+with
+.B host
+and
+.BR port ,
+.BR sessions ,
+.BR failed_attempts ,
+.B traffic
+with payload and record bytes sent and received,
+.B socks5
+and
+.B forwards
+(the local listeners) and
+.B last_failure
+(null, or
+.B code
+and
+.BR message ).
+A connected client adds
+.B server_identity
+and
+.BR connected_ms ,
+and a waiting one adds
+.BR retry_ms .
+Any other request gets an object that holds
+.B control
+and an
+.B error
+text.
+No answer holds a key, credential or payload.
 .SH SIGNALS
 .B SIGINT
 and

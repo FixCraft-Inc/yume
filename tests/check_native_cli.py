@@ -10,6 +10,7 @@ Run with --yume /path/to/yume --yumed /path/to/yumed.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -100,6 +101,34 @@ class NativeCli(unittest.TestCase):
                               ["--completion", "bash", "--completion", "bash"]):
                 with self.subTest(binary=name, arguments=arguments):
                     self.assert_usage_failure(name, arguments, "--completion needs bash")
+
+    def test_status_is_a_client_action_on_its_own(self) -> None:
+        self.assert_usage_failure("yumed", ["--config", "x.json", "--status"],
+                                  "unknown argument: --status")
+        self.assert_usage_failure("yume", ["--status"], "--config is required")
+        for extra in (["--validate"], ["--connect", "192.0.2.7"],
+                      ["--outer-carrier-evidence", "/tmp/evidence.json"]):
+            with self.subTest(extra=extra):
+                self.assert_usage_failure("yume", ["--config", "x.json", "--status", *extra],
+                                          "--status takes only --config")
+
+    def test_status_needs_a_control_socket_and_a_running_client(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="yume-cli-") as temporary:
+            path = Path(temporary) / "yume.json"
+            config = json.loads((ROOT / "config/yume.json").read_text(encoding="utf-8"))
+            path.write_text(json.dumps(config), encoding="utf-8")
+            result = self.invoke("yume", "--config", str(path), "--status")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stderr,
+                             "yume: the configuration has no control socket (control.socket)\n")
+            socket_path = Path(temporary) / "control.sock"
+            config["control"] = {"socket": str(socket_path)}
+            path.write_text(json.dumps(config), encoding="utf-8")
+            result = self.invoke("yume", "--config", str(path), "--status")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr,
+                             f"yume: no yume is running on the control socket {socket_path}\n")
 
     def test_config_is_required_for_run_and_validation(self) -> None:
         for name in PROGRAMS:

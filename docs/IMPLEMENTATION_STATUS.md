@@ -196,12 +196,15 @@ An optional callback reports each state change on the runtime context.
 counts. The endpoint test checks both across a reconnect.
 
 A server endpoint reloads its credential stores on request, and `yumed` does
-so on SIGHUP. Reload builds a new engine graph for later sessions and swaps the
+so on SIGHUP. Reload replaces the security factory that every later session
+takes its credentials from, including sessions on accepts armed before the
+reload, and swaps the
 authorization policy that every service wrapper consults, so established
 sessions apply changed grants to their next OPEN. It ends sessions of removed
 identities and those beyond a lowered `max_sessions`, and refuses a store that
 fails validation or a changed admission key. The endpoint test covers grant
-changes, refusal of a malformed store and revocation of a live session.
+changes, refusal of a malformed store, revocation of a live session and a
+client added while an accept was armed.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every

@@ -93,6 +93,52 @@ private:
     std::shared_ptr<const NativeAuthorizationPolicy> policy_;
 };
 
+// A server's current session credentials. Accepts stay armed across a
+// reload with the graph they were created from, and each session they start
+// creates its security provider here, so it authenticates against the
+// credentials loaded last.
+class CurrentSecurityFactory final : public SessionSecurityProviderFactory {
+public:
+    explicit CurrentSecurityFactory(
+        std::shared_ptr<SessionSecurityProviderFactory> factory)
+        : descriptor_(factory->descriptor()), factory_(std::move(factory)) {}
+
+    const ProviderDescriptor& descriptor() const noexcept override {
+        return descriptor_;
+    }
+
+    Result<std::unique_ptr<SessionSecurityProvider>> create(
+        EndpointRole local_role) override {
+        std::shared_ptr<SessionSecurityProviderFactory> current;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            current = factory_;
+        }
+        return current->create(local_role);
+    }
+
+    // A factory for another provider or version is refused, as the graph
+    // was checked against this descriptor. The replaced factory is released
+    // after the lock.
+    Status set(
+        std::shared_ptr<SessionSecurityProviderFactory> factory) noexcept {
+        const auto& next = factory->descriptor();
+        if (next.provider_id() != descriptor_.provider_id() ||
+            next.kind() != descriptor_.kind() ||
+            next.api_version() != descriptor_.api_version() ||
+            next.capabilities().bits() != descriptor_.capabilities().bits())
+            return Status(StatusCode::ProviderMismatch);
+        std::lock_guard<std::mutex> lock(mutex_);
+        factory_.swap(factory);
+        return Status::success();
+    }
+
+private:
+    ProviderDescriptor descriptor_;
+    mutable std::mutex mutex_;
+    std::shared_ptr<SessionSecurityProviderFactory> factory_;
+};
+
 // A server's configured egress rate. Every served stream shares it by the
 // weight of its authenticated identity.
 struct EgressPacing final {
@@ -418,9 +464,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         }
     }
 
-    // Server only, on the context. Loads the credential stores again, builds a
-    // graph with the new security factory for later sessions, publishes the new
-    // policy to every established session's next OPEN, and ends sessions whose
+    // Server only, on the context. Loads the credential stores again, gives
+    // every later session the new security factory, publishes the new policy
+    // to every established session's next OPEN, and ends sessions whose
     // identity is gone or beyond a lowered max_sessions. The listener's TLS
     // material stays loaded, and a changed admission key is refused because
     // clients using the new key could not be admitted. On any failure the
@@ -439,13 +485,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             if (!std::equal(next.begin(), next.end(), loaded.begin()))
                 throw Status(StatusCode::FailedPrecondition,
                     "the admission key changed; restart the daemon to apply it");
-            EngineBuilder builder(role, inputs.suite);
-            require(builder.register_session_security_provider_factory(credentials.security_factory));
-            if (options.route_provider) require(builder.register_route_provider(options.route_provider));
-            for (const auto& handler : inputs.handlers)
-                require(builder.register_stream_handler(handler.name, handler.handler));
-            auto rebuilt = require(builder.build());
-            graph = std::move(rebuilt);
+            require(inputs.security->set(credentials.security_factory));
             policy->set(credentials.authorization);
             const auto current = policy->get();
             for (const auto& slot : slots) {
@@ -748,12 +788,12 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     // admission counter that orders sessions for replacement.
     std::shared_ptr<PolicyHolder> policy;
     std::uint64_t admissions{0U};
-    // What a server reload rebuilds from. The admission key must not change.
+    // What a server reload reads and replaces. The admission key must not
+    // change.
     struct ReloadInputs final {
         config::v1::Config config;
         std::filesystem::path base_directory;
-        TransportSuiteDescriptor suite;
-        std::vector<NativeServiceBinding> handlers;
+        std::shared_ptr<CurrentSecurityFactory> security;
         NativeAdmissionKey admission_key;
     };
     std::optional<ReloadInputs> reload_inputs;
@@ -906,11 +946,19 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         }
         auto suite = require(TransportSuiteDescriptor::create(std::string(config.suite().id()),
             "YTP/1", std::move(requirements), std::move(service_requirements)));
-        if (role == EndpointRole::Server)
-            state->reload_inputs.emplace(State::ReloadInputs{config, base_directory, suite, handlers,
+        std::shared_ptr<SessionSecurityProviderFactory> security =
+            credentials.security_factory;
+        if (role == EndpointRole::Server) {
+            auto current = std::make_shared<CurrentSecurityFactory>(
+                credentials.security_factory);
+            security = current;
+            state->reload_inputs.emplace(State::ReloadInputs{
+                config, base_directory, std::move(current),
                 NativeAdmissionKey(credentials.admission_key.bytes())});
+        }
         EngineBuilder builder(role, std::move(suite));
-        require(builder.register_session_security_provider_factory(credentials.security_factory));
+        require(builder.register_session_security_provider_factory(
+            std::move(security)));
         if (state->options.route_provider)
             require(builder.register_route_provider(state->options.route_provider));
         for (auto& handler : handlers)

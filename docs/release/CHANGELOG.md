@@ -397,6 +397,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Reload reaches armed accepts.** `yumed` keeps up to four accepts armed on
+  each listener, and each held the credentials loaded before a SIGHUP. A
+  client added by `add-client`, or a changed PSK, failed its first attempts
+  until those accepts were used up, which cost the client its backoff. Every
+  session now takes its credentials from the endpoint's current factory when
+  AUTH starts, so the reload reaches it on the first attempt.
 - **Receive-window autotuning.** A session returns consumed credit in one
   update per half window instead of two records per received record. A stream
   window grows from 256 KiB while the application drains it within two round

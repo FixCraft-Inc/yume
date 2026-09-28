@@ -5,7 +5,7 @@ title:       yumed
 summary:     native YTP/1 daemon with configured TCP and UDP egress
 man:         docs/man/yumed.8
 man-section: 8
-man-date:    2026-09-24
+man-date:    2026-09-28
 man-source:  YUME 0.3.0-dev1
 man-manual:  YUME Manual
 ---
@@ -62,7 +62,9 @@ Module programs run as the daemon's user without capabilities.
 by removal of owned TUN networking. Modules receive **SIGTERM**, then
 **SIGKILL** after five seconds.
 **SIGHUP** reloads the authorized and admin key stores and the server's
-composite and ML-KEM keys without dropping other clients. Sessions of removed
+composite and ML-KEM keys without dropping other clients. Every later session
+authenticates against them, including one on a connection accepted before
+the reload. Sessions of removed
 identities, or beyond a lowered per-identity **max_sessions**, end. Established
 sessions apply changed grants to their next stream and a changed **weight** to
 their next transfer. An invalid store is

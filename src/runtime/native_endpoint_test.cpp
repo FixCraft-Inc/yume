@@ -653,6 +653,62 @@ void test_credential_reload(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+// A server start armed before a reload authenticates against the reloaded
+// stores, so a client added by the reload connects on its first attempt.
+void test_reload_reaches_armed_starts(const std::filesystem::path& kit) {
+    const auto store_path = kit / "server/credentials/authorized-keys.json";
+    std::string original;
+    CHECK(read_text_file_bounded(
+        store_path, yume::config::v1::kMaxDocumentBytes, &original));
+    const auto write_store = [&](const std::string& text) {
+        std::ofstream output(store_path, std::ios::binary | std::ios::trunc);
+        output << text;
+        CHECK(static_cast<bool>(output));
+    };
+    struct Restore final {
+        std::function<void()> restore;
+        ~Restore() { restore(); }
+    } restore{[&] { write_store(original); }};
+    auto without = nlohmann::json::parse(original);
+    CHECK(without["keys"][0]["name"] == "client1");
+    without["keys"].erase(0U);
+    write_store(without.dump());
+
+    Runner runner;
+    auto handler = std::make_shared<Handler>();
+    NativeEndpointOptions server_options;
+    server_options.max_sessions = 1U;
+    server_options.max_pending_starts = 1U;
+    auto server = runner.sync([&] {
+        return take(NativeEndpoint::create(
+            runner.context, load(kit / "server/yumed.json"), kit / "server",
+            bindings(handler), server_options));
+    });
+    auto accepting = start(runner, server);
+    write_store(original);
+    CHECK(runner.sync([&] { return server->reload_credentials(); }).ok());
+    NativeEndpointOptions client_options;
+    client_options.max_sessions = client_options.max_pending_starts = 1U;
+    client_options.connection_address = "127.0.0.1";
+    auto client = runner.sync([&] {
+        return take(NativeEndpoint::create(
+            runner.context, load(kit / "client/yume.json"), kit / "client",
+            bindings(handler), client_options));
+    });
+    auto connecting = start(runner, client);
+    auto accepted = take(await(accepting));
+    auto session = take(await(connecting));
+    CHECK(session->state() == SessionState::Active);
+    runner.sync([&] {
+        client->close();
+        server->close();
+        accepted.reset();
+        session.reset();
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+
 // A client whose system lookup never returns. Endpoint close ends the lookup
 // by ending its helper process, so the start settles and the final drain does
 // not wait for the stalled system call.
@@ -2923,6 +2979,7 @@ int main(int argc, char** argv) {
         test_idle_epochs_rotate(argv[1], false);
         test_session_epoch_is_the_smaller_limit(argv[1]);
         test_credential_reload(argv[1]);
+        test_reload_reaches_armed_starts(argv[1]);
         test_promoted_server_auth_deadline(argv[1]);
         test_unanswered_rekey_watchdog(argv[1]);
         test_accept_loop(argv[1]);

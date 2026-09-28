@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import datetime
 import errno
 import hashlib
 import ipaddress
@@ -94,6 +95,18 @@ MAX_WEIGHT = 100.0
 MAX_EGRESS_MBPS = 1_000_000
 MAX_JSON_BYTES = 4 * 1024 * 1024
 IDENTITY_DOMAIN = b"yume/ytp/1/composite-identity/v1"
+# The cluster list: its signature domain, node bound and validity window.
+# They match src/runtime/cluster_list.hpp.
+CLUSTER_LIST_DOMAIN = b"yume-cluster-list/1"
+MAX_CLUSTER_NODES = 64
+DEFAULT_CLUSTER_DAYS = 30
+MAX_CLUSTER_DAYS = 366
+COMPOSITE_SIGNATURE_BYTES = 64 + 4627
+# Where a node keeps its cluster files, relative to its server directory.
+NODE_CLUSTER_DIRECTORY = Path("credentials") / "cluster"
+PEM_BLOCK = re.compile(
+    r"-----BEGIN ([A-Z0-9 ]+)-----\s+[A-Za-z0-9+/=\s]+?-----END \1-----\s*"
+)
 
 
 class SetupError(RuntimeError):
@@ -1239,6 +1252,479 @@ def remove_client(server_path: Path, client_name: str) -> Path:
     return store_path
 
 
+# Clusters. An operator directory holds the composite operator key, which
+# never goes to a node, and cluster.json, the operator's record of its nodes:
+# each node's name, the server directory it was added from, its host and an
+# optional address to dial. cluster-sign builds the signed list from the node
+# directories' public material, so the list always matches their keys.
+
+
+def _pem_blocks(text: str, count: int, what: str) -> list[str]:
+    blocks = [match.group(0) for match in PEM_BLOCK.finditer(text)]
+    if len(blocks) != count or "".join(blocks).strip() != text.strip():
+        raise SetupError(f"{what} must hold exactly {count} PEM block(s)")
+    return [block.strip() + "\n" for block in blocks]
+
+
+def _pem_fingerprint(openssl: str, composite_public: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(IDENTITY_DOMAIN)
+    for block in _pem_blocks(composite_public, 2, "a composite public key"):
+        encoded = _run_openssl(
+            openssl, ["pkey", "-pubin", "-outform", "DER"], input_bytes=block.encode("ascii")
+        )
+        digest.update(len(encoded).to_bytes(4, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _require_node_name(value: str) -> str:
+    if CLIENT_NAME.fullmatch(value) is None:
+        raise SetupError(
+            "node name must contain 1..63 letters, digits, '.', '_', or '-', "
+            "and must begin and end with a letter or digit"
+        )
+    return value
+
+
+def _certificate_names(openssl: str, certificate: Path, host: str) -> bool:
+    option = "-checkip" if _is_ip(host) else "-checkhost"
+    try:
+        result = subprocess.run(
+            [openssl, "x509", "-in", str(certificate), "-noout", option, host],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=60,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SetupError("OpenSSL invocation failed") from exc
+    output = result.stdout.decode("utf-8", "replace")
+    return result.returncode == 0 and "does match certificate" in output
+
+
+def _read_text_file(path: Path, limit: int = MAX_JSON_BYTES) -> str:
+    try:
+        flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SetupError(f"cannot open {path}") from exc
+    with os.fdopen(descriptor, "rb") as source:
+        status = os.fstat(source.fileno())
+        if not stat.S_ISREG(status.st_mode) or status.st_size > limit:
+            raise SetupError(f"{path} is not a bounded regular file")
+        payload = source.read(limit + 1)
+    if len(payload) > limit:
+        raise SetupError(f"{path} is not a bounded regular file")
+    try:
+        return payload.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise SetupError(f"{path} is not ASCII text") from exc
+
+
+class _Node:
+    """A server directory in the init layout, as a cluster sees it."""
+
+    def __init__(self, openssl: str, server_path: Path) -> None:
+        try:
+            self.server = server_path.resolve(strict=True)
+        except OSError as exc:
+            raise SetupError(f"server directory does not exist: {server_path}") from exc
+        self.config_path = self.server / "yumed.json"
+        config = _read_json(self.config_path)
+        if not isinstance(config, dict) or config.get("schema") != 1 or config.get("role") != "server":
+            raise SetupError(f"{self.server} must hold a schema-1 server yumed.json")
+        self.config = config
+        endpoint = config.get("endpoint")
+        port = endpoint.get("port") if isinstance(endpoint, dict) else None
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise SetupError(f"{self.config_path} has no valid endpoint.port")
+        self.port = port
+        self.credentials = _server_reference(self.server, config, "admission_key").parent
+        self.admission = _server_reference(self.server, config, "admission_key")
+        for name in ("server-composite.pub.pem", "server-mlkem.pub.pem", "server-trust.pem",
+                     "server-tls.pem"):
+            if not (self.credentials / name).is_file():
+                raise SetupError(
+                    f"{self.credentials} lacks {name}; clusters need the layout init writes"
+                )
+        self.identity_key = _read_text_file(self.credentials / "server-composite.pub.pem")
+        self.identity = _pem_fingerprint(openssl, self.identity_key)
+        self.cluster = self.server / NODE_CLUSTER_DIRECTORY
+        self.peers_path = self.cluster / "peers.json"
+        self.owner = self.config_path.stat()
+
+    def peers(self) -> list[object]:
+        if not self.peers_path.exists():
+            return []
+        store = _read_json(self.peers_path)
+        keys = store.get("keys") if isinstance(store, dict) else None
+        if not isinstance(store, dict) or store.get("schema") != 1 or not isinstance(keys, list):
+            raise SetupError(f"{self.peers_path} is not a schema-1 peer store")
+        return keys
+
+
+class _Changes:
+    """Files a cluster command creates and stores it replaces.
+
+    New files are created exclusively and replacements are staged beside
+    their targets, so nothing a node reads changes until commit(). Until
+    then, rollback() removes everything created. After a commit that fails
+    part way, the nodes it names may need another run.
+    """
+
+    def __init__(self) -> None:
+        self.created: list[Path] = []
+        self.replacements: list[tuple[Path, Path]] = []
+        self.owners: dict[Path, os.stat_result] = {}
+
+    def directory(self, path: Path, owner: os.stat_result) -> None:
+        if path.is_dir():
+            return
+        self.directory(path.parent, owner)
+        _mkdir_private(path)
+        self.created.append(path)
+        self.owners[path] = owner
+
+    def create(self, path: Path, payload: bytes, owner: os.stat_result) -> None:
+        self.directory(path.parent, owner)
+        _write_bytes(path, payload)
+        self.created.append(path)
+        self.owners[path] = owner
+
+    def copy(self, source: Path, path: Path, owner: os.stat_result) -> None:
+        self.directory(path.parent, owner)
+        _copy_stream(source, path)
+        self.created.append(path)
+        self.owners[path] = owner
+
+    def replace(self, path: Path, payload: bytes, owner: os.stat_result) -> None:
+        self.directory(path.parent, owner)
+        temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.new")
+        _write_bytes(temporary, payload)
+        self.replacements.append((temporary, path))
+        self.owners[temporary] = owner
+
+    def commit(self) -> None:
+        if os.geteuid() == 0:
+            for path, owner in self.owners.items():
+                os.chown(path, owner.st_uid, owner.st_gid, follow_symlinks=False)
+        for path in self.created:
+            _fsync_directory(path.parent)
+        for temporary, path in self.replacements:
+            os.replace(temporary, path)
+            _fsync_directory(path.parent)
+        self.replacements = []
+        self.created = []
+
+    def rollback(self) -> None:
+        for temporary, _ in self.replacements:
+            temporary.unlink(missing_ok=True)
+        for path in reversed(self.created):
+            if path.is_dir() and not path.is_symlink():
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            else:
+                path.unlink(missing_ok=True)
+
+
+def _json_bytes(value: object) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _read_cluster(directory: Path) -> tuple[Path, dict[str, object], list[dict[str, object]]]:
+    try:
+        root = directory.resolve(strict=True)
+    except OSError as exc:
+        raise SetupError(f"cluster directory does not exist: {directory}") from exc
+    state = _read_json(root / "cluster.json")
+    nodes = state.get("nodes") if isinstance(state, dict) else None
+    if (
+        not isinstance(state, dict)
+        or state.get("schema") != 1
+        or not isinstance(state.get("cluster"), str)
+        or not isinstance(state.get("serial"), int)
+        or not isinstance(nodes, list)
+        or not all(
+            isinstance(node, dict)
+            and set(node) <= {"name", "server", "host", "address"}
+            and all(isinstance(node.get(key), str) for key in ("name", "server", "host"))
+            and isinstance(node.get("address", ""), str)
+            for node in nodes
+        )
+    ):
+        raise SetupError(f"{root / 'cluster.json'} is not a schema-1 cluster record")
+    return root, state, nodes
+
+
+def cluster_init(output_path: Path) -> tuple[Path, str]:
+    """Create an operator directory with a new composite operator key."""
+    output = _require_output_path(output_path)
+    parent = output.parent
+    staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=parent))
+    os.chmod(staging, 0o700)
+    published = False
+    try:
+        openssl = _openssl_path()
+        fingerprint = _generate_composite_identity(
+            openssl,
+            staging / ".work",
+            staging / "operator-composite.pem",
+            staging / "operator-composite.pub.pem",
+        )
+        shutil.rmtree(staging / ".work")
+        _write_json(
+            staging / "cluster.json",
+            {"schema": 1, "cluster": fingerprint, "serial": 0, "nodes": []},
+        )
+        _fsync_tree(staging)
+        _rename_noreplace(staging, output)
+        published = True
+        _fsync_directory(parent)
+        return output, fingerprint
+    finally:
+        if not published:
+            _remove_staging(staging, parent)
+
+
+def _peer_entry(name: str, identity: str) -> dict[str, object]:
+    return {
+        "identity": identity,
+        "outbound_psk": {"file": f"peers/{name}-outbound.psk"},
+        "inbound_psk": {"file": f"peers/{name}-inbound.psk"},
+        "admission_key": {"file": f"peers/{name}-admission.key"},
+    }
+
+
+def _cluster_section() -> dict[str, object]:
+    base = NODE_CLUSTER_DIRECTORY.as_posix()
+    return {
+        "operator_key": {"file": f"{base}/operator.pub.pem"},
+        "list": {"file": f"{base}/cluster-list.json"},
+        "signature": {"file": f"{base}/cluster-list.sig"},
+        "peers": {"file": f"{base}/peers.json"},
+    }
+
+
+def cluster_add(
+    cluster_path: Path, server_path: Path, name: str, host: str, address: str | None = None
+) -> Path:
+    """Enter one node into a cluster.
+
+    For every node already in the cluster it writes a fresh PSK for each
+    direction into both nodes' peer stores, with the other node's admission
+    key, and it gives the new node the operator's public key and a cluster
+    section in its yumed.json. The list is signed separately by cluster-sign.
+    """
+    name = _require_node_name(name)
+    host = _require_host(host)
+    if address is not None:
+        try:
+            address = str(ipaddress.ip_address(address))
+        except ValueError as exc:
+            raise SetupError("node address must be an IP literal") from exc
+    root, state, records = _read_cluster(cluster_path)
+    if len(records) >= MAX_CLUSTER_NODES:
+        raise SetupError(f"a cluster holds at most {MAX_CLUSTER_NODES} nodes")
+    if any(record.get("name") == name for record in records):
+        raise SetupError(f"the cluster already has a node named {name}")
+    openssl = _openssl_path()
+    node = _Node(openssl, server_path)
+    if node.config.get("cluster") is not None:
+        raise SetupError(f"{node.config_path} already belongs to a cluster")
+    if not _certificate_names(openssl, node.credentials / "server-tls.pem", host):
+        raise SetupError(f"the node's TLS certificate does not name {host}")
+    existing = [_Node(openssl, Path(str(record.get("server")))) for record in records]
+    if any(other.identity == node.identity or other.server == node.server for other in existing):
+        raise SetupError("that server directory is already in the cluster")
+
+    changes = _Changes()
+    try:
+        new_entries: list[object] = []
+        for record, other in zip(records, existing):
+            other_name = str(record["name"])
+            outbound = secrets.token_bytes(32)
+            inbound = secrets.token_bytes(32)
+            if outbound == inbound:
+                raise SetupError("generated link PSKs are equal")
+            peers = node.cluster / "peers"
+            changes.create(peers / f"{other_name}-outbound.psk", outbound, node.owner)
+            changes.create(peers / f"{other_name}-inbound.psk", inbound, node.owner)
+            changes.copy(other.admission, peers / f"{other_name}-admission.key", node.owner)
+            new_entries.append(_peer_entry(other_name, other.identity))
+            # The other node's inbound PSK from this node is this node's
+            # outbound PSK, and the other way round.
+            other_peers = other.cluster / "peers"
+            changes.create(other_peers / f"{name}-outbound.psk", inbound, other.owner)
+            changes.create(other_peers / f"{name}-inbound.psk", outbound, other.owner)
+            changes.copy(node.admission, other_peers / f"{name}-admission.key", other.owner)
+            changes.replace(
+                other.peers_path,
+                _json_bytes({"schema": 1, "keys": [*other.peers(), _peer_entry(name, node.identity)]}),
+                other.owner,
+            )
+        changes.replace(node.peers_path, _json_bytes({"schema": 1, "keys": new_entries}), node.owner)
+        changes.copy(root / "operator-composite.pub.pem", node.cluster / "operator.pub.pem", node.owner)
+        config = dict(node.config)
+        config["cluster"] = _cluster_section()
+        changes.replace(node.config_path, _json_bytes(config), node.owner)
+        record: dict[str, object] = {"name": name, "server": str(node.server), "host": host}
+        if address is not None:
+            record["address"] = address
+        updated = dict(state)
+        updated["nodes"] = [*records, record]
+        changes.replace(root / "cluster.json", _json_bytes(updated), (root / "cluster.json").stat())
+        changes.commit()
+    except BaseException:
+        changes.rollback()
+        raise
+    return node.server
+
+
+def cluster_remove(cluster_path: Path, name: str) -> Path:
+    """Take one node out of a cluster.
+
+    Every other node forgets it: its entry leaves their peer stores and its
+    link files are deleted. The removed node loses its cluster section and
+    its credentials/cluster directory, so it runs alone after a restart and
+    can join again. Sign a new list afterwards, so that no node keeps
+    accepting it once the other nodes reload.
+    """
+    name = _require_node_name(name)
+    root, state, records = _read_cluster(cluster_path)
+    removed = [record for record in records if record.get("name") == name]
+    if not removed:
+        raise SetupError(f"the cluster has no node named {name}")
+    openssl = _openssl_path()
+    leaving = _Node(openssl, Path(str(removed[0].get("server"))))
+    remaining = [record for record in records if record is not removed[0]]
+    changes = _Changes()
+    stale: list[Path] = []
+    try:
+        for record in remaining:
+            other = _Node(openssl, Path(str(record.get("server"))))
+            kept = [
+                entry
+                for entry in other.peers()
+                if not (isinstance(entry, dict) and entry.get("identity") == leaving.identity)
+            ]
+            changes.replace(other.peers_path, _json_bytes({"schema": 1, "keys": kept}), other.owner)
+            stale += [
+                other.cluster / "peers" / f"{name}-{kind}"
+                for kind in ("outbound.psk", "inbound.psk", "admission.key")
+            ]
+        config = {key: value for key, value in leaving.config.items() if key != "cluster"}
+        changes.replace(leaving.config_path, _json_bytes(config), leaving.owner)
+        updated = dict(state)
+        updated["nodes"] = remaining
+        changes.replace(root / "cluster.json", _json_bytes(updated), (root / "cluster.json").stat())
+        changes.commit()
+    except BaseException:
+        changes.rollback()
+        raise
+    for path in stale:
+        path.unlink(missing_ok=True)
+    if leaving.cluster.is_dir() and not leaving.cluster.is_symlink():
+        shutil.rmtree(leaving.cluster)
+    return leaving.server
+
+
+def _sign_list(openssl: str, work: Path, private_key: Path, message: bytes) -> bytes:
+    blocks = _pem_blocks(_read_text_file(private_key), 2, "the operator key")
+    message_path = work / "message"
+    _write_bytes(message_path, message)
+    signature = b""
+    for index, (block, size) in enumerate(zip(blocks, (64, 4627))):
+        key = work / f"key-{index}.pem"
+        public = work / f"key-{index}.pub.pem"
+        output = work / f"signature-{index}"
+        _write_text(key, block)
+        _run_openssl(openssl, ["pkeyutl", "-sign", "-rawin", "-inkey", str(key),
+                               "-in", str(message_path), "-out", str(output)])
+        _derive_public(openssl, key, public)
+        _run_openssl(openssl, ["pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(public),
+                               "-in", str(message_path), "-sigfile", str(output)])
+        part = output.read_bytes()
+        if len(part) != size:
+            raise SetupError("the operator key produced a signature of the wrong size")
+        signature += part
+    return signature
+
+
+def cluster_sign(cluster_path: Path, days: int = DEFAULT_CLUSTER_DAYS) -> tuple[int, str]:
+    """Sign the next list and give it to every node.
+
+    The serial goes up by one and not_after is days from now. The list and
+    its signature replace each node's copy, which a running node applies
+    when it reloads (SIGHUP).
+    """
+    if not 1 <= days <= MAX_CLUSTER_DAYS:
+        raise SetupError(f"days must be in 1..{MAX_CLUSTER_DAYS}")
+    root, state, records = _read_cluster(cluster_path)
+    if not records:
+        raise SetupError("the cluster has no nodes; add one with cluster-add")
+    openssl = _openssl_path()
+    operator_public = _read_text_file(root / "operator-composite.pub.pem")
+    if _pem_fingerprint(openssl, operator_public) != state["cluster"]:
+        raise SetupError("the operator key does not match cluster.json")
+    nodes = []
+    entries = []
+    for record in records:
+        node = _Node(openssl, Path(str(record.get("server"))))
+        nodes.append(node)
+        entry: dict[str, object] = {
+            "name": record["name"],
+            "identity": node.identity,
+            "host": record["host"],
+            "port": node.port,
+            "identity_key": node.identity_key,
+            "mlkem_key": _read_text_file(node.credentials / "server-mlkem.pub.pem"),
+            "tls_trust": _read_text_file(node.credentials / "server-trust.pem"),
+        }
+        if "address" in record:
+            entry["address"] = record["address"]
+        entries.append(entry)
+    serial = int(state["serial"]) + 1
+    not_after = (
+        datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        + datetime.timedelta(days=days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    document = _json_bytes(
+        {"schema": 1, "cluster": state["cluster"], "serial": serial,
+         "not_after": not_after, "nodes": entries}
+    )
+    work = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
+    os.chmod(work, 0o700)
+    try:
+        signature = _sign_list(
+            openssl, work, root / "operator-composite.pem",
+            CLUSTER_LIST_DOMAIN + b"\0" + document,
+        )
+    finally:
+        _remove_staging(work, root)
+    if len(signature) != COMPOSITE_SIGNATURE_BYTES:
+        raise SetupError("the composite signature has the wrong size")
+    changes = _Changes()
+    try:
+        owner = (root / "cluster.json").stat()
+        for node in nodes:
+            changes.replace(node.cluster / "cluster-list.json", document, node.owner)
+            changes.replace(node.cluster / "cluster-list.sig", signature, node.owner)
+        changes.replace(root / "cluster-list.json", document, owner)
+        changes.replace(root / "cluster-list.sig", signature, owner)
+        updated = dict(state)
+        updated["serial"] = serial
+        changes.replace(root / "cluster.json", _json_bytes(updated), owner)
+        changes.commit()
+    except BaseException:
+        changes.rollback()
+        raise
+    return serial, not_after
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="yume-setup",
@@ -1313,13 +1799,85 @@ def build_parser() -> argparse.ArgumentParser:
         help="server directory holding yumed.json and its credentials",
     )
     remove.add_argument("--client-name", required=True)
+    cluster_init_parser = commands.add_parser(
+        "cluster-init",
+        help="create an operator directory with a new cluster operator key",
+    )
+    cluster_init_parser.add_argument(
+        "--output", required=True, type=Path, help="new operator directory, kept off the nodes"
+    )
+    cluster_add_parser = commands.add_parser(
+        "cluster-add",
+        help="enter a server directory into a cluster and write its link secrets",
+    )
+    cluster_add_parser.add_argument(
+        "--cluster", required=True, type=Path, help="operator directory from cluster-init"
+    )
+    cluster_add_parser.add_argument(
+        "--server", required=True, type=Path, help="server directory holding yumed.json"
+    )
+    cluster_add_parser.add_argument("--name", required=True, help="the node's name in the list")
+    cluster_add_parser.add_argument(
+        "--host",
+        required=True,
+        help="the DNS name or IP address the node's TLS certificate names",
+    )
+    cluster_add_parser.add_argument(
+        "--address", help="an IP address other nodes dial instead of resolving the host"
+    )
+    cluster_remove_parser = commands.add_parser(
+        "cluster-remove",
+        help="take a node out of a cluster and delete its link secrets on the others",
+    )
+    cluster_remove_parser.add_argument(
+        "--cluster", required=True, type=Path, help="operator directory from cluster-init"
+    )
+    cluster_remove_parser.add_argument("--name", required=True)
+    cluster_sign_parser = commands.add_parser(
+        "cluster-sign",
+        help="sign the next cluster list and copy it to every node",
+    )
+    cluster_sign_parser.add_argument(
+        "--cluster", required=True, type=Path, help="operator directory from cluster-init"
+    )
+    cluster_sign_parser.add_argument(
+        "--days",
+        type=int,
+        default=DEFAULT_CLUSTER_DAYS,
+        help=f"days the list stays valid, 1 to {MAX_CLUSTER_DAYS} (default {DEFAULT_CLUSTER_DAYS})",
+    )
     return parser
+
+
+def _run_cluster_command(arguments: argparse.Namespace) -> int:
+    if arguments.command == "cluster-init":
+        output, fingerprint = cluster_init(arguments.output)
+        print(f"Created cluster operator directory: {output}")
+        print(f"Cluster ID: {fingerprint}")
+        print("Keep this directory off the nodes. Add nodes with cluster-add.")
+    elif arguments.command == "cluster-add":
+        server = cluster_add(
+            arguments.cluster, arguments.server, arguments.name, arguments.host, arguments.address
+        )
+        print(f"Added {arguments.name} ({server}) to the cluster")
+        print("Sign the list with cluster-sign, then deploy the nodes' credentials/cluster.")
+    elif arguments.command == "cluster-remove":
+        server = cluster_remove(arguments.cluster, arguments.name)
+        print(f"Removed {arguments.name} ({server}) from the cluster")
+        print("Sign a new list with cluster-sign and reload the other nodes (SIGHUP).")
+    else:
+        serial, not_after = cluster_sign(arguments.cluster, arguments.days)
+        print(f"Signed cluster list serial {serial}, valid until {not_after}")
+        print("Deploy each node's credentials/cluster and reload it (SIGHUP).")
+    return 0
 
 
 def main() -> int:
     os.umask(0o077)
     arguments = build_parser().parse_args()
     try:
+        if arguments.command.startswith("cluster-"):
+            return _run_cluster_command(arguments)
         if arguments.command == "remove-client":
             store = remove_client(arguments.server, arguments.client_name)
             print(f"Removed {arguments.client_name} from {store}")

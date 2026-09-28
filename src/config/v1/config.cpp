@@ -1284,12 +1284,25 @@ ResourceLimits ParseLimits(const Json& limits) {
                           credit_returns, idle_epoch_rotation);
 }
 
+std::optional<ClusterSettings> ParseCluster(const Json& document, Role role) {
+    if (!document.contains("cluster")) return std::nullopt;
+    const Json& cluster = document.at("cluster");
+    CheckClosedObject(cluster, "/cluster",
+                      {"operator_key", "list", "signature", "peers"},
+                      {"operator_key", "list", "signature", "peers"});
+    if (role != Role::Server) Fail("/cluster", "is server-only");
+    return ClusterSettings{
+        ParseFileReference(cluster, "/cluster", "operator_key"),
+        ParseFileReference(cluster, "/cluster", "list"),
+        ParseFileReference(cluster, "/cluster", "signature"),
+        ParseFileReference(cluster, "/cluster", "peers")};
+}
+
 std::optional<ControlSettings> ParseControl(
-    const Json& document, Role role, const std::vector<Adapter>& adapters) {
+    const Json& document, const std::vector<Adapter>& adapters) {
     if (!document.contains("control")) return std::nullopt;
     const Json& control = document.at("control");
     CheckClosedObject(control, "/control", {"socket"}, {"socket"});
-    if (role != Role::Client) Fail("/control", "is client-only");
     const auto& path = ReadString(control.at("socket"), "/control/socket",
                                   kMaxUnixSocketPathBytes);
     if (!IsNormalizedAbsolutePath(path)) {
@@ -1319,17 +1332,25 @@ void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,
 
 }  // namespace
 
+bool IsEndpointHost(std::string_view value) {
+    return IsClientHost(value);
+}
+bool IsIpAddressLiteral(std::string_view value) {
+    return IsIpLiteral(value);
+}
+
 ValidationError::ValidationError(std::string json_pointer, std::string detail)
     : std::runtime_error(FormatValidationMessage(json_pointer, detail)),
       json_pointer_(std::move(json_pointer)),
       detail_(std::move(detail)) {}
 
 Config Parse(const nlohmann::json& document) {
-    CheckClosedObject(document, "",
-                      {"schema", "role", "endpoint", "suite", "credentials",
-                       "cover", "services", "adapters", "limits", "control"},
-                      {"schema", "role", "endpoint", "suite", "credentials",
-                       "cover", "services", "adapters", "limits"});
+    CheckClosedObject(
+        document, "",
+        {"schema", "role", "endpoint", "suite", "credentials", "cover",
+         "services", "adapters", "limits", "control", "cluster"},
+        {"schema", "role", "endpoint", "suite", "credentials", "cover",
+         "services", "adapters", "limits"});
 
     const std::uint32_t schema =
         ReadBoundedUnsigned(document.at("schema"), "/schema", kSchema, kSchema);
@@ -1352,12 +1373,13 @@ Config Parse(const nlohmann::json& document) {
     if (role == Role::Client && limits.max_egress_mbps()) {
         Fail("/limits/max_egress_mbps", "is server-only");
     }
-    std::optional<ControlSettings> control =
-        ParseControl(document, role, adapters);
+    std::optional<ControlSettings> control = ParseControl(document, adapters);
+    std::optional<ClusterSettings> cluster = ParseCluster(document, role);
 
     return Config(role, std::move(endpoint), std::move(suite),
                   std::move(credentials), std::move(cover), std::move(services),
-                  std::move(adapters), std::move(limits), std::move(control));
+                  std::move(adapters), std::move(limits), std::move(control),
+                  std::move(cluster));
 }
 
 namespace {

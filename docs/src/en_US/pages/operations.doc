@@ -62,6 +62,36 @@ systemctl reload yumed
 public key and PSK. It refuses to remove the last client, because the daemon
 requires at least one.
 
+## Join servers into a cluster
+
+Servers of one operator can form a cluster: each checks a server list the
+operator signs and keeps an authenticated link to every other server. The
+links carry no traffic yet; they are the base for routes over several servers.
+Keep the operator directory, which holds the signing key, off the servers, and
+run the commands on the operator's copies of the server directories:
+
+@code bash
+yume-setup cluster-init --output "$PWD/operator"
+yume-setup cluster-add --cluster operator --server north/server \
+  --name north --host north.example.net
+yume-setup cluster-add --cluster operator --server south/server \
+  --name south --host south.example.net
+yume-setup cluster-sign --cluster operator --days 30
+@end
+
+`cluster-add` writes a PSK for each direction between the new server and each
+earlier one into their `credentials/cluster/` directories, and adds a
+`cluster` section to the new server's `yumed.json`. `cluster-sign` signs the
+next list and copies it to every server. Deploy each server's
+`credentials/cluster/` directory (and a new member's `yumed.json`) with its
+files owned by the daemon's account and mode `0600`, restart a new member and
+reload the others. Sign again before `not_after`, 30 days by
+default: a server whose list has expired closes its links, and it refuses to
+start or reload until it has a newer list. `cluster-remove --cluster operator
+--name south` takes a server out; sign and deploy afterwards. With
+`control.socket` set, `yumed --config PATH --status` shows each link.
+[Cluster 1](protocol/CLUSTER_1.md) gives the formats and limits.
+
 ## Run the daemon as a service
 
 The Debian `yume-daemon` package installs `/usr/bin/yumed`, a credential-free

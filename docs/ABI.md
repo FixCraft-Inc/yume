@@ -362,8 +362,8 @@ settles `FAILED` through `STOPPING` to `STOPPED`. Start accepts only `CREATED`
 or `STOPPED`; a direct retry from `FAILED` returns `YUME_STATUS_INVALID_STATE`
 without starting work or emitting lifecycle events. A client start
 that outlives its deadline reports `YUME_STATUS_TIMEOUT`. Declared adapters,
-a `control` socket and reverse-proxy cover report `YUME_STATUS_UNSUPPORTED`
-instead of starting without them. Never infer a status from the message.
+a `control` socket, a `cluster` section and reverse-proxy cover report
+`YUME_STATUS_UNSUPPORTED` instead of starting without them. Never infer a status from the message.
 
 `stop` is synchronous, idempotent after a start attempt, and accepts only zero.
 It closes the endpoint's sessions, wakes blocked calls, and joins the backend's

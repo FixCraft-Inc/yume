@@ -5,12 +5,13 @@ title:       yumed
 summary:     native YTP/1 daemon with configured TCP and UDP egress
 man:         docs/man/yumed.8
 man-section: 8
-man-date:    2026-09-24
+man-date:    2026-09-28
 man-source:  YUME 0.3.0-dev1
 man-manual:  YUME Manual
 ---
 @synopsis
 **yumed** **--config** *path* [ **--validate** ]
+**yumed** **--config** *path* **--status**
 **yumed** **--version**
 **yumed** **--completion** **bash**
 **yumed** **--help**
@@ -29,15 +30,60 @@ A module adapter's program runs as a supervised child process that receives
 its service's streams over a private UNIX socket below **TMPDIR**. The daemon
 restarts it with backoff when it exits. See **docs/MODULES.md**.
 
-The daemon is not yet qualified for production, and relay and federation
-are not yet available. Check **docs/IMPLEMENTATION_STATUS.md** before
+With a **cluster** section the daemon is a member of its operator's
+cluster and keeps an authenticated link to every other member it holds
+secrets for. The links carry no traffic yet.
+
+The daemon is not yet qualified for production, and routes over several
+servers are not yet available. Check **docs/IMPLEMENTATION_STATUS.md** before
 deployment.
 
 ## OPTIONS
 
 @include shared/native_cli.part
 
+The status option asks the running daemon of the same configuration for its
+state.
+
+@options
+@opt **--status**
+@cli spell: --status
+@cli help: Print the running daemon's listeners and cluster links
+
+Connect to the control socket that **control.socket** names, print the
+running daemon's state and exit. The report names the listeners, the number
+of client sessions and, for a cluster member, the list's serial and expiry
+and each peer's links: the outbound link's state, how long it has lasted or
+when the next attempt starts and its last failure, and the peer's inbound
+sessions. The exit status is 2 when the configuration names no control
+socket and 1 when no daemon answers on it. **--status** takes no option
+besides **--config**.
+@end
+
 @include shared/native_configuration.part
+
+## CLUSTER
+
+A server's **cluster** object names four files: **operator_key**, the
+operator's composite public key, **list**, the cluster list, **signature**,
+its composite signature, and **peers**, the peer store. The list names at
+most 64 servers with their addresses and public keys, and the operator signs
+it with a key that stays off the servers. The daemon refuses to start with a
+list whose signature does not verify, whose **not_after** has passed or that
+does not name the daemon itself. The peer store gives each peer an outbound
+PSK, an inbound PSK and the peer's admission key. Every PSK differs from
+every other PSK, admission key and client PSK, and a peer is never also a
+client or administrator. All four files are owner-only like the other
+credential files. **yume-setup** writes all of it: **cluster-init**,
+**cluster-add**, **cluster-remove** and **cluster-sign**. The format is in
+**docs/protocol/CLUSTER_1.md**.
+
+Once its listeners accept, the daemon keeps one outbound link to each peer, a
+YTP/1 session like a client's that offers no service, and reconnects with
+backoff when it ends. Each peer's own link arrives like a client's session:
+the peer may hold two at once and may open no stream. When the list's
+**not_after** passes, the daemon closes its links and ends the peers'
+sessions until a reload loads a newer list.
 
 ## COVER AND ADMISSION
 
@@ -62,14 +108,31 @@ Module programs run as the daemon's user without capabilities.
 by removal of owned TUN networking. Modules receive **SIGTERM**, then
 **SIGKILL** after five seconds.
 **SIGHUP** reloads the authorized and admin key stores and the server's
-composite and ML-KEM keys without dropping other clients. Sessions of removed
+composite and ML-KEM keys without dropping other clients. Every later session
+authenticates against them, including one on a connection accepted before
+the reload. Sessions of removed
 identities, or beyond a lowered per-identity **max_sessions**, end. Established
 sessions apply changed grants to their next stream and a changed **weight** to
-their next transfer. An invalid store is
+their next transfer. A cluster member also reads its list and peer store
+again and restarts every link. An invalid store, a list naming another
+operator or a list with a lower serial is
 refused and the previous credentials stay in force. TLS material, the
 admission key and egress lists are read only at startup, and a changed
 admission key is refused.
 **SIGPIPE** is ignored.
+
+## CONTROL SOCKET
+
+@include shared/native_control.part
+
+The daemon's answer holds **control** (1), **program**, **version**,
+**listeners**, **client_sessions** and **cluster**, null outside a cluster.
+A member's **cluster** holds **id**, **serial**, **not_after**, **expired**,
+**self** and **links**, one per peer with **peer**, **identity**,
+**outbound** and **inbound**. **outbound** holds **state**, **sessions**,
+**failed_attempts**, **last_failure** and, as for a client, **connected_ms**
+or **retry_ms**. **inbound** holds **sessions** and, while there is one,
+**connected_ms** of the oldest.
 
 @include shared/native_exit_status.part
 

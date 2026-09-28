@@ -7,13 +7,16 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "common/socks5_credentials.hpp"
@@ -67,10 +70,18 @@ public:
         double weight;
     };
 
+    // Cluster peers, recognized without any grant while the verified list
+    // that names them is valid.
+    struct Peers final {
+        std::vector<std::string> identities;
+        std::chrono::system_clock::time_point not_after;
+    };
+
     NativeAuthorizationPolicy(engine::EndpointRole peer_role,
                               std::vector<Grant> grants,
                               std::vector<SessionLimit> session_limits = {},
-                              std::vector<EgressWeight> egress_weights = {}) noexcept;
+                              std::vector<EgressWeight> egress_weights = {},
+                              Peers peers = {}) noexcept;
     engine::Status authorize(
         const engine::StreamOpenContext& context) const noexcept;
     // The configured bound for an authenticated identity, or zero when its
@@ -79,8 +90,9 @@ public:
     // The configured weight for an authenticated identity, or
     // EgressLimiter::kDefaultWeight when its store entry sets none.
     double egress_weight(std::string_view peer_identity) const noexcept;
-    // Whether the policy grants this identity anything. A store entry always
-    // grants at least one service, so this is store membership.
+    // Whether the identity may hold a session: an authorized-keys entry,
+    // which always grants at least one service, or a cluster peer before
+    // its list's not_after.
     bool recognizes(std::string_view peer_identity) const noexcept;
 
 private:
@@ -88,11 +100,42 @@ private:
     std::vector<Grant> grants_;
     std::vector<SessionLimit> session_limits_;
     std::vector<EgressWeight> egress_weights_;
+    Peers peers_;
 };
 
 // Upper bound for an authorized-keys entry's optional max_sessions. It matches
 // the largest native endpoint session capacity.
 inline constexpr std::size_t kMaxSessionsPerIdentity = 1024U;
+
+// One outbound cluster link: what a client session to a peer needs, built
+// from the verified cluster list and this node's peer store.
+struct NativeLinkCredentials final {
+    std::string peer_name;
+    std::string peer_identity;
+    // The TLS name the link authenticates, the address it dials (host itself
+    // when the list gives no address) and the port.
+    std::string host;
+    std::string dial;
+    std::uint16_t port{0U};
+    std::shared_ptr<providers::OpenSslSecurityProviderFactory> security_factory;
+    std::shared_ptr<providers::Tls13SecureChannelProvider> tls_provider;
+    NativeAdmissionKey admission_key;
+};
+
+// A server's verified membership in its operator's cluster.
+struct NativeClusterCredentials final {
+    std::string cluster;
+    std::uint64_t serial{0U};
+    std::chrono::system_clock::time_point not_after;
+    std::string self_name;
+    // Peers this node accepts links from, as (identity, name).
+    std::vector<std::pair<std::string, std::string>> inbound;
+    std::vector<NativeLinkCredentials> links;
+};
+
+// Each peer may hold this many sessions to a node at once: its link and one
+// replacing it.
+inline constexpr std::size_t kMaxPeerSessions = 2U;
 
 struct LoadedNativeCredentials final {
     std::shared_ptr<providers::OpenSslSecurityProviderFactory>
@@ -102,6 +145,8 @@ struct LoadedNativeCredentials final {
     NativeAdmissionKey admission_key;
     // A client's SOCKS5 proxy credentials, when its configuration names them.
     std::optional<common::Socks5Credentials> socks5_credentials;
+    // A server's cluster membership, when its configuration names one.
+    std::optional<NativeClusterCredentials> cluster;
 };
 
 // References in config resolve against config_base_directory; references in

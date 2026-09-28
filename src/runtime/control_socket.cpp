@@ -14,8 +14,10 @@
 #include <algorithm>
 #include <cerrno>
 #include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <iterator>
 #include <list>
 #include <new>
@@ -147,6 +149,137 @@ std::string duration_text(std::uint64_t milliseconds) {
     if (hours) text += std::to_string(hours) + " h ";
     if (hours || minutes) text += std::to_string(minutes) + " min ";
     return text + std::to_string(seconds % 60U) + " s";
+}
+
+std::string utc_text(std::chrono::system_clock::time_point when) {
+    const std::time_t seconds = std::chrono::system_clock::to_time_t(when);
+    std::tm parts{};
+    char text[32] = "?";
+    if (::gmtime_r(&seconds, &parts) != nullptr)
+        static_cast<void>(
+            std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &parts));
+    return text;
+}
+
+std::int64_t elapsed_ms(Clock::time_point since, Clock::time_point now) {
+    return std::max<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - since)
+            .count(),
+        0);
+}
+
+// A failure's code and message, the message cut to a bound so that a
+// reply naming every cluster peer stays within kControlReplyBytes.
+Json failure_json(const Status& failure) {
+    if (failure.ok()) return nullptr;
+    constexpr std::size_t kMaxMessage = 160U;
+    return {{"code", code_name(failure.code())},
+            {"message", failure.message().substr(0U, kMaxMessage)}};
+}
+
+std::string failure_text(const Json& failure) {
+    std::string text = failure.at("code").get<std::string>();
+    const auto message = failure.at("message").get<std::string>();
+    if (!message.empty()) text += ", " + message;
+    return text;
+}
+
+std::string client_text(const Json& status) {
+    const auto& server = status.at("server");
+    const auto& traffic = status.at("traffic");
+    const std::string state = status.at("state").get<std::string>();
+    std::string text = status.at("program").get<std::string>() + " " +
+                       status.at("version").get<std::string>() + "\n";
+    text += "state: " + state;
+    if (state == "connected") {
+        text += " for " +
+                duration_text(status.at("connected_ms").get<std::uint64_t>());
+    } else if (state == "waiting") {
+        text += ", next attempt in " +
+                duration_text(status.at("retry_ms").get<std::uint64_t>());
+    }
+    text += "\nserver: " + server.at("host").get<std::string>() + " port " +
+            std::to_string(server.at("port").get<std::uint32_t>()) + "\n";
+    if (const auto identity = status.find("server_identity");
+        identity != status.end()) {
+        text += "server identity: " + identity->get<std::string>() + "\n";
+    }
+    text += "sessions: " +
+            std::to_string(status.at("sessions").get<std::uint64_t>()) +
+            ", failed attempts since the last: " +
+            std::to_string(status.at("failed_attempts").get<std::uint64_t>()) +
+            "\n";
+    text += "sent: " +
+            byte_text(traffic.at("payload_bytes_sent").get<std::uint64_t>()) +
+            " of payload in " +
+            byte_text(traffic.at("record_bytes_sent").get<std::uint64_t>()) +
+            " of records\n";
+    text +=
+        "received: " +
+        byte_text(traffic.at("payload_bytes_received").get<std::uint64_t>()) +
+        " of payload in " +
+        byte_text(traffic.at("record_bytes_received").get<std::uint64_t>()) +
+        " of records\n";
+    for (const auto& endpoint : status.at("socks5")) {
+        text += "SOCKS5: " + endpoint.get<std::string>() + "\n";
+    }
+    for (const auto& forward : status.at("forwards")) {
+        text += "forward: " + forward.get<std::string>() + "\n";
+    }
+    if (const auto& failure = status.at("last_failure"); !failure.is_null()) {
+        text += "last failure: " + failure_text(failure) + "\n";
+    }
+    return text;
+}
+
+std::string link_text(const Json& link) {
+    const auto& outbound = link.at("outbound");
+    const auto& inbound = link.at("inbound");
+    const std::string state = outbound.at("state").get<std::string>();
+    std::string text =
+        "link " + link.at("peer").get<std::string>() + ": outbound " + state;
+    if (state == "connected") {
+        text += " for " +
+                duration_text(outbound.at("connected_ms").get<std::uint64_t>());
+    } else if (state == "waiting") {
+        text += ", next attempt in " +
+                duration_text(outbound.at("retry_ms").get<std::uint64_t>());
+    }
+    if (const auto& failure = outbound.at("last_failure");
+        !failure.is_null() && state != "connected") {
+        text += " (last failure: " + failure_text(failure) + ")";
+    }
+    const auto sessions = inbound.at("sessions").get<std::uint64_t>();
+    if (sessions == 0U) {
+        text += ", inbound none";
+    } else {
+        text +=
+            ", inbound " + std::to_string(sessions) +
+            (sessions == 1U ? " session for " : " sessions, the oldest for ") +
+            duration_text(inbound.at("connected_ms").get<std::uint64_t>());
+    }
+    return text + "\n";
+}
+
+std::string server_text(const Json& status) {
+    std::string text = status.at("program").get<std::string>() + " " +
+                       status.at("version").get<std::string>() + "\n";
+    for (const auto& listener : status.at("listeners")) {
+        text += "listening: " + listener.get<std::string>() + "\n";
+    }
+    text += "client sessions: " +
+            std::to_string(status.at("client_sessions").get<std::uint64_t>()) +
+            "\n";
+    const auto& cluster = status.at("cluster");
+    if (cluster.is_null()) return text;
+    text += "cluster: " + cluster.at("id").get<std::string>() + " serial " +
+            std::to_string(cluster.at("serial").get<std::uint64_t>()) +
+            (cluster.at("expired").get<bool>() ? ", expired at "
+                                               : ", valid until ") +
+            cluster.at("not_after").get<std::string>() + "\n";
+    text += "this node: " + cluster.at("self").get<std::string>() + "\n";
+    for (const auto& link : cluster.at("links")) text += link_text(link);
+    return text;
 }
 
 }  // namespace
@@ -458,6 +591,48 @@ std::string client_status_reply(const NativeClientStatus& status,
     return dump(reply);
 }
 
+std::string server_status_reply(const NativeServerStatus& status,
+                                Clock::time_point now) {
+    Json listeners = Json::array();
+    for (const auto& endpoint : status.listeners)
+        listeners.push_back(endpoint_text(endpoint));
+    Json reply{{"control", kControlProtocol},
+               {"program", "yumed"},
+               {"version", kVersion},
+               {"listeners", std::move(listeners)},
+               {"client_sessions", status.client_sessions},
+               {"cluster", nullptr}};
+    if (!status.cluster) return dump(reply);
+    const auto& cluster = *status.cluster;
+    Json links = Json::array();
+    for (const auto& link : cluster.links) {
+        const auto& outbound = link.outbound;
+        Json out{{"state", state_name(outbound.state)},
+                 {"sessions", outbound.sessions},
+                 {"failed_attempts", outbound.failed_attempts},
+                 {"last_failure", failure_json(outbound.last_failure)}};
+        if (outbound.state == NativeClientState::Connected)
+            out["connected_ms"] = elapsed_ms(outbound.connected_since, now);
+        if (outbound.state == NativeClientState::Waiting)
+            out["retry_ms"] =
+                std::max<std::int64_t>(outbound.retry_delay.count(), 0);
+        Json in{{"sessions", link.inbound_sessions}};
+        if (link.inbound_sessions != 0U)
+            in["connected_ms"] = elapsed_ms(link.inbound_since, now);
+        links.push_back({{"peer", link.peer_name},
+                         {"identity", link.peer_identity},
+                         {"outbound", std::move(out)},
+                         {"inbound", std::move(in)}});
+    }
+    reply["cluster"] = {{"id", cluster.cluster},
+                        {"serial", cluster.serial},
+                        {"not_after", utc_text(cluster.not_after)},
+                        {"expired", cluster.expired},
+                        {"self", cluster.self_name},
+                        {"links", std::move(links)}};
+    return dump(reply);
+}
+
 Result<std::string> query_control_status(const std::filesystem::path& path,
                                          std::chrono::milliseconds timeout) {
     using Queried = Result<std::string>;
@@ -576,59 +751,9 @@ Result<std::string> status_reply_text(std::string_view reply) {
                                     : std::string("?"))));
     }
     try {
-        const auto& server = status.at("server");
-        const auto& traffic = status.at("traffic");
-        const std::string state = status.at("state").get<std::string>();
-        std::string text = status.at("program").get<std::string>() + " " +
-                           status.at("version").get<std::string>() + "\n";
-        text += "state: " + state;
-        if (state == "connected") {
-            text +=
-                " for " +
-                duration_text(status.at("connected_ms").get<std::uint64_t>());
-        } else if (state == "waiting") {
-            text += ", next attempt in " +
-                    duration_text(status.at("retry_ms").get<std::uint64_t>());
-        }
-        text += "\nserver: " + server.at("host").get<std::string>() + " port " +
-                std::to_string(server.at("port").get<std::uint32_t>()) + "\n";
-        if (const auto identity = status.find("server_identity");
-            identity != status.end()) {
-            text += "server identity: " + identity->get<std::string>() + "\n";
-        }
-        text +=
-            "sessions: " +
-            std::to_string(status.at("sessions").get<std::uint64_t>()) +
-            ", failed attempts since the last: " +
-            std::to_string(status.at("failed_attempts").get<std::uint64_t>()) +
-            "\n";
-        text +=
-            "sent: " +
-            byte_text(traffic.at("payload_bytes_sent").get<std::uint64_t>()) +
-            " of payload in " +
-            byte_text(traffic.at("record_bytes_sent").get<std::uint64_t>()) +
-            " of records\n";
-        text += "received: " +
-                byte_text(
-                    traffic.at("payload_bytes_received").get<std::uint64_t>()) +
-                " of payload in " +
-                byte_text(
-                    traffic.at("record_bytes_received").get<std::uint64_t>()) +
-                " of records\n";
-        for (const auto& endpoint : status.at("socks5")) {
-            text += "SOCKS5: " + endpoint.get<std::string>() + "\n";
-        }
-        for (const auto& forward : status.at("forwards")) {
-            text += "forward: " + forward.get<std::string>() + "\n";
-        }
-        if (const auto& failure = status.at("last_failure");
-            !failure.is_null()) {
-            text += "last failure: " + failure.at("code").get<std::string>();
-            const auto message = failure.at("message").get<std::string>();
-            if (!message.empty()) text += ", " + message;
-            text += "\n";
-        }
-        return Text(std::move(text));
+        const auto& program = status.at("program");
+        return Text(program == "yumed" ? server_text(status)
+                                       : client_text(status));
     } catch (const std::bad_alloc&) {
         return Text(Status(StatusCode::ResourceExhausted));
     } catch (...) {

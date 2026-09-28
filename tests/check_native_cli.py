@@ -102,11 +102,13 @@ class NativeCli(unittest.TestCase):
                 with self.subTest(binary=name, arguments=arguments):
                     self.assert_usage_failure(name, arguments, "--completion needs bash")
 
-    def test_status_is_a_client_action_on_its_own(self) -> None:
-        self.assert_usage_failure("yumed", ["--config", "x.json", "--status"],
-                                  "unknown argument: --status")
-        self.assert_usage_failure("yume", ["--status"], "--config is required")
-        for extra in (["--validate"], ["--connect", "192.0.2.7"],
+    def test_status_is_an_action_on_its_own(self) -> None:
+        for name in PROGRAMS:
+            with self.subTest(binary=name):
+                self.assert_usage_failure(name, ["--status"], "--config is required")
+                self.assert_usage_failure(name, ["--config", "x.json", "--status", "--validate"],
+                                          "--status takes only --config")
+        for extra in (["--connect", "192.0.2.7"],
                       ["--outer-carrier-evidence", "/tmp/evidence.json"]):
             with self.subTest(extra=extra):
                 self.assert_usage_failure("yume", ["--config", "x.json", "--status", *extra],

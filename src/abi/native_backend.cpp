@@ -1881,12 +1881,20 @@ BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
                         "and are not composed by the embedding backend");
         return BackendIo::Unsupported;
     }
-    // The control socket serves the standalone client's status, which an
+    // The control socket serves the standalone program's status, which an
     // embedder reports through the ABI instead.
     if (config_.control()) {
         describe(error,
                  "the schema-1 control socket belongs to the standalone "
-                 "client and is not composed by the embedding backend");
+                 "programs and is not composed by the embedding backend");
+        return BackendIo::Unsupported;
+    }
+    // A cluster member keeps links to its peers. Accepting the peers without
+    // dialing them would be half a membership.
+    if (config_.cluster()) {
+        describe(error,
+                 "cluster membership runs in the standalone yumed and is "
+                 "not composed by the embedding backend");
         return BackendIo::Unsupported;
     }
     if (std::holds_alternative<v1::ReverseProxyCover>(config_.cover())) {

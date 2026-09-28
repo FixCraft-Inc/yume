@@ -192,7 +192,7 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
                 std::filesystem::path(argv[++index]);
         } else if (argument == "--validate") {
             arguments.validate = true;
-        } else if (role == NativeCliRole::Client && argument == "--status") {
+        } else if (argument == "--status") {
             arguments.status = true;
         } else if (const auto* kit_flag = role == NativeCliRole::Client
                                               ? find_kit_flag(argument)
@@ -518,7 +518,8 @@ int import_kit(NativeCliRole role, const std::filesystem::path& file,
     return kExitStopped;
 }
 
-// yume --status: one request to the running client's control socket.
+// yume --status and yumed --status: one request to the running program's
+// control socket.
 int print_status(NativeCliRole role, const config::v1::Config& config) {
     if (!config.control()) {
         say(role, "the configuration has no control socket (control.socket)");
@@ -528,7 +529,8 @@ int print_status(NativeCliRole role, const config::v1::Config& config) {
     const auto reply = query_control_status(path, std::chrono::seconds(5));
     if (!reply.ok()) {
         say(role, reply.status().code() == StatusCode::NotFound
-                      ? "no yume is running on the control socket " + path
+                      ? "no " + std::string(program(role)) +
+                            " is running on the control socket " + path
                       : describe("status request failed", reply.status()));
         return kExitFailure;
     }
@@ -585,6 +587,24 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         context->finish();
     };
 
+    // Opens the control socket, or stops the program when it cannot.
+    const auto open_control = [&](const std::string& path,
+                                  ControlStatusSource source) {
+        auto opened = ControlServer::open(
+            context, path, std::move(source), [role](Status status) noexcept {
+                say(role, describe("control socket stopped", status));
+            });
+        if (!opened.ok()) {
+            say(role,
+                describe("cannot open the control socket", opened.status()));
+            stop(exit_for(opened.status()));
+            return false;
+        }
+        control = std::move(opened).take_value();
+        say(role, "control socket on " + path);
+        return true;
+    };
+
     std::function<void()> wait_for_signal;
     wait_for_signal = [&]() {
         signals.async_wait([&](const boost::system::error_code& error, int number) noexcept {
@@ -636,6 +656,19 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                     say(role, "listening on " + endpoint.address().to_string() + " port " +
                                   std::to_string(endpoint.port()));
                 }
+                if (config.control()) {
+                    const std::weak_ptr<NativeServerRuntime> weak = server;
+                    if (!open_control(config.control()->socket_path, [weak] {
+                            const auto runtime = weak.lock();
+                            if (!runtime)
+                                throw std::runtime_error(
+                                    "the server has stopped");
+                            return server_status_reply(
+                                runtime->status(),
+                                std::chrono::steady_clock::now());
+                        }))
+                        return;
+                }
                 return;
             }
             NativeClientRuntimeOptions client_options;
@@ -685,8 +718,8 @@ int serve(NativeCliRole role, const config::v1::Config& config,
             }
             if (config.control()) {
                 const std::weak_ptr<NativeClientRuntime> weak = client;
-                auto opened = ControlServer::open(
-                    context, config.control()->socket_path,
+                static_cast<void>(open_control(
+                    config.control()->socket_path,
                     [weak, view = std::move(view)] {
                         const auto runtime = weak.lock();
                         if (!runtime)
@@ -694,18 +727,7 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                         return client_status_reply(
                             runtime->status(), view,
                             std::chrono::steady_clock::now());
-                    },
-                    [role](Status status) noexcept {
-                        say(role, describe("control socket stopped", status));
-                    });
-                if (!opened.ok()) {
-                    say(role, describe("cannot open the control socket",
-                                       opened.status()));
-                    stop(exit_for(opened.status()));
-                    return;
-                }
-                control = std::move(opened).take_value();
-                say(role, "control socket on " + config.control()->socket_path);
+                    }));
             }
         } catch (...) {
             say(role, "startup failed");

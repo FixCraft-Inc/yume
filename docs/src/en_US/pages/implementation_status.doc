@@ -205,12 +205,27 @@ An optional callback reports each state change on the runtime context.
 counts. The endpoint test checks both across a reconnect.
 
 A server endpoint reloads its credential stores on request, and `yumed` does
-so on SIGHUP. Reload builds a new engine graph for later sessions and swaps the
+so on SIGHUP. Reload replaces the security factory that every later session
+takes its credentials from, including sessions on accepts armed before the
+reload, and swaps the
 authorization policy that every service wrapper consults, so established
 sessions apply changed grants to their next OPEN. It ends sessions of removed
 identities and those beyond a lowered `max_sessions`, and refuses a store that
 fails validation or a changed admission key. The endpoint test covers grant
-changes, refusal of a malformed store and revocation of a live session.
+changes, refusal of a malformed store, revocation of a live session and a
+client added while an accept was armed.
+
+Servers of one operator form a cluster ([cluster 1](protocol/CLUSTER_1.md)).
+A server with a `cluster` section verifies the operator's signed list and its
+peer store, keeps one outbound link to every peer with the client's backoff,
+and admits peers' links without granting them a service. An expired list
+closes the links and ends the peers' sessions, and a reload restarts every
+link. `yumed --status` reports the list and each link over the control socket.
+`yume_cluster_list_test` and the credential test cover the list and store
+refusals, and `yume_native_cluster_test` runs three daemons from
+`yume-setup`'s cluster commands: links in both directions, recovery after a
+stop, a refused wrong PSK and a reload. The links carry no traffic. Circuits,
+route choice and exits are the next phases.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every
@@ -487,6 +502,8 @@ must not be advertised as working:
   and can read its credential files, so modules are trusted programs until each
   runs as a user of its own;
 - production qualification of module adapters and managed TUN;
+- traffic over cluster links: circuits, route choice, consent to a shorter
+  route and exits, and decentralized server lists;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native
   `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;

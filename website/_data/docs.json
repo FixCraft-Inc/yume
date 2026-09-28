@@ -170,6 +170,15 @@
     "home_group": "Internals and status"
   },
   {
+    "title": "Cluster links",
+    "summary": "The signed server list, the peer store and the links that make one operator's yumed servers a cluster.",
+    "url": "/docs/protocol/CLUSTER_1/",
+    "source": "docs/protocol/CLUSTER_1.md",
+    "landing_group": "Security and transport",
+    "order": 158,
+    "home_group": "Internals and status"
+  },
+  {
     "title": "Implementation status",
     "summary": "What exists, what has focused tests, and what still blocks a stable release.",
     "url": "/docs/IMPLEMENTATION_STATUS/",

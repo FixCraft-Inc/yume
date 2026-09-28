@@ -597,11 +597,62 @@ class YumeDoctorTests(unittest.TestCase):
         config_path.write_text(original)
         server_path = self.case / "server/yumed.json"
         server = json.loads(server_path.read_text())
-        server["control"] = {"socket": "/run/yume/control.sock"}
+        server["control"] = {"socket": "/run/yumed/control.sock"}
         server_path.write_text(json.dumps(server))
         result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_cluster_section_matches_the_native_parser(self) -> None:
+        server_path = self.case / "server/yumed.json"
+        original = json.loads(server_path.read_text())
+        cluster = self.case / "server/credentials/cluster"
+        cluster.mkdir(mode=0o700)
+        names = {"operator_key": "operator.pub.pem", "list": "cluster-list.json",
+                 "signature": "cluster-list.sig", "peers": "peers.json"}
+        for name in names.values():
+            (cluster / name).write_bytes(b"{}")
+            os.chmod(cluster / name, 0o600)
+        section = {key: {"file": f"credentials/cluster/{name}"} for key, name in names.items()}
+        server = copy.deepcopy(original)
+        server["cluster"] = section
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        (cluster / "cluster-list.sig").write_bytes(b"x" * (64 + 4627 + 1))
+        result = self.run_doctor(server_path)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("client-only", result.stderr)
+        self.assertIn("/cluster/signature", result.stderr)
+        (cluster / "cluster-list.sig").write_bytes(b"{}")
+        os.chmod(cluster / "peers.json", 0o644)
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/cluster/peers", result.stderr)
+        os.chmod(cluster / "peers.json", 0o600)
+
+        for change, pointer in (
+            ({"peers": None}, "/cluster/peers"),
+            ({"extra": {"file": "x"}}, "/cluster/extra"),
+            ({"list": "cluster-list.json"}, "/cluster/list"),
+        ):
+            server = copy.deepcopy(original)
+            server["cluster"] = {**section, **change}
+            if change.get("peers", 1) is None:
+                del server["cluster"]["peers"]
+            server_path.write_text(json.dumps(server))
+            result = self.run_doctor(server_path)
+            self.assertEqual(result.returncode, 1, change)
+            self.assertIn(pointer, result.stderr)
+        client_path = self.case / "client/yume.json"
+        client_original = client_path.read_text()
+        client = json.loads(client_original)
+        client["cluster"] = section
+        client_path.write_text(json.dumps(client))
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/cluster: is server-only", result.stderr)
+        client_path.write_text(client_original)
+        server_path.write_text(json.dumps(original))
 
     def test_module_adapters_match_the_native_parser(self) -> None:
         server_path = self.case / "server/yumed.json"

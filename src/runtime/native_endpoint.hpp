@@ -21,6 +21,7 @@
 #include "providers/asio_execution_context.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
 #include "providers/system_resolver.hpp"
+#include "runtime/native_credentials.hpp"
 #include "stealth/outer_carrier_observer.hpp"
 
 namespace yume::runtime {
@@ -149,6 +150,11 @@ inline NativeServerSizing native_server_sizing(
 // close() and destruction may cross threads and use reserved control dispatch.
 // No thread is detached or joined here. Name lookups run in the resolver's
 // helper process, so a stalled system lookup does not hold the final drain.
+struct NativePeerSession final {
+    std::string identity;
+    std::chrono::steady_clock::time_point admitted_at;
+};
+
 class NativeEndpoint final {
 public:
     using Completion = engine::SessionBootstrap::Completion;
@@ -160,6 +166,18 @@ public:
         const std::filesystem::path& config_base_directory,
         std::vector<NativeServiceBinding> services,
         NativeEndpointOptions options = {});
+
+    // A cluster link: a client endpoint for this node's outbound session to
+    // one peer. It takes its suite and limits from the node's own server
+    // configuration, and its transport and credentials from the verified
+    // cluster membership. It offers no service and accepts no stream the peer
+    // opens. options.connection_address, a SOCKS5 proxy and outer-carrier
+    // evidence do not apply and are refused. options.resolver stays the
+    // caller's to close, so several links can share one.
+    static engine::Result<std::shared_ptr<NativeEndpoint>> create_link(
+        std::shared_ptr<providers::AsioExecutionContext> context,
+        const config::v1::Config& node_config,
+        const NativeLinkCredentials& link, NativeEndpointOptions options = {});
 
     NativeEndpoint(const NativeEndpoint&) = delete;
     NativeEndpoint& operator=(const NativeEndpoint&) = delete;
@@ -196,9 +214,19 @@ public:
     // against them, established sessions' next OPEN uses the new grants, and
     // sessions of removed identities or beyond a lowered max_sessions end.
     // TLS material stays as loaded, and a changed admission key is refused.
-    // On failure the previous credentials stay in force. FailedPrecondition
-    // for a client, Closed while closing.
+    // A cluster list naming another operator, or with a lower serial than the
+    // loaded one, is refused. On failure the previous credentials stay in
+    // force. FailedPrecondition for a client, Closed while closing.
     engine::Status reload_credentials();
+    // Server, on the context: the verified cluster membership its
+    // configuration names, as last loaded, or nullptr. A reload replaces it.
+    const NativeClusterCredentials* cluster() const noexcept;
+    // Server, on the context: the verified identity of each active session
+    // and when it was admitted.
+    std::vector<NativePeerSession> authenticated_sessions() const;
+    // Server, on the context: ends sessions whose identity the current policy
+    // no longer recognizes, such as cluster peers after the list expired.
+    void end_unrecognized_sessions() noexcept;
     void close() noexcept;
 
 private:

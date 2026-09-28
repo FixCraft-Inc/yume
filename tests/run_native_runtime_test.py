@@ -566,6 +566,53 @@ def check_control_status(yume: Path, kit: Path, environment: dict[str, str],
     print("control socket verified: yume --status showed the connected session")
 
 
+def check_client_reconnects(yumed: Path, yume: Path, kit: Path, environment: dict[str, str],
+                            root: Path, server_port: int, socks_port: int,
+                            target_port: int) -> None:
+    """A restarted daemon ends one session, and the client reconnects with backoff."""
+    # The main flow's payload server may still hold its port.
+    target_port = session.free_port()
+    target = session.serve_payload("127.0.0.1", target_port, PAYLOAD_BYTES)
+    server_log = (root / "yumed-restart.log").open("wb")
+    client_log_path = root / "yume-restart.log"
+    client_log = client_log_path.open("wb")
+    command = [str(yumed), "--config", str(kit / "server/yumed.json")]
+    server = subprocess.Popen(command, env=environment, stdout=server_log, stderr=subprocess.STDOUT)
+    client = None
+    try:
+        session.wait_for_port("127.0.0.1", server_port, server, time.monotonic() + 30)
+        client = subprocess.Popen([str(yume), "--config", str(kit / "client/yume.json")],
+                                  env=environment, stdout=client_log, stderr=subprocess.STDOUT)
+        session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
+        check_first_payload(socks_port, target_port)
+        session.stop_process(server, "yumed before its restart")
+        server = subprocess.Popen(command, env=environment, stdout=server_log,
+                                  stderr=subprocess.STDOUT)
+        session.wait_for_port("127.0.0.1", server_port, server, time.monotonic() + 30)
+        check_first_payload(socks_port, target_port)
+        session.stop_process(client, "yume after the restart")
+        client = None
+        session.stop_process(server, "yumed after the restart")
+        server = None
+    finally:
+        for process in (client, server):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        target.shutdown()
+        server_log.close()
+        client_log.close()
+        for name in ("yumed-restart", "yume-restart"):
+            logged = (root / f"{name}.log").read_text(encoding="utf-8", errors="replace")
+            session.reject_secret_output(name, logged)
+            sys.stdout.write(f"--- {name} log\n{logged}")
+    text = client_log_path.read_text(encoding="utf-8")
+    if text.count("yume: session authenticated\n") != 2 or \
+            text.count("yume: session ended, reconnecting\n") != 1:
+        raise session.SessionFailure(f"the client did not reconnect once: {text!r}")
+    print("reconnect verified: the client carried traffic again after yumed restarted")
+
+
 def process_gone(pid: int) -> bool:
     # A dead child of init can stay a zombie briefly until it is reaped. A
     # process that exits between opening and reading its stat file makes the
@@ -701,6 +748,11 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
         client_log = (root / "yume.log").read_text(encoding="utf-8")
         if client_log.count("yume: session authenticated\n") != 1 or "session ended" in client_log:
             raise session.SessionFailure("SOCKS requests replaced the authenticated session")
+        # The DNS variant's resolver fixture expects an exact query count, and
+        # the plain variant covers reconnection.
+        if not dns_fixture:
+            check_client_reconnects(yumed, yume, kit, environment, root, server_port,
+                                    socks_port, target_port)
         server_log = (root / "yumed.log").read_text(encoding="utf-8")
         if module is not None and (server_log.count("module echo: started as process") != 1 or
                                    "module echo: exited" in server_log):

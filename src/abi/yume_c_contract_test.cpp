@@ -453,6 +453,54 @@ int main(int argc, char** argv) {
 #if defined(YUME_TEST_ABI_ALLOCATIONS)
     test_startup_allocation_settlement(server_text);
 #endif
+    {
+        // A cluster section is refused at start rather than accepting the
+        // peers without keeping links to them.
+        std::string cluster_text = server_text;
+        const std::size_t server_adapters = cluster_text.find("\"adapters\"");
+        const std::size_t open_bracket =
+            cluster_text.find('[', server_adapters);
+        std::size_t close_bracket = open_bracket;
+        for (int depth = 0; close_bracket < cluster_text.size();
+             ++close_bracket) {
+            if (cluster_text[close_bracket] == '[') ++depth;
+            if (cluster_text[close_bracket] == ']' && --depth == 0) break;
+        }
+        require(server_adapters != std::string::npos &&
+                    open_bracket != std::string::npos &&
+                    close_bracket < cluster_text.size(),
+                "server config fixture omitted its adapter array");
+        cluster_text.replace(open_bracket, close_bracket - open_bracket + 1U,
+                             "[]");
+        cluster_text.insert(
+            server_adapters,
+            R"("cluster":{"operator_key":{"file":"cluster/operator.pub.pem"},)"
+            R"("list":{"file":"cluster/list.json"},"signature":{"file":"cluster/list.sig"},)"
+            R"("peers":{"file":"cluster/peers.json"}},)");
+        yume_config* cluster_config = nullptr;
+        require(yume_config_parse_json(first, cluster_text.data(),
+                                       cluster_text.size(),
+                                       &cluster_config) == YUME_STATUS_OK,
+                "cluster config fixture was rejected");
+        yume_endpoint* cluster_endpoint = nullptr;
+        require(yume_endpoint_create(first, cluster_config,
+                                     &cluster_endpoint) == YUME_STATUS_OK,
+                "cluster endpoint creation failed");
+        require(yume_endpoint_start(cluster_endpoint, 0U) ==
+                    YUME_STATUS_UNSUPPORTED,
+                "an embedded endpoint started as a cluster member");
+        yume_diagnostic cluster_diagnostic{};
+        cluster_diagnostic.struct_size = sizeof(cluster_diagnostic);
+        cluster_diagnostic.abi_version = YUME_ABI_VERSION;
+        require(yume_handle_get_diagnostic(
+                    cluster_endpoint, &cluster_diagnostic,
+                    sizeof(cluster_diagnostic)) == YUME_STATUS_OK &&
+                    std::string(cluster_diagnostic.message).find("cluster") !=
+                        std::string::npos,
+                "the cluster refusal diagnostic did not name it");
+        yume_endpoint_destroy(cluster_endpoint);
+        yume_config_destroy(cluster_config);
+    }
     yume_config* server_config = nullptr;
     require(yume_config_parse_json(first, server_text.data(),
                                    server_text.size(), &server_config) ==

@@ -633,6 +633,8 @@ endif()
 
 if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_native_credentials STATIC
+        runtime/cluster_list.cpp runtime/cluster_list.hpp
+        runtime/composite_keys.cpp runtime/composite_keys.hpp
         runtime/native_credentials.cpp runtime/native_credentials.hpp)
     target_include_directories(yume_native_credentials PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_native_credentials
@@ -773,6 +775,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             runtime/native_session_source.hpp
             runtime/native_socks5.cpp runtime/native_socks5.hpp
             runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
+            runtime/session_keeper.cpp runtime/session_keeper.hpp
             runtime/socks5_request.cpp runtime/socks5_request.hpp)
         target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(yume_native_runtime
@@ -1630,6 +1633,13 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_native_local_listener_test COMMAND yume_native_local_listener_test)
         set_tests_properties(yume_native_local_listener_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_cluster_list_test runtime/cluster_list_test.cpp)
+        target_link_libraries(yume_cluster_list_test PRIVATE
+            yume_native_credentials OpenSSL::Crypto nlohmann_json::nlohmann_json)
+        yume_apply_perf_opts(yume_cluster_list_test)
+        add_test(NAME yume_cluster_list_test COMMAND yume_cluster_list_test)
+        set_tests_properties(yume_cluster_list_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_sealed_kit_test runtime/sealed_kit_test.cpp)
         target_link_libraries(yume_sealed_kit_test PRIVATE yume_sealed_kit OpenSSL::Crypto)
         yume_apply_perf_opts(yume_sealed_kit_test)
@@ -1704,6 +1714,16 @@ if(YUME_BUILD_TESTING)
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}"
                     --module "$<TARGET_FILE:yume-echo-module>")
             set_tests_properties(yume_native_runtime_test PROPERTIES
+                TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            # Three clustered daemons from yume-setup's cluster commands: links
+            # in both directions, recovery after a stop, a refused wrong PSK
+            # and a reload, observed through each node's control socket.
+            add_test(NAME yume_native_cluster_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/run_native_cluster_test.py"
+                    --yumed "$<TARGET_FILE:yumed>"
+                    --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+            set_tests_properties(yume_native_cluster_test PROPERTIES
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
             if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 add_executable(yume_native_runtime_dns_server_test

@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <csignal>
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <exception>
@@ -20,9 +21,15 @@
 #include <string_view>
 #include <variant>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <termios.h>
+#include <unistd.h>
+
 #include <boost/asio/basic_signal_set.hpp>
 #include <boost/asio/post.hpp>
 
+#include "common/secure_erase.hpp"
 #include "common/version.hpp"
 #include "config/v1/config.hpp"
 #include "fs/bounded_file.hpp"
@@ -38,6 +45,7 @@
 #include "runtime/native_run_loop.hpp"
 #include "runtime/native_server_runtime.hpp"
 #include "runtime/outer_carrier_evidence.hpp"
+#include "runtime/sealed_kit.hpp"
 #include "runtime/yume_help_text.hpp"
 #include "runtime/yumed_help_text.hpp"
 
@@ -63,6 +71,22 @@ struct Arguments final {
     bool help{false};
     bool completion{false};
     bool status{false};
+    std::optional<std::filesystem::path> seal_kit;
+    std::optional<std::filesystem::path> output;
+    std::optional<std::filesystem::path> import_kit;
+    std::optional<std::filesystem::path> into;
+};
+
+// A flag that takes one path, and the client-only flags among them.
+struct PathFlag final {
+    std::string_view flag;
+    std::optional<std::filesystem::path> Arguments::* value;
+};
+constexpr PathFlag kKitFlags[] = {
+    {"--seal-kit", &Arguments::seal_kit},
+    {"--output", &Arguments::output},
+    {"--import-kit", &Arguments::import_kit},
+    {"--into", &Arguments::into},
 };
 
 // The client's per-run flags. Each sets one schema-1 key through
@@ -123,6 +147,13 @@ void usage(NativeCliRole role, std::FILE* out) noexcept {
     std::fputs(role == NativeCliRole::Server ? yumed_cli::kHelpBody : yume_cli::kHelpBody, out);
 }
 
+const PathFlag* find_kit_flag(std::string_view argument) noexcept {
+    for (const auto& flag : kKitFlags) {
+        if (flag.flag == argument) return &flag;
+    }
+    return nullptr;
+}
+
 const RunFlag* find_run_flag(NativeCliRole role,
                              std::string_view argument) noexcept {
     if (role != NativeCliRole::Client) return nullptr;
@@ -163,6 +194,15 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             arguments.validate = true;
         } else if (role == NativeCliRole::Client && argument == "--status") {
             arguments.status = true;
+        } else if (const auto* kit_flag = role == NativeCliRole::Client
+                                              ? find_kit_flag(argument)
+                                              : nullptr) {
+            auto& value = arguments.*(kit_flag->value);
+            if (index + 1 >= argc || value) {
+                error = std::string(kit_flag->flag) + " needs exactly one path";
+                return std::nullopt;
+            }
+            value = std::filesystem::path(argv[++index]);
         } else if (argument == "--version") {
             arguments.version = true;
         } else if (argument == "--completion") {
@@ -180,8 +220,26 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             return std::nullopt;
         }
     }
+    const bool kit_action = arguments.seal_kit || arguments.output ||
+                            arguments.import_kit || arguments.into;
+    if (kit_action) {
+        const bool seal = arguments.seal_kit && arguments.output &&
+                          !arguments.import_kit && !arguments.into;
+        const bool import = arguments.import_kit && arguments.into &&
+                            !arguments.seal_kit && !arguments.output;
+        if ((!seal && !import) || arguments.config || arguments.validate ||
+            arguments.status || arguments.outer_carrier_evidence ||
+            arguments.run.connect_address ||
+            arguments.run.socks5_listen_address ||
+            arguments.run.socks5_listen_port) {
+            error =
+                "use --seal-kit DIR --output FILE or --import-kit FILE --into "
+                "DIR alone";
+            return std::nullopt;
+        }
+    }
     if (!arguments.help && !arguments.version && !arguments.completion &&
-        !arguments.config) {
+        !kit_action && !arguments.config) {
         error = "--config is required";
         return std::nullopt;
     }
@@ -305,6 +363,158 @@ int validate(NativeCliRole role, const config::v1::Config& config,
         }
     }
     say(role, "configuration and credentials are valid");
+    return kExitStopped;
+}
+
+// A kit's yume.json must be a client configuration, so a server's private
+// keys are never sealed or imported as a client kit.
+bool client_kit(const kit::Kit& contents, std::string& error) {
+    for (const auto& file : contents.files) {
+        if (file.path != "yume.json") continue;
+        try {
+            const auto config = config::v1::ParseJson(std::string_view(
+                reinterpret_cast<const char*>(file.bytes.data()),
+                file.bytes.size()));
+            if (config.role() == config::v1::Role::Client) return true;
+            error = "the kit's yume.json is a server configuration";
+        } catch (const std::exception& thrown) {
+            error =
+                std::string("the kit's yume.json is invalid: ") + thrown.what();
+        }
+        return false;
+    }
+    error = "the kit has no yume.json";
+    return false;
+}
+
+// yume --seal-kit DIR --output FILE: prints the new code on standard output.
+int seal_kit(NativeCliRole role, const std::filesystem::path& directory,
+             const std::filesystem::path& output) {
+    auto contents = kit::read_directory(directory);
+    if (!contents.ok()) {
+        say(role, describe("cannot read the kit", contents.status()));
+        return kExitUsage;
+    }
+    std::string error;
+    if (!client_kit(contents.value(), error)) {
+        say(role, error);
+        return kExitUsage;
+    }
+    auto code = kit::generate_code();
+    if (!code.ok()) {
+        say(role, describe("cannot make a kit code", code.status()));
+        return kExitFailure;
+    }
+    const auto sealed = kit::seal(contents.value(), code.value());
+    if (!sealed.ok()) {
+        say(role, describe("cannot seal the kit", sealed.status()));
+        return kExitFailure;
+    }
+    const int fd =
+        ::open(output.c_str(),
+               O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        say(role, errno == EEXIST ? "the output file exists"
+                                  : "cannot create the output file");
+        return kExitUsage;
+    }
+    const auto& bytes = sealed.value();
+    std::size_t written = 0U;
+    bool ok = true;
+    while (ok && written < bytes.size()) {
+        const auto count =
+            ::write(fd, bytes.data() + written, bytes.size() - written);
+        if (count < 0 && errno == EINTR) continue;
+        ok = count > 0;
+        if (ok) written += static_cast<std::size_t>(count);
+    }
+    ok = ok && ::fsync(fd) == 0;
+    ok = ::close(fd) == 0 && ok;
+    if (!ok) {
+        std::error_code ignored;
+        std::filesystem::remove(output, ignored);
+        say(role, "cannot write the output file");
+        return kExitFailure;
+    }
+    std::printf("%s\n", kit::display_code(code.value()).c_str());
+    std::fflush(stdout);
+    return kExitStopped;
+}
+
+// Reads one line of at most 256 bytes from standard input, with echo off on
+// a terminal.
+std::optional<std::string> read_code_line(NativeCliRole role) {
+    const bool terminal = ::isatty(STDIN_FILENO) == 1;
+    termios saved{};
+    const bool quiet = terminal && ::tcgetattr(STDIN_FILENO, &saved) == 0;
+    if (terminal) {
+        std::fputs("kit code: ", stderr);
+        std::fflush(stderr);
+    }
+    if (quiet) {
+        termios silent = saved;
+        silent.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+        static_cast<void>(::tcsetattr(STDIN_FILENO, TCSAFLUSH, &silent));
+    }
+    std::string line;
+    bool ended = false;
+    for (;;) {
+        char ch = 0;
+        const auto count = ::read(STDIN_FILENO, &ch, 1U);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0 || ch == '\n') {
+            ended = count > 0 || !line.empty();
+            break;
+        }
+        if (line.size() >= 256U) break;
+        line.push_back(ch);
+    }
+    if (quiet) {
+        static_cast<void>(::tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved));
+        std::fputs("\n", stderr);
+    }
+    if (!ended) {
+        security::secure_erase(line);
+        say(role, "no kit code on standard input");
+        return std::nullopt;
+    }
+    return line;
+}
+
+// yume --import-kit FILE --into DIR: reads the code from standard input.
+int import_kit(NativeCliRole role, const std::filesystem::path& file,
+               const std::filesystem::path& directory) {
+    std::vector<std::uint8_t> sealed;
+    std::string error;
+    if (!read_file_bounded(file, kit::kMaxSealedBytes, &sealed, &error)) {
+        say(role, "cannot read the sealed kit: " + error);
+        return kExitUsage;
+    }
+    auto typed = read_code_line(role);
+    if (!typed) return kExitUsage;
+    const security::ScopedErase typed_guard(*typed);
+    auto code = kit::normalize_code(*typed);
+    if (!code) {
+        say(role, "the kit code is not 25 code characters");
+        return kExitUsage;
+    }
+    const security::ScopedErase code_guard(*code);
+    const auto contents = kit::open(sealed, *code);
+    if (!contents.ok()) {
+        say(role, describe("cannot open the kit", contents.status()));
+        return kExitFailure;
+    }
+    if (!client_kit(contents.value(), error)) {
+        say(role, error);
+        return kExitFailure;
+    }
+    const auto written = kit::write_directory(contents.value(), directory);
+    if (!written.ok()) {
+        say(role, describe("cannot write the kit", written));
+        return exit_for(written);
+    }
+    say(role, "imported the kit into " + directory.string() +
+                  ", run yume --config " + (directory / "yume.json").string());
     return kExitStopped;
 }
 
@@ -550,6 +760,11 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
                            : yume_cli::kBashCompletion,
                        stdout);
             return kExitStopped;
+        }
+        if (arguments->seal_kit)
+            return seal_kit(role, *arguments->seal_kit, *arguments->output);
+        if (arguments->import_kit) {
+            return import_kit(role, *arguments->import_kit, *arguments->into);
         }
         const auto config =
             load(*arguments->config, role, arguments->run, error);

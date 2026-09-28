@@ -130,6 +130,77 @@ class NativeCli(unittest.TestCase):
             self.assertEqual(result.stderr,
                              f"yume: no yume is running on the control socket {socket_path}\n")
 
+    def kit(self, root: Path, example: str = "config/yume.json") -> Path:
+        kit = root / "kit"
+        (kit / "credentials").mkdir(parents=True, mode=0o700)
+        (kit / "yume.json").write_text((ROOT / example).read_text(encoding="utf-8"),
+                                       encoding="utf-8")
+        (kit / "credentials/client-access.psk").write_bytes(bytes(range(32)))
+        start = kit / "start-client"
+        start.write_text("#!/bin/sh\nexec yume --config yume.json\n", encoding="utf-8")
+        start.chmod(0o700)
+        return kit
+
+    def import_kit(self, sealed: Path, into: Path, code: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(PROGRAMS["yume"]), "--import-kit", str(sealed), "--into",
+                               str(into)], input=code, capture_output=True, text=True,
+                              timeout=30, check=False)
+
+    def test_a_sealed_kit_imports_with_its_code(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="yume-kit-") as temporary:
+            root = Path(temporary)
+            kit = self.kit(root)
+            sealed = root / "client.kit"
+            result = self.invoke("yume", "--seal-kit", str(kit), "--output", str(sealed))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(result.stdout, r"^([0-9A-HJKMNP-TV-Z]{5}-){4}[0-9A-HJKMNP-TV-Z]{5}\n$")
+            self.assertEqual(sealed.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((sealed.stat().st_size - 44) % 1024, 0)
+            code = result.stdout.strip()
+            result = self.import_kit(sealed, root / "wrong", code[:-1] + ("0" if code[-1] != "0" else "1"))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("the code is wrong or the file is not a sealed kit", result.stderr)
+            self.assertFalse((root / "wrong").exists())
+            # Typed codes may be lower case and without separators.
+            result = self.import_kit(sealed, root / "imported", code.lower().replace("-", "") + "\n")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            imported = root / "imported"
+            self.assertEqual(imported.stat().st_mode & 0o777, 0o700)
+            for name in ("yume.json", "credentials/client-access.psk", "start-client"):
+                self.assertEqual((imported / name).read_bytes(), (kit / name).read_bytes(), name)
+            self.assertEqual((imported / "credentials/client-access.psk").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((imported / "start-client").stat().st_mode & 0o777, 0o700)
+            result = self.import_kit(sealed, imported, code)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("the kit directory exists", result.stderr)
+            result = self.import_kit(sealed, root / "empty", "")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("no kit code on standard input", result.stderr)
+            result = self.invoke("yume", "--seal-kit", str(kit), "--output", str(sealed))
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stderr, "yume: the output file exists\n")
+
+    def test_only_a_client_kit_is_sealed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="yume-kit-") as temporary:
+            root = Path(temporary)
+            kit = self.kit(root, "config/yumed.json")
+            result = self.invoke("yume", "--seal-kit", str(kit), "--output", str(root / "k"))
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(result.stderr, "yume: the kit's yume.json is a server configuration\n")
+            self.assertFalse((root / "k").exists())
+
+    def test_kit_actions_stand_alone(self) -> None:
+        message = "use --seal-kit DIR --output FILE or --import-kit FILE --into DIR alone"
+        for arguments in (["--seal-kit", "d"], ["--output", "f"], ["--import-kit", "f"],
+                          ["--into", "d"], ["--seal-kit", "d", "--into", "e"],
+                          ["--seal-kit", "d", "--output", "f", "--config", "c.json"],
+                          ["--import-kit", "f", "--into", "d", "--status"]):
+            with self.subTest(arguments=arguments):
+                self.assert_usage_failure("yume", arguments, message)
+        self.assert_usage_failure("yume", ["--seal-kit"], "--seal-kit needs exactly one path")
+        self.assert_usage_failure("yumed", ["--seal-kit", "d", "--output", "f"],
+                                  "unknown argument: --seal-kit")
+
     def test_config_is_required_for_run_and_validation(self) -> None:
         for name in PROGRAMS:
             for arguments in ([], ["--validate"]):

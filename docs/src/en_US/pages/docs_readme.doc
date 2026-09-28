@@ -41,6 +41,8 @@ speak YTP/1. Transport v2, the protocol before it, has been removed.
 - [YTP/1](protocol/YTP_1.md): the wire and security contract.
 - [Relay channel](protocol/RELAY_CHANNEL.md): the end-to-end channel the relay
   module keeps for the planned chat and file modules.
+- [Sealed kit](protocol/SEALED_KIT_1.md): the one-file format that moves a
+  client kit to another device.
 - [C ABI](ABI.md): embedding the client or server. The ABI is experimental and
   its install contract is not frozen.
 - [Modules](MODULES.md): running a program behind a stream service, and

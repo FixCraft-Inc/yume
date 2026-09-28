@@ -50,11 +50,6 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   brings transport v2's egress filter to the native daemon without archive
   unpacking or the compact country format, and it fixes v2's reading of
   28-bit MaxMind records.
-- **Share container library.** `yume_module_share` holds the password-sealed
-  `.yss` container from transport v2 for a planned kit import format. It keeps
-  the file layout and always derives the key with Argon2id. Passwords that
-  start with `file://` or `password://` are now refused, where transport v2
-  let BaseFWX read the first from a file.
 - **Outer-carrier evidence.** `yume --outer-carrier-evidence PATH` writes a
   payload-free report on its first connection's HTTP/2 and WebSocket carrier
   when the run ends: frame types and sizes, pinned or redacted header
@@ -83,6 +78,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   and answers one JSON request line with one JSON line (control protocol 1,
   in yume(1)). The planned GUI reads it. `yume-doctor` checks the key, and
   the embedding ABI refuses a configuration that names one.
+- **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
+  into one file and prints a 25-character code, and `yume --import-kit FILE
+  --into DIR` opens it on the client's device with that code. The file is
+  Argon2id and AES-256-GCM from the core's OpenSSL 3.5, with no plaintext
+  header and fixed parameters ([sealed kit 1](../protocol/SEALED_KIT_1.md)).
+  Only a client configuration is sealed, and the import writes a new
+  owner-only directory. `yume-setup` names the command after it writes a
+  client. The format replaces the BaseFWX `.yss` container library that
+  transport v2 kept client settings in, and that library is removed.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

@@ -32,6 +32,18 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 .B --status
 .PP
 .B yume
+.B --seal-kit
+.I directory
+.B --output
+.I file
+.PP
+.B yume
+.B --import-kit
+.I file
+.B --into
+.I directory
+.PP
+.B yume
 .B --version
 .PP
 .B yume
@@ -151,6 +163,50 @@ The exit status is 2 when the configuration names no control socket and
 .B --status
 takes no option besides
 .BR --config .
+.PP
+The kit options move a client kit to another device in one file, a
+sealed kit.
+Each pair stands alone.
+.TP
+.BI "--seal-kit " directory
+Seal the client kit in
+.I directory
+into the file that
+.B --output
+names, and print a new code in five groups of five characters.
+The kit is the directory's regular files and those one level below it,
+at most 32 files of up to 256 KiB each, and its
+.I yume.json
+must be a client configuration.
+The file is Argon2id and AES-256-GCM output with no plaintext header, so
+it reads as random bytes.
+Pass the code to the user by another channel than the file.
+.TP
+.BI "--output " file
+Write the sealed kit to
+.I file
+with mode 0600.
+An existing file is not replaced.
+.TP
+.BI "--import-kit " file
+Open the sealed kit in
+.I file
+with the code read from standard input, echo off on a terminal, and
+write it to the new directory that
+.B --into
+names.
+Case, dashes and spaces in the code do not matter.
+A wrong code and a file that is not a sealed kit fail the same way.
+The directory is written under a private temporary name beside it and
+renamed into place, with mode 0700 for directories and programs and 0600
+for other files.
+It must not exist.
+.TP
+.BI "--into " directory
+The directory
+.B --import-kit
+creates.
+Its parent must exist.
 .PP
 The evidence option observes the run and changes nothing on the wire.
 .TP

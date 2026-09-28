@@ -14,6 +14,8 @@ man-manual:  YUME Manual
 [ **--socks-address** *ip* ] [ **--socks-port** *port* ]
 [ **--outer-carrier-evidence** *path* ]
 **yume** **--config** *path* **--status**
+**yume** **--seal-kit** *directory* **--output** *file*
+**yume** **--import-kit** *file* **--into** *directory*
 **yume** **--version**
 **yume** **--completion** **bash**
 **yume** **--help**
@@ -82,6 +84,47 @@ verified identity, the sessions and failed attempts, payload and record bytes
 in each direction, the local listeners and the last failure. The exit status
 is 2 when the configuration names no control socket and 1 when no client
 answers on it. **--status** takes no option besides **--config**.
+@end
+
+The kit options move a client kit to another device in one file, a sealed
+kit. Each pair stands alone.
+
+@options
+@opt **--seal-kit** *directory*
+@cli file: yes
+@cli spell: --seal-kit <directory>
+@cli help: Seal a client kit into one file, with --output
+
+Seal the client kit in *directory* into the file that **--output** names, and
+print a new code in five groups of five characters. The kit is the
+directory's regular files and those one level below it, at most 32 files of
+up to 256 KiB each, and its *yume.json* must be a client configuration. The
+file is Argon2id and AES-256-GCM output with no plaintext header, so it reads
+as random bytes. Pass the code to the user by another channel than the file.
+@opt **--output** *file*
+@cli file: yes
+@cli spell: --output <file>
+@cli help: Write the sealed kit here, mode 0600, never replacing a file
+
+Write the sealed kit to *file* with mode 0600. An existing file is not
+replaced.
+@opt **--import-kit** *file*
+@cli file: yes
+@cli spell: --import-kit <file>
+@cli help: Open a sealed kit with its code, with --into
+
+Open the sealed kit in *file* with the code read from standard input, echo
+off on a terminal, and write it to the new directory that **--into** names.
+Case, dashes and spaces in the code do not matter. A wrong code and a file
+that is not a sealed kit fail the same way. The directory is written under a
+private temporary name beside it and renamed into place, with mode 0700 for
+directories and programs and 0600 for other files. It must not exist.
+@opt **--into** *directory*
+@cli file: yes
+@cli spell: --into <directory>
+@cli help: Write the imported kit to this new directory
+
+The directory **--import-kit** creates. Its parent must exist.
 @end
 
 The evidence option observes the run and changes nothing on the wire.

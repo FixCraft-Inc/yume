@@ -1352,11 +1352,13 @@ def main() -> int:
         print(f"Created YUME client bundle: {output}")
         print(f"Client config: {output / 'yume.json'}")
         print("Reload yumed (SIGHUP, or systemctl reload yumed) to accept the new client.")
+        print(f"To move it to the client's device: yume --seal-kit {output} --output FILE")
         return 0
     print(f"Created YUME server kit and client bundle: {output}")
     print(f"Server config: {output / 'server' / 'yumed.json'}")
     print(f"Client config: {output / 'client' / 'yume.json'}")
     print(f"Tuning preset: {arguments.preset}")
+    print(f"To move the client to its device: yume --seal-kit {output / 'client'} --output FILE")
     return 0
 
 

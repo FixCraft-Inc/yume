@@ -454,6 +454,23 @@ changes that have no capture or classifier evidence yet. Moving along the
 table trades one against the others, so a later interface can offer three
 coupled sliders over these four points.
 
+One emulator run on one host measured these rates for a single download, in
+Mbit/s at 40, 100 and 200 ms round trips without loss:
+
+| Preset | Default host TCP buffers | 64 MiB host TCP buffers |
+| --- | --- | --- |
+| `stealth` | 176, 77, 41 | 181, 79, 41 |
+| `balanced` | 423, 177, 92 | 679, 285, 155 |
+| `fast` | 424, 178, 93 | 2373, 1102, 582 |
+| `max` | 414, 178, 92 | 2969, 2737, 1326 |
+
+With Linux's default 6 MiB ceilings, one TCP connection holds about 2 MiB per
+round trip whether it is tunnelled or not, and the untunnelled download moved
+436 to 441, 186 to 188 and 98 Mbit/s. `balanced` already reaches about 95 % of
+that, so `fast` and `max` are faster only on a host with raised ceilings. The
+emulator handles packets in software, which caps its rates below a real
+network card, and none of these rates is a claim about a real path.
+
 Some limits hold for every preset. Keys always rotate, a session uses the
 smaller epoch that either side allows, and a server can therefore hold its
 clients to a stricter setting than theirs. A larger budget needs memory: a

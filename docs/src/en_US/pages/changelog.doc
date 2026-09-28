@@ -390,6 +390,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   copies the server's settings and `yume-doctor` names the preset a
   configuration matches. `config/tuning_presets.json` lists the presets with
   a speed, security and stealth level each, for a later interface.
+- **Client run settings.** `yume` accepts `--connect`, `--socks-address` and
+  `--socks-port`. Each replaces one configuration key for one run before the
+  configuration is validated, so the value meets the file's checks and an
+  error names its key. None can change the wire image, authentication,
+  encryption, admission, destination policy or leak protection, and `yumed`
+  accepts none. `--validate` prints every key a run setting can replace, with
+  its value and where it came from. The `yumed(8)` manual also printed the
+  client's SIGNALS section beside its own and now has only its own.
 - **Key rotation without a pause.** A sender sent nothing protected between
   REKEY_INIT and REKEY_ACK, so every rotation cost a round trip, about 29 % of
   the time at 200 ms with 500 ms epochs, and a request that met a rotation

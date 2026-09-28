@@ -52,7 +52,7 @@ Required unless
 or
 .B --version
 is requested.
-Network and security policy have no command-line overrides.
+Security policy has no command-line overrides.
 .TP
 .B --validate
 Check schema, role, referenced credentials, direct-adapter destination
@@ -82,23 +82,6 @@ Credential paths are relative to the configuration file's directory
 unless absolute.
 Credential loading rejects unsafe file types and permissions; inline
 secrets are forbidden.
-.SH SIGNALS
-.B SIGINT
-and
-.B SIGTERM
-request shutdown of listeners and sessions, followed by removal of owned
-TUN networking.
-.B SIGPIPE
-is ignored.
-.SH EXIT STATUS
-Zero indicates successful help, version or validation output, or
-shutdown requested by a handled signal with successful cleanup.
-Exit status 1 indicates a runtime or internal failure.
-Exit status 2 indicates invalid arguments, configuration or startup
-prerequisites.
-Diagnostics go to standard error; help and version output go to standard
-output.
-Argument errors also print usage on standard error.
 .SH COVER AND ADMISSION
 The daemon loads an operator-provided static site with explicit index
 and not-found files.
@@ -125,7 +108,8 @@ Module programs run as the daemon's user without capabilities.
 .B SIGINT
 and
 .B SIGTERM
-stop the daemon after its sessions close.
+stop the daemon after its sessions close, followed by removal of owned
+TUN networking.
 Modules receive
 .BR SIGTERM ,
 then
@@ -144,6 +128,17 @@ to their next transfer.
 An invalid store is refused and the previous credentials stay in force.
 TLS material, the admission key and egress lists are read only at
 startup, and a changed admission key is refused.
+.B SIGPIPE
+is ignored.
+.SH EXIT STATUS
+Zero indicates successful help, version or validation output, or
+shutdown requested by a handled signal with successful cleanup.
+Exit status 1 indicates a runtime or internal failure.
+Exit status 2 indicates invalid arguments, configuration or startup
+prerequisites.
+Diagnostics go to standard error; help and version output go to standard
+output.
+Argument errors also print usage on standard error.
 .SH EXAMPLES
 Validate an existing server kit, then start its configured listeners:
 .PP

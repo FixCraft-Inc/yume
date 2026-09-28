@@ -10,7 +10,8 @@ man-source:  YUME 0.3.0-dev1
 man-manual:  YUME Manual
 ---
 @synopsis
-**yume** **--config** *path* [ **--validate** ]
+**yume** **--config** *path* [ **--validate** ] [ **--connect** *ip* ]
+[ **--socks-address** *ip* ] [ **--socks-port** *port* ]
 **yume** **--version**
 **yume** **--help**
 @end
@@ -30,7 +31,48 @@ interface and owns its addresses, routes and optional per-link DNS. The client
 is not yet qualified for production. Check **docs/IMPLEMENTATION_STATUS.md**
 before deployment.
 
+## OPTIONS
+
 @include shared/native_cli.part
+
+Each run setting replaces one configuration key for this run only and passes
+the same checks as the file's value. An error names the key's JSON pointer and
+says that the value came from the command line. No run setting can change the
+wire image, authentication, encryption, admission, destination policy or leak
+protection. **--validate** prints every key a run setting can replace, with its
+value and whether it came from the configuration or a flag.
+
+@options
+@opt **--connect** *ip*
+@cli spell: --connect <ip>
+@cli help: Dial this IP address instead of the host
+
+Dial this IP literal instead of resolving the configured host, as
+**endpoint.connect_address** does. The TLS server name stays the configured
+host, and TLS and admission still authenticate it. Through a configured SOCKS5
+upstream proxy, the proxy connects to this address.
+@opt **--socks-address** *ip*
+@cli spell: --socks-address <ip>
+@cli help: Listen for SOCKS5 on 127.0.0.1 or ::1
+
+Set the listen address of the configuration's only SOCKS5 adapter. The
+configuration's rule applies: 127.0.0.1 or ::1.
+@opt **--socks-port** *port*
+@cli spell: --socks-port <port>
+@cli help: Listen for SOCKS5 on this port
+
+Set the listen port of the configuration's only SOCKS5 adapter, 1 to 65535.
+@end
+
+@include shared/native_configuration.part
+
+## SIGNALS
+
+**SIGINT** and **SIGTERM** request shutdown of listeners and sessions, followed
+by removal of owned TUN networking.
+**SIGPIPE** is ignored.
+
+@include shared/native_exit_status.part
 
 ## EXAMPLES
 

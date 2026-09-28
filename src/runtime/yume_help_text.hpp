@@ -13,7 +13,7 @@ namespace yume::runtime::yume_cli {
 
 inline constexpr char kHelpBody[] =
     "Usage:\n"
-    "  yume --config <path> [--validate]\n"
+    "  yume --config <path> [--validate] [run settings]\n"
     "  yume --version\n"
     "  yume --help\n"
     "\n"
@@ -23,7 +23,12 @@ inline constexpr char kHelpBody[] =
     "  --version                Print local versions and provider information\n"
     "  -h, --help               Print this help and exit\n"
     "\n"
-    "Network and security policy come only from the schema-1 configuration.\n"
+    "Run settings:\n"
+    "  --connect <ip>           Dial this IP address instead of the host\n"
+    "  --socks-address <ip>     Listen for SOCKS5 on 127.0.0.1 or ::1\n"
+    "  --socks-port <port>      Listen for SOCKS5 on this port\n"
+    "\n"
+    "Security policy comes only from the schema-1 configuration.\n"
     "This development runtime is not qualified for production use.\n";
 
 }  // namespace yume::runtime::yume_cli

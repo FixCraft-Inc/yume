@@ -95,8 +95,9 @@ build/bin/yumed --version
 For other hosts, provision a kit for the endpoint's DNS name and move each
 client bundle through an authenticated channel. Keep the offline CA private
 material off the server. Run doctor and `--validate` as the identity that will
-run the program. Configuration and security policy have no command-line
-overrides.
+run the program. Security policy has no command-line overrides. The client's
+run settings, listed in `yume --help`, change only the address it dials and
+its SOCKS5 listener.
 
 [The native development guide](development/ytp1/README.md) owns detailed
 credential, managed Linux TUN, packet policy, reconnect and embedding guidance.

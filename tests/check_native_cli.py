@@ -91,6 +91,50 @@ class NativeCli(unittest.TestCase):
                 with self.subTest(binary=name, arguments=values):
                     self.assert_usage_failure(name, values, f"unknown argument: {values[0]}")
 
+    def test_only_the_client_takes_run_settings(self) -> None:
+        for flag in ("--connect", "--socks-address", "--socks-port"):
+            with self.subTest(flag=flag):
+                self.assert_usage_failure("yumed", [flag, "1"], f"unknown argument: {flag}")
+
+    def test_run_settings_take_exactly_one_value(self) -> None:
+        for flag, value in (("--connect", "IP address"), ("--socks-address", "IP address"),
+                            ("--socks-port", "port")):
+            for arguments in ([flag], ["--config", "client.json", flag, "1", flag, "2"]):
+                with self.subTest(arguments=arguments):
+                    self.assert_usage_failure("yume", arguments, f"{flag} needs exactly one {value}")
+
+    def validate_example(self, *flags: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory(prefix="yume-cli-") as temporary:
+            path = Path(temporary) / "yume.json"
+            path.write_text((ROOT / "config/yume.json").read_text(encoding="utf-8"), encoding="utf-8")
+            return self.invoke("yume", "--config", str(path), "--validate", *flags)
+
+    def test_a_run_setting_fails_at_its_key(self) -> None:
+        cases = (
+            (["--connect", "origin.example.com"], "/endpoint/connect_address", "IP literal"),
+            (["--socks-address", "0.0.0.0"], "/adapters/0/listen_address", "127.0.0.1 or ::1"),
+            (["--socks-port", "65536"], "/adapters/0/listen_port", ""),
+        )
+        for flags, pointer, detail in cases:
+            with self.subTest(flags=flags):
+                result = self.validate_example(*flags)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn(f'JSON pointer "{pointer}"', result.stderr)
+                self.assertIn(f"{detail} (set on the command line)", result.stderr)
+
+    def test_validation_reports_where_each_run_setting_came_from(self) -> None:
+        # The example's credential files are absent, so validation fails after
+        # the report, before any file is read as a credential.
+        result = self.validate_example("--connect", "192.0.2.7", "--socks-port", "1081")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertTrue(result.stderr.startswith(
+            "yume: /endpoint/connect_address 192.0.2.7 (from --connect)\n"
+            "yume: /adapters/0/listen_address 127.0.0.1 (from the configuration)\n"
+            "yume: /adapters/0/listen_port 1081 (from --socks-port)\n"
+            "yume: credentials are invalid: "), result.stderr)
+
     def test_metadata_flags_do_not_hide_unknown_arguments(self) -> None:
         for name in PROGRAMS:
             for flag in ("--help", "--version"):

@@ -6,7 +6,7 @@ namespace: yume::runtime::yume_cli
 output-kind: static-help
 ---
 @usage
-yume --config <path> [--validate]
+yume --config <path> [--validate] [run settings]
 yume --version
 yume --help
 @end
@@ -17,8 +17,13 @@ yume --help
 --version
 -h
 
+@section Run settings
+--connect
+--socks-address
+--socks-port
+
 @gap
 @note
-Network and security policy come only from the schema-1 configuration.
+Security policy comes only from the schema-1 configuration.
 This development runtime is not qualified for production use.
 @end

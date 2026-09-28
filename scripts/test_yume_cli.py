@@ -340,11 +340,15 @@ class Tracked(unittest.TestCase):
         self.assertEqual(sorted(item.binary for item in self.layouts), ["yume", "yumed"])
 
     def test_native_help_has_exactly_the_parser_options(self) -> None:
+        # native_cli.cpp's parser and kRunFlags, which only the client accepts.
+        shared = {"--config", "--validate", "--version", "--help", "-h"}
+        expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port"},
+                    "yumed": shared}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):
                 ordered, _ = yume_cli.resolve(layout)
                 self.assertEqual({flag for entry in ordered for flag in entry.flags},
-                                 {"--config", "--validate", "--version", "--help", "-h"})
+                                 expected[layout.binary])
                 self.assertEqual(layout.output_kind, "static-help")
 
     def test_every_generated_header_is_current(self) -> None:

@@ -32,7 +32,11 @@ The daemon is not yet qualified for production, and relay and federation
 are not yet available. Check **docs/IMPLEMENTATION_STATUS.md** before
 deployment.
 
+## OPTIONS
+
 @include shared/native_cli.part
+
+@include shared/native_configuration.part
 
 ## COVER AND ADMISSION
 
@@ -53,8 +57,9 @@ Module programs run as the daemon's user without capabilities.
 
 ## SIGNALS
 
-**SIGINT** and **SIGTERM** stop the daemon after its sessions close. Modules
-receive **SIGTERM**, then **SIGKILL** after five seconds.
+**SIGINT** and **SIGTERM** stop the daemon after its sessions close, followed
+by removal of owned TUN networking. Modules receive **SIGTERM**, then
+**SIGKILL** after five seconds.
 **SIGHUP** reloads the authorized and admin key stores and the server's
 composite and ML-KEM keys without dropping other clients. Sessions of removed
 identities, or beyond a lowered per-identity **max_sessions**, end. Established
@@ -63,6 +68,9 @@ their next transfer. An invalid store is
 refused and the previous credentials stay in force. TLS material, the
 admission key and egress lists are read only at startup, and a changed
 admission key is refused.
+**SIGPIPE** is ignored.
+
+@include shared/native_exit_status.part
 
 ## EXAMPLES
 

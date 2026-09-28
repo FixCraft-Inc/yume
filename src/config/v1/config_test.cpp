@@ -12,6 +12,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -527,6 +528,82 @@ void TestClientSocks5Proxy() {
     document = ServerDocument();
     document["endpoint"]["socks5_proxy"] = {{"address", "127.0.0.1"}, {"port", 1080}};
     ExpectError(document, pointer, "unknown key");
+}
+
+void ExpectRunError(const Json& document, const RunSettings& run,
+                    std::string_view pointer, std::string_view detail) {
+    try {
+        (void)ParseJson(document.dump(), run);
+    } catch (const ValidationError& error) {
+        if (error.json_pointer() != pointer ||
+            error.detail().find(detail) == std::string::npos) {
+            TestFailure("expected a run setting error at '" +
+                        std::string(pointer) + "', got '" +
+                        error.json_pointer() + "': " + error.detail());
+        }
+        return;
+    }
+    TestFailure("an invalid run setting was accepted at " +
+                std::string(pointer));
+}
+
+// Command-line values replace one key each before validation, fail at that
+// key's pointer with a note, and leave the file's own first error and a
+// server document alone.
+void TestRunSettings() {
+    RunSettings run;
+    run.connect_address = "192.0.2.7";
+    run.socks5_listen_address = "::1";
+    run.socks5_listen_port = "1081";
+    const Config config = ParseJson(ClientDocument().dump(), run);
+    Check(std::get<ClientEndpoint>(config.endpoint()).connect_address() ==
+              std::optional<std::string>("192.0.2.7"),
+          "the connect address run setting was not applied");
+    const auto& socks5 = std::get<Socks5Adapter>(config.adapters().at(0));
+    Check(socks5.listen_address() == "::1" && socks5.listen_port() == 1081,
+          "the SOCKS5 run settings were not applied");
+    Check(
+        !std::get<ClientEndpoint>(ParseJson(ClientDocument().dump()).endpoint())
+             .connect_address(),
+        "a run setting applied without a value");
+
+    RunSettings host;
+    host.connect_address = "origin.example.com";
+    ExpectRunError(ClientDocument(), host, "/endpoint/connect_address",
+                   "IP literal (set on the command line)");
+    RunSettings wildcard;
+    wildcard.socks5_listen_address = "0.0.0.0";
+    ExpectRunError(ClientDocument(), wildcard, "/adapters/0/listen_address",
+                   "127.0.0.1 or ::1 (set on the command line)");
+    for (const char* port :
+         {"0", "65536", "99999", "http", "", "1080x", "123456"}) {
+        RunSettings bad;
+        bad.socks5_listen_port = port;
+        ExpectRunError(ClientDocument(), bad, "/adapters/0/listen_port",
+                       "(set on the command line)");
+    }
+
+    RunSettings port;
+    port.socks5_listen_port = "1081";
+    Json none = ClientDocument();
+    none["adapters"] = Json::array();
+    ExpectRunError(none, port, "/adapters", "needs a socks5 adapter");
+    Json two = ClientDocument();
+    two["adapters"].push_back({{"kind", "socks5"},
+                               {"service", "tcp"},
+                               {"listen_address", "127.0.0.1"},
+                               {"listen_port", 1082}});
+    ExpectRunError(two, port, "/adapters", "exactly one socks5 adapter");
+    two["schema"] = 2;
+    ExpectRunError(two, port, "/schema", "");
+    Json misspelled = ClientDocument();
+    misspelled["endpoint"]["hots"] = "origin.example.com";
+    ExpectRunError(misspelled, host, "/endpoint/hots", "unknown key");
+
+    RunSettings everything = run;
+    const Config server = ParseJson(ServerDocument().dump(), everything);
+    Check(server.role() == Role::Server,
+          "run settings changed a server document");
 }
 
 void TestMandatorySuite() {
@@ -1372,6 +1449,7 @@ int main(int argc, char** argv) {
         TestEndpointValidation();
     TestClientConnectAddress();
     TestClientSocks5Proxy();
+        TestRunSettings();
         TestMandatorySuite();
         TestCredentialReferences();
         TestCoverValidation();

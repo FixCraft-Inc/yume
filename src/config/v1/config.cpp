@@ -1332,7 +1332,9 @@ Config Parse(const nlohmann::json& document) {
                   std::move(services), std::move(adapters), std::move(limits));
 }
 
-Config ParseJson(std::string_view text) {
+namespace {
+
+Json ReadBoundedDocument(std::string_view text) {
     if (text.size() > kMaxDocumentBytes) {
         Fail("", "document exceeds the 1 MiB limit");
     }
@@ -1407,7 +1409,91 @@ Config ParseJson(std::string_view text) {
         if (error.id != 406) throw;
         Fail("", "JSON number exceeds the supported range");
     }
-    return Parse(document);
+    return document;
+}
+
+bool IsSocks5Adapter(const Json& adapter) {
+    if (!adapter.is_object()) return false;
+    const auto kind = adapter.find("kind");
+    return kind != adapter.end() && kind->is_string() &&
+           kind->get_ref<const std::string&>() == "socks5";
+}
+
+struct AppliedRunSettings final {
+    std::vector<std::string> pointers;
+    // Why a SOCKS5 setting found no single adapter. Reported only once the
+    // file itself parses, so the file's own first error keeps precedence.
+    std::optional<std::string> unresolved;
+};
+
+AppliedRunSettings ApplyRunSettings(Json& document, const RunSettings& run) {
+    AppliedRunSettings applied;
+    if (!document.is_object()) return applied;
+    const auto role = document.find("role");
+    if (role == document.end() || !role->is_string() ||
+        role->get_ref<const std::string&>() != "client") {
+        return applied;
+    }
+    if (run.connect_address) {
+        const auto endpoint = document.find("endpoint");
+        if (endpoint != document.end() && endpoint->is_object()) {
+            (*endpoint)["connect_address"] = *run.connect_address;
+            applied.pointers.emplace_back("/endpoint/connect_address");
+        }
+    }
+    if (!run.socks5_listen_address && !run.socks5_listen_port) return applied;
+    const auto adapters = document.find("adapters");
+    if (adapters == document.end() || !adapters->is_array()) return applied;
+    std::optional<std::size_t> socks5;
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < adapters->size(); ++index) {
+        if (!IsSocks5Adapter((*adapters)[index])) continue;
+        socks5 = index;
+        ++count;
+    }
+    if (count != 1U) {
+        applied.unresolved = count == 0U
+                                 ? "a SOCKS5 setting from the command line "
+                                   "needs a socks5 adapter"
+                                 : "a SOCKS5 setting from the command line "
+                                   "needs exactly one socks5 adapter";
+        return applied;
+    }
+    auto& adapter = (*adapters)[*socks5];
+    const std::string pointer = IndexPointer("/adapters", *socks5);
+    if (run.socks5_listen_address) {
+        adapter["listen_address"] = *run.socks5_listen_address;
+        applied.pointers.push_back(JoinPointer(pointer, "listen_address"));
+    }
+    if (run.socks5_listen_port) {
+        const auto& text = *run.socks5_listen_port;
+        const bool decimal = !text.empty() && text.size() <= 5U &&
+                             std::all_of(text.begin(), text.end(), [](char ch) {
+                                 return ch >= '0' && ch <= '9';
+                             });
+        adapter["listen_port"] = decimal ? Json(std::stoul(text)) : Json(text);
+        applied.pointers.push_back(JoinPointer(pointer, "listen_port"));
+    }
+    return applied;
+}
+
+}  // namespace
+
+Config ParseJson(std::string_view text, const RunSettings& run) {
+    Json document = ReadBoundedDocument(text);
+    const AppliedRunSettings applied = ApplyRunSettings(document, run);
+    try {
+        Config config = Parse(document);
+        if (applied.unresolved) Fail("/adapters", *applied.unresolved);
+        return config;
+    } catch (const ValidationError& error) {
+        if (std::find(applied.pointers.begin(), applied.pointers.end(),
+                      error.json_pointer()) == applied.pointers.end()) {
+            throw;
+        }
+        throw ValidationError(error.json_pointer(),
+                              error.detail() + " (set on the command line)");
+    }
 }
 
 }  // namespace yume::config::v1

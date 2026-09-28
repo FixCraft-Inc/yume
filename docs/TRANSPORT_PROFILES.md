@@ -50,17 +50,25 @@ the installed production HTTP/1 cover backend. Changing it requires new
 matched captures and must not silently rewrite the existing
 `chrome151-node24-v1` evidence claim.
 
-The capture script for the YUME arm, `tools/cover-node/capture_yume151_runs.sh`,
-still drives the transport-v2 client and its `--outer-carrier-evidence`
-option with a one-tunnel workload of 64 ordered 16-KiB messages echoed
-byte-for-byte. Native `yume` has no evidence option yet. The H2 carrier can
-record an `OuterCarrierTrace`, but no runtime passes it one, so the YUME arm
-cannot be captured until a native evidence path exists. The comparison rules
-stay the same for that path. The behavior summary comes from bounded live
-carrier events, and the registry only validates and redacts expected
-metadata, never fabricating observed events. The observer reports the actual
-outer WebSocket geometry, so the classifier may correctly return `DRIFT`. The
-stable classifier projection keeps ordered request and WebSocket lifecycle.
+`yume --outer-carrier-evidence PATH` writes the YUME arm's behavior report
+from its first carrier's `OuterCarrierTrace` when the run ends
+(`runtime/outer_carrier_evidence.*`). The capture script for the YUME arm,
+`tools/cover-node/capture_yume151_runs.sh`, starts `yumed` and `yume` from
+one exact-commit release bundle with a kit that
+`scripts/yume_carrier_workload.py configure-kit` prepared, puts the TLS wire
+relay between them, and has that script drive the workload through yume's
+SOCKS5 port: 64 16-KiB messages to an echo target behind `yumed`, echoed
+byte for byte, then the stream closes, the tunnel idles 42 seconds and a
+SIGTERM closes `yume`. Each run keeps `behavior.json`, `tls-wire.json` and
+the driver's `workload.json`. `yume` carries whatever its applications send,
+so the driver's result, not the carrier report, binds the application
+volume. The browser arm must use the kit's server certificate and key so both
+arms terminate with the same certificate. The behavior summary comes from
+bounded live carrier events, and the registry only validates and redacts
+expected metadata, never fabricating observed events. The observer reports
+the actual outer WebSocket geometry, so the classifier may correctly return
+`DRIFT`. The stable classifier projection keeps ordered request and WebSocket
+lifecycle.
 The YUME carrier reproduces normal Chrome's stream-9 favicon request, while the
 server's PING-before-first-fragment relationship is compared even though the
 YUME server does not reproduce it.

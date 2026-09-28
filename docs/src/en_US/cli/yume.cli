@@ -6,7 +6,7 @@ namespace: yume::runtime::yume_cli
 output-kind: static-help
 ---
 @usage
-yume --config <path> [--validate] [run settings]
+yume --config <path> [--validate] [run settings] [evidence]
 yume --version
 yume --help
 @end
@@ -21,6 +21,9 @@ yume --help
 --connect
 --socks-address
 --socks-port
+
+@section Evidence
+--outer-carrier-evidence
 
 @gap
 @note

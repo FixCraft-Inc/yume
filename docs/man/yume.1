@@ -21,6 +21,11 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 .I port
 ]
 .PP
+[
+.B --outer-carrier-evidence
+.I path
+]
+.PP
 .B yume
 .B --version
 .PP
@@ -107,6 +112,25 @@ The configuration's rule applies: 127.0.0.1 or ::1.
 .BI "--socks-port " port
 Set the listen port of the configuration's only SOCKS5 adapter, 1 to
 65535.
+.PP
+The evidence option observes the run and changes nothing on the wire.
+.TP
+.BI "--outer-carrier-evidence " path
+When the run ends, write a report on the first connection's HTTP/2 and
+WebSocket carrier to
+.IR path ,
+for comparison with the captured browser session.
+The report holds frame types, sizes, header names with pinned or
+redacted values, and timing.
+It holds no payload, key, address or admission value.
+.I path
+must be absolute, in a directory this user owns that is not group or
+world writable and not inside a Git worktree, and must not exist.
+The file is created with mode 0600 when the run starts.
+The exit status is 1 when the report is incomplete, for example when the
+session never closed gracefully.
+.B --validate
+does not accept this option.
 .SH CONFIGURATION
 The configuration owns endpoint addresses, exact suite, credential file
 references, cover profile, services, adapters and resource limits.

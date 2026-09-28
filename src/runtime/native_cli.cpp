@@ -34,6 +34,7 @@
 #include "runtime/native_egress_policy.hpp"
 #include "runtime/native_run_loop.hpp"
 #include "runtime/native_server_runtime.hpp"
+#include "runtime/outer_carrier_evidence.hpp"
 #include "runtime/yume_help_text.hpp"
 #include "runtime/yumed_help_text.hpp"
 
@@ -52,6 +53,7 @@ constexpr std::string_view kSelfHelperProgram = "/proc/self/exe";
 
 struct Arguments final {
     std::optional<std::filesystem::path> config;
+    std::optional<std::filesystem::path> outer_carrier_evidence;
     config::v1::RunSettings run;
     bool validate{false};
     bool version{false};
@@ -144,6 +146,14 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
                 return std::nullopt;
             }
             arguments.config = std::filesystem::path(argv[++index]);
+        } else if (role == NativeCliRole::Client &&
+                   argument == "--outer-carrier-evidence") {
+            if (index + 1 >= argc || arguments.outer_carrier_evidence) {
+                error = "--outer-carrier-evidence needs exactly one path";
+                return std::nullopt;
+            }
+            arguments.outer_carrier_evidence =
+                std::filesystem::path(argv[++index]);
         } else if (argument == "--validate") {
             arguments.validate = true;
         } else if (argument == "--version") {
@@ -157,6 +167,10 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
     }
     if (!arguments.help && !arguments.version && !arguments.config) {
         error = "--config is required";
+        return std::nullopt;
+    }
+    if (arguments.validate && arguments.outer_carrier_evidence) {
+        error = "--outer-carrier-evidence needs a run, not --validate";
         return std::nullopt;
     }
     return arguments;
@@ -272,7 +286,19 @@ int validate(NativeCliRole role, const config::v1::Config& config,
 }
 
 int serve(NativeCliRole role, const config::v1::Config& config,
-          const std::filesystem::path& base) {
+          const std::filesystem::path& base,
+          const std::optional<std::filesystem::path>& evidence_path) {
+    // The evidence file is reserved before anything connects, so a bad path
+    // fails the run instead of a finished session.
+    std::unique_ptr<OuterCarrierEvidence> evidence;
+    if (evidence_path) {
+        std::string error;
+        evidence = OuterCarrierEvidence::reserve(*evidence_path, error);
+        if (!evidence) {
+            say(role, error);
+            return kExitUsage;
+        }
+    }
     auto created = providers::AsioExecutionContext::create(engine::ExecutorAffinity(0x5954503152554e31ULL));
     if (!created.ok()) {
         say(role, describe("execution context unavailable", created.status()));
@@ -356,6 +382,8 @@ int serve(NativeCliRole role, const config::v1::Config& config,
             }
             NativeClientRuntimeOptions client_options;
             client_options.resolver_program = std::string(kSelfHelperProgram);
+            if (evidence)
+                client_options.outer_carrier_trace = evidence->trace();
             auto runtime = NativeClientRuntime::create(context, config, base,
                 [role](std::string_view text) { say(role, text); }, std::move(client_options),
                 [&](Status status) noexcept {
@@ -398,6 +426,13 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         say(role, "runner exception, stopping");
         stop(kExitFailure);
     });
+    if (evidence) {
+        std::string error;
+        if (!evidence->finalize(exit_code == kExitStopped, error)) {
+            say(role, error);
+            if (exit_code == kExitStopped) exit_code = kExitFailure;
+        }
+    }
     return exit_code;
 }
 
@@ -437,7 +472,8 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
         const auto base = std::filesystem::absolute(*arguments->config).parent_path();
         return arguments->validate
                    ? validate(role, *config, arguments->run, base)
-                   : serve(role, *config, base);
+                   : serve(role, *config, base,
+                           arguments->outer_carrier_evidence);
     } catch (const std::exception& thrown) {
         say(role, thrown.what());
     } catch (...) {

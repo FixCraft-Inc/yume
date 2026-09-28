@@ -739,6 +739,16 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     yume_prepare_static_for_shared_abi(yume_module_launcher)
     yume_assert_exact_link_dependencies(yume_module_launcher yume_process_privileges)
 
+    # yume --outer-carrier-evidence writes this report about its carrier.
+    add_library(yume_outer_carrier_evidence STATIC
+        runtime/outer_carrier_evidence.cpp runtime/outer_carrier_evidence.hpp)
+    target_include_directories(yume_outer_carrier_evidence PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_outer_carrier_evidence
+        PUBLIC yume_h2_carrier PRIVATE yume_cover_profile nlohmann_json::nlohmann_json)
+    yume_apply_perf_opts(yume_outer_carrier_evidence)
+    yume_assert_exact_link_dependencies(yume_outer_carrier_evidence
+        yume_h2_carrier yume_cover_profile nlohmann_json::nlohmann_json)
+
     # One application composition owns the normal client and daemon.
     if(TARGET yume_asio_direct_route_provider)
         add_library(yume_native_runtime STATIC
@@ -760,7 +770,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
                 yume_system_resolver yume_system_resolver_helper
                 yume_child_process yume_module_launcher
                 yume_direct_route_handler yume_openssl_security_provider yume_bounded_files ${_yume_native_network_libraries}
-                Boost::system)
+                yume_outer_carrier_evidence Boost::system)
         yume_apply_perf_opts(yume_native_runtime)
         yume_assert_exact_link_dependencies(yume_native_runtime
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context
@@ -769,7 +779,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             yume_system_resolver yume_system_resolver_helper
             yume_child_process yume_module_launcher
             yume_direct_route_handler yume_openssl_security_provider yume_bounded_files ${_yume_native_network_libraries}
-            Boost::system)
+            yume_outer_carrier_evidence Boost::system)
         # The example module. It links nothing of YUME.
         add_executable(yume-echo-module modules/echo/echo_module.cpp)
         target_link_libraries(yume-echo-module PRIVATE Threads::Threads)
@@ -1597,6 +1607,14 @@ if(YUME_BUILD_TESTING)
             TIMEOUT 120 LABELS "foundation;0.3;native-runtime")
     endif()
     if(TARGET yume_native_runtime)
+        add_executable(yume_outer_carrier_evidence_test runtime/outer_carrier_evidence_test.cpp)
+        target_link_libraries(yume_outer_carrier_evidence_test PRIVATE
+            yume_outer_carrier_evidence yume_h2_carrier yume_cover_profile
+            nlohmann_json::nlohmann_json)
+        yume_apply_perf_opts(yume_outer_carrier_evidence_test)
+        add_test(NAME yume_outer_carrier_evidence_test COMMAND yume_outer_carrier_evidence_test)
+        set_tests_properties(yume_outer_carrier_evidence_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
         add_executable(yume_native_run_loop_test runtime/native_run_loop_test.cpp)
         target_link_libraries(yume_native_run_loop_test PRIVATE yume_asio_execution_context)
         yume_apply_perf_opts(yume_native_run_loop_test)
@@ -1955,10 +1973,12 @@ if(YUME_BUILD_TESTING)
             "yume_bench_resources_test;scripts/test_yume_bench_resources.py"
             "yume_classifier_evidence_test;scripts/test_yume_classifier_evidence.py"
             "yume_classifier_gate_test;scripts/test_yume_classifier_gate.py"
+            "yume_classifier_features_test;scripts/test_yume_classifier_features.py"
             "yume_constrained_host_test;scripts/test_yume_constrained_host.py"
             "yume_capture_manifest_test;scripts/test_yume_capture_manifest.py"
             "yume_capture_binary_provenance_test;scripts/test_yume_capture_binary_provenance.py"
             "yume_capture_finalize_test;scripts/test_yume_capture_finalize.py"
+            "yume_carrier_workload_test;scripts/test_yume_carrier_workload.py"
             "yume_diagrams_test;scripts/test_yume_diagrams.py")
         list(GET _yume_tool_test 0 _yume_tool_test_name)
         list(GET _yume_tool_test 1 _yume_tool_test_script)

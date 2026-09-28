@@ -60,6 +60,21 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   the file layout and always derives the key with Argon2id. Passwords that
   start with `file://` or `password://` are now refused, where transport v2
   let BaseFWX read the first from a file.
+- **Outer-carrier evidence.** `yume --outer-carrier-evidence PATH` writes a
+  payload-free report on its first connection's HTTP/2 and WebSocket carrier
+  when the run ends: frame types and sizes, pinned or redacted header
+  values, timing, the quiet interval before the close and the close itself.
+  It is the YUME arm's input to the classifier comparison with the captured
+  browser, ported from transport v2 without its benchmark mode.
+- **Native YUME capture arm.** `tools/cover-node/capture_yume151_runs.sh`
+  captures native `yume` and `yumed` from one release bundle, and
+  `scripts/yume_carrier_workload.py` runs the frozen workload through yume's
+  SOCKS5 port where the browser arm runs a page script. The classifier-input
+  validator takes the YUME arm's application volume from the driver's
+  measured result and no longer requires a GOAWAY that the browser capture
+  never recorded. The TLS relay now also records each record's time, type and
+  length, and `scripts/yume_classifier_features.py` turns that timeline into
+  the classifier gate's feature document.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

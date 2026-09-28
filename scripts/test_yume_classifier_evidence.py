@@ -189,17 +189,33 @@ class ClassifierEvidenceTest(unittest.TestCase):
             final=True, masked=close["client_masked"],
             payload_bytes=close["payload_bytes"],
             h2_ping_immediately_before=True)
-        add("h2-frame", "sent", "connection", elapsed, h2_type=7, flags=0,
-            stream_id=0, length=8, error_code=0)
-        add("close-wire", "sent", "carrier", elapsed, completed=True)
         add("h2-frame", "received", "connection", elapsed, h2_type=6, flags=1,
             stream_id=0, length=8, is_ack=True, unique_id=1)
-        add("h2-frame", "received", "carrier", elapsed, h2_type=0, flags=0,
+        add("h2-frame", "received", "carrier", elapsed, h2_type=0, flags=1,
             stream_id=7, length=20)
         add("websocket-frame", "received", "carrier", elapsed, opcode=8,
             final=True, masked=close["server_masked"],
             payload_bytes=close["payload_bytes"])
+        # Native yume sends no GOAWAY and records the close complete once the
+        # echo arrived and the connection ended.
+        add("close-wire", "sent", "carrier", elapsed, completed=True)
         return events
+
+    @staticmethod
+    def _workload() -> dict[str, object]:
+        return {
+            "schema": 1,
+            "workload_id": EXPECTED_WORKLOAD_MANIFEST["id"],
+            "workload_sha256": EXPECTED_WORKLOAD_MANIFEST["sha256"],
+            "application_bytes_each_direction": 1048576,
+            "echoed_bytes": 1048576,
+            "client_messages": 64,
+            "message_bytes": 16384,
+            "stream_closed_before_idle": True,
+            "transfer_ms": 250,
+            "settle_ms": 1000,
+            "idle_ms": 42000,
+        }
 
     @staticmethod
     def _write_checksums(directory: Path, names: list[str]) -> None:
@@ -227,7 +243,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
             names = [
                 name
                 for name in ("netlog.json", "sanitized.json", "behavior.json",
-                             "tls-wire.json")
+                             "tls-wire.json", "workload.json")
                 if (run / name).is_file()
             ]
             self._write_checksums(run, names)
@@ -311,9 +327,11 @@ class ClassifierEvidenceTest(unittest.TestCase):
         else:
             environment["node_sha256"] = PINNED_NODE_BINARY_SHA256
             environment["yume_binary_sha256"] = "c" * 64
+            environment["yumed_binary_sha256"] = "d" * 64
             environment["tls_backend"] = tls_backend
             environment["release_bundle_sha256"] = "f" * 64
             environment["client_config_sha256"] = "0" * 64
+            environment["server_config_sha256"] = "1" * 64
             environment["tls_leaf_sha256"] = "e" * 64
         (arm / "server.crt").write_bytes(certificate)
         (arm / "environment.json").write_text(json.dumps(environment))
@@ -326,6 +344,8 @@ class ClassifierEvidenceTest(unittest.TestCase):
             behavior.setdefault("observations", {})["outer_events"] = (
                 self._synthetic_live_outer_events(behavior)
             )
+            # The carrier report leaves the application volume to the driver.
+            behavior["websocket_fixture"]["application_bytes_each_direction"] = None
         for index in range(1, 6):
             run = arm / f"run-{index:02d}"
             run.mkdir()
@@ -336,6 +356,8 @@ class ClassifierEvidenceTest(unittest.TestCase):
                 (run / filename).write_text(json.dumps(behavior))
             if normal:
                 (run / "netlog.json").write_text("opaque fixture\n")
+            else:
+                (run / "workload.json").write_text(json.dumps(self._workload()))
         self._seal_arm(arm)
         return arm
 
@@ -817,6 +839,67 @@ class ClassifierEvidenceTest(unittest.TestCase):
             )
             self.assertEqual(report["verdict"], "PARITY")
 
+    def _mutate_yume_runs(self, root: Path, mutate) -> dict[str, object]:
+        normal = self._make_arm(root, "normal", normal=True, certificate=b"cert")
+        yume = self._make_arm(root, "yume", normal=False, certificate=b"cert")
+        for index in range(1, 6):
+            run = yume / f"run-{index:02d}"
+            mutate(run)
+        self._seal_arm(yume)
+        return analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
+
+    def test_driver_workload_binds_the_yume_volume(self) -> None:
+        def rewrite(field: str, value: object):
+            def mutate(run: Path) -> None:
+                workload = json.loads((run / "workload.json").read_text())
+                workload[field] = value
+                (run / "workload.json").write_text(json.dumps(workload))
+            return mutate
+
+        for field, value in (
+            ("echoed_bytes", 1048575),
+            ("application_bytes_each_direction", 16384),
+            ("workload_sha256", "0" * 64),
+            ("stream_closed_before_idle", False),
+            ("idle_ms", 1000),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                report = self._mutate_yume_runs(Path(tmp), rewrite(field, value))
+                self.assertEqual(report["verdict"], "DRIFT")
+                self.assertIn("workload.yume.run-01",
+                              {item["field"] for item in report["findings"]})
+
+    def test_carrier_report_cannot_claim_the_volume(self) -> None:
+        def mutate(run: Path) -> None:
+            behavior = json.loads((run / "behavior.json").read_text())
+            behavior["websocket_fixture"]["application_bytes_each_direction"] = 1048576
+            (run / "behavior.json").write_text(json.dumps(behavior))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._mutate_yume_runs(Path(tmp), mutate)
+        self.assertEqual(report["verdict"], "DRIFT")
+        self.assertTrue(any("claims an application volume" in item["detail"]
+                            for item in report["findings"]))
+
+    def test_close_wire_before_the_echo_is_drift(self) -> None:
+        def mutate(run: Path) -> None:
+            behavior = json.loads((run / "behavior.json").read_text())
+            events = behavior["observations"]["outer_events"]
+            close_wire = next(event for event in events if event["kind"] == "close-wire")
+            events.remove(close_wire)
+            sent_close = next(
+                index for index, event in enumerate(events)
+                if event["kind"] == "websocket-frame" and event["direction"] == "sent"
+                and event["opcode"] == 8)
+            events.insert(sent_close + 1, close_wire)
+            (run / "behavior.json").write_text(json.dumps(behavior))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = self._mutate_yume_runs(Path(tmp), mutate)
+        self.assertEqual(report["verdict"], "DRIFT")
+        self.assertTrue(any("idle/terminal observations" in item["detail"]
+                            for item in report["findings"]))
+
     def test_unbound_live_terminal_sequence_is_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1065,9 +1148,6 @@ class ClassifierEvidenceTest(unittest.TestCase):
             and event.get("direction") == "sent"
             and event.get("h2_type") == 0x08
             and event.get("stream_id") == 0,
-            lambda event: event.get("kind") == "h2-frame"
-            and event.get("direction") == "sent"
-            and event.get("h2_type") == 0x07,
             lambda event: event.get("kind") == "idle-interval",
             lambda event: event.get("kind") == "close-wire",
         )
@@ -1107,8 +1187,6 @@ class ClassifierEvidenceTest(unittest.TestCase):
             lambda event: event.get("direction") == "sent"
             and event.get("h2_type") == 0x06
             and not event.get("flags", 0) & 0x01,
-            lambda event: event.get("direction") == "sent"
-            and event.get("h2_type") == 0x07,
         )
         for selector_index, selector in enumerate(malformed_lengths):
             with (

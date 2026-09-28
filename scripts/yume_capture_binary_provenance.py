@@ -55,12 +55,15 @@ def _sha256(path: pathlib.Path) -> str:
 def validate_capture_binaries(
     bundle: pathlib.Path,
     yume: pathlib.Path,
+    yumed: pathlib.Path,
     commit: str,
-) -> str:
+) -> tuple[str, str]:
     if not COMMIT_RE.fullmatch(commit):
         raise ProvenanceError("source commit must be exact lowercase 40-hex")
     _regular_executable(yume, "YUME binary")
+    _regular_executable(yumed, "yumed binary")
     yume_hash = _sha256(yume)
+    yumed_hash = _sha256(yumed)
     try:
         manifest = validate_bundle(
             bundle,
@@ -83,31 +86,41 @@ def validate_capture_binaries(
         raise ProvenanceError("release bundle YUME runtime entry is missing")
     if yume_entry.get("sha256") != yume_hash:
         raise ProvenanceError("YUME binary differs from the exact release bundle")
-    for entry, path, description in ((yume_entry, yume, "YUME binary"),):
+    # The bundle's manifest records the separately shipped server.
+    server_entry = manifest.get("standalone_server")
+    if not isinstance(server_entry, dict):
+        raise ProvenanceError("release bundle standalone server entry is missing")
+    if server_entry.get("sha256") != yumed_hash:
+        raise ProvenanceError("yumed binary differs from the exact release bundle")
+    for entry, path, description in (
+        (yume_entry, yume, "YUME binary"),
+        (server_entry, yumed, "yumed binary"),
+    ):
         if entry.get("size") != path.stat().st_size:
             raise ProvenanceError(f"{description} size differs from the release bundle")
         if not isinstance(entry.get("sha256"), str) or not SHA256_RE.fullmatch(
             entry["sha256"]
         ):
             raise ProvenanceError(f"{description} bundle hash is malformed")
-    return yume_hash
+    return yume_hash, yumed_hash
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, type=pathlib.Path)
     parser.add_argument("--yume", required=True, type=pathlib.Path)
+    parser.add_argument("--yumed", required=True, type=pathlib.Path)
     parser.add_argument("--source-commit", required=True)
     args = parser.parse_args()
     try:
-        yume_hash = validate_capture_binaries(
-            args.bundle, args.yume, args.source_commit
+        yume_hash, yumed_hash = validate_capture_binaries(
+            args.bundle, args.yume, args.yumed, args.source_commit
         )
     except ProvenanceError as exc:
         print(f"capture binary provenance rejected: {exc}", file=sys.stderr)
         return 1
     print(f"Capture binary provenance OK: source={args.source_commit} "
-          f"yume={yume_hash}")
+          f"yume={yume_hash} yumed={yumed_hash}")
     return 0
 
 

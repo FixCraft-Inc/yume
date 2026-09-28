@@ -548,7 +548,7 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertIn("capture output must be outside the source checkout", script)
         self.assertIn("capture output must be outside every Git worktree", script)
         self.assertIn(
-            'for non_symlink_input in "$yume_input" "$release_bundle_input"',
+            'for non_symlink_input in "$yume_input" "$yumed_input" "$release_bundle_input"',
             script,
         )
         self.assertIn("capture input must not be a symlink", script)
@@ -568,22 +568,25 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertIn("--tls-backend openssl-chrome151", script)
         self.assertIn("yume_capture_binary_provenance.py", script)
         self.assertIn('--bundle "$release_bundle"', script)
-        self.assertIn('--client-config-sha256 "$config_sha256"', script)
+        self.assertIn('--yume "$yume_bin" --yumed "$yumed_bin"', script)
+        self.assertIn('--client-config-sha256 "$client_config_sha256"', script)
+        self.assertIn('--server-config-sha256 "$server_config_sha256"', script)
         self.assertIn('openssl x509 -in "$certificate" -outform DER', script)
-        self.assertIn('--tls-pin "$tls_leaf_sha256"', script)
         self.assertIn('--tls-leaf-sha256 "$tls_leaf_sha256"', script)
-        for runtime in ("chrome_launcher", "chrome_binary", "node_bin"):
-            self.assertGreaterEqual(
-                script.count(f'sha256sum -- "${runtime}"'), 2
-            )
+        # Every pinned runtime and every input is hashed again after the runs.
+        for runtime in ("chrome_launcher", "chrome_binary", "node_bin", "yume_bin",
+                        "yumed_bin", "release_bundle", "client_config",
+                        "server_config", "certificate"):
+            self.assertIn(f'sha256sum -- "${runtime}"', script)
+            self.assertRegex(script, rf'"\${runtime}:\${runtime.removesuffix("_bin")}')
         self.assertIn('for run_index in $(seq 1 "$run_count")', script)
-        self.assertIn('sha256sum -- behavior.json tls-wire.json', script)
+        self.assertIn('sha256sum -- behavior.json tls-wire.json workload.json', script)
         self.assertIn("scripts/yume_capture_finalize.py", script)
-        self.assertIn("trap cleanup_relay EXIT", script)
+        self.assertIn("trap cleanup_children EXIT", script)
         self.assertIn("trap 'exit 130' INT TERM", script)
-        self.assertIn('ulimit -f "$YUME_LOG_BLOCKS"', script)
-        self.assertIn("readonly YUME_LOG_BLOCKS=16384", script)
-        self.assertIn('"${YUME_RUN_TIMEOUT_SECONDS}s"', script)
+        self.assertIn('ulimit -f "$LOG_BLOCKS"', script)
+        self.assertIn("readonly LOG_BLOCKS=16384", script)
+        self.assertIn('"${RUN_TIMEOUT_SECONDS}s"', script)
         self.assertNotRegex(script, r"install[^\n]*\$client_config")
         self.assertNotRegex(script, r"install[^\n]*(secret|private.key)")
 
@@ -653,6 +656,8 @@ class BrowserSandboxTest(unittest.TestCase):
                 binary = install / "chrome"
                 node = root / "node"
                 yume = yume_dir / "yume"
+                yumed = yume_dir / "yumed"
+                kit = root / "kit"
                 self._write_executable(
                     launcher,
                     '#!/bin/sh\ntouch "$CHROME_MARKER"\nexit 0\n',
@@ -663,6 +668,11 @@ class BrowserSandboxTest(unittest.TestCase):
                     '#!/bin/sh\ntouch "$NODE_MARKER"\nexit 0\n',
                 )
                 self._write_executable(yume, "#!/bin/sh\nexit 0\n")
+                self._write_executable(yumed, "#!/bin/sh\nexit 0\n")
+                for name in ("client/yume.json", "server/yumed.json",
+                             "server/credentials/server-tls.pem"):
+                    (kit / name).parent.mkdir(parents=True, exist_ok=True)
+                    (kit / name).write_text("not executed\n", encoding="utf-8")
                 # This case exercises the Chrome/Node hash gates, not host
                 # package discovery. GitHub's minimal runner does not
                 # necessarily provide ss or rg, so keep those later-stage
@@ -671,8 +681,7 @@ class BrowserSandboxTest(unittest.TestCase):
                     self._write_executable(
                         fake_bin / executable, "#!/bin/sh\nexit 0\n"
                     )
-                for name in ("bundle.tar.xz", "client.json", "server.crt"):
-                    (root / name).write_text("not executed\n", encoding="utf-8")
+                (root / "bundle.tar.xz").write_text("not executed\n", encoding="utf-8")
 
                 environment = dict(os.environ)
                 environment.update({
@@ -700,9 +709,8 @@ printf '%s  %s\n' "$hash" "$target"
                 result = subprocess.run(
                     [
                         str(capture_script), str(root / "output"), str(yume),
-                        str(root / "bundle.tar.xz"), str(root / "client.json"),
-                        str(root / "server.crt"), "cover.test", "127.0.0.1:443",
-                        str(launcher), str(binary), str(node), "1",
+                        str(yumed), str(root / "bundle.tar.xz"), str(kit),
+                        "cover.lan", str(launcher), str(binary), str(node), "1",
                     ],
                     check=False,
                     stdout=subprocess.PIPE,

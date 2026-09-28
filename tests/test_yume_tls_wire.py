@@ -162,5 +162,39 @@ class WireProfileTests(unittest.TestCase):
             )
 
 
+class RecordTimelineTests(unittest.TestCase):
+    @staticmethod
+    def record(content_type: int, length: int) -> bytes:
+        return bytes([content_type, 3, 3]) + length.to_bytes(2, "big") + bytes(length)
+
+    def test_records_types_lengths_and_times_across_split_reads(self) -> None:
+        timeline = WIRE.RecordTimeline(100.0)
+        stream = self.record(22, 300) + self.record(23, 5) + self.record(23, 16401)
+        # Split inside the second header and inside the third body.
+        timeline.feed(stream[:307], 100.001)
+        timeline.feed(stream[307:900], 100.002)
+        timeline.feed(stream[900:], 100.003)
+        report = timeline.report()
+        self.assertEqual([record[1:] for record in report["records"]],
+                         [[22, 300], [23, 5], [23, 16401]])
+        self.assertEqual([record[0] for record in report["records"]], [1000, 2000, 2000])
+        self.assertFalse(report["truncated"] or report["malformed"])
+
+    def test_non_tls_bytes_stop_the_timeline(self) -> None:
+        timeline = WIRE.RecordTimeline(0.0)
+        timeline.feed(self.record(23, 4) + b"GET / HTTP/1.1\r\n", 0.0)
+        report = timeline.report()
+        self.assertTrue(report["malformed"])
+        self.assertEqual(len(report["records"]), 1)
+
+    def test_timeline_is_bounded(self) -> None:
+        timeline = WIRE.RecordTimeline(0.0)
+        record = self.record(23, 1)
+        timeline.feed(record * (WIRE.MAX_TIMELINE_RECORDS + 3), 0.0)
+        report = timeline.report()
+        self.assertTrue(report["truncated"])
+        self.assertEqual(len(report["records"]), WIRE.MAX_TIMELINE_RECORDS)
+
+
 if __name__ == "__main__":
     unittest.main()

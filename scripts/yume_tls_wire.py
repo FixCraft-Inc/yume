@@ -28,6 +28,8 @@ from typing import Any, Iterable
 
 MAX_CAPTURE_BYTES = 128 * 1024
 MAX_RECORD_BYTES = (1 << 14) + 2048
+# A timeline entry is three small integers. This bounds a report to a few MiB.
+MAX_TIMELINE_RECORDS = 65536
 MAX_HANDSHAKE_BYTES = 64 * 1024
 IO_CHUNK_BYTES = 64 * 1024
 
@@ -325,15 +327,67 @@ def parse_endpoint(value: str) -> tuple[str, int]:
     return host, port
 
 
+class RecordTimeline:
+    """What a passive observer of one direction sees: record types and sizes.
+
+    Records only each TLS record's arrival time, content type and length, never
+    its bytes. A header split across reads is completed from the next read.
+    """
+
+    def __init__(self, started: float) -> None:
+        self._started = started
+        self._header = bytearray()
+        self._remaining = 0
+        self.records: list[list[int]] = []
+        self.truncated = False
+        self.malformed = False
+
+    def feed(self, chunk: bytes, now: float) -> None:
+        offset = 0
+        while offset < len(chunk) and not self.malformed:
+            if self._remaining:
+                taken = min(self._remaining, len(chunk) - offset)
+                self._remaining -= taken
+                offset += taken
+                continue
+            needed = 5 - len(self._header)
+            self._header.extend(chunk[offset:offset + needed])
+            offset += min(needed, len(chunk) - offset)
+            if len(self._header) < 5:
+                return
+            content_type = self._header[0]
+            length = int.from_bytes(self._header[3:5], "big")
+            self._header.clear()
+            if content_type not in (20, 21, 22, 23) or length > MAX_RECORD_BYTES:
+                self.malformed = True
+                return
+            self._remaining = length
+            if len(self.records) >= MAX_TIMELINE_RECORDS:
+                self.truncated = True
+            else:
+                elapsed_us = round((now - self._started) * 1_000_000)
+                self.records.append([elapsed_us, content_type, length])
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "records": self.records,
+            "truncated": self.truncated,
+            "malformed": self.malformed,
+        }
+
+
 def relay_once(listen: tuple[str, int], target: tuple[str, int],
                output: pathlib.Path, timeout: float,
                ready_file: pathlib.Path | None) -> None:
     captures = {"client_to_server": bytearray(), "server_to_client": bytearray()}
+    timelines: dict[str, RecordTimeline] = {}
     with socket.create_server(listen, family=socket.AF_INET, backlog=1) as listener:
         listener.settimeout(timeout)
         if ready_file is not None:
             write_json(ready_file, {"listen": f"{listen[0]}:{listen[1]}"})
         client, _ = listener.accept()
+        accepted = time.monotonic()
+        timelines = {direction: RecordTimeline(accepted) for direction in captures}
         with client, socket.create_connection(target, timeout=timeout) as server:
             client.setblocking(False)
             server.setblocking(False)
@@ -361,6 +415,7 @@ def relay_once(listen: tuple[str, int], target: tuple[str, int],
                             pass
                         continue
                     deadline = time.monotonic() + timeout
+                    timelines[direction].feed(chunk, time.monotonic())
                     if len(captures[direction]) < MAX_CAPTURE_BYTES:
                         available = MAX_CAPTURE_BYTES - len(captures[direction])
                         captures[direction].extend(chunk[:available])
@@ -400,6 +455,11 @@ def relay_once(listen: tuple[str, int], target: tuple[str, int],
         "captured_byte_counts": {
             "client_to_server": len(client_bytes),
             "server_to_client": len(server_bytes),
+        },
+        # Microseconds after the relay accepted the connection, TLS content
+        # type and record length, as the relay received them.
+        "record_timeline": {
+            direction: timeline.report() for direction, timeline in timelines.items()
         },
     }
     write_json(output, report)

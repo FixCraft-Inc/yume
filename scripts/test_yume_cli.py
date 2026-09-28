@@ -340,9 +340,11 @@ class Tracked(unittest.TestCase):
         self.assertEqual(sorted(item.binary for item in self.layouts), ["yume", "yumed"])
 
     def test_native_help_has_exactly_the_parser_options(self) -> None:
-        # native_cli.cpp's parser and kRunFlags, which only the client accepts.
+        # native_cli.cpp's parser, kRunFlags and the evidence option, which
+        # only the client accepts.
         shared = {"--config", "--validate", "--version", "--help", "-h"}
-        expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port"},
+        expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port",
+                                      "--outer-carrier-evidence"},
                     "yumed": shared}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):

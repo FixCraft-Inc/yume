@@ -415,6 +415,7 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
         endpoint_options.caller_runs_socks5_adapters = !state->socks5.empty();
         endpoint_options.caller_runs_forward_adapters = !state->forwards.empty();
         endpoint_options.caller_runs_packet_adapters = !state->packets.empty();
+        endpoint_options.outer_carrier_trace = options.outer_carrier_trace;
         if (!options.resolver_program.empty()) {
             providers::SystemResolverOptions resolver_options;
             resolver_options.program = options.resolver_program;

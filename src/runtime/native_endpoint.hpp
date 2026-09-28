@@ -21,6 +21,7 @@
 #include "providers/asio_execution_context.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
 #include "providers/system_resolver.hpp"
+#include "stealth/outer_carrier_observer.hpp"
 
 namespace yume::runtime {
 
@@ -91,6 +92,9 @@ struct NativeEndpointOptions final {
     // Release old engine handles to return their carrier admission reservations;
     // keeping a closed engine alive still consumes that front-door capacity.
     std::function<void(std::shared_ptr<engine::SessionEngine>, engine::Status)> session_ended;
+    // Client only. Payload-free observation of the first carrier this
+    // endpoint opens, for outer-carrier evidence. A server refuses it.
+    std::shared_ptr<obfs::OuterCarrierTrace> outer_carrier_trace;
 };
 
 // Automatic server accepts. The total pending across listeners must fit

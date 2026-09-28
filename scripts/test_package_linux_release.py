@@ -149,9 +149,11 @@ class NativeReleasePackageTests(unittest.TestCase):
     def test_capture_provenance_uses_native_bundle_contract(self) -> None:
         self.package()
         with mock.patch.object(provenance, "source_version", return_value=self.version):
-            digest = provenance.validate_capture_binaries(
-                self.output_dir / package.BUNDLE_NAME, self.args.yume, self.commit)
-        self.assertEqual(digest, package.sha256_file(self.args.yume))
+            digests = provenance.validate_capture_binaries(
+                self.output_dir / package.BUNDLE_NAME, self.args.yume, self.args.yumed,
+                self.commit)
+        self.assertEqual(digests, (package.sha256_file(self.args.yume),
+                                   package.sha256_file(self.args.yumed)))
 
     def test_release_index_does_not_invent_library_features(self) -> None:
         self.package()

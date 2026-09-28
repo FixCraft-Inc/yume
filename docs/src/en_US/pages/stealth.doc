@@ -158,6 +158,37 @@ Valid HTTP/2 removes a proprietary post-handshake grammar. Keyed admission and
 the cover path make simple probes less informative. Neither property provides
 anonymity or prevents statistical traffic analysis.
 
+The first matched capture of native `yume` against the captured Chrome
+session ran the same workload five times per arm on one host (2026-09-28).
+The close matched: one 34-byte client record after the 42-second quiet
+period. So did the upload record count, the largest record size and the
+single long gap. These differences remain, all visible from TLS record
+sizes and timing alone:
+
+- The ServerHello names AES-128-GCM, which `yumed` takes from Chrome's
+  order, where the Node server answers with AES-256-GCM from its own.
+- The session carries about 14 KB more upstream and 17 KB more downstream
+  than the browser's. Most of it is YTP/1 AUTH: the server speaks first
+  after the upgrade with about 9.3 KB, the client answers with about 9.3 KB
+  and the server adds 4.9 KB.
+- Node sends 39 to 47 small download records, mostly HTTP/2 flow control,
+  where the YUME server sends 10, so YUME's download records are fewer and
+  fuller. Chrome sends 12 to 15 small upload records, `yume` sends 7.
+- Chrome and Node write each request and control frame in a TLS record of
+  its own. YUME writes one flush as one record, except the preface PING.
+- `yumed` answers the ClientHello in about 0.5 ms where Node takes 1.3 to
+  2 ms, and the direction changes 45 to 63 times per session against 73 to
+  83.
+- Node sends a WebSocket PING right before its first fragmented echo. The
+  YUME server does not.
+- Without `limits.idle_epoch_rotation`, the first send after more than half
+  a second of quiet starts a key rotation, an exchange of about 1.7 KB each
+  way at the start of the next burst. The workload sends one burst, so the
+  capture does not show this.
+
+Each needs its own change and a new capture. One campaign is one group, and
+the classifier gate needs four, so its verdict is INSUFFICIENT.
+
 ## Native TLS evidence
 
 YUME keeps two separate native TLS contracts:
@@ -217,6 +248,16 @@ Freeze the target profile, workload, feature extraction, overhead budget, and
 acceptance threshold before evaluating a candidate. Split data by complete
 session and hold out capture day, host, network, and provider. A packet-random
 split leaks session identity into both sets.
+
+The capture relay records, for each TLS record in each direction, its
+arrival time, content type and length, and never its bytes.
+`scripts/yume_classifier_features.py` turns those timelines into per-session
+features (record counts, sizes and their shares, gaps and direction changes)
+in the document `scripts/yume_classifier_gate.py` scores under
+`config/classifier_gate_v1.json`. One capture campaign is one group, and the
+gate needs at least four groups and 40 sessions per arm, so a single campaign
+reports INSUFFICIENT. Its `--describe` output lists each feature's range per
+arm, which shows where to look but is not a classifier result.
 
 Report sample counts, confidence intervals, ROC-AUC, PR-AUC, and true-positive
 rate at low false-positive rates across more than one classifier family. Include

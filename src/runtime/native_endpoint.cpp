@@ -945,12 +945,15 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                     context->affinity(), make_asio_h2_dispatch(context),
                     {endpoint.host(), endpoint.port(),
                      h2_duplex_limits_for_budget(
-                         config.limits().max_queued_bytes())},
+                         config.limits().max_queued_bytes()),
+                     state->options.outer_carrier_trace},
                     credentials.admission_key.bytes()))));
         }
         state->graph = require(builder.build());
         if (role == EndpointRole::Server) {
-            if (!state->options.connection_address.empty() || state->options.socket_protector)
+            if (!state->options.connection_address.empty() ||
+                state->options.socket_protector ||
+                state->options.outer_carrier_trace)
                 throw Status(StatusCode::InvalidArgument);
             const auto* cover_config = std::get_if<config::v1::StaticCover>(&config.cover());
             if (!cover_config) throw Status(StatusCode::FailedPrecondition,

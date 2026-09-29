@@ -252,6 +252,9 @@ public:
 
     void close(Status) noexcept override {
         if (terminated()) return;
+        // Unless both sides finished, END closed ends both directions, even
+        // after this side sent done, so the exit stops reading the
+        // destination.
         const bool finished = end_sent_ && remote_done_;
         if (!finished) send_end(c1::StreamReason::Closed);
         abort(Status(StatusCode::Cancelled));
@@ -368,8 +371,10 @@ private:
 
     void send_end(c1::StreamReason reason) noexcept {
         const auto state = circuit_.lock();
-        if (!state || end_sent_ || state->phase != State::Phase::Ready) return;
-        end_sent_ = true;
+        auto& sent =
+            reason == c1::StreamReason::Done ? end_sent_ : closed_sent_;
+        if (!state || sent || state->phase != State::Phase::Ready) return;
+        sent = true;
         try {
             state->send_message(
                 state->route.size(), c1::RelayType::End, id_,
@@ -500,6 +505,7 @@ private:
     bool remote_done_{false};
     bool shutdown_{false};
     bool end_sent_{false};
+    bool closed_sent_{false};
     std::atomic<bool> terminated_{false};
     std::deque<Buffer> received_;
     ReadCompletion pending_read_;

@@ -278,8 +278,9 @@ when STREAM_CREDIT would let its sender hold more than 2^30 bytes.
 END with reason done finishes one direction: its sender will send no more
 DATA, and the receiver delivers what it holds and then ends the stream toward
 its reader or destination. The stream is gone once both ends have sent
-done. END with any other reason ends both directions at once, and DATA after
-an END is a protocol error.
+done. END with any other reason ends both directions at once, also from an
+end that already sent done, and DATA after its sender's END is a protocol
+error.
 
 EXTEND_FAILED leaves the circuit open at the hop that sent it, so the client
 may extend to another node. CIRCUIT_FAILED comes from the hop that saw the

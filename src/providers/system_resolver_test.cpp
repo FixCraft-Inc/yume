@@ -336,11 +336,19 @@ void test_non_helper_program() {
     const auto resolver = make_resolver(context, "/bin/true");
     std::optional<Result<Addresses>> result;
     boost::asio::post(context->executor(), [&] {
-        CHECK(resolver->resolve("localhost", 1U, [&](Result<Addresses> value) {
-            result = std::move(value);
+        auto lookup =
+            resolver->resolve("localhost", 1U, [&](Result<Addresses> value) {
+                result = std::move(value);
+                resolver->close();
+                context->finish();
+            });
+        // The program can exit before the request is written. That refusal
+        // runs no completion and fails the lookup just as well.
+        if (!lookup.ok()) {
+            result.emplace(lookup.status());
             resolver->close();
             context->finish();
-        }).ok());
+        }
     });
     context->run();
     CHECK(result && !result->ok());

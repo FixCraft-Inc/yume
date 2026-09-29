@@ -53,4 +53,13 @@ inline bool valid_service_name(std::string_view name) noexcept {
     return !at_segment_start && previous_is_alphanumeric;
 }
 
+// Services the daemon itself provides. Their names, and every name whose first
+// segment is "yume", are reserved: a configuration may not declare them.
+inline constexpr std::string_view kCircuitServiceName = "yume.circuit";
+inline constexpr std::string_view kRoutesServiceName = "yume.routes";
+
+inline bool reserved_service_name(std::string_view name) noexcept {
+    return name == "yume" || name.starts_with("yume.");
+}
+
 }  // namespace yume::common

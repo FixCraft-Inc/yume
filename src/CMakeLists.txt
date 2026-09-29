@@ -648,9 +648,9 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_composite_keys STATIC
         providers/composite_keys.cpp providers/composite_keys.hpp)
     target_include_directories(yume_composite_keys PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    # composite_keys.hpp names OpenSSL types, so its users need the headers.
     target_link_libraries(yume_composite_keys
-        PUBLIC yume_engine yume_openssl_security_provider
-        PRIVATE OpenSSL::Crypto)
+        PUBLIC yume_engine yume_openssl_security_provider OpenSSL::Crypto)
     yume_apply_perf_opts(yume_composite_keys)
     yume_assert_exact_link_dependencies(yume_composite_keys
         yume_engine yume_openssl_security_provider OpenSSL::Crypto)
@@ -660,9 +660,10 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_circuit_crypto STATIC
         providers/circuit_crypto.cpp providers/circuit_crypto.hpp)
     target_include_directories(yume_circuit_crypto PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    # circuit_crypto.hpp names OpenSSL types, so its users need the headers.
     target_link_libraries(yume_circuit_crypto
         PUBLIC yume_circuit1 yume_composite_keys yume_openssl_security_provider
-        PRIVATE OpenSSL::Crypto)
+            OpenSSL::Crypto)
     yume_apply_perf_opts(yume_circuit_crypto)
     yume_assert_exact_link_dependencies(yume_circuit_crypto
         yume_circuit1 yume_composite_keys yume_openssl_security_provider
@@ -800,6 +801,25 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
 
     # One application composition owns the normal client and daemon.
     if(TARGET yume_asio_direct_route_provider)
+        # Circuit 1 node service and client, over the engine's stream
+        # contracts and the circuit crypto.
+        add_library(yume_circuit_runtime STATIC
+            runtime/circuit_client.cpp runtime/circuit_client.hpp
+            runtime/circuit_node.cpp runtime/circuit_node.hpp)
+        target_include_directories(yume_circuit_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_circuit_runtime
+            PUBLIC yume_circuit_crypto yume_engine yume_asio_execution_context
+            PRIVATE Boost::system)
+        yume_apply_perf_opts(yume_circuit_runtime)
+        yume_assert_exact_link_dependencies(yume_circuit_runtime
+            yume_circuit_crypto yume_engine yume_asio_execution_context Boost::system)
+        add_executable(yume_circuit_runtime_test runtime/circuit_runtime_test.cpp)
+        target_link_libraries(yume_circuit_runtime_test PRIVATE yume_circuit_runtime OpenSSL::Crypto)
+        yume_apply_perf_opts(yume_circuit_runtime_test)
+        add_test(NAME yume_circuit_runtime_test COMMAND yume_circuit_runtime_test)
+        set_tests_properties(yume_circuit_runtime_test PROPERTIES
+            TIMEOUT 120 LABELS "foundation;0.3;circuit")
+
         add_library(yume_native_runtime STATIC
             runtime/control_socket.cpp runtime/control_socket.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp

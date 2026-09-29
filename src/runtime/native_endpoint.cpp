@@ -18,6 +18,7 @@
 
 #include "engine/buffer.hpp"
 #include "runtime/accept_scheduler.hpp"
+#include "runtime/cluster_state.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "runtime/native_credentials.hpp"
 #include "providers/socks5_upstream.hpp"
@@ -570,6 +571,15 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                                  "the cluster list's serial is older than the "
                                  "loaded list's");
             }
+            // The newer serial is saved before anything switches, so a
+            // failed write leaves the previous credentials in force.
+            if (credentials.cluster && credentials.cluster->serial >
+                                           credentials.cluster->saved_serial) {
+                require(yume::runtime::cluster::write_state(
+                    credentials.cluster->state, {credentials.cluster->cluster,
+                                                 credentials.cluster->serial}));
+                credentials.cluster->saved_serial = credentials.cluster->serial;
+            }
             require(inputs.security->set(credentials.security_factory));
             policy->set(credentials.authorization);
             cluster = std::move(credentials.cluster);
@@ -1042,6 +1052,13 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 config, base_directory, std::move(current),
                 NativeAdmissionKey(credentials.admission_key.bytes())});
             state->cluster = std::move(credentials.cluster);
+            if (state->cluster &&
+                state->cluster->serial > state->cluster->saved_serial) {
+                require(yume::runtime::cluster::write_state(
+                    state->cluster->state,
+                    {state->cluster->cluster, state->cluster->serial}));
+                state->cluster->saved_serial = state->cluster->serial;
+            }
         }
         EngineBuilder builder(role, std::move(suite));
         require(builder.register_session_security_provider_factory(

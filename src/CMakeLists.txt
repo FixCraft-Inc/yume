@@ -275,6 +275,17 @@ add_library(yume::ytp1 ALIAS yume_ytp1)
 target_include_directories(yume_ytp1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 yume_apply_perf_opts(yume_ytp1)
 
+# Circuit 1 codec: cells, handshake encodings and relay messages. Like the
+# YTP/1 kernel it performs no I/O or cryptography.
+add_library(yume_circuit1 STATIC
+    circuit/protocol.cpp
+    circuit/protocol.hpp
+)
+add_library(yume::circuit1 ALIAS yume_circuit1)
+target_include_directories(yume_circuit1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(yume_circuit1 PUBLIC yume_ytp1)
+yume_apply_perf_opts(yume_circuit1)
+
 add_library(yume_session_engine STATIC
     engine/session_engine.cpp
     engine/session_engine.hpp
@@ -632,19 +643,44 @@ else()
 endif()
 
 if(YUME_BUILD_NATIVE_PROVIDERS)
+    # Composite Ed25519 and ML-DSA-87 keys in a private OpenSSL context, for
+    # cluster lists and circuit handshakes.
+    add_library(yume_composite_keys STATIC
+        providers/composite_keys.cpp providers/composite_keys.hpp)
+    target_include_directories(yume_composite_keys PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_composite_keys
+        PUBLIC yume_engine yume_openssl_security_provider
+        PRIVATE OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_composite_keys)
+    yume_assert_exact_link_dependencies(yume_composite_keys
+        yume_engine yume_openssl_security_provider OpenSSL::Crypto)
+
+    # Circuit 1 handshakes and layers, on YTP/1's crypto context and the
+    # composite keys.
+    add_library(yume_circuit_crypto STATIC
+        providers/circuit_crypto.cpp providers/circuit_crypto.hpp)
+    target_include_directories(yume_circuit_crypto PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_circuit_crypto
+        PUBLIC yume_circuit1 yume_composite_keys yume_openssl_security_provider
+        PRIVATE OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_circuit_crypto)
+    yume_assert_exact_link_dependencies(yume_circuit_crypto
+        yume_circuit1 yume_composite_keys yume_openssl_security_provider
+        OpenSSL::Crypto)
+
     add_library(yume_native_credentials STATIC
         runtime/cluster_list.cpp runtime/cluster_list.hpp
-        runtime/composite_keys.cpp runtime/composite_keys.hpp
+        runtime/cluster_state.cpp runtime/cluster_state.hpp
         runtime/native_credentials.cpp runtime/native_credentials.hpp)
     target_include_directories(yume_native_credentials PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_native_credentials
-        PUBLIC yume_config_v1 yume_engine
+        PUBLIC yume_config_v1 yume_engine yume_composite_keys
         PRIVATE yume_private_files yume_openssl_security_provider
             yume_tls13_secure_channel OpenSSL::Crypto)
     yume_apply_perf_opts(yume_native_credentials)
     yume_assert_exact_link_dependencies(yume_native_credentials
-        yume_config_v1 yume_engine yume_private_files yume_openssl_security_provider
-        yume_tls13_secure_channel OpenSSL::Crypto)
+        yume_config_v1 yume_engine yume_composite_keys yume_private_files
+        yume_openssl_security_provider yume_tls13_secure_channel OpenSSL::Crypto)
 
     # Operator egress lists: JSON lists, the VPN provider database and
     # MaxMind country databases, swept into disjoint ranges at load.
@@ -935,7 +971,7 @@ if(YUME_BUILD_SHARED_ABI)
     # including the whole native chain behind the schema-1 backend.
     foreach(_yume_absorbed IN ITEMS
             yume_embed yume_native_endpoint yume_native_egress_policy yume_egress_lists
-            yume_native_credentials yume_socks5_upstream
+            yume_native_credentials yume_composite_keys yume_socks5_upstream
             yume_egress_pacing yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
             yume_asio_execution_context yume_asio_tcp_byte_channel_provider yume_system_resolver
             yume_child_process
@@ -1003,6 +1039,7 @@ endif()
 # already-configured build tree.
 yume_assert_exact_link_dependencies(yume_engine)
 yume_assert_exact_link_dependencies(yume_ytp1)
+yume_assert_exact_link_dependencies(yume_circuit1 yume_ytp1)
 yume_assert_exact_link_dependencies(
     yume_session_engine yume_engine yume_ytp1)
 yume_assert_exact_link_dependencies(
@@ -1454,6 +1491,30 @@ if(YUME_BUILD_TESTING)
     yume_apply_perf_opts(yume_ytp1_kernel_test)
     yume_assert_exact_link_dependencies(yume_ytp1_kernel_test yume_ytp1)
     add_test(NAME yume_ytp1_kernel_test COMMAND yume_ytp1_kernel_test)
+
+    add_executable(yume_circuit1_codec_test circuit/tests/circuit1_codec_test.cpp)
+    target_link_libraries(yume_circuit1_codec_test PRIVATE yume_circuit1)
+    target_compile_definitions(yume_circuit1_codec_test PRIVATE
+        YUME_CIRCUIT1_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/circuit/testdata/circuit1_vectors.txt")
+    yume_apply_perf_opts(yume_circuit1_codec_test)
+    yume_assert_exact_link_dependencies(yume_circuit1_codec_test yume_circuit1)
+    add_test(NAME yume_circuit1_codec_test COMMAND yume_circuit1_codec_test)
+    set_tests_properties(yume_circuit1_codec_test PROPERTIES
+        LABELS "foundation;0.3;circuit")
+
+    if(YUME_BUILD_NATIVE_PROVIDERS)
+        add_executable(yume_circuit_crypto_test providers/circuit_crypto_test.cpp)
+        target_link_libraries(yume_circuit_crypto_test
+            PRIVATE yume_circuit_crypto OpenSSL::Crypto)
+        target_compile_definitions(yume_circuit_crypto_test PRIVATE
+            YUME_CIRCUIT1_VECTORS_FILE="${CMAKE_CURRENT_SOURCE_DIR}/circuit/testdata/circuit1_vectors.txt")
+        yume_apply_perf_opts(yume_circuit_crypto_test)
+        yume_assert_exact_link_dependencies(yume_circuit_crypto_test
+            yume_circuit_crypto OpenSSL::Crypto)
+        add_test(NAME yume_circuit_crypto_test COMMAND yume_circuit_crypto_test)
+        set_tests_properties(yume_circuit_crypto_test PROPERTIES
+            TIMEOUT 120 LABELS "foundation;0.3;circuit")
+    endif()
 
     if(YUME_BUILD_NATIVE_PROVIDERS)
         add_executable(yume_openssl_security_provider_test
@@ -2020,7 +2081,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Fuzz harnesses. Opt-in, Clang-only, never installed. Each target covers a
 # parser that consumes input from outside the trust boundary: the YTP/1
-# protocol, AUTH and schema-1 configuration. They are executables rather than
+# protocol, AUTH, circuit 1 cells and messages, and schema-1 configuration. They are executables rather than
 # CTest cases because a fuzz run is
 # time-bounded by the operator, not by a pass/fail assertion.
 if(YUME_BUILD_FUZZERS)
@@ -2036,6 +2097,7 @@ if(YUME_BUILD_FUZZERS)
     yume_add_fuzzer(yume_fuzz_ytp1_protocol fuzz_ytp1_protocol.cpp yume_ytp1)
     yume_add_fuzzer(yume_fuzz_ytp1_auth fuzz_ytp1_auth.cpp yume_ytp1)
     yume_add_fuzzer(yume_fuzz_config_v1 fuzz_config_v1.cpp yume_config_v1)
+    yume_add_fuzzer(yume_fuzz_circuit1 fuzz_circuit1.cpp yume_circuit1)
 endif()
 
 # ---------------------------------------------------------------------------

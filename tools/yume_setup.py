@@ -104,6 +104,8 @@ MAX_CLUSTER_DAYS = 366
 COMPOSITE_SIGNATURE_BYTES = 64 + 4627
 # Where a node keeps its cluster files, relative to its server directory.
 NODE_CLUSTER_DIRECTORY = Path("credentials") / "cluster"
+# Where yumed saves the highest list serial, next to yumed.json.
+NODE_CLUSTER_STATE = "cluster-state.json"
 PEM_BLOCK = re.compile(
     r"-----BEGIN ([A-Z0-9 ]+)-----\s+[A-Za-z0-9+/=\s]+?-----END \1-----\s*"
 )
@@ -1506,6 +1508,9 @@ def _cluster_section() -> dict[str, object]:
         "list": {"file": f"{base}/cluster-list.json"},
         "signature": {"file": f"{base}/cluster-list.sig"},
         "peers": {"file": f"{base}/peers.json"},
+        # yumed writes this itself, so it stays outside the credentials that
+        # the operator deploys.
+        "state": {"file": NODE_CLUSTER_STATE},
     }
 
 
@@ -1588,10 +1593,11 @@ def cluster_remove(cluster_path: Path, name: str) -> Path:
     """Take one node out of a cluster.
 
     Every other node forgets it: its entry leaves their peer stores and its
-    link files are deleted. The removed node loses its cluster section and
-    its credentials/cluster directory, so it runs alone after a restart and
-    can join again. Sign a new list afterwards, so that no node keeps
-    accepting it once the other nodes reload.
+    link files are deleted. The removed node loses its cluster section, its
+    credentials/cluster directory and the serial it saved, so it runs alone
+    after a restart and can join this or another cluster again. Sign a new
+    list afterwards, so that no node keeps accepting it once the other nodes
+    reload.
     """
     name = _require_node_name(name)
     root, state, records = _read_cluster(cluster_path)
@@ -1616,6 +1622,13 @@ def cluster_remove(cluster_path: Path, name: str) -> Path:
                 other.cluster / "peers" / f"{name}-{kind}"
                 for kind in ("outbound.psk", "inbound.psk", "admission.key")
             ]
+        section = leaving.config.get("cluster")
+        state_reference = section.get("state") if isinstance(section, dict) else None
+        # Only a state file inside the server directory is this node's to remove.
+        if (isinstance(state_reference, dict) and isinstance(state_reference.get("file"), str)
+                and not Path(state_reference["file"]).is_absolute()):
+            saved = leaving.server / state_reference["file"]
+            stale += [saved, saved.with_name(saved.name + ".new")]
         config = {key: value for key, value in leaving.config.items() if key != "cluster"}
         changes.replace(leaving.config_path, _json_bytes(config), leaving.owner)
         updated = dict(state)

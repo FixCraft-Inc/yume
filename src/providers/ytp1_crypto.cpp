@@ -37,12 +37,6 @@ struct ProviderDeleter final {
     }
 };
 
-struct PkeyCtxDeleter final {
-    void operator()(EVP_PKEY_CTX* value) const noexcept {
-        EVP_PKEY_CTX_free(value);
-    }
-};
-
 struct MdDeleter final {
     void operator()(EVP_MD* value) const noexcept { EVP_MD_free(value); }
 };
@@ -87,7 +81,6 @@ struct KdfCtxDeleter final {
 
 using LibCtxPtr = std::unique_ptr<OSSL_LIB_CTX, LibCtxDeleter>;
 using ProviderPtr = std::unique_ptr<OSSL_PROVIDER, ProviderDeleter>;
-using PkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, PkeyCtxDeleter>;
 using MdPtr = std::unique_ptr<EVP_MD, MdDeleter>;
 using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, MdCtxDeleter>;
 using CipherPtr = std::unique_ptr<EVP_CIPHER, CipherDeleter>;
@@ -707,6 +700,180 @@ SecretBytes derive_rekey_root(
                   static_cast<std::ptrdiff_t>(x25519_shared.size()));
     return hkdf_sha256(crypto, secret_input.span(), old_root,
                        public_binding, kSha256Bytes);
+}
+
+void PkeyDeleter::operator()(EVP_PKEY* value) const noexcept {
+    EVP_PKEY_free(value);
+}
+
+void PkeyCtxDeleter::operator()(EVP_PKEY_CTX* value) const noexcept {
+    EVP_PKEY_CTX_free(value);
+}
+
+std::vector<std::uint8_t> ml_kem_public_bytes(EVP_PKEY* key) {
+    std::size_t size = 0U;
+    if (key == nullptr ||
+        EVP_PKEY_get_octet_string_param(
+            key, OSSL_PKEY_PARAM_PUB_KEY, nullptr, 0U, &size) != 1 ||
+        size != ytp1::kMlKem1024PublicKeySize) {
+        throw std::runtime_error("ML-KEM-1024 public-key size is invalid");
+    }
+    std::vector<std::uint8_t> output(size);
+    if (EVP_PKEY_get_octet_string_param(
+            key, OSSL_PKEY_PARAM_PUB_KEY, output.data(), output.size(),
+            &size) != 1 ||
+        size != output.size()) {
+        throw std::runtime_error("ML-KEM-1024 public-key export failed");
+    }
+    return output;
+}
+
+PkeyPtr import_ml_kem_public(const CryptoContext& crypto,
+                             std::span<const std::uint8_t> encoded) {
+    if (encoded.size() != ytp1::kMlKem1024PublicKeySize) {
+        throw std::invalid_argument("ML-KEM-1024 public key has wrong size");
+    }
+    PkeyCtxPtr context(EVP_PKEY_CTX_new_from_name(
+        crypto.library_context(), kMlKem1024Algorithm.data(),
+        kOpenSslPropertyQuery.data()));
+    if (!context || EVP_PKEY_fromdata_init(context.get()) != 1) {
+        throw std::runtime_error("ML-KEM-1024 import initialization failed");
+    }
+    OSSL_PARAM parameters[] = {
+        OSSL_PARAM_construct_octet_string(
+            OSSL_PKEY_PARAM_PUB_KEY,
+            const_cast<std::uint8_t*>(encoded.data()), encoded.size()),
+        OSSL_PARAM_construct_end(),
+    };
+    EVP_PKEY* raw = nullptr;
+    if (EVP_PKEY_fromdata(context.get(), &raw, EVP_PKEY_PUBLIC_KEY,
+                          parameters) != 1 ||
+        raw == nullptr) {
+        throw std::invalid_argument("ML-KEM-1024 public key was rejected");
+    }
+    PkeyPtr key(raw);
+    if (EVP_PKEY_is_a(key.get(), kMlKem1024Algorithm.data()) != 1) {
+        throw std::invalid_argument("ML-KEM public-key algorithm mismatch");
+    }
+    return key;
+}
+
+PkeyPtr generate_key(const CryptoContext& crypto,
+                     std::string_view algorithm) {
+    PkeyCtxPtr context(EVP_PKEY_CTX_new_from_name(
+        crypto.library_context(), algorithm.data(),
+        kOpenSslPropertyQuery.data()));
+    if (!context || EVP_PKEY_keygen_init(context.get()) != 1) {
+        throw std::runtime_error("key generation initialization failed");
+    }
+    EVP_PKEY* raw = nullptr;
+    if (EVP_PKEY_generate(context.get(), &raw) != 1 || raw == nullptr) {
+        throw std::runtime_error("key generation failed");
+    }
+    return PkeyPtr(raw);
+}
+
+X25519KeyPair generate_x25519(const CryptoContext& crypto) {
+    X25519KeyPair output;
+    output.private_key = generate_key(crypto, kX25519Algorithm);
+    std::size_t size = output.public_key.size();
+    if (EVP_PKEY_get_raw_public_key(output.private_key.get(),
+                                    output.public_key.data(), &size) != 1 ||
+        size != output.public_key.size()) {
+        throw std::runtime_error("X25519 public-key export failed");
+    }
+    return output;
+}
+
+SecretBytes derive_x25519(const CryptoContext& crypto,
+                          EVP_PKEY* private_key,
+                          std::span<const std::uint8_t> peer_public) {
+    if (private_key == nullptr ||
+        peer_public.size() != ytp1::kX25519PublicKeySize) {
+        throw std::invalid_argument("X25519 key input is invalid");
+    }
+    PkeyPtr peer(EVP_PKEY_new_raw_public_key_ex(
+        crypto.library_context(), kX25519Algorithm.data(),
+        kOpenSslPropertyQuery.data(), peer_public.data(),
+        peer_public.size()));
+    PkeyCtxPtr context(peer ? EVP_PKEY_CTX_new_from_pkey(
+                                  crypto.library_context(), private_key,
+                                  kOpenSslPropertyQuery.data())
+                              : nullptr);
+    if (!peer || !context || EVP_PKEY_derive_init(context.get()) != 1 ||
+        EVP_PKEY_derive_set_peer(context.get(), peer.get()) != 1) {
+        throw std::invalid_argument("X25519 peer key was rejected");
+    }
+    std::size_t size = 0U;
+    if (EVP_PKEY_derive(context.get(), nullptr, &size) != 1 ||
+        size != ytp1::kX25519SharedSecretSize) {
+        throw std::runtime_error("X25519 shared-secret size is invalid");
+    }
+    SecretBytes shared(size);
+    if (EVP_PKEY_derive(context.get(), shared.data(), &size) != 1 ||
+        size != shared.size() || !any_nonzero(shared.span())) {
+        throw std::invalid_argument("X25519 shared secret was rejected");
+    }
+    return shared;
+}
+
+MlKemEncapsulation encapsulate_ml_kem(const CryptoContext& crypto,
+                                      EVP_PKEY* public_key) {
+    PkeyCtxPtr context(public_key ? EVP_PKEY_CTX_new_from_pkey(
+                                       crypto.library_context(), public_key,
+                                       kOpenSslPropertyQuery.data())
+                                  : nullptr);
+    if (!context || EVP_PKEY_encapsulate_init(context.get(), nullptr) != 1) {
+        throw std::runtime_error("ML-KEM encapsulation initialization failed");
+    }
+    std::size_t ciphertext_size = 0U;
+    std::size_t shared_size = 0U;
+    if (EVP_PKEY_encapsulate(context.get(), nullptr, &ciphertext_size,
+                             nullptr, &shared_size) != 1 ||
+        ciphertext_size != ytp1::kMlKem1024CiphertextSize ||
+        shared_size != ytp1::kMlKem1024SharedSecretSize) {
+        throw std::runtime_error("ML-KEM encapsulation sizes are invalid");
+    }
+    MlKemEncapsulation output;
+    output.shared = SecretBytes(shared_size);
+    if (EVP_PKEY_encapsulate(context.get(), output.ciphertext.data(),
+                             &ciphertext_size, output.shared.data(),
+                             &shared_size) != 1 ||
+        ciphertext_size != output.ciphertext.size() ||
+        shared_size != output.shared.size() ||
+        !any_nonzero(output.shared.span())) {
+        throw std::runtime_error("ML-KEM encapsulation failed");
+    }
+    return output;
+}
+
+SecretBytes decapsulate_ml_kem(
+    const CryptoContext& crypto,
+    EVP_PKEY* private_key,
+    std::span<const std::uint8_t> ciphertext) {
+    if (private_key == nullptr ||
+        ciphertext.size() != ytp1::kMlKem1024CiphertextSize) {
+        throw std::invalid_argument("ML-KEM decapsulation input is invalid");
+    }
+    PkeyCtxPtr context(EVP_PKEY_CTX_new_from_pkey(
+        crypto.library_context(), private_key,
+        kOpenSslPropertyQuery.data()));
+    if (!context || EVP_PKEY_decapsulate_init(context.get(), nullptr) != 1) {
+        throw std::runtime_error("ML-KEM decapsulation initialization failed");
+    }
+    std::size_t shared_size = 0U;
+    if (EVP_PKEY_decapsulate(context.get(), nullptr, &shared_size,
+                             ciphertext.data(), ciphertext.size()) != 1 ||
+        shared_size != ytp1::kMlKem1024SharedSecretSize) {
+        throw std::runtime_error("ML-KEM shared-secret size is invalid");
+    }
+    SecretBytes shared(shared_size);
+    if (EVP_PKEY_decapsulate(context.get(), shared.data(), &shared_size,
+                             ciphertext.data(), ciphertext.size()) != 1 ||
+        shared_size != shared.size() || !any_nonzero(shared.span())) {
+        throw std::invalid_argument("ML-KEM ciphertext was rejected");
+    }
+    return shared;
 }
 
 } // namespace yume::providers::ytp1_crypto

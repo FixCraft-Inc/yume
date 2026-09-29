@@ -1194,23 +1194,26 @@ void TestControlSocket() {
     ExpectError(document, "/control/socket", "duplicate local listen path");
 }
 
-// cluster is a server-only object of four file references.
+// cluster is a server-only object of five file references.
 void TestClusterSection() {
     Check(!Parse(ServerDocument()).cluster(), "a cluster appeared unasked");
     const Json cluster = {
         {"operator_key", {{"file", "cluster/operator.pub.pem"}}},
         {"list", {{"file", "cluster/cluster-list.json"}}},
         {"signature", {{"file", "cluster/cluster-list.sig"}}},
-        {"peers", {{"file", "cluster/peers.json"}}}};
+        {"peers", {{"file", "cluster/peers.json"}}},
+        {"state", {{"file", "/var/lib/yume/cluster-state.json"}}}};
     Json document = ServerDocument();
     document["cluster"] = cluster;
     const auto parsed = Parse(document).cluster();
     Check(parsed && parsed->operator_key.path() == "cluster/operator.pub.pem" &&
               parsed->list.path() == "cluster/cluster-list.json" &&
               parsed->signature.path() == "cluster/cluster-list.sig" &&
-              parsed->peers.path() == "cluster/peers.json",
+              parsed->peers.path() == "cluster/peers.json" &&
+              parsed->state.path() == "/var/lib/yume/cluster-state.json",
           "the cluster references were not retained");
-    for (const char* key : {"operator_key", "list", "signature", "peers"}) {
+    for (const char* key :
+         {"operator_key", "list", "signature", "peers", "state"}) {
         document = ServerDocument();
         document["cluster"] = cluster;
         document["cluster"].erase(key);

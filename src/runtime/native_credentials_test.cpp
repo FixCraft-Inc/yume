@@ -5,6 +5,7 @@
  */
 
 #include "runtime/native_credentials.hpp"
+#include "runtime/cluster_state.hpp"
 
 #include <algorithm>
 #include <array>
@@ -824,7 +825,8 @@ void test_cluster_membership(Fixture& fixture) {
         {"operator_key", reference("credentials/cluster/operator.pub.pem")},
         {"list", reference("credentials/cluster/cluster-list.json")},
         {"signature", reference("credentials/cluster/cluster-list.sig")},
-        {"peers", reference("credentials/cluster/peers.json")}};
+        {"peers", reference("credentials/cluster/peers.json")},
+        {"state", reference("cluster-state.json")}};
     auto config = fixture.server_config;
     config["cluster"] = cluster_refs;
     auto peer_config = config;
@@ -842,7 +844,8 @@ void test_cluster_membership(Fixture& fixture) {
         reference("peer/credentials/admission.key");
     peer_config["credentials"]["mlkem_key"] =
         reference("peer/credentials/kem.pem");
-    for (const char* key : {"operator_key", "list", "signature", "peers"}) {
+    for (const char* key :
+         {"operator_key", "list", "signature", "peers", "state"}) {
         peer_config["cluster"][key] =
             reference("peer/" + cluster_refs[key]["file"].get<std::string>());
     }
@@ -863,6 +866,16 @@ void test_cluster_membership(Fixture& fixture) {
               link.port == 443U &&
               link.admission_key.bytes()[0] == std::byte{0x3b},
           "the link credentials are wrong");
+    check(link.material != std::array<std::byte, 32>{} &&
+              own.cluster->state == root / "cluster-state.json" &&
+              own.cluster->saved_serial == 0U,
+          "the link material or the state reference is missing");
+    check(take(load(config)).cluster->links.front().material == link.material,
+          "the same inputs gave another link material");
+    fixture.write("credentials/cluster/to-peer.psk", std::string(32, '\x53'));
+    check(take(load(config)).cluster->links.front().material != link.material,
+          "a changed outbound PSK kept the link material");
+    fixture.write("credentials/cluster/to-peer.psk", std::string(32, '\x51'));
     check(own.authorization->max_sessions(peer.id) == kMaxPeerSessions &&
               own.authorization->recognizes(peer.id),
           "a peer is not recognized or not limited to its link sessions");
@@ -976,6 +989,31 @@ void test_cluster_membership(Fixture& fixture) {
     }
     check(take(load(config)).cluster.has_value(),
           "the restored cluster was refused");
+
+    // The serial this node saved is a floor across restarts.
+    namespace saved = yume::runtime::cluster;
+    const auto state_path = root / "cluster-state.json";
+    check(saved::write_state(state_path, {operator_key.id, 3U}).ok(),
+          "the cluster state was not written");
+    auto again = take(load(config));
+    check(again.cluster && again.cluster->saved_serial == 3U,
+          "the saved serial was not read");
+    check(saved::write_state(state_path, {operator_key.id, 4U}).ok(),
+          "the cluster state was not replaced");
+    const auto older = load(config);
+    check(older.status().code() == StatusCode::FailedPrecondition &&
+              older.status().message().find("older") != std::string::npos,
+          "a list older than the saved serial was accepted");
+    check(saved::write_state(state_path, {std::string(64, 'b'), 1U}).ok(),
+          "a foreign cluster state was not written");
+    check(load(config).status().code() == StatusCode::FailedPrecondition,
+          "a state file of another cluster was accepted");
+    fixture.write("cluster-state.json", "{}");
+    check(load(config).status().code() == StatusCode::InvalidArgument,
+          "a malformed state file was accepted");
+    std::filesystem::remove(state_path);
+    check(take(load(config)).cluster->saved_serial == 0U,
+          "a missing state file did not start from nothing");
 }
 
 int main() {

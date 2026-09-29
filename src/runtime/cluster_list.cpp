@@ -24,6 +24,7 @@
 namespace yume::runtime::cluster {
 namespace {
 
+namespace keys = providers::keys;
 using engine::Result;
 using engine::Status;
 using engine::StatusCode;

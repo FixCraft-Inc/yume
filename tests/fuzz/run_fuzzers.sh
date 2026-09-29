@@ -35,6 +35,7 @@ TARGETS=(
     "yume_fuzz_ytp1_protocol:ytp1_protocol:1048589"
     "yume_fuzz_ytp1_auth:ytp1_auth:65537"
     "yume_fuzz_config_v1:config_v1:1048577"
+    "yume_fuzz_circuit1:circuit1:16385"
 )
 
 status=0

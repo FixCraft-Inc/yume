@@ -94,6 +94,7 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     struct Link final {
         std::string peer_name;
         std::string peer_identity;
+        std::array<std::byte, 32> material{};
         std::shared_ptr<NativeEndpoint> endpoint;
         std::shared_ptr<SessionKeeper> keeper;
     };
@@ -138,43 +139,50 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
         }
     }
 
-    // Builds a link endpoint and keeper for every peer of the membership,
-    // without starting them.
+    // Builds one link endpoint and its keeper, without starting it.
+    Link make_link(const NativeLinkCredentials& credentials) {
+        SessionKeeperOptions keeper_options;
+        keeper_options.report = [weak = weak_from_this(),
+                                 prefix = "cluster link to " +
+                                          credentials.peer_name +
+                                          ": "](std::string_view text) {
+            if (const auto self = weak.lock())
+                self->say(prefix + std::string(text));
+        };
+        auto keeper = std::make_shared<SessionKeeper>(
+            context, std::move(keeper_options),
+            [weak = weak_from_this()](Status status) {
+                if (const auto self = weak.lock())
+                    self->stop(std::move(status));
+            });
+        NativeEndpointOptions options;
+        options.max_sessions = 1U;
+        options.max_pending_starts = 1U;
+        options.resolver = link_resolver;
+        options.session_ended = keeper->session_ended();
+        auto endpoint = NativeEndpoint::create_link(
+            context, config, credentials, std::move(options));
+        if (!endpoint.ok()) {
+            throw Status(endpoint.status().code(),
+                         "cluster link to " + credentials.peer_name + ": " +
+                             endpoint.status().message());
+        }
+        keeper->attach(endpoint.value());
+        return {credentials.peer_name, credentials.peer_identity,
+                credentials.material, std::move(endpoint).take_value(),
+                std::move(keeper)};
+    }
+
+    // Builds a link for every peer of the membership, without starting them.
     std::vector<Link> make_links(const NativeClusterCredentials& cluster) {
         std::vector<Link> made;
         made.reserve(cluster.links.size());
-        for (const auto& credentials : cluster.links) {
-            SessionKeeperOptions keeper_options;
-            keeper_options.report = [weak = weak_from_this(),
-                                     prefix = "cluster link to " +
-                                              credentials.peer_name +
-                                              ": "](std::string_view text) {
-                if (const auto self = weak.lock())
-                    self->say(prefix + std::string(text));
-            };
-            auto keeper = std::make_shared<SessionKeeper>(
-                context, std::move(keeper_options),
-                [weak = weak_from_this()](Status status) {
-                    if (const auto self = weak.lock())
-                        self->stop(std::move(status));
-                });
-            NativeEndpointOptions options;
-            options.max_sessions = 1U;
-            options.max_pending_starts = 1U;
-            options.resolver = link_resolver;
-            options.session_ended = keeper->session_ended();
-            auto endpoint = NativeEndpoint::create_link(
-                context, config, credentials, std::move(options));
-            if (!endpoint.ok()) {
-                close_links(made);
-                throw Status(endpoint.status().code(),
-                             "cluster link to " + credentials.peer_name + ": " +
-                                 endpoint.status().message());
-            }
-            keeper->attach(endpoint.value());
-            made.push_back({credentials.peer_name, credentials.peer_identity,
-                            std::move(endpoint).take_value(),
-                            std::move(keeper)});
+        try {
+            for (const auto& credentials : cluster.links)
+                made.push_back(make_link(credentials));
+        } catch (...) {
+            close_links(made);
+            throw;
         }
         return made;
     }
@@ -445,22 +453,60 @@ engine::Status NativeServerRuntime::reload() {
     auto status = state->endpoint->reload_credentials();
     const auto* cluster = state->endpoint->cluster();
     if (!status.ok() || !cluster) return status;
-    // Every link restarts with the reloaded list and peer store. A peer holds
-    // up to kMaxPeerSessions sessions, so the new link is admitted while the
-    // old session is still ending.
-    std::vector<State::Link> links;
+    // A link whose peer and material are unchanged keeps running with its
+    // session. A new or changed peer gets a new link, and the links of
+    // removed or changed peers close. After expiry every link was closed, so
+    // none is kept. New links are built first, so a failure leaves the
+    // running set as it was. A peer holds up to kMaxPeerSessions sessions,
+    // so a replacement link is admitted while the old session is ending.
+    const auto kept = [&](const NativeLinkCredentials& credentials) {
+        return state->cluster_expired
+                   ? state->links.end()
+                   : std::find_if(state->links.begin(), state->links.end(),
+                                  [&](const State::Link& link) {
+                                      return link.peer_identity ==
+                                                 credentials.peer_identity &&
+                                             link.material ==
+                                                 credentials.material;
+                                  });
+    };
+    std::vector<State::Link> fresh;
+    std::vector<bool> is_fresh;
+    std::vector<State::Link> next;
     try {
-        links = state->make_links(*cluster);
+        next.reserve(cluster->links.size());
+        is_fresh.reserve(cluster->links.size());
+        for (const auto& credentials : cluster->links) {
+            const bool make = kept(credentials) == state->links.end();
+            is_fresh.push_back(make);
+            if (make) fresh.push_back(state->make_link(credentials));
+        }
     } catch (const Status& failure) {
+        State::close_links(fresh);
         return Status::diagnostic(failure.code(), failure.message());
     } catch (const std::bad_alloc&) {
+        State::close_links(fresh);
         return Status(StatusCode::ResourceExhausted);
     }
+    // Nothing below allocates: next has room for every link, and links move
+    // and erase without throwing.
+    auto added = fresh.begin();
+    for (std::size_t index = 0U; index < cluster->links.size(); ++index) {
+        if (is_fresh[index]) {
+            next.push_back(std::move(*added++));
+            continue;
+        }
+        const auto old = kept(cluster->links[index]);
+        next.push_back(std::move(*old));
+        state->links.erase(old);
+    }
     State::close_links(state->links);
-    state->links = std::move(links);
+    state->links = std::move(next);
     state->cluster_expired = false;
     if (state->started) {
-        for (const auto& link : state->links) link.keeper->start();
+        for (std::size_t index = 0U; index < state->links.size(); ++index) {
+            if (is_fresh[index]) state->links[index].keeper->start();
+        }
         boost::system::error_code ignored;
         state->expiry.cancel(ignored);
         state->arm_expiry();

@@ -118,7 +118,8 @@ cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
   -DYUME_BUILD_TESTING=ON -DYUME_BUILD_FUZZERS=ON
 cmake --build build-fuzz -j"$(nproc)" \
-  --target yume_fuzz_ytp1_protocol yume_fuzz_ytp1_auth yume_fuzz_config_v1
+  --target yume_fuzz_ytp1_protocol yume_fuzz_ytp1_auth yume_fuzz_config_v1 \
+  yume_fuzz_circuit1
 bash tests/fuzz/run_fuzzers.sh build-fuzz/bin 600 fuzz-out
 ```
 
@@ -128,7 +129,8 @@ writes any artifact. CI runs the same script with a short budget as a
 regression gate. A longer campaign is the same invocation with a larger budget
 and a corpus carried over from the previous run. `tests/fuzz/make_seeds.py`
 generates the seeds as code rather than checking in opaque binaries, and
-derives the configuration seeds from the schema-1 examples in `config/`.
+derives the configuration seeds from the schema-1 examples in `config/` and
+the circuit seeds from the circuit 1 vectors.
 
 `YUME_BUILD_FUZZERS` builds libFuzzer harnesses for the parsers that consume
 input from outside a trust boundary, and requires Clang. It selects
@@ -145,6 +147,7 @@ evidence.
 | `yume_fuzz_ytp1_protocol` | YTP/1 frame, OPEN, destination and capability codecs in `ytp/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
 | `yume_fuzz_ytp1_auth` | AUTH TLV records in `ytp/security.*` | Unknown critical fields, duplicate IDs, reordered TLVs and wrong suite values are refused, and unknown noncritical fields survive |
 | `yume_fuzz_config_v1` | The schema-1 parser in `config/v1/` | Typed rejection is the expected failure, and any other exception is a finding. It opens no credential file |
+| `yume_fuzz_circuit1` | Circuit 1 cells, handshakes, CREATE bodies, relay messages and BEGIN destinations in `circuit/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
 
 Corpora live outside the tree. A crashing input is evidence and does not
 belong in Git.

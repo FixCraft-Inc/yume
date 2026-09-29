@@ -613,11 +613,30 @@ class YumeDoctorTests(unittest.TestCase):
             (cluster / name).write_bytes(b"{}")
             os.chmod(cluster / name, 0o600)
         section = {key: {"file": f"credentials/cluster/{name}"} for key, name in names.items()}
+        # yumed creates the state file, so it may be absent.
+        section["state"] = {"file": "cluster-state.json"}
         server = copy.deepcopy(original)
         server["cluster"] = section
         server_path.write_text(json.dumps(server))
         result = self.run_doctor(server_path)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = self.case / "server/cluster-state.json"
+        state.write_bytes(b"{}")
+        os.chmod(state, 0o640)
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/cluster/state", result.stderr)
+        os.chmod(state, 0o600)
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state.unlink()
+        server["cluster"] = {**section, "state": {"file": "missing/cluster-state.json"}}
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/cluster/state: its directory does not exist", result.stderr)
+        server["cluster"] = section
+        server_path.write_text(json.dumps(server))
 
         (cluster / "cluster-list.sig").write_bytes(b"x" * (64 + 4627 + 1))
         result = self.run_doctor(server_path)
@@ -632,13 +651,15 @@ class YumeDoctorTests(unittest.TestCase):
 
         for change, pointer in (
             ({"peers": None}, "/cluster/peers"),
+            ({"state": None}, "/cluster/state"),
             ({"extra": {"file": "x"}}, "/cluster/extra"),
             ({"list": "cluster-list.json"}, "/cluster/list"),
         ):
             server = copy.deepcopy(original)
             server["cluster"] = {**section, **change}
-            if change.get("peers", 1) is None:
-                del server["cluster"]["peers"]
+            for key in ("peers", "state"):
+                if key in change and change[key] is None:
+                    del server["cluster"][key]
             server_path.write_text(json.dumps(server))
             result = self.run_doctor(server_path)
             self.assertEqual(result.returncode, 1, change)

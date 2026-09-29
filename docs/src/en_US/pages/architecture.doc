@@ -440,7 +440,8 @@ The foundational CMake targets enforce the following dependency rule:
 
 @code text
 yume_engine + yume_ytp1 +     no OpenSSL, nghttp2, socket, JSON, CLI,
-yume_session_bootstrap        filesystem, or GUI dependency
+yume_session_bootstrap +      filesystem, or GUI dependency
+yume_circuit1
 yume_config_v1                nlohmann JSON only
 native providers              engine/YTP plus their explicit system libraries
 native runtime                config, bootstrap, providers, protected files

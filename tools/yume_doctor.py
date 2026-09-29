@@ -901,12 +901,18 @@ CLUSTER_FILE_BYTES = {
 }
 
 
+# The file where yumed saves the newest list's serial. yumed creates and
+# replaces it, so it may be absent, but its directory must exist.
+CLUSTER_STATE_BYTES = 4096
+
+
 def _validate_cluster(value: Any, role: str) -> dict[str, str]:
-    """cluster, as config::v1 checks it: four file references, server-only."""
-    cluster = _closed_object(value, "/cluster", set(CLUSTER_FILE_BYTES))
+    """cluster, as config::v1 checks it: five file references, server-only."""
+    keys = set(CLUSTER_FILE_BYTES) | {"state"}
+    cluster = _closed_object(value, "/cluster", keys)
     if role != "server":
         _fail("/cluster", "is server-only")
-    return {key: _file_reference(cluster[key], f"/cluster/{key}") for key in CLUSTER_FILE_BYTES}
+    return {key: _file_reference(cluster[key], f"/cluster/{key}") for key in sorted(keys)}
 
 
 def _validate_control(control: Any, adapters: list[Any]) -> None:
@@ -1759,10 +1765,16 @@ def diagnose(config_path: Path) -> list[DoctorError]:
         # loader would open.
         for name, reference in checked.cluster.items():
             try:
+                path = _resolve_reference(base, reference)
+                if name == "state":
+                    if not path.parent.is_dir():
+                        raise DoctorError("/cluster/state", "its directory does not exist")
+                    if not os.path.lexists(path):
+                        continue
                 payload = _checked_bytes(
-                    _resolve_reference(base, reference),
+                    path,
                     f"/cluster/{name}",
-                    maximum=CLUSTER_FILE_BYTES[name],
+                    maximum=CLUSTER_STATE_BYTES if name == "state" else CLUSTER_FILE_BYTES[name],
                 )
                 payload[:] = b"\0" * len(payload)
             except DoctorError as error:

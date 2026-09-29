@@ -65,6 +65,26 @@ def write_ytp1_seeds(protocol_out: pathlib.Path, auth_out: pathlib.Path) -> None
         (auth_out / name).write_bytes(value)
 
 
+def write_circuit1_seeds(out: pathlib.Path) -> None:
+    """Cells, relay messages, handshakes and BEGIN payloads from the vectors."""
+    out.mkdir(parents=True, exist_ok=True)
+    root = pathlib.Path(__file__).resolve().parents[2]
+    text = (root / "src/circuit/testdata/circuit1_vectors.txt").read_text()
+    for line in text.splitlines():
+        if "=" not in line or line.startswith("#"):
+            continue
+        name, value = line.split("=", 1)
+        wanted = (name.endswith((".cell", ".message"))
+                  or name in ("handshake.client", "handshake.hop")
+                  or (name.startswith("relay.begin_") and name.endswith(".payload")))
+        if not wanted:
+            continue
+        encoded = bytes.fromhex(value)
+        (out / name).write_bytes(encoded)
+        (out / f"{name}_truncated").write_bytes(encoded[:-1])
+        (out / f"{name}_trailing").write_bytes(encoded + b"\0")
+
+
 def write_config_v1_seeds(out: pathlib.Path) -> None:
     """Use shipped schema-1 documents without opening their file references."""
     out.mkdir(parents=True, exist_ok=True)
@@ -107,9 +127,11 @@ def main() -> int:
 
     write_ytp1_seeds(args.out_dir / "seeds_ytp1_protocol", args.out_dir / "seeds_ytp1_auth")
     write_config_v1_seeds(args.out_dir / "seeds_config_v1")
+    write_circuit1_seeds(args.out_dir / "seeds_circuit1")
 
     counts = {name: len(list((args.out_dir / name).iterdir())) for name in
-              ("seeds_ytp1_protocol", "seeds_ytp1_auth", "seeds_config_v1")}
+              ("seeds_ytp1_protocol", "seeds_ytp1_auth", "seeds_config_v1",
+               "seeds_circuit1")}
     for name, count in counts.items():
         print(f"{name}: {count} seeds")
     return 0

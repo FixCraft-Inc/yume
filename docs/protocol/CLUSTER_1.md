@@ -88,7 +88,7 @@ client's access PSK.
 
 ## Configuration
 
-A server's schema-1 configuration names the four files in its `cluster`
+A server's schema-1 configuration names five files in its `cluster`
 object:
 
 ```json
@@ -96,15 +96,26 @@ object:
   "operator_key": {"file": "credentials/cluster/operator.pub.pem"},
   "list": {"file": "credentials/cluster/cluster-list.json"},
   "signature": {"file": "credentials/cluster/cluster-list.sig"},
-  "peers": {"file": "credentials/cluster/peers.json"}
+  "peers": {"file": "credentials/cluster/peers.json"},
+  "state": {"file": "/var/lib/yume/cluster-state.json"}
 }
 ```
 
-All four are read like the other credential files: regular files owned by
-the daemon's user and closed to group and others, even the public ones.
+The first four are read like the other credential files: regular files owned
+by the daemon's user and closed to group and others, even the public ones.
 `yumed --validate` checks all of it without dialing, and `yume-doctor` checks
 that each file is one the daemon would open. A client configuration and the
 embedding interface refuse the section.
+
+`state` is where the server saves the highest list serial it has loaded, as
+the JSON object `{"schema":1,"cluster":ID,"serial":N}`. The server creates and
+replaces the file itself, owner-only, by writing a new file beside it and
+renaming it into place, so the file's directory must exist and the daemon
+must be able to write there. The packaged unit keeps `/etc/yume` read-only
+and gives the daemon `/var/lib/yume`. A missing file means no list was loaded
+before. The server refuses a list with a lower serial than the saved one,
+after a restart too, and a state file that names another cluster, which the
+operator removes when a server moves to another operator's cluster.
 
 ## Links
 
@@ -125,9 +136,14 @@ link needs streams opened by the side that accepted it.
 
 When the list's `not_after` passes, the server closes its links and ends the
 peers' sessions, and it recognizes no peer until it loads a newer list. On
-SIGHUP it reads the list and peer store again with its other credentials and
-restarts every link. A reload refuses a list naming another operator or with a
-lower serial than the loaded one, and the previous credentials stay in force.
+SIGHUP it reads the list and peer store again with its other credentials. A
+link keeps running when nothing it is built from changed: this server's
+identity and the peer's name, host, address, port, keys, TLS anchors,
+admission key and outbound PSK. A changed peer's link is replaced, a removed
+peer's link closes and a new peer gets one. A newer serial is saved before the
+new credentials take effect. A reload refuses a list naming another operator
+or with a lower serial than the loaded one, and a state file it cannot write,
+and the previous credentials stay in force.
 
 `yumed --status` reports the list's serial and expiry and, for each peer, the
 outbound link's state and the peer's inbound sessions. yumed(8) gives the
@@ -151,8 +167,8 @@ yume-setup cluster-sign --cluster operator --days 30
 fresh PSKs for both directions between the new server and each earlier one,
 copies each side's admission key to the other, and gives the new server the
 operator's public key and a `cluster` section. `cluster-remove` takes a server
-out: the others drop its peer entry and files, and it loses its section and
-cluster files. `cluster-sign` builds the list from the servers' public
+out: the others drop its peer entry and files, and it loses its section,
+its cluster files and a state file inside its server directory. `cluster-sign` builds the list from the servers' public
 material, raises the serial, sets `not_after` from 1 to 366 days ahead (30 by
 default) and copies the list and signature to every server. Each command
 changes files only after all of its new files are written. Deploy each
@@ -163,10 +179,10 @@ and reload the others.
 
 - Links carry no traffic. Circuits, route choice and exits come in later
   phases.
-- The serial is compared only within one run of the daemon. A restarted
-  server accepts any valid list the operator signed, including an older one
-  that has not expired, so removing a server is complete only when every list
-  that still names it has expired.
+- The saved serial protects a server only from lists older than one it has
+  loaded. A server that never received the newest list keeps any valid list
+  it holds, so removing a server is complete only when every server has loaded
+  a list without it or every list that names it has expired.
 - A server that holds an old list keeps dialing until the list expires, and
   the servers that dropped it refuse its links.
 - The operator key signs the whole list, so whoever holds it can add servers.

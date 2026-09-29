@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "engine/status.hpp"
-#include "runtime/composite_keys.hpp"
+#include "providers/composite_keys.hpp"
 
 namespace yume::runtime::cluster {
 
@@ -40,7 +40,7 @@ struct Node final {
     std::string address;
     std::uint16_t port{0U};
     // Its YTP/1 composite identity, whose fingerprint is the node's identity.
-    keys::CompositePublic identity;
+    providers::keys::CompositePublic identity;
     // Its ML-KEM-1024 public key, DER encoded.
     std::vector<std::byte> mlkem_key;
     // The PEM certificates a peer trusts for this node's TLS.

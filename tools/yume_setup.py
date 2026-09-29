@@ -8,6 +8,7 @@ import ctypes
 import datetime
 import errno
 import hashlib
+import hmac
 import ipaddress
 import json
 import math
@@ -16,6 +17,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -98,6 +100,13 @@ IDENTITY_DOMAIN = b"yume/ytp/1/composite-identity/v1"
 # The cluster list: its signature domain, node bound and validity window.
 # They match src/runtime/cluster_list.hpp.
 CLUSTER_LIST_DOMAIN = b"yume-cluster-list/1"
+# The routes view clients choose circuit routes from, signed beside the list.
+CLUSTER_ROUTES_DOMAIN = b"yume-cluster-routes/1"
+# The key network tags are made under. It stays in the operator directory.
+ROUTES_TAG_KEY = "routes-tag.key"
+NETWORK_TAG_BYTES = 8
+# The daemon's own circuit service, granted with add-client --circuits.
+CIRCUIT_CAPABILITY = {"service": "yume.circuit", "kind": "packet"}
 MAX_CLUSTER_NODES = 64
 DEFAULT_CLUSTER_DAYS = 30
 MAX_CLUSTER_DAYS = 366
@@ -752,8 +761,17 @@ def _write_admin_keys(credentials: Path) -> None:
 
 
 def _authorized_entry(
-    client_name: str, fingerprint: str, max_sessions: int | None, weight: float | None
+    client_name: str,
+    fingerprint: str,
+    max_sessions: int | None,
+    weight: float | None,
+    circuits: bool = False,
 ) -> dict[str, object]:
+    capabilities: list[dict[str, str]] = [
+        {"service": service["name"], "kind": service["kind"]} for service in SERVICES
+    ]
+    if circuits:
+        capabilities.append(dict(CIRCUIT_CAPABILITY))
     entry: dict[str, object] = {
         "name": client_name,
         "identity": {
@@ -761,10 +779,7 @@ def _authorized_entry(
             "sha256": fingerprint,
         },
         "access_psk": {"file": f"authorized/{client_name}-access.psk"},
-        "capabilities": [
-            {"service": service["name"], "kind": service["kind"]}
-            for service in SERVICES
-        ],
+        "capabilities": capabilities,
     }
     if max_sessions is not None:
         entry["max_sessions"] = max_sessions
@@ -1063,11 +1078,13 @@ def add_client(
     client_name: str,
     max_sessions: int | None = None,
     weight: float | None = None,
+    circuits: bool = False,
 ) -> Path:
     """Issue one client bundle for an existing server tree.
 
     The new identity is appended to the server's authorized-keys store with
-    the kit's standard services. Nothing changes unless every step succeeds:
+    the kit's standard services, and with yume.circuit when circuits is set,
+    which needs a server in a cluster. Nothing changes unless every step succeeds:
     the bundle, the server's new key and PSK files and the store replacement
     are removed again on failure. A running daemon accepts the client after
     it reloads its credentials (SIGHUP).
@@ -1094,6 +1111,8 @@ def add_client(
     }
     if any((service["name"], service["kind"]) not in declared for service in SERVICES):
         raise SetupError("server configuration does not declare the standard tcp and udp services")
+    if circuits and not isinstance(config.get("cluster"), dict):
+        raise SetupError("--circuits needs a server that belongs to a cluster")
     # A new client takes the server's tuning, so both sides of the kit match.
     server_limits = config.get("limits")
     tuning = dict(TUNING_PRESETS[DEFAULT_PRESET])
@@ -1165,7 +1184,7 @@ def add_client(
             created.append(destination)
         updated = dict(store)
         updated["keys"] = [
-            *keys, _authorized_entry(client_name, fingerprint, max_sessions, weight)
+            *keys, _authorized_entry(client_name, fingerprint, max_sessions, weight, circuits)
         ]
         replacement = _write_replacement(store_path, updated)
         if os.geteuid() == 0:
@@ -1306,7 +1325,7 @@ def _certificate_names(openssl: str, certificate: Path, host: str) -> bool:
     return result.returncode == 0 and "does match certificate" in output
 
 
-def _read_text_file(path: Path, limit: int = MAX_JSON_BYTES) -> str:
+def _read_bytes_file(path: Path, limit: int = MAX_JSON_BYTES) -> bytes:
     try:
         flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK
         descriptor = os.open(path, flags)
@@ -1319,6 +1338,11 @@ def _read_text_file(path: Path, limit: int = MAX_JSON_BYTES) -> str:
         payload = source.read(limit + 1)
     if len(payload) > limit:
         raise SetupError(f"{path} is not a bounded regular file")
+    return payload
+
+
+def _read_text_file(path: Path, limit: int = MAX_JSON_BYTES) -> str:
+    payload = _read_bytes_file(path, limit)
     try:
         return payload.decode("ascii")
     except UnicodeDecodeError as exc:
@@ -1452,9 +1476,10 @@ def _read_cluster(directory: Path) -> tuple[Path, dict[str, object], list[dict[s
         or not isinstance(nodes, list)
         or not all(
             isinstance(node, dict)
-            and set(node) <= {"name", "server", "host", "address"}
+            and set(node) <= {"name", "server", "host", "address", "exit"}
             and all(isinstance(node.get(key), str) for key in ("name", "server", "host"))
             and isinstance(node.get("address", ""), str)
+            and isinstance(node.get("exit", False), bool)
             for node in nodes
         )
     ):
@@ -1478,6 +1503,7 @@ def cluster_init(output_path: Path) -> tuple[Path, str]:
             staging / "operator-composite.pub.pem",
         )
         shutil.rmtree(staging / ".work")
+        _write_bytes(staging / ROUTES_TAG_KEY, secrets.token_bytes(32))
         _write_json(
             staging / "cluster.json",
             {"schema": 1, "cluster": fingerprint, "serial": 0, "nodes": []},
@@ -1501,28 +1527,80 @@ def _peer_entry(name: str, identity: str) -> dict[str, object]:
     }
 
 
-def _cluster_section() -> dict[str, object]:
+def _cluster_section(exit_service: str | None = None) -> dict[str, object]:
     base = NODE_CLUSTER_DIRECTORY.as_posix()
-    return {
+    section: dict[str, object] = {
         "operator_key": {"file": f"{base}/operator.pub.pem"},
         "list": {"file": f"{base}/cluster-list.json"},
         "signature": {"file": f"{base}/cluster-list.sig"},
         "peers": {"file": f"{base}/peers.json"},
+        "routes": {"file": f"{base}/cluster-routes.json"},
+        "routes_signature": {"file": f"{base}/cluster-routes.sig"},
         # yumed writes this itself, so it stays outside the credentials that
         # the operator deploys.
         "state": {"file": NODE_CLUSTER_STATE},
     }
+    if exit_service is not None:
+        section["exit"] = {"service": exit_service}
+    return section
+
+
+def _exit_service(node: "_Node") -> str:
+    """The one direct_tcp service an exit carries circuits' streams through."""
+    services = [
+        adapter.get("service")
+        for adapter in node.config.get("adapters", [])
+        if isinstance(adapter, dict) and adapter.get("kind") == "direct_tcp"
+    ]
+    if len(services) != 1 or not isinstance(services[0], str):
+        raise SetupError(
+            f"{node.config_path} needs exactly one direct_tcp adapter to be an exit"
+        )
+    return services[0]
+
+
+def _network_tag(key: bytes, host: str, address: str | None) -> str:
+    """The network tag of a node: the first bytes of an HMAC of its IPv4 /16
+    or IPv6 /32 under the operator's tag key, from its address or, without
+    one, from resolving its host now, preferring an IPv4 address."""
+    if address is None:
+        try:
+            answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise SetupError(
+                f"cannot resolve {host} for its network tag; give the node an --address"
+            ) from exc
+        found = sorted({str(answer[4][0]) for answer in answers},
+                       key=lambda text: (":" in text, text))
+        if not found:
+            raise SetupError(f"{host} resolves to no address; give the node an --address")
+        address = found[0]
+    parsed = ipaddress.ip_address(address)
+    prefix = 16 if parsed.version == 4 else 32
+    network = ipaddress.ip_network(f"{parsed}/{prefix}", strict=False)
+    # The exploded form is the same on every Python release, and only this
+    # tool ever computes the text, so tags stay equal from one signing to
+    # the next.
+    text = f"{network.network_address.exploded}/{prefix}"
+    return hmac.new(key, text.encode("ascii"), hashlib.sha256).digest()[:NETWORK_TAG_BYTES].hex()
 
 
 def cluster_add(
-    cluster_path: Path, server_path: Path, name: str, host: str, address: str | None = None
+    cluster_path: Path,
+    server_path: Path,
+    name: str,
+    host: str,
+    address: str | None = None,
+    exit_node: bool = False,
 ) -> Path:
     """Enter one node into a cluster.
 
     For every node already in the cluster it writes a fresh PSK for each
     direction into both nodes' peer stores, with the other node's admission
     key, and it gives the new node the operator's public key and a cluster
-    section in its yumed.json. The list is signed separately by cluster-sign.
+    section in its yumed.json. An exit carries circuits' streams through its
+    one direct_tcp service, and the routes view marks it. The list and the
+    view are signed separately by cluster-sign.
     """
     name = _require_node_name(name)
     host = _require_host(host)
@@ -1542,6 +1620,7 @@ def cluster_add(
         raise SetupError(f"{node.config_path} already belongs to a cluster")
     if not _certificate_names(openssl, node.credentials / "server-tls.pem", host):
         raise SetupError(f"the node's TLS certificate does not name {host}")
+    exit_service = _exit_service(node) if exit_node else None
     existing = [_Node(openssl, Path(str(record.get("server")))) for record in records]
     if any(other.identity == node.identity or other.server == node.server for other in existing):
         raise SetupError("that server directory is already in the cluster")
@@ -1574,11 +1653,13 @@ def cluster_add(
         changes.replace(node.peers_path, _json_bytes({"schema": 1, "keys": new_entries}), node.owner)
         changes.copy(root / "operator-composite.pub.pem", node.cluster / "operator.pub.pem", node.owner)
         config = dict(node.config)
-        config["cluster"] = _cluster_section()
+        config["cluster"] = _cluster_section(exit_service)
         changes.replace(node.config_path, _json_bytes(config), node.owner)
         record: dict[str, object] = {"name": name, "server": str(node.server), "host": host}
         if address is not None:
             record["address"] = address
+        if exit_node:
+            record["exit"] = True
         updated = dict(state)
         updated["nodes"] = [*records, record]
         changes.replace(root / "cluster.json", _json_bytes(updated), (root / "cluster.json").stat())
@@ -1668,11 +1749,13 @@ def _sign_list(openssl: str, work: Path, private_key: Path, message: bytes) -> b
 
 
 def cluster_sign(cluster_path: Path, days: int = DEFAULT_CLUSTER_DAYS) -> tuple[int, str]:
-    """Sign the next list and give it to every node.
+    """Sign the next list and routes view and give them to every node.
 
-    The serial goes up by one and not_after is days from now. The list and
-    its signature replace each node's copy, which a running node applies
-    when it reloads (SIGHUP).
+    The serial goes up by one and not_after is days from now, the same for
+    both. The routes view names each node, its identity, its exit mark and
+    its network tag, and no address. Both documents and their signatures
+    replace each node's copies, which a running node applies when it
+    reloads (SIGHUP).
     """
     if not 1 <= days <= MAX_CLUSTER_DAYS:
         raise SetupError(f"days must be in 1..{MAX_CLUSTER_DAYS}")
@@ -1683,8 +1766,12 @@ def cluster_sign(cluster_path: Path, days: int = DEFAULT_CLUSTER_DAYS) -> tuple[
     operator_public = _read_text_file(root / "operator-composite.pub.pem")
     if _pem_fingerprint(openssl, operator_public) != state["cluster"]:
         raise SetupError("the operator key does not match cluster.json")
+    tag_key = _read_bytes_file(root / ROUTES_TAG_KEY, 32)
+    if len(tag_key) != 32:
+        raise SetupError(f"{root / ROUTES_TAG_KEY} must hold 32 bytes")
     nodes = []
     entries = []
+    routes = []
     for record in records:
         node = _Node(openssl, Path(str(record.get("server"))))
         nodes.append(node)
@@ -1700,34 +1787,48 @@ def cluster_sign(cluster_path: Path, days: int = DEFAULT_CLUSTER_DAYS) -> tuple[
         if "address" in record:
             entry["address"] = record["address"]
         entries.append(entry)
+        routes.append({
+            "name": record["name"],
+            "identity": node.identity,
+            "identity_key": node.identity_key,
+            "exit": bool(record.get("exit", False)),
+            "network": _network_tag(tag_key, str(record["host"]), record.get("address")),
+        })
     serial = int(state["serial"]) + 1
     not_after = (
         datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
         + datetime.timedelta(days=days)
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
-    document = _json_bytes(
-        {"schema": 1, "cluster": state["cluster"], "serial": serial,
-         "not_after": not_after, "nodes": entries}
-    )
+    header = {"schema": 1, "cluster": state["cluster"], "serial": serial, "not_after": not_after}
+    document = _json_bytes({**header, "nodes": entries})
+    view = _json_bytes({**header, "nodes": routes})
     work = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=root))
     os.chmod(work, 0o700)
     try:
-        signature = _sign_list(
-            openssl, work, root / "operator-composite.pem",
-            CLUSTER_LIST_DOMAIN + b"\0" + document,
-        )
+        signed = []
+        for label, domain, message in (("list", CLUSTER_LIST_DOMAIN, document),
+                                       ("routes", CLUSTER_ROUTES_DOMAIN, view)):
+            _mkdir_private(work / label)
+            signed.append(_sign_list(openssl, work / label, root / "operator-composite.pem",
+                                     domain + b"\0" + message))
     finally:
         _remove_staging(work, root)
-    if len(signature) != COMPOSITE_SIGNATURE_BYTES:
+    signature, view_signature = signed
+    if any(len(part) != COMPOSITE_SIGNATURE_BYTES for part in signed):
         raise SetupError("the composite signature has the wrong size")
+    published = {
+        "cluster-list.json": document,
+        "cluster-list.sig": signature,
+        "cluster-routes.json": view,
+        "cluster-routes.sig": view_signature,
+    }
     changes = _Changes()
     try:
         owner = (root / "cluster.json").stat()
-        for node in nodes:
-            changes.replace(node.cluster / "cluster-list.json", document, node.owner)
-            changes.replace(node.cluster / "cluster-list.sig", signature, node.owner)
-        changes.replace(root / "cluster-list.json", document, owner)
-        changes.replace(root / "cluster-list.sig", signature, owner)
+        for name, payload in published.items():
+            for node in nodes:
+                changes.replace(node.cluster / name, payload, node.owner)
+            changes.replace(root / name, payload, owner)
         updated = dict(state)
         updated["serial"] = serial
         changes.replace(root / "cluster.json", _json_bytes(updated), owner)
@@ -1801,6 +1902,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="the client's share of the egress rate against other busy clients, 0.1 to 100",
     )
+    add.add_argument(
+        "--circuits",
+        action="store_true",
+        help="let the client build circuits through this cluster node (yume.circuit)",
+    )
     remove = commands.add_parser(
         "remove-client",
         help="remove a client from an existing server directory",
@@ -1838,6 +1944,11 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_add_parser.add_argument(
         "--address", help="an IP address other nodes dial instead of resolving the host"
     )
+    cluster_add_parser.add_argument(
+        "--exit",
+        action="store_true",
+        help="carry circuits' streams to destinations through the node's direct_tcp service",
+    )
     cluster_remove_parser = commands.add_parser(
         "cluster-remove",
         help="take a node out of a cluster and delete its link secrets on the others",
@@ -1848,7 +1959,7 @@ def build_parser() -> argparse.ArgumentParser:
     cluster_remove_parser.add_argument("--name", required=True)
     cluster_sign_parser = commands.add_parser(
         "cluster-sign",
-        help="sign the next cluster list and copy it to every node",
+        help="sign the next cluster list and routes view and copy them to every node",
     )
     cluster_sign_parser.add_argument(
         "--cluster", required=True, type=Path, help="operator directory from cluster-init"
@@ -1870,7 +1981,8 @@ def _run_cluster_command(arguments: argparse.Namespace) -> int:
         print("Keep this directory off the nodes. Add nodes with cluster-add.")
     elif arguments.command == "cluster-add":
         server = cluster_add(
-            arguments.cluster, arguments.server, arguments.name, arguments.host, arguments.address
+            arguments.cluster, arguments.server, arguments.name, arguments.host,
+            arguments.address, arguments.exit,
         )
         print(f"Added {arguments.name} ({server}) to the cluster")
         print("Sign the list with cluster-sign, then deploy the nodes' credentials/cluster.")
@@ -1880,7 +1992,7 @@ def _run_cluster_command(arguments: argparse.Namespace) -> int:
         print("Sign a new list with cluster-sign and reload the other nodes (SIGHUP).")
     else:
         serial, not_after = cluster_sign(arguments.cluster, arguments.days)
-        print(f"Signed cluster list serial {serial}, valid until {not_after}")
+        print(f"Signed cluster list and routes view serial {serial}, valid until {not_after}")
         print("Deploy each node's credentials/cluster and reload it (SIGHUP).")
     return 0
 
@@ -1904,6 +2016,7 @@ def main() -> int:
                 arguments.client_name,
                 arguments.max_sessions,
                 arguments.weight,
+                arguments.circuits,
             )
         else:
             output = init_kit(

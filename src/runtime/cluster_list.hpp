@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -68,6 +69,46 @@ engine::Result<List> verify_list(std::span<const std::byte> list,
                                  std::span<const std::byte> signature,
                                  std::string_view operator_key_pem,
                                  std::chrono::system_clock::time_point now);
+
+// The routes view is what a client needs to choose circuit routes: each
+// node's name, composite identity, exit mark and network tag, and nothing
+// that says where a node is. The operator signs it beside the list, with
+// the same serial and not_after, over kRoutesDomain, one zero byte and the
+// exact bytes.
+inline constexpr std::string_view kRoutesDomain = "yume-cluster-routes/1";
+inline constexpr std::size_t kNetworkTagBytes = 8U;
+
+struct RouteNode final {
+    std::string name;
+    providers::keys::CompositePublic identity;
+    // Whether the node carries circuits' streams to their destinations.
+    bool exit{false};
+    // The first bytes of an HMAC, under a key only the operator holds, of
+    // the node's IPv4 /16 or IPv6 /32. Equal tags mean one network.
+    std::array<std::byte, kNetworkTagBytes> network{};
+};
+
+struct Routes final {
+    std::string cluster;
+    std::uint64_t serial{0U};
+    std::chrono::system_clock::time_point not_after;
+    std::vector<RouteNode> nodes;
+
+    // The node with this identity fingerprint, or nullptr.
+    const RouteNode* find(std::string_view identity) const noexcept;
+};
+
+// Verifies and parses a routes view as verify_list does a list, with the same
+// status codes. Nodes follow the list's rules for names and identities.
+engine::Result<Routes> verify_routes(std::span<const std::byte> routes,
+                                     std::span<const std::byte> signature,
+                                     std::string_view operator_key_pem,
+                                     std::chrono::system_clock::time_point now);
+
+// Whether a view belongs to a list: the same cluster, serial and not_after,
+// and the same nodes by name and identity in the same order. InvalidArgument
+// names the first difference.
+engine::Status check_routes(const List& list, const Routes& routes);
 
 // "YYYY-MM-DDTHH:MM:SSZ", as not_after is written. Nothing for any other text.
 std::optional<std::chrono::system_clock::time_point> parse_utc(

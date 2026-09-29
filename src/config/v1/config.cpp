@@ -650,6 +650,10 @@ std::vector<Service> ParseServices(const Json& services) {
                           {"name", "kind", "max_concurrent_streams"});
         const std::string name =
             ParseServiceName(service.at("name"), JoinPointer(pointer, "name"));
+        if (common::reserved_service_name(name)) {
+            Fail(JoinPointer(pointer, "name"),
+                 "is reserved for services the daemon provides");
+        }
         const ServiceKind kind = ParseServiceKind(
             service.at("kind"), JoinPointer(pointer, "kind"));
         if (!unique.emplace(name, kind).second) {
@@ -1288,15 +1292,27 @@ std::optional<ClusterSettings> ParseCluster(const Json& document, Role role) {
     if (!document.contains("cluster")) return std::nullopt;
     const Json& cluster = document.at("cluster");
     CheckClosedObject(cluster, "/cluster",
-                      {"operator_key", "list", "signature", "peers", "state"},
-                      {"operator_key", "list", "signature", "peers", "state"});
+                      {"operator_key", "list", "signature", "peers", "state",
+                       "routes", "routes_signature", "exit"},
+                      {"operator_key", "list", "signature", "peers", "state",
+                       "routes", "routes_signature"});
     if (role != Role::Server) Fail("/cluster", "is server-only");
+    std::optional<std::string> exit_service;
+    if (cluster.contains("exit")) {
+        const auto& exit = cluster.at("exit");
+        CheckClosedObject(exit, "/cluster/exit", {"service"}, {"service"});
+        exit_service =
+            ParseServiceName(exit.at("service"), "/cluster/exit/service");
+    }
     return ClusterSettings{
         ParseFileReference(cluster, "/cluster", "operator_key"),
         ParseFileReference(cluster, "/cluster", "list"),
         ParseFileReference(cluster, "/cluster", "signature"),
         ParseFileReference(cluster, "/cluster", "peers"),
-        ParseFileReference(cluster, "/cluster", "state")};
+        ParseFileReference(cluster, "/cluster", "state"),
+        ParseFileReference(cluster, "/cluster", "routes"),
+        ParseFileReference(cluster, "/cluster", "routes_signature"),
+        std::move(exit_service)};
 }
 
 std::optional<ControlSettings> ParseControl(
@@ -1376,6 +1392,16 @@ Config Parse(const nlohmann::json& document) {
     }
     std::optional<ControlSettings> control = ParseControl(document, adapters);
     std::optional<ClusterSettings> cluster = ParseCluster(document, role);
+    // A circuit exit follows the destinations of one direct TCP service.
+    if (cluster && cluster->exit_service &&
+        std::none_of(
+            adapters.begin(), adapters.end(), [&](const Adapter& adapter) {
+                const auto* tcp = std::get_if<DirectTcpAdapter>(&adapter);
+                return tcp && tcp->service() == *cluster->exit_service;
+            })) {
+        Fail("/cluster/exit/service",
+             "must name a direct_tcp adapter's service");
+    }
 
     return Config(role, std::move(endpoint), std::move(suite),
                   std::move(credentials), std::move(cover), std::move(services),

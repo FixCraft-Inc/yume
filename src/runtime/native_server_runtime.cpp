@@ -14,8 +14,12 @@
 
 #include <boost/asio/basic_waitable_timer.hpp>
 
+#include "common/service_name.hpp"
 #include "engine/route_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
+#include "providers/circuit_crypto.hpp"
+#include "runtime/circuit_host.hpp"
+#include "runtime/circuit_node.hpp"
 #include "runtime/native_egress_policy.hpp"
 #include "runtime/native_endpoint.hpp"
 #include "runtime/session_keeper.hpp"
@@ -37,6 +41,10 @@ using Timer = boost::asio::basic_waitable_timer<
 // The expiry timer wakes at least this often, so a changed wall clock is
 // noticed without waiting out the whole remaining time.
 constexpr std::chrono::hours kExpiryRecheck{1};
+
+// A client fetches the routes view once per build decision, so a session
+// rarely needs more than one of these streams at a time.
+constexpr std::uint32_t kRoutesStreams = 2U;
 
 bool has_runtime_adapter(const config::v1::Config& config, const config::v1::Service& service) {
     return std::any_of(config.adapters().begin(), config.adapters().end(), [&](const auto& adapter) {
@@ -117,6 +125,9 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     // Cluster links share one resolver, which the runtime closes.
     std::shared_ptr<providers::SystemResolver> link_resolver;
     std::vector<Link> links;
+    // A cluster member's circuit service and the routes view it serves.
+    std::shared_ptr<circuit::CircuitService> circuits;
+    std::shared_ptr<const circuit::RoutesView> routes_view;
     Timer expiry;
     bool cluster_expired{false};
     bool started{false};
@@ -137,6 +148,47 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
             completion(std::move(status));
         } catch (...) {
         }
+    }
+
+    // Whether an authenticated identity is a peer of the loaded, unexpired
+    // list, as the circuit service asks.
+    bool is_peer(std::string_view identity) const noexcept {
+        const auto* cluster = endpoint ? endpoint->cluster() : nullptr;
+        return cluster && !cluster_expired &&
+               std::any_of(
+                   cluster->inbound.begin(), cluster->inbound.end(),
+                   [&](const auto& peer) { return peer.first == identity; });
+    }
+
+    // Opens a circuit stream on this node's link to the peer, for EXTEND.
+    void open_next(std::string_view peer,
+                   engine::CancellationToken cancellation,
+                   circuit::StreamOpened done) {
+        using Opened = engine::Result<std::shared_ptr<engine::StreamResponder>>;
+        if (closing) return done(Opened(Status(StatusCode::Closed)));
+        const auto link = std::find_if(
+            links.begin(), links.end(), [&](const Link& candidate) {
+                return candidate.peer_identity == peer;
+            });
+        if (link == links.end())
+            return done(Opened(Status(StatusCode::NotFound)));
+        const auto session =
+            cluster_expired ? nullptr : link->keeper->active_session();
+        if (!session)
+            return done(Opened(Status(StatusCode::FailedPrecondition)));
+        session->async_open(common::kCircuitServiceName,
+                            engine::ServiceKind::PacketChannel, std::nullopt,
+                            std::move(cancellation), std::move(done));
+    }
+
+    // Serves the view the endpoint loaded last.
+    void publish_routes() {
+        const auto* cluster = endpoint ? endpoint->cluster() : nullptr;
+        routes_view = cluster
+                          ? std::make_shared<const circuit::RoutesView>(
+                                circuit::RoutesView{cluster->routes,
+                                                    cluster->routes_signature})
+                          : nullptr;
     }
 
     // Builds one link endpoint and its keeper, without starting it.
@@ -237,6 +289,7 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
         closing = true;
         boost::system::error_code ignored;
         expiry.cancel(ignored);
+        if (circuits) circuits->close();
         close_links(links);
         if (link_resolver) link_resolver->close();
         if (endpoint) endpoint->close();
@@ -331,10 +384,67 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
             if (!provider.ok()) return Created(provider.status());
             options.route_provider = std::move(provider).take_value();
         }
+        if (const auto& cluster = config.cluster()) {
+            auto crypto =
+                std::make_shared<const providers::circuit::CircuitCrypto>();
+            auto signing = load_signing_identity(config, config_base_directory,
+                                                 crypto->key_context());
+            if (!signing.ok()) return Created(signing.status());
+            const std::weak_ptr<State> weak = state;
+            circuit::NodeEnvironment environment;
+            environment.context = context;
+            environment.crypto = crypto;
+            environment.identity =
+                std::make_shared<const providers::keys::CompositePrivate>(
+                    std::move(signing).take_value());
+            environment.is_peer = [weak](std::string_view identity) {
+                const auto self = weak.lock();
+                return self && self->is_peer(identity);
+            };
+            environment.open_next = [weak](
+                                        std::string_view peer,
+                                        engine::CancellationToken cancellation,
+                                        circuit::StreamOpened done) {
+                if (const auto self = weak.lock())
+                    return self->open_next(peer, std::move(cancellation),
+                                           std::move(done));
+                done(engine::Result<std::shared_ptr<engine::StreamResponder>>(
+                    Status(StatusCode::Closed)));
+            };
+            // Configuration requires the exit to name a direct_tcp service, so
+            // the egress policy and the route provider exist here.
+            if (cluster->exit_service)
+                environment.open_exit = circuit::exit_connector(
+                    *cluster->exit_service, options.egress_policy,
+                    options.route_provider);
+            auto service =
+                circuit::CircuitService::create(std::move(environment));
+            if (!service.ok()) return Created(service.status());
+            state->circuits = std::move(service).take_value();
+            auto routes = circuit::RoutesService::create([weak] {
+                const auto self = weak.lock();
+                return self ? self->routes_view : nullptr;
+            });
+            if (!routes.ok()) return Created(routes.status());
+            // A circuit stream's window stops at its share of the byte budget,
+            // as each link's streams do, so a stalled circuit cannot hold a
+            // peer's whole connection window.
+            options.builtin_services.push_back(
+                {std::string(common::kCircuitServiceName), state->circuits,
+                 config.limits().max_streams(),
+                 config.limits().max_queued_bytes() / kLinkStreamShare});
+            options.builtin_services.push_back(
+                {std::string(common::kRoutesServiceName),
+                 std::move(routes).take_value(), kRoutesStreams});
+        }
         auto created = NativeEndpoint::create(context, config, config_base_directory, std::move(bindings),
                                               std::move(options));
-        if (!created.ok()) return Created(created.status());
+        if (!created.ok()) {
+            if (state->circuits) state->circuits->close();
+            return Created(created.status());
+        }
         state->endpoint = std::move(created).take_value();
+        state->publish_routes();
         if (const auto* cluster = state->endpoint->cluster()) {
             if (!runtime_options.resolver_program.empty()) {
                 providers::SystemResolverOptions resolver_options;
@@ -453,6 +563,11 @@ engine::Status NativeServerRuntime::reload() {
     auto status = state->endpoint->reload_credentials();
     const auto* cluster = state->endpoint->cluster();
     if (!status.ok() || !cluster) return status;
+    try {
+        state->publish_routes();
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted);
+    }
     // A link whose peer and material are unchanged keeps running with its
     // session. A new or changed peer gets a new link, and the links of
     // removed or changed peers close. After expiry every link was closed, so
@@ -538,10 +653,31 @@ NativeServerStatus NativeServerRuntime::status() const {
     view.not_after = cluster->not_after;
     view.self_name = cluster->self_name;
     view.expired = state.cluster_expired;
+    circuit::NodeStatus node;
+    if (state.circuits) {
+        node = state.circuits->status();
+        auto& circuits = view.circuits;
+        circuits.exit = cluster->exit;
+        circuits.circuits = node.circuits;
+        circuits.entry_circuits = node.entry_circuits;
+        circuits.relayed_circuits = node.relayed_circuits;
+        circuits.exit_streams = node.exit_streams;
+        circuits.refused = node.refused;
+        circuits.refused_client_circuits = node.refused_client_circuits;
+        circuits.refused_circuit_rate = node.refused_circuit_rate;
+        circuits.refused_handshakes = node.refused_handshakes;
+        circuits.refused_streams = node.refused_streams;
+        circuits.failed = node.failed;
+    }
     for (const auto& [identity, name] : cluster->inbound) {
         NativeLinkStatus link;
         link.peer_name = name;
         link.peer_identity = identity;
+        for (const auto& counted : node.links) {
+            if (counted.peer_identity != identity) continue;
+            link.circuits_in = counted.inbound;
+            link.circuits_out = counted.outbound;
+        }
         for (const auto& outbound : state.links) {
             if (outbound.peer_identity == identity)
                 link.outbound = outbound.keeper->status();

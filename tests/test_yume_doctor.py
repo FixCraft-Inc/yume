@@ -151,6 +151,17 @@ class YumeDoctorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, invalid_name)
             self.assertIn("/services/0/name:", result.stderr)
 
+        # The daemon's own services own every name under yume.
+        for reserved in ("yume", "yume.circuit", "yume.routes", "yume.other"):
+            document = copy.deepcopy(original)
+            document["services"][0]["name"] = reserved
+            document["adapters"][0]["service"] = reserved
+            config_path.write_text(json.dumps(document))
+            os.chmod(config_path, 0o600)
+            result = self.run_doctor(config_path)
+            self.assertEqual(result.returncode, 1, reserved)
+            self.assertIn("/services/0/name: is reserved", result.stderr)
+
         maximum = copy.deepcopy(original)
         maximum_name = "a" * 128
         maximum["services"][0]["name"] = maximum_name
@@ -608,7 +619,8 @@ class YumeDoctorTests(unittest.TestCase):
         cluster = self.case / "server/credentials/cluster"
         cluster.mkdir(mode=0o700)
         names = {"operator_key": "operator.pub.pem", "list": "cluster-list.json",
-                 "signature": "cluster-list.sig", "peers": "peers.json"}
+                 "signature": "cluster-list.sig", "peers": "peers.json",
+                 "routes": "cluster-routes.json", "routes_signature": "cluster-routes.sig"}
         for name in names.values():
             (cluster / name).write_bytes(b"{}")
             os.chmod(cluster / name, 0o600)
@@ -649,15 +661,30 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertIn("/cluster/peers", result.stderr)
         os.chmod(cluster / "peers.json", 0o600)
 
+        (cluster / "cluster-routes.sig").write_bytes(b"x" * (64 + 4627 + 1))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/cluster/routes_signature", result.stderr)
+        (cluster / "cluster-routes.sig").write_bytes(b"{}")
+
+        server = copy.deepcopy(original)
+        server["cluster"] = {**section, "exit": {"service": "tcp"}}
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         for change, pointer in (
             ({"peers": None}, "/cluster/peers"),
             ({"state": None}, "/cluster/state"),
+            ({"routes": None}, "/cluster/routes"),
+            ({"routes_signature": None}, "/cluster/routes_signature"),
             ({"extra": {"file": "x"}}, "/cluster/extra"),
             ({"list": "cluster-list.json"}, "/cluster/list"),
+            ({"exit": {"service": "udp"}}, "/cluster/exit/service"),
+            ({"exit": {"service": "tcp", "ports": []}}, "/cluster/exit/ports"),
         ):
             server = copy.deepcopy(original)
             server["cluster"] = {**section, **change}
-            for key in ("peers", "state"):
+            for key in ("peers", "state", "routes", "routes_signature"):
                 if key in change and change[key] is None:
                     del server["cluster"][key]
             server_path.write_text(json.dumps(server))

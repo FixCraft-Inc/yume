@@ -11,6 +11,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -77,10 +78,11 @@ struct Composite final {
         const keys::KeyContext context;
         return keys::composite_public_from_pem(context, pem).fingerprint;
     }
-    // The composite signature over the list domain, a zero byte and bytes.
-    std::vector<std::byte> sign(const std::string& bytes) const {
-        std::vector<unsigned char> message(cluster::kListDomain.begin(),
-                                           cluster::kListDomain.end());
+    // The composite signature over a domain, a zero byte and bytes.
+    std::vector<std::byte> sign(
+        const std::string& bytes,
+        std::string_view domain = cluster::kListDomain) const {
+        std::vector<unsigned char> message(domain.begin(), domain.end());
         message.push_back(0U);
         message.insert(message.end(), bytes.begin(), bytes.end());
         auto signature = sign_one(classical.get(), message);
@@ -156,9 +158,41 @@ struct Fixture final {
         const auto bytes = value.dump();
         return verify(bytes, operator_key.sign(bytes));
     }
+    Json route(const Composite& key, const std::string& name, bool exit,
+               const char* network) const {
+        return {{"name", name},
+                {"identity", key.fingerprint()},
+                {"identity_key", key.pem},
+                {"exit", exit},
+                {"network", network}};
+    }
+    Json routes() const {
+        return {{"schema", 1},
+                {"cluster", operator_key.fingerprint()},
+                {"serial", 7},
+                {"not_after", "2099-01-01T00:00:00Z"},
+                {"nodes",
+                 Json::array(
+                     {route(node_a, "gloomy-data", false, "0011223344556677"),
+                      route(node_b, "sweet-fox", true, "8899aabbccddeeff")})}};
+    }
+    yume::engine::Result<cluster::Routes> verify_routes(
+        const std::string& bytes,
+        const std::vector<std::byte>& signature) const {
+        const auto* start = reinterpret_cast<const std::byte*>(bytes.data());
+        return cluster::verify_routes({start, bytes.size()}, signature,
+                                      operator_key.pem, Clock::now());
+    }
+    yume::engine::Result<cluster::Routes> signed_routes(
+        const Json& value) const {
+        const auto bytes = value.dump();
+        return verify_routes(bytes,
+                             operator_key.sign(bytes, cluster::kRoutesDomain));
+    }
 };
 
-void expect_refused(const yume::engine::Result<cluster::List>& result,
+template <typename Value>
+void expect_refused(const yume::engine::Result<Value>& result,
                     const char* description,
                     StatusCode code = StatusCode::InvalidArgument) {
     if (result.ok() || result.status().code() != code)
@@ -279,6 +313,93 @@ void test_document_refusals(const Fixture& fixture) {
     }
 }
 
+// The routes view names nodes, their exit marks and network tags, and no
+// address. It verifies only under its own domain and must match its list.
+void test_routes(const Fixture& fixture) {
+    auto routes = fixture.signed_routes(fixture.routes());
+    check(routes.ok(), "a valid routes view was refused");
+    const auto& view = routes.value();
+    const auto* b = view.find(fixture.node_b.fingerprint());
+    check(view.serial == 7U && view.nodes.size() == 2U && b != nullptr &&
+              b->name == "sweet-fox" && b->exit && !view.nodes[0].exit &&
+              b->network[0] == std::byte{0x88} &&
+              b->network[7] == std::byte{0xff},
+          "the routes view's fields are wrong");
+    auto list = fixture.signed_list(fixture.document());
+    check(list.ok() && cluster::check_routes(list.value(), view).ok(),
+          "a matching routes view and list disagreed");
+
+    const auto bytes = fixture.routes().dump();
+    expect_refused(
+        fixture.verify_routes(bytes, fixture.operator_key.sign(bytes)),
+        "a view signed as a list verified");
+    const auto list_bytes = fixture.document().dump();
+    expect_refused(
+        fixture.verify(list_bytes, fixture.operator_key.sign(
+                                       list_bytes, cluster::kRoutesDomain)),
+        "a list signed as a view verified");
+
+    const auto refused = [&](Json value, const char* description) {
+        expect_refused(fixture.signed_routes(value), description);
+    };
+    const std::pair<const char*, Json> bad_fields[] = {
+        {"exit", "yes"},
+        {"network", "0011223344556677aa"},
+        {"network", "00112233445566ZZ"},
+        {"network", "0011223344556677"},
+        {"identity", fixture.node_b.fingerprint()},
+        {"name", "-bad"},
+    };
+    for (const auto& [field, bad] : bad_fields) {
+        Json value = fixture.routes();
+        value["nodes"][0][field] = bad;
+        if (std::string(field) == "network" && bad == "0011223344556677") {
+            // The same tag twice is allowed: two nodes on one network.
+            value["nodes"][1]["network"] = bad;
+            check(fixture.signed_routes(value).ok(),
+                  "a shared network was refused");
+            continue;
+        }
+        refused(value, "a routes node with a bad field was accepted");
+    }
+    Json value = fixture.routes();
+    value["nodes"][0]["address"] = "127.0.0.2";
+    refused(value, "a routes node with an address was accepted");
+    value = fixture.routes();
+    value["nodes"][0].erase("exit");
+    refused(value, "a routes node without an exit mark was accepted");
+    value = fixture.routes();
+    value["nodes"][1]["name"] = "gloomy-data";
+    refused(value, "a repeated routes name was accepted");
+    value = fixture.routes();
+    value["not_after"] = "2020-01-01T00:00:00Z";
+    expect_refused(fixture.signed_routes(value), "an expired view was accepted",
+                   StatusCode::FailedPrecondition);
+
+    const auto mismatch = [&](Json changed, const char* description) {
+        auto other = fixture.signed_routes(changed);
+        check(other.ok(), "a changed routes view did not verify");
+        const auto status = cluster::check_routes(list.value(), other.value());
+        check(!status.ok() && status.code() == StatusCode::InvalidArgument,
+              description);
+    };
+    value = fixture.routes();
+    value["serial"] = 8;
+    mismatch(value, "a view of another serial matched the list");
+    value = fixture.routes();
+    value["not_after"] = "2098-01-01T00:00:00Z";
+    mismatch(value, "a view of another not_after matched the list");
+    value = fixture.routes();
+    value["nodes"].erase(1);
+    mismatch(value, "a view without a node matched the list");
+    value = fixture.routes();
+    std::swap(value["nodes"][0], value["nodes"][1]);
+    mismatch(value, "a view in another order matched the list");
+    value = fixture.routes();
+    value["nodes"][1]["name"] = "sour-fox";
+    mismatch(value, "a view with another name matched the list");
+}
+
 void test_dates() {
     check(cluster::parse_utc("2026-09-28T12:34:56Z").has_value(),
           "a valid date was refused");
@@ -299,6 +420,7 @@ int main() {
         test_valid_list(fixture);
         test_signature_refusals(fixture);
         test_document_refusals(fixture);
+        test_routes(fixture);
         test_dates();
     } catch (const std::exception& error) {
         std::cerr << "cluster list test failure: " << error.what() << '\n';

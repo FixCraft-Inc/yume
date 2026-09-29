@@ -26,8 +26,9 @@
 
 namespace yume::runtime {
 
-// One cluster peer as this node sees it: its outbound link's keeper status
-// and the sessions the peer holds to this node.
+// One cluster peer as this node sees it: its outbound link's keeper status,
+// the sessions the peer holds to this node, and the circuits that arrive
+// over the peer's link and leave over this node's link to it, counted apart.
 struct NativeLinkStatus final {
     std::string peer_name;
     std::string peer_identity;
@@ -35,6 +36,25 @@ struct NativeLinkStatus final {
     std::size_t inbound_sessions{0U};
     // When the oldest inbound session was admitted.
     std::chrono::steady_clock::time_point inbound_since{};
+    std::size_t circuits_in{0U};
+    std::size_t circuits_out{0U};
+};
+
+// The node's circuit service in counts. No count names a circuit or joins
+// the two neighbours of one. Refusals are since start, by the bound that
+// refused them, and refused is their sum.
+struct NativeCircuitStatus final {
+    bool exit{false};
+    std::size_t circuits{0U};
+    std::size_t entry_circuits{0U};
+    std::size_t relayed_circuits{0U};
+    std::size_t exit_streams{0U};
+    std::uint64_t refused{0U};
+    std::uint64_t refused_client_circuits{0U};
+    std::uint64_t refused_circuit_rate{0U};
+    std::uint64_t refused_handshakes{0U};
+    std::uint64_t refused_streams{0U};
+    std::uint64_t failed{0U};
 };
 
 struct NativeClusterStatus final {
@@ -44,6 +64,7 @@ struct NativeClusterStatus final {
     std::string self_name;
     bool expired{false};
     std::vector<NativeLinkStatus> links;
+    NativeCircuitStatus circuits;
 };
 
 struct NativeServerStatus final {
@@ -73,7 +94,12 @@ struct NativeServerRuntimeOptions final {
 // With a cluster section, the runtime keeps one outbound link to every peer
 // once the listeners accept, reconnecting with SessionKeeper's backoff. When
 // the list's not_after passes, the links close and the peers' sessions end
-// until a reload loads a newer list.
+// until a reload loads a newer list. A cluster member also serves circuit 1
+// on yume.circuit, extending circuits over its links and, when its cluster
+// section names an exit, carrying their streams through that direct_tcp
+// service's destination policy, and serves the routes view on yume.routes.
+// Circuits sign with the composite key loaded at start: a changed node
+// identity needs a restart, since the list names the old one anyway.
 // Destinations are enforced by NativeEgressPolicy for the request and for
 // every resolved address. Each packet adapter admits one authenticated stream
 // across all sessions and enforces local/peer address policy in both

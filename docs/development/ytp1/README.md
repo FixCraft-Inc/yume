@@ -373,7 +373,8 @@ Schema 1 is role tagged and contains these sections only:
   server cover root;
 - `services` and `adapters`: explicit named-service exposure, unique by
   `(name, kind)`. Several adapters of one kind are valid when their concrete
-  resources differ; exact resource collisions are rejected;
+  resources differ; exact resource collisions are rejected. Names whose first
+  segment is `yume` belong to services the daemon provides and are refused;
 - `destinations` on each server `direct_tcp` or `direct_udp` adapter:
   `public` permits globally reachable unicast addresses, and `networks` lists
   up to 64 canonical prefixes such as `10.0.0.0/8` or `fd00::/8`. At least one
@@ -432,8 +433,10 @@ Schema 1 is role tagged and contains these sections only:
   directory must belong to that user and be closed to writes by group and
   others. yume(1) and yumed(8) describe the protocol;
 - `cluster`, optional and server-only: `operator_key`, `list`, `signature`,
-  `peers` and `state`, the file references of a cluster membership. The
-  daemon writes `state` itself, so it needs a writable directory.
+  `routes`, `routes_signature`, `peers` and `state`, the file references of
+  a cluster membership, and an optional `exit` whose `service` names the
+  `direct_tcp` adapter a circuit exit leaves through. The daemon writes
+  `state` itself, so it needs a writable directory.
   `yume-setup`'s cluster commands write them, and
   [cluster 1](../../protocol/CLUSTER_1.md) gives their format and what the
   daemon checks.

@@ -22,6 +22,7 @@
 #include <openssl/x509.h>
 
 #include "common/secure_erase.hpp"
+#include "common/service_name.hpp"
 #include "fs/secret_file.hpp"
 #include "providers/openssl_security_provider.hpp"
 #include "providers/tls13_secure_channel.hpp"
@@ -364,11 +365,19 @@ std::vector<NativeAuthorizationPolicy::Grant> read_capabilities(
         const auto expected_kind = kind == "stream"
                                        ? config::v1::ServiceKind::Stream
                                        : config::v1::ServiceKind::Packet;
-        require(std::any_of(config.services().begin(), config.services().end(),
-                            [&](const auto& service) {
-                                return service.name() == name &&
-                                       service.kind() == expected_kind;
-                            }),
+        // yume.circuit is the daemon's own packet service, offered only by a
+        // cluster member. Its grant also lets the client fetch the routes
+        // view from yume.routes.
+        const bool circuit = name == common::kCircuitServiceName;
+        require(circuit
+                    ? config.cluster().has_value() &&
+                          expected_kind == config::v1::ServiceKind::Packet
+                    : std::any_of(config.services().begin(),
+                                  config.services().end(),
+                                  [&](const auto& service) {
+                                      return service.name() == name &&
+                                             service.kind() == expected_kind;
+                                  }),
                 "credential capability is not a configured service");
         const auto native_kind = service_kind(expected_kind);
         require(std::none_of(grants.begin(), grants.end(),
@@ -378,6 +387,11 @@ std::vector<NativeAuthorizationPolicy::Grant> read_capabilities(
                              }),
                 "credential store contains a duplicate capability");
         grants.push_back({fingerprint, name, native_kind});
+        if (circuit) {
+            grants.push_back({fingerprint,
+                              std::string(common::kRoutesServiceName),
+                              engine::ServiceKind::ByteStream});
+        }
     }
     return grants;
 }
@@ -436,6 +450,28 @@ NativeClusterCredentials load_cluster(
                 StatusCode::FailedPrecondition);
         result.saved_serial = previous->serial;
     }
+    // The routes view goes to clients as it was signed, so it is checked
+    // against the list here, where the list is known.
+    auto routes_bytes = read_file(base, refs.routes, cluster::kMaxListBytes);
+    auto routes_signature =
+        read_file(base, refs.routes_signature, ytp1::kCompositeSignatureSize);
+    auto routes = cluster::verify_routes(
+        routes_bytes.bytes(), routes_signature.bytes(), operator_key.text(),
+        std::chrono::system_clock::now());
+    if (!routes.ok()) throw routes.status();
+    if (auto match = cluster::check_routes(list, routes.value()); !match.ok())
+        throw match;
+    result.exit = routes.value().find(local.fingerprint)->exit;
+    require(result.exit == refs.exit_service.has_value(),
+            result.exit ? "the routes view marks this node as an exit but its "
+                          "cluster section has no exit"
+                        : "this node's cluster section has an exit but the "
+                          "routes view does not mark it as one",
+            StatusCode::FailedPrecondition);
+    result.routes.assign(routes_bytes.bytes().begin(),
+                         routes_bytes.bytes().end());
+    result.routes_signature.assign(routes_signature.bytes().begin(),
+                                   routes_signature.bytes().end());
 
     const auto store_path = resolve_reference(base, refs.peers.path());
     auto store = read_store(store_path, cluster::kMaxNodes - 1U, true);
@@ -778,9 +814,7 @@ bool NativeAuthorizationPolicy::recognizes(
             return matches(grant.peer_identity);
         }))
         return true;
-    return std::any_of(peers_.identities.begin(), peers_.identities.end(),
-                       matches) &&
-           std::chrono::system_clock::now() < peers_.not_after;
+    return is_peer(peer_identity);
 }
 
 std::size_t NativeAuthorizationPolicy::max_sessions(
@@ -801,15 +835,32 @@ double NativeAuthorizationPolicy::egress_weight(
 
 Status NativeAuthorizationPolicy::authorize(
     const engine::StreamOpenContext& context) const noexcept {
-    if (context.peer_evidence().peer_role() == peer_role_ &&
-        std::any_of(grants_.begin(), grants_.end(), [&](const auto& grant) {
-            return grant.peer_identity == context.peer_evidence().identity() &&
+    if (context.peer_evidence().peer_role() != peer_role_)
+        return Status(StatusCode::FailedPrecondition);
+    const auto& identity = context.peer_evidence().identity();
+    if (std::any_of(grants_.begin(), grants_.end(), [&](const auto& grant) {
+            return grant.peer_identity == identity &&
                    grant.service_name == context.service_name() &&
                    grant.service_kind == context.service_kind();
         })) {
         return Status::success();
     }
+    // A cluster peer extends circuits over its link and opens nothing else.
+    if (context.service_name() == common::kCircuitServiceName &&
+        context.service_kind() == engine::ServiceKind::PacketChannel &&
+        is_peer(identity)) {
+        return Status::success();
+    }
     return Status(StatusCode::FailedPrecondition);
+}
+
+bool NativeAuthorizationPolicy::is_peer(
+    std::string_view peer_identity) const noexcept {
+    return std::any_of(peers_.identities.begin(), peers_.identities.end(),
+                       [&](const auto& identity) {
+                           return identity == peer_identity;
+                       }) &&
+           std::chrono::system_clock::now() < peers_.not_after;
 }
 
 Result<LoadedNativeCredentials> load_native_credentials(
@@ -838,6 +889,27 @@ Result<LoadedNativeCredentials> load_native_credentials(
         return Result<LoadedNativeCredentials>(status);
     } catch (...) {
         return Result<LoadedNativeCredentials>(Status(StatusCode::Internal));
+    }
+}
+
+Result<keys::CompositePrivate> load_signing_identity(
+    const config::v1::Config& config,
+    const std::filesystem::path& config_base_directory,
+    const keys::KeyContext& keys) noexcept {
+    using Loaded = Result<keys::CompositePrivate>;
+    try {
+        const auto* refs =
+            std::get_if<config::v1::ServerCredentials>(&config.credentials());
+        if (!refs) return Loaded(Status(StatusCode::InvalidArgument));
+        auto pem = read_file(config_base_directory, refs->composite_key());
+        return Loaded(keys::composite_private_from_pem(keys, pem.text()));
+    } catch (const std::bad_alloc&) {
+        return Loaded(Status(StatusCode::ResourceExhausted));
+    } catch (const CredentialError& error) {
+        return Loaded(Status::diagnostic(error.code(), error.what()));
+    } catch (...) {
+        return Loaded(Status::diagnostic(StatusCode::InvalidArgument,
+                                         "server composite key is malformed"));
     }
 }
 

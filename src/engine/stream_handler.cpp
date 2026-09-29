@@ -78,4 +78,17 @@ void StreamHandler::on_route(
     }
 }
 
+Result<AuthorizedRouteRequest> RouteAuthority::after_policy(
+    const StreamOpenContext& context) {
+    const auto* destination = context.destination_if();
+    if (destination == nullptr) {
+        return Result<AuthorizedRouteRequest>(
+            Status(StatusCode::InvalidArgument,
+                   "a route request needs a destination"));
+    }
+    return Result<AuthorizedRouteRequest>(
+        AuthorizedRouteRequest(context.stream_id(), context.service_name(),
+                               context.peer_evidence(), *destination));
+}
+
 }  // namespace yume::engine

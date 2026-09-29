@@ -677,13 +677,19 @@ private:
 // operator_key. peers is the node's private store of pairwise link secrets.
 // state is the file where yumed keeps the highest list serial it has loaded,
 // which it creates and replaces itself, so it must be somewhere yumed may
-// write. yumed verifies the list and the store when it starts.
+// write. routes is the operator-signed view of the cluster that clients get
+// to choose routes. exit_service, when set, names the direct_tcp service
+// whose destinations circuits may reach through this node. yumed verifies
+// the list, the view and the store when it starts.
 struct ClusterSettings final {
     FileReference operator_key;
     FileReference list;
     FileReference signature;
     FileReference peers;
     FileReference state;
+    FileReference routes;
+    FileReference routes_signature;
+    std::optional<std::string> exit_service;
 };
 
 // control.socket: the owner-only control socket of yume or yumed, a

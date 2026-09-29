@@ -33,17 +33,17 @@ using keys::require;
 
 void closed(const Json& value, std::initializer_list<std::string_view> fields) {
     require(value.is_object() && value.size() == fields.size(),
-            "cluster list object has missing or unknown fields");
+            "cluster document object has missing or unknown fields");
     for (const auto field : fields) {
         require(value.contains(field),
-                "cluster list object is missing a field");
+                "cluster document object is missing a field");
     }
 }
 
 const std::string& text(const Json& value, std::size_t maximum) {
     require(value.is_string() && !value.get_ref<const std::string&>().empty() &&
                 value.get_ref<const std::string&>().size() <= maximum,
-            "cluster list text field is missing or too long");
+            "cluster document text field is missing or too long");
     return value.get_ref<const std::string&>();
 }
 
@@ -100,6 +100,112 @@ bool trust_text(const keys::KeyContext& keys, std::string_view value) {
     return blocks >= 1U;
 }
 
+// The signature check both documents share: domain, one zero byte, bytes.
+keys::CompositePublic verified_signer(const keys::KeyContext& keys,
+                                      std::string_view domain,
+                                      std::span<const std::byte> bytes,
+                                      std::span<const std::byte> signature,
+                                      std::string_view operator_key_pem,
+                                      const char* refusal) {
+    auto operator_key = keys::composite_public_from_pem(keys, operator_key_pem);
+    std::vector<std::byte> message;
+    message.reserve(domain.size() + 1U + bytes.size());
+    for (const char ch : domain) message.push_back(static_cast<std::byte>(ch));
+    message.push_back(std::byte{0});
+    message.insert(message.end(), bytes.begin(), bytes.end());
+    require(keys::verify_composite(keys, operator_key, message, signature),
+            refusal);
+    return operator_key;
+}
+
+bool network_text(std::string_view value,
+                  std::array<std::byte, kNetworkTagBytes>& tag) noexcept {
+    if (value.size() != 2U * kNetworkTagBytes) return false;
+    const auto nibble = [](char ch) -> int {
+        if (ch >= '0' && ch <= '9') return ch - '0';
+        if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+        return -1;
+    };
+    for (std::size_t i = 0U; i < kNetworkTagBytes; ++i) {
+        const int high = nibble(value[2U * i]);
+        const int low = nibble(value[2U * i + 1U]);
+        if (high < 0 || low < 0) return false;
+        tag[i] = static_cast<std::byte>((high << 4) | low);
+    }
+    return true;
+}
+
+RouteNode parse_route_node(const keys::KeyContext& keys, const Json& entry) {
+    closed(entry, {"name", "identity", "identity_key", "exit", "network"});
+    RouteNode node;
+    node.name = text(entry.at("name"), kMaxNameBytes);
+    require(label_text(node.name), "routes view node name is invalid");
+    const auto& identity = text(entry.at("identity"), 64U);
+    require(fingerprint_text(identity),
+            "routes view node identity must be lowercase SHA-256");
+    node.identity = keys::composite_public_from_pem(
+        keys, text(entry.at("identity_key"), 32768U));
+    require(node.identity.fingerprint == identity,
+            "routes view node identity does not match its key");
+    require(entry.at("exit").is_boolean(),
+            "routes view exit must be a boolean");
+    node.exit = entry.at("exit").get<bool>();
+    require(network_text(text(entry.at("network"), 2U * kNetworkTagBytes),
+                         node.network),
+            "routes view network must be 16 lowercase hex digits");
+    return node;
+}
+
+// The header both documents share: schema 1, the signer as cluster, a
+// positive serial and a future not_after.
+template <typename Document>
+void parse_header(const Json& document, const std::string& operator_fingerprint,
+                  std::chrono::system_clock::time_point now, Document& out) {
+    closed(document, {"schema", "cluster", "serial", "not_after", "nodes"});
+    require(document.at("schema").is_number_unsigned() &&
+                document.at("schema").get<std::uint64_t>() == 1U,
+            "cluster document schema must be 1");
+    out.cluster = text(document.at("cluster"), 64U);
+    require(out.cluster == operator_fingerprint,
+            "cluster document names another operator than its signer");
+    const auto& serial = document.at("serial");
+    require(serial.is_number_unsigned() && serial.get<std::uint64_t>() >= 1U,
+            "cluster document serial must be a positive integer");
+    out.serial = serial.get<std::uint64_t>();
+    const auto not_after = parse_utc(text(document.at("not_after"), 20U));
+    require(not_after.has_value(),
+            "cluster document not_after must be YYYY-MM-DDTHH:MM:SSZ");
+    out.not_after = *not_after;
+    require(out.not_after > now, "cluster document has expired",
+            StatusCode::FailedPrecondition);
+    const auto& nodes = document.at("nodes");
+    require(nodes.is_array() && !nodes.empty() && nodes.size() <= kMaxNodes,
+            "cluster document must name 1 to 64 nodes");
+}
+
+Routes parse_routes(const keys::KeyContext& keys,
+                    std::span<const std::byte> bytes,
+                    const std::string& operator_fingerprint,
+                    std::chrono::system_clock::time_point now) {
+    const std::string_view view(reinterpret_cast<const char*>(bytes.data()),
+                                bytes.size());
+    const Json document = Json::parse(view, nullptr, false);
+    require(!document.is_discarded(), "routes view is not JSON");
+    Routes routes;
+    parse_header(document, operator_fingerprint, now, routes);
+    std::set<std::string> names;
+    std::set<std::string> identities;
+    for (const auto& entry : document.at("nodes")) {
+        auto node = parse_route_node(keys, entry);
+        require(names.insert(node.name).second,
+                "routes view repeats a node name");
+        require(identities.insert(node.identity.fingerprint).second,
+                "routes view repeats a node identity");
+        routes.nodes.push_back(std::move(node));
+    }
+    return routes;
+}
+
 Node parse_node(const keys::KeyContext& keys, const Json& entry) {
     if (entry.is_object() && entry.contains("address")) {
         closed(entry, {"name", "identity", "host", "address", "port",
@@ -148,27 +254,9 @@ List parse_list(const keys::KeyContext& keys, std::span<const std::byte> bytes,
                                 bytes.size());
     const Json document = Json::parse(view, nullptr, false);
     require(!document.is_discarded(), "cluster list is not JSON");
-    closed(document, {"schema", "cluster", "serial", "not_after", "nodes"});
-    require(document.at("schema").is_number_unsigned() &&
-                document.at("schema").get<std::uint64_t>() == 1U,
-            "cluster list schema must be 1");
     List list;
-    list.cluster = text(document.at("cluster"), 64U);
-    require(list.cluster == operator_fingerprint,
-            "cluster list names another operator than its signer");
-    const auto& serial = document.at("serial");
-    require(serial.is_number_unsigned() && serial.get<std::uint64_t>() >= 1U,
-            "cluster list serial must be a positive integer");
-    list.serial = serial.get<std::uint64_t>();
-    const auto not_after = parse_utc(text(document.at("not_after"), 20U));
-    require(not_after.has_value(),
-            "cluster list not_after must be YYYY-MM-DDTHH:MM:SSZ");
-    list.not_after = *not_after;
-    require(list.not_after > now, "cluster list has expired",
-            StatusCode::FailedPrecondition);
+    parse_header(document, operator_fingerprint, now, list);
     const auto& nodes = document.at("nodes");
-    require(nodes.is_array() && !nodes.empty() && nodes.size() <= kMaxNodes,
-            "cluster list must name 1 to 64 nodes");
     std::set<std::string> names;
     std::set<std::string> identities;
     list.nodes.reserve(nodes.size());
@@ -241,16 +329,9 @@ Result<List> verify_list(std::span<const std::byte> list,
         require(!list.empty() && list.size() <= kMaxListBytes,
                 "cluster list must hold 1 byte to 1 MiB");
         const keys::KeyContext keys;
-        const auto operator_key =
-            keys::composite_public_from_pem(keys, operator_key_pem);
-        std::vector<std::byte> message;
-        message.reserve(kListDomain.size() + 1U + list.size());
-        for (const char ch : kListDomain)
-            message.push_back(static_cast<std::byte>(ch));
-        message.push_back(std::byte{0});
-        message.insert(message.end(), list.begin(), list.end());
-        require(keys::verify_composite(keys, operator_key, message, signature),
-                "cluster list signature does not verify");
+        const auto operator_key = verified_signer(
+            keys, kListDomain, list, signature, operator_key_pem,
+            "cluster list signature does not verify");
         return Result<List>(
             parse_list(keys, list, operator_key.fingerprint, now));
     } catch (const std::bad_alloc&) {
@@ -261,6 +342,55 @@ Result<List> verify_list(std::span<const std::byte> list,
         return Result<List>(Status::diagnostic(StatusCode::InvalidArgument,
                                                "cluster list is malformed"));
     }
+}
+
+const RouteNode* Routes::find(std::string_view identity) const noexcept {
+    for (const auto& node : nodes) {
+        if (node.identity.fingerprint == identity) return &node;
+    }
+    return nullptr;
+}
+
+Result<Routes> verify_routes(std::span<const std::byte> routes,
+                             std::span<const std::byte> signature,
+                             std::string_view operator_key_pem,
+                             std::chrono::system_clock::time_point now) {
+    try {
+        require(!routes.empty() && routes.size() <= kMaxListBytes,
+                "routes view must hold 1 byte to 1 MiB");
+        const keys::KeyContext keys;
+        const auto operator_key = verified_signer(
+            keys, kRoutesDomain, routes, signature, operator_key_pem,
+            "routes view signature does not verify");
+        return Result<Routes>(
+            parse_routes(keys, routes, operator_key.fingerprint, now));
+    } catch (const std::bad_alloc&) {
+        return Result<Routes>(Status(StatusCode::ResourceExhausted));
+    } catch (const keys::KeyError& error) {
+        return Result<Routes>(Status::diagnostic(error.code(), error.what()));
+    } catch (...) {
+        return Result<Routes>(Status::diagnostic(StatusCode::InvalidArgument,
+                                                 "routes view is malformed"));
+    }
+}
+
+Status check_routes(const List& list, const Routes& routes) {
+    const auto differs = [](const char* what) {
+        return Status::diagnostic(StatusCode::InvalidArgument, what);
+    };
+    if (routes.cluster != list.cluster)
+        return differs("the routes view names another cluster than the list");
+    if (routes.serial != list.serial || routes.not_after != list.not_after)
+        return differs("the routes view and the list were not signed together");
+    if (routes.nodes.size() != list.nodes.size())
+        return differs("the routes view and the list name different nodes");
+    for (std::size_t i = 0U; i < list.nodes.size(); ++i) {
+        if (routes.nodes[i].name != list.nodes[i].name ||
+            routes.nodes[i].identity.fingerprint !=
+                list.nodes[i].identity.fingerprint)
+            return differs("the routes view and the list name different nodes");
+    }
+    return Status::success();
 }
 
 }  // namespace yume::runtime::cluster

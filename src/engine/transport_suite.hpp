@@ -156,13 +156,16 @@ private:
 
 class ServiceRequirement final {
 public:
+    // max_receive_credit, when not zero, caps the receive window of every
+    // stream the peer opens to this service below the session's stream
+    // maximum, and never below one frame. It changes nothing on the wire:
+    // each side sizes its own windows.
     static Result<ServiceRequirement> create(
-        std::string service_name,
-        ServiceKind service_kind,
-        std::string provider_id,
-        std::uint32_t api_version,
+        std::string service_name, ServiceKind service_kind,
+        std::string provider_id, std::uint32_t api_version,
         std::uint32_t max_concurrent_streams,
-        CapabilitySet required_capabilities);
+        CapabilitySet required_capabilities,
+        std::uint32_t max_receive_credit = 0U);
 
     const std::string& service_name() const noexcept { return service_name_; }
     ServiceKind service_kind() const noexcept { return service_kind_; }
@@ -174,14 +177,16 @@ public:
     CapabilitySet required_capabilities() const noexcept {
         return required_capabilities_;
     }
+    std::uint32_t max_receive_credit() const noexcept {
+        return max_receive_credit_;
+    }
 
 private:
-    ServiceRequirement(std::string service_name,
-                       ServiceKind service_kind,
-                       std::string provider_id,
-                       std::uint32_t api_version,
+    ServiceRequirement(std::string service_name, ServiceKind service_kind,
+                       std::string provider_id, std::uint32_t api_version,
                        std::uint32_t max_concurrent_streams,
-                       CapabilitySet required_capabilities) noexcept;
+                       CapabilitySet required_capabilities,
+                       std::uint32_t max_receive_credit) noexcept;
 
     std::string service_name_;
     ServiceKind service_kind_;
@@ -189,6 +194,7 @@ private:
     std::uint32_t api_version_{0U};
     std::uint32_t max_concurrent_streams_{0U};
     CapabilitySet required_capabilities_;
+    std::uint32_t max_receive_credit_{0U};
 };
 
 // A descriptor has no setters. Creation validates one exact provider for each

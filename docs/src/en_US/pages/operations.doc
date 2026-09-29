@@ -65,24 +65,30 @@ requires at least one.
 ## Join servers into a cluster
 
 Servers of one operator can form a cluster: each checks a server list the
-operator signs and keeps an authenticated link to every other server. The
-links carry no traffic yet; they are the base for routes over several servers.
-Keep the operator directory, which holds the signing key, off the servers, and
-run the commands on the operator's copies of the server directories:
+operator signs and keeps an authenticated link to every other server, and
+circuits run over the links through two or three servers. The `yume` client
+does not build circuits yet. Keep the operator directory, which holds the
+signing key, off the servers, and run the commands on the operator's copies
+of the server directories:
 
 @code bash
 yume-setup cluster-init --output "$PWD/operator"
 yume-setup cluster-add --cluster operator --server north/server \
   --name north --host north.example.net
 yume-setup cluster-add --cluster operator --server south/server \
-  --name south --host south.example.net
+  --name south --host south.example.net --exit
 yume-setup cluster-sign --cluster operator --days 30
 @end
 
 `cluster-add` writes a PSK for each direction between the new server and each
 earlier one into their `credentials/cluster/` directories, and adds a
-`cluster` section to the new server's `yumed.json`. `cluster-sign` signs the
-next list and copies it to every server. Deploy each server's
+`cluster` section to the new server's `yumed.json`. With `--exit` the server
+carries circuits' streams to destinations through its `direct_tcp` adapter's
+destination policy. `cluster-sign` signs the next list and the routes view
+that clients choose routes from, and copies both to every server. A server
+whose host does not resolve when you sign needs `--address` at
+`cluster-add`. `add-client --circuits` lets a new client build circuits
+through that server. Deploy each server's
 `credentials/cluster/` directory (and a new member's `yumed.json`) with its
 files owned by the daemon's account and mode `0600`, restart a new member and
 reload the others. Sign again before `not_after`, 30 days by

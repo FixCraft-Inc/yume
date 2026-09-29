@@ -51,6 +51,18 @@ private:
     std::optional<RouteDestination> destination_;
 };
 
+// Makes the route request for a stream that reached this node through another
+// protocol layer instead of a YTP OPEN: a circuit exit's stream. The caller
+// must already have applied the destination policy the dispatcher applies to
+// an OPEN for context's service and destination, and the route provider
+// still checks every resolved address. InvalidArgument without a
+// destination.
+class RouteAuthority final {
+public:
+    static Result<AuthorizedRouteRequest> after_policy(
+        const StreamOpenContext& context);
+};
+
 // Application-facing authenticated stream. For PacketChannel services each
 // read/write Buffer is one packet; for ByteStream services buffers are ordered
 // byte chunks. Receive credit remains owned by ReceivedRecord until the

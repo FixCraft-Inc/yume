@@ -1,12 +1,13 @@
 <!-- Generated from docs/src/en_US/pages/circuit_1.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # Circuit 1
 
-Status: normative contract for the codec in `circuit/` and the constructions
-in `providers/circuit_crypto.*`, with their vectors. The node service and the
-client that will run circuits over [cluster links](CLUSTER_1.md) are not
-built yet, so no traffic uses this protocol today
-([implementation status](../IMPLEMENTATION_STATUS.md)). This page is not a
-cryptographic proof or an anonymity claim.
+Status: normative contract for the codec in `circuit/`, the constructions in
+`providers/circuit_crypto.*` with their vectors, and the node service and
+client builder in `runtime/circuit_node.*` and `runtime/circuit_client.*`.
+`yumed` serves circuits over its [cluster links](CLUSTER_1.md). The `yume`
+client does not build them yet, so only test clients use this protocol
+today ([implementation status](../IMPLEMENTATION_STATUS.md)). This page is
+not a cryptographic proof or an anonymity claim.
 
 ## Purpose
 
@@ -259,6 +260,29 @@ u8  dns_length, u8 dns_name[dns_length]    DNS, canonical lowercase
 Reasons name no node. A hop reports why a circuit failed only in its own
 layer, so no other hop can read it.
 
+## Streams
+
+A stream starts when the client sends BEGIN. The exit answers CONNECTED once
+it has reached the destination, or END with the reason it could not. The
+client sends DATA only after CONNECTED. Messages for a stream the receiver
+has already ended are ignored, because they may have crossed its END.
+
+Each end grants the other a window of 262144 bytes for every stream's DATA
+when the stream starts and returns it with STREAM_CREDIT as it delivers the
+bytes, so neither end holds more of one stream than the window it granted.
+A receiver MUST end the circuit when DATA exceeds the window it granted or
+when STREAM_CREDIT would let its sender hold more than 2^30 bytes.
+
+END with reason done finishes one direction: its sender will send no more
+DATA, and the receiver delivers what it holds and then ends the stream toward
+its reader or destination. The stream is gone once both ends have sent
+done. END with any other reason ends both directions at once, and DATA after
+an END is a protocol error.
+
+EXTEND_FAILED leaves the circuit open at the hop that sent it, so the client
+may extend to another node. CIRCUIT_FAILED comes from the hop that saw the
+circuit break, and that hop then ends the circuit.
+
 ## Vectors
 
 `src/circuit/testdata/circuit1_vectors.txt` holds public synthetic vectors,
@@ -287,5 +311,6 @@ signatures have no vectors here, because their keys are random.
 - Layer tags cost 16 bytes per hop. A length-preserving layer would hide the
   layer count but lets a malicious entry mark cells for a colluding exit, and
   the construction that avoids that is not available in OpenSSL.
-- This page defines no route choice, bounds, consent or exits. Those belong
-  to the node service and client that will use it.
+- This page defines no route choice, bounds, consent or exits. The node
+  service's bounds and exits are in [cluster 1](CLUSTER_1.md), and route
+  choice and consent belong to the client.

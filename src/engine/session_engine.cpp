@@ -551,6 +551,10 @@ private:
         bool peer_write_closed{false};
         std::uint64_t outbound_credit{0U};
         std::uint64_t inbound_credit{0U};
+        // The largest receive window this stream may grow to: the session's
+        // stream maximum, or a service's lower cap for a stream the peer
+        // opened.
+        std::uint32_t max_receive_credit{0U};
         ReceiveWindow receive_window;
         std::size_t inbound_queued_bytes{0U};
         std::size_t outbound_queued_bytes{0U};
@@ -2633,6 +2637,17 @@ Status SessionEngine::Impl::process_open(
     auto context = std::move(context_result).take_value();
     auto stream = std::make_shared<StreamStateData>(
         stream_id, decoded.value->service_name, kind.value(), true);
+    stream->max_receive_credit = limits_.max_stream_credit;
+    for (const ServiceRequirement& service : graph_->suite().services()) {
+        if (service.service_name() == decoded.value->service_name &&
+            service.service_kind() == kind.value() &&
+            service.max_receive_credit() != 0U) {
+            stream->max_receive_credit =
+                std::min(limits_.max_stream_credit,
+                         std::max(service.max_receive_credit(),
+                                  limits_.max_frame_payload));
+        }
+    }
     auto responder = std::make_shared<EngineStreamResponder>(
         weak_owner(), stream_id, kind.value(), affinity_,
         kind.value() == ServiceKind::PacketChannel ? limits_.max_packet_size
@@ -2700,6 +2715,7 @@ Status SessionEngine::Impl::process_open(
 void SessionEngine::Impl::complete_peer_open(StreamId stream_id,
                                             Status status) noexcept {
     try {
+        std::uint32_t initial = 0U;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto it = streams_.find(stream_id.value());
@@ -2708,11 +2724,13 @@ void SessionEngine::Impl::complete_peer_open(StreamId stream_id,
             if (status.ok()) {
                 it->second->opening = false;
                 --pending_opens_;
-                it->second->receive_window.size = limits_.initial_stream_credit;
+                initial = std::min(limits_.initial_stream_credit,
+                                   it->second->max_receive_credit);
+                it->second->receive_window.size = initial;
             }
         }
         if (status.ok()) {
-            status = send_stream_credit(stream_id, limits_.initial_stream_credit);
+            status = send_stream_credit(stream_id, initial);
             if (status.ok()) status = finish_stream_shutdown_if_ready(stream_id);
             // A concurrent local cancellation can win before acceptance is
             // published. Its terminal handshake already owns stream cleanup.
@@ -3040,6 +3058,7 @@ Status SessionEngine::Impl::process_stream_credit(const ytp1::RecordView& record
     if (!decoded.ok()) return protocol_failure("stream-credit update is malformed");
     std::shared_ptr<StreamStateData> stream;
     bool accepted = false;
+    std::uint32_t initial = 0U;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto it = streams_.find(record.header.stream_id.value());
@@ -3063,12 +3082,14 @@ Status SessionEngine::Impl::process_stream_credit(const ytp1::RecordView& record
             stream->opening = false;
             --pending_opens_;
             accepted = true;
-            stream->receive_window.size = limits_.initial_stream_credit;
+            initial = std::min(limits_.initial_stream_credit,
+                               stream->max_receive_credit);
+            stream->receive_window.size = initial;
         }
         if (stream->closed) return Status::success();
     }
     if (accepted) {
-        Status credit = send_stream_credit(stream->id, limits_.initial_stream_credit);
+        Status credit = send_stream_credit(stream->id, initial);
         if (credit.code() == StatusCode::Closed) return Status::success();
         if (!credit.ok()) return credit;
         OpenCompletion completion;
@@ -3169,6 +3190,7 @@ void SessionEngine::Impl::async_open(
                     } else {
                         stream = std::make_shared<StreamStateData>(
                             id.value(), std::string(service_name), service_kind, false);
+                        stream->max_receive_credit = limits_.max_stream_credit;
                         stream->responder = std::make_shared<EngineStreamResponder>(
                             weak_owner(), id.value(), service_kind, affinity_,
                             service_kind == ServiceKind::PacketChannel
@@ -3751,9 +3773,9 @@ void SessionEngine::Impl::return_receive_credit(
                 ReceiveWindow& window = stream.receive_window;
                 window.unreturned += bytes;
                 if (window.unreturned >=
-                    return_threshold(window.size, limits_.max_stream_credit)) {
+                    return_threshold(window.size, stream.max_receive_credit)) {
                     const std::uint64_t growth = grow_window_locked(
-                        window, limits_.max_stream_credit, now);
+                        window, stream.max_receive_credit, now);
                     stream_increment = window.unreturned + growth;
                     window.unreturned = 0U;
                     connection_floor = window.size + window.size / 2U;

@@ -28,6 +28,13 @@ class OpenSslSecurityProviderFactory;
 class Tls13SecureChannelProvider;
 }  // namespace yume::providers
 
+// Declared here so this header stays free of OpenSSL. Callers of
+// load_signing_identity include providers/composite_keys.hpp.
+namespace yume::providers::keys {
+class KeyContext;
+struct CompositePrivate;
+}  // namespace yume::providers::keys
+
 namespace yume::runtime {
 
 // An admission secret has a single owner. Moves wipe the source; assignment
@@ -94,6 +101,9 @@ public:
     // which always grants at least one service, or a cluster peer before
     // its list's not_after.
     bool recognizes(std::string_view peer_identity) const noexcept;
+    // Whether the identity is a cluster peer before its list's not_after. A
+    // peer is granted yume.circuit and nothing else.
+    bool is_peer(std::string_view peer_identity) const noexcept;
 
 private:
     engine::EndpointRole peer_role_;
@@ -136,6 +146,11 @@ struct NativeClusterCredentials final {
     // serial it held when this list was loaded, zero without a file.
     std::filesystem::path state;
     std::uint64_t saved_serial{0U};
+    // The operator-signed routes view and its signature, which yume.routes
+    // serves as they are, and whether the view marks this node as an exit.
+    std::vector<std::byte> routes;
+    std::vector<std::byte> routes_signature;
+    bool exit{false};
     // Peers this node accepts links from, as (identity, name).
     std::vector<std::pair<std::string, std::string>> inbound;
     std::vector<NativeLinkCredentials> links;
@@ -167,5 +182,14 @@ engine::Result<LoadedNativeCredentials> load_native_credentials(
     const config::v1::Config& config,
     const std::filesystem::path& config_base_directory,
     std::string_view tls_server_name = {}) noexcept;
+
+// A server's composite identity as its circuit handshakes sign with it: the
+// configured composite_key, read under the same protected-file contract and
+// parsed in keys, which must outlive the result. InvalidArgument for a
+// client configuration.
+engine::Result<providers::keys::CompositePrivate> load_signing_identity(
+    const config::v1::Config& config,
+    const std::filesystem::path& config_base_directory,
+    const providers::keys::KeyContext& keys) noexcept;
 
 }  // namespace yume::runtime

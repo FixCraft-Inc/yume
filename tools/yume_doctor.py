@@ -513,6 +513,8 @@ def _validate_services(value: Any) -> dict[tuple[str, str], int]:
                 f"{pointer}/name",
                 "must use lowercase ASCII namespace segments",
             )
+        if name == "yume" or name.startswith("yume."):
+            _fail(f"{pointer}/name", "is reserved for services the daemon provides")
         kind = _string(service["kind"], f"{pointer}/kind", 16)
         if kind not in {"stream", "packet"}:
             _fail(f"{pointer}/kind", "must be 'stream' or 'packet'")
@@ -891,13 +893,16 @@ class CheckedConfig:
     cluster: dict[str, str]
 
 
-# The cluster files' byte bounds, as yumed reads them: the list, its
-# composite signature, and the operator key and peer store as documents.
+# The cluster files' byte bounds, as yumed reads them: the list and the
+# routes view with their composite signatures, and the operator key and peer
+# store as documents.
 CLUSTER_FILE_BYTES = {
     "operator_key": MAX_DOCUMENT_BYTES,
     "list": 1024 * 1024,
     "signature": 64 + 4627,
     "peers": MAX_DOCUMENT_BYTES,
+    "routes": 1024 * 1024,
+    "routes_signature": 64 + 4627,
 }
 
 
@@ -906,13 +911,21 @@ CLUSTER_FILE_BYTES = {
 CLUSTER_STATE_BYTES = 4096
 
 
-def _validate_cluster(value: Any, role: str) -> dict[str, str]:
-    """cluster, as config::v1 checks it: five file references, server-only."""
+def _validate_cluster(value: Any, role: str, adapters: list[Any]) -> dict[str, str]:
+    """cluster, as config::v1 checks it: seven file references and an
+    optional exit naming a direct_tcp adapter's service, server-only."""
     keys = set(CLUSTER_FILE_BYTES) | {"state"}
-    cluster = _closed_object(value, "/cluster", keys)
+    cluster = _closed_object(value, "/cluster", keys | {"exit"}, keys)
     if role != "server":
         _fail("/cluster", "is server-only")
-    return {key: _file_reference(cluster[key], f"/cluster/{key}") for key in sorted(keys)}
+    references = {key: _file_reference(cluster[key], f"/cluster/{key}") for key in sorted(keys)}
+    if "exit" in cluster:
+        exit_section = _closed_object(cluster["exit"], "/cluster/exit", {"service"})
+        service = _string(exit_section["service"], "/cluster/exit/service", MAX_SERVICE_NAME_BYTES)
+        if not any(type(adapter) is dict and adapter.get("kind") == "direct_tcp"
+                   and adapter.get("service") == service for adapter in adapters):
+            _fail("/cluster/exit/service", "must name a direct_tcp adapter's service")
+    return references
 
 
 def _validate_control(control: Any, adapters: list[Any]) -> None:
@@ -968,7 +981,7 @@ def _validate_config(document: Any) -> CheckedConfig:
     _validate_limits(top["limits"], top["adapters"], role)
     if "control" in top:
         _validate_control(top["control"], top["adapters"])
-    cluster = _validate_cluster(top["cluster"], role) if "cluster" in top else {}
+    cluster = _validate_cluster(top["cluster"], role, top["adapters"]) if "cluster" in top else {}
     return CheckedConfig(role, credentials, cover_root, list_files, socks5_credentials, cluster)
 
 

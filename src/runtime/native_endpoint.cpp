@@ -16,6 +16,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 
+#include "common/service_name.hpp"
 #include "engine/buffer.hpp"
 #include "runtime/accept_scheduler.hpp"
 #include "runtime/cluster_state.hpp"
@@ -917,6 +918,23 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
     context->require_context();
     if (services.size() > config.services().size())
         return Result<std::shared_ptr<NativeEndpoint>>(Status(StatusCode::InvalidArgument));
+    // The endpoint keeps no reference to them after registration.
+    auto builtins = std::move(options.builtin_services);
+    options.builtin_services.clear();
+    for (std::size_t index = 0U; index < builtins.size(); ++index) {
+        const auto& builtin = builtins[index];
+        if (config.role() != config::v1::Role::Server ||
+            !common::valid_service_name(builtin.name) ||
+            !common::reserved_service_name(builtin.name) || !builtin.handler ||
+            builtin.max_concurrent_streams == 0U ||
+            std::any_of(builtins.begin(),
+                        builtins.begin() + static_cast<std::ptrdiff_t>(index),
+                        [&](const auto& earlier) {
+                            return earlier.name == builtin.name;
+                        }))
+            return Result<std::shared_ptr<NativeEndpoint>>(
+                Status(StatusCode::InvalidArgument));
+    }
     std::shared_ptr<State> state;
     try {
         if (options.caller_runs_socks5_adapters &&
@@ -1040,6 +1058,19 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             handlers.push_back({service.name(), std::make_shared<AuthorizedHandler>(
                 std::move(match->handler), state->policy, pacing)});
         }
+        for (auto& builtin : builtins) {
+            const auto& descriptor = builtin.handler->descriptor();
+            service_requirements.push_back(require(ServiceRequirement::create(
+                builtin.name, builtin.handler->service_kind(),
+                descriptor.provider_id(), descriptor.api_version(),
+                builtin.max_concurrent_streams, descriptor.capabilities(),
+                builtin.max_receive_credit)));
+            handlers.push_back(
+                {builtin.name,
+                 std::make_shared<AuthorizedHandler>(std::move(builtin.handler),
+                                                     state->policy, pacing)});
+        }
+        builtins.clear();
         auto suite = require(TransportSuiteDescriptor::create(std::string(config.suite().id()),
             "YTP/1", std::move(requirements), std::move(service_requirements)));
         std::shared_ptr<SessionSecurityProviderFactory> security =
@@ -1154,7 +1185,8 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create_link(
         options.caller_runs_socks5_adapters ||
         options.caller_runs_forward_adapters ||
         options.caller_runs_module_adapters ||
-        options.caller_runs_packet_adapters)
+        options.caller_runs_packet_adapters ||
+        !options.builtin_services.empty())
         return Result<std::shared_ptr<NativeEndpoint>>(
             Status(StatusCode::InvalidArgument));
     context->require_context();
@@ -1162,6 +1194,11 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create_link(
     try {
         auto limits = session_limits(node_config.limits());
         limits.rekey_ack_timeout = options.rekey_ack_timeout;
+        limits.max_stream_credit =
+            std::max(node_config.limits().max_queued_bytes() / kLinkStreamShare,
+                     limits.max_frame_payload);
+        limits.initial_stream_credit =
+            std::min(limits.initial_stream_credit, limits.max_stream_credit);
         require(validate_session_limits(limits));
         state = std::make_shared<State>(context, EndpointRole::Client,
                                         std::move(options), limits);

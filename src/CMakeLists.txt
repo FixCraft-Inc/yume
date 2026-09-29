@@ -648,9 +648,9 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_composite_keys STATIC
         providers/composite_keys.cpp providers/composite_keys.hpp)
     target_include_directories(yume_composite_keys PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    # composite_keys.hpp names OpenSSL types, so its users need the headers.
     target_link_libraries(yume_composite_keys
-        PUBLIC yume_engine yume_openssl_security_provider
-        PRIVATE OpenSSL::Crypto)
+        PUBLIC yume_engine yume_openssl_security_provider OpenSSL::Crypto)
     yume_apply_perf_opts(yume_composite_keys)
     yume_assert_exact_link_dependencies(yume_composite_keys
         yume_engine yume_openssl_security_provider OpenSSL::Crypto)
@@ -660,9 +660,10 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     add_library(yume_circuit_crypto STATIC
         providers/circuit_crypto.cpp providers/circuit_crypto.hpp)
     target_include_directories(yume_circuit_crypto PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    # circuit_crypto.hpp names OpenSSL types, so its users need the headers.
     target_link_libraries(yume_circuit_crypto
         PUBLIC yume_circuit1 yume_composite_keys yume_openssl_security_provider
-        PRIVATE OpenSSL::Crypto)
+            OpenSSL::Crypto)
     yume_apply_perf_opts(yume_circuit_crypto)
     yume_assert_exact_link_dependencies(yume_circuit_crypto
         yume_circuit1 yume_composite_keys yume_openssl_security_provider
@@ -800,6 +801,25 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
 
     # One application composition owns the normal client and daemon.
     if(TARGET yume_asio_direct_route_provider)
+        # Circuit 1 node service and client, over the engine's stream
+        # contracts and the circuit crypto.
+        add_library(yume_circuit_runtime STATIC
+            runtime/circuit_client.cpp runtime/circuit_client.hpp
+            runtime/circuit_node.cpp runtime/circuit_node.hpp)
+        target_include_directories(yume_circuit_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_circuit_runtime
+            PUBLIC yume_circuit_crypto yume_engine yume_asio_execution_context
+            PRIVATE Boost::system)
+        yume_apply_perf_opts(yume_circuit_runtime)
+        yume_assert_exact_link_dependencies(yume_circuit_runtime
+            yume_circuit_crypto yume_engine yume_asio_execution_context Boost::system)
+        add_executable(yume_circuit_runtime_test runtime/circuit_runtime_test.cpp)
+        target_link_libraries(yume_circuit_runtime_test PRIVATE yume_circuit_runtime OpenSSL::Crypto)
+        yume_apply_perf_opts(yume_circuit_runtime_test)
+        add_test(NAME yume_circuit_runtime_test COMMAND yume_circuit_runtime_test)
+        set_tests_properties(yume_circuit_runtime_test PROPERTIES
+            TIMEOUT 120 LABELS "foundation;0.3;circuit")
+
         add_library(yume_native_runtime STATIC
             runtime/control_socket.cpp runtime/control_socket.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp
@@ -811,6 +831,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             runtime/native_session_source.hpp
             runtime/native_socks5.cpp runtime/native_socks5.hpp
             runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
+            runtime/circuit_host.cpp runtime/circuit_host.hpp
             runtime/session_keeper.cpp runtime/session_keeper.hpp
             runtime/socks5_request.cpp runtime/socks5_request.hpp)
         target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -821,7 +842,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
                 yume_system_resolver yume_system_resolver_helper
                 yume_child_process yume_module_launcher
                 yume_direct_route_handler yume_openssl_security_provider yume_bounded_files ${_yume_native_network_libraries}
-                yume_outer_carrier_evidence yume_sealed_kit Boost::system)
+                yume_outer_carrier_evidence yume_sealed_kit yume_circuit_runtime Boost::system)
         yume_apply_perf_opts(yume_native_runtime)
         yume_assert_exact_link_dependencies(yume_native_runtime
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context
@@ -830,7 +851,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             yume_system_resolver yume_system_resolver_helper
             yume_child_process yume_module_launcher
             yume_direct_route_handler yume_openssl_security_provider yume_bounded_files ${_yume_native_network_libraries}
-            yume_outer_carrier_evidence yume_sealed_kit Boost::system)
+            yume_outer_carrier_evidence yume_sealed_kit yume_circuit_runtime Boost::system)
         # The example module. It links nothing of YUME.
         add_executable(yume-echo-module modules/echo/echo_module.cpp)
         target_link_libraries(yume-echo-module PRIVATE Threads::Threads)
@@ -1786,6 +1807,23 @@ if(YUME_BUILD_TESTING)
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}")
             set_tests_properties(yume_native_cluster_test PROPERTIES
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            # Four clustered daemons carrying circuits for a test client that
+            # fetches the routes view, builds two- and three-hop circuits and
+            # echoes through an exit, with refusals, a stopped middle and a
+            # reload. The probe is a test tool and is not installed.
+            add_executable(yume_circuit_probe runtime/circuit_probe.cpp)
+            target_link_libraries(yume_circuit_probe PRIVATE
+                yume_native_endpoint yume_circuit_runtime yume_native_credentials
+                yume_bounded_files nlohmann_json::nlohmann_json Boost::system)
+            yume_apply_perf_opts(yume_circuit_probe)
+            add_test(NAME yume_native_circuit_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/run_native_circuit_test.py"
+                    --yumed "$<TARGET_FILE:yumed>"
+                    --probe "$<TARGET_FILE:yume_circuit_probe>"
+                    --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+            set_tests_properties(yume_native_circuit_test PROPERTIES
+                TIMEOUT 240 LABELS "foundation;0.3;native-runtime;integration;circuit")
             if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 add_executable(yume_native_runtime_dns_server_test
                     runtime/native_runtime_dns_server_test.cpp)

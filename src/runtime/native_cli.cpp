@@ -37,6 +37,7 @@
 #include "providers/child_process.hpp"
 #include "providers/system_resolver_helper.hpp"
 #include "providers/openssl_security_provider.hpp"
+#include "runtime/circuit_status.hpp"
 #include "runtime/control_socket.hpp"
 #include "runtime/module_launcher.hpp"
 #include "runtime/native_client_runtime.hpp"
@@ -71,6 +72,7 @@ struct Arguments final {
     bool help{false};
     bool completion{false};
     bool status{false};
+    std::optional<std::string> accept_route;
     std::optional<std::filesystem::path> seal_kit;
     std::optional<std::filesystem::path> output;
     std::optional<std::filesystem::path> import_kit;
@@ -194,6 +196,13 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             arguments.validate = true;
         } else if (argument == "--status") {
             arguments.status = true;
+        } else if (role == NativeCliRole::Client &&
+                   argument == "--accept-route") {
+            if (index + 1 >= argc || arguments.accept_route) {
+                error = "--accept-route needs exactly one id";
+                return std::nullopt;
+            }
+            arguments.accept_route = std::string(argv[++index]);
         } else if (const auto* kit_flag = role == NativeCliRole::Client
                                               ? find_kit_flag(argument)
                                               : nullptr) {
@@ -228,8 +237,8 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
         const bool import = arguments.import_kit && arguments.into &&
                             !arguments.seal_kit && !arguments.output;
         if ((!seal && !import) || arguments.config || arguments.validate ||
-            arguments.status || arguments.outer_carrier_evidence ||
-            arguments.run.connect_address ||
+            arguments.status || arguments.accept_route ||
+            arguments.outer_carrier_evidence || arguments.run.connect_address ||
             arguments.run.socks5_listen_address ||
             arguments.run.socks5_listen_port) {
             error =
@@ -252,6 +261,14 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
          arguments.run.connect_address || arguments.run.socks5_listen_address ||
          arguments.run.socks5_listen_port)) {
         error = "--status takes only --config";
+        return std::nullopt;
+    }
+    if (arguments.accept_route &&
+        (arguments.status || arguments.validate ||
+         arguments.outer_carrier_evidence || arguments.run.connect_address ||
+         arguments.run.socks5_listen_address ||
+         arguments.run.socks5_listen_port)) {
+        error = "--accept-route takes only --config";
         return std::nullopt;
     }
     return arguments;
@@ -334,10 +351,42 @@ void report_run_settings(NativeCliRole role, const config::v1::Config& config,
                   origin(run.socks5_listen_port, "--socks-port"));
 }
 
+// What the configuration decides about routes, said where the user sees it:
+// a client's circuits and what its shortest pre-approved route gives up, and
+// that a server is an exit.
+void report_routes(NativeCliRole role, const config::v1::Config& config) {
+    if (const auto& circuits = config.circuits()) {
+        say(role, "/circuits/hops " + std::to_string(circuits->hops) +
+                      ", /circuits/plain_http " +
+                      (circuits->plain_http_allowed ? "allow" : "refuse"));
+        if (circuits->min_hops < circuits->hops) {
+            say(role,
+                "/circuits/min_hops " + std::to_string(circuits->min_hops) +
+                    ": routes down to " + std::to_string(circuits->min_hops) +
+                    (circuits->min_hops == 1U ? " hop" : " hops") +
+                    " are used without asking when no longer one can be built");
+            say(role, std::string("warning: ") +
+                          shorter_route_cost(circuits->min_hops) +
+                          " An entry that refuses to extend circuits can force "
+                          "this route.");
+        }
+    }
+    if (const auto& cluster = config.cluster();
+        cluster && cluster->exit_service) {
+        say(role,
+            "warning: this server is an exit. Circuits' streams leave through "
+            "service '" +
+                *cluster->exit_service +
+                "', and it sees their destinations and anything not protected "
+                "end to end.");
+    }
+}
+
 int validate(NativeCliRole role, const config::v1::Config& config,
              const config::v1::RunSettings& run,
              const std::filesystem::path& base) {
     report_run_settings(role, config, run);
+    report_routes(role, config);
     const std::string_view server_name = role == NativeCliRole::Client
         ? std::string_view(std::get<config::v1::ClientEndpoint>(config.endpoint()).host())
         : std::string_view{};
@@ -543,9 +592,38 @@ int print_status(NativeCliRole role, const config::v1::Config& config) {
     return kExitStopped;
 }
 
+// yume --accept-route: the one control request that changes anything.
+int accept_route(NativeCliRole role, const config::v1::Config& config,
+                 std::string_view id) {
+    if (!config.control()) {
+        say(role, "the configuration has no control socket (control.socket)");
+        return kExitUsage;
+    }
+    const auto& path = config.control()->socket_path;
+    const auto reply =
+        query_control_accept_route(path, id, std::chrono::seconds(5));
+    if (!reply.ok()) {
+        say(role,
+            reply.status().code() == StatusCode::NotFound
+                ? "no yume is running on the control socket " + path
+                : describe("accept-route request failed", reply.status()));
+        return reply.status().code() == StatusCode::InvalidArgument
+                   ? kExitUsage
+                   : kExitFailure;
+    }
+    const auto answer = status_reply_text(reply.value());
+    if (!answer.ok()) {
+        say(role, describe("route not accepted", answer.status()));
+        return kExitUsage;
+    }
+    std::fputs(answer.value().c_str(), stdout);
+    return kExitStopped;
+}
+
 int serve(NativeCliRole role, const config::v1::Config& config,
           const std::filesystem::path& base,
           const std::optional<std::filesystem::path>& evidence_path) {
+    report_routes(role, config);
     // The evidence file is reserved before anything connects, so a bad path
     // fails the run instead of a finished session.
     std::unique_ptr<OuterCarrierEvidence> evidence;
@@ -589,11 +667,14 @@ int serve(NativeCliRole role, const config::v1::Config& config,
 
     // Opens the control socket, or stops the program when it cannot.
     const auto open_control = [&](const std::string& path,
-                                  ControlStatusSource source) {
+                                  ControlStatusSource source,
+                                  ControlRouteAcceptance accept = {}) {
         auto opened = ControlServer::open(
-            context, path, std::move(source), [role](Status status) noexcept {
+            context, path, std::move(source),
+            [role](Status status) noexcept {
                 say(role, describe("control socket stopped", status));
-            });
+            },
+            std::move(accept));
         if (!opened.ok()) {
             say(role,
                 describe("cannot open the control socket", opened.status()));
@@ -726,7 +807,13 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                             throw std::runtime_error("the client has stopped");
                         return client_status_reply(
                             runtime->status(), view,
-                            std::chrono::steady_clock::now());
+                            std::chrono::steady_clock::now(),
+                            runtime->circuits());
+                    },
+                    [weak](std::string_view id) {
+                        const auto runtime = weak.lock();
+                        return runtime ? runtime->accept_route(id)
+                                       : Status(StatusCode::Closed);
                     }));
             }
         } catch (...) {
@@ -795,6 +882,8 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
             return kExitUsage;
         }
         if (arguments->status) return print_status(role, *config);
+        if (arguments->accept_route)
+            return accept_route(role, *config, *arguments->accept_route);
         const auto base = std::filesystem::absolute(*arguments->config).parent_path();
         return arguments->validate
                    ? validate(role, *config, arguments->run, base)

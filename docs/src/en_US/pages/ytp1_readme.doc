@@ -446,6 +446,13 @@ Schema 1 is role tagged and contains these sections only:
   a cluster membership, and an optional `exit` whose `service` names the
   `direct_tcp` adapter a circuit exit leaves through. The daemon writes
   `state` itself, so it needs a writable directory.
+- `circuits`, optional and client-only: `hops` (2 or 3), `min_hops` (1 to
+  `hops`, the shortest route used without asking, `hops` by default),
+  `plain_http` (`refuse`, the default, or `allow`) and the file references
+  `operator_key`, `routes`, `routes_signature` and `state`. With it, every
+  SOCKS5 CONNECT and forward to a destination leaves through a circuit, UDP
+  ASSOCIATE is refused and a packet adapter is not allowed.
+  `yume-setup add-client --circuits` writes it.
   `yume-setup`'s cluster commands write them, and
   [cluster 1](../../protocol/CLUSTER_1.md) gives their format and what the
   daemon checks.

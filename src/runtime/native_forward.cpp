@@ -81,6 +81,7 @@ struct NativeForwardAdapter::State final : std::enable_shared_from_this<State> {
     std::string service;
     std::optional<RouteDestination> destination;
     NativeSessionSource sessions;
+    NativeStreamOpener opener;
     Stopped on_stopped;
     NativeForwardLimits limits;
     std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
@@ -104,18 +105,29 @@ public:
     void start() noexcept {
         const auto owner = owner_.lock();
         const auto session = owner ? owner->active_session() : nullptr;
-        if (!session) {
+        // A forward to a destination opens through the circuits when the
+        // client has them. One to a service opens on the entry itself.
+        const bool circuit = owner && owner->opener && owner->destination;
+        if (!owner || (!circuit && !session)) {
             finish();
             return;
         }
         arm_deadline(owner->limits.open_timeout);
         if (done_) return;
         try {
-            session->async_open(owner->service, ServiceKind::ByteStream, owner->destination,
-                open_cancellation_.token(),
-                [self = shared_from_this()](Result<std::shared_ptr<StreamResponder>> result) noexcept {
+            auto opened =
+                [self = shared_from_this()](
+                    Result<std::shared_ptr<StreamResponder>> result) noexcept {
                     self->on_open(std::move(result));
-                });
+                };
+            if (circuit) {
+                owner->opener(*owner->destination, owner->service,
+                              open_cancellation_.token(), std::move(opened));
+                return;
+            }
+            session->async_open(owner->service, ServiceKind::ByteStream,
+                                owner->destination, open_cancellation_.token(),
+                                std::move(opened));
         } catch (...) {
             finish();
         }
@@ -225,12 +237,11 @@ void NativeForwardAdapter::State::close() noexcept {
     on_stopped = {};
 }
 
-engine::Result<std::shared_ptr<NativeForwardAdapter>> NativeForwardAdapter::create(
+engine::Result<std::shared_ptr<NativeForwardAdapter>>
+NativeForwardAdapter::create(
     std::shared_ptr<providers::AsioExecutionContext> context,
-    const config::v1::ForwardAdapter& adapter,
-    NativeSessionSource sessions,
-    NativeForwardLimits limits,
-    Stopped on_stopped) {
+    const config::v1::ForwardAdapter& adapter, NativeSessionSource sessions,
+    NativeForwardLimits limits, Stopped on_stopped, NativeStreamOpener opener) {
     using Created = engine::Result<std::shared_ptr<NativeForwardAdapter>>;
     if (!context || !sessions || limits.max_connections == 0U || limits.max_connections > 4096U ||
         limits.open_timeout <= std::chrono::milliseconds::zero()) {
@@ -282,6 +293,7 @@ engine::Result<std::shared_ptr<NativeForwardAdapter>> NativeForwardAdapter::crea
             });
         if (state->closing) return Created(Status(state->failure));
         state->on_stopped = std::move(on_stopped);
+        state->opener = std::move(opener);
         return Created(std::move(result));
     } catch (const std::bad_alloc&) {
         return Created(Status(StatusCode::ResourceExhausted));

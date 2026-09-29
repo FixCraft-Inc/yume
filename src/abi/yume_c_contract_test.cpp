@@ -449,6 +449,56 @@ int main(int argc, char** argv) {
                 YUME_STATUS_INVALID_ARGUMENT,
             "client service registration was accepted");
 
+    {
+        // A circuits section is refused at start: circuits may need the
+        // user's consent to a shorter route, which the ABI cannot ask for.
+        std::string circuits_text = config_text;
+        const std::size_t adapters = circuits_text.find("\"adapters\"");
+        const std::size_t open_bracket = circuits_text.find('[', adapters);
+        std::size_t close_bracket = open_bracket;
+        for (int depth = 0; close_bracket < circuits_text.size();
+             ++close_bracket) {
+            if (circuits_text[close_bracket] == '[') ++depth;
+            if (circuits_text[close_bracket] == ']' && --depth == 0) break;
+        }
+        require(adapters != std::string::npos &&
+                    open_bracket != std::string::npos &&
+                    close_bracket < circuits_text.size(),
+                "client config fixture omitted its adapter array");
+        // Adapters are refused first, so the section alone is what start meets.
+        circuits_text.replace(open_bracket, close_bracket - open_bracket + 1U,
+                              "[]");
+        circuits_text.insert(
+            adapters,
+            R"("circuits":{"hops":3,"operator_key":{"file":"circuits/operator.pub.pem"},)"
+            R"("routes":{"file":"circuits/routes.json"},)"
+            R"("routes_signature":{"file":"circuits/routes.sig"},)"
+            R"("state":{"file":"circuits-state.json"}},)");
+        yume_config* circuits_config = nullptr;
+        require(yume_config_parse_json(first, circuits_text.data(),
+                                       circuits_text.size(),
+                                       &circuits_config) == YUME_STATUS_OK,
+                "circuits config fixture was rejected");
+        yume_endpoint* circuits_endpoint = nullptr;
+        require(yume_endpoint_create(first, circuits_config,
+                                     &circuits_endpoint) == YUME_STATUS_OK,
+                "circuits endpoint creation failed");
+        require(yume_endpoint_start(circuits_endpoint, 0U) ==
+                    YUME_STATUS_UNSUPPORTED,
+                "an embedded endpoint started with circuits");
+        yume_diagnostic circuits_diagnostic{};
+        circuits_diagnostic.struct_size = sizeof(circuits_diagnostic);
+        circuits_diagnostic.abi_version = YUME_ABI_VERSION;
+        require(yume_handle_get_diagnostic(
+                    circuits_endpoint, &circuits_diagnostic,
+                    sizeof(circuits_diagnostic)) == YUME_STATUS_OK &&
+                    std::string(circuits_diagnostic.message).find("circuits") !=
+                        std::string::npos,
+                "the circuits refusal diagnostic did not name them");
+        yume_endpoint_destroy(circuits_endpoint);
+        yume_config_destroy(circuits_config);
+    }
+
     const std::string server_text = read_file(argv[2]);
 #if defined(YUME_TEST_ABI_ALLOCATIONS)
     test_startup_allocation_settlement(server_text);

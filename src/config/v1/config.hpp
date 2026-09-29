@@ -700,6 +700,27 @@ struct ControlSettings final {
     std::string socket_path;
 };
 
+// A client's circuits: every connection leaves through a circuit of hops
+// servers of its operator's cluster (docs/protocol/CIRCUIT_1.md), 2 or 3,
+// the entry being the server this kit reaches. min_hops, from 1 to hops, is
+// the shortest route the user accepts without being asked, and 1 lets
+// connections leave through the direct session. plain_http_allowed lets
+// cleartext HTTP through circuits, which are refused it by default. The
+// operator key verifies the routes view, of which routes and
+// routes_signature are the kit's copy. state is where the client keeps the
+// highest serial and newest view it has verified, so it must be writable.
+// With circuits a packet adapter is refused, and SOCKS5 refuses UDP
+// ASSOCIATE, since circuits carry TCP only.
+struct CircuitSettings final {
+    std::uint32_t hops;
+    std::uint32_t min_hops;
+    bool plain_http_allowed;
+    FileReference operator_key;
+    FileReference routes;
+    FileReference routes_signature;
+    FileReference state;
+};
+
 class Config final {
 public:
     Config(const Config&) = default;
@@ -722,13 +743,17 @@ public:
     const std::optional<ClusterSettings>& cluster() const noexcept {
         return cluster_;
     }
+    const std::optional<CircuitSettings>& circuits() const noexcept {
+        return circuits_;
+    }
 
 private:
     Config(Role role, Endpoint endpoint, Suite suite, Credentials credentials,
            Cover cover, std::vector<Service> services,
            std::vector<Adapter> adapters, ResourceLimits limits,
            std::optional<ControlSettings> control,
-           std::optional<ClusterSettings> cluster)
+           std::optional<ClusterSettings> cluster,
+           std::optional<CircuitSettings> circuits)
         : role_(role),
           endpoint_(std::move(endpoint)),
           suite_(std::move(suite)),
@@ -738,7 +763,8 @@ private:
           adapters_(std::move(adapters)),
           limits_(std::move(limits)),
           control_(std::move(control)),
-          cluster_(std::move(cluster)) {}
+          cluster_(std::move(cluster)),
+          circuits_(std::move(circuits)) {}
 
     Role role_;
     Endpoint endpoint_;
@@ -750,6 +776,7 @@ private:
     ResourceLimits limits_;
     std::optional<ControlSettings> control_;
     std::optional<ClusterSettings> cluster_;
+    std::optional<CircuitSettings> circuits_;
 
     friend Config Parse(const nlohmann::json& document);
 };

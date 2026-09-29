@@ -3,10 +3,11 @@
 
 Status: normative contract for `runtime/cluster_list.*`, the cluster part of
 `runtime/native_credentials.*`, the links in `runtime/native_server_runtime.*`
-and the circuit service around `runtime/circuit_node.*`, which `yume-setup`'s
-cluster commands write for. Servers know and authenticate each other, and
-their links carry [circuits](CIRCUIT_1.md). The `yume` client does not build
-circuits yet. This page is not a cryptographic proof.
+the circuit service around `runtime/circuit_node.*` and the client's
+circuits in `runtime/circuit_pool.*`, which `yume-setup`'s cluster commands
+write for. Servers know and authenticate each other, their links carry
+[circuits](CIRCUIT_1.md), and `yume` builds them for a client with a
+`circuits` section. This page is not a cryptographic proof.
 
 ## Purpose
 
@@ -238,6 +239,68 @@ holds at most that share of a link's connection window, and it gives that
 share back when the 30-second bound ends it. A server keeps no record of
 which neighbour a circuit came from or went to.
 
+## Circuit clients
+
+A client's `circuits` section sends every SOCKS5 CONNECT, and every forward
+to a destination, through a circuit whose entry is the server its kit names.
+A forward without a destination still opens its service on the entry.
+Circuits carry TCP only: UDP ASSOCIATE is refused and a packet adapter fails
+validation, so nothing leaves through the direct session by mistake. A
+SOCKS5 client gets the answer the direct session would give: not allowed
+for a destination the exit's policy refuses, host unreachable for one it
+cannot reach. The C ABI refuses the section until it has a way to ask the
+user about a shorter route.
+
+**The routes view.** At each session the client reads the view from
+`yume.routes`. It must verify under `circuits.operator_key`, not have
+expired, name the client's entry and have a serial at least as high as the
+highest the client has verified: the kit's copy when that verifies and the
+serial the client saved in `circuits.state`, which it writes like a server's
+state file before it uses a newer view. A view that fails these checks stops
+circuits, and direct fallback with them. The client says why, and it asks
+the entry again at its next session, or at most every 30 seconds while
+connections arrive.
+
+**Route choice.** The entry is the first hop. The others are distinct nodes,
+the last one marked as an exit, and no two hops of a route share a network
+tag. The client measures how long each node's EXTEND takes and picks at
+random among routes it has not measured and those within 1.5 times the
+fastest one, drawing from the system's random source each time. A node that
+stopped a build is left out for five minutes. A circuit takes new streams for
+ten minutes after its first one, at most 32 at once, closes when its last
+stream ends after that, and closes after five minutes without streams. One
+spare circuit stays ready once circuits are in use. The client keeps no route
+history on disk.
+
+**Shorter routes.** When three routes of `circuits.hops` fail, or none
+passes the rules, the client does not shorten on its own. It refuses new
+connections as not allowed and proposes the shorter route it would use,
+with its nodes, measured latency when it has one, and what it gives up:
+
+- 2 hops: the exit's neighbour is the entry, so a party that runs or watches
+  both can link the user to the sites they visit.
+- 1 hop: the direct session, where the entry sees both who the user is and
+  every site they visit.
+
+The proposal's id is a digest of its hop count, nodes and view serial.
+`yume --config PATH --accept-route ID` accepts it over the control socket,
+and only the same id accepts anything. The acceptance lasts until the
+configured length works again, which the client tries every five minutes, or
+until it exits. `circuits.min_hops` approves routes down to that length in
+advance, for machines nobody watches. A dishonest entry can refuse to extend
+circuits to force such a route, which `--validate` and every start say.
+
+**Plain HTTP.** Unless `circuits.plain_http` is `allow`, a circuit stream to
+port 80 is refused before BEGIN, and a stream whose first bytes form an
+HTTP/1.x request line or the HTTP/2 cleartext preface ends before those
+bytes leave the client. Other cleartext protocols, and HTTP sent later in a
+stream, pass. The direct session of an accepted one-hop route is not
+affected.
+
+`yume --status` shows each circuit's route by name, the length in use
+against the configured one, the plain HTTP setting, a stop and any proposal.
+yume(1) gives the fields.
+
 ## Tools
 
 `yume-setup` provisions a cluster from the operator's copies of the server
@@ -270,8 +333,9 @@ and reload the others.
 
 ## Limits
 
-- Links carry circuits, but the `yume` client does not build them yet, and
-  route choice and consent to a shorter route come with it.
+- Circuits carry TCP only. UDP and IP packets over circuits come later.
+- Timing is not hidden, and an entry learns how many hops a circuit has
+  (CIRCUIT_1, "Limits").
 - The saved serial protects a server only from lists older than one it has
   loaded. A server that never received the newest list keeps any valid list
   it holds, so removing a server is complete only when every server has loaded

@@ -245,6 +245,8 @@ public:
     // Server, on the context: the verified cluster membership its
     // configuration names, as last loaded, or nullptr. A reload replaces it.
     const NativeClusterCredentials* cluster() const noexcept;
+    // Client: the circuits credentials its configuration names, or nullptr.
+    const NativeCircuitCredentials* circuits() const noexcept;
     // Server, on the context: the verified identity of each active session
     // and when it was admitted.
     std::vector<NativePeerSession> authenticated_sessions() const;

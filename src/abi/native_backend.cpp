@@ -1897,6 +1897,14 @@ BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
                  "not composed by the embedding backend");
         return BackendIo::Unsupported;
     }
+    // Circuits wait for the user's consent to a shorter route, and the C
+    // ABI has no consent interface yet.
+    if (config_.circuits()) {
+        describe(error,
+                 "circuits run in the standalone yume and are not composed "
+                 "by the embedding backend");
+        return BackendIo::Unsupported;
+    }
     if (std::holds_alternative<v1::ReverseProxyCover>(config_.cover())) {
         describe(error, "native reverse-proxy cover is not implemented");
         return BackendIo::Unsupported;

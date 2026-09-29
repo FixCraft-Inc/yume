@@ -13,10 +13,10 @@ catalog-order: 159
 Status: normative contract for the codec in `circuit/`, the constructions in
 `providers/circuit_crypto.*` with their vectors, and the node service and
 client builder in `runtime/circuit_node.*` and `runtime/circuit_client.*`.
-`yumed` serves circuits over its [cluster links](CLUSTER_1.md). The `yume`
-client does not build them yet, so only test clients use this protocol
-today ([implementation status](../IMPLEMENTATION_STATUS.md)). This page is
-not a cryptographic proof or an anonymity claim.
+`yumed` serves circuits over its [cluster links](CLUSTER_1.md), and `yume`
+builds them for a client with a `circuits` section
+([implementation status](../IMPLEMENTATION_STATUS.md)). This page is not a
+cryptographic proof or an anonymity claim.
 
 ## Purpose
 
@@ -329,5 +329,5 @@ signatures have no vectors here, because their keys are random.
   layer count but lets a malicious entry mark cells for a colluding exit, and
   the construction that avoids that is not available in OpenSSL.
 - This page defines no route choice, bounds, consent or exits. The node
-  service's bounds and exits are in [cluster 1](CLUSTER_1.md), and route
-  choice and consent belong to the client.
+  service's bounds and exits, and the client's route choice and consent, are
+  in [cluster 1](CLUSTER_1.md).

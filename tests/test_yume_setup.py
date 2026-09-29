@@ -852,6 +852,14 @@ class ClusterSetupTests(unittest.TestCase):
         self.assertIn("cluster", refused.stderr)
         self.assertFalse(output.exists())
         self.add("north")
+        # The bundle carries the node's routes view, so the cluster must be
+        # signed first.
+        unsigned = self.tool("add-client", "--server", str(self.servers["north"]), "--host",
+                             self.HOSTS["north"], "--output", str(output), "--client-name",
+                             "walker", "--circuits", code=1)
+        self.assertIn("cluster-sign", unsigned.stderr)
+        self.assertFalse(output.exists())
+        self.tool("cluster-sign", "--cluster", str(self.operator))
         self.tool("add-client", "--server", str(self.servers["north"]), "--host",
                   self.HOSTS["north"], "--output", str(output), "--client-name", "walker",
                   "--circuits")
@@ -861,6 +869,24 @@ class ClusterSetupTests(unittest.TestCase):
         self.assertIn({"service": "yume.circuit", "kind": "packet"}, entry["capabilities"])
         first = next(key for key in store["keys"] if key["name"] != "walker")
         self.assertNotIn({"service": "yume.circuit", "kind": "packet"}, first["capabilities"])
+        config = json.loads((output / "yume.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["circuits"], {
+            "hops": 3,
+            "operator_key": {"file": "credentials/circuits/operator.pub.pem"},
+            "routes": {"file": "credentials/circuits/cluster-routes.json"},
+            "routes_signature": {"file": "credentials/circuits/cluster-routes.sig"},
+            "state": {"file": "circuits-state.json"},
+        })
+        socks = [adapter for adapter in config["adapters"] if adapter["kind"] == "socks5"]
+        self.assertEqual(len(socks), 1)
+        self.assertNotIn("udp_service", socks[0])
+        node = self.servers["north"] / "credentials/cluster"
+        for name, source in (("operator.pub.pem", "operator.pub.pem"),
+                             ("cluster-routes.json", "cluster-routes.json"),
+                             ("cluster-routes.sig", "cluster-routes.sig")):
+            copied = output / "credentials/circuits" / name
+            self.assertEqual(copied.read_bytes(), (node / source).read_bytes())
+            self.assertEqual(stat.S_IMODE(copied.stat().st_mode) & 0o077, 0)
 
     def test_remove_detaches_the_node_from_the_others(self) -> None:
         for name in self.HOSTS:

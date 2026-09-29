@@ -78,8 +78,13 @@ carries circuits' streams to destinations through its `direct_tcp` adapter's
 destination policy. `cluster-sign` signs the next list and the routes view
 that clients choose routes from, and copies both to every server. A server
 whose host does not resolve when you sign needs `--address` at
-`cluster-add`. `add-client --circuits` lets a new client build circuits
-through that server. Deploy each server's
+`cluster-add`. `add-client --circuits` gives a new client a `circuits` section: its
+SOCKS5 connections then leave through circuits of three servers, with that
+server as the entry. When no route of three hops can be built, the client
+refuses connections until you accept its proposal: `yume --config PATH
+--status` shows it, with what the shorter route gives up, and `yume
+--config PATH --accept-route ID` accepts it. Set `circuits.min_hops` to
+approve a shorter route in advance on a machine nobody watches. Deploy each server's
 `credentials/cluster/` directory (and a new member's `yumed.json`) with its
 files owned by the daemon's account and mode `0600`, restart a new member and
 reload the others. Sign again before `not_after`, 30 days by

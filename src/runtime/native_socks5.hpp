@@ -51,7 +51,8 @@ struct NativeSocks5Limits final {
 // starts a NativeSocks5UdpAssociation that lasts as long as the client's TCP
 // connection. Without one, UDP ASSOCIATE is refused as unsupported. BIND is
 // always refused. A request made while no session is active is refused rather
-// than queued.
+// than queued. With an opener, CONNECT opens through it and UDP ASSOCIATE is
+// refused, since the client's circuits carry TCP only.
 //
 // Creation, close and every callback run on the supplied single-runner
 // context. The caller closes the adapter, calls finish() and drains. Bridged
@@ -64,10 +65,9 @@ public:
 
     static engine::Result<std::shared_ptr<NativeSocks5Adapter>> create(
         std::shared_ptr<providers::AsioExecutionContext> context,
-        const config::v1::Socks5Adapter& adapter,
-        NativeSessionSource sessions,
-        NativeSocks5Limits limits = {},
-        Stopped on_stopped = {});
+        const config::v1::Socks5Adapter& adapter, NativeSessionSource sessions,
+        NativeSocks5Limits limits = {}, Stopped on_stopped = {},
+        NativeStreamOpener opener = {});
 
     NativeSocks5Adapter(const NativeSocks5Adapter&) = delete;
     NativeSocks5Adapter& operator=(const NativeSocks5Adapter&) = delete;

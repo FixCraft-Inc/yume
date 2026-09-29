@@ -35,8 +35,10 @@ struct NativeForwardLimits final {
 // destination when it names one, and the server's policy for the service
 // decides the rest. Once the peer accepts, the connection and the stream are
 // joined by the shared route bridge. A connection made while no session is
-// active, or whose OPEN is refused or expires, is closed. LocalListener owns
-// the loopback and UNIX socket rules.
+// active, or whose OPEN is refused or expires, is closed. With an opener, a
+// forward that names a destination opens through it, the client's circuits,
+// and one without a destination still opens its service on the entry.
+// LocalListener owns the loopback and UNIX socket rules.
 //
 // Creation, close and every callback run on the supplied single-runner
 // context. The caller closes the adapter, calls finish() and drains. Close
@@ -49,10 +51,9 @@ public:
 
     static engine::Result<std::shared_ptr<NativeForwardAdapter>> create(
         std::shared_ptr<providers::AsioExecutionContext> context,
-        const config::v1::ForwardAdapter& adapter,
-        NativeSessionSource sessions,
-        NativeForwardLimits limits = {},
-        Stopped on_stopped = {});
+        const config::v1::ForwardAdapter& adapter, NativeSessionSource sessions,
+        NativeForwardLimits limits = {}, Stopped on_stopped = {},
+        NativeStreamOpener opener = {});
 
     NativeForwardAdapter(const NativeForwardAdapter&) = delete;
     NativeForwardAdapter& operator=(const NativeForwardAdapter&) = delete;

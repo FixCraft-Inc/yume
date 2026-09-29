@@ -156,6 +156,20 @@ struct NativeClusterCredentials final {
     std::vector<NativeLinkCredentials> links;
 };
 
+// What a client with circuits needs to trust the routes views its entry
+// serves: the operator's composite public key and its fingerprint, the kit
+// server's identity, which every view must name, and the state file. floor
+// is the highest serial the client has verified, from the state file or a
+// valid kit copy of the view, and saved the serial the state file holds.
+struct NativeCircuitCredentials final {
+    std::string operator_key_pem;
+    std::string cluster;
+    std::string entry;
+    std::filesystem::path state;
+    std::uint64_t floor{0U};
+    std::uint64_t saved{0U};
+};
+
 // Each peer may hold this many sessions to a node at once: its link and one
 // replacing it.
 inline constexpr std::size_t kMaxPeerSessions = 2U;
@@ -170,6 +184,8 @@ struct LoadedNativeCredentials final {
     std::optional<common::Socks5Credentials> socks5_credentials;
     // A server's cluster membership, when its configuration names one.
     std::optional<NativeClusterCredentials> cluster;
+    // A client's circuits, when its configuration names them.
+    std::optional<NativeCircuitCredentials> circuits;
 };
 
 // References in config resolve against config_base_directory; references in

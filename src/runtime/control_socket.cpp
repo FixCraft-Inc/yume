@@ -184,6 +184,61 @@ std::string failure_text(const Json& failure) {
     return text;
 }
 
+// A client's circuits: the length in use against the configured one, each
+// route by name and any proposal of a shorter route.
+std::string circuits_client_text(const Json& circuits) {
+    const auto count = [&](const Json& value, const char* key) {
+        return std::to_string(value.at(key).get<std::uint64_t>());
+    };
+    const auto names = [](const Json& nodes) {
+        std::string text;
+        for (const auto& node : nodes) {
+            if (!text.empty()) text += " > ";
+            text += node.get<std::string>();
+        }
+        return text;
+    };
+    const auto hops = [&](const Json& value, const char* key) {
+        const auto number = value.at(key).get<std::uint64_t>();
+        return std::to_string(number) + (number == 1U ? " hop" : " hops");
+    };
+    std::string text = circuits.at("current_hops").get<std::uint64_t>() == 0U
+                           ? "circuits: no route in use, " +
+                                 hops(circuits, "hops") + " configured"
+                           : "circuits: " + hops(circuits, "current_hops") +
+                                 " in use of " + count(circuits, "hops") +
+                                 " configured";
+    if (circuits.at("accepted_hops").get<std::uint64_t>() != 0U)
+        text += ", " + count(circuits, "accepted_hops") + " accepted";
+    if (circuits.at("min_hops").get<std::uint64_t>() <
+        circuits.at("hops").get<std::uint64_t>())
+        text += ", down to " + count(circuits, "min_hops") +
+                " approved in the configuration";
+    text += ", plain HTTP " +
+            std::string(circuits.at("plain_http") == "allow" ? "allowed"
+                                                             : "refused") +
+            ", routes view serial " + count(circuits, "serial") + "\n";
+    if (const auto& stopped = circuits.at("stopped"); !stopped.is_null())
+        text += "circuits stopped: " + stopped.get<std::string>() + "\n";
+    for (const auto& route : circuits.at("routes")) {
+        text += "circuit " + names(route.at("nodes")) + ": " +
+                duration_text(route.at("age_ms").get<std::uint64_t>()) +
+                " old, " + count(route, "streams") + " streams\n";
+    }
+    if (const auto& proposal = circuits.at("proposal"); !proposal.is_null()) {
+        text += "proposed route of " + hops(proposal, "hops") + ": " +
+                names(proposal.at("nodes"));
+        if (const auto latency = proposal.find("latency_ms");
+            latency != proposal.end())
+            text += ", measured " +
+                    std::to_string(latency->get<std::uint64_t>()) + " ms";
+        text += "\n  " + proposal.at("gives_up").get<std::string>() +
+                "\n  accept it with: yume --config <path> --accept-route " +
+                proposal.at("id").get<std::string>() + "\n";
+    }
+    return text;
+}
+
 std::string client_text(const Json& status) {
     const auto& server = status.at("server");
     const auto& traffic = status.at("traffic");
@@ -228,6 +283,10 @@ std::string client_text(const Json& status) {
     }
     if (const auto& failure = status.at("last_failure"); !failure.is_null()) {
         text += "last failure: " + failure_text(failure) + "\n";
+    }
+    if (const auto circuits = status.find("circuits");
+        circuits != status.end() && !circuits->is_null()) {
+        text += circuits_client_text(*circuits);
     }
     return text;
 }
@@ -319,6 +378,7 @@ struct ControlServer::State final : std::enable_shared_from_this<State> {
 
     std::shared_ptr<providers::AsioExecutionContext> context;
     ControlStatusSource status;
+    ControlRouteAcceptance accept_route;
     std::function<void(Status)> on_failure;
     std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
     std::shared_ptr<LocalListener> listener;
@@ -454,7 +514,29 @@ std::string ControlServer::State::reply_to(std::string_view line) {
         return error_reply("unsupported control protocol");
     }
     const auto name = request.find("request");
-    if (name == request.end() || !name->is_string() || request.size() != 2U) {
+    if (name == request.end() || !name->is_string()) {
+        return error_reply("a request holds exactly control and request");
+    }
+    if (name->get_ref<const std::string&>() == "accept-route" && accept_route) {
+        const auto id = request.find("id");
+        if (request.size() != 3U || id == request.end() || !id->is_string() ||
+            id->get_ref<const std::string&>().size() > 64U) {
+            return error_reply(
+                "accept-route holds exactly control, request and id");
+        }
+        Status accepted(StatusCode::Internal);
+        try {
+            accepted = accept_route(id->get_ref<const std::string&>());
+        } catch (...) {
+        }
+        if (!accepted.ok()) {
+            return error_reply(accepted.code() == StatusCode::NotFound
+                                   ? "no route proposal has that id"
+                                   : "the route could not be accepted");
+        }
+        return Json{{"control", kControlProtocol}, {"accepted", *id}}.dump();
+    }
+    if (request.size() != 2U) {
         return error_reply("a request holds exactly control and request");
     }
     if (name->get_ref<const std::string&>() != "status") {
@@ -514,7 +596,8 @@ void ControlServer::State::close() noexcept {
 Result<std::shared_ptr<ControlServer>> ControlServer::open(
     std::shared_ptr<providers::AsioExecutionContext> context,
     const std::filesystem::path& path, ControlStatusSource status,
-    std::function<void(Status)> on_failure) {
+    std::function<void(Status)> on_failure,
+    ControlRouteAcceptance accept_route) {
     using Opened = Result<std::shared_ptr<ControlServer>>;
     if (!context || !status || path.empty())
         return Opened(Status(StatusCode::InvalidArgument));
@@ -527,6 +610,7 @@ Result<std::shared_ptr<ControlServer>> ControlServer::open(
         auto state = std::make_shared<State>();
         state->context = std::move(context);
         state->status = std::move(status);
+        state->accept_route = std::move(accept_route);
         state->channels = std::move(channels).take_value();
         auto listener =
             LocalListener::open(state->context, LocalListener::Unix{path},
@@ -570,9 +654,9 @@ void ControlServer::close() noexcept {
     state_->close();
 }
 
-std::string client_status_reply(const NativeClientStatus& status,
-                                const ClientControlView& view,
-                                Clock::time_point now) {
+std::string client_status_reply(
+    const NativeClientStatus& status, const ClientControlView& view,
+    Clock::time_point now, const std::optional<CircuitPoolStatus>& circuits) {
     Json reply{
         {"control", kControlProtocol},
         {"program", "yume"},
@@ -612,6 +696,36 @@ std::string client_status_reply(const NativeClientStatus& status,
         forwards.push_back(endpoint_text(endpoint));
     for (const auto& path : view.unix_forwards) forwards.push_back(path);
     reply["forwards"] = std::move(forwards);
+    reply["circuits"] = nullptr;
+    if (circuits) {
+        Json routes = Json::array();
+        for (const auto& route : circuits->circuits) {
+            routes.push_back({{"nodes", route.nodes},
+                              {"age_ms", elapsed_ms(route.built, now)},
+                              {"streams", route.streams}});
+        }
+        Json proposal = nullptr;
+        if (const auto& offered = circuits->proposal) {
+            proposal = {{"id", offered->id},
+                        {"hops", offered->hops},
+                        {"nodes", offered->nodes},
+                        {"serial", offered->serial},
+                        {"gives_up", shorter_route_cost(offered->hops)}};
+            if (offered->latency)
+                proposal["latency_ms"] = offered->latency->count();
+        }
+        reply["circuits"] = {
+            {"hops", circuits->hops},
+            {"min_hops", circuits->min_hops},
+            {"accepted_hops", circuits->accepted_hops},
+            {"current_hops", circuits->current_hops},
+            {"plain_http", circuits->plain_http_allowed ? "allow" : "refuse"},
+            {"serial", circuits->serial},
+            {"stopped", circuits->stopped.empty() ? Json(nullptr)
+                                                  : Json(circuits->stopped)},
+            {"routes", std::move(routes)},
+            {"proposal", std::move(proposal)}};
+    }
     return dump(reply);
 }
 
@@ -675,8 +789,11 @@ std::string server_status_reply(const NativeServerStatus& status,
     return dump(reply);
 }
 
-Result<std::string> query_control_status(const std::filesystem::path& path,
-                                         std::chrono::milliseconds timeout) {
+namespace {
+
+Result<std::string> query_control(const std::filesystem::path& path,
+                                  std::string_view request,
+                                  std::chrono::milliseconds timeout) {
     using Queried = Result<std::string>;
     const std::string& name = path.native();
     sockaddr_un address{};
@@ -724,8 +841,6 @@ Result<std::string> query_control_status(const std::filesystem::path& path,
             Status::diagnostic(StatusCode::PermissionDenied,
                                "the control socket belongs to another user"));
     }
-    constexpr std::string_view request =
-        "{\"control\":1,\"request\":\"status\"}\n";
     std::size_t sent = 0U;
     while (sent < request.size()) {
         if (!wait_ready(fd, POLLOUT, deadline)) {
@@ -773,6 +888,33 @@ Result<std::string> query_control_status(const std::filesystem::path& path,
     return Queried(std::move(reply));
 }
 
+}  // namespace
+
+Result<std::string> query_control_status(const std::filesystem::path& path,
+                                         std::chrono::milliseconds timeout) {
+    return query_control(path, "{\"control\":1,\"request\":\"status\"}\n",
+                         timeout);
+}
+
+Result<std::string> query_control_accept_route(
+    const std::filesystem::path& path, std::string_view id,
+    std::chrono::milliseconds timeout) {
+    if (id.empty() || id.size() > 64U ||
+        !std::all_of(id.begin(), id.end(), [](char ch) {
+            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+        })) {
+        return Result<std::string>(
+            Status::diagnostic(StatusCode::InvalidArgument,
+                               "a route id is lowercase hexadecimal"));
+    }
+    const auto request = Json{{"control", kControlProtocol},
+                              {"request", "accept-route"},
+                              {"id", std::string(id)}}
+                             .dump() +
+                         "\n";
+    return query_control(path, request, timeout);
+}
+
 Result<std::string> status_reply_text(std::string_view reply) {
     using Text = Result<std::string>;
     const Json status = Json::parse(reply, nullptr, false);
@@ -791,6 +933,10 @@ Result<std::string> status_reply_text(std::string_view reply) {
             "the control socket refused the request: " +
                 (error->is_string() ? error->get<std::string>()
                                     : std::string("?"))));
+    }
+    if (const auto accepted = status.find("accepted");
+        accepted != status.end() && accepted->is_string()) {
+        return Text("accepted route " + accepted->get<std::string>() + "\n");
     }
     try {
         const auto& program = status.at("program");

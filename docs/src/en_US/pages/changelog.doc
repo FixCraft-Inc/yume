@@ -117,8 +117,20 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   windows are capped at an eighth of the session budget, and
   `yumed --status` counts circuits per link and refusals by bound.
   `yume-setup cluster-add --exit`, `add-client --circuits` and the routes
-  view in `cluster-sign` provision it. The `yume` client does not build
-  circuits yet.
+  view in `cluster-sign` provision it.
+- **Circuits for clients.** A client configuration's `circuits` section
+  (`hops`, `min_hops`, `plain_http` and the operator key, routes view and
+  state files) sends every SOCKS5 CONNECT and forward to a destination
+  through circuits of two or three servers that `yume` chooses from the
+  routes view: distinct nodes, an exit last and no shared network tag, with
+  measured latency, a spare and rotation. UDP ASSOCIATE and packet adapters
+  are refused with circuits, and plain HTTP is refused unless allowed. A
+  destination the exit cannot reach answers SOCKS5 as host unreachable, as
+  on the direct session. The client never shortens a route on its own: it proposes one, which
+  `yume --accept-route ID` accepts over the control socket, or
+  `circuits.min_hops` approves in advance. `yume --status` shows routes and
+  proposals, `yume-setup add-client --circuits` writes the section and kit
+  copies, and the C ABI refuses the section.
 - **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
   into one file and prints a 25-character code, and `yume --import-kit FILE
   --into DIR` opens it on the client's device with that code. The file is

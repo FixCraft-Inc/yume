@@ -906,6 +906,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     std::optional<ReloadInputs> reload_inputs;
     // A server's verified cluster membership, replaced by a reload.
     std::optional<NativeClusterCredentials> cluster;
+    // A client's circuits credentials.
+    std::optional<NativeCircuitCredentials> circuits;
     ControlTask close_task;
 };
 
@@ -1099,6 +1101,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         for (auto& handler : handlers)
             require(builder.register_stream_handler(std::move(handler.name), std::move(handler.handler)));
         if (role == EndpointRole::Client) {
+            state->circuits = std::move(credentials.circuits);
             const auto& endpoint = std::get<config::v1::ClientEndpoint>(config.endpoint());
             const auto& configured_dial = endpoint.connect_address();
             if (!state->options.connection_address.empty() && configured_dial &&
@@ -1258,6 +1261,9 @@ engine::Status NativeEndpoint::reload_credentials() {
 }
 const NativeClusterCredentials* NativeEndpoint::cluster() const noexcept {
     return state_->cluster ? &*state_->cluster : nullptr;
+}
+const NativeCircuitCredentials* NativeEndpoint::circuits() const noexcept {
+    return state_->circuits ? &*state_->circuits : nullptr;
 }
 std::vector<NativePeerSession> NativeEndpoint::authenticated_sessions() const {
     state_->context->require_context();

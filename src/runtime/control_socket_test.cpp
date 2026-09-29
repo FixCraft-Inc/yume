@@ -236,6 +236,57 @@ void test_status_text() {
         check(!yume::runtime::status_reply_text(reply).ok(),
               "a bad reply was rendered");
     }
+
+    // A client with circuits: the length in use, each route by name and a
+    // proposal with what it gives up and how to accept it.
+    yume::runtime::CircuitPoolStatus circuits;
+    circuits.hops = 3U;
+    circuits.min_hops = 2U;
+    circuits.current_hops = 0U;
+    circuits.serial = 7U;
+    yume::runtime::CircuitRoute route;
+    route.nodes = {"north", "east", "west"};
+    route.built = now - 90s;
+    route.streams = 2U;
+    circuits.circuits.push_back(route);
+    yume::runtime::RouteProposal proposal;
+    proposal.id = "0011223344556677";
+    proposal.hops = 1U;
+    proposal.nodes = {"north"};
+    proposal.serial = 7U;
+    circuits.proposal = proposal;
+    const Json reply = Json::parse(yume::runtime::client_status_reply(
+        connected_status(now), view(), now, circuits));
+    const auto& section = reply.at("circuits");
+    check(
+        section.at("hops") == 3 && section.at("min_hops") == 2 &&
+            section.at("current_hops") == 0 &&
+            section.at("plain_http") == "refuse" &&
+            section.at("stopped").is_null() &&
+            section.at("routes") ==
+                Json::parse(
+                    R"([{"nodes":["north","east","west"],"age_ms":90000,"streams":2}])") &&
+            section.at("proposal").at("id") == "0011223344556677" &&
+            section.at("proposal").at("hops") == 1 &&
+            !section.at("proposal").contains("latency_ms"),
+        "the circuits fields are wrong");
+    check(Json::parse(yume::runtime::client_status_reply(connected_status(now),
+                                                         view(), now))
+              .at("circuits")
+              .is_null(),
+          "a client without circuits reported some");
+    const auto shown = require(yume::runtime::status_reply_text(reply.dump()));
+    check(
+        shown.find(
+            "circuits: no route in use, 3 hops configured, down to 2 approved "
+            "in "
+            "the configuration, plain HTTP refused, routes view serial 7\n"
+            "circuit north > east > west: 1 min 30 s old, 2 streams\n"
+            "proposed route of 1 hop: north\n"
+            "  Your entry server sees both who you are") != std::string::npos &&
+            shown.find("accept it with: yume --config <path> --accept-route "
+                       "0011223344556677\n") != std::string::npos,
+        "the circuits text is wrong");
 }
 
 // A server reply names its listeners and client sessions, and with a cluster
@@ -399,11 +450,72 @@ void test_requests_and_errors() {
               "a bad request got the wrong error");
     }
     check(calls == 2, "a bad request reached the status source");
+    // A server without route acceptance knows no accept-route request.
+    check(
+        error_of(exchange(
+            path,
+            "{\"control\":1,\"request\":\"accept-route\",\"id\":\"ab\"}\n")) ==
+            "a request holds exactly control and request",
+        "accept-route reached a server without acceptance");
     runner.sync([&] { server->close(); });
     check(!std::filesystem::exists(path), "close left the control socket");
     const auto gone = yume::runtime::query_control_status(path, 500ms);
     check(!gone.ok() && gone.status().code() == StatusCode::NotFound,
           "a missing control socket was not NotFound");
+}
+
+// A client with circuits accepts a proposal by its id over the socket, and
+// only that id.
+void test_accept_route() {
+    Directory directory;
+    Runner runner;
+    const auto path = directory.path / "control.sock";
+    std::vector<std::string> accepted;
+    auto server = runner.sync([&] {
+        return require(ControlServer::open(
+            runner.context, path,
+            [] { return std::string(R"({"control":1})"); }, {},
+            [&accepted](std::string_view id) {
+                if (id != "00112233aabbccdd")
+                    return Status(StatusCode::NotFound);
+                accepted.emplace_back(id);
+                return Status::success();
+            }));
+    });
+    const auto reply = yume::runtime::query_control_accept_route(
+        path, "00112233aabbccdd", 2000ms);
+    check(
+        reply.ok() &&
+            reply.value() == R"({"accepted":"00112233aabbccdd","control":1})" &&
+            require(yume::runtime::status_reply_text(reply.value())) ==
+                "accepted route 00112233aabbccdd\n",
+        "a proposal's id was not accepted");
+    const auto stale = yume::runtime::query_control_accept_route(
+        path, "ffffffffffffffff", 2000ms);
+    check(
+        stale.ok() &&
+            error_of(stale.value() + "\n") == "no route proposal has that id" &&
+            !yume::runtime::status_reply_text(stale.value()).ok(),
+        "another id was accepted");
+    check(!yume::runtime::query_control_accept_route(path, "NOT-HEX", 500ms)
+                  .ok() &&
+              !yume::runtime::query_control_accept_route(path, "", 500ms).ok(),
+          "a malformed id was sent");
+    const std::pair<std::string, std::string> cases[] = {
+        {"{\"control\":1,\"request\":\"accept-route\"}\n",
+         "accept-route holds exactly control, request and id"},
+        {"{\"control\":1,\"request\":\"accept-route\",\"id\":7}\n",
+         "accept-route holds exactly control, request and id"},
+        {"{\"control\":1,\"request\":\"accept-route\",\"id\":\"00\",\"x\":1}\n",
+         "accept-route holds exactly control, request and id"},
+    };
+    for (const auto& [request, error] : cases) {
+        check(error_of(exchange(path, request)) == error,
+              "a bad accept-route got the wrong error");
+    }
+    check(accepted == std::vector<std::string>{"00112233aabbccdd"},
+          "acceptance saw something other than the one valid id");
+    runner.sync([&] { server->close(); });
 }
 
 // A silent connection ends at the request deadline, and connections beyond
@@ -471,6 +583,7 @@ int main() {
         test_status_text();
         test_server_status();
         test_requests_and_errors();
+        test_accept_route();
         test_deadline_and_limit();
         test_open_refusals();
     } catch (const std::exception& error) {

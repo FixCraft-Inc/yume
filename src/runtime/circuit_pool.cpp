@@ -15,6 +15,7 @@
 #include <utility>
 
 #include <boost/asio/basic_waitable_timer.hpp>
+#include <boost/asio/post.hpp>
 
 #include "common/service_name.hpp"
 #include "providers/circuit_crypto.hpp"
@@ -571,8 +572,19 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             proposal.reset();
             next_recheck.reset();
         }
+        // A circuit closes inside loops over entries, such as rotation in
+        // maintain() and close(), and pump() erases closed entries, so it
+        // runs later, never inside close(). If the post fails, the next
+        // tick pumps.
         circuit->on_closed([weak = weak_from_this()] {
-            if (const auto self = weak.lock()) self->pump();
+            const auto self = weak.lock();
+            if (!self) return;
+            try {
+                boost::asio::post(self->context->executor(), [weak] {
+                    if (const auto later = weak.lock()) later->pump();
+                });
+            } catch (...) {
+            }
         });
         entries.push_back(
             Entry{std::move(circuit), std::move(route), Clock::now(), {}, {}});

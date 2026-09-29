@@ -272,14 +272,16 @@ are ignored, because they may have crossed its END.
 Each end grants the other a window of 262144 bytes for every stream's DATA
 when the stream starts and returns it with STREAM_CREDIT as it delivers the
 bytes, so neither end holds more of one stream than the window it granted.
-A receiver MUST end the circuit when DATA exceeds the window it granted or
+A receiver may grow a window by returning more than it delivered. A
+receiver MUST end the circuit when DATA exceeds the window it granted or
 when STREAM_CREDIT would let its sender hold more than 2^30 bytes.
 
 END with reason done finishes one direction: its sender will send no more
 DATA, and the receiver delivers what it holds and then ends the stream toward
 its reader or destination. The stream is gone once both ends have sent
-done. END with any other reason ends both directions at once, and DATA after
-an END is a protocol error.
+done. END with any other reason ends both directions at once, also from an
+end that already sent done, and DATA after its sender's END is a protocol
+error.
 
 EXTEND_FAILED leaves the circuit open at the hop that sent it, so the client
 may extend to another node. CIRCUIT_FAILED comes from the hop that saw the

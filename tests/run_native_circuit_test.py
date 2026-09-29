@@ -158,6 +158,20 @@ class Client:
                 env=self.environment, stdout=log, stderr=subprocess.STDOUT)
         session.wait_for_port("127.0.0.1", self.socks_port, self.process,
                               time.monotonic() + 60.0)
+        # SOCKS5 opens before the session, and without a session the client
+        # refuses connections as not allowed, so wait for it.
+        deadline = time.monotonic() + 60.0
+        while not self.connected():
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                raise session.SessionFailure(
+                    f"yume never connected: {self.log.read_text(errors='replace')}")
+            time.sleep(0.1)
+
+    def connected(self) -> bool:
+        try:
+            return self.status().get("state") == "connected"
+        except (OSError, ValueError):
+            return False
 
     def status(self) -> dict:
         return cluster.query(self.control)

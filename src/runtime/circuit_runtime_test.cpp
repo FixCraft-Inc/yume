@@ -12,6 +12,7 @@
 #include <chrono>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <map>
@@ -19,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <boost/asio/post.hpp>
@@ -274,6 +276,54 @@ private:
     bool closed_{false};
 };
 
+// A destination that always has data and discards what it is sent. It
+// counts its closes in closed.
+class SourceChannel final : public engine::ByteChannel {
+public:
+    SourceChannel(std::shared_ptr<providers::AsioExecutionContext> context,
+                  std::shared_ptr<std::atomic<int>> closed)
+        : context_(std::move(context)), closed_count_(std::move(closed)) {}
+    engine::ExecutorAffinity executor_affinity() const noexcept override {
+        return context_->affinity();
+    }
+    std::size_t max_read_size() const noexcept override { return 65536U; }
+    std::size_t max_write_size() const noexcept override { return 65536U; }
+    void async_read(std::size_t max_bytes, CancellationToken,
+                    ReadCompletion completion) override {
+        if (closed_) {
+            boost::asio::post(
+                context_->executor(), [completion = std::move(completion)] {
+                    completion(Result<Buffer>(Status(StatusCode::Closed)));
+                });
+            return;
+        }
+        auto shared = std::make_shared<Buffer>(take(Buffer::allocate(
+            std::min<std::size_t>(max_bytes, 65536U), 65536U)));
+        boost::asio::post(context_->executor(),
+                          [completion = std::move(completion), shared] {
+                              completion(Result<Buffer>(std::move(*shared)));
+                          });
+    }
+    void async_write(Buffer buffer, CancellationToken,
+                     WriteCompletion completion) override {
+        const auto size = buffer.size();
+        boost::asio::post(context_->executor(),
+                          [completion = std::move(completion), size] {
+                              completion(Status::success(), size);
+                          });
+    }
+    Status shutdown_write() noexcept override { return Status::success(); }
+    void cancel() noexcept override {}
+    void close() noexcept override {
+        if (!std::exchange(closed_, true)) ++*closed_count_;
+    }
+
+private:
+    std::shared_ptr<providers::AsioExecutionContext> context_;
+    std::shared_ptr<std::atomic<int>> closed_count_;
+    bool closed_{false};
+};
+
 std::string pem_of(EVP_PKEY* key) {
     std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()),
                                                   BIO_free);
@@ -398,6 +448,12 @@ struct Cluster {
                                 Status(failure->second)));
                             return;
                         }
+                        if (to.port == 19) {
+                            done(Result<std::unique_ptr<engine::ByteChannel>>(
+                                std::make_unique<SourceChannel>(
+                                    runtime.context(), sources_closed)));
+                            return;
+                        }
                         done(Result<std::unique_ptr<engine::ByteChannel>>(
                             std::make_unique<EchoChannel>(runtime.context())));
                     };
@@ -486,6 +542,8 @@ struct Cluster {
 
     IoRuntime& runtime;
     std::shared_ptr<cc::CircuitCrypto> crypto;
+    std::shared_ptr<std::atomic<int>> sources_closed{
+        std::make_shared<std::atomic<int>>(0)};
     bool exit_everywhere{false};
     std::size_t clients{0U};
     std::map<std::string, std::shared_ptr<const keys::CompositePrivate>>
@@ -598,6 +656,104 @@ void test_three_hops(Cluster& cluster) {
               pattern(1000U));
         CHECK(echo(cluster.runtime, second.value(), pattern(70000U)) ==
               pattern(70000U));
+    }
+    cluster.runtime.sync([&] { circuit->close(); });
+}
+
+// Reads and releases drain bytes of an endless stream, then reads and keeps
+// records until none arrives for half a second. Returns how many bytes it
+// kept: what the client's window let the exit send ahead of the reader.
+std::size_t sent_ahead(Cluster& cluster,
+                       const std::shared_ptr<StreamResponder>& stream,
+                       std::size_t drain) {
+    struct Reader {
+        std::size_t drained{0U};
+        std::size_t kept_bytes{0U};
+        std::vector<ReceivedRecord> kept;
+        std::chrono::steady_clock::time_point last{
+            std::chrono::steady_clock::now()};
+    };
+    auto reader = std::make_shared<Reader>();
+    auto next = std::make_shared<std::function<void()>>();
+    *next = [stream, reader, next, drain] {
+        stream->async_read(
+            {}, [reader, next, drain](Result<ReceivedRecord> result) {
+                if (!result.ok()) return;
+                auto record = std::move(result).take_value();
+                // A record released here returns its credit.
+                if (reader->drained < drain) {
+                    reader->drained += record.payload().size();
+                } else {
+                    reader->kept_bytes += record.payload().size();
+                    reader->kept.push_back(std::move(record));
+                }
+                reader->last = std::chrono::steady_clock::now();
+                if (*next) (*next)();
+            });
+    };
+    cluster.runtime.sync([&] { (*next)(); });
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(100ms);
+        const bool quiet = cluster.runtime.sync([&] {
+            return reader->drained >= drain &&
+                   std::chrono::steady_clock::now() - reader->last > 500ms;
+        });
+        if (quiet) break;
+    }
+    return cluster.runtime.sync([&] {
+        CHECK(reader->drained >= drain);
+        *next = nullptr;
+        stream->close(Status(StatusCode::Cancelled));
+        reader->kept.clear();
+        return reader->kept_bytes;
+    });
+}
+
+// The client grows a stream's window as its reader drains it, up to 1 MiB,
+// and not past the circuit's total.
+void test_window_growth(Cluster& cluster) {
+    const std::size_t first_window =
+        runtime::circuit::ClientLimits{}.stream_window;
+    auto circuit = cluster.circuit({"north", "east", "west"});
+    CHECK(cluster.build(circuit).ok());
+    auto stream = cluster.open(circuit, 19);
+    CHECK(stream.ok());
+    if (stream.ok()) {
+        const auto ahead = sent_ahead(cluster, stream.value(), 3U << 20U);
+        CHECK(ahead > first_window && ahead <= (1U << 20U));
+    }
+    cluster.runtime.sync([&] { circuit->close(); });
+
+    runtime::circuit::ClientLimits capped;
+    capped.circuit_window = capped.stream_window;
+    auto held = cluster.circuit({"north", "west"}, {}, nullptr, capped);
+    CHECK(cluster.build(held).ok());
+    auto small = cluster.open(held, 19);
+    CHECK(small.ok());
+    if (small.ok())
+        CHECK(sent_ahead(cluster, small.value(), 3U << 20U) <= first_window);
+    cluster.runtime.sync([&] { held->close(); });
+}
+
+// A client that finished writing and then drops the stream before the exit
+// finished ends it at the exit, which closes the destination.
+void test_dropped_after_done(Cluster& cluster) {
+    auto circuit = cluster.circuit({"north", "west"});
+    CHECK(cluster.build(circuit).ok());
+    auto stream = cluster.open(circuit, 19);
+    CHECK(stream.ok());
+    if (stream.ok()) {
+        const int before = cluster.sources_closed->load();
+        cluster.runtime.sync([&] {
+            CHECK(stream.value()->shutdown_write().ok());
+            stream.value()->close(Status(StatusCode::Cancelled));
+        });
+        const auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (cluster.sources_closed->load() == before &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(20ms);
+        CHECK(cluster.sources_closed->load() == before + 1);
     }
     cluster.runtime.sync([&] { circuit->close(); });
 }
@@ -756,6 +912,8 @@ int main() {
         {
             Cluster cluster(io);
             test_three_hops(cluster);
+            test_window_growth(cluster);
+            test_dropped_after_done(cluster);
             test_two_hops_and_refusals(cluster);
             test_extend_failures(cluster);
             test_client_bounds(cluster);

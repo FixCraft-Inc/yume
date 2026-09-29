@@ -120,6 +120,10 @@ struct NativeLinkCredentials final {
     std::shared_ptr<providers::OpenSslSecurityProviderFactory> security_factory;
     std::shared_ptr<providers::Tls13SecureChannelProvider> tls_provider;
     NativeAdmissionKey admission_key;
+    // A digest of everything the link is built from, this node's identity
+    // and secrets included, so a reload can keep a link whose inputs did not
+    // change.
+    std::array<std::byte, 32> material{};
 };
 
 // A server's verified membership in its operator's cluster.
@@ -128,6 +132,10 @@ struct NativeClusterCredentials final {
     std::uint64_t serial{0U};
     std::chrono::system_clock::time_point not_after;
     std::string self_name;
+    // The file where this node keeps the newest list's serial, and the
+    // serial it held when this list was loaded, zero without a file.
+    std::filesystem::path state;
+    std::uint64_t saved_serial{0U};
     // Peers this node accepts links from, as (identity, name).
     std::vector<std::pair<std::string, std::string>> inbound;
     std::vector<NativeLinkCredentials> links;

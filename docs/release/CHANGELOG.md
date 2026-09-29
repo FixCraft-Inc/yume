@@ -81,12 +81,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Cluster links.** Servers of one operator form a cluster from a list the
   operator signs with a composite Ed25519 and ML-DSA-87 key
   ([cluster 1](../protocol/CLUSTER_1.md)). A server's `cluster` section names
-  the list, its signature, the operator key and a peer store with a PSK for
-  each direction of each pair. `yumed` refuses a list that fails its
-  signature, has expired or does not name it, keeps an authenticated YTP/1
-  link to every peer and closes them when the list expires. SIGHUP reloads
-  the list and restarts the links, and a list with a lower serial is refused.
-  `yume-setup cluster-init`, `cluster-add`, `cluster-remove` and
+  the list, its signature, the operator key, a peer store with a PSK for
+  each direction of each pair and a state file. `yumed` refuses a list that
+  fails its signature, has expired or does not name it, keeps an
+  authenticated YTP/1 link to every peer and closes them when the list
+  expires. SIGHUP reloads the list and peer store and keeps every link whose
+  inputs did not change. The server saves the highest serial it has loaded
+  in the state file and refuses a list with a lower one, after a restart
+  too. `yume-setup cluster-init`, `cluster-add`, `cluster-remove` and
   `cluster-sign` provision it, `yume-doctor` checks the section, and the
   embedding ABI refuses it. The links carry no traffic yet.
 - **`yumed --status`.** `control.socket` is now available to the daemon, which

@@ -670,6 +670,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
 
     add_library(yume_native_credentials STATIC
         runtime/cluster_list.cpp runtime/cluster_list.hpp
+        runtime/cluster_state.cpp runtime/cluster_state.hpp
         runtime/native_credentials.cpp runtime/native_credentials.hpp)
     target_include_directories(yume_native_credentials PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_native_credentials

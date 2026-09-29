@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <exception>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <string>
@@ -56,6 +58,10 @@ public:
     // hex.
     std::string fingerprint(std::span<const std::byte> classical,
                             std::span<const std::byte> post_quantum) const;
+    // SHA-256 over each field behind its u32 big-endian length, hashed as it
+    // goes, so secret fields are never copied into one buffer.
+    std::array<std::byte, 32> digest(
+        std::initializer_list<std::span<const std::byte>> fields) const;
 
 private:
     struct Impl;

@@ -210,12 +210,16 @@ Servers of one operator form a cluster ([cluster 1](protocol/CLUSTER_1.md)).
 A server with a `cluster` section verifies the operator's signed list and its
 peer store, keeps one outbound link to every peer with the client's backoff,
 and admits peers' links without granting them a service. An expired list
-closes the links and ends the peers' sessions, and a reload restarts every
-link. `yumed --status` reports the list and each link over the control socket.
-`yume_cluster_list_test` and the credential test cover the list and store
-refusals, and `yume_native_cluster_test` runs three daemons from
-`yume-setup`'s cluster commands: links in both directions, recovery after a
-stop, a refused wrong PSK and a reload. The links carry no traffic.
+closes the links and ends the peers' sessions. A reload keeps every link whose
+inputs did not change and replaces or closes the others, and the server saves
+the highest serial it has loaded so that an older list is refused after a
+restart too. `yumed --status` reports the list and each link over the control
+socket. `yume_cluster_list_test` and the credential test cover the list, store
+and saved-serial refusals, and `yume_native_cluster_test` runs three daemons
+from `yume-setup`'s cluster commands: links in both directions, recovery after
+a stop, a refused wrong PSK, a reload that restores a link, a newer list that
+keeps every link, a removed server and a restart refused for an older list.
+The links carry no traffic.
 
 The circuit protocol that will carry traffic over those links is specified in
 [circuit 1](protocol/CIRCUIT_1.md). Its codec (`circuit/`) and its handshake

@@ -675,12 +675,15 @@ private:
 // cluster: a server's membership in its operator's cluster. The list names
 // the cluster's nodes and the operator signs it with the key in
 // operator_key. peers is the node's private store of pairwise link secrets.
-// yumed verifies the list and the store when it starts.
+// state is the file where yumed keeps the highest list serial it has loaded,
+// which it creates and replaces itself, so it must be somewhere yumed may
+// write. yumed verifies the list and the store when it starts.
 struct ClusterSettings final {
     FileReference operator_key;
     FileReference list;
     FileReference signature;
     FileReference peers;
+    FileReference state;
 };
 
 // control.socket: the owner-only control socket of yume or yumed, a

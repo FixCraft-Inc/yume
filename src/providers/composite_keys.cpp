@@ -138,6 +138,36 @@ std::string KeyContext::fingerprint(
     return output;
 }
 
+std::array<std::byte, 32> KeyContext::digest(
+    std::initializer_list<std::span<const std::byte>> fields) const {
+    MdCtxPtr context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    require(context && EVP_DigestInit_ex2(context.get(), impl_->sha256.get(),
+                                          nullptr) == 1,
+            "digest initialization failed", StatusCode::Internal);
+    for (const auto field : fields) {
+        require(field.size() <= std::numeric_limits<std::uint32_t>::max(),
+                "digest field exceeds its size bound");
+        const auto size = static_cast<std::uint32_t>(field.size());
+        const std::array<unsigned char, 4> length{
+            static_cast<unsigned char>(size >> 24U),
+            static_cast<unsigned char>(size >> 16U),
+            static_cast<unsigned char>(size >> 8U),
+            static_cast<unsigned char>(size)};
+        const bool updated =
+            EVP_DigestUpdate(context.get(), length.data(), 4U) == 1 &&
+            EVP_DigestUpdate(context.get(), field.data(), field.size()) == 1;
+        require(updated, "digest update failed", StatusCode::Internal);
+    }
+    std::array<std::byte, 32> output{};
+    unsigned int size = 0;
+    require(EVP_DigestFinal_ex(context.get(),
+                               reinterpret_cast<unsigned char*>(output.data()),
+                               &size) == 1 &&
+                size == output.size(),
+            "digest failed", StatusCode::Internal);
+    return output;
+}
+
 void PkeyDeleter::operator()(EVP_PKEY* key) const noexcept {
     EVP_PKEY_free(key);
 }

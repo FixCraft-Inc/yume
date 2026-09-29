@@ -113,6 +113,25 @@ def all_linked(nodes: list[Node]) -> bool:
     return all(linked(node, other.name) for node in nodes for other in nodes if other is not node)
 
 
+def kept(node: Node, peer: str, reloaded_at: float) -> bool:
+    """The outbound link to peer has been up since before the reload."""
+    outbound = node.links().get(peer, {}).get("outbound", {})
+    up_for = outbound.get("connected_ms", 0) / 1000.0
+    return outbound.get("state") == "connected" and up_for > time.monotonic() - reloaded_at + 0.2
+
+
+def saved_serial(node: Node) -> int:
+    state = json.loads((node.server / "cluster-state.json").read_text(encoding="utf-8"))
+    return int(state["serial"])
+
+
+def reload(nodes: list[Node]) -> float:
+    reloaded_at = time.monotonic()
+    for node in nodes:
+        node.process.send_signal(signal.SIGHUP)
+    return reloaded_at
+
+
 def run(yumed: Path, openssl: Path) -> None:
     environment = session.openssl_environment(openssl)
     with tempfile.TemporaryDirectory(prefix="yume-cluster-", dir="/tmp") as temporary:
@@ -195,6 +214,58 @@ def run(yumed: Path, openssl: Path) -> None:
             b.process.send_signal(signal.SIGHUP)
             wait_until("node-a links to node-b after the reload", lambda: all_linked(nodes), 60.0)
             print("a wrong link PSK was refused and a reload restored the link")
+
+            # A newer list with the same nodes keeps every link running.
+            if [saved_serial(node) for node in nodes] != [1, 1, 1]:
+                raise session.SessionFailure("the nodes did not save serial 1")
+            listed = a.server / "credentials/cluster"
+            first_list = ((listed / "cluster-list.json").read_bytes(),
+                          (listed / "cluster-list.sig").read_bytes())
+            time.sleep(1.0)
+            setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+            reloaded_at = reload(nodes)
+            wait_until("every node loaded serial 2", lambda: all(
+                (node.status() or {}).get("cluster", {}).get("serial") == 2 for node in nodes))
+            if not all(kept(node, other.name, reloaded_at)
+                       for node in nodes for other in nodes if other is not node):
+                raise session.SessionFailure(
+                    f"a reload restarted an unchanged link: {[node.links() for node in nodes]}")
+            if [saved_serial(node) for node in nodes] != [2, 2, 2]:
+                raise session.SessionFailure("the nodes did not save serial 2")
+            print("a reload with a newer list kept every unchanged link")
+
+            # Removing node-c closes only its links.
+            setup(environment, "cluster-remove", "--cluster", str(operator), "--name", "node-c")
+            setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+            reloaded_at = reload([a, b])
+            wait_until("node-a and node-b dropped node-c", lambda: all(
+                set(node.links()) == {other} for node, other in ((a, "node-b"), (b, "node-a"))))
+            if not (kept(a, "node-b", reloaded_at) and kept(b, "node-a", reloaded_at)):
+                raise session.SessionFailure("removing node-c restarted the other link")
+            if (c.server / "cluster-state.json").exists():
+                raise session.SessionFailure("cluster-remove left node-c's saved serial")
+            print("removing a node closed only its links")
+
+            # node-a refuses the older list it saw before, even after a restart.
+            current_list = ((listed / "cluster-list.json").read_bytes(),
+                            (listed / "cluster-list.sig").read_bytes())
+            a.stop()
+            (listed / "cluster-list.json").write_bytes(first_list[0])
+            (listed / "cluster-list.sig").write_bytes(first_list[1])
+            a.start()
+            try:
+                code = a.process.wait(timeout=30)
+            except subprocess.TimeoutExpired as error:
+                raise session.SessionFailure("node-a started with an older list") from error
+            a.process = None
+            if code == 0:
+                raise session.SessionFailure("node-a exited cleanly with an older list")
+            refusal = (root / f"node-a-{a.runs}.log").read_text(encoding="utf-8", errors="replace")
+            if "older than one this node has loaded" not in refusal:
+                raise session.SessionFailure(f"node-a did not say why it refused: {refusal}")
+            (listed / "cluster-list.json").write_bytes(current_list[0])
+            (listed / "cluster-list.sig").write_bytes(current_list[1])
+            print("a restarted node refused a list older than the one it saved")
             for node in nodes:
                 node.stop()
         except session.SessionFailure:
@@ -226,7 +297,8 @@ def main() -> int:
     except (session.SessionFailure, OSError, subprocess.SubprocessError) as error:
         print(f"native cluster test: {error}", file=sys.stderr)
         return 1
-    print("clustered yumed nodes linked, recovered and refused a wrong PSK")
+    print("clustered yumed nodes linked, recovered, kept links across reloads "
+          "and refused a wrong PSK and an older list")
     return 0
 
 

@@ -431,10 +431,12 @@ Schema 1 is role tagged and contains these sections only:
   there to processes of its own user, and `--status` reads it. The socket's
   directory must belong to that user and be closed to writes by group and
   others. yume(1) and yumed(8) describe the protocol;
-- `cluster`, optional and server-only: `operator_key`, `list`, `signature`
-  and `peers`, the file references of a cluster membership. `yume-setup`'s
-  cluster commands write them, and [cluster 1](../../protocol/CLUSTER_1.md)
-  gives their format and what the daemon checks.
+- `cluster`, optional and server-only: `operator_key`, `list`, `signature`,
+  `peers` and `state`, the file references of a cluster membership. The
+  daemon writes `state` itself, so it needs a writable directory.
+  `yume-setup`'s cluster commands write them, and
+  [cluster 1](../../protocol/CLUSTER_1.md) gives their format and what the
+  daemon checks.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
 and unsafe combinations. The CLIs accept config selection, validation, the

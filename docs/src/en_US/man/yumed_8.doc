@@ -64,17 +64,23 @@ besides **--config**.
 
 ## CLUSTER
 
-A server's **cluster** object names four files: **operator_key**, the
+A server's **cluster** object names five files: **operator_key**, the
 operator's composite public key, **list**, the cluster list, **signature**,
-its composite signature, and **peers**, the peer store. The list names at
+its composite signature, **peers**, the peer store, and **state**, where the
+daemon saves the highest list serial it has loaded. The list names at
 most 64 servers with their addresses and public keys, and the operator signs
 it with a key that stays off the servers. The daemon refuses to start with a
 list whose signature does not verify, whose **not_after** has passed or that
 does not name the daemon itself. The peer store gives each peer an outbound
 PSK, an inbound PSK and the peer's admission key. Every PSK differs from
 every other PSK, admission key and client PSK, and a peer is never also a
-client or administrator. All four files are owner-only like the other
-credential files. **yume-setup** writes all of it: **cluster-init**,
+client or administrator. All five files are owner-only like the other
+credential files. The daemon creates and replaces **state** itself, so its
+directory must exist and be writable by the daemon, for example
+**/var/lib/yume/cluster-state.json** under the packaged unit, whose
+**/etc/yume** is read-only. It refuses a list with a lower serial than the
+saved one, after a restart too, and a state file of another cluster.
+**yume-setup** writes all of it: **cluster-init**,
 **cluster-add**, **cluster-remove** and **cluster-sign**. The format is in
 **docs/protocol/CLUSTER_1.md**.
 
@@ -114,9 +120,12 @@ the reload. Sessions of removed
 identities, or beyond a lowered per-identity **max_sessions**, end. Established
 sessions apply changed grants to their next stream and a changed **weight** to
 their next transfer. A cluster member also reads its list and peer store
-again and restarts every link. An invalid store, a list naming another
-operator or a list with a lower serial is
-refused and the previous credentials stay in force. TLS material, the
+again. A link whose peer and inputs are unchanged keeps running, a changed
+peer's link is replaced, a removed peer's link closes and a new peer gets
+one. A newer serial is saved before anything switches. An invalid store, a
+list naming another operator, a list with a lower serial or a state file
+that cannot be written is refused and the previous credentials stay in
+force. TLS material, the
 admission key and egress lists are read only at startup, and a changed
 admission key is refused.
 **SIGPIPE** is ignored.

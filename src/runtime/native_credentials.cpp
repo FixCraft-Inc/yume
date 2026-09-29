@@ -26,6 +26,7 @@
 #include "providers/openssl_security_provider.hpp"
 #include "providers/tls13_secure_channel.hpp"
 #include "runtime/cluster_list.hpp"
+#include "runtime/cluster_state.hpp"
 #include "providers/composite_keys.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
@@ -399,7 +400,8 @@ bool same_secret(std::span<const std::byte> left,
 // client access PSK. A node identity is never also a client or admin.
 NativeClusterCredentials load_cluster(
     const config::v1::ClusterSettings& refs, const std::filesystem::path& base,
-    const CompositePrivate& local, std::span<const std::byte> own_admission,
+    const CredentialCrypto& crypto, const CompositePrivate& local,
+    std::span<const std::byte> own_admission,
     const std::vector<AuthorizedIdentity>& clients,
     const std::set<std::string>& reserved,
     std::vector<AuthorizedIdentity>& inbound) {
@@ -419,6 +421,21 @@ NativeClusterCredentials load_cluster(
     result.serial = list.serial;
     result.not_after = list.not_after;
     result.self_name = self->name;
+    // A list older than one this node has loaded before is refused, across
+    // restarts too.
+    result.state = resolve_reference(base, refs.state.path());
+    auto saved = cluster::read_state(result.state);
+    if (!saved.ok()) throw saved.status();
+    if (const auto& previous = saved.value()) {
+        require(previous->cluster == list.cluster,
+                "the cluster state file names another cluster; remove it to "
+                "join this one",
+                StatusCode::FailedPrecondition);
+        require(list.serial >= previous->serial,
+                "the cluster list is older than one this node has loaded",
+                StatusCode::FailedPrecondition);
+        result.saved_serial = previous->serial;
+    }
 
     const auto store_path = resolve_reference(base, refs.peers.path());
     auto store = read_store(store_path, cluster::kMaxNodes - 1U, true);
@@ -488,12 +505,25 @@ NativeClusterCredentials load_cluster(
              {}});
         require(tls.ok(), "cluster link TLS credential validation failed",
                 tls.status().code());
+        const auto& dial = node->address.empty() ? node->host : node->address;
+        const auto text = [](std::string_view value) {
+            return std::as_bytes(std::span(value));
+        };
+        const std::array<std::byte, 2> port{
+            static_cast<std::byte>(node->port >> 8U),
+            static_cast<std::byte>(node->port & 0xffU)};
+        const auto material = crypto.digest(
+            {text(local.fingerprint), text(node->name), text(identity),
+             text(node->host), text(dial), port, node->identity.classical,
+             node->identity.post_quantum, node->mlkem_key,
+             text(node->tls_trust), admissions.back().bytes(),
+             outbound_psk.bytes()});
         result.links.push_back(NativeLinkCredentials{
-            node->name, identity, node->host,
-            node->address.empty() ? node->host : node->address, node->port,
+            node->name, identity, node->host, dial, node->port,
             std::move(factory).take_value(), std::move(tls).take_value(),
             NativeAdmissionKey(std::span<const std::byte, 32>(
-                admissions.back().bytes().data(), 32))});
+                admissions.back().bytes().data(), 32)),
+            material});
         result.inbound.emplace_back(identity, node->name);
         inbound.push_back(
             {node->identity,
@@ -603,7 +633,7 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
     if (config.cluster()) {
         std::set<std::string> reserved = identities;
         reserved.insert(admin_identities.begin(), admin_identities.end());
-        cluster = load_cluster(*config.cluster(), base, local,
+        cluster = load_cluster(*config.cluster(), base, crypto, local,
                                admission.bytes(), authorized, reserved, peers);
         require(authorized.size() + peers.size() <=
                     providers::kMaxAuthorizedIdentities,

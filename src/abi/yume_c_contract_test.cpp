@@ -476,7 +476,8 @@ int main(int argc, char** argv) {
             server_adapters,
             R"("cluster":{"operator_key":{"file":"cluster/operator.pub.pem"},)"
             R"("list":{"file":"cluster/list.json"},"signature":{"file":"cluster/list.sig"},)"
-            R"("peers":{"file":"cluster/peers.json"}},)");
+            R"("peers":{"file":"cluster/peers.json"},)"
+            R"("state":{"file":"cluster-state.json"}},)");
         yume_config* cluster_config = nullptr;
         require(yume_config_parse_json(first, cluster_text.data(),
                                        cluster_text.size(),

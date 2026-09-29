@@ -1288,14 +1288,15 @@ std::optional<ClusterSettings> ParseCluster(const Json& document, Role role) {
     if (!document.contains("cluster")) return std::nullopt;
     const Json& cluster = document.at("cluster");
     CheckClosedObject(cluster, "/cluster",
-                      {"operator_key", "list", "signature", "peers"},
-                      {"operator_key", "list", "signature", "peers"});
+                      {"operator_key", "list", "signature", "peers", "state"},
+                      {"operator_key", "list", "signature", "peers", "state"});
     if (role != Role::Server) Fail("/cluster", "is server-only");
     return ClusterSettings{
         ParseFileReference(cluster, "/cluster", "operator_key"),
         ParseFileReference(cluster, "/cluster", "list"),
         ParseFileReference(cluster, "/cluster", "signature"),
-        ParseFileReference(cluster, "/cluster", "peers")};
+        ParseFileReference(cluster, "/cluster", "peers"),
+        ParseFileReference(cluster, "/cluster", "state")};
 }
 
 std::optional<ControlSettings> ParseControl(

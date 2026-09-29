@@ -227,7 +227,7 @@ stream reason, are:
 | New circuits over one peer's link | 20 a second, a burst of 64 |
 | Handshakes one server answers | 200 a second, a burst of 64 |
 | Streams on one circuit | 256 |
-| Window per stream and direction | 256 KiB, returned as it drains |
+| Window an exit grants per stream | 256 KiB, returned as it drains |
 | Window an exit grants across one circuit | 8 MiB, so 32 streams at once |
 | Answer to an EXTEND | 10 seconds |
 | A cell waiting for the next hop, or for the previous one | 30 seconds |
@@ -296,6 +296,16 @@ HTTP/1.x request line or the HTTP/2 cleartext preface ends before those
 bytes leave the client. Other cleartext protocols, and HTTP sent later in a
 stream, pass. The direct session of an accepted one-hop route is not
 affected.
+
+**Streams.** The client grants each stream 256 KiB at first and doubles
+the window each time its reader drains half of it, up to 1 MiB, while the
+windows of one circuit's streams total at most 8 MiB, so a download is not
+held to 256 KiB per round trip through the circuit. What the client sends
+stays within the exit's 256 KiB. A stream the client drops before both
+sides finished ends at the exit at once, even after the client sent done.
+Every hop is its own YTP/1 session, and a key carries records for at most
+half a second, so after a quiet spell each hop's first record waits one
+round trip for a new key unless `limits.idle_epoch_rotation` is set.
 
 `yume --status` shows each circuit's route by name, the length in use
 against the configured one, the plain HTTP setting, a stop and any proposal.

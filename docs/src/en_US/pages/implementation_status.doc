@@ -539,9 +539,9 @@ must not be advertised as working:
   runs as a user of its own;
 - production qualification of module adapters and managed TUN;
 - circuits beyond their first test: captures of client sessions and node
-  links, a soak, a cross-host run with emulated delay per hop, stream windows
-  that grow, UDP and IP packets over circuits, a consent interface in the C
-  ABI, and decentralized server lists;
+  links, a soak, a cross-host run with emulated delay per hop, exit windows
+  that grow for what a client sends, UDP and IP packets over circuits, a
+  consent interface in the C ABI, and decentralized server lists;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native
   `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;

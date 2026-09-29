@@ -12,6 +12,7 @@
 #include <chrono>
 #include <deque>
 #include <exception>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <map>
@@ -659,6 +660,82 @@ void test_three_hops(Cluster& cluster) {
     cluster.runtime.sync([&] { circuit->close(); });
 }
 
+// Reads and releases drain bytes of an endless stream, then reads and keeps
+// records until none arrives for half a second. Returns how many bytes it
+// kept: what the client's window let the exit send ahead of the reader.
+std::size_t sent_ahead(Cluster& cluster,
+                       const std::shared_ptr<StreamResponder>& stream,
+                       std::size_t drain) {
+    struct Reader {
+        std::size_t drained{0U};
+        std::size_t kept_bytes{0U};
+        std::vector<ReceivedRecord> kept;
+        std::chrono::steady_clock::time_point last{
+            std::chrono::steady_clock::now()};
+    };
+    auto reader = std::make_shared<Reader>();
+    auto next = std::make_shared<std::function<void()>>();
+    *next = [stream, reader, next, drain] {
+        stream->async_read(
+            {}, [reader, next, drain](Result<ReceivedRecord> result) {
+                if (!result.ok()) return;
+                auto record = std::move(result).take_value();
+                // A record released here returns its credit.
+                if (reader->drained < drain) {
+                    reader->drained += record.payload().size();
+                } else {
+                    reader->kept_bytes += record.payload().size();
+                    reader->kept.push_back(std::move(record));
+                }
+                reader->last = std::chrono::steady_clock::now();
+                if (*next) (*next)();
+            });
+    };
+    cluster.runtime.sync([&] { (*next)(); });
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(100ms);
+        const bool quiet = cluster.runtime.sync([&] {
+            return reader->drained >= drain &&
+                   std::chrono::steady_clock::now() - reader->last > 500ms;
+        });
+        if (quiet) break;
+    }
+    return cluster.runtime.sync([&] {
+        CHECK(reader->drained >= drain);
+        *next = nullptr;
+        stream->close(Status(StatusCode::Cancelled));
+        reader->kept.clear();
+        return reader->kept_bytes;
+    });
+}
+
+// The client grows a stream's window as its reader drains it, up to 1 MiB,
+// and not past the circuit's total.
+void test_window_growth(Cluster& cluster) {
+    const std::size_t first_window =
+        runtime::circuit::ClientLimits{}.stream_window;
+    auto circuit = cluster.circuit({"north", "east", "west"});
+    CHECK(cluster.build(circuit).ok());
+    auto stream = cluster.open(circuit, 19);
+    CHECK(stream.ok());
+    if (stream.ok()) {
+        const auto ahead = sent_ahead(cluster, stream.value(), 3U << 20U);
+        CHECK(ahead > first_window && ahead <= (1U << 20U));
+    }
+    cluster.runtime.sync([&] { circuit->close(); });
+
+    runtime::circuit::ClientLimits capped;
+    capped.circuit_window = capped.stream_window;
+    auto held = cluster.circuit({"north", "west"}, {}, nullptr, capped);
+    CHECK(cluster.build(held).ok());
+    auto small = cluster.open(held, 19);
+    CHECK(small.ok());
+    if (small.ok())
+        CHECK(sent_ahead(cluster, small.value(), 3U << 20U) <= first_window);
+    cluster.runtime.sync([&] { held->close(); });
+}
+
 // A client that finished writing and then drops the stream before the exit
 // finished ends it at the exit, which closes the destination.
 void test_dropped_after_done(Cluster& cluster) {
@@ -835,6 +912,7 @@ int main() {
         {
             Cluster cluster(io);
             test_three_hops(cluster);
+            test_window_growth(cluster);
             test_dropped_after_done(cluster);
             test_two_hops_and_refusals(cluster);
             test_extend_failures(cluster);

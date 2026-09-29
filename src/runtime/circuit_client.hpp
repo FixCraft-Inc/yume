@@ -29,8 +29,13 @@ namespace yume::runtime::circuit {
 using Fingerprint = providers::circuit::Fingerprint;
 
 struct ClientLimits final {
-    // The window this client grants the exit for each stream's data.
+    // The window this client grants the exit for each stream's data at
+    // first. Each time the application drains half of it the window doubles,
+    // up to max_stream_window, while the circuit's stream windows total at
+    // most circuit_window.
     std::uint32_t stream_window{256U * 1024U};
+    std::uint32_t max_stream_window{1024U * 1024U};
+    std::uint64_t circuit_window{8U * 1024U * 1024U};
     std::size_t streams_per_circuit{256U};
     std::chrono::milliseconds build_timeout{30'000};
     // Forward cells queued toward the entry before stream writes wait.

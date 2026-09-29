@@ -159,6 +159,8 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
                      Opened done) noexcept;
     void fail(std::size_t hop, c1::CircuitReason reason) noexcept;
     void close(Status reason) noexcept;
+    // How much a stream's window may grow now.
+    std::uint32_t window_growth(std::uint32_t window) const noexcept;
 };
 
 namespace detail {
@@ -272,6 +274,7 @@ public:
     }
 
     bool is_connected() const noexcept { return connected_; }
+    std::uint32_t window() const noexcept { return window_; }
 
     // Data from the exit, within the window this client granted.
     bool data(std::span<const std::uint8_t> payload) {
@@ -406,7 +409,8 @@ private:
     }
 
     // The application released data: return window to the exit once half
-    // of it has drained.
+    // of it has drained, and grow the window with the same credit, so a
+    // stream on a long circuit is not held to its first window.
     void consumed(std::size_t released) noexcept {
         consumed_ += static_cast<std::uint32_t>(released);
         if (consumed_ < window_ / 2U || remote_done_ || terminated()) return;
@@ -414,11 +418,13 @@ private:
         if (!state || state->phase != State::Phase::Ready) return;
         const auto returned = consumed_;
         consumed_ = 0U;
-        receive_allowed_ += returned;
+        const auto growth = state->window_growth(window_);
+        window_ += growth;
+        receive_allowed_ += returned + growth;
         try {
             state->send_message(state->route.size(),
                                 c1::RelayType::StreamCredit, id_,
-                                u32(returned));
+                                u32(returned + growth));
         } catch (...) {
             state->close(Status(StatusCode::Internal));
         }
@@ -855,6 +861,16 @@ void ClientCircuit::State::open_stream(const ytp1::Destination& destination,
     } catch (...) {
         close(Status(StatusCode::Internal));
     }
+}
+
+std::uint32_t ClientCircuit::State::window_growth(
+    std::uint32_t window) const noexcept {
+    if (window >= limits.max_stream_window) return 0U;
+    const std::uint32_t growth =
+        std::min(window, limits.max_stream_window - window);
+    std::uint64_t granted = growth;
+    for (const auto& [id, stream] : streams) granted += stream->window();
+    return granted <= limits.circuit_window ? growth : 0U;
 }
 
 void ClientCircuit::State::fail(std::size_t hop,

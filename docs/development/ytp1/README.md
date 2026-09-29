@@ -282,6 +282,17 @@ hops, and 175 and 78 Mbit/s through the direct session. At 100 ms per hop
 a small request after a download took 2.0 s through three hops, 0.8 s
 with idle rotation, and 0.4 s through the direct session.
 
+`scripts/yume_circuit_capture.py` captures the same cluster as a passive
+observer sees it. For each session it runs the frozen cover-page workload
+of the matched capture through a fresh `yume` with three-hop circuits,
+while tcpdump in the router namespace records the client's link and every
+node's links. It rebuilds each connection's TLS record timeline from the
+captures (arrival time, content type and length), gives the client's
+sessions the classifier gate's features and, with `--compare`, describes
+them against one arm of an earlier campaign's feature document. Each link
+gets its record counts and common lengths. The output keeps the pcaps and
+belongs in private evidence. It is a baseline, not a classifier verdict.
+
 ## Managed Linux TUN networking
 
 A `packet` adapter binds one authenticated packet service to a new Linux TUN.

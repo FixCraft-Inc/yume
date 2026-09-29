@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import yume_circuit_capture as circuit_capture  # noqa: E402
 import yume_circuit_wan as circuit_wan  # noqa: E402
 import yume_ethernet_smoke as ethernet  # noqa: E402
 import yume_ndpi_report as ndpi  # noqa: E402
@@ -235,6 +237,85 @@ class CircuitWanTest(unittest.TestCase):
             server.kill()
             server.wait(timeout=5)
             server.stdout.close()
+
+
+def frame(source: str, source_port: int, target: str, target_port: int, sequence: int,
+          flags: int, payload: bytes = b"") -> bytes:
+    """One Ethernet, IPv4 and TCP frame without checksums."""
+    tcp = struct.pack("!HHIIBBHHH", source_port, target_port, sequence, 0, 5 << 4, flags,
+                      65535, 0, 0) + payload
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 0, 0, 64, 6, 0,
+                     bytes(map(int, source.split("."))), bytes(map(int, target.split("."))))
+    return bytes(12) + b"\x08\x00" + ip + tcp
+
+
+def pcap(frames: list[tuple[float, bytes]]) -> bytes:
+    data = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 262144, 1)
+    for when, packet in frames:
+        data += struct.pack("<IIII", int(when), round((when % 1) * 1e6), len(packet), len(packet))
+        data += packet
+    return data
+
+
+class CircuitCaptureTest(unittest.TestCase):
+    CLIENT, SERVER = ("10.20.0.1", 40000), ("10.21.0.1", 443)
+
+    def segment(self, when: float, upward: bool, sequence: int, flags: int,
+                payload: bytes = b"") -> tuple[float, bytes]:
+        source, target = (self.CLIENT, self.SERVER) if upward else (self.SERVER, self.CLIENT)
+        return when, frame(*source, *target, sequence, flags, payload)
+
+    def test_records_are_rebuilt_in_order_across_segments(self) -> None:
+        hello = b"\x16\x03\x01\x00\x04abcd"
+        data = b"\x17\x03\x03\x00\x06" + b"x" * 6 + b"\x17\x03\x03\x00\x02yz"
+        frames = [
+            self.segment(1.0, True, 99, 0x02),
+            self.segment(1.001, False, 499, 0x12),
+            self.segment(1.002, True, 100, 0x10, hello[:3]),
+            # Out of order: the rest of the hello arrives after later data,
+            # which becomes usable only when the gap fills at 1.004.
+            self.segment(1.003, True, 103 + 6, 0x10, data[:7]),
+            self.segment(1.004, True, 103, 0x10, hello[3:]),
+            # A retransmission that overlaps what was already delivered.
+            self.segment(1.005, True, 103 + 6 + 4, 0x10, data[4:]),
+            self.segment(1.006, False, 500, 0x18, b"\x17\x03\x03\x00\x01Z"),
+            self.segment(1.007, False, 506, 0x11),
+        ]
+        found = circuit_capture.connections(
+            circuit_capture.tcp_segments(circuit_capture.read_pcap(pcap(frames))))
+        self.assertEqual(len(found), 1)
+        timeline = circuit_capture.record_timeline(found[0])
+        up = timeline["client_to_server"]
+        self.assertFalse(up["malformed"] or up["truncated"])
+        self.assertEqual([record[1:] for record in up["records"]], [[22, 4], [23, 6], [23, 2]])
+        # Times never go back, as the gate's feature extraction requires.
+        self.assertEqual([record[0] for record in up["records"]], [4000, 4000, 5000])
+        self.assertEqual([record[1:] for record in timeline["server_to_client"]["records"]], [[23, 1]])
+        self.assertEqual(found[0]["client_to_server"].bytes, len(hello) + len(data))
+
+    def test_a_refused_dial_and_mid_stream_traffic_are_left_out(self) -> None:
+        frames = [
+            # A connection whose SYN came before the capture.
+            self.segment(1.0, True, 5000, 0x18, b"\x17\x03\x03\x00\x01Z"),
+            self.segment(2.0, True, 99, 0x02),
+            self.segment(2.001, False, 0, 0x14),
+        ]
+        found = circuit_capture.connections(
+            circuit_capture.tcp_segments(circuit_capture.read_pcap(pcap(frames))))
+        self.assertEqual(len(found), 1)
+        timeline = circuit_capture.record_timeline(found[0])
+        self.assertEqual(timeline["client_to_server"]["records"], [])
+
+    def test_a_gap_or_truncated_frame_is_refused(self) -> None:
+        frames = [self.segment(1.0, True, 99, 0x02),
+                  self.segment(1.1, True, 200, 0x18, b"late")]
+        with self.assertRaises(circuit_capture.CaptureError):
+            circuit_capture.connections(
+                circuit_capture.tcp_segments(circuit_capture.read_pcap(pcap(frames))))
+        truncated = bytearray(pcap([self.segment(1.0, True, 99, 0x02)]))
+        truncated[24 + 8:24 + 12] = struct.pack("<I", 20)
+        with self.assertRaises(circuit_capture.CaptureError):
+            list(circuit_capture.read_pcap(bytes(truncated)))
 
 
 if __name__ == "__main__":

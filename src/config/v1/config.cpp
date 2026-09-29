@@ -1347,6 +1347,52 @@ void CheckAdapterLimitCombinations(const std::vector<Adapter>& adapters,
     }
 }
 
+std::optional<CircuitSettings> ParseCircuits(
+    const Json& document, Role role, const std::vector<Adapter>& adapters) {
+    if (!document.contains("circuits")) return std::nullopt;
+    const Json& circuits = document.at("circuits");
+    CheckClosedObject(
+        circuits, "/circuits",
+        {"hops", "min_hops", "plain_http", "operator_key", "routes",
+         "routes_signature", "state"},
+        {"hops", "operator_key", "routes", "routes_signature", "state"});
+    if (role != Role::Client) Fail("/circuits", "is client-only");
+    const std::uint32_t hops =
+        ReadBoundedUnsigned(circuits.at("hops"), "/circuits/hops", 2, 3);
+    const std::uint32_t min_hops =
+        circuits.contains("min_hops")
+            ? ReadBoundedUnsigned(circuits.at("min_hops"), "/circuits/min_hops",
+                                  1, hops)
+            : hops;
+    bool plain_http_allowed = false;
+    if (circuits.contains("plain_http")) {
+        const auto& value =
+            ReadString(circuits.at("plain_http"), "/circuits/plain_http", 16);
+        if (value != "refuse" && value != "allow") {
+            Fail("/circuits/plain_http", "must be 'refuse' or 'allow'");
+        }
+        plain_http_allowed = value == "allow";
+    }
+    CircuitSettings settings{
+        hops,
+        min_hops,
+        plain_http_allowed,
+        ParseFileReference(circuits, "/circuits", "operator_key"),
+        ParseFileReference(circuits, "/circuits", "routes"),
+        ParseFileReference(circuits, "/circuits", "routes_signature"),
+        ParseFileReference(circuits, "/circuits", "state")};
+    // Circuits carry TCP only, so no packet adapter may reach the direct
+    // session beside them.
+    for (std::size_t index = 0; index < adapters.size(); ++index) {
+        if (std::holds_alternative<PacketAdapter>(adapters[index])) {
+            Fail(IndexPointer("/adapters", index),
+                 "a packet adapter cannot run with circuits, which carry TCP "
+                 "only");
+        }
+    }
+    return settings;
+}
+
 }  // namespace
 
 bool IsEndpointHost(std::string_view value) {
@@ -1365,7 +1411,7 @@ Config Parse(const nlohmann::json& document) {
     CheckClosedObject(
         document, "",
         {"schema", "role", "endpoint", "suite", "credentials", "cover",
-         "services", "adapters", "limits", "control", "cluster"},
+         "services", "adapters", "limits", "control", "cluster", "circuits"},
         {"schema", "role", "endpoint", "suite", "credentials", "cover",
          "services", "adapters", "limits"});
 
@@ -1403,10 +1449,13 @@ Config Parse(const nlohmann::json& document) {
              "must name a direct_tcp adapter's service");
     }
 
+    std::optional<CircuitSettings> circuits =
+        ParseCircuits(document, role, adapters);
+
     return Config(role, std::move(endpoint), std::move(suite),
                   std::move(credentials), std::move(cover), std::move(services),
                   std::move(adapters), std::move(limits), std::move(control),
-                  std::move(cluster));
+                  std::move(cluster), std::move(circuits));
 }
 
 namespace {

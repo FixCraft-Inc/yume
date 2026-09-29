@@ -32,6 +32,7 @@
 #include <openssl/x509.h>
 
 #include "providers/openssl_security_provider.hpp"
+#include "runtime/client_routes.hpp"
 #include "runtime/cluster_list.hpp"
 #include "test_support/tls_identity.hpp"
 #include "ytp/protocol.hpp"
@@ -1138,6 +1139,156 @@ void test_cluster_membership(Fixture& fixture) {
           "a missing state file did not start from nothing");
 }
 
+// A client with circuits trusts its entry's routes views through the
+// operator key, a floor from its state file and a valid kit copy, and the
+// entry each view must name.
+void test_client_circuits(Fixture& fixture) {
+    namespace saved = yume::runtime::cluster;
+    const Identity operator_key;
+    const Identity other_node;
+    const auto root = fixture.directory.path();
+    std::filesystem::create_directories(root / "credentials/circuits");
+    fixture.write("credentials/circuits/operator.pub.pem",
+                  operator_key.public_pem);
+    const auto route = [](const Identity& node, const std::string& name,
+                          bool exit) {
+        return Json{
+            {"name", name},
+            {"identity", node.id},
+            {"identity_key", node.public_pem},
+            {"exit", exit},
+            {"network", exit ? "1111111111111111" : "2222222222222222"}};
+    };
+    const auto view = [&](std::uint64_t serial, const char* not_after,
+                          bool with_entry) {
+        Json nodes = Json::array({route(other_node, "sweet-fox", true)});
+        if (with_entry)
+            nodes.push_back(route(fixture.server, "large-sky", false));
+        return Json{{"schema", 1},
+                    {"cluster", operator_key.id},
+                    {"serial", serial},
+                    {"not_after", not_after},
+                    {"nodes", nodes}};
+    };
+    const auto signed_view = [&](const Json& value, const Identity& signer) {
+        const auto bytes = value.dump();
+        return std::pair{
+            bytes, cluster_signature(signer, bytes,
+                                     yume::runtime::cluster::kRoutesDomain)};
+    };
+    const auto publish_kit = [&](const Json& value, const Identity& signer) {
+        const auto [bytes, signature] = signed_view(value, signer);
+        fixture.write("credentials/circuits/cluster-routes.json", bytes);
+        fixture.write("credentials/circuits/cluster-routes.sig", signature);
+    };
+    const auto served = [&](const Json& value, const Identity& signer) {
+        const auto [bytes, signature] = signed_view(value, signer);
+        const std::string joined = signature + bytes;
+        const auto* start = reinterpret_cast<const std::byte*>(joined.data());
+        return std::vector<std::byte>(start, start + joined.size());
+    };
+    auto config = fixture.client_config;
+    config["circuits"] = {
+        {"hops", 3},
+        {"operator_key", reference("credentials/circuits/operator.pub.pem")},
+        {"routes", reference("credentials/circuits/cluster-routes.json")},
+        {"routes_signature",
+         reference("credentials/circuits/cluster-routes.sig")},
+        {"state", reference("circuits-state.json")}};
+    const auto load = [&] {
+        return load_native_credentials(yume::config::v1::Parse(config), root,
+                                       "server.example.test");
+    };
+    const auto state_path = root / "circuits-state.json";
+    std::filesystem::remove(state_path);
+
+    publish_kit(view(4, "2099-01-01T00:00:00Z", true), operator_key);
+    auto loaded = take(load());
+    check(loaded.circuits && loaded.circuits->floor == 4U &&
+              loaded.circuits->saved == 0U &&
+              loaded.circuits->cluster == operator_key.id &&
+              loaded.circuits->entry == fixture.server.id &&
+              loaded.circuits->state == state_path,
+          "the client circuits were not loaded from a valid kit copy");
+    // An expired kit copy is only old, and it counts for nothing.
+    publish_kit(view(9, "2020-01-01T00:00:00Z", true), operator_key);
+    check(take(load()).circuits->floor == 0U,
+          "an expired kit copy raised the floor");
+    publish_kit(view(4, "2099-01-01T00:00:00Z", true), other_node);
+    check(!load().ok(), "a kit copy signed by another key was accepted");
+    publish_kit(view(4, "2099-01-01T00:00:00Z", false), operator_key);
+    check(load().status().code() == StatusCode::FailedPrecondition,
+          "a kit copy without the kit's server was accepted");
+    publish_kit(view(4, "2099-01-01T00:00:00Z", true), operator_key);
+    check(saved::write_state(state_path, {std::string(64, 'b'), 1U}).ok(),
+          "a foreign circuits state was not written");
+    check(load().status().code() == StatusCode::FailedPrecondition,
+          "a circuits state of another cluster was accepted");
+    check(saved::write_state(state_path, {operator_key.id, 7U}).ok(),
+          "the circuits state was not written");
+    loaded = take(load());
+    check(loaded.circuits->floor == 7U && loaded.circuits->saved == 7U,
+          "the saved serial did not raise the floor");
+
+    // Views the entry serves.
+    auto& circuits = *loaded.circuits;
+    const auto now = std::chrono::system_clock::now();
+    using yume::runtime::accept_served_routes;
+    const std::vector<std::byte> short_view(
+        yume::ytp1::kCompositeSignatureSize);
+    check(accept_served_routes(circuits, short_view, now).status().code() ==
+              StatusCode::InvalidArgument,
+          "a routes view without a body was accepted");
+    check(accept_served_routes(
+              circuits,
+              served(view(6, "2099-01-01T00:00:00Z", true), operator_key), now)
+                  .status()
+                  .code() == StatusCode::FailedPrecondition,
+          "a view older than the floor was accepted");
+    check(accept_served_routes(
+              circuits,
+              served(view(8, "2099-01-01T00:00:00Z", false), operator_key), now)
+                  .status()
+                  .code() == StatusCode::FailedPrecondition,
+          "a view without the entry was accepted");
+    check(accept_served_routes(
+              circuits,
+              served(view(8, "2020-01-01T00:00:00Z", true), operator_key), now)
+                  .status()
+                  .code() == StatusCode::FailedPrecondition,
+          "an expired view was accepted");
+    check(!accept_served_routes(
+               circuits,
+               served(view(8, "2099-01-01T00:00:00Z", true), other_node), now)
+               .ok(),
+          "a view signed by another key was accepted");
+    check(circuits.floor == 7U && circuits.saved == 7U,
+          "a refused view moved the floor");
+    auto accepted = accept_served_routes(
+        circuits, served(view(8, "2099-01-01T00:00:00Z", true), operator_key),
+        now);
+    check(accepted.ok() && accepted.value().serial == 8U &&
+              circuits.floor == 8U && circuits.saved == 8U,
+          "a newer view was not accepted");
+    const auto state = saved::read_state(state_path);
+    check(state.ok() && state.value() && state.value()->serial == 8U,
+          "the newer serial was not saved");
+    check(accept_served_routes(
+              circuits,
+              served(view(8, "2099-01-01T00:00:00Z", true), operator_key), now)
+              .ok(),
+          "the same view was refused a second time");
+    circuits.state = root / "missing/circuits-state.json";
+    check(accept_served_routes(
+              circuits,
+              served(view(9, "2099-01-01T00:00:00Z", true), operator_key), now)
+                      .status()
+                      .code() == StatusCode::FailedPrecondition &&
+              circuits.floor == 8U,
+          "a view was used although its serial could not be saved");
+    std::filesystem::remove(state_path);
+}
+
 int main() {
     try {
         test_admission_ownership();
@@ -1149,6 +1300,7 @@ int main() {
         test_file_boundaries(fixture);
         test_socks5_credentials(fixture);
         test_cluster_membership(fixture);
+        test_client_circuits(fixture);
         std::cout << "native credential tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

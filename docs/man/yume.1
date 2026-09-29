@@ -32,6 +32,12 @@ yume \- native YTP/1 client, SOCKS5 proxy and Linux TUN
 .B --status
 .PP
 .B yume
+.B --config
+.I path
+.B --accept-route
+.I id
+.PP
+.B yume
 .B --seal-kit
 .I directory
 .B --output
@@ -71,6 +77,27 @@ The client is not yet qualified for production.
 Check
 .B docs/IMPLEMENTATION_STATUS.md
 before deployment.
+.PP
+With a
+.B circuits
+section, every SOCKS5 CONNECT and every forward to a destination leaves
+through a circuit of two or three servers of the entry's cluster, the
+entry being the configured server.
+The client fetches the operator-signed routes view from the entry,
+chooses the other servers and builds the circuit.
+UDP ASSOCIATE is refused and a packet adapter is not allowed, since
+circuits carry TCP only, and plain HTTP is refused unless
+.B circuits.plain_http
+is
+.BR allow .
+When no route of
+.B circuits.hops
+can be built, the client does not shorten it on its own: connections are
+refused as not allowed until the user accepts its proposal with
+.BR --accept-route ,
+unless
+.B circuits.min_hops
+approves the shorter length in advance.
 .SH OPTIONS
 .TP
 .BI "--config " path
@@ -163,6 +190,28 @@ The exit status is 2 when the configuration names no control socket and
 .B --status
 takes no option besides
 .BR --config .
+With circuits, it also shows each circuit's route by name, the hop count
+in use against the configured one, whether plain HTTP is refused, and
+any proposal of a shorter route with its id and what that route gives
+up.
+.TP
+.BI "--accept-route " id
+Accept the shorter route that the running client of this configuration
+proposed, when no route of
+.B circuits.hops
+could be built.
+The
+.I id
+is the one
+.B --status
+shows, so an answer to an older proposal accepts nothing.
+The acceptance lasts until routes of the configured length work again or
+the client exits.
+It is the one control request that changes anything, and only a process
+of the client's own user can send it.
+Exit statuses follow
+.BR --status ,
+and an id no proposal has exits with status 2.
 .PP
 The kit options move a client kit to another device in one file, a
 sealed kit.
@@ -229,7 +278,8 @@ does not accept this option.
 .SH CONFIGURATION
 The configuration owns endpoint addresses, exact suite, credential file
 references, cover profile, services, adapters and resource limits, and
-optionally a control socket and a server's cluster membership.
+optionally a control socket, a server's cluster membership and a
+client's circuits.
 The schema rejects unknown fields, wrong types and unsupported values.
 Credential paths are relative to the configuration file's directory
 unless absolute.
@@ -295,6 +345,40 @@ and
 .BR connected_ms ,
 and a waiting one adds
 .BR retry_ms .
+.B circuits
+is null without a circuits section.
+Otherwise it holds
+.BR hops ,
+.BR min_hops ,
+.B accepted_hops
+(0 unless the user accepted a shorter route),
+.B current_hops
+(0 while none can be used),
+.BR plain_http ,
+.B serial
+of the routes view in use,
+.B stopped
+(null, or why circuits stopped),
+.BR routes ,
+one per circuit with
+.BR nodes ,
+.B age_ms
+and
+.BR streams ,
+and
+.BR proposal :
+null, or
+.BR id ,
+.BR hops ,
+.BR nodes ,
+.BR serial ,
+.B gives_up
+and, when measured,
+.BR latency_ms .
+The client also takes the request
+{"control":\:1,\:"request":\:"accept-route",\:"id":\:ID}, which
+.B --accept-route
+sends.
 .SH SIGNALS
 .B SIGINT
 and

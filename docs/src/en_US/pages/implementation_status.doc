@@ -247,8 +247,21 @@ in-memory `yume_circuit_runtime_test` covers the node service and the client
 builder, and `yume_native_circuit_test` runs four daemons with a test client:
 two- and three-hop circuits carrying a stream both ways, an exit policy and
 a non-exit refusing streams, a client without the grant, the per-client
-bound, a reload under load and a stopped middle. The `yume` client does not
-build circuits yet.
+bound, a reload under load and a stopped middle.
+
+A client with a `circuits` section sends every SOCKS5 CONNECT and every
+forward to a destination through circuits it builds itself: it verifies the
+routes view its entry serves against the kit's copy and a saved serial,
+chooses routes by the rules in cluster 1, keeps a spare, rotates circuits
+and refuses UDP, packet adapters and plain HTTP. It never shortens a route
+on its own: a proposal waits for `yume --accept-route` over the control
+socket, unless `circuits.min_hops` approves it in advance, and `yume
+--status` shows routes and proposals. `yume_circuit_routes_test`,
+`yume_plain_http_guard_test` and the credential, config, control socket and
+setup tests cover the parts, and the four-daemon test runs the real `yume`
+through three hops, the plain HTTP refusal, a proposal accepted after the
+exits stopped and a pre-approved direct route. The C ABI refuses a
+`circuits` section.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every
@@ -525,10 +538,10 @@ must not be advertised as working:
   and can read its credential files, so modules are trusted programs until each
   runs as a user of its own;
 - production qualification of module adapters and managed TUN;
-- client traffic over circuits: the `yume` client's route choice, SOCKS and
-  forward adapters over circuits, consent to a shorter route and the plain
-  HTTP refusal, then captures, a soak and a cross-host run, and decentralized
-  server lists;
+- circuits beyond their first test: captures of client sessions and node
+  links, a soak, a cross-host run with emulated delay per hop, stream windows
+  that grow, UDP and IP packets over circuits, a consent interface in the C
+  ABI, and decentralized server lists;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native
   `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;

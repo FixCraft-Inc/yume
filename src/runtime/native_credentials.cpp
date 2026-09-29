@@ -714,7 +714,49 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
             NativeAdmissionKey(
                 std::span<const std::byte, 32>(admission.bytes().data(), 32)),
             std::nullopt,
-            std::move(cluster)};
+            std::move(cluster),
+            std::nullopt};
+}
+
+// The kit's copy of the view raises the floor when it verifies. An expired
+// copy is only old, so it counts for nothing, but any other failure means a
+// damaged kit. The state file must name the same cluster.
+NativeCircuitCredentials load_circuits(const config::v1::CircuitSettings& refs,
+                                       const std::filesystem::path& base,
+                                       const CredentialCrypto& crypto,
+                                       const std::string& entry) {
+    NativeCircuitCredentials result;
+    auto key = read_file(base, refs.operator_key);
+    result.operator_key_pem.assign(key.text());
+    result.cluster =
+        keys::composite_public_from_pem(crypto, key.text()).fingerprint;
+    result.entry = entry;
+    auto view = read_file(base, refs.routes, cluster::kMaxListBytes);
+    auto signature =
+        read_file(base, refs.routes_signature, ytp1::kCompositeSignatureSize);
+    auto verified =
+        cluster::verify_routes(view.bytes(), signature.bytes(), key.text(),
+                               std::chrono::system_clock::now());
+    if (verified.ok()) {
+        require(verified.value().find(entry) != nullptr,
+                "the kit's routes view does not name its server",
+                StatusCode::FailedPrecondition);
+        result.floor = verified.value().serial;
+    } else if (verified.status().code() != StatusCode::FailedPrecondition) {
+        throw verified.status();
+    }
+    result.state = resolve_reference(base, refs.state.path());
+    auto saved = cluster::read_state(result.state);
+    if (!saved.ok()) throw saved.status();
+    if (const auto& previous = saved.value()) {
+        require(previous->cluster == result.cluster,
+                "the circuits state file names another cluster; remove it to "
+                "use this one",
+                StatusCode::FailedPrecondition);
+        result.saved = previous->serial;
+        result.floor = std::max(result.floor, previous->serial);
+    }
+    return result;
 }
 
 LoadedNativeCredentials load_client(const config::v1::Config& config,
@@ -759,6 +801,11 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
     if (proxy && proxy->credentials()) {
         socks5.emplace(read_socks5_credentials(base, *proxy->credentials()));
     }
+    std::optional<NativeCircuitCredentials> circuits;
+    if (const auto& settings = config.circuits()) {
+        circuits.emplace(
+            load_circuits(*settings, base, crypto, remote.fingerprint));
+    }
     return {std::move(factory).take_value(),
             std::move(tls).take_value(),
             std::make_shared<const NativeAuthorizationPolicy>(
@@ -766,7 +813,8 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
             NativeAdmissionKey(
                 std::span<const std::byte, 32>(admission.bytes().data(), 32)),
             std::move(socks5),
-            std::nullopt};
+            std::nullopt,
+            std::move(circuits)};
 }
 
 }  // namespace

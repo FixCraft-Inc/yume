@@ -4,10 +4,10 @@
 Status: normative contract for the codec in `circuit/`, the constructions in
 `providers/circuit_crypto.*` with their vectors, and the node service and
 client builder in `runtime/circuit_node.*` and `runtime/circuit_client.*`.
-`yumed` serves circuits over its [cluster links](CLUSTER_1.md). The `yume`
-client does not build them yet, so only test clients use this protocol
-today ([implementation status](../IMPLEMENTATION_STATUS.md)). This page is
-not a cryptographic proof or an anonymity claim.
+`yumed` serves circuits over its [cluster links](CLUSTER_1.md), and `yume`
+builds them for a client with a `circuits` section
+([implementation status](../IMPLEMENTATION_STATUS.md)). This page is not a
+cryptographic proof or an anonymity claim.
 
 ## Purpose
 
@@ -251,7 +251,7 @@ u8  dns_length, u8 dns_name[dns_length]    DNS, canonical lowercase
 | policy | 1 | The exit's egress policy refused the destination |
 | connection refused | 2 | The destination refused the connection |
 | unreachable | 3 | The destination could not be reached |
-| name not found | 4 | The destination's name did not resolve |
+| name not found | 4 | The destination's name did not resolve, or none of its addresses connected |
 | timeout | 5 | Resolving or connecting took too long |
 | resources | 6 | The exit reached a bound |
 | protocol | 7 | A malformed message or a broken rule |
@@ -263,9 +263,11 @@ layer, so no other hop can read it.
 ## Streams
 
 A stream starts when the client sends BEGIN. The exit answers CONNECTED once
-it has reached the destination, or END with the reason it could not. The
-client sends DATA only after CONNECTED. Messages for a stream the receiver
-has already ended are ignored, because they may have crossed its END.
+it has reached the destination, or END with the reason it could not. An
+exit that cannot tell a failed lookup from a failed connection answers name
+not found for a name and unreachable for an address. The client sends DATA
+only after CONNECTED. Messages for a stream the receiver has already ended
+are ignored, because they may have crossed its END.
 
 Each end grants the other a window of 262144 bytes for every stream's DATA
 when the stream starts and returns it with STREAM_CREDIT as it delivers the
@@ -312,5 +314,5 @@ signatures have no vectors here, because their keys are random.
   layer count but lets a malicious entry mark cells for a colluding exit, and
   the construction that avoids that is not available in OpenSSL.
 - This page defines no route choice, bounds, consent or exits. The node
-  service's bounds and exits are in [cluster 1](CLUSTER_1.md), and route
-  choice and consent belong to the client.
+  service's bounds and exits, and the client's route choice and consent, are
+  in [cluster 1](CLUSTER_1.md).

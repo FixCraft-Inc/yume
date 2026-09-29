@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -317,6 +318,15 @@ ytp1::Destination destination(std::uint16_t port) {
     return result;
 }
 
+ytp1::Destination named(std::uint16_t port) {
+    ytp1::Destination result;
+    result.transport = ytp1::TransportProtocol::Tcp;
+    result.address_kind = ytp1::AddressKind::Dns;
+    result.dns_name = "missing.example";
+    result.port = port;
+    return result;
+}
+
 // Three nodes, north, east and west, with west an exit. Each open_next
 // makes an in-memory stream to the named node unless redirected.
 struct Cluster {
@@ -360,6 +370,12 @@ struct Cluster {
                 }
                 auto [mine, theirs] = PipeEnd::pair(runtime.context());
                 links.push_back(mine);
+                // A node that takes the stream and never answers.
+                if (target == "silent") {
+                    client_ends.push_back(theirs);
+                    done(Result<std::shared_ptr<StreamResponder>>(mine));
+                    return;
+                }
                 services[target]->async_open(
                     open_context(identities[self]->identity.fingerprint),
                     theirs, [](Status) {});
@@ -370,9 +386,16 @@ struct Cluster {
                     [this](const engine::StreamOpenContext&,
                            const ytp1::Destination& to, CancellationToken,
                            runtime::circuit::ChannelOpened done) {
-                        if (to.port == 25) {
+                        // As the route provider reports a refusal, a
+                        // failed lookup or connection and a connect timeout.
+                        const std::map<std::uint16_t, StatusCode> failures{
+                            {25, StatusCode::PermissionDenied},
+                            {26, StatusCode::NotFound},
+                            {27, StatusCode::Closed}};
+                        if (const auto failure = failures.find(to.port);
+                            failure != failures.end()) {
                             done(Result<std::unique_ptr<engine::ByteChannel>>(
-                                Status(StatusCode::PermissionDenied)));
+                                Status(failure->second)));
                             return;
                         }
                         done(Result<std::unique_ptr<engine::ByteChannel>>(
@@ -405,7 +428,8 @@ struct Cluster {
     // out of the way of tests that do not test them.
     std::shared_ptr<ClientCircuit> circuit(
         const std::vector<std::string>& route, std::string client = {},
-        Status* accepted = nullptr) {
+        Status* accepted = nullptr,
+        runtime::circuit::ClientLimits limits = {}) {
         if (client.empty()) {
             client = std::to_string(++clients);
             client.insert(0, 64U - client.size(), 'e');
@@ -422,7 +446,7 @@ struct Cluster {
             for (const auto& name : route)
                 hops.push_back(identities[name]->identity);
             return take(ClientCircuit::create(runtime.context(), crypto, mine,
-                                              hops, {}));
+                                              hops, limits));
         });
     }
 
@@ -440,13 +464,17 @@ struct Cluster {
 
     Result<std::shared_ptr<StreamResponder>> open(
         const std::shared_ptr<ClientCircuit>& circuit, std::uint16_t port) {
+        return open(circuit, destination(port));
+    }
+    Result<std::shared_ptr<StreamResponder>> open(
+        const std::shared_ptr<ClientCircuit>& circuit,
+        const ytp1::Destination& to) {
         auto promise = std::make_shared<
             std::promise<Result<std::shared_ptr<StreamResponder>>>>();
         auto future = promise->get_future();
         runtime.sync([&] {
             circuit->open_stream(
-                destination(port),
-                [promise](Result<std::shared_ptr<StreamResponder>> r) {
+                to, [promise](Result<std::shared_ptr<StreamResponder>> r) {
                     promise->set_value(std::move(r));
                 });
         });
@@ -580,6 +608,18 @@ void test_two_hops_and_refusals(Cluster& cluster) {
     auto refused = cluster.open(circuit, 25);
     CHECK(!refused.ok() &&
           refused.status().code() == StatusCode::PermissionDenied);
+    // A destination the exit could not reach is a route failure, which
+    // SOCKS5 answers as host unreachable, never as not allowed. Only a name
+    // can have failed to resolve.
+    const auto failed = [&](const ytp1::Destination& to,
+                            std::string_view message) {
+        auto result = cluster.open(circuit, to);
+        return !result.ok() && result.status().code() == StatusCode::Internal &&
+               result.status().message() == message;
+    };
+    CHECK(failed(destination(26), "the destination could not be reached"));
+    CHECK(failed(named(26), "the destination's name did not resolve"));
+    CHECK(failed(destination(27), "the destination did not answer in time"));
     auto stream = cluster.open(circuit, 443);
     CHECK(stream.ok());
     if (stream.ok())
@@ -612,6 +652,20 @@ void test_extend_failures(Cluster& cluster) {
     const auto caught = cluster.runtime.sync([&] { return hidden->failure(); });
     CHECK(caught && caught->hop == 2U &&
           caught->reason == c1::CircuitReason::Protocol);
+
+    // east takes the extension and never answers. The client blames the
+    // hop it was extending to, not the entry that forwarded the request.
+    cluster.redirects["north>east"] = "silent";
+    runtime::circuit::ClientLimits limits;
+    limits.build_timeout = 300ms;
+    auto quiet =
+        cluster.circuit({"north", "east", "west"}, {}, nullptr, limits);
+    CHECK(!cluster.build(quiet).ok());
+    const auto timed_out =
+        cluster.runtime.sync([&] { return quiet->failure(); });
+    CHECK(timed_out && timed_out->hop == 2U &&
+          timed_out->reason == c1::CircuitReason::Timeout);
+    cluster.runtime.sync([&] { quiet->close(); });
     cluster.redirects.clear();
 }
 

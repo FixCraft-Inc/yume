@@ -14,6 +14,7 @@
 
 #include "engine/session_engine.hpp"
 #include "engine/stream_handler.hpp"
+#include "runtime/circuit_pool.hpp"
 #include "runtime/native_endpoint.hpp"
 #ifdef __linux__
 #include "runtime/linux_tun_network.hpp"
@@ -82,9 +83,11 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
         return keeper ? keeper->active_session() : nullptr;
     }
 
-    // Opens each managed TUN's packet stream once a session authenticates.
+    // Opens each managed TUN's packet stream once a session authenticates,
+    // and hands the session to the circuits.
     void on_authenticated(
         const std::shared_ptr<engine::SessionEngine>& session) noexcept {
+        if (pool && !closing) pool->set_session(session);
         try {
             for (const auto& [config, adapter] : packets) {
                 if (closing || active_session() != session) break;
@@ -130,6 +133,24 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
         }
     }
 
+    // Opens streams through the circuits, or nothing without them.
+    NativeStreamOpener opener() {
+        if (!pool) return {};
+        return [weak = std::weak_ptr<CircuitPool>(pool)](
+                   const engine::RouteDestination& destination,
+                   std::string service, engine::CancellationToken cancellation,
+                   engine::SessionEngine::OpenCompletion done) {
+            const auto circuits = weak.lock();
+            if (!circuits) {
+                done(Result<std::shared_ptr<engine::StreamResponder>>(
+                    Status(StatusCode::Closed)));
+                return;
+            }
+            circuits->open(destination, std::move(service),
+                           std::move(cancellation), std::move(done));
+        };
+    }
+
     void stop(Status status) noexcept {
         if (closing) return;
         auto stopped = std::exchange(*on_stopped, {});
@@ -143,6 +164,7 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
     void close() noexcept {
         if (closing) return;
         closing = true;
+        if (pool) pool->close();
         if (keeper) keeper->close();
         for (const auto& adapter : adapters) adapter->close();
         for (const auto& forward : forward_adapters) forward->close();
@@ -157,6 +179,8 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
     NativeClientRuntimeOptions options;
     std::shared_ptr<SessionKeeper> keeper;
     std::shared_ptr<NativeEndpoint> endpoint;
+    // The client's circuits, when its configuration names them.
+    std::shared_ptr<CircuitPool> pool;
     std::vector<config::v1::Socks5Adapter> socks5;
     std::vector<std::shared_ptr<NativeSocks5Adapter>> adapters;
     std::vector<config::v1::ForwardAdapter> forwards;
@@ -262,6 +286,22 @@ engine::Result<std::shared_ptr<NativeClientRuntime>> NativeClientRuntime::create
         if (!endpoint.ok()) return Created(endpoint.status());
         state->endpoint = std::move(endpoint).take_value();
         state->keeper->attach(state->endpoint);
+        if (const auto& settings = config.circuits()) {
+            CircuitPoolOptions pool_options;
+            pool_options.hops = settings->hops;
+            pool_options.min_hops = settings->min_hops;
+            pool_options.plain_http_allowed = settings->plain_http_allowed;
+            auto pool = CircuitPool::create(
+                context, *state->endpoint->circuits(), pool_options,
+                [weak = std::weak_ptr<State>(state)](std::string_view text) {
+                    if (const auto self = weak.lock()) self->say(text);
+                });
+            if (!pool.ok()) {
+                state->close();
+                return Created(pool.status());
+            }
+            state->pool = std::move(pool).take_value();
+        }
         return Created(std::shared_ptr<NativeClientRuntime>(new NativeClientRuntime(std::move(state))));
     } catch (const std::bad_alloc&) {
         return Created(Status(StatusCode::ResourceExhausted));
@@ -319,14 +359,17 @@ engine::Status NativeClientRuntime::start() {
         for (const auto& adapter : state->socks5) {
             auto created = NativeSocks5Adapter::create(
                 state->context, adapter,
-                [weak = std::weak_ptr<State>(state)]() -> std::shared_ptr<engine::SessionEngine> {
+                [weak = std::weak_ptr<State>(
+                     state)]() -> std::shared_ptr<engine::SessionEngine> {
                     const auto self = weak.lock();
                     return self ? self->active_session() : nullptr;
                 },
                 state->options.socks5,
                 [weak = std::weak_ptr<State>(state)](Status status) noexcept {
-                    if (const auto self = weak.lock()) self->stop(std::move(status));
-                });
+                    if (const auto self = weak.lock())
+                        self->stop(std::move(status));
+                },
+                state->opener());
             if (!created.ok()) {
                 state->close();
                 return created.status();
@@ -336,14 +379,17 @@ engine::Status NativeClientRuntime::start() {
         for (const auto& adapter : state->forwards) {
             auto created = NativeForwardAdapter::create(
                 state->context, adapter,
-                [weak = std::weak_ptr<State>(state)]() -> std::shared_ptr<engine::SessionEngine> {
+                [weak = std::weak_ptr<State>(
+                     state)]() -> std::shared_ptr<engine::SessionEngine> {
                     const auto self = weak.lock();
                     return self ? self->active_session() : nullptr;
                 },
                 state->options.forward,
                 [weak = std::weak_ptr<State>(state)](Status status) noexcept {
-                    if (const auto self = weak.lock()) self->stop(std::move(status));
-                });
+                    if (const auto self = weak.lock())
+                        self->stop(std::move(status));
+                },
+                state->opener());
             if (!created.ok()) {
                 state->close();
                 return created.status();
@@ -378,6 +424,16 @@ std::vector<boost::asio::ip::tcp::endpoint> NativeClientRuntime::forward_endpoin
 
 NativeClientStatus NativeClientRuntime::status() const {
     return state_->keeper->status();
+}
+
+std::optional<CircuitPoolStatus> NativeClientRuntime::circuits() const {
+    if (!state_->pool) return std::nullopt;
+    return state_->pool->status();
+}
+
+engine::Status NativeClientRuntime::accept_route(std::string_view id) noexcept {
+    if (!state_->pool) return Status(StatusCode::FailedPrecondition);
+    return state_->pool->accept(id);
 }
 
 void NativeClientRuntime::close() noexcept { state_->close(); }

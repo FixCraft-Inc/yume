@@ -702,6 +702,67 @@ class YumeDoctorTests(unittest.TestCase):
         client_path.write_text(client_original)
         server_path.write_text(json.dumps(original))
 
+    def test_circuits_section_matches_the_native_parser(self) -> None:
+        client_path = self.case / "client/yume.json"
+        original = json.loads(client_path.read_text())
+        circuits = self.case / "client/credentials/circuits"
+        circuits.mkdir(mode=0o700)
+        names = {"operator_key": "operator.pub.pem", "routes": "cluster-routes.json",
+                 "routes_signature": "cluster-routes.sig"}
+        for name in names.values():
+            (circuits / name).write_bytes(b"{}")
+            os.chmod(circuits / name, 0o600)
+        section = {key: {"file": f"credentials/circuits/{name}"} for key, name in names.items()}
+        # The client creates its state file, so it may be absent.
+        section["state"] = {"file": "circuits-state.json"}
+        section["hops"] = 3
+        client = copy.deepcopy(original)
+        client["circuits"] = section
+        client_path.write_text(json.dumps(client))
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        client["circuits"] = {**section, "hops": 2, "min_hops": 1, "plain_http": "allow"}
+        client_path.write_text(json.dumps(client))
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        (circuits / "cluster-routes.sig").write_bytes(b"x" * (64 + 4627 + 1))
+        result = self.run_doctor(client_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/circuits/routes_signature", result.stderr)
+        (circuits / "cluster-routes.sig").write_bytes(b"{}")
+
+        for change, pointer in (
+            ({"hops": 1}, "/circuits/hops"),
+            ({"hops": 4}, "/circuits/hops"),
+            ({"min_hops": 4}, "/circuits/min_hops"),
+            ({"min_hops": 0}, "/circuits/min_hops"),
+            ({"plain_http": "maybe"}, "/circuits/plain_http"),
+            ({"routes": None}, "/circuits/routes"),
+            ({"state": None}, "/circuits/state"),
+            ({"exit": True}, "/circuits/exit"),
+            ({"state": {"file": "missing/state.json"}}, "/circuits/state"),
+        ):
+            client = copy.deepcopy(original)
+            client["circuits"] = {**section, **change}
+            for key in ("routes", "state"):
+                if key in change and change[key] is None:
+                    del client["circuits"][key]
+            client_path.write_text(json.dumps(client))
+            result = self.run_doctor(client_path)
+            self.assertEqual(result.returncode, 1, change)
+            self.assertIn(pointer, result.stderr)
+        server_path = self.case / "server/yumed.json"
+        server_original = server_path.read_text()
+        server = json.loads(server_original)
+        server["circuits"] = section
+        server_path.write_text(json.dumps(server))
+        result = self.run_doctor(server_path)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("/circuits: is client-only", result.stderr)
+        server_path.write_text(server_original)
+        client_path.write_text(json.dumps(original))
+
     def test_module_adapters_match_the_native_parser(self) -> None:
         server_path = self.case / "server/yumed.json"
         original = json.loads(server_path.read_text())

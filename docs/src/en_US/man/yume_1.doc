@@ -14,6 +14,7 @@ man-manual:  YUME Manual
 [ **--socks-address** *ip* ] [ **--socks-port** *port* ]
 [ **--outer-carrier-evidence** *path* ]
 **yume** **--config** *path* **--status**
+**yume** **--config** *path* **--accept-route** *id*
 **yume** **--seal-kit** *directory* **--output** *file*
 **yume** **--import-kit** *file* **--into** *directory*
 **yume** **--version**
@@ -35,6 +36,17 @@ A Linux packet adapter connects a named service to a managed IP/TUN
 interface and owns its addresses, routes and optional per-link DNS. The client
 is not yet qualified for production. Check **docs/IMPLEMENTATION_STATUS.md**
 before deployment.
+
+With a **circuits** section, every SOCKS5 CONNECT and every forward to a
+destination leaves through a circuit of two or three servers of the entry's
+cluster, the entry being the configured server. The client fetches the
+operator-signed routes view from the entry, chooses the other servers and
+builds the circuit. UDP ASSOCIATE is refused and a packet adapter is not
+allowed, since circuits carry TCP only, and plain HTTP is refused unless
+**circuits.plain_http** is **allow**. When no route of **circuits.hops** can
+be built, the client does not shorten it on its own: connections are refused
+as not allowed until the user accepts its proposal with **--accept-route**,
+unless **circuits.min_hops** approves the shorter length in advance.
 
 ## OPTIONS
 
@@ -84,6 +96,21 @@ verified identity, the sessions and failed attempts, payload and record bytes
 in each direction, the local listeners and the last failure. The exit status
 is 2 when the configuration names no control socket and 1 when no client
 answers on it. **--status** takes no option besides **--config**.
+With circuits, it also shows each circuit's route by name, the hop count in
+use against the configured one, whether plain HTTP is refused, and any
+proposal of a shorter route with its id and what that route gives up.
+
+@opt **--accept-route** *id*
+@cli spell: --accept-route <id>
+@cli help: Accept the running client's proposal of a shorter route
+
+Accept the shorter route that the running client of this configuration
+proposed, when no route of **circuits.hops** could be built. The *id* is the
+one **--status** shows, so an answer to an older proposal accepts nothing.
+The acceptance lasts until routes of the configured length work again or
+the client exits. It is the one control request that changes anything, and
+only a process of the client's own user can send it. Exit statuses follow
+**--status**, and an id no proposal has exits with status 2.
 @end
 
 The kit options move a client kit to another device in one file, a sealed
@@ -159,7 +186,15 @@ The client's answer holds **control** (1), **program**, **version**,
 received, **socks5** and **forwards** (the local listeners) and
 **last_failure** (null, or **code** and **message**). A connected client adds
 **server_identity** and **connected_ms**, and a waiting one adds
-**retry_ms**.
+**retry_ms**. **circuits** is null without a circuits section. Otherwise it
+holds **hops**, **min_hops**, **accepted_hops** (0 unless the user accepted a
+shorter route), **current_hops** (0 while none can be used), **plain_http**,
+**serial** of the routes view in use, **stopped** (null, or why circuits
+stopped), **routes**, one per circuit with **nodes**, **age_ms** and
+**streams**, and **proposal**: null, or **id**, **hops**, **nodes**,
+**serial**, **gives_up** and, when measured, **latency_ms**. The client also
+takes the request {"control":1,"request":"accept-route","id":ID}, which
+**--accept-route** sends.
 
 ## SIGNALS
 

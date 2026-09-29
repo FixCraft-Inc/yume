@@ -1064,6 +1064,55 @@ def _server_reference(server: Path, config: dict[str, object], name: str) -> Pat
     return path if path.is_absolute() else server / path
 
 
+def _cluster_reference(server: Path, config: dict[str, object], name: str) -> Path:
+    section = config.get("cluster")
+    reference = section.get(name) if isinstance(section, dict) else None
+    relative = reference.get("file") if isinstance(reference, dict) else None
+    if not isinstance(relative, str) or not relative:
+        raise SetupError(f"server configuration lacks cluster.{name}")
+    path = Path(relative)
+    return path if path.is_absolute() else server / path
+
+
+# Where a circuits client keeps its kit copies and the state it writes.
+CLIENT_CIRCUITS_DIRECTORY = "credentials/circuits"
+CLIENT_CIRCUITS_STATE = "circuits-state.json"
+
+
+def _add_client_circuits(client: Path, server: Path, config: dict[str, object]) -> None:
+    """Give a client bundle its circuits section and the kit copies it needs.
+
+    The operator key verifies every routes view, and the node's current view
+    and signature are the kit's copy. The client keeps the highest serial it
+    has verified in circuits-state.json. Circuits carry TCP only, so the
+    SOCKS5 adapter loses its UDP service.
+    """
+    material = client / CLIENT_CIRCUITS_DIRECTORY
+    _mkdir_private(material)
+    for name, target in (("operator_key", "operator.pub.pem"),
+                         ("routes", "cluster-routes.json"),
+                         ("routes_signature", "cluster-routes.sig")):
+        source = _cluster_reference(server, config, name)
+        if not source.is_file():
+            raise SetupError(f"{source} is missing; sign the cluster with cluster-sign first")
+        _copy_stream(source, material / target)
+    client_config = _read_json(client / "yume.json")
+    if not isinstance(client_config, dict):
+        raise SetupError("the new client configuration is not an object")
+    client_config["circuits"] = {
+        "hops": 3,
+        "operator_key": {"file": f"{CLIENT_CIRCUITS_DIRECTORY}/operator.pub.pem"},
+        "routes": {"file": f"{CLIENT_CIRCUITS_DIRECTORY}/cluster-routes.json"},
+        "routes_signature": {"file": f"{CLIENT_CIRCUITS_DIRECTORY}/cluster-routes.sig"},
+        "state": {"file": CLIENT_CIRCUITS_STATE},
+    }
+    for adapter in client_config.get("adapters", []):
+        if isinstance(adapter, dict) and adapter.get("kind") == "socks5":
+            adapter.pop("udp_service", None)
+    (client / "yume.json").unlink()
+    _write_json(client / "yume.json", client_config)
+
+
 def _write_replacement(path: Path, value: object) -> Path:
     """Write value beside path for a later atomic replace, and return it."""
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.new")
@@ -1083,8 +1132,10 @@ def add_client(
     """Issue one client bundle for an existing server tree.
 
     The new identity is appended to the server's authorized-keys store with
-    the kit's standard services, and with yume.circuit when circuits is set,
-    which needs a server in a cluster. Nothing changes unless every step succeeds:
+    the kit's standard services. With circuits, which needs a server in a
+    signed cluster, it is also granted yume.circuit and the bundle gets a
+    circuits section of three hops with the kit's copies of the operator key
+    and the routes view. Nothing changes unless every step succeeds:
     the bundle, the server's new key and PSK files and the store replacement
     are removed again on failure. A running daemon accepts the client after
     it reloads its credentials (SIGHUP).
@@ -1161,6 +1212,8 @@ def add_client(
             openssl, client, work / "client-identity", server_credentials, host, port,
             tuning,
         )
+        if circuits:
+            _add_client_circuits(client, server, config)
         if any(
             isinstance(entry, dict)
             and isinstance(entry.get("identity"), dict)
@@ -1905,7 +1958,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument(
         "--circuits",
         action="store_true",
-        help="let the client build circuits through this cluster node (yume.circuit)",
+        help="send the client's connections through circuits of three cluster servers, this one the entry",
     )
     remove = commands.add_parser(
         "remove-client",

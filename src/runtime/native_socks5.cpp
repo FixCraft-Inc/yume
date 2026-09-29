@@ -89,6 +89,7 @@ struct NativeSocks5Adapter::State final : std::enable_shared_from_this<State> {
     std::string service;
     std::optional<std::string> udp_service;
     NativeSessionSource sessions;
+    NativeStreamOpener opener;
     Stopped on_stopped;
     NativeSocks5Limits limits;
     std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
@@ -224,8 +225,9 @@ private:
     }
 
     void open(RouteDestination destination) noexcept {
+        const auto owner = owner_.lock();
         const auto session = current_session();
-        if (!session) {
+        if (!owner || (!owner->opener && !session)) {
             write(socks5::reply(socks5::Reply::GeneralFailure), AfterWrite::Close);
             return;
         }
@@ -233,11 +235,19 @@ private:
         arm_deadline(limits_.open_timeout);
         if (done_) return;
         try {
-            session->async_open(service_, ServiceKind::ByteStream, std::move(destination),
-                open_cancellation_.token(),
-                [self = shared_from_this()](Result<std::shared_ptr<StreamResponder>> result) noexcept {
+            auto opened =
+                [self = shared_from_this()](
+                    Result<std::shared_ptr<StreamResponder>> result) noexcept {
                     self->on_open(std::move(result));
-                });
+                };
+            if (owner->opener) {
+                owner->opener(destination, service_, open_cancellation_.token(),
+                              std::move(opened));
+                return;
+            }
+            session->async_open(service_, ServiceKind::ByteStream,
+                                std::move(destination),
+                                open_cancellation_.token(), std::move(opened));
         } catch (...) {
             disarm_deadline();
             phase_ = Phase::Replying;
@@ -265,7 +275,9 @@ private:
     // The association relays datagrams from this client's own address only.
     // The server authorizes each destination when its packet stream opens.
     void associate(std::uint16_t client_port) noexcept {
-        if (!udp_service_) {
+        // Circuits carry TCP only.
+        const auto adapter = owner_.lock();
+        if (!udp_service_ || (adapter && adapter->opener)) {
             write(socks5::reply(socks5::Reply::CommandNotSupported), AfterWrite::Close);
             return;
         }
@@ -468,12 +480,11 @@ void NativeSocks5Adapter::State::close() noexcept {
     on_stopped = {};
 }
 
-engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create(
+engine::Result<std::shared_ptr<NativeSocks5Adapter>>
+NativeSocks5Adapter::create(
     std::shared_ptr<providers::AsioExecutionContext> context,
-    const config::v1::Socks5Adapter& adapter,
-    NativeSessionSource sessions,
-    NativeSocks5Limits limits,
-    Stopped on_stopped) {
+    const config::v1::Socks5Adapter& adapter, NativeSessionSource sessions,
+    NativeSocks5Limits limits, Stopped on_stopped, NativeStreamOpener opener) {
     using Created = engine::Result<std::shared_ptr<NativeSocks5Adapter>>;
     if (!context || !sessions || limits.max_connections == 0U || limits.max_connections > 4096U ||
         limits.handshake_timeout <= std::chrono::milliseconds::zero() ||
@@ -523,6 +534,7 @@ engine::Result<std::shared_ptr<NativeSocks5Adapter>> NativeSocks5Adapter::create
             });
         if (state->closing) return Created(Status(state->failure));
         state->on_stopped = std::move(on_stopped);
+        state->opener = std::move(opener);
         return Created(std::move(result));
     } catch (const std::bad_alloc&) {
         return Created(Status(StatusCode::ResourceExhausted));

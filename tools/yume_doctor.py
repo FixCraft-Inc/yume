@@ -891,6 +891,8 @@ class CheckedConfig:
     socks5_credentials: str | None
     # The cluster section's file references by key, for a server in one.
     cluster: dict[str, str]
+    # The circuits section's file references by key, for a client with one.
+    circuits: dict[str, str]
 
 
 # The cluster files' byte bounds, as yumed reads them: the list and the
@@ -910,6 +912,14 @@ CLUSTER_FILE_BYTES = {
 # replaces it, so it may be absent, but its directory must exist.
 CLUSTER_STATE_BYTES = 4096
 
+# A client's circuits files: the operator key, the kit's copy of the routes
+# view and its signature. Its state file is the same as a server's.
+CIRCUITS_FILE_BYTES = {
+    "operator_key": MAX_DOCUMENT_BYTES,
+    "routes": 1024 * 1024,
+    "routes_signature": 64 + 4627,
+}
+
 
 def _validate_cluster(value: Any, role: str, adapters: list[Any]) -> dict[str, str]:
     """cluster, as config::v1 checks it: seven file references and an
@@ -925,6 +935,28 @@ def _validate_cluster(value: Any, role: str, adapters: list[Any]) -> dict[str, s
         if not any(type(adapter) is dict and adapter.get("kind") == "direct_tcp"
                    and adapter.get("service") == service for adapter in adapters):
             _fail("/cluster/exit/service", "must name a direct_tcp adapter's service")
+    return references
+
+
+def _validate_circuits(value: Any, role: str, adapters: list[Any]) -> dict[str, str]:
+    """circuits, as config::v1 checks it: hops, min_hops, plain_http and
+    four file references, client-only, and no packet adapter beside it."""
+    files = set(CIRCUITS_FILE_BYTES) | {"state"}
+    circuits = _closed_object(value, "/circuits", files | {"hops", "min_hops", "plain_http"},
+                              files | {"hops"})
+    if role != "client":
+        _fail("/circuits", "is client-only")
+    hops = _integer(circuits["hops"], "/circuits/hops", 2, 3)
+    if "min_hops" in circuits:
+        _integer(circuits["min_hops"], "/circuits/min_hops", 1, hops)
+    if "plain_http" in circuits:
+        plain_http = _string(circuits["plain_http"], "/circuits/plain_http", 16)
+        if plain_http not in {"refuse", "allow"}:
+            _fail("/circuits/plain_http", "must be 'refuse' or 'allow'")
+    references = {key: _file_reference(circuits[key], f"/circuits/{key}") for key in sorted(files)}
+    for index, adapter in enumerate(adapters):
+        if type(adapter) is dict and adapter.get("kind") == "packet":
+            _fail(f"/adapters/{index}", "a packet adapter cannot run with circuits, which carry TCP only")
     return references
 
 
@@ -955,6 +987,7 @@ def _validate_config(document: Any) -> CheckedConfig:
             "limits",
             "control",
             "cluster",
+            "circuits",
         },
         {
             "schema",
@@ -982,7 +1015,12 @@ def _validate_config(document: Any) -> CheckedConfig:
     if "control" in top:
         _validate_control(top["control"], top["adapters"])
     cluster = _validate_cluster(top["cluster"], role, top["adapters"]) if "cluster" in top else {}
-    return CheckedConfig(role, credentials, cover_root, list_files, socks5_credentials, cluster)
+    circuits = (
+        _validate_circuits(top["circuits"], role, top["adapters"]) if "circuits" in top else {}
+    )
+    return CheckedConfig(
+        role, credentials, cover_root, list_files, socks5_credentials, cluster, circuits
+    )
 
 
 def _checked_bytes(
@@ -1776,18 +1814,24 @@ def diagnose(config_path: Path) -> list[DoctorError]:
         # yumed verifies the list's signature and the peer store when it
         # starts or validates. The doctor checks that each file is one the
         # loader would open.
-        for name, reference in checked.cluster.items():
+        sections = (("cluster", checked.cluster, CLUSTER_FILE_BYTES),
+                    ("circuits", checked.circuits, CIRCUITS_FILE_BYTES))
+        for section, name, reference, bounds in (
+            (section, name, reference, bounds)
+            for section, files, bounds in sections
+            for name, reference in files.items()
+        ):
             try:
                 path = _resolve_reference(base, reference)
                 if name == "state":
                     if not path.parent.is_dir():
-                        raise DoctorError("/cluster/state", "its directory does not exist")
+                        raise DoctorError(f"/{section}/state", "its directory does not exist")
                     if not os.path.lexists(path):
                         continue
                 payload = _checked_bytes(
                     path,
-                    f"/cluster/{name}",
-                    maximum=CLUSTER_STATE_BYTES if name == "state" else CLUSTER_FILE_BYTES[name],
+                    f"/{section}/{name}",
+                    maximum=CLUSTER_STATE_BYTES if name == "state" else bounds[name],
                 )
                 payload[:] = b"\0" * len(payload)
             except DoctorError as error:

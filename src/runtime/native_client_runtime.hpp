@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,7 @@
 #include "engine/session_engine.hpp"
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
+#include "runtime/circuit_status.hpp"
 #include "runtime/native_forward.hpp"
 #include "runtime/native_socks5.hpp"
 #include "stealth/outer_carrier_observer.hpp"
@@ -111,6 +113,12 @@ public:
     std::vector<boost::asio::ip::tcp::endpoint> forward_endpoints() const;
     // Callable from any thread, including after close.
     NativeClientStatus status() const;
+    // On the context: the circuits' routes, lengths and any proposal, or
+    // nothing without a circuits section.
+    std::optional<CircuitPoolStatus> circuits() const;
+    // On the context: accepts the circuits' current proposal. NotFound for
+    // another id, FailedPrecondition without circuits.
+    engine::Status accept_route(std::string_view id) noexcept;
     void close() noexcept;
 
 private:

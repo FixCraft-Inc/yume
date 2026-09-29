@@ -670,6 +670,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         OpenSSL::Crypto)
 
     add_library(yume_native_credentials STATIC
+        runtime/client_routes.cpp runtime/client_routes.hpp
         runtime/cluster_list.cpp runtime/cluster_list.hpp
         runtime/cluster_state.cpp runtime/cluster_state.hpp
         runtime/native_credentials.cpp runtime/native_credentials.hpp)
@@ -805,7 +806,9 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         # contracts and the circuit crypto.
         add_library(yume_circuit_runtime STATIC
             runtime/circuit_client.cpp runtime/circuit_client.hpp
-            runtime/circuit_node.cpp runtime/circuit_node.hpp)
+            runtime/circuit_node.cpp runtime/circuit_node.hpp
+            runtime/circuit_routes.cpp runtime/circuit_routes.hpp
+            runtime/plain_http_guard.cpp runtime/plain_http_guard.hpp)
         target_include_directories(yume_circuit_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(yume_circuit_runtime
             PUBLIC yume_circuit_crypto yume_engine yume_asio_execution_context
@@ -819,6 +822,18 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         add_test(NAME yume_circuit_runtime_test COMMAND yume_circuit_runtime_test)
         set_tests_properties(yume_circuit_runtime_test PROPERTIES
             TIMEOUT 120 LABELS "foundation;0.3;circuit")
+        add_executable(yume_circuit_routes_test runtime/circuit_routes_test.cpp)
+        target_link_libraries(yume_circuit_routes_test PRIVATE yume_circuit_runtime)
+        yume_apply_perf_opts(yume_circuit_routes_test)
+        add_test(NAME yume_circuit_routes_test COMMAND yume_circuit_routes_test)
+        set_tests_properties(yume_circuit_routes_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;circuit")
+        add_executable(yume_plain_http_guard_test runtime/plain_http_guard_test.cpp)
+        target_link_libraries(yume_plain_http_guard_test PRIVATE yume_circuit_runtime)
+        yume_apply_perf_opts(yume_plain_http_guard_test)
+        add_test(NAME yume_plain_http_guard_test COMMAND yume_plain_http_guard_test)
+        set_tests_properties(yume_plain_http_guard_test PROPERTIES
+            TIMEOUT 30 LABELS "foundation;0.3;circuit")
 
         add_library(yume_native_runtime STATIC
             runtime/control_socket.cpp runtime/control_socket.hpp
@@ -832,6 +847,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             runtime/native_socks5.cpp runtime/native_socks5.hpp
             runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
             runtime/circuit_host.cpp runtime/circuit_host.hpp
+            runtime/circuit_pool.cpp runtime/circuit_pool.hpp runtime/circuit_status.hpp
             runtime/session_keeper.cpp runtime/session_keeper.hpp
             runtime/socks5_request.cpp runtime/socks5_request.hpp)
         target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1821,6 +1837,7 @@ if(YUME_BUILD_TESTING)
                     "${CMAKE_SOURCE_DIR}/tests/run_native_circuit_test.py"
                     --yumed "$<TARGET_FILE:yumed>"
                     --probe "$<TARGET_FILE:yume_circuit_probe>"
+                    --yume "$<TARGET_FILE:yume>"
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}")
             set_tests_properties(yume_native_circuit_test PROPERTIES
                 TIMEOUT 240 LABELS "foundation;0.3;native-runtime;integration;circuit")

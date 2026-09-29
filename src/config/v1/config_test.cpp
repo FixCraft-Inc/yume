@@ -1254,6 +1254,92 @@ void TestClusterSection() {
     ExpectError(document, "/cluster/exit/service", "required key");
 }
 
+// circuits is a client-only object: hops 2 or 3, min_hops from 1 to hops
+// with hops as the default, plain_http refuse or allow with refuse as the
+// default, and four file references. Circuits carry TCP only, so a packet
+// adapter beside them is refused.
+void TestCircuitsSection() {
+    Check(!Parse(ClientDocument()).circuits(), "circuits appeared unasked");
+    const Json circuits = {
+        {"hops", 3},
+        {"operator_key", {{"file", "circuits/operator.pub.pem"}}},
+        {"routes", {{"file", "circuits/cluster-routes.json"}}},
+        {"routes_signature", {{"file", "circuits/cluster-routes.sig"}}},
+        {"state", {{"file", "circuits/state.json"}}}};
+    Json document = ClientDocument();
+    document["circuits"] = circuits;
+    const auto parsed = Parse(document).circuits();
+    Check(
+        parsed && parsed->hops == 3U && parsed->min_hops == 3U &&
+            !parsed->plain_http_allowed &&
+            parsed->operator_key.path() == "circuits/operator.pub.pem" &&
+            parsed->routes.path() == "circuits/cluster-routes.json" &&
+            parsed->routes_signature.path() == "circuits/cluster-routes.sig" &&
+            parsed->state.path() == "circuits/state.json",
+        "the circuits settings were not retained");
+    document["circuits"]["hops"] = 2;
+    document["circuits"]["min_hops"] = 1;
+    document["circuits"]["plain_http"] = "allow";
+    const auto two = Parse(document).circuits();
+    Check(two && two->hops == 2U && two->min_hops == 1U &&
+              two->plain_http_allowed,
+          "hops, min_hops or plain_http were not retained");
+    document["circuits"]["plain_http"] = "refuse";
+    Check(!Parse(document).circuits()->plain_http_allowed,
+          "plain_http refuse was ignored");
+
+    const auto refused = [&](const std::function<void(Json&)>& change,
+                             const std::string& pointer,
+                             std::string_view detail) {
+        Json candidate = ClientDocument();
+        candidate["circuits"] = circuits;
+        change(candidate);
+        ExpectError(candidate, pointer, detail);
+    };
+    for (const int hops : {0, 1, 4}) {
+        refused([&](Json& value) { value["circuits"]["hops"] = hops; },
+                "/circuits/hops", "");
+    }
+    refused([](Json& value) { value["circuits"]["min_hops"] = 0; },
+            "/circuits/min_hops", "");
+    refused([](Json& value) { value["circuits"]["min_hops"] = 4; },
+            "/circuits/min_hops", "");
+    refused(
+        [](Json& value) {
+            value["circuits"]["hops"] = 2;
+            value["circuits"]["min_hops"] = 3;
+        },
+        "/circuits/min_hops", "");
+    refused([](Json& value) { value["circuits"]["plain_http"] = "sometimes"; },
+            "/circuits/plain_http", "'refuse' or 'allow'");
+    refused([](Json& value) { value["circuits"]["plain_http"] = true; },
+            "/circuits/plain_http", "string");
+    for (const char* key :
+         {"hops", "operator_key", "routes", "routes_signature", "state"}) {
+        refused([&](Json& value) { value["circuits"].erase(key); },
+                "/circuits/" + std::string(key), "required key");
+    }
+    refused([](Json& value) { value["circuits"]["exit"] = true; },
+            "/circuits/exit", "unknown key");
+    refused(
+        [](Json& value) {
+            value["circuits"]["state"] = {{"file", "../state.json"}};
+        },
+        "/circuits/state/file", "");
+    refused(
+        [](Json& value) {
+            value["adapters"].push_back({{"kind", "packet"},
+                                         {"service", "packet"},
+                                         {"interface_name", "yume0"},
+                                         {"mtu", 1420},
+                                         {"network", TunNetworkDocument()}});
+        },
+        "/adapters/1", "carry TCP only");
+    document = ServerDocument();
+    document["circuits"] = circuits;
+    ExpectError(document, "/circuits", "client-only");
+}
+
 // Names whose first segment is yume belong to the daemon's own services.
 void TestReservedServiceNames() {
     for (const char* name :
@@ -1597,6 +1683,7 @@ int main(int argc, char** argv) {
         TestControlSocket();
         TestClusterSection();
         TestReservedServiceNames();
+        TestCircuitsSection();
         TestModuleAdapters();
         TestEgressRate();
         test_managed_tun_network();

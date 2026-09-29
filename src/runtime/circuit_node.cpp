@@ -85,17 +85,21 @@ struct TokenBucket final {
     }
 };
 
-// What a failed destination open tells the client.
-c1::StreamReason exit_reason(const Status& status) noexcept {
+// What a failed destination open tells the client. The route provider
+// reports a failed lookup and a failed connection alike as NotFound, so only
+// a name can be name not found, and it reports a connect timeout as Closed.
+c1::StreamReason exit_reason(const Status& status, bool named) noexcept {
     switch (status.code()) {
         case StatusCode::PermissionDenied:
             return c1::StreamReason::Policy;
         case StatusCode::NotFound:
-            return c1::StreamReason::NameNotFound;
+            return named ? c1::StreamReason::NameNotFound
+                         : c1::StreamReason::Unreachable;
         case StatusCode::ResourceExhausted:
             return c1::StreamReason::Resources;
-        case StatusCode::Cancelled:
         case StatusCode::Closed:
+            return c1::StreamReason::Timeout;
+        case StatusCode::Cancelled:
             return c1::StreamReason::Closed;
         default:
             return c1::StreamReason::Unreachable;
@@ -248,6 +252,7 @@ private:
         bool client_done{false};
         bool destination_done{false};
         bool shut{false};
+        bool named{false};
     };
 
     // Reads the next cell from the previous hop, from the executor rather
@@ -742,6 +747,8 @@ private:
         if (!destination.ok()) return refuse(c1::StreamReason::Protocol);
         auto stream = std::make_shared<ExitStream>();
         stream->id = id;
+        stream->named =
+            destination.value->address_kind == ytp1::AddressKind::Dns;
         stream->receive_allowed = node_->env.limits.stream_window;
         stream->send_window = node_->env.limits.stream_window;
         streams_.emplace(id, stream);
@@ -765,7 +772,7 @@ private:
                 streams_.erase(found);
                 send(c1::RelayType::End, stream->id,
                      std::array<std::uint8_t, 1>{static_cast<std::uint8_t>(
-                         exit_reason(opened.status()))});
+                         exit_reason(opened.status(), stream->named))});
                 return;
             }
             stream->channel = std::move(opened).take_value();

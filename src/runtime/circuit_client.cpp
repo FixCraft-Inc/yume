@@ -64,19 +64,24 @@ Status status_for(c1::StreamReason reason) noexcept {
             return Status::diagnostic(
                 StatusCode::PermissionDenied,
                 "the exit's policy refused the destination");
+        // A destination failure is a route failure, as a failed OPEN on the
+        // direct session reports, so SOCKS5 answers host unreachable. NotFound
+        // or FailedPrecondition would read as a refused service.
         case c1::StreamReason::NameNotFound:
-            return Status::diagnostic(StatusCode::NotFound,
+            return Status::diagnostic(StatusCode::Internal,
                                       "the destination's name did not resolve");
         case c1::StreamReason::ConnectionRefused:
-            return Status::diagnostic(StatusCode::Closed,
+            return Status::diagnostic(StatusCode::Internal,
                                       "the destination refused the connection");
         case c1::StreamReason::Resources:
             return Status::diagnostic(StatusCode::ResourceExhausted,
                                       "the exit reached a bound");
         case c1::StreamReason::Unreachable:
-        case c1::StreamReason::Timeout:
-            return Status::diagnostic(StatusCode::FailedPrecondition,
+            return Status::diagnostic(StatusCode::Internal,
                                       "the destination could not be reached");
+        case c1::StreamReason::Timeout:
+            return Status::diagnostic(StatusCode::Internal,
+                                      "the destination did not answer in time");
         case c1::StreamReason::Done:
         case c1::StreamReason::Protocol:
         case c1::StreamReason::Closed:
@@ -518,7 +523,9 @@ void ClientCircuit::State::start_build(
             [weak = weak_from_this()](const boost::system::error_code& error) {
                 const auto self = weak.lock();
                 if (!self || error || self->phase != Phase::Building) return;
-                self->fail(self->layers.size(), c1::CircuitReason::Timeout);
+                // The hop being extended to did not answer.
+                self->fail(self->layers.size() + 1U,
+                           c1::CircuitReason::Timeout);
             });
         auto started = cc::ClientExchange::start(*crypto);
         if (!started.ok()) {

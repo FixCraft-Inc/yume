@@ -37,17 +37,19 @@ struct ClientLimits final {
     std::size_t forward_queue_cells{16U};
 };
 
-// Why a circuit ended: the hop that reported it, 1 for the entry, or 0 when
-// the client or the entry's stream ended it.
+// Why a circuit ended, with hops counted from 1 at the entry. While it was
+// being built, hop names the hop that could not be reached, did not answer
+// or answered wrongly. Once it was built, hop names the hop that reported
+// the break. 0 when the client or the entry's stream ended it.
 struct CircuitFailure final {
     std::size_t hop{0U};
     circuit1::CircuitReason reason{circuit1::CircuitReason::Protocol};
 };
 
-// The status a refused stream open reports, and back. PermissionDenied is
-// the exit's policy, NotFound an unresolved name, Unavailable-like reasons
-// FailedPrecondition, a refused connection Closed and a bound
-// ResourceExhausted.
+// The status a refused stream open reports. PermissionDenied is the exit's
+// policy and ResourceExhausted a bound. A destination whose name did not
+// resolve, that could not be reached, did not answer or refused the
+// connection is Internal, as a failed route on the direct session reports.
 engine::Status status_for(circuit1::StreamReason reason) noexcept;
 
 class ClientCircuit final : public std::enable_shared_from_this<ClientCircuit> {

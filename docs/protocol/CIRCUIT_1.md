@@ -251,7 +251,7 @@ u8  dns_length, u8 dns_name[dns_length]    DNS, canonical lowercase
 | policy | 1 | The exit's egress policy refused the destination |
 | connection refused | 2 | The destination refused the connection |
 | unreachable | 3 | The destination could not be reached |
-| name not found | 4 | The destination's name did not resolve |
+| name not found | 4 | The destination's name did not resolve, or none of its addresses connected |
 | timeout | 5 | Resolving or connecting took too long |
 | resources | 6 | The exit reached a bound |
 | protocol | 7 | A malformed message or a broken rule |
@@ -263,9 +263,11 @@ layer, so no other hop can read it.
 ## Streams
 
 A stream starts when the client sends BEGIN. The exit answers CONNECTED once
-it has reached the destination, or END with the reason it could not. The
-client sends DATA only after CONNECTED. Messages for a stream the receiver
-has already ended are ignored, because they may have crossed its END.
+it has reached the destination, or END with the reason it could not. An
+exit that cannot tell a failed lookup from a failed connection answers name
+not found for a name and unreachable for an address. The client sends DATA
+only after CONNECTED. Messages for a stream the receiver has already ended
+are ignored, because they may have crossed its END.
 
 Each end grants the other a window of 262144 bytes for every stream's DATA
 when the stream starts and returns it with STREAM_CREDIT as it delivers the

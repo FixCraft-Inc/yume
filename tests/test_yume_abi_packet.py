@@ -26,6 +26,8 @@ from test_yume_abi_stream import composite_fingerprint  # noqa: E402
 SERVICES = (("echo", "stream"), ("echo", "packet"), ("unregistered", "packet"),
             ("denied", "packet"), ("stream-only", "stream"))
 GRANTED = (("echo", "stream"), ("echo", "packet"), ("unregistered", "packet"))
+# Kits whose listening port another process took before the listener bound it.
+PORT_ATTEMPTS = 4
 
 
 class Echo(socketserver.BaseRequestHandler):
@@ -80,8 +82,39 @@ def bind_targets() -> tuple[Target, TargetV6]:
     raise session.SessionFailure("no UDP port was free on both localhost families")
 
 
-def named(probe: Path, openssl: Path, kit: Path, environment: dict[str, str]) -> None:
-    session.provision_kit(kit, "localhost", session.free_port(), environment)
+def port_held(port: int) -> bool:
+    """Whether another process holds the TCP port on 127.0.0.1 now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as error:
+            if error.errno == errno.EADDRINUSE:
+                return True
+            raise
+    return False
+
+
+def named(probe: Path, openssl: Path, root: Path, environment: dict[str, str]) -> None:
+    """Runs the named probe on a new kit, again on a new port if its was taken.
+
+    The kit's port is free when chosen, but provisioning takes seconds, and a
+    test running beside this one can bind the port before the probe does.
+    """
+    for attempt in range(PORT_ATTEMPTS):
+        port = session.free_port()
+        code, errors = named_once(probe, openssl, root / f"named-kit-{attempt}", port,
+                                  environment)
+        sys.stderr.write(errors)
+        if code == 0:
+            return
+        if "server endpoint start" not in errors or not port_held(port):
+            raise session.SessionFailure(f"named packet ABI probe exited {code}")
+    raise session.SessionFailure("the named probe's port was taken on every attempt")
+
+
+def named_once(probe: Path, openssl: Path, kit: Path, port: int,
+               environment: dict[str, str]) -> tuple[int, str]:
+    session.provision_kit(kit, "localhost", port, environment)
     for relative in ("server/yumed.json", "client/yume.json"):
         path = kit / relative
         config = json.loads(path.read_text(encoding="utf-8"))
@@ -115,9 +148,8 @@ def named(probe: Path, openssl: Path, kit: Path, environment: dict[str, str]) ->
     result = subprocess.run(
         [str(probe), "named", str(kit / "server"), str(kit / "client"),
          client_fingerprint, server_fingerprint],
-        env=environment, timeout=90, check=False)
-    if result.returncode:
-        raise session.SessionFailure(f"named packet ABI probe exited {result.returncode}")
+        env=environment, timeout=90, check=False, stderr=subprocess.PIPE, text=True)
+    return result.returncode, result.stderr
 
 
 def routed(probe: Path, daemon: Path, root: Path, environment: dict[str, str]) -> None:
@@ -133,20 +165,30 @@ def routed(probe: Path, daemon: Path, root: Path, environment: dict[str, str]) -
                 thread = threading.Thread(target=target.serve_forever)
                 thread.start()
                 threads.append(thread)
-            kit = root / "route-kit"
-            server_port = session.free_port()
-            session.provision_kit(kit, "localhost", server_port, environment)
-            session.configure_kit(kit, listen_address="127.0.0.1",
-                                  networks=("127.0.0.1/32", "::1/128"),
-                                  connect_address="127.0.0.1", socks_port=session.free_port())
-            path = kit / "client/yume.json"
-            config = json.loads(path.read_text(encoding="utf-8"))
-            config["adapters"] = []
-            path.write_text(json.dumps(config), encoding="utf-8")
             log = stack.enter_context((root / "daemon.log").open("w+", encoding="utf-8"))
-            server = subprocess.Popen([str(daemon), "--config", str(kit / "server/yumed.json")],
-                                      env=environment, stdout=log, stderr=subprocess.STDOUT)
-            session.wait_for_port("127.0.0.1", server_port, server, time.monotonic() + 20)
+            # As in named(), a new kit on a new port when the daemon's port
+            # was taken before it bound it.
+            for attempt in range(PORT_ATTEMPTS):
+                kit = root / f"route-kit-{attempt}"
+                server_port = session.free_port()
+                session.provision_kit(kit, "localhost", server_port, environment)
+                session.configure_kit(kit, listen_address="127.0.0.1",
+                                      networks=("127.0.0.1/32", "::1/128"),
+                                      connect_address="127.0.0.1", socks_port=session.free_port())
+                path = kit / "client/yume.json"
+                config = json.loads(path.read_text(encoding="utf-8"))
+                config["adapters"] = []
+                path.write_text(json.dumps(config), encoding="utf-8")
+                server = subprocess.Popen([str(daemon), "--config", str(kit / "server/yumed.json")],
+                                          env=environment, stdout=log, stderr=subprocess.STDOUT)
+                try:
+                    session.wait_for_port("127.0.0.1", server_port, server, time.monotonic() + 20)
+                    break
+                except session.SessionFailure:
+                    if server.poll() is None or not port_held(server_port) or \
+                            attempt + 1 == PORT_ATTEMPTS:
+                        raise
+                    server = None
             result = subprocess.run(
                 [str(probe), "route", str(kit / "client"), str(target4.server_address[1]),
                  str(target6.server_address[1])],
@@ -186,7 +228,7 @@ def run(probe: Path, daemon: Path, openssl: Path) -> None:
         environment["ASAN_OPTIONS"] = child_options
     with tempfile.TemporaryDirectory(prefix="yume-abi-packet-") as temporary:
         root = Path(temporary)
-        named(probe, openssl, root / "named-kit", environment)
+        named(probe, openssl, root, environment)
         routed(probe, daemon, root, environment)
 
 

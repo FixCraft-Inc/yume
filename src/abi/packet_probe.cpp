@@ -67,9 +67,21 @@ struct Peer final {
                YUME_STATUS_OK, "endpoint create");
         endpoint.reset(raw_endpoint);
     }
+    // A failed start names the role and the endpoint's diagnostic, so the
+    // harness can tell a listener whose port was taken from a real failure.
     void start(bool server) {
-        expect(yume_endpoint_start(endpoint.get(), server ? 0U : 10000U),
-               YUME_STATUS_OK, "endpoint start");
+        const auto status =
+            yume_endpoint_start(endpoint.get(), server ? 0U : 10000U);
+        if (status == YUME_STATUS_OK) return;
+        yume_diagnostic diagnostic{};
+        diagnostic.struct_size = sizeof(diagnostic);
+        diagnostic.abi_version = YUME_ABI_VERSION;
+        (void)yume_handle_get_diagnostic(endpoint.get(), &diagnostic,
+                                         sizeof(diagnostic));
+        throw std::runtime_error(std::string(server ? "server" : "client") +
+                                 " endpoint start: status " +
+                                 std::to_string(status) +
+                                 ", expected 0: " + diagnostic.message);
     }
     void stop() { expect(yume_endpoint_stop(endpoint.get(), 0U), YUME_STATUS_OK, "endpoint stop"); }
     Runtime runtime;

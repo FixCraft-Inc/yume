@@ -15,6 +15,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -650,12 +651,12 @@ void test_socks5_credentials(Fixture& fixture) {
     check(load(config).ok(), "SOCKS5 proxy credentials did not recover");
 }
 
-// A composite signature over the cluster list domain, a zero byte and bytes.
-std::string cluster_signature(const Identity& signer,
-                              const std::string& bytes) {
-    std::vector<unsigned char> message(
-        yume::runtime::cluster::kListDomain.begin(),
-        yume::runtime::cluster::kListDomain.end());
+// A composite signature over a cluster document's domain, a zero byte and
+// bytes.
+std::string cluster_signature(
+    const Identity& signer, const std::string& bytes,
+    std::string_view domain = yume::runtime::cluster::kListDomain) {
+    std::vector<unsigned char> message(domain.begin(), domain.end());
     message.push_back(0U);
     message.insert(message.end(), bytes.begin(), bytes.end());
     std::string signature;
@@ -783,6 +784,34 @@ void test_cluster_membership(Fixture& fixture) {
                            root / "credentials/tls.pem"),
                       node(peer, "sweet-fox", peer_kem.get(),
                            root / "peer/credentials/tls.pem")})}};
+    // The routes view of a list: the same header and nodes, with exit marks
+    // and network tags in place of addresses.
+    std::set<std::string> exits;
+    const auto view_of = [&](const Json& value) {
+        Json view = value;
+        for (auto& entry : view["nodes"]) {
+            Json route = {
+                {"name", entry["name"]},
+                {"identity", entry["identity"]},
+                {"identity_key", entry["identity_key"]},
+                {"exit", exits.contains(entry["identity"].get<std::string>())},
+                {"network", "0123456789abcdef"}};
+            entry = std::move(route);
+        }
+        return view;
+    };
+    const auto publish_view = [&](const Json& view, const Identity& signer) {
+        const auto bytes = view.dump();
+        const auto signature = cluster_signature(
+            signer, bytes, yume::runtime::cluster::kRoutesDomain);
+        for (const auto* directory :
+             {"credentials/cluster/", "peer/credentials/cluster/"}) {
+            fixture.write(std::string(directory) + "cluster-routes.json",
+                          bytes);
+            fixture.write(std::string(directory) + "cluster-routes.sig",
+                          signature);
+        }
+    };
     const auto publish = [&](const Json& value, const Identity& signer) {
         const auto bytes = value.dump();
         const auto signature = cluster_signature(signer, bytes);
@@ -794,6 +823,7 @@ void test_cluster_membership(Fixture& fixture) {
             fixture.write(std::string(directory) + "operator.pub.pem",
                           operator_key.public_pem);
         }
+        publish_view(view_of(value), signer);
     };
     publish(list, operator_key);
     // This node's link to the peer and the peer's link to it use different
@@ -826,7 +856,10 @@ void test_cluster_membership(Fixture& fixture) {
         {"list", reference("credentials/cluster/cluster-list.json")},
         {"signature", reference("credentials/cluster/cluster-list.sig")},
         {"peers", reference("credentials/cluster/peers.json")},
-        {"state", reference("cluster-state.json")}};
+        {"state", reference("cluster-state.json")},
+        {"routes", reference("credentials/cluster/cluster-routes.json")},
+        {"routes_signature",
+         reference("credentials/cluster/cluster-routes.sig")}};
     auto config = fixture.server_config;
     config["cluster"] = cluster_refs;
     auto peer_config = config;
@@ -844,8 +877,8 @@ void test_cluster_membership(Fixture& fixture) {
         reference("peer/credentials/admission.key");
     peer_config["credentials"]["mlkem_key"] =
         reference("peer/credentials/kem.pem");
-    for (const char* key :
-         {"operator_key", "list", "signature", "peers", "state"}) {
+    for (const char* key : {"operator_key", "list", "signature", "peers",
+                            "state", "routes", "routes_signature"}) {
         peer_config["cluster"][key] =
             reference("peer/" + cluster_refs[key]["file"].get<std::string>());
     }
@@ -884,6 +917,34 @@ void test_cluster_membership(Fixture& fixture) {
                                         ServiceKind::ByteStream))
                .ok(),
           "a cluster peer gained a service");
+    // A peer extends circuits over its link, and that is all it may open.
+    check(own.authorization
+                  ->authorize(open_context(peer.id, EndpointRole::Client,
+                                           "yume.circuit",
+                                           ServiceKind::PacketChannel))
+                  .ok() &&
+              own.authorization->is_peer(peer.id) &&
+              !own.authorization->is_peer(fixture.client.id),
+          "a cluster peer may not open yume.circuit");
+    for (const auto& [service, kind] :
+         {std::pair{"yume.circuit", ServiceKind::ByteStream},
+          std::pair{"yume.routes", ServiceKind::ByteStream}}) {
+        check(!own.authorization
+                   ->authorize(open_context(peer.id, EndpointRole::Client,
+                                            service, kind))
+                   .ok(),
+              "a cluster peer gained a daemon service beyond its circuits");
+    }
+    check(!own.authorization
+               ->authorize(open_context(fixture.client.id, EndpointRole::Client,
+                                        "yume.circuit",
+                                        ServiceKind::PacketChannel))
+               .ok(),
+          "a client without the grant may open yume.circuit");
+    check(!own.cluster->exit && !own.cluster->routes.empty() &&
+              own.cluster->routes_signature.size() ==
+                  yume::ytp1::kCompositeSignatureSize,
+          "the routes view was not kept for yume.routes");
     const NativeAuthorizationPolicy lapsed(
         EndpointRole::Client, {}, {}, {},
         {{peer.id},
@@ -989,6 +1050,67 @@ void test_cluster_membership(Fixture& fixture) {
     }
     check(take(load(config)).cluster.has_value(),
           "the restored cluster was refused");
+
+    // The routes view must match the list and its own signature, and its
+    // exit mark must match the cluster section.
+    auto view = view_of(list);
+    view["serial"] = 4;
+    publish_view(view, operator_key);
+    refused("a routes view of another serial was accepted");
+    publish_view(view_of(list), peer);
+    refused("a routes view signed by another key was accepted");
+    publish_view(list, operator_key);
+    refused("a list published as the routes view was accepted");
+    exits.insert(fixture.server.id);
+    publish(list, operator_key);
+    const auto unmarked = load(config);
+    check(unmarked.status().code() == StatusCode::FailedPrecondition,
+          "an exit mark without an exit section was not refused");
+    auto exit_config = config;
+    exit_config["services"].push_back(
+        {{"name", "tcp"}, {"kind", "stream"}, {"max_concurrent_streams", 8}});
+    exit_config["adapters"].push_back(
+        {{"kind", "direct_tcp"},
+         {"service", "tcp"},
+         {"destinations", {{"public", true}, {"networks", Json::array()}}}});
+    exit_config["cluster"]["exit"] = {{"service", "tcp"}};
+    check(take(load(exit_config)).cluster->exit, "an exit node was not marked");
+    exits.clear();
+    publish(list, operator_key);
+    check(load(exit_config).status().code() == StatusCode::FailedPrecondition,
+          "an exit section without an exit mark was not refused");
+
+    // yume.circuit can be granted to a client of a cluster member, and brings
+    // yume.routes along. Without a cluster it names no service.
+    Json circuit_store = fixture.authorized;
+    circuit_store["keys"][0]["capabilities"].push_back(
+        {{"service", "yume.circuit"}, {"kind", "packet"}});
+    fixture.write("credentials/authorized.json", circuit_store.dump());
+    const auto granted = take(load(config));
+    check(granted.authorization
+                  ->authorize(open_context(fixture.client.id,
+                                           EndpointRole::Client, "yume.circuit",
+                                           ServiceKind::PacketChannel))
+                  .ok() &&
+              granted.authorization
+                  ->authorize(open_context(fixture.client.id,
+                                           EndpointRole::Client, "yume.routes",
+                                           ServiceKind::ByteStream))
+                  .ok(),
+          "a circuit grant did not reach yume.circuit and yume.routes");
+    check(!load(fixture.server_config).ok(),
+          "yume.circuit was granted by a node outside any cluster");
+    for (const auto& [service, kind] : {std::pair{"yume.circuit", "stream"},
+                                        std::pair{"yume.routes", "stream"},
+                                        std::pair{"yume.other", "packet"}}) {
+        Json store = fixture.authorized;
+        store["keys"][0]["capabilities"].push_back(
+            {{"service", service}, {"kind", kind}});
+        fixture.write("credentials/authorized.json", store.dump());
+        check(!load(config).ok(),
+              "a daemon service was granted in the wrong form");
+    }
+    fixture.restore_stores();
 
     // The serial this node saved is a floor across restarts.
     namespace saved = yume::runtime::cluster;

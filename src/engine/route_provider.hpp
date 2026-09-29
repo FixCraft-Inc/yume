@@ -91,10 +91,14 @@ public:
 };
 
 class SessionEngine;
+class RouteAuthority;
 
-// Only SessionEngine can construct an AuthorizedRouteRequest. A RouteProvider
-// therefore cannot be invoked through the supported API until the dispatcher
-// has authenticated the peer and authorized the named service/destination.
+// Only SessionEngine and RouteAuthority can construct an
+// AuthorizedRouteRequest. A RouteProvider therefore cannot be invoked through
+// the supported API until the dispatcher has authenticated the peer and
+// authorized the named service and destination, or a circuit exit has
+// applied the same destination policy to a stream that arrived inside a
+// circuit.
 class AuthorizedRouteRequest final {
 public:
     AuthorizedRouteRequest(const AuthorizedRouteRequest&) = default;
@@ -113,6 +117,7 @@ public:
 
 private:
     friend class SessionEngine;
+    friend class RouteAuthority;
     AuthorizedRouteRequest(StreamId stream_id,
                            std::string service_name,
                            PeerEvidence peer_evidence,

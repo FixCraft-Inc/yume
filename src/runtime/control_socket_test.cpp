@@ -277,6 +277,8 @@ void test_server_status() {
     up.outbound = connected_status(now);
     up.inbound_sessions = 2U;
     up.inbound_since = now - 65s;
+    up.circuits_in = 3U;
+    up.circuits_out = 1U;
     NativeLinkStatus down;
     down.peer_name = "far-owl";
     down.peer_identity = std::string(64, 'b');
@@ -286,6 +288,17 @@ void test_server_status() {
     down.outbound.last_failure =
         Status(StatusCode::Closed, std::string(400, 'x'));
     cluster.links = {up, down};
+    auto& circuits = cluster.circuits;
+    circuits.exit = true;
+    circuits.circuits = 5U;
+    circuits.entry_circuits = 2U;
+    circuits.relayed_circuits = 1U;
+    circuits.exit_streams = 9U;
+    circuits.refused = 6U;
+    circuits.refused_client_circuits = 1U;
+    circuits.refused_circuit_rate = 2U;
+    circuits.refused_handshakes = 3U;
+    circuits.failed = 4U;
     const Json reply =
         Json::parse(yume::runtime::server_status_reply(status, now));
     const auto& links = reply.at("cluster").at("links");
@@ -310,6 +323,22 @@ void test_server_status() {
                       .size() == 160U &&
               links[1].at("inbound") == Json({{"sessions", 0}}),
           "the waiting link is wrong");
+    check(links[0].at("circuits") == Json({{"in", 3}, {"out", 1}}) &&
+              links[1].at("circuits") == Json({{"in", 0}, {"out", 0}}) &&
+              reply.at("cluster").at("circuits") ==
+                  Json({{"exit", true},
+                        {"open", 5},
+                        {"entry", 2},
+                        {"relayed", 1},
+                        {"exit_streams", 9},
+                        {"failed", 4},
+                        {"refused",
+                         {{"total", 6},
+                          {"client_circuits", 1},
+                          {"circuit_rate", 2},
+                          {"handshakes", 3},
+                          {"streams", 0}}}}),
+          "the circuit counts are wrong");
     down.outbound.last_failure = Status(StatusCode::Closed, "peer closed");
     cluster.links = {up, down};
     cluster.expired = true;
@@ -317,10 +346,14 @@ void test_server_status() {
         expected_plain + "cluster: " + std::string(64, 'c') +
         " serial 7, expired at 2100-01-01T00:00:00Z\n"
         "this node: gloomy-data\n"
+        "circuits: 5 open, 2 as entry, 1 relayed, 9 exit streams\n"
+        "circuits refused: 6 (client circuits 1, circuit rate 2, handshakes 3, "
+        "streams 0), failed 4\n"
         "link sweet-fox: outbound connected for 1 h 2 min 3 s, "
-        "inbound 2 sessions, the oldest for 1 min 5 s\n"
+        "inbound 2 sessions, the oldest for 1 min 5 s, circuits in 3 out 1\n"
         "link far-owl: outbound waiting, next attempt in 4 s "
-        "(last failure: closed, peer closed), inbound none\n";
+        "(last failure: closed, peer closed), inbound none, circuits in 0 out "
+        "0\n";
     check(require(yume::runtime::status_reply_text(
               yume::runtime::server_status_reply(status, now))) == expected,
           "the cluster status text is wrong");

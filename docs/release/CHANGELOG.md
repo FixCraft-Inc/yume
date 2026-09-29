@@ -90,17 +90,30 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   in the state file and refuses a list with a lower one, after a restart
   too. `yume-setup cluster-init`, `cluster-add`, `cluster-remove` and
   `cluster-sign` provision it, `yume-doctor` checks the section, and the
-  embedding ABI refuses it. The links carry no traffic yet.
+  embedding ABI refuses it. The links carry circuits, below.
 - **`yumed --status`.** `control.socket` is now available to the daemon, which
-  reports its listeners, client sessions and cluster links there.
+  reports its listeners, client sessions, cluster links and circuits there.
 - **Circuit 1 codec and crypto.** [Circuit 1](../protocol/CIRCUIT_1.md)
   specifies the circuits that will carry a client's traffic through two or
   three cluster servers: fixed-size cells, a hybrid X25519 and ML-KEM-1024
   handshake with each hop signed by its composite identity, one AES-256-GCM
   layer per hop and relay messages. The codec (`circuit/`) and the
   constructions (`providers/circuit_crypto.*`) are built, with vectors from
-  an independent Python generator, real-key handshake tests and a fuzzer. No
-  node or client runs circuits yet.
+  an independent Python generator, real-key handshake tests and a fuzzer.
+- **Circuits on cluster servers.** Every cluster member serves
+  `yume.circuit`: it answers each hop's handshake, extends circuits over its
+  links, relays cells, and, as an exit named by `cluster.exit`, carries their
+  streams through a `direct_tcp` service's destination policy. It serves the
+  operator-signed routes view on `yume.routes`: server names, identities,
+  exit marks and network tags, without addresses. The cluster section gains
+  `routes`, `routes_signature` and `exit`, names starting with `yume` are
+  reserved for these services, and a client needs the `yume.circuit` grant.
+  Circuits are bounded per client, per link and per node, their streams'
+  windows are capped at an eighth of the session budget, and
+  `yumed --status` counts circuits per link and refusals by bound.
+  `yume-setup cluster-add --exit`, `add-client --circuits` and the routes
+  view in `cluster-sign` provision it. The `yume` client does not build
+  circuits yet.
 - **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
   into one file and prints a 25-character code, and `yume --import-kit FILE
   --into DIR` opens it on the client's device with that code. The file is

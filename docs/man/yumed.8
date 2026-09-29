@@ -227,7 +227,9 @@ Established sessions apply changed grants to their next stream and a
 changed
 .B weight
 to their next transfer.
-A cluster member also reads its list and peer store again.
+A cluster member also reads its list, routes view and peer store again,
+and serves the new view on
+.BR yume.routes .
 A link whose peer and inputs are unchanged keeps running, a changed
 peer's link is replaced, a removed peer's link closes and a new peer
 gets one.
@@ -280,15 +282,17 @@ holds
 .BR serial ,
 .BR not_after ,
 .BR expired ,
-.B self
+.BR self ,
+.B circuits
 and
 .BR links ,
 one per peer with
 .BR peer ,
 .BR identity ,
-.B outbound
+.BR outbound ,
+.B inbound
 and
-.BR inbound .
+.BR circuits .
 .B outbound
 holds
 .BR state ,
@@ -305,6 +309,32 @@ holds
 and, while there is one,
 .B connected_ms
 of the oldest.
+A link's
+.B circuits
+holds
+.BR in ,
+the circuits that arrive over the peer's link, and
+.BR out ,
+those this server extended over its link to the peer.
+The cluster's
+.B circuits
+holds
+.BR exit ,
+whether this server is an exit,
+.BR open ,
+.BR entry ,
+.BR relayed ,
+.BR exit_streams ,
+.B failed
+and
+.BR refused ,
+which counts refusals since start as
+.BR total ,
+.BR client_circuits ,
+.BR circuit_rate ,
+.B handshakes
+and
+.BR streams .
 .SH EXIT STATUS
 Zero indicates successful help, version or validation output, or
 shutdown requested by a handled signal with successful cleanup.

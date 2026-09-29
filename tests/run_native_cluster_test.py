@@ -219,8 +219,9 @@ def run(yumed: Path, openssl: Path) -> None:
             if [saved_serial(node) for node in nodes] != [1, 1, 1]:
                 raise session.SessionFailure("the nodes did not save serial 1")
             listed = a.server / "credentials/cluster"
-            first_list = ((listed / "cluster-list.json").read_bytes(),
-                          (listed / "cluster-list.sig").read_bytes())
+            signed_files = ("cluster-list.json", "cluster-list.sig",
+                            "cluster-routes.json", "cluster-routes.sig")
+            first_list = [(listed / name).read_bytes() for name in signed_files]
             time.sleep(1.0)
             setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
             reloaded_at = reload(nodes)
@@ -247,11 +248,10 @@ def run(yumed: Path, openssl: Path) -> None:
             print("removing a node closed only its links")
 
             # node-a refuses the older list it saw before, even after a restart.
-            current_list = ((listed / "cluster-list.json").read_bytes(),
-                            (listed / "cluster-list.sig").read_bytes())
+            current_list = [(listed / name).read_bytes() for name in signed_files]
             a.stop()
-            (listed / "cluster-list.json").write_bytes(first_list[0])
-            (listed / "cluster-list.sig").write_bytes(first_list[1])
+            for name, payload in zip(signed_files, first_list):
+                (listed / name).write_bytes(payload)
             a.start()
             try:
                 code = a.process.wait(timeout=30)
@@ -263,8 +263,8 @@ def run(yumed: Path, openssl: Path) -> None:
             refusal = (root / f"node-a-{a.runs}.log").read_text(encoding="utf-8", errors="replace")
             if "older than one this node has loaded" not in refusal:
                 raise session.SessionFailure(f"node-a did not say why it refused: {refusal}")
-            (listed / "cluster-list.json").write_bytes(current_list[0])
-            (listed / "cluster-list.sig").write_bytes(current_list[1])
+            for name, payload in zip(signed_files, current_list):
+                (listed / name).write_bytes(payload)
             print("a restarted node refused a list older than the one it saved")
             for node in nodes:
                 node.stop()

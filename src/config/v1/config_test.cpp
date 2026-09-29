@@ -1194,7 +1194,8 @@ void TestControlSocket() {
     ExpectError(document, "/control/socket", "duplicate local listen path");
 }
 
-// cluster is a server-only object of five file references.
+// cluster is a server-only object of seven file references and an optional
+// exit, which must follow a direct_tcp adapter's destinations.
 void TestClusterSection() {
     Check(!Parse(ServerDocument()).cluster(), "a cluster appeared unasked");
     const Json cluster = {
@@ -1202,7 +1203,9 @@ void TestClusterSection() {
         {"list", {{"file", "cluster/cluster-list.json"}}},
         {"signature", {{"file", "cluster/cluster-list.sig"}}},
         {"peers", {{"file", "cluster/peers.json"}}},
-        {"state", {{"file", "/var/lib/yume/cluster-state.json"}}}};
+        {"state", {{"file", "/var/lib/yume/cluster-state.json"}}},
+        {"routes", {{"file", "cluster/cluster-routes.json"}}},
+        {"routes_signature", {{"file", "cluster/cluster-routes.sig"}}}};
     Json document = ServerDocument();
     document["cluster"] = cluster;
     const auto parsed = Parse(document).cluster();
@@ -1210,10 +1213,13 @@ void TestClusterSection() {
               parsed->list.path() == "cluster/cluster-list.json" &&
               parsed->signature.path() == "cluster/cluster-list.sig" &&
               parsed->peers.path() == "cluster/peers.json" &&
-              parsed->state.path() == "/var/lib/yume/cluster-state.json",
+              parsed->state.path() == "/var/lib/yume/cluster-state.json" &&
+              parsed->routes.path() == "cluster/cluster-routes.json" &&
+              parsed->routes_signature.path() == "cluster/cluster-routes.sig" &&
+              !parsed->exit_service,
           "the cluster references were not retained");
-    for (const char* key :
-         {"operator_key", "list", "signature", "peers", "state"}) {
+    for (const char* key : {"operator_key", "list", "signature", "peers",
+                            "state", "routes", "routes_signature"}) {
         document = ServerDocument();
         document["cluster"] = cluster;
         document["cluster"].erase(key);
@@ -1230,6 +1236,43 @@ void TestClusterSection() {
     document = ClientDocument();
     document["cluster"] = cluster;
     ExpectError(document, "/cluster", "server-only");
+
+    document = ServerDocument();
+    document["cluster"] = cluster;
+    document["cluster"]["exit"] = {{"service", "tcp"}};
+    const auto exit = Parse(document).cluster();
+    Check(exit && exit->exit_service == "tcp",
+          "the exit service was not retained");
+    for (const char* service : {"udp", "missing"}) {
+        document["cluster"]["exit"] = {{"service", service}};
+        ExpectError(document, "/cluster/exit/service", "direct_tcp adapter");
+    }
+    document["cluster"]["exit"] = {{"service", "tcp"},
+                                   {"ports", Json::array()}};
+    ExpectError(document, "/cluster/exit/ports", "unknown key");
+    document["cluster"]["exit"] = Json::object();
+    ExpectError(document, "/cluster/exit/service", "required key");
+}
+
+// Names whose first segment is yume belong to the daemon's own services.
+void TestReservedServiceNames() {
+    for (const char* name :
+         {"yume", "yume.circuit", "yume.routes", "yume.other"}) {
+        Json document = ServerDocument();
+        document["services"].push_back({{"name", name},
+                                        {"kind", "stream"},
+                                        {"max_concurrent_streams", 4}});
+        ExpectError(document, "/services/3/name", "reserved");
+    }
+    Json document = ServerDocument();
+    document["services"].push_back({{"name", "yumechat"},
+                                    {"kind", "stream"},
+                                    {"max_concurrent_streams", 4}});
+    document["adapters"].push_back({{"kind", "direct_tcp"},
+                                    {"service", "yumechat"},
+                                    {"destinations", PublicDestinations()}});
+    Check(Parse(document).services().size() == 4U,
+          "a name that only starts with the letters yume was refused");
 }
 
 void TestModuleAdapters() {
@@ -1553,6 +1596,7 @@ int main(int argc, char** argv) {
         TestForwardAdapters();
         TestControlSocket();
         TestClusterSection();
+        TestReservedServiceNames();
         TestModuleAdapters();
         TestEgressRate();
         test_managed_tun_network();

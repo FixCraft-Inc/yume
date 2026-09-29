@@ -258,7 +258,30 @@ std::string link_text(const Json& link) {
             (sessions == 1U ? " session for " : " sessions, the oldest for ") +
             duration_text(inbound.at("connected_ms").get<std::uint64_t>());
     }
+    const auto& circuits = link.at("circuits");
+    text += ", circuits in " +
+            std::to_string(circuits.at("in").get<std::uint64_t>()) + " out " +
+            std::to_string(circuits.at("out").get<std::uint64_t>());
     return text + "\n";
+}
+
+std::string circuits_text(const Json& circuits) {
+    const auto count = [&](const Json& value, const char* key) {
+        return std::to_string(value.at(key).get<std::uint64_t>());
+    };
+    const auto& refused = circuits.at("refused");
+    return "circuits: " + count(circuits, "open") + " open, " +
+           count(circuits, "entry") + " as entry, " +
+           count(circuits, "relayed") + " relayed, " +
+           (circuits.at("exit").get<bool>()
+                ? count(circuits, "exit_streams") + " exit streams"
+                : std::string("not an exit")) +
+           "\ncircuits refused: " + count(refused, "total") +
+           " (client circuits " + count(refused, "client_circuits") +
+           ", circuit rate " + count(refused, "circuit_rate") +
+           ", handshakes " + count(refused, "handshakes") + ", streams " +
+           count(refused, "streams") + "), failed " +
+           count(circuits, "failed") + "\n";
 }
 
 std::string server_text(const Json& status) {
@@ -278,6 +301,7 @@ std::string server_text(const Json& status) {
                                                : ", valid until ") +
             cluster.at("not_after").get<std::string>() + "\n";
     text += "this node: " + cluster.at("self").get<std::string>() + "\n";
+    text += circuits_text(cluster.at("circuits"));
     for (const auto& link : cluster.at("links")) text += link_text(link);
     return text;
 }
@@ -619,17 +643,35 @@ std::string server_status_reply(const NativeServerStatus& status,
         Json in{{"sessions", link.inbound_sessions}};
         if (link.inbound_sessions != 0U)
             in["connected_ms"] = elapsed_ms(link.inbound_since, now);
-        links.push_back({{"peer", link.peer_name},
-                         {"identity", link.peer_identity},
-                         {"outbound", std::move(out)},
-                         {"inbound", std::move(in)}});
+        links.push_back(
+            {{"peer", link.peer_name},
+             {"identity", link.peer_identity},
+             {"outbound", std::move(out)},
+             {"inbound", std::move(in)},
+             {"circuits",
+              {{"in", link.circuits_in}, {"out", link.circuits_out}}}});
     }
-    reply["cluster"] = {{"id", cluster.cluster},
-                        {"serial", cluster.serial},
-                        {"not_after", utc_text(cluster.not_after)},
-                        {"expired", cluster.expired},
-                        {"self", cluster.self_name},
-                        {"links", std::move(links)}};
+    const auto& circuits = cluster.circuits;
+    reply["cluster"] = {
+        {"id", cluster.cluster},
+        {"serial", cluster.serial},
+        {"not_after", utc_text(cluster.not_after)},
+        {"expired", cluster.expired},
+        {"self", cluster.self_name},
+        {"links", std::move(links)},
+        {"circuits",
+         {{"exit", circuits.exit},
+          {"open", circuits.circuits},
+          {"entry", circuits.entry_circuits},
+          {"relayed", circuits.relayed_circuits},
+          {"exit_streams", circuits.exit_streams},
+          {"failed", circuits.failed},
+          {"refused",
+           {{"total", circuits.refused},
+            {"client_circuits", circuits.refused_client_circuits},
+            {"circuit_rate", circuits.refused_circuit_rate},
+            {"handshakes", circuits.refused_handshakes},
+            {"streams", circuits.refused_streams}}}}}};
     return dump(reply);
 }
 

@@ -673,6 +673,9 @@ class ClusterSetupTests(unittest.TestCase):
 
     HOSTS = {"north": "north.example.test", "south": "south.example.test",
              "west": "west.example.test"}
+    # Test hosts do not resolve, so each node names its address, and north
+    # and west share one /16.
+    ADDRESSES = {"north": "192.0.2.10", "south": "198.51.100.10", "west": "192.0.77.10"}
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -693,10 +696,30 @@ class ClusterSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, code, result.stderr)
         return result
 
-    def add(self, name: str, code: int = 0, host: str | None = None) -> subprocess.CompletedProcess[str]:
+    def add(self, name: str, code: int = 0, host: str | None = None,
+            *extra: str) -> subprocess.CompletedProcess[str]:
         return self.tool("cluster-add", "--cluster", str(self.operator), "--server",
                          str(self.servers[name]), "--name", name, "--host",
-                         host or self.HOSTS[name], code=code)
+                         host or self.HOSTS[name], "--address", self.ADDRESSES[name],
+                         *extra, code=code)
+
+    def verify(self, domain: bytes, document: bytes, signature: bytes) -> None:
+        message = self.base / "message"
+        message.write_bytes(domain + b"\0" + document)
+        blocks = [match.group(0) + b"\n" for match in
+                  PEM_BLOCK.finditer((self.operator / "operator-composite.pub.pem").read_bytes())]
+        self.assertEqual(len(blocks), 2)
+        for index, (block, part) in enumerate(((blocks[0], signature[:64]),
+                                               (blocks[1], signature[64:]))):
+            key = self.base / f"key-{index}.pem"
+            key.write_bytes(block)
+            sig = self.base / f"sig-{index}"
+            sig.write_bytes(part)
+            verified = subprocess.run(
+                ["openssl", "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(key),
+                 "-in", str(message), "-sigfile", str(sig)],
+                capture_output=True, check=False)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
 
     def peers(self, name: str) -> Path:
         return self.servers[name] / "credentials/cluster/peers"
@@ -706,8 +729,10 @@ class ClusterSetupTests(unittest.TestCase):
         self.assertEqual(set(state), {"schema", "cluster", "serial", "nodes"})
         self.assertEqual((state["serial"], state["nodes"]), (0, []))
         self.assertRegex(state["cluster"], r"\A[0-9a-f]{64}\Z")
-        for path in (self.operator, self.operator / "operator-composite.pem"):
+        for path in (self.operator, self.operator / "operator-composite.pem",
+                     self.operator / "routes-tag.key"):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode) & 0o077, 0)
+        self.assertEqual(len((self.operator / "routes-tag.key").read_bytes()), 32)
         self.assertEqual(len(PEM_BLOCK.findall(
             (self.operator / "operator-composite.pem").read_bytes())), 2)
 
@@ -768,22 +793,74 @@ class ClusterSetupTests(unittest.TestCase):
             cluster = self.servers[name] / "credentials/cluster"
             self.assertEqual((cluster / "cluster-list.json").read_bytes(), listing)
             self.assertEqual((cluster / "cluster-list.sig").read_bytes(), signature)
-        message = self.base / "message"
-        message.write_bytes(b"yume-cluster-list/1\0" + listing)
-        blocks = [match.group(0) + b"\n" for match in
-                  PEM_BLOCK.finditer((self.operator / "operator-composite.pub.pem").read_bytes())]
-        self.assertEqual(len(blocks), 2)
-        for index, (block, part) in enumerate(((blocks[0], signature[:64]),
-                                               (blocks[1], signature[64:]))):
-            key = self.base / f"key-{index}.pem"
-            key.write_bytes(block)
-            sig = self.base / f"sig-{index}"
-            sig.write_bytes(part)
-            verified = subprocess.run(
-                ["openssl", "pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(key),
-                 "-in", str(message), "-sigfile", str(sig)],
-                capture_output=True, check=False)
-            self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.verify(b"yume-cluster-list/1", listing, signature)
+
+    def test_sign_writes_a_routes_view_without_addresses(self) -> None:
+        self.add("north", 0, None, "--exit")
+        self.add("south")
+        self.add("west")
+        config = json.loads((self.servers["north"] / "yumed.json").read_text(encoding="utf-8"))
+        self.assertEqual(config["cluster"]["exit"], {"service": "tcp"})
+        self.assertEqual(config["cluster"]["routes"],
+                         {"file": "credentials/cluster/cluster-routes.json"})
+        self.assertNotIn("exit", json.loads(
+            (self.servers["south"] / "yumed.json").read_text(encoding="utf-8"))["cluster"])
+        self.tool("cluster-sign", "--cluster", str(self.operator))
+        listing = json.loads((self.operator / "cluster-list.json").read_bytes())
+        view_bytes = (self.operator / "cluster-routes.json").read_bytes()
+        view_signature = (self.operator / "cluster-routes.sig").read_bytes()
+        view = json.loads(view_bytes)
+        self.assertEqual({key: view[key] for key in ("schema", "cluster", "serial", "not_after")},
+                         {key: listing[key] for key in ("schema", "cluster", "serial", "not_after")})
+        self.assertEqual([node["name"] for node in view["nodes"]], ["north", "south", "west"])
+        for node, listed in zip(view["nodes"], listing["nodes"]):
+            self.assertEqual(set(node), {"name", "identity", "identity_key", "exit", "network"})
+            self.assertEqual((node["identity"], node["identity_key"]),
+                             (listed["identity"], listed["identity_key"]))
+            self.assertRegex(node["network"], r"\A[0-9a-f]{16}\Z")
+        self.assertEqual([node["exit"] for node in view["nodes"]], [True, False, False])
+        tags = {node["name"]: node["network"] for node in view["nodes"]}
+        self.assertEqual(tags["north"], tags["west"])
+        self.assertNotEqual(tags["north"], tags["south"])
+        self.assertNotIn(b"192.0.2.10", view_bytes)
+        self.assertNotIn(b"example.test", view_bytes)
+        for name in self.HOSTS:
+            cluster = self.servers[name] / "credentials/cluster"
+            self.assertEqual((cluster / "cluster-routes.json").read_bytes(), view_bytes)
+            self.assertEqual((cluster / "cluster-routes.sig").read_bytes(), view_signature)
+        self.verify(b"yume-cluster-routes/1", view_bytes, view_signature)
+        # The same key gives the same tags at the next signing.
+        self.tool("cluster-sign", "--cluster", str(self.operator))
+        again = json.loads((self.operator / "cluster-routes.json").read_bytes())
+        self.assertEqual({node["name"]: node["network"] for node in again["nodes"]}, tags)
+
+    def test_exit_needs_one_direct_tcp_adapter(self) -> None:
+        config_path = self.servers["south"] / "yumed.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["adapters"] = [adapter for adapter in config["adapters"]
+                              if adapter.get("kind") != "direct_tcp"]
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        result = self.add("south", 1, None, "--exit")
+        self.assertIn("direct_tcp", result.stderr)
+        self.assertFalse((self.servers["south"] / "credentials/cluster").exists())
+
+    def test_add_client_grants_circuits_only_in_a_cluster(self) -> None:
+        output = self.base / "circuit-client"
+        refused = self.tool("add-client", "--server", str(self.servers["north"]), "--host",
+                            self.HOSTS["north"], "--output", str(output), "--client-name",
+                            "walker", "--circuits", code=1)
+        self.assertIn("cluster", refused.stderr)
+        self.assertFalse(output.exists())
+        self.add("north")
+        self.tool("add-client", "--server", str(self.servers["north"]), "--host",
+                  self.HOSTS["north"], "--output", str(output), "--client-name", "walker",
+                  "--circuits")
+        store = json.loads((self.servers["north"] / "credentials/authorized-keys.json")
+                           .read_text(encoding="utf-8"))
+        entry = next(key for key in store["keys"] if key["name"] == "walker")
+        self.assertIn({"service": "yume.circuit", "kind": "packet"}, entry["capabilities"])
+        first = next(key for key in store["keys"] if key["name"] != "walker")
+        self.assertNotIn({"service": "yume.circuit", "kind": "packet"}, first["capabilities"])
 
     def test_remove_detaches_the_node_from_the_others(self) -> None:
         for name in self.HOSTS:

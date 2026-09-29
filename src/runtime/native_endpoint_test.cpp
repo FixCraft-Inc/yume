@@ -2802,6 +2802,36 @@ void test_adapter_configuration_rejections(const std::filesystem::path& kit) {
         auto no_packet = NativeEndpoint::create(runner.context, load(kit / "server/yumed.json"),
             kit / "server", bindings(std::make_shared<Handler>()), std::move(unused_packet_owner));
         CHECK(!no_packet.ok() && no_packet.status().code() == StatusCode::InvalidArgument);
+        // Daemon services take reserved names only, once each, with a handler
+        // and a stream bound, and only on a server.
+        const auto builtin = [&](const char* role,
+                                 std::vector<NativeBuiltinService> services) {
+            NativeEndpointOptions options;
+            options.builtin_services = std::move(services);
+            const std::filesystem::path config = std::string(role) == "server"
+                                                     ? kit / "server/yumed.json"
+                                                     : kit / "client/yume.json";
+            return NativeEndpoint::create(
+                runner.context, load(config), kit / role,
+                bindings(std::make_shared<Handler>()), std::move(options));
+        };
+        const auto handler = std::make_shared<Handler>();
+        for (auto services : std::vector<std::vector<NativeBuiltinService>>{
+                 {{"chat", handler, 4U}},
+                 {{"yume.routes", nullptr, 4U}},
+                 {{"yume.routes", handler, 0U}},
+                 {{"yume.routes", handler, 4U}, {"yume.routes", handler, 4U}},
+                 {{"yume..routes", handler, 4U}}}) {
+            auto refused = builtin("server", std::move(services));
+            CHECK(!refused.ok() &&
+                  refused.status().code() == StatusCode::InvalidArgument);
+        }
+        auto on_client = builtin("client", {{"yume.routes", handler, 4U}});
+        CHECK(!on_client.ok() &&
+              on_client.status().code() == StatusCode::InvalidArgument);
+        auto accepted = builtin("server", {{"yume.routes", handler, 4U}});
+        CHECK(accepted.ok());
+        if (accepted.ok()) accepted.value()->close();
     });
     runner.finish_and_join();
     CHECK(runner.context->poll() == 0U);

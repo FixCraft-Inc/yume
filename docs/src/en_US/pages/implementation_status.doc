@@ -218,7 +218,7 @@ client added while an accept was armed.
 Servers of one operator form a cluster ([cluster 1](protocol/CLUSTER_1.md)).
 A server with a `cluster` section verifies the operator's signed list and its
 peer store, keeps one outbound link to every peer with the client's backoff,
-and admits peers' links without granting them a service. An expired list
+and admits peers' links, granting them only `yume.circuit`. An expired list
 closes the links and ends the peers' sessions. A reload keeps every link whose
 inputs did not change and replaces or closes the others, and the server saves
 the highest serial it has loaded so that an older list is refused after a
@@ -228,15 +228,27 @@ and saved-serial refusals, and `yume_native_cluster_test` runs three daemons
 from `yume-setup`'s cluster commands: links in both directions, recovery after
 a stop, a refused wrong PSK, a reload that restores a link, a newer list that
 keeps every link, a removed server and a restart refused for an older list.
-The links carry no traffic.
 
-The circuit protocol that will carry traffic over those links is specified in
-[circuit 1](protocol/CIRCUIT_1.md). Its codec (`circuit/`) and its handshake
-and layer constructions (`providers/circuit_crypto.*`) are built and checked
-by `yume_circuit1_codec_test` and `yume_circuit_crypto_test` against vectors
-from an independent Python generator, with real-key handshakes and their
-refusals, and `yume_fuzz_circuit1` fuzzes the codec. No node or client runs
-circuits yet, so no traffic uses them.
+The links carry [circuit 1](protocol/CIRCUIT_1.md). Its codec (`circuit/`)
+and its handshake and layer constructions (`providers/circuit_crypto.*`) are
+checked by `yume_circuit1_codec_test` and `yume_circuit_crypto_test` against
+vectors from an independent Python generator, with real-key handshakes and
+their refusals, and `yume_fuzz_circuit1` fuzzes the codec. Every member
+serves `yume.circuit`, answering CREATE, extending circuits over its links,
+relaying cells and, when its `cluster.exit` names a `direct_tcp` service,
+carrying circuits' streams through that service's destination policy, within
+the bounds in cluster 1. It also serves the operator-signed routes view on
+`yume.routes`, which names servers, exits and network tags without
+addresses. A client needs the `yume.circuit` grant, which `yume-setup
+add-client --circuits` writes. Circuit streams' receive windows are capped at
+an eighth of the session budget on `yume.circuit` and on links, and
+`yumed --status` counts circuits per link and refusals by bound. The
+in-memory `yume_circuit_runtime_test` covers the node service and the client
+builder, and `yume_native_circuit_test` runs four daemons with a test client:
+two- and three-hop circuits carrying a stream both ways, an exit policy and
+a non-exit refusing streams, a client without the grant, the per-client
+bound, a reload under load and a stopped middle. The `yume` client does not
+build circuits yet.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every
@@ -513,8 +525,10 @@ must not be advertised as working:
   and can read its credential files, so modules are trusted programs until each
   runs as a user of its own;
 - production qualification of module adapters and managed TUN;
-- traffic over cluster links: circuits, route choice, consent to a shorter
-  route and exits, and decentralized server lists;
+- client traffic over circuits: the `yume` client's route choice, SOCKS and
+  forward adapters over circuits, consent to a shorter route and the plain
+  HTTP refusal, then captures, a soak and a cross-host run, and decentralized
+  server lists;
 - complete installed-SDK qualification across the supported build/toolchain matrix;
 - installed package/service and remaining consumer migration around native
   `yume` and `yumed`, and a qualified setup-to-first-SOCKS path over a real network;

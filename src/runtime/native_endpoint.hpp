@@ -33,6 +33,18 @@ struct NativeServiceBinding final {
     std::shared_ptr<engine::StreamHandler> handler;
 };
 
+// A service the daemon provides itself, beside the configured ones, such as
+// yume.circuit. Its name is a reserved one (common/service_name.hpp), which
+// no configuration may declare, and it streams up to max_concurrent_streams
+// at once on each session. max_receive_credit, when not zero, caps each of
+// its streams' receive windows (ServiceRequirement).
+struct NativeBuiltinService final {
+    std::string name;
+    std::shared_ptr<engine::StreamHandler> handler;
+    std::uint32_t max_concurrent_streams{0U};
+    std::uint32_t max_receive_credit{0U};
+};
+
 struct NativeEndpointOptions final {
     std::size_t max_sessions{128U};
     std::size_t max_pending_starts{8U};
@@ -84,6 +96,11 @@ struct NativeEndpointOptions final {
     // The caller owns every configured packet device and supplies the service
     // bindings. Setting this without a packet adapter is also refused.
     bool caller_runs_packet_adapters{false};
+    // Server only: the daemon's own services. The endpoint's authorization
+    // policy and egress pacing wrap them as they do configured services. A
+    // name that is not reserved, a repeated one, an empty handler or a zero
+    // stream bound is refused.
+    std::vector<NativeBuiltinService> builtin_services;
     // A successfully delivered session ended. Runs once on the endpoint
     // context after pending engine callbacks settle and the session slot is
     // released, so it may start a replacement. Startup failures use their
@@ -150,6 +167,11 @@ inline NativeServerSizing native_server_sizing(
 // close() and destruction may cross threads and use reserved control dispatch.
 // No thread is detached or joined here. Name lookups run in the resolver's
 // helper process, so a stalled system lookup does not hold the final drain.
+// The share of a session's byte budget one circuit stream's receive window
+// may reach, on a link and on yume.circuit, so a stalled circuit holds at
+// most this part of a link's connection window (CLUSTER_DESIGN 6b).
+inline constexpr std::uint32_t kLinkStreamShare = 8U;
+
 struct NativePeerSession final {
     std::string identity;
     std::chrono::steady_clock::time_point admitted_at;
@@ -170,7 +192,9 @@ public:
     // A cluster link: a client endpoint for this node's outbound session to
     // one peer. It takes its suite and limits from the node's own server
     // configuration, and its transport and credentials from the verified
-    // cluster membership. It offers no service and accepts no stream the peer
+    // cluster membership. Every stream it opens carries a circuit, so each
+    // stream's receive window is capped at kLinkStreamShare of the byte
+    // budget. It offers no service and accepts no stream the peer
     // opens. options.connection_address, a SOCKS5 proxy and outer-carrier
     // evidence do not apply and are refused. options.resolver stays the
     // caller's to close, so several links can share one.

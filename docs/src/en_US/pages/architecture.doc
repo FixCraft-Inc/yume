@@ -236,7 +236,15 @@ IPv4-mapped IPv6 is evaluated as IPv4. An optional `route_authorization`
 callback runs only after the configured destinations permit an OPEN and can
 only refuse more. No destination authority exists without configuration or an
 explicit handler. Explicit service bindings cannot also own a declared direct
-adapter, and an unused route callback is refused. Other services still require
+adapter, and an unused route callback is refused. A route request is made only
+by `SessionEngine` for an OPEN, or by `engine::RouteAuthority` for a stream
+that reached the node through another protocol layer, a circuit exit's, after
+the caller applied the same destination policy. A server may also bind
+services it provides itself, such as `yume.circuit` and `yume.routes`, whose
+reserved names no configuration may declare. The credential policy and
+egress pacing wrap them like configured services, and a service may cap its
+streams' receive windows below the session's, which changes nothing on the
+wire. Other services still require
 explicit bindings. SOCKS5 declarations require a caller that explicitly owns
 those adapters; `NativeClientRuntime` supplies that ownership. Packet declarations
 require the caller to supply the matching packet binding and retain its adapter.

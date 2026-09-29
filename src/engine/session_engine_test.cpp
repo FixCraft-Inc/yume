@@ -638,7 +638,8 @@ private:
 
 std::shared_ptr<const EngineGraph> graph(
     const std::shared_ptr<FakeSecurityFactory>& security,
-    const std::shared_ptr<EchoHandler>& echo) {
+    const std::shared_ptr<EchoHandler>& echo,
+    std::uint32_t echo_receive_credit = 0U) {
     std::vector<ProviderRequirement> providers;
     providers.push_back(requirement("test.bytes", ProviderKind::ByteChannel));
     providers.push_back(requirement("test.tls", ProviderKind::SecureChannel));
@@ -649,7 +650,8 @@ std::shared_ptr<const EngineGraph> graph(
     std::vector<ServiceRequirement> services;
     services.push_back(require(ServiceRequirement::create(
         "echo", ServiceKind::ByteStream, "test.echo", 1U, 8U,
-        CapabilitySet::of({Capability::NamedByteStreams}))));
+        CapabilitySet::of({Capability::NamedByteStreams}),
+        echo_receive_credit)));
     auto suite = require(TransportSuiteDescriptor::create(
         "test.ytp1", "YTP/1", std::move(providers), std::move(services)));
     EngineBuilder builder(EndpointRole::Server, std::move(suite));
@@ -665,9 +667,9 @@ std::shared_ptr<const EngineGraph> graph(
 
 class TestSession final {
 public:
-    explicit TestSession(bool exporter_available = true,
-                         bool routes = false,
-                         SessionLimits limits = {})
+    explicit TestSession(bool exporter_available = true, bool routes = false,
+                         SessionLimits limits = {},
+                         std::uint32_t echo_receive_credit = 0U)
         : trace(std::make_shared<SecurityTrace>()),
           factory(std::make_shared<FakeSecurityFactory>(trace)),
           handler(std::make_shared<EchoHandler>(routes)) {
@@ -676,7 +678,7 @@ public:
         carrier = owned_carrier.get();
         limits.max_streams = 4U;
         limits.max_pending_opens = 2U;
-        auto selected_graph = graph(factory, handler);
+        auto selected_graph = graph(factory, handler, echo_receive_credit);
         selected_route = selected_graph->route_provider();
         engine = require(SessionEngine::create(
             std::move(selected_graph), std::move(owned_carrier), limits));
@@ -3804,6 +3806,42 @@ void test_receive_credit_returns_before_a_blocked_peer_could_stall() {
            std::vector<std::uint32_t>{4U * 1024U, 1024U}));
 }
 
+// A service's receive cap holds the windows of streams opened to it below
+// the session's stream maximum however fast they drain, and a cap below one
+// frame still lets the peer send a frame.
+void test_service_receive_cap_bounds_its_windows() {
+    const SessionLimits limits = small_window_limits();
+    for (const auto& [cap, expected] :
+         {std::pair<std::uint32_t, std::uint32_t>{8U * 1024U, 8U * 1024U},
+          std::pair<std::uint32_t, std::uint32_t>{1024U, 4U * 1024U}}) {
+        TestSession session(true, false, limits, cap);
+        session.start_to_active(std::chrono::milliseconds(20));
+        session.open_peer_stream();
+        GrantedCredit granted;
+        scan_granted_credit(session, granted);
+        CHECK(!granted.stream_increments.empty() &&
+              granted.stream_increments.front() == expected);
+        std::uint64_t sequence = 2U;
+        std::uint64_t sent = 0U;
+        std::uint64_t largest = 0U;
+        constexpr std::size_t kRecord = 1024U;
+        for (int burst = 0; burst < 8; ++burst) {
+            scan_granted_credit(session, granted);
+            const std::uint64_t stream = granted.stream - sent;
+            largest = std::max(largest, stream);
+            CHECK(stream <= expected);
+            for (std::uint64_t spent = 0U; spent + kRecord <= stream;
+                 spent += kRecord) {
+                deliver_consumed(session, sequence, kRecord);
+                sent += kRecord;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        CHECK(largest == expected);
+        CHECK(session.engine->state() == SessionState::Active);
+    }
+}
+
 void test_receive_window_grows_to_its_bound_while_drained_quickly() {
     const SessionLimits limits = small_window_limits();
     TestSession session(true, false, limits);
@@ -4094,6 +4132,7 @@ void run_test() {
     test_receive_credit_returns_per_window_at_the_maximum();
     test_receive_credit_returns_before_a_blocked_peer_could_stall();
     test_receive_window_grows_to_its_bound_while_drained_quickly();
+    test_service_receive_cap_bounds_its_windows();
     test_receive_window_holds_while_the_application_is_slow();
     test_peer_grants_are_bounded_by_the_protocol_not_local_windows();
     test_receive_windows_fit_the_queue_budget();

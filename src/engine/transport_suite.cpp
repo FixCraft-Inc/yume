@@ -166,26 +166,22 @@ Result<ProviderRequirement> ProviderRequirement::create(
 }
 
 ServiceRequirement::ServiceRequirement(
-    std::string service_name,
-    ServiceKind service_kind,
-    std::string provider_id,
-    std::uint32_t api_version,
-    std::uint32_t max_concurrent_streams,
-    CapabilitySet required_capabilities) noexcept
+    std::string service_name, ServiceKind service_kind, std::string provider_id,
+    std::uint32_t api_version, std::uint32_t max_concurrent_streams,
+    CapabilitySet required_capabilities,
+    std::uint32_t max_receive_credit) noexcept
     : service_name_(std::move(service_name)),
       service_kind_(service_kind),
       provider_id_(std::move(provider_id)),
       api_version_(api_version),
       max_concurrent_streams_(max_concurrent_streams),
-      required_capabilities_(required_capabilities) {}
+      required_capabilities_(required_capabilities),
+      max_receive_credit_(max_receive_credit) {}
 
 Result<ServiceRequirement> ServiceRequirement::create(
-    std::string service_name,
-    ServiceKind service_kind,
-    std::string provider_id,
-    std::uint32_t api_version,
-    std::uint32_t max_concurrent_streams,
-    CapabilitySet required_capabilities) {
+    std::string service_name, ServiceKind service_kind, std::string provider_id,
+    std::uint32_t api_version, std::uint32_t max_concurrent_streams,
+    CapabilitySet required_capabilities, std::uint32_t max_receive_credit) {
     if (!valid_service_name(service_name) ||
         !valid_provider_id(provider_id) || api_version == 0U ||
         max_concurrent_streams == 0U ||
@@ -206,7 +202,8 @@ Result<ServiceRequirement> ServiceRequirement::create(
     }
     return Result<ServiceRequirement>(ServiceRequirement(
         std::move(service_name), service_kind, std::move(provider_id),
-        api_version, max_concurrent_streams, required_capabilities));
+        api_version, max_concurrent_streams, required_capabilities,
+        max_receive_credit));
 }
 
 TransportSuiteDescriptor::TransportSuiteDescriptor(

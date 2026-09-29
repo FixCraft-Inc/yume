@@ -1003,19 +1003,36 @@ void test_ipv4_ipv6_wildcard_pair_shares_port() {
     CHECK(!error);
 
     Fixture fixture;
-    fixture.destroy_door();
     H2WebFrontDoorConfig config;
-    config.listen_endpoint = {boost::asio::ip::address_v4::any(), 0U};
-    fixture.door = fixture.runtime.sync([&] {
-        return take(H2WebFrontDoor::create(fixture.runtime.context(), config,
-            fixture.tls, fixture.cover, fixture.replay, kAdmissionKey));
-    });
-    const auto port = fixture.port();
-    config.listen_endpoint = {boost::asio::ip::address_v6::any(), port};
-    auto ipv6 = fixture.runtime.sync([&] {
-        return take(H2WebFrontDoor::create(fixture.runtime.context(), config,
-            fixture.tls, fixture.cover, fixture.replay, kAdmissionKey));
-    });
+    // IPv4 and IPv6 allocate ports separately, so the port the IPv4 wildcard
+    // got may already be held on IPv6 by another process, which a parallel
+    // CTest run showed once. That says nothing about the pair, so the test
+    // takes another port.
+    std::shared_ptr<H2WebFrontDoor> ipv6;
+    std::uint16_t port = 0U;
+    for (int attempt = 0; attempt < 16 && !ipv6; ++attempt) {
+        fixture.destroy_door();
+        config.listen_endpoint = {boost::asio::ip::address_v4::any(), 0U};
+        fixture.door = fixture.runtime.sync([&] {
+            return take(H2WebFrontDoor::create(
+                fixture.runtime.context(), config, fixture.tls, fixture.cover,
+                fixture.replay, kAdmissionKey));
+        });
+        port = fixture.port();
+        config.listen_endpoint = {boost::asio::ip::address_v6::any(), port};
+        auto created = fixture.runtime.sync([&] {
+            return H2WebFrontDoor::create(fixture.runtime.context(), config,
+                                          fixture.tls, fixture.cover,
+                                          fixture.replay, kAdmissionKey);
+        });
+        if (created.ok()) {
+            ipv6 = std::move(created).take_value();
+        } else {
+            CHECK(created.status().code() == StatusCode::AddressInUse);
+        }
+    }
+    CHECK(ipv6 != nullptr);
+    if (!ipv6) return;
     CHECK(ipv6->local_endpoint().address().is_v6());
     CHECK(ipv6->local_endpoint().port() == port);
     // Each family must reach genuine cover on its own wildcard listener.

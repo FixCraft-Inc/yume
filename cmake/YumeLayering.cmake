@@ -20,13 +20,14 @@ function(yume_check_03_source_layering source_dir)
         message(FATAL_ERROR "Invalid YUME source directory: ${source_dir}")
     endif()
 
-    # The engine and YTP/1 include common/, so it stays as clean as they are.
+    # The engine, YTP/1 and the circuit 1 codec include common/, so it stays as
+    # clean as they are.
     set(_dependency_clean_patterns
         [=[(^|[/<"])(boost|openssl|nghttp2|nlohmann|filesystem)([/\.>"]|$)]=]
         [=[(^|[/<"])(asio|json\.hpp|json_fwd\.hpp)([/>"]|$)]=]
         [=[(^|[/<"])(sys/socket\.h|winsock2\.h)([>"]|$)]=])
 
-    foreach(_layer IN ITEMS engine ytp common)
+    foreach(_layer IN ITEMS engine ytp circuit common)
         file(GLOB_RECURSE _sources
             "${source_dir}/src/${_layer}/*.cpp"
             "${source_dir}/src/${_layer}/*.hpp"
@@ -49,6 +50,12 @@ function(yume_check_03_source_layering source_dir)
                 file(RELATIVE_PATH _relative "${source_dir}" "${_source}")
                 message(FATAL_ERROR
                     "YTP/1 must not depend upward on the engine: ${_relative}")
+            endif()
+            if(_layer STREQUAL "circuit" AND
+               _lower_contents MATCHES [=[#[ 	]*include[ 	]*[<"](engine|providers|runtime)/]=])
+                file(RELATIVE_PATH _relative "${source_dir}" "${_source}")
+                message(FATAL_ERROR
+                    "The circuit 1 codec builds only on YTP/1 and common/: ${_relative}")
             endif()
             get_filename_component(_name "${_source}" NAME)
             if(_layer STREQUAL "engine" AND
@@ -75,7 +82,7 @@ function(yume_check_03_source_layering source_dir)
     # Each entry is "layer" followed by the directories it must never include.
     # common/ holds std-only helpers every layer may use, so it includes no
     # other layer. fs/ and stealth/ build only on it.
-    set(_common_forbidden    admission engine ytp stealth fs providers runtime config abi gui modules basefwx)
+    set(_common_forbidden    admission engine ytp circuit stealth fs providers runtime config abi gui modules basefwx)
     set(_fs_forbidden        admission engine ytp stealth providers runtime config abi gui modules basefwx)
     set(_stealth_forbidden   admission engine ytp fs providers runtime config abi gui modules basefwx)
     # Admission mechanics sit below the protocol and the providers, so neither

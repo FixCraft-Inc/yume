@@ -19,7 +19,7 @@
 #include "engine/status.hpp"
 #include "providers/openssl_security_provider.hpp"
 
-namespace yume::runtime::keys {
+namespace yume::providers::keys {
 
 // A key operation that failed. The message is a fixed text that names no
 // input, key or path, so callers may publish it.
@@ -99,4 +99,22 @@ bool verify_composite(const KeyContext& keys, const CompositePublic& identity,
                       std::span<const std::byte> message,
                       std::span<const std::byte> signature);
 
-}  // namespace yume::runtime::keys
+// A composite private identity parsed in a key context. The keys stay inside
+// OpenSSL, which clears them when they are freed.
+struct CompositePrivate final {
+    PkeyPtr classical;
+    PkeyPtr post_quantum;
+    CompositePublic identity;
+};
+
+// Two PRIVATE KEY blocks, Ed25519 then ML-DSA-87.
+CompositePrivate composite_private_from_pem(const KeyContext& keys,
+                                            std::string_view pem);
+
+// The Ed25519 signature followed by the ML-DSA-87 signature (pure mode, empty
+// context) over the message, 4691 bytes. Throws KeyError on failure.
+std::vector<std::byte> sign_composite(const KeyContext& keys,
+                                      const CompositePrivate& identity,
+                                      std::span<const std::byte> message);
+
+}  // namespace yume::providers::keys

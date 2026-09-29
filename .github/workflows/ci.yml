@@ -406,7 +406,8 @@ jobs:
           cmake --build build-fuzz --parallel "${CI_SANITIZER_BUILD_JOBS}" \
             --target yume_fuzz_ytp1_protocol \
                      yume_fuzz_ytp1_auth \
-                     yume_fuzz_config_v1
+                     yume_fuzz_config_v1 \
+                     yume_fuzz_circuit1
 
       - name: Fuzz
         run: |

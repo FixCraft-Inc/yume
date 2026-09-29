@@ -215,8 +215,15 @@ link. `yumed --status` reports the list and each link over the control socket.
 `yume_cluster_list_test` and the credential test cover the list and store
 refusals, and `yume_native_cluster_test` runs three daemons from
 `yume-setup`'s cluster commands: links in both directions, recovery after a
-stop, a refused wrong PSK and a reload. The links carry no traffic. Circuits,
-route choice and exits are the next phases.
+stop, a refused wrong PSK and a reload. The links carry no traffic.
+
+The circuit protocol that will carry traffic over those links is specified in
+[circuit 1](protocol/CIRCUIT_1.md). Its codec (`circuit/`) and its handshake
+and layer constructions (`providers/circuit_crypto.*`) are built and checked
+by `yume_circuit1_codec_test` and `yume_circuit_crypto_test` against vectors
+from an independent Python generator, with real-key handshakes and their
+refusals, and `yume_fuzz_circuit1` fuzzes the codec. No node or client runs
+circuits yet, so no traffic uses them.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every

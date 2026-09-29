@@ -26,7 +26,7 @@
 #include "providers/openssl_security_provider.hpp"
 #include "providers/tls13_secure_channel.hpp"
 #include "runtime/cluster_list.hpp"
-#include "runtime/composite_keys.hpp"
+#include "providers/composite_keys.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
 
@@ -41,6 +41,7 @@ constexpr std::size_t kMaxPemBytes = 256U * 1024U;
 constexpr std::size_t kMaxStoreBytes = 1024U * 1024U;
 constexpr std::size_t kMaxAdminIdentities = 4096U;
 
+namespace keys = providers::keys;
 using CredentialError = keys::KeyError;
 using keys::require;
 using CredentialCrypto = keys::KeyContext;

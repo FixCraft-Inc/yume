@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "runtime/composite_keys.hpp"
+#include "providers/composite_keys.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,7 +20,7 @@
 #include "fs/secret_file.hpp"
 #include "ytp/security.hpp"
 
-namespace yume::runtime::keys {
+namespace yume::providers::keys {
 namespace {
 
 using engine::StatusCode;
@@ -247,4 +247,44 @@ bool verify_composite(const KeyContext& keys, const CompositePublic& identity,
     return classical_ok && post_quantum_ok;
 }
 
-}  // namespace yume::runtime::keys
+CompositePrivate composite_private_from_pem(const KeyContext& keys,
+                                            std::string_view pem) {
+    const auto blocks = pem_blocks(pem, true, 2);
+    CompositePrivate identity{parse_key(keys, blocks[0], true, "ED25519"),
+                              parse_key(keys, blocks[1], true, "ML-DSA-87"),
+                              {}};
+    identity.identity.classical = public_der(identity.classical.get());
+    identity.identity.post_quantum = public_der(identity.post_quantum.get());
+    identity.identity.fingerprint = keys.fingerprint(
+        identity.identity.classical, identity.identity.post_quantum);
+    return identity;
+}
+
+std::vector<std::byte> sign_composite(const KeyContext& keys,
+                                      const CompositePrivate& identity,
+                                      std::span<const std::byte> message) {
+    std::vector<std::byte> signature(ytp1::kCompositeSignatureSize);
+    const auto sign_into = [&](EVP_PKEY* key, std::span<std::byte> output) {
+        MdCtxPtr context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+        std::size_t size = output.size();
+        require(context &&
+                    EVP_DigestSignInit_ex(context.get(), nullptr, nullptr,
+                                          keys.context(), kProperties, key,
+                                          nullptr) == 1 &&
+                    EVP_DigestSign(
+                        context.get(),
+                        reinterpret_cast<unsigned char*>(output.data()), &size,
+                        reinterpret_cast<const unsigned char*>(message.data()),
+                        message.size()) == 1 &&
+                    size == output.size(),
+                "composite signature failed", StatusCode::Internal);
+    };
+    const auto span = std::span<std::byte>(signature);
+    sign_into(identity.classical.get(),
+              span.first(ytp1::kEd25519SignatureSize));
+    sign_into(identity.post_quantum.get(),
+              span.subspan(ytp1::kEd25519SignatureSize));
+    return signature;
+}
+
+}  // namespace yume::providers::keys

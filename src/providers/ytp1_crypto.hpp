@@ -23,8 +23,9 @@
 #include "engine/session_engine.hpp"
 #include "ytp/security.hpp"
 
-// Provider-internal constructions, shared by the session implementation and
-// published known-answer tests. This is not an SDK or provider injection API.
+// Provider-internal constructions, shared by the session implementation,
+// circuit handshakes and published known-answer tests. This is not an SDK or
+// provider injection API.
 namespace yume::providers::ytp1_crypto {
 
 using engine::EndpointRole;
@@ -125,6 +126,49 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+// Owning handles for OpenSSL keys and key contexts. Freeing a private key
+// clears it inside OpenSSL.
+struct PkeyDeleter final {
+    void operator()(EVP_PKEY* value) const noexcept;
+};
+struct PkeyCtxDeleter final {
+    void operator()(EVP_PKEY_CTX* value) const noexcept;
+};
+using PkeyPtr = std::unique_ptr<EVP_PKEY, PkeyDeleter>;
+using PkeyCtxPtr = std::unique_ptr<EVP_PKEY_CTX, PkeyCtxDeleter>;
+
+// X25519 and ML-KEM-1024 in the context, shared by YTP/1 establishment and
+// rekey and by circuit handshakes. Each throws on failure, and none accepts
+// an all-zero shared secret.
+PkeyPtr generate_key(const CryptoContext& crypto, std::string_view algorithm);
+
+struct X25519KeyPair final {
+    PkeyPtr private_key;
+    std::array<std::uint8_t, ytp1::kX25519PublicKeySize> public_key{};
+};
+
+X25519KeyPair generate_x25519(const CryptoContext& crypto);
+
+SecretBytes derive_x25519(const CryptoContext& crypto, EVP_PKEY* private_key,
+                          std::span<const std::uint8_t> peer_public);
+
+std::vector<std::uint8_t> ml_kem_public_bytes(EVP_PKEY* key);
+
+PkeyPtr import_ml_kem_public(const CryptoContext& crypto,
+                             std::span<const std::uint8_t> encoded);
+
+struct MlKemEncapsulation final {
+    std::array<std::uint8_t, ytp1::kMlKem1024CiphertextSize> ciphertext{};
+    SecretBytes shared;
+};
+
+MlKemEncapsulation encapsulate_ml_kem(const CryptoContext& crypto,
+                                      EVP_PKEY* public_key);
+
+SecretBytes decapsulate_ml_kem(const CryptoContext& crypto,
+                               EVP_PKEY* private_key,
+                               std::span<const std::uint8_t> ciphertext);
 
 enum class ConfirmationPurpose : std::uint8_t {
     Response = 1U,

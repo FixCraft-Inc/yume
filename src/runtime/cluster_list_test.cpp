@@ -23,7 +23,7 @@
 
 namespace {
 namespace cluster = yume::runtime::cluster;
-namespace keys = yume::runtime::keys;
+namespace keys = yume::providers::keys;
 using yume::engine::StatusCode;
 using Json = nlohmann::json;
 using Clock = std::chrono::system_clock;

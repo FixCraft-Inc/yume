@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import yume_circuit_wan as circuit_wan  # noqa: E402
 import yume_ethernet_smoke as ethernet  # noqa: E402
 import yume_ndpi_report as ndpi  # noqa: E402
 import yume_wan_emulation as wan  # noqa: E402
@@ -189,6 +190,52 @@ class WanEmulationTest(unittest.TestCase):
             server.stdout.close()
         with self.assertRaises(wan.session.SessionFailure):
             wan.parallel_downloads(None, "127.0.0.1", port, 2.0, 2)
+
+
+class CircuitWanTest(unittest.TestCase):
+    def test_every_side_has_its_own_network(self) -> None:
+        # Distinct /16s give the nodes distinct network tags in the routes
+        # view, and each side shares a /30 with its router address.
+        sixteens = {circuit_wan.address(side).rsplit(".", 2)[0] for side in circuit_wan.SIDES}
+        self.assertEqual(len(sixteens), len(circuit_wan.SIDES))
+        for side in circuit_wan.SIDES:
+            near, far = circuit_wan.address(side), circuit_wan.router_address(side)
+            self.assertEqual(near.rsplit(".", 1)[0], far.rsplit(".", 1)[0])
+            self.assertEqual((int(near.rsplit(".", 1)[1]), int(far.rsplit(".", 1)[1])), (1, 2))
+
+    def test_summary_compares_every_path_with_the_direct_session(self) -> None:
+        downloads = {"direct": [{"tail_mbit_s": 80.0, "first_byte_ms": 400.0},
+                                {"tail_mbit_s": 100.0, "first_byte_ms": 500.0}],
+                     "three_hops": [{"tail_mbit_s": 20.0, "first_byte_ms": 900.0}]}
+        requests = {"direct": [400.0, 402.0, 401.0], "three_hops": [800.0]}
+        summary = circuit_wan.summarize(downloads, requests)
+        self.assertEqual(summary["median_tail_mbit_s"], {"direct": 90.0, "three_hops": 20.0})
+        self.assertEqual(summary["median_first_byte_ms"], {"direct": 450.0, "three_hops": 900.0})
+        self.assertEqual(summary["median_request_ms"], {"direct": 401.0, "three_hops": 800.0})
+        self.assertEqual(summary["to_direct"], {"three_hops": 0.222})
+        stalled = circuit_wan.summarize({"direct": [{"tail_mbit_s": 0.0, "first_byte_ms": 1.0}],
+                                         "two_hops": [{"tail_mbit_s": 5.0, "first_byte_ms": 1.0}]},
+                                        {"direct": [1.0], "two_hops": [1.0]})
+        self.assertEqual(stalled["to_direct"], {"two_hops": None})
+
+    def test_downloads_and_requests_check_the_binary_workload(self) -> None:
+        port = circuit_wan.session.free_port()
+        server = subprocess.Popen(
+            [sys.executable, "-c", circuit_wan.PAYLOAD_SERVER, str(circuit_wan.SMALL_BYTES), str(port)],
+            stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(server.stdout.readline().strip(), "ready")
+            download = circuit_wan.timed_download(None, "127.0.0.1", port, 2.0)
+            self.assertGreater(download["bytes"], 0)
+            self.assertGreater(download["tail_mbit_s"], 0.0)
+            self.assertGreater(circuit_wan.small_request(None, "127.0.0.1", port), 0.0)
+            outcome = circuit_wan.parallel_downloads(None, "127.0.0.1", port, 2.0, 2)
+            self.assertEqual(len(outcome["streams"]), 2)
+        finally:
+            server.kill()
+            server.wait(timeout=5)
+            server.stdout.close()
+
 
 if __name__ == "__main__":
     unittest.main()

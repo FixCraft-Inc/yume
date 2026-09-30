@@ -134,7 +134,8 @@ public:
     LayerCipher(const LayerCipher&) = delete;
     LayerCipher& operator=(const LayerCipher&) = delete;
     LayerCipher(LayerCipher&& other) noexcept;
-    LayerCipher& operator=(LayerCipher&& other) noexcept;
+    // Nothing reassigns a layer, so there is no replacement path to wipe.
+    LayerCipher& operator=(LayerCipher&&) = delete;
     ~LayerCipher();
 
     // output holds exactly the plaintext and the 16-byte tag.

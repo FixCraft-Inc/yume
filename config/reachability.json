@@ -1,0 +1,226 @@
+{
+  "schema": 1,
+  "production": [
+    "yume",
+    "yumed",
+    "yume-resolver",
+    "yume-echo-module",
+    "yume-gui",
+    "libyume.so"
+  ],
+  "retained": [
+    {
+      "path": "src/modules/relay/",
+      "reason": "Relay channel library for the planned chat and file module programs, which do not exist yet."
+    },
+    {
+      "path": "src/modules/files/",
+      "reason": "Relay file transfer library for the planned file module program."
+    },
+    {
+      "path": "src/modules/codecs/",
+      "reason": "Application codec core for the planned codec module program."
+    },
+    {
+      "path": "src/fs/secret_file.cpp",
+      "functions": ["yume::security::ReadPrivateKeyFileStrict(*"],
+      "reason": "Reads the relay secret for the retained relay module library."
+    },
+    {
+      "path": "src/providers/loopback_http_fetch.cpp",
+      "reason": "Backend client of the planned reverse-proxy cover, a stealth feature on the roadmap."
+    },
+    {
+      "path": "src/stealth/h2_carrier.cpp",
+      "functions": ["yume::obfs::H2Carrier::*RefuseStream(int)"],
+      "reason": "Retryable overload answer for the planned reverse-proxy cover's fetch budget."
+    },
+    {
+      "path": "src/runtime/circuit_probe.cpp",
+      "reason": "Test program: the circuit client of yume_native_circuit_test."
+    },
+    {
+      "path": "src/abi/stream_probe.c",
+      "reason": "Test program: the C consumer of the ABI stream integration test."
+    },
+    {
+      "path": "src/abi/packet_probe.cpp",
+      "reason": "Test program: the consumer of the ABI packet integration test."
+    },
+    {
+      "path": "src/abi/route_probe.cpp",
+      "reason": "Test program: the consumer of the ABI route integration test."
+    },
+    {
+      "path": "src/stealth/h2_opening_probe.cpp",
+      "reason": "Evidence probe the tests run to record the carrier's HTTP/2 opening."
+    },
+    {
+      "path": "src/stealth/clienthello_dump.cpp",
+      "reason": "Evidence probe the tests run to record the TLS ClientHello."
+    },
+    {
+      "path": "src/stealth/h2_carrier.cpp",
+      "functions": [
+        "yume::obfs::H2Carrier::*set_timing_enabled(bool)",
+        "yume::obfs::H2Carrier::*stats() const",
+        "yume::obfs::FormatH2CarrierStats*"
+      ],
+      "reason": "Development diagnostics, compiled out of Release, that the carrier tests read to check window accounting."
+    },
+    {
+      "path": "src/stealth/h2_carrier.cpp",
+      "functions": [
+        "yume::obfs::H2Carrier::*unconsumed_tunnel_bytes() const",
+        "yume::obfs::H2Carrier::*carrier_stream_id() const"
+      ],
+      "reason": "Test observers of the carrier's receive-credit ledger and stream."
+    },
+    {
+      "path": "src/engine/buffer.cpp",
+      "functions": ["yume::engine::Buffer::append(*"],
+      "reason": "Bounded, aliasing-safe append that shares the allocation-failure tests of resize."
+    },
+    {
+      "path": "src/fs/bounded_file.cpp",
+      "functions": ["yume::runtime::read_optional_text_file_bounded(*"],
+      "reason": "Most of bounded_file_test covers it, so rewrite those tests onto read_text_file_bounded before removing it."
+    },
+    {
+      "path": "src/engine/engine_builder.cpp",
+      "functions": [
+        "yume::engine::EngineBuilder::register_front_door_provider(*",
+        "*validate_registration<yume::engine::FrontDoorProvider>(*"
+      ],
+      "reason": "The engine tests build complete provider graphs with it."
+    },
+    {
+      "path": "src/providers/asio_execution_context.cpp",
+      "functions": [
+        "yume::providers::AsioExecutionContext::poll()",
+        "yume::providers::AsioExecutionContext::stop()"
+      ],
+      "reason": "The endpoint tests check drain with poll and stop."
+    },
+    {
+      "path": "src/engine/cancellation.cpp",
+      "functions": ["yume::engine::CancellationSource::operator=(*&&)"],
+      "reason": "Defaulted move completing the type's value semantics."
+    },
+    {
+      "path": "src/fs/bounded_file.cpp",
+      "functions": ["yume::runtime::FileRoot::operator=(*&&)"],
+      "reason": "Defaulted move completing the type's value semantics."
+    },
+    {
+      "path": "src/stealth/h2_carrier.cpp",
+      "functions": [
+        "yume::obfs::H2Carrier::H2Carrier(*&&)",
+        "yume::obfs::H2Carrier::operator=(*&&)"
+      ],
+      "reason": "Defaulted moves completing the type's value semantics."
+    },
+    {
+      "path": "src/runtime/native_credentials.cpp",
+      "functions": ["yume::runtime::NativeAdmissionKey::operator=(*&&)"],
+      "reason": "Wipe-on-move assignment of a secret, checked by the credential tests."
+    },
+    {
+      "path": "src/engine/session_engine.cpp",
+      "functions": ["yume::engine::SessionEngine::*executor_affinity() const"],
+      "reason": "Accessor of the engine's declared execution contract."
+    },
+    {
+      "path": "src/engine/session_bootstrap.cpp",
+      "functions": ["yume::engine::SessionBootstrap::*executor_affinity() const"],
+      "reason": "Accessor of the bootstrap's declared execution contract."
+    },
+    {
+      "path": "src/providers/asio_direct_route_provider.cpp",
+      "functions": [
+        "yume::providers::AsioDirectRouteProvider::executor_affinity() const",
+        "yume::providers::AsioDirectRouteProvider::limits() const"
+      ],
+      "reason": "Accessors of the provider's declared execution contract and limits."
+    },
+    {
+      "path": "src/providers/asio_tcp_byte_channel_provider.cpp",
+      "functions": [
+        "yume::providers::AsioTcpByteChannelProvider::executor_affinity() const",
+        "yume::providers::AsioTcpByteChannelProvider::limits() const",
+        "yume::providers::AsioTcpAcceptedChannelOwner::executor_affinity() const",
+        "yume::providers::AsioTcpAcceptedChannelOwner::limits() const"
+      ],
+      "reason": "Accessors of the provider's declared execution contract and limits."
+    },
+    {
+      "path": "src/providers/h2_duplex_carrier.cpp",
+      "functions": ["yume::providers::H2DuplexCarrierProvider::executor_affinity() const"],
+      "reason": "Accessor of the provider's declared execution contract."
+    },
+    {
+      "path": "src/providers/linux_tun_packet_channel.cpp",
+      "functions": ["yume::providers::LinuxTunPacketChannel::interface_name() const"],
+      "reason": "Accessor of the device the channel owns, which its tests check."
+    },
+    {
+      "path": "src/providers/asio_tcp_byte_channel_provider.cpp",
+      "functions": [
+        "yume::providers::AsioTcpByteChannelProvider::remote_host*",
+        "yume::providers::AsioTcpByteChannelProvider::remote_port() const"
+      ],
+      "reason": "Test observers of the provider's configured target."
+    },
+    {
+      "path": "src/engine/session_engine.cpp",
+      "functions": [
+        "yume::engine::SessionEngine::*terminal_status() const",
+        "yume::engine::SessionEngine::initiate_rekey()"
+      ],
+      "reason": "Test observer of the terminal status, and the test driver that forces a rekey the engine otherwise starts itself."
+    },
+    {
+      "path": "src/engine/session_bootstrap.cpp",
+      "functions": ["yume::engine::SessionBootstrap::state() const"],
+      "reason": "Test observer of the bootstrap state machine."
+    },
+    {
+      "path": "src/engine/engine_builder.cpp",
+      "functions": ["yume::engine::EngineBuilder::frozen() const"],
+      "reason": "Test observer of the builder freezing after its first build."
+    },
+    {
+      "path": "src/admission/h2_admission.cpp",
+      "functions": ["yume::admission::ReplayCache::size() const"],
+      "reason": "Test observer of the bounded replay cache."
+    },
+    {
+      "path": "src/runtime/egress_limiter.cpp",
+      "functions": ["yume::runtime::EgressLimiter::tracked_identities() const"],
+      "reason": "Test observer of the limiter's bounded identity table."
+    },
+    {
+      "path": "src/runtime/module_supervisor.cpp",
+      "functions": [
+        "yume::runtime::ModuleSupervisor::pid() const",
+        "yume::runtime::ModuleSupervisor::socket_directory*"
+      ],
+      "reason": "Test observers of the supervised module process and its socket directory."
+    },
+    {
+      "path": "src/runtime/circuit_routes.cpp",
+      "functions": ["yume::runtime::circuit::RouteChooser::count(*"],
+      "reason": "Test observer of how many routes pass the route rules."
+    },
+    {
+      "path": "src/providers/circuit_crypto.cpp",
+      "functions": ["yume::providers::circuit::layer_aad(*"],
+      "reason": "Exposes the production layer AAD construction to the circuit 1 vector test."
+    },
+    {
+      "path": "src/circuit/protocol.cpp",
+      "functions": ["yume::circuit1::ErrorName(*"],
+      "reason": "Names codec errors, which the circuit 1 vectors state by name."
+    }
+  ]
+}

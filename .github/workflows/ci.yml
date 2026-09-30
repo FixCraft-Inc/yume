@@ -67,6 +67,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The commit format check reads every pushed commit.
+          fetch-depth: 0
+
+      # Every committed file, new ones included, and each pushed commit's
+      # message and signature.
+      - name: Check whitespace and commit format
+        env:
+          RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
+        run: python3 scripts/check_repository_hygiene.py --commits "$RANGE"
 
       - name: Validate pinned BaseFWX ref and crypto guards
         run: |
@@ -398,6 +408,82 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1:abort_on_error=1:second_deadlock_stack=1
         run: |
           ctest --test-dir build-tsan --output-on-failure --parallel 2
+
+  # Every first-party function must survive in a shipped program, or be
+  # retained in config/reachability.json with its reason, and every tracked
+  # source must be compiled. A Debug -O0 build with one section per function,
+  # linked with --gc-sections, makes the linker's reachability the answer.
+  # The GUI is built too, since yume-gui is one of the shipped programs.
+  # Warnings are gated by the other lanes, so this one does not repeat them.
+  reachability:
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
+          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+          fi
+          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config perl \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev libsystemd-dev \
+            libboost-all-dev nlohmann-json3-dev qt6-base-dev qt6-declarative-dev
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
+
+      - name: Fetch and verify prebuilt vendor libs
+        run: |
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Configure (reachability)
+        run: |
+          test "$(pkg-config --modversion openssl)" = "3.5.7"
+          cmake -S . -B build-reach \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            "-DCMAKE_C_FLAGS=-ffunction-sections -fdata-sections" \
+            "-DCMAKE_CXX_FLAGS=-ffunction-sections -fdata-sections" \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--gc-sections \
+            -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--gc-sections \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_BUILD_GUI=ON \
+            -DYUME_STATIC_OPENSSL=ON \
+            -DYUME_WARNINGS_AS_ERRORS=OFF \
+            -DYUME_LTO=OFF \
+            -DYUME_PCH=OFF \
+            -DYUME_BUILD_BASEFWX_MODULES=ON \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+
+      - name: Build
+        run: |
+          cmake --build build-reach --parallel "${CI_SANITIZER_BUILD_JOBS}"
+
+      - name: Check reachability
+        run: python3 scripts/check_reachability.py build-reach --jobs 2
 
   # libFuzzer smoke over the parsers that consume input from outside a trust
   # boundary. This is a regression gate, not a campaign: it proves the

@@ -209,32 +209,51 @@ engine -> providers (security, TLS, H2 carrier, FrontDoor, routes, resolver)
 config_v1 + session_bootstrap + providers -> native_endpoint
 native_endpoint + circuit_runtime -> native_runtime -> yume, yumed
 native_endpoint -> embed -> abi (libyume)
-basefwx -> modules (relay, files, share)
+basefwx -> modules (relay, files, codecs)
 @end
 
-[`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake) defines two checks
-that run during configuration. CTest `yume_03_layering_check` reruns the source
-include check, without reconstructing the target link graph.
+[`cmake/YumeLayering.cmake`](../cmake/YumeLayering.cmake) runs two checks
+during configuration, and CTest `yume_03_layering_check` reruns the include
+check. `yume_03_layering_guard_test` feeds both checks fixtures that must
+pass or fail.
 
 `yume_assert_exact_link_dependencies` pins a target's exact direct link list.
-Every library in `src/CMakeLists.txt` carries one, from the engine and YTP/1
-up to `yume_native_runtime`, `yume_embed`, `yume_abi` and the module
-libraries.
+Every static or shared library in `src/` and `src/gui/` must carry one, or
+configuration fails naming the library.
 
-`yume_check_03_source_layering` reads sources and rejects forbidden includes.
-`engine/`, `ytp/`, `circuit/` and `common/` may not touch Boost, Asio,
-OpenSSL, nghttp2, JSON, `<filesystem>` or sockets. `ytp/` may not include the
-engine, and `circuit/` builds only on YTP/1 and `common/`. Inside the
-engine only `session_engine.cpp` and tests include YTP/1, and nothing includes
-`config/`. `common/` includes no other layer, and `fs/`, `stealth/` and
-`admission/` build only on it. `providers/` may not include `runtime/`,
-`config/`, `abi/`, `gui/`, `modules/` or BaseFWX. `runtime/` may not include
-`abi/`, `gui/`, `modules/` or BaseFWX, and `abi/` may not include `gui/`,
-`modules/` or BaseFWX.
+`yume_check_03_source_layering` treats each directory under `src/` as a
+layer, and each layer names the layers its production sources may include. A
+directory that is not declared fails, and so does a source directly under
+`src/`. Tests (`*_test.cpp` and anything under a `tests/` directory) may reach
+across layers to build fixtures.
 
-Both checks fail at configure time. A `gui/` include in `abi/`, or a
-`providers/` include in `stealth/`, stops the build rather than being noticed
-later.
+@table
+| Layer | May include |
+| --- | --- |
+| `common/` | no other layer |
+| `ytp/` | `common/` |
+| `circuit/` | `common/`, `ytp/` |
+| `engine/` | `common/`, and `ytp/` from `session_engine.cpp` only |
+| `config/`, `fs/`, `stealth/`, `admission/`, `gui/` | `common/` |
+| `providers/` | `common/`, `ytp/`, `circuit/`, `engine/`, `fs/`, `stealth/`, `admission/` |
+| `runtime/` | `common/`, `ytp/`, `circuit/`, `engine/`, `config/`, `fs/`, `stealth/`, `providers/` |
+| `abi/` | `common/`, `config/` and the public header, and `engine/`, `providers/`, `runtime/` from `native_backend.cpp` only |
+| `modules/` | `common/`, `fs/` and BaseFWX |
+| `test_support/` | `common/`, `ytp/`, `circuit/`, `engine/`, `fs/`, `stealth/`, `admission/`, `providers/`, for tests only |
+@end
+
+`engine/`, `ytp/`, `circuit/` and `common/` also may not touch Boost, Asio,
+OpenSSL, nghttp2, JSON, `<filesystem>` or sockets, tests included, and only
+`src/gui/` includes Qt.
+
+Build reachability is checked in CI rather than at configuration.
+`scripts/check_reachability.py` preprocesses every compile command of a Debug
+`-O0` tree built with one section per function and linked with
+`--gc-sections`, then requires every tracked source to be compiled and every
+first-party function to survive in `yume`, `yumed`, `yume-resolver`, the echo
+module, `yume-gui` or `libyume.so`. Code kept on purpose, such as the planned
+module libraries and test observers, is listed in `config/reachability.json`
+with its reason, and an entry that no longer matches anything fails too.
 
 ## Where to look
 

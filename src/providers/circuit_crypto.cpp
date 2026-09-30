@@ -199,20 +199,6 @@ LayerCipher::LayerCipher(LayerCipher&& other) noexcept
     OPENSSL_cleanse(other.iv_.data(), other.iv_.size());
 }
 
-LayerCipher& LayerCipher::operator=(LayerCipher&& other) noexcept {
-    if (this != &other) {
-        release();
-        context_ = std::exchange(other.context_, nullptr);
-        mode_ = other.mode_;
-        direction_ = other.direction_;
-        iv_ = other.iv_;
-        cells_ = other.cells_;
-        failed_ = std::exchange(other.failed_, true);
-        OPENSSL_cleanse(other.iv_.data(), other.iv_.size());
-    }
-    return *this;
-}
-
 LayerCipher::~LayerCipher() {
     release();
 }

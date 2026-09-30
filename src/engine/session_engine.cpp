@@ -1094,16 +1094,6 @@ void SessionEngine::async_open(std::string_view service_name,
 }
 
 void SessionEngine::async_open(
-    std::string_view service_name,
-    ServiceKind service_kind,
-    std::optional<RouteDestination> destination,
-    OpenCompletion completion) {
-    const auto keepalive = weak_from_this().lock();
-    impl_->async_open(service_name, service_kind, std::move(destination), {},
-                      std::move(completion));
-}
-
-void SessionEngine::async_open(
     std::string_view service_name, ServiceKind service_kind,
     std::optional<RouteDestination> destination, CancellationToken cancellation,
     OpenCompletion completion) {

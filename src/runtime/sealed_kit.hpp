@@ -69,7 +69,8 @@ class Kit final {
 public:
     Kit() = default;
     Kit(Kit&&) noexcept = default;
-    Kit& operator=(Kit&& other) noexcept;
+    // Nothing reassigns a kit, so there is no replacement path to wipe.
+    Kit& operator=(Kit&&) = delete;
     Kit(const Kit&) = delete;
     Kit& operator=(const Kit&) = delete;
     ~Kit() noexcept;

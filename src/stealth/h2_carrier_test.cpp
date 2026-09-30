@@ -743,7 +743,9 @@ void ObserverClockStartsAtFirstCarrierEvent() {
     assert(snapshot.events.front().elapsed_us == 0);
 }
 
-void RejectCarrierLooksHttp() {
+// The front door answers a CONNECT that fails admission as the cover answers
+// any request, and the client then has no carrier.
+void UnadmittedConnectGetsAnOrdinaryResponse() {
     H2Carrier client(H2CarrierRole::Client);
     H2Carrier server(H2CarrierRole::Server);
     assert(client.StartClient("cover.example"));
@@ -757,9 +759,9 @@ void RejectCarrierLooksHttp() {
     assert(client.SubmitExtendedConnect("/wrong"));
     Pump(client, server);
     requests = server.TakeRequests();
-    assert(server.RejectCarrier(requests[0].stream_id, 404,
-                                 {{"content-type", "text/plain"}},
-                                 H2Bytes{'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd'}));
+    assert(server.RespondHttp(requests[0].stream_id, 404,
+                              {{"content-type", "text/plain"}},
+                              H2Bytes{'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd'}));
     Pump(server, client);
     assert(!client.carrier_active());
 }
@@ -1101,7 +1103,7 @@ int main() {
     ObserverDoesNotChangeOpeningWire();
     ObserverCapIsFailOpenAndBounded();
     ObserverClockStartsAtFirstCarrierEvent();
-    RejectCarrierLooksHttp();
+    UnadmittedConnectGetsAnOrdinaryResponse();
     ServerResetDropsPendingRequestAndReportsClose();
     ServerSaturationRefusalIsRetryableAndReleasesState();
     ServerManualFlowControlStallsAndResumes();

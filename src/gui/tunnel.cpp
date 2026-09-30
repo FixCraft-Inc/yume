@@ -54,18 +54,11 @@ QStringList Tunnel::requests() const {
     return names;
 }
 
-qint64 Tunnel::status_age_ms() const {
-    return since_status_.isValid() ? since_status_.elapsed() : -1;
-}
-
 void Tunnel::set_phase(Phase phase) {
     if (phase_ == phase) return;
     phase_ = phase;
     since_phase_.restart();
-    if (phase_ == Phase::Stopped) {
-        status_ = {};
-        since_status_.invalidate();
-    }
+    if (phase_ == Phase::Stopped) status_ = {};
     emit changed();
 }
 
@@ -99,7 +92,6 @@ void Tunnel::request_status() {
 void Tunnel::on_status(const ControlReply& reply) {
     if (reply.ok()) {
         status_ = reply.value;
-        since_status_.restart();
         if (reply.peer_pid > 0) pid_ = reply.peer_pid;
         if (phase_ == Phase::Stopping &&
             since_phase_.elapsed() >

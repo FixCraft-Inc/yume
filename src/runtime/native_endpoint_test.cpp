@@ -1541,7 +1541,7 @@ void test_destination_route(const std::filesystem::path& kit, bool declared) {
         auto result = promise->get_future();
         runner.sync([&, promise, name = std::move(name), route = std::move(route)]() mutable {
             client_session->async_open(std::move(name), kind,
-                std::move(route), [promise](auto value) { promise->set_value(std::move(value)); });
+                std::move(route), {}, [promise](auto value) { promise->set_value(std::move(value)); });
         });
         return await(result);
     };

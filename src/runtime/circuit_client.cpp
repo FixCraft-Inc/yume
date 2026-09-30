@@ -975,10 +975,6 @@ std::vector<std::chrono::milliseconds> ClientCircuit::hop_times() const {
     return state_->hop_times;
 }
 
-std::size_t ClientCircuit::hops() const noexcept {
-    return state_->route.size();
-}
-
 bool ClientCircuit::ready() const noexcept {
     return state_->phase == State::Phase::Ready;
 }

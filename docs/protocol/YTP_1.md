@@ -386,7 +386,11 @@ connection's at 4 MiB, both capped by the byte budget
 (`limits.max_queued_bytes`). It returns consumed credit in one update once half
 a window is consumed, or once the window less one frame is consumed if that
 comes first, so a peer holding less than a frame of credit never waits for it.
-When two returns on a window come less than two round trips apart, the window
+A packet cannot be split to spend the last of a window, so on a packet
+channel the halves are those of the whole packets that fit, measured by the
+largest packet the peer has sent. Half the whole window could exceed that by
+less than a packet, and a sender left short of one packet would then get a
+single return, about half its window, per round trip. When two returns on a window come less than two round trips apart, the window
 was limiting the sender, and the engine doubles it, as Chromium does. A stream
 window can reach two thirds of the budget and the connection window the whole
 budget. The connection window stays at least one and a half times the largest

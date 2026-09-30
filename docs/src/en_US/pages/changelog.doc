@@ -489,6 +489,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   accepts none. `--validate` prints every key a run setting can replace, with
   its value and where it came from. The `yumed(8)` manual also printed the
   client's SIGNALS section beside its own and now has only its own.
+- **Packet channels return credit by whole packets.** A packet cannot be
+  split to spend the last of a stream's credit, so a sender whose packets do
+  not divide the receive window is left short of one packet while the
+  receiver waits for half the window. It then got one return, about half a
+  window, per round trip. On a packet channel the engine now returns at half
+  of the whole packets that fit, by the largest packet the peer has sent.
+  With circuit cells of 16311 and 16315 bytes, four streams through one
+  circuit moved 52 Mbit/s at 40 ms per hop without this and 98 with it.
 - **Key rotation without a pause.** A sender sent nothing protected between
   REKEY_INIT and REKEY_ACK, so every rotation cost a round trip, about 29 % of
   the time at 200 ms with 500 ms epochs, and a request that met a rotation

@@ -147,9 +147,10 @@ Buffer copy_bytes(std::span<const std::byte> bytes,
 }
 
 std::vector<std::byte> capability_bytes(
-    std::uint32_t max_epoch_bytes = ytp1::kMinEpochPayloadBytes) {
-    ytp1::CapabilityManifest manifest{
-        {{"echo", ytp1::ServiceKind::ByteStream, 4U}}, max_epoch_bytes};
+    std::uint32_t max_epoch_bytes = ytp1::kMinEpochPayloadBytes,
+    ytp1::ServiceKind echo_kind = ytp1::ServiceKind::ByteStream) {
+    ytp1::CapabilityManifest manifest{{{"echo", echo_kind, 4U}},
+                                      max_epoch_bytes};
     auto encoded = ytp1::EncodeCapabilityManifest(manifest);
     CHECK(encoded.ok());
     std::vector<std::byte> bytes(encoded.value->size());
@@ -355,6 +356,8 @@ private:
 };
 
 struct SecurityTrace final {
+    // The echo service's kind in the peer's authenticated manifest.
+    ytp1::ServiceKind echo_kind{ytp1::ServiceKind::ByteStream};
     std::vector<RecordKeyToken> sealed;
     std::vector<RecordKeyToken> opened;
     std::vector<std::uint32_t> rekey_begun;
@@ -409,7 +412,7 @@ public:
             EndpointRole::Client, "device-1", "composite-ed25519-mldsa87",
             std::vector<std::byte>{std::byte{1}}));
         output.authenticated_peer_capability_manifest =
-            capability_bytes(trace_->peer_epoch_bytes);
+            capability_bytes(trace_->peer_epoch_bytes, trace_->echo_kind);
         return Result<AuthenticationOutput>(std::move(output));
     }
     Result<Buffer> seal_record(RecordKeyToken token,
@@ -470,17 +473,26 @@ private:
     std::shared_ptr<SecurityTrace> trace_;
 };
 
+// What the echo service of a kind requires of its handler.
+CapabilitySet echo_capabilities(ServiceKind kind) {
+    return kind == ServiceKind::PacketChannel
+               ? CapabilitySet::of(
+                     {Capability::NamedByteStreams, Capability::PacketChannels})
+               : CapabilitySet::of({Capability::NamedByteStreams});
+}
+
 class EchoHandler final : public StreamHandler {
 public:
-    explicit EchoHandler(bool routes = false)
+    explicit EchoHandler(bool routes = false,
+                         ServiceKind kind = ServiceKind::ByteStream)
         : descriptor_(require(ProviderDescriptor::create(
               "test.echo", ProviderKind::StreamHandler, 1U,
-              routes
-                  ? CapabilitySet::of({Capability::NamedByteStreams,
-                                       Capability::DirectTcp})
-                  : CapabilitySet::of({Capability::NamedByteStreams})))) {}
+              routes ? CapabilitySet::of({Capability::NamedByteStreams,
+                                          Capability::DirectTcp})
+                     : echo_capabilities(kind)))),
+          kind_(kind) {}
     const ProviderDescriptor& descriptor() const noexcept override { return descriptor_; }
-    ServiceKind service_kind() const noexcept override { return ServiceKind::ByteStream; }
+    ServiceKind service_kind() const noexcept override { return kind_; }
     Status authorize(const StreamOpenContext& context) override {
         CHECK(context.peer_evidence().identity() == "device-1");
         if (context.destination_if()) {
@@ -526,6 +538,7 @@ public:
     AcceptanceCompletion pending_acceptance;
 private:
     ProviderDescriptor descriptor_;
+    ServiceKind kind_;
 };
 
 class FakeSecureChannel final : public SecureChannel {
@@ -649,9 +662,8 @@ std::shared_ptr<const EngineGraph> graph(
     providers.push_back(requirement("test.route", ProviderKind::RouteProvider));
     std::vector<ServiceRequirement> services;
     services.push_back(require(ServiceRequirement::create(
-        "echo", ServiceKind::ByteStream, "test.echo", 1U, 8U,
-        CapabilitySet::of({Capability::NamedByteStreams}),
-        echo_receive_credit)));
+        "echo", echo->service_kind(), "test.echo", 1U, 8U,
+        echo_capabilities(echo->service_kind()), echo_receive_credit)));
     auto suite = require(TransportSuiteDescriptor::create(
         "test.ytp1", "YTP/1", std::move(providers), std::move(services)));
     EngineBuilder builder(EndpointRole::Server, std::move(suite));
@@ -669,10 +681,13 @@ class TestSession final {
 public:
     explicit TestSession(bool exporter_available = true, bool routes = false,
                          SessionLimits limits = {},
-                         std::uint32_t echo_receive_credit = 0U)
+                         std::uint32_t echo_receive_credit = 0U,
+                         ServiceKind echo_kind = ServiceKind::ByteStream)
         : trace(std::make_shared<SecurityTrace>()),
           factory(std::make_shared<FakeSecurityFactory>(trace)),
-          handler(std::make_shared<EchoHandler>(routes)) {
+          handler(std::make_shared<EchoHandler>(routes, echo_kind)) {
+        if (echo_kind == ServiceKind::PacketChannel)
+            trace->echo_kind = ytp1::ServiceKind::Packet;
         auto owned_carrier =
             std::make_unique<FakeCarrier>(exporter_available);
         carrier = owned_carrier.get();
@@ -715,9 +730,10 @@ public:
         CHECK((trace->opened.back() == RecordKeyToken{0U, 0U}));
     }
 
-    void open_peer_stream(std::uint64_t sequence = 1U) {
-        ytp1::OpenRequest open{
-            ytp1::ServiceKind::ByteStream, "echo", {}};
+    void open_peer_stream(
+        std::uint64_t sequence = 1U,
+        ytp1::ServiceKind kind = ytp1::ServiceKind::ByteStream) {
+        ytp1::OpenRequest open{kind, "echo", {}};
         auto encoded_open = ytp1::EncodeOpen(open);
         CHECK(encoded_open.ok());
         carrier->deliver(protected_wire(
@@ -3775,6 +3791,40 @@ void test_receive_credit_returns_per_window_at_the_maximum() {
     }
 }
 
+// A packet cannot be split to spend the last of a window, so a packet
+// channel's peer uses only the whole packets that fit. Six 2730-byte packets
+// fit a 16 KiB window, 16380 bytes, and credit goes back at half of those:
+// after the third packet, 8190 bytes, two short of half the window. Waiting
+// for half the window would take a fourth packet, and a peer then gets one
+// return, about half a window, per round trip.
+void test_packet_credit_returns_at_half_the_usable_window() {
+    SessionLimits limits = small_window_limits();
+    limits.initial_stream_credit = 16U * 1024U;
+    TestSession session(true, false, limits, 0U, ServiceKind::PacketChannel);
+    session.start_to_active();
+    session.open_peer_stream(1U, ytp1::ServiceKind::Packet);
+    constexpr std::size_t kPacket = 2730U;
+    std::uint64_t sequence = 2U;
+    GrantedCredit granted;
+    for (int packet = 0; packet < 3; ++packet) {
+        std::optional<ReceivedRecord> received;
+        session.handler->responder->async_read(
+            {}, [&](Result<ReceivedRecord> result) {
+                if (result.ok())
+                    received.emplace(std::move(result).take_value());
+            });
+        const std::vector<std::byte> payload(kPacket, std::byte{0x5a});
+        session.carrier->deliver(protected_wire(
+            0U, sequence++, frame(ytp1::RecordType::Packet, 1U, payload)));
+        CHECK(received.has_value());
+        received.reset();
+        CHECK(session.engine->state() == SessionState::Active);
+    }
+    scan_granted_credit(session, granted);
+    CHECK((granted.stream_increments ==
+           std::vector<std::uint32_t>{16U * 1024U, 3U * kPacket}));
+}
+
 void test_receive_credit_returns_before_a_blocked_peer_could_stall() {
     // A 6 KiB window with 4 KiB frames. After spending 2.5 KiB the peer
     // holds 3.5 KiB, less than a full frame. Waiting for half the window
@@ -4131,6 +4181,7 @@ void run_test() {
     test_receive_credit_returns_after_half_a_window();
     test_receive_credit_returns_per_window_at_the_maximum();
     test_receive_credit_returns_before_a_blocked_peer_could_stall();
+    test_packet_credit_returns_at_half_the_usable_window();
     test_receive_window_grows_to_its_bound_while_drained_quickly();
     test_service_receive_cap_bounds_its_windows();
     test_receive_window_holds_while_the_application_is_slow();

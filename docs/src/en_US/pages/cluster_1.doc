@@ -285,9 +285,9 @@ random among routes it has not measured and those within 1.5 times the
 fastest one, drawing from the system's random source each time. A node that
 stopped a build is left out for five minutes. A circuit takes new streams for
 ten minutes after its first one, at most 32 at once, closes when its last
-stream ends after that, and closes after five minutes without streams. One
-spare circuit stays ready once circuits are in use. The client keeps no route
-history on disk.
+stream ends after that, and closes after five minutes without streams. The
+client builds a circuit as soon as its session starts, and one spare circuit
+without streams stays ready. The client keeps no route history on disk.
 
 **Shorter routes.** When three routes of `circuits.hops` fail, or none
 passes the rules, the client does not shorten on its own. It refuses new

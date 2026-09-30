@@ -252,18 +252,19 @@ bound, a reload under load and a stopped middle.
 A client with a `circuits` section sends every SOCKS5 CONNECT and every
 forward to a destination through circuits it builds itself: it verifies the
 routes view its entry serves against the kit's copy and a saved serial,
-chooses routes by the rules in cluster 1, keeps a spare, rotates circuits
-and refuses UDP, packet adapters and plain HTTP. It never shortens a route
+chooses routes by the rules in cluster 1, builds a circuit when its session
+starts, keeps a spare, rotates circuits and refuses UDP, packet adapters and
+plain HTTP. It never shortens a route
 on its own: a proposal waits for `yume --accept-route` over the control
 socket, unless `circuits.min_hops` approves it in advance, and `yume
 --status` shows routes and proposals. `yume_circuit_routes_test`,
 `yume_plain_http_guard_test` and the credential, config, control socket and
 setup tests cover the parts. `yume_circuit_pool_test` runs the circuit pool
-over an in-memory session with real circuit nodes: rotation, idle closing,
-the spare-failure rule, exclusion of a failed node and circuits closing
-inside the pool's own loops. `yume_circuit_record_fit_test` checks that a
-full cell of either direction leaves as one 16384-byte TLS write. The
-four-daemon test runs the real `yume`
+over an in-memory session with real circuit nodes: the build at session
+start, rotation, idle closing, the spare-failure rule, exclusion of a failed
+node and circuits closing inside the pool's own loops.
+`yume_circuit_record_fit_test` checks that a full cell of either direction
+leaves as one 16384-byte TLS write. The four-daemon test runs the real `yume`
 through three hops, the plain HTTP refusal, a proposal accepted after the
 exits stopped and a pre-approved direct route. The C ABI refuses a
 `circuits` section.

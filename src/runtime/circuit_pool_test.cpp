@@ -373,6 +373,28 @@ CircuitPoolOptions fast(std::chrono::milliseconds rotation,
     return options;
 }
 
+// A session builds a circuit before any stream asks for one, so the first
+// stream does not wait for a build.
+void test_build_at_session_start(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    CHECK(harness.wait_until([](const auto& status) {
+        return status.serial == 7U && status.circuits.size() == 1U &&
+               with_streams(status) == 0U;
+    }));
+    const auto opens =
+        harness.runtime.sync([&] { return harness.session->circuit_opens; });
+    auto stream = harness.open();
+    CHECK(stream.ok() && harness.echoes(stream.value()));
+    // The first stream took the circuit already built, and a new spare
+    // follows it.
+    CHECK(harness.wait_until([](const auto& status) {
+        return status.circuits.size() == 2U && with_streams(status) == 1U;
+    }));
+    CHECK(harness.runtime.sync(
+              [&] { return harness.session->circuit_opens; }) == opens + 1U);
+    if (stream.ok()) harness.close(stream.value());
+}
+
 // New streams leave a circuit once it is older than the rotation time since
 // its first stream, and the rotated circuit closes when its last stream
 // ends. A stream never moves.
@@ -522,6 +544,7 @@ void test_close_inside_loops(IoRuntime& io) {
 int main() {
     try {
         IoRuntime io;
+        test_build_at_session_start(io);
         test_rotation(io);
         test_idle_close(io);
         test_spare_failure(io);

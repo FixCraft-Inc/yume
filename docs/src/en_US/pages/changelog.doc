@@ -126,10 +126,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   measured latency, a spare and rotation. UDP ASSOCIATE and packet adapters
   are refused with circuits, and plain HTTP is refused unless allowed. A
   destination the exit cannot reach answers SOCKS5 as host unreachable, as
-  on the direct session. The largest cell of each direction, 16311 bytes
-  forward and 16315 backward, and its framing fill exactly one TLS record.
-  A client's stream windows grow from 256 KiB to 1 MiB as its reader
-  drains them. The client never shortens a route on its
+  on the direct session. The client builds a circuit when its session
+  starts. The largest cell of each direction, 16311 bytes forward and 16315
+  backward, and its framing fill exactly one TLS record. A client's stream
+  windows grow from 256 KiB to 1 MiB as its reader drains them. The client never shortens a route on its
   own: it proposes one, which `yume --accept-route ID` accepts over the
   control socket, or `circuits.min_hops` approves in advance.
   `yume --status` shows routes and proposals,

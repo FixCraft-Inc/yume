@@ -413,7 +413,10 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         std::erase_if(entries, [](const Entry& entry) {
             return entry.circuit->closed();
         });
-        if (waiters.empty() && view != View::Ready) return;
+        // A new session fetches its view and builds a circuit before the
+        // first stream asks for one. A view that failed its checks is asked
+        // for again only when a stream waits.
+        if (waiters.empty() && (!session || view == View::Failed)) return;
         if (!session) {
             return fail_waiters(Status::diagnostic(
                 StatusCode::FailedPrecondition, "the client has no session"));
@@ -466,14 +469,14 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             waiters.pop_front();
             open_on(*found, std::move(next));
         }
-        // Build when a stream waits, or keep one spare circuit ready.
+        // Build when a stream waits, or keep one spare circuit ready, from
+        // the start of the session.
         const bool spare = std::any_of(
             entries.begin(), entries.end(), [&](const Entry& entry) {
                 return usable(entry, now) && entry.circuit->streams() == 0U;
             });
         const bool building_needed =
-            !waiters.empty() ||
-            (!entries.empty() && !spare && now >= spare_after);
+            !waiters.empty() || (!spare && now >= spare_after);
         if (building_needed && !building && current_hops >= 2U)
             start_build(current_hops, false);
     }

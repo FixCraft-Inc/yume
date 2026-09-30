@@ -32,7 +32,7 @@ Rectangle {
             Icon {
                 visible: metric.iconName.length > 0
                 name: metric.iconName
-                width: 14; height: 14
+                size: 14
                 color: Theme.muted
             }
             Text {

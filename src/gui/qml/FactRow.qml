@@ -19,12 +19,12 @@ RowLayout {
 
     Rectangle {
         Layout.alignment: Qt.AlignTop
-        width: 30; height: 30; radius: 9
+        implicitWidth: 30; implicitHeight: 30; radius: 9
         color: Qt.rgba(fact.tint.r, fact.tint.g, fact.tint.b, 0.12)
         Icon {
             anchors.centerIn: parent
             name: fact.iconName
-            width: 16; height: 16
+            size: 16
             color: fact.tint
         }
     }

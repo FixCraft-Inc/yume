@@ -116,6 +116,9 @@ private:
     // The client's process: the one this GUI started, or the one its socket
     // last answered from. 0 when neither is known.
     qint64 pid_{0};
+    // The process this Tunnel last started, whose standard error the output
+    // file holds. A client started elsewhere has no output file of its own.
+    qint64 started_pid_{0};
     QProcess* validation_{nullptr};
 };
 

@@ -10,11 +10,15 @@
 // and route consent that accepts only the reviewed proposal. With --rtl it
 // checks the mirrored layout instead.
 
+#include <signal.h>
+
 #include <cstdlib>
 #include <cstring>
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QProcess>
 #include <QApplication>
 #include <QFontDatabase>
 #include <QJsonDocument>
@@ -35,6 +39,7 @@
 #include "gui/mark.hpp"
 #include "gui/offline_network.hpp"
 #include "gui/tray.hpp"
+#include "gui/tunnel.hpp"
 
 namespace {
 
@@ -259,6 +264,71 @@ private slots:
         QQmlEngine ordinary;
         render(ordinary);
         QVERIFY2(fetches > 0, "the probe saw no fetch from an ordinary engine");
+    }
+
+    // A client this GUI did not start ends without a reason from the output
+    // file, which holds an earlier start's lines.
+    void a_client_started_elsewhere_ends_without_a_stale_reason() {
+        if (g_rtl) QSKIP("the left-to-right run covers the lifecycle");
+        QString error;
+        auto places = find_places(QStringLiteral(YUME_GUI_FAKE_YUME), error);
+        QVERIFY2(places.has_value(), qPrintable(error));
+        const QString directory =
+            QFileInfo(kit_).dir().filePath(QStringLiteral("elsewhere"));
+        QVERIFY(QDir().mkpath(directory));
+        write_json(directory + QStringLiteral("/yume.json"),
+                   {{QStringLiteral("endpoint"),
+                     QJsonObject{{QStringLiteral("host"), QStringLiteral("h")},
+                                 {QStringLiteral("port"), 1}}}});
+        write_json(directory + QStringLiteral("/fake.json"),
+                   {{QStringLiteral("linger_ms"), 0}});
+        Kit kit;
+        for (auto& listed : list_kits(*places))
+            if (listed.name == QStringLiteral("elsewhere")) kit = listed;
+        QCOMPARE(kit.name, QStringLiteral("elsewhere"));
+        QVERIFY(ensure_private_directory(places->runtime, error));
+        Tunnel tunnel(*places, kit);
+        QFile stale(tunnel.output_path());
+        QVERIFY(stale.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        stale.write("yume: an earlier start failed\n");
+        stale.close();
+        qint64 pid = 0;
+        QProcess client;
+        client.setProgram(QStringLiteral(YUME_GUI_FAKE_YUME));
+        client.setArguments({QStringLiteral("--config"), kit.config,
+                             QStringLiteral("--control-socket"),
+                             tunnel.socket_path()});
+        client.setStandardErrorFile(QProcess::nullDevice());
+        QVERIFY(client.startDetached(&pid));
+        tunnel.poll(Tunnel::kFastPollMs);
+        QTRY_COMPARE_WITH_TIMEOUT(tunnel.phase(), Tunnel::Phase::Running,
+                                  10000);
+        ::kill(static_cast<pid_t>(pid), SIGKILL);
+        QTRY_COMPARE_WITH_TIMEOUT(tunnel.phase(), Tunnel::Phase::Stopped,
+                                  10000);
+        QCOMPARE(tunnel.error(), QStringLiteral("yume stopped"));
+    }
+
+    // Layouts size a child by its implicit size, so an Icon's size must set
+    // it. Qt 6.4 gave icons in layouts their default 20 pixels otherwise.
+    void layout_children_keep_their_size() {
+        if (g_rtl) QSKIP("the left-to-right run covers layout sizes");
+        QQmlComponent component(&engine_);
+        component.setData(
+            "import QtQuick\nimport QtQuick.Layouts\n"
+            "RowLayout { width: 400\n"
+            "  Icon { objectName: 'icon'; name: 'key'; size: 14 }\n"
+            "  Text { text: 'e'; Layout.fillWidth: true } }\n",
+            QUrl(QStringLiteral("qrc:/yume/qml/LayoutProbe.qml")));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        qobject_cast<QQuickItem*>(root.get())
+            ->setParentItem(window_->contentItem());
+        QTest::qWait(100);
+        auto* icon = root->findChild<QQuickItem*>(QStringLiteral("icon"));
+        QVERIFY(icon);
+        QCOMPARE(icon->width(), 14.0);
+        QCOMPARE(icon->height(), 14.0);
     }
 
     // The mark comes from assets/icon.svg, and the parser takes only well

@@ -12,8 +12,11 @@ Item {
     property string name
     property color color: "black"
     property real stroke: 1.8
-    implicitWidth: 20
-    implicitHeight: 20
+    // The icon's side. Layouts size their children by implicit size, so
+    // callers set this rather than width and height.
+    property real size: 20
+    implicitWidth: size
+    implicitHeight: size
 
     readonly property var paths: ({
         "overview": "M3 12h4l3-7 4 14 3-7h4",

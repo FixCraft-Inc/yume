@@ -74,7 +74,7 @@ Dialog {
                 anchors.fill: parent
                 anchors.margins: 10
                 spacing: 10
-                Icon { name: "route"; width: 18; height: 18; color: Theme.serverStrong }
+                Icon { name: "route"; size: 18; color: Theme.serverStrong }
                 Text {
                     textFormat: Text.PlainText
                     horizontalAlignment: Text.AlignLeft

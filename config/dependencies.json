@@ -3,7 +3,7 @@
   "dependencies": {
     "basefwx": {
       "repository": "https://github.com/F1xGOD/basefwx.git",
-      "revision": "8a8ab66d2551e89990d5ffb1fff3f2c96584dff8",
+      "revision": "5b9cb44f01b7c5ce489ee104885fbb2ce5892ecf",
       "minimum_version": "3.8.0",
       "license": "LGPL-3.0-or-later"
     },

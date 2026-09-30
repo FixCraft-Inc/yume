@@ -484,6 +484,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **BaseFWX pin `5b9cb44`.** The module libraries build on BaseFWX with the
+  documentation tooling's sequence type and a B512 stream encoder that no
+  longer trips a false GCC 13 `-Wstringop-overflow` warning in CI's Release
+  build. The pin also takes the five BaseFWX commits after `8a8ab66`.
 - **Reload reaches armed accepts.** `yumed` keeps up to four accepts armed on
   each listener, and each held the credentials loaded before a SIGHUP. A
   client added by `add-client`, or a changed PSK, failed its first attempts

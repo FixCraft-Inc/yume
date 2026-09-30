@@ -149,6 +149,54 @@ def validate_expected_artifacts() -> None:
     require(len(expected) == len(set(expected)), "Duplicate release artifact names")
 
 
+def cmake_lanes(workflow: str) -> list[str]:
+    """Each CMake configure command in a workflow, with its continued lines."""
+    lines = workflow.splitlines()
+    lanes = []
+    for index, line in enumerate(lines):
+        if "cmake -S . -B " not in line:
+            continue
+        command = [line]
+        while command[-1].rstrip().endswith("\\") and index + len(command) < len(lines):
+            command.append(lines[index + len(command)])
+        lanes.append("\n".join(command))
+    return lanes
+
+
+def check_native_lanes(ci_yml: str, dependency_setup: str) -> None:
+    """Every CI lane that builds the native graph uses the patched OpenSSL.
+
+    The invariant is "every native lane that configures CMake", not "exactly
+    three": a hardcoded count went stale the moment a lane was added, and it
+    would also have passed if a lane were deleted and another added in its
+    place. A lane that turns the native application off and builds no shared
+    ABI compiles no TLS provider, as the desktop GUI's lane does, so it needs
+    no OpenSSL. CMake itself refuses stock OpenSSL for any lane that builds
+    the native providers.
+    """
+    lanes = cmake_lanes(ci_yml)
+    native = []
+    for lane in lanes:
+        if "-DYUME_BUILD_NATIVE_APPLICATION=OFF" in lane:
+            require("-DYUME_BUILD_SHARED_ABI=ON" not in lane,
+                    "a CI lane without the native application must not build the "
+                    "shared ABI, which needs the patched OpenSSL")
+            continue
+        native.append(lane)
+    require(len(native) >= 3,
+            "ci.yml must keep at least the release, sanitizer and thread-sanitizer "
+            f"build lanes; found {len(native)} native lanes that configure CMake")
+    require(ci_yml.count(dependency_setup) == len(native),
+            "every native CI build lane must preserve the combined OpenSSL/nghttp2 "
+            f"environment: {len(native)} native lanes configure CMake but "
+            f"{ci_yml.count(dependency_setup)} set that environment up")
+    embedding = sum(1 for lane in native if "-DYUME_STATIC_OPENSSL=ON" in lane)
+    require(embedding == len(native) and
+            ci_yml.count("-DYUME_STATIC_OPENSSL=ON") == len(native),
+            "every native CI build lane must embed the patched OpenSSL: "
+            f"{len(native)} native lanes configure CMake but {embedding} embed it")
+
+
 def validate_workflow_guards() -> None:
     release_yml = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     ci_yml = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -187,22 +235,7 @@ def validate_workflow_guards() -> None:
         "          source scripts/ensure-nghttp2.sh\n"
         "          yume_nghttp2_ensure"
     )
-    # The invariant is "every lane that configures CMake", not "exactly three".
-    # A hardcoded count went stale the moment a lane was added, and it would
-    # also have passed if a lane were deleted and another added in its place.
-    # Derive the lane count so a new lane must carry the same guarantees.
-    cmake_lanes = ci_yml.count("cmake -S . -B ")
-    require(cmake_lanes >= 3,
-            "ci.yml must keep at least the release, sanitizer and thread-sanitizer "
-            f"build lanes; found {cmake_lanes} lanes that configure CMake")
-    require(ci_yml.count(dependency_setup) == cmake_lanes,
-            "every CI build lane must preserve the combined OpenSSL/nghttp2 "
-            f"environment: {cmake_lanes} lanes configure CMake but "
-            f"{ci_yml.count(dependency_setup)} set that environment up")
-    require(ci_yml.count("-DYUME_STATIC_OPENSSL=ON") == cmake_lanes,
-            "every CI build lane must embed the patched OpenSSL: "
-            f"{cmake_lanes} lanes configure CMake but "
-            f"{ci_yml.count('-DYUME_STATIC_OPENSSL=ON')} embed it")
+    check_native_lanes(ci_yml, dependency_setup)
     require(codeql_yml.count(dependency_setup) == 1,
             "CodeQL C++ setup must preserve the combined OpenSSL/nghttp2 environment")
     require(release_yml.count(dependency_setup) == 1,

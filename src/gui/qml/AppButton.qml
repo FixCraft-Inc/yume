@@ -30,8 +30,7 @@ Button {
         Icon {
             visible: control.iconName.length > 0
             name: control.iconName
-            width: control.compact ? 14 : 16
-            height: width
+            size: control.compact ? 14 : 16
             anchors.verticalCenter: parent.verticalCenter
             color: label.color
         }

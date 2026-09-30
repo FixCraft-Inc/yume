@@ -57,7 +57,7 @@ ApplicationWindow {
                 pageNames: window.pageNames
                 pageTitles: window.pageTitles
             }
-            Rectangle { Layout.fillHeight: true; width: 1; color: Theme.rule }
+            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: Theme.rule }
 
             ColumnLayout {
                 Layout.fillWidth: true

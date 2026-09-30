@@ -25,7 +25,7 @@ Rectangle {
             Layout.topMargin: 8
             Layout.bottomMargin: 18
             spacing: 10
-            Logo { width: 34; height: 34 }
+            Logo { implicitWidth: 34; implicitHeight: 34 }
             ColumnLayout {
                 spacing: -2
                 Text {
@@ -104,7 +104,7 @@ Rectangle {
                 contentItem: RowLayout {
                     spacing: 10
                     Rectangle {
-                        width: 8; height: 8; radius: 4
+                        implicitWidth: 8; implicitHeight: 8; radius: 4
                         color: Theme.stateColor(App.stateKind(modelData.phase, modelData.state))
                     }
                     ColumnLayout {

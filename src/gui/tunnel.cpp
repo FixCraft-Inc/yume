@@ -125,13 +125,15 @@ void Tunnel::on_status(const ControlReply& reply) {
                             "yume runs but has not opened its control socket"));
                     return;
                 }
-                pid_ = 0;
+                // The reason comes from this start's output while pid_
+                // still names the process that wrote it.
                 set_error(output_reason(tr("yume stopped while starting")));
+                pid_ = 0;
                 set_phase(Phase::Stopped);
                 return;
             case Phase::Running:
-                pid_ = 0;
                 set_error(output_reason(tr("yume stopped")));
+                pid_ = 0;
                 set_phase(Phase::Stopped);
                 return;
             case Phase::Stopping:
@@ -240,6 +242,7 @@ void Tunnel::spawn() {
         return;
     }
     pid_ = pid;
+    started_pid_ = pid;
     set_phase(Phase::Starting);
     poll(interval_ms_);
 }
@@ -315,8 +318,11 @@ QString Tunnel::output_tail() const {
     return QString::fromUtf8(file.read(kOutputTailBytes));
 }
 
-// The last line yume printed before it ended, or fallback.
+// The last line yume printed before it ended, or fallback. Only a client
+// this Tunnel started wrote the output file, so another one's end gets no
+// line from an earlier run.
 QString Tunnel::output_reason(const QString& fallback) const {
+    if (started_pid_ == 0 || pid_ != started_pid_) return fallback;
     const auto lines = output_tail().split(u'\n', Qt::SkipEmptyParts);
     for (auto line = lines.crbegin(); line != lines.crend(); ++line) {
         const QString text = strip_program(*line);

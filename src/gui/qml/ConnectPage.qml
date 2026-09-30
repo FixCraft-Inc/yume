@@ -67,7 +67,7 @@ Flickable {
                             anchors.margins: 10
                             spacing: 10
                             Rectangle {
-                                width: 10; height: 10; radius: 5
+                                implicitWidth: 10; implicitHeight: 10; radius: 5
                                 color: Theme.stateColor(App.stateKind(kitRow.modelData.phase, kitRow.modelData.state))
                             }
                             ColumnLayout {

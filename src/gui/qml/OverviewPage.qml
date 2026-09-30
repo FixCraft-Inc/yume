@@ -59,7 +59,7 @@ Flickable {
                 anchors.fill: parent
                 anchors.margins: 14
                 spacing: 12
-                Icon { name: "route"; width: 22; height: 22; color: Theme.disguiseStrong }
+                Icon { name: "route"; size: 22; color: Theme.disguiseStrong }
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 2
@@ -164,7 +164,7 @@ Flickable {
                     Layout.alignment: Qt.AlignTop
                     RowLayout {
                         spacing: 8
-                        Icon { name: "up"; width: 16; height: 16; color: Theme.accentStrong }
+                        Icon { name: "up"; size: 16; color: Theme.accentStrong }
                         Text {
                             textFormat: Text.PlainText
                             text: App.formatRate(App.sendRate)
@@ -176,7 +176,7 @@ Flickable {
                     }
                     RowLayout {
                         spacing: 8
-                        Icon { name: "down"; width: 16; height: 16; color: Theme.dataStrong }
+                        Icon { name: "down"; size: 16; color: Theme.dataStrong }
                         Text {
                             textFormat: Text.PlainText
                             text: App.formatRate(App.receiveRate)
@@ -291,7 +291,7 @@ Flickable {
                 RowLayout {
                     visible: !page.circuits
                     spacing: 10
-                    Icon { name: "server"; width: 18; height: 18; color: Theme.serverStrong }
+                    Icon { name: "server"; size: 18; color: Theme.serverStrong }
                     Text {
                         textFormat: Text.PlainText
                         text: page.status.server ? page.status.server.host + ":" + page.status.server.port : ""
@@ -353,7 +353,7 @@ Flickable {
                         required property var modelData
                         Layout.fillWidth: true
                         spacing: 10
-                        Icon { name: "route"; width: 16; height: 16; color: Theme.serverStrong }
+                        Icon { name: "route"; size: 16; color: Theme.serverStrong }
                         Text {
                             textFormat: Text.PlainText
                             horizontalAlignment: Text.AlignLeft

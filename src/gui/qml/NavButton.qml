@@ -28,7 +28,7 @@ ItemDelegate {
         Icon {
             id: glyph
             name: control.iconName
-            width: 18; height: 18
+            size: 18
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             color: control.current ? Theme.accentStrong : Theme.inkSoft

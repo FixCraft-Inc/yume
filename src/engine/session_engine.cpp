@@ -30,7 +30,6 @@ Status copy_failure(const Status& reason) noexcept {
     return Status::diagnostic(reason.code(), reason.message());
 }
 
-constexpr std::size_t kProtectedEnvelopeBytes = 16U;
 constexpr std::uint8_t kProtectedEnvelopeVersion = 1U;
 constexpr std::size_t kClosePayloadBytes = 1U;
 constexpr std::size_t kRekeyEpochBytes = 4U;

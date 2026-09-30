@@ -258,7 +258,9 @@ on its own: a proposal waits for `yume --accept-route` over the control
 socket, unless `circuits.min_hops` approves it in advance, and `yume
 --status` shows routes and proposals. `yume_circuit_routes_test`,
 `yume_plain_http_guard_test` and the credential, config, control socket and
-setup tests cover the parts, and the four-daemon test runs the real `yume`
+setup tests cover the parts. `yume_circuit_record_fit_test` checks that a
+full cell of either direction leaves as one 16384-byte TLS write. The
+four-daemon test runs the real `yume`
 through three hops, the plain HTTP refusal, a proposal accepted after the
 exits stopped and a pre-approved direct route. The C ABI refuses a
 `circuits` section.

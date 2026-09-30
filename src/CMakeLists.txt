@@ -1551,6 +1551,19 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_circuit_crypto_test COMMAND yume_circuit_crypto_test)
         set_tests_properties(yume_circuit_crypto_test PROPERTIES
             TIMEOUT 120 LABELS "foundation;0.3;circuit")
+
+        # A full cell and its framing must fill exactly one TLS record.
+        add_executable(yume_circuit_record_fit_test
+            providers/circuit_record_fit_test.cpp)
+        target_link_libraries(yume_circuit_record_fit_test
+            PRIVATE yume_circuit1 yume_h2_duplex_carrier OpenSSL::Crypto)
+        yume_apply_perf_opts(yume_circuit_record_fit_test)
+        yume_assert_exact_link_dependencies(yume_circuit_record_fit_test
+            yume_circuit1 yume_h2_duplex_carrier OpenSSL::Crypto)
+        add_test(NAME yume_circuit_record_fit_test
+            COMMAND yume_circuit_record_fit_test)
+        set_tests_properties(yume_circuit_record_fit_test PROPERTIES
+            LABELS "foundation;0.3;circuit")
     endif()
 
     if(YUME_BUILD_NATIVE_PROVIDERS)

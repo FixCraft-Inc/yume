@@ -62,9 +62,22 @@ struct Result {
     }
 };
 
+enum class Direction : std::uint8_t {
+    Forward = 1,
+    Backward = 2,
+};
+
 inline constexpr std::uint8_t kCellVersion = 1;
 inline constexpr std::size_t kCellHeaderBytes = 4;
-inline constexpr std::array<std::size_t, 3> kBuckets{512, 4096, 16384};
+// The buckets of each direction, smallest first. A full largest cell, its
+// YTP/1 PACKET record, the carrier envelope, one WebSocket frame header and
+// one HTTP/2 DATA frame header fill exactly one 16384-byte TLS record.
+// Forward cells travel on the dialing side of every session and link, whose
+// WebSocket frames carry a 4-byte mask, so the forward bucket is 4 bytes
+// smaller.
+inline constexpr std::array<std::size_t, 3> kForwardBuckets{512, 4096, 16311};
+inline constexpr std::array<std::size_t, 3> kBackwardBuckets{512, 4096, 16315};
+inline constexpr std::size_t kMaxCellBytes = kBackwardBuckets[2];
 inline constexpr std::size_t kMaxHops = 3;
 inline constexpr std::size_t kLayerTagBytes = 16;
 inline constexpr std::size_t kRelayHeaderBytes = 8;
@@ -83,7 +96,7 @@ inline constexpr std::size_t kHopHandshakeBytes =
     kSignatureBytes;
 inline constexpr std::size_t kCreateBodyBytes = 2 + kClientHandshakeBytes;
 inline constexpr std::size_t kCreateBucket = 4096;
-inline constexpr std::size_t kCreatedBucket = 16384;
+inline constexpr std::size_t kCreatedBucket = kBackwardBuckets[2];
 inline constexpr std::size_t kExtendPayloadBytes =
     kFingerprintBytes + kClientHandshakeBytes;
 inline constexpr std::uint32_t kMaxCreditIncrement = 1U << 30;
@@ -95,11 +108,6 @@ enum class Command : std::uint8_t {
     Create = 1,
     Created = 2,
     Relay = 3,
-};
-
-enum class Direction : std::uint8_t {
-    Forward = 1,
-    Backward = 2,
 };
 
 enum class RelayType : std::uint8_t {
@@ -135,22 +143,45 @@ enum class StreamReason : std::uint8_t {
     Closed = 8,
 };
 
-[[nodiscard]] constexpr bool IsBucket(std::size_t size) noexcept {
-    return size == kBuckets[0] || size == kBuckets[1] || size == kBuckets[2];
+[[nodiscard]] constexpr bool IsBucket(Direction direction,
+                                      std::size_t size) noexcept {
+    if (direction != Direction::Forward && direction != Direction::Backward) {
+        return false;
+    }
+    const auto& buckets =
+        direction == Direction::Forward ? kForwardBuckets : kBackwardBuckets;
+    return size == buckets[0] || size == buckets[1] || size == buckets[2];
 }
 
 // The padded size of a relay message in a bucket: the bucket less the cell
-// header and three layer tags. Zero for a size that is not a bucket.
-[[nodiscard]] constexpr std::size_t RelayCapacity(std::size_t bucket) noexcept {
-    return IsBucket(bucket)
+// header and three layer tags. Zero for a size that is not a bucket of the
+// direction.
+[[nodiscard]] constexpr std::size_t RelayCapacity(Direction direction,
+                                                  std::size_t bucket) noexcept {
+    return IsBucket(direction, bucket)
                ? bucket - kCellHeaderBytes - kMaxHops * kLayerTagBytes
                : 0U;
 }
 
-// The smallest bucket whose relay capacity holds a relay payload of this
-// size, or nothing when none does.
+// The largest DATA payload one relay message of the direction carries.
+[[nodiscard]] constexpr std::size_t MaxDataPayload(
+    Direction direction) noexcept {
+    const auto& buckets =
+        direction == Direction::Forward ? kForwardBuckets : kBackwardBuckets;
+    return RelayCapacity(direction, buckets[2]) - kRelayHeaderBytes;
+}
+
+static_assert(kCreateBodyBytes <= kCreateBucket - kCellHeaderBytes);
+static_assert(kHopHandshakeBytes <= kCreatedBucket - kCellHeaderBytes);
+static_assert(kRelayHeaderBytes + kExtendPayloadBytes <=
+              RelayCapacity(Direction::Forward, kCreateBucket));
+static_assert(kRelayHeaderBytes + kHopHandshakeBytes <=
+              RelayCapacity(Direction::Backward, kCreatedBucket));
+
+// The smallest bucket of the direction whose relay capacity holds a relay
+// payload of this size, or nothing when none does.
 [[nodiscard]] std::optional<std::size_t> BucketForPayload(
-    std::size_t payload_bytes) noexcept;
+    Direction direction, std::size_t payload_bytes) noexcept;
 
 // A decoded cell. body borrows from the decoded input. layers is the RELAY
 // layer count, 1 to 3, and zero for CREATE and CREATED.
@@ -161,17 +192,20 @@ struct CellView {
     std::size_t layers{0};
 };
 
-// Checks the version, command, bucket size, body length for the command and
-// zero filler.
+// Checks the bucket size for the direction, the version, the command and its
+// direction (CREATE forward, CREATED backward), the body length for the
+// command and zero filler.
 [[nodiscard]] Result<CellView> DecodeCell(
-    std::span<const std::uint8_t> cell) noexcept;
+    Direction direction, std::span<const std::uint8_t> cell) noexcept;
 // Writes one cell of the given bucket into output, which must hold exactly
 // the bucket. The body must be valid for the command as DecodeCell checks it.
-[[nodiscard]] Status EncodeCell(Command command, std::size_t bucket,
+[[nodiscard]] Status EncodeCell(Direction direction, Command command,
+                                std::size_t bucket,
                                 std::span<const std::uint8_t> body,
                                 std::span<std::uint8_t> output) noexcept;
 [[nodiscard]] Result<std::vector<std::uint8_t>> EncodeCell(
-    Command command, std::size_t bucket, std::span<const std::uint8_t> body);
+    Direction direction, Command command, std::size_t bucket,
+    std::span<const std::uint8_t> body);
 
 struct ClientHandshake {
     std::array<std::uint8_t, kNonceBytes> nonce{};

@@ -138,10 +138,16 @@ bool is_stream_message(RelayType type) noexcept {
     return false;
 }
 
-bool is_relay_capacity(std::size_t size) noexcept {
-    return std::any_of(
-        kBuckets.begin(), kBuckets.end(),
-        [size](std::size_t bucket) { return RelayCapacity(bucket) == size; });
+const std::array<std::size_t, 3>& buckets_of(Direction direction) noexcept {
+    return direction == Direction::Forward ? kForwardBuckets : kBackwardBuckets;
+}
+
+bool is_relay_capacity(Direction direction, std::size_t size) noexcept {
+    const auto& buckets = buckets_of(direction);
+    return std::any_of(buckets.begin(), buckets.end(),
+                       [direction, size](std::size_t bucket) {
+                           return RelayCapacity(direction, bucket) == size;
+                       });
 }
 
 // The smallest and largest BEGIN payloads: an IPv4 destination, and a DNS
@@ -205,22 +211,29 @@ Status check_payload(RelayType type,
 }
 
 // The body rule of each command in a bucket, shared by decode and encode.
-Status check_body(Command command, std::size_t bucket,
+// CREATE only goes forward and CREATED only backward.
+Status check_body(Direction direction, Command command, std::size_t bucket,
                   std::size_t body_bytes) noexcept {
     constexpr std::size_t kLengthOffset = 2U;
     switch (command) {
         case Command::Create:
+            if (direction != Direction::Forward) {
+                return {ErrorCode::WrongDirection, 1U};
+            }
             if (bucket != kCreateBucket) return {ErrorCode::InvalidBucket, 0U};
             return body_bytes == kCreateBodyBytes
                        ? Status::Success()
                        : Status{ErrorCode::InvalidLength, kLengthOffset};
         case Command::Created:
+            if (direction != Direction::Backward) {
+                return {ErrorCode::WrongDirection, 1U};
+            }
             if (bucket != kCreatedBucket) return {ErrorCode::InvalidBucket, 0U};
             return body_bytes == kHopHandshakeBytes
                        ? Status::Success()
                        : Status{ErrorCode::InvalidLength, kLengthOffset};
         case Command::Relay: {
-            const auto capacity = RelayCapacity(bucket);
+            const auto capacity = RelayCapacity(direction, bucket);
             if (body_bytes <= capacity ||
                 (body_bytes - capacity) % kLayerTagBytes != 0U ||
                 (body_bytes - capacity) / kLayerTagBytes > kMaxHops) {
@@ -235,17 +248,22 @@ Status check_body(Command command, std::size_t bucket,
 }  // namespace
 
 std::optional<std::size_t> BucketForPayload(
-    std::size_t payload_bytes) noexcept {
-    for (const auto bucket : kBuckets) {
-        if (payload_bytes <= RelayCapacity(bucket) - kRelayHeaderBytes) {
+    Direction direction, std::size_t payload_bytes) noexcept {
+    if (direction != Direction::Forward && direction != Direction::Backward) {
+        return std::nullopt;
+    }
+    for (const auto bucket : buckets_of(direction)) {
+        if (payload_bytes <=
+            RelayCapacity(direction, bucket) - kRelayHeaderBytes) {
             return bucket;
         }
     }
     return std::nullopt;
 }
 
-Result<CellView> DecodeCell(std::span<const std::uint8_t> cell) noexcept {
-    if (!IsBucket(cell.size())) {
+Result<CellView> DecodeCell(Direction direction,
+                            std::span<const std::uint8_t> cell) noexcept {
+    if (!IsBucket(direction, cell.size())) {
         return failure<CellView>(ErrorCode::InvalidBucket, 0U);
     }
     if (cell[0] != kCellVersion) {
@@ -259,7 +277,7 @@ Result<CellView> DecodeCell(std::span<const std::uint8_t> cell) noexcept {
     if (body_bytes > cell.size() - kCellHeaderBytes) {
         return failure<CellView>(ErrorCode::InvalidLength, 2U);
     }
-    const auto rule = check_body(command, cell.size(), body_bytes);
+    const auto rule = check_body(direction, command, cell.size(), body_bytes);
     if (!rule.ok()) return {rule, std::nullopt};
     if (const auto nonzero =
             first_nonzero(cell, kCellHeaderBytes + body_bytes)) {
@@ -269,17 +287,17 @@ Result<CellView> DecodeCell(std::span<const std::uint8_t> cell) noexcept {
     view.command = command;
     view.bucket = cell.size();
     view.body = cell.subspan(kCellHeaderBytes, body_bytes);
-    view.layers =
-        command == Command::Relay
-            ? (body_bytes - RelayCapacity(cell.size())) / kLayerTagBytes
-            : 0U;
+    view.layers = command == Command::Relay
+                      ? (body_bytes - RelayCapacity(direction, cell.size())) /
+                            kLayerTagBytes
+                      : 0U;
     return success(view);
 }
 
-Status EncodeCell(Command command, std::size_t bucket,
+Status EncodeCell(Direction direction, Command command, std::size_t bucket,
                   std::span<const std::uint8_t> body,
                   std::span<std::uint8_t> output) noexcept {
-    if (!IsBucket(bucket)) return {ErrorCode::InvalidBucket, 0U};
+    if (!IsBucket(direction, bucket)) return {ErrorCode::InvalidBucket, 0U};
     if (output.size() != bucket) return {ErrorCode::OutputTooSmall, 0U};
     if (!is_known_command(static_cast<std::uint8_t>(command))) {
         return {ErrorCode::InvalidCommand, 1U};
@@ -287,7 +305,7 @@ Status EncodeCell(Command command, std::size_t bucket,
     if (body.size() > bucket - kCellHeaderBytes) {
         return {ErrorCode::InvalidLength, 2U};
     }
-    const auto rule = check_body(command, bucket, body.size());
+    const auto rule = check_body(direction, command, bucket, body.size());
     if (!rule.ok()) return rule;
     output[0] = kCellVersion;
     output[1] = static_cast<std::uint8_t>(command);
@@ -300,12 +318,13 @@ Status EncodeCell(Command command, std::size_t bucket,
 }
 
 Result<std::vector<std::uint8_t>> EncodeCell(
-    Command command, std::size_t bucket, std::span<const std::uint8_t> body) {
-    if (!IsBucket(bucket)) {
+    Direction direction, Command command, std::size_t bucket,
+    std::span<const std::uint8_t> body) {
+    if (!IsBucket(direction, bucket)) {
         return failure<std::vector<std::uint8_t>>(ErrorCode::InvalidBucket, 0U);
     }
     std::vector<std::uint8_t> output(bucket);
-    const auto status = EncodeCell(command, bucket, body, output);
+    const auto status = EncodeCell(direction, command, bucket, body, output);
     if (!status.ok()) return {status, std::nullopt};
     return success(std::move(output));
 }
@@ -406,7 +425,7 @@ Result<CreateView> DecodeCreate(std::span<const std::uint8_t> body) noexcept {
 
 Result<RelayMessageView> DecodeRelayMessage(
     Direction direction, std::span<const std::uint8_t> plaintext) noexcept {
-    if (!is_relay_capacity(plaintext.size())) {
+    if (!is_relay_capacity(direction, plaintext.size())) {
         return failure<RelayMessageView>(ErrorCode::InvalidLength, 0U);
     }
     if (!is_known_relay_type(plaintext[0])) {
@@ -441,7 +460,7 @@ Status EncodeRelayMessage(Direction direction, RelayType type,
                           std::uint32_t stream,
                           std::span<const std::uint8_t> payload,
                           std::span<std::uint8_t> output) noexcept {
-    if (!is_relay_capacity(output.size())) {
+    if (!is_relay_capacity(direction, output.size())) {
         return {ErrorCode::OutputTooSmall, 0U};
     }
     if (!is_known_relay_type(static_cast<std::uint8_t>(type))) {

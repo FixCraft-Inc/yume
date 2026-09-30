@@ -189,23 +189,25 @@ the classifier gate needs four, so its verdict is INSUFFICIENT.
 
 ## Circuit sessions
 
-The first circuit capture (2026-09-29, `scripts/yume_circuit_capture.py`)
-ran the same workload five times through three-hop circuits of four
-clustered nodes on one host, with no added delay, and described the
-client's session against the browser sessions above. It is a baseline for
-later changes, not a verdict. Sixteen of the nineteen gate features do not
-overlap the browser's range:
+The circuit capture (`scripts/yume_circuit_capture.py`, 2026-09-29) runs the
+same workload five times through three-hop circuits of four clustered nodes
+on one host, with no added delay, and describes the client's session against
+the browser sessions above. It is a baseline for later changes, not a
+verdict. Sixteen of the nineteen gate features do not overlap the browser's
+range:
 
-- The session carries about twice the browser's records: 196 to 208 up and
-  256 to 298 down, against 105 and 142 to 145. They average 5.6 to 5.9 KB
-  up and 6.0 to 6.3 KB down, against 10 KB and 7.3 to 7.4 KB.
-- A full 16 KiB cell and its YTP/1 and HTTP/2 framing do not fit one TLS
-  record, so every full cell leaves as a 16401-byte record followed by one
-  of about 100 bytes. The client's session and every link show that pair.
+- The session carries more records than the browser: 133 to 140 up and 165
+  to 180 down, against 105 and 142 to 145. They average 8.3 to 8.8 KB up and
+  9.0 to 9.6 KB down, against 10 KB and 7.3 to 7.4 KB.
+- A full cell and its framing fill one 16401-byte record, the largest TLS
+  sends, as the browser's bulk records do ([circuit 1](protocol/CIRCUIT_1.md),
+  Cells). The first capture, with 16384-byte cells, sent every full cell as
+  that record and one of about 100 bytes, on the client's session and every
+  link, and carried 196 to 208 records up and 256 to 298 down.
 - Partial reads at the exit are padded to their bucket, so the download
-  carries 1.54 to 1.79 MB for 1 MiB of echo, where the upload carries 1.12
-  to 1.23 MB.
-- The direction changes 133 to 163 times against 75 to 77, and the session
+  carries 1.49 to 1.69 MB for 1 MiB of echo, where the upload carries 1.16
+  to 1.17 MB.
+- The direction changes 111 to 135 times against 75 to 77, and the session
   sends 6 small upload records and 8 small download records, against 12 to
   15 and 42 to 46.
 

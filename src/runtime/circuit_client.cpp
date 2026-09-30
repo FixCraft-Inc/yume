@@ -37,8 +37,7 @@ using Timer = boost::asio::basic_waitable_timer<
     providers::AsioExecutionContext::Executor>;
 
 constexpr std::size_t kMaxWriteSize = 64U * 1024U;
-constexpr std::size_t kDataPerCell =
-    c1::RelayCapacity(c1::kBuckets[2]) - c1::kRelayHeaderBytes;
+constexpr std::size_t kDataPerCell = c1::MaxDataPayload(c1::Direction::Forward);
 
 std::span<const std::uint8_t> bytes_of(const Buffer& buffer) noexcept {
     return {reinterpret_cast<const std::uint8_t*>(buffer.bytes().data()),
@@ -46,7 +45,7 @@ std::span<const std::uint8_t> bytes_of(const Buffer& buffer) noexcept {
 }
 
 Result<Buffer> buffer_of(std::span<const std::uint8_t> bytes) {
-    return Buffer::copy_from(std::as_bytes(bytes), c1::kBuckets[2]);
+    return Buffer::copy_from(std::as_bytes(bytes), c1::kMaxCellBytes);
 }
 
 std::array<std::uint8_t, 4> u32(std::uint32_t value) noexcept {
@@ -551,8 +550,8 @@ void ClientCircuit::State::start_build(
             return;
         }
         sent_at = Clock::now();
-        queue_cell(c1::EncodeCell(c1::Command::Create, c1::kCreateBucket,
-                                  *body.value));
+        queue_cell(c1::EncodeCell(c1::Direction::Forward, c1::Command::Create,
+                                  c1::kCreateBucket, *body.value));
         read();
     } catch (...) {
         close(Status(StatusCode::Internal));
@@ -592,7 +591,8 @@ void ClientCircuit::State::on_cell(Result<ReceivedRecord> result) noexcept {
     }
     try {
         auto record = std::move(result).take_value();
-        const auto cell = c1::DecodeCell(bytes_of(record.payload()));
+        const auto cell =
+            c1::DecodeCell(c1::Direction::Backward, bytes_of(record.payload()));
         if (!cell.ok()) {
             fail(0U, c1::CircuitReason::Protocol);
             return;
@@ -760,11 +760,13 @@ void ClientCircuit::State::become_ready() noexcept {
 void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
                                         std::uint32_t stream,
                                         std::span<const std::uint8_t> payload) {
-    const auto bucket = c1::BucketForPayload(payload.size());
+    const auto bucket =
+        c1::BucketForPayload(c1::Direction::Forward, payload.size());
     if (!bucket || target == 0U || target > layers.size()) {
         throw Status(StatusCode::InvalidArgument);
     }
-    std::vector<std::uint8_t> body(c1::RelayCapacity(*bucket));
+    std::vector<std::uint8_t> body(
+        c1::RelayCapacity(c1::Direction::Forward, *bucket));
     if (!c1::EncodeRelayMessage(c1::Direction::Forward, type, stream, payload,
                                 body)
              .ok()) {
@@ -777,7 +779,8 @@ void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
         }
         body = std::move(sealed);
     }
-    queue_cell(c1::EncodeCell(c1::Command::Relay, *bucket, body));
+    queue_cell(c1::EncodeCell(c1::Direction::Forward, c1::Command::Relay,
+                              *bucket, body));
 }
 
 void ClientCircuit::State::queue_cell(

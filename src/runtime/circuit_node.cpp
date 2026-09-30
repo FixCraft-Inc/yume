@@ -46,7 +46,7 @@ std::span<const std::uint8_t> bytes_of(const Buffer& buffer) noexcept {
 }
 
 Result<Buffer> buffer_of(std::span<const std::uint8_t> bytes) {
-    return Buffer::copy_from(std::as_bytes(bytes), c1::kBuckets[2]);
+    return Buffer::copy_from(std::as_bytes(bytes), c1::kMaxCellBytes);
 }
 
 std::string hex(std::span<const std::uint8_t> bytes) {
@@ -294,7 +294,8 @@ private:
         }
         try {
             auto record = std::move(result).take_value();
-            const auto decoded = c1::DecodeCell(bytes_of(record.payload()));
+            const auto decoded = c1::DecodeCell(c1::Direction::Forward,
+                                                bytes_of(record.payload()));
             if (!decoded.ok()) {
                 close(true);
                 return;
@@ -347,8 +348,9 @@ private:
             *node_->env.crypto, Mode::Seal, c1::Direction::Backward,
             reply.keys.backward_key.span(), reply.keys.backward_iv.span());
         depth_ = create.value->depth;
-        auto cell = c1::EncodeCell(c1::Command::Created, c1::kCreatedBucket,
-                                   reply.message);
+        auto cell =
+            c1::EncodeCell(c1::Direction::Backward, c1::Command::Created,
+                           c1::kCreatedBucket, reply.message);
         auto buffer = cell.ok() ? buffer_of(*cell.value)
                                 : Result<Buffer>(Status(StatusCode::Internal));
         if (!buffer.ok()) {
@@ -389,7 +391,8 @@ private:
     // one before it. The record's credit is held until then.
     void forward(std::size_t bucket, std::span<const std::uint8_t> body,
                  ReceivedRecord record) {
-        auto cell = c1::EncodeCell(c1::Command::Relay, bucket, body);
+        auto cell = c1::EncodeCell(c1::Direction::Forward, c1::Command::Relay,
+                                   bucket, body);
         auto buffer = cell.ok() ? buffer_of(*cell.value)
                                 : Result<Buffer>(Status(StatusCode::Internal));
         if (!buffer.ok()) {
@@ -482,7 +485,8 @@ private:
                 std::span<const std::uint8_t, c1::kClientHandshakeBytes>(
                     create_body_.data(), create_body_.size()));
             auto cell = body.ok()
-                            ? c1::EncodeCell(c1::Command::Create,
+                            ? c1::EncodeCell(c1::Direction::Forward,
+                                             c1::Command::Create,
                                              c1::kCreateBucket, *body.value)
                             : c1::Result<std::vector<std::uint8_t>>{
                                   body.status, std::nullopt};
@@ -529,7 +533,8 @@ private:
         }
         try {
             auto record = std::move(result).take_value();
-            const auto cell = c1::DecodeCell(bytes_of(record.payload()));
+            const auto cell = c1::DecodeCell(c1::Direction::Backward,
+                                             bytes_of(record.payload()));
             if (!cell.ok() || cell.value->command != c1::Command::Created) {
                 abandon_extension(c1::CircuitReason::Protocol);
                 return;
@@ -589,7 +594,8 @@ private:
         }
         try {
             auto record = std::move(result).take_value();
-            const auto cell = c1::DecodeCell(bytes_of(record.payload()));
+            const auto cell = c1::DecodeCell(c1::Direction::Backward,
+                                             bytes_of(record.payload()));
             if (!cell.ok() || cell.value->command != c1::Command::Relay ||
                 cell.value->layers >= c1::kMaxHops) {
                 close(true);
@@ -603,7 +609,8 @@ private:
                 return;
             }
             auto encoded =
-                c1::EncodeCell(c1::Command::Relay, cell.value->bucket, body);
+                c1::EncodeCell(c1::Direction::Backward, c1::Command::Relay,
+                               cell.value->bucket, body);
             auto buffer = encoded.ok()
                               ? buffer_of(*encoded.value)
                               : Result<Buffer>(Status(StatusCode::Internal));
@@ -634,9 +641,11 @@ private:
     // Seals a relay message under this hop's backward layer and queues it.
     void send(c1::RelayType type, std::uint32_t stream,
               std::span<const std::uint8_t> payload) {
-        const auto bucket = c1::BucketForPayload(payload.size());
+        const auto bucket =
+            c1::BucketForPayload(c1::Direction::Backward, payload.size());
         if (!bucket) throw Status(StatusCode::InvalidArgument);
-        std::vector<std::uint8_t> plain(c1::RelayCapacity(*bucket));
+        std::vector<std::uint8_t> plain(
+            c1::RelayCapacity(c1::Direction::Backward, *bucket));
         if (!c1::EncodeRelayMessage(c1::Direction::Backward, type, stream,
                                     payload, plain)
                  .ok()) {
@@ -646,7 +655,8 @@ private:
         if (!backward_->seal(*bucket, plain, body).ok()) {
             throw Status(StatusCode::Internal);
         }
-        auto cell = c1::EncodeCell(c1::Command::Relay, *bucket, body);
+        auto cell = c1::EncodeCell(c1::Direction::Backward, c1::Command::Relay,
+                                   *bucket, body);
         auto buffer = cell.ok() ? buffer_of(*cell.value)
                                 : Result<Buffer>(Status(StatusCode::Internal));
         if (!buffer.ok()) throw buffer.status();
@@ -893,8 +903,7 @@ private:
         }
         stream->reading = true;
         const auto most = std::min<std::uint64_t>(
-            stream->send_window,
-            c1::RelayCapacity(c1::kBuckets[2]) - c1::kRelayHeaderBytes);
+            stream->send_window, c1::MaxDataPayload(c1::Direction::Backward));
         try {
             stream->channel->async_read(
                 static_cast<std::size_t>(most), stream->cancel.token(),

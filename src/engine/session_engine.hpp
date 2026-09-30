@@ -29,6 +29,9 @@ inline constexpr auto kMaxRekeyAckTimeout = std::chrono::seconds(30);
 // It bounds queued and held bytes, not any one buffer.
 inline constexpr std::size_t kMaxSessionQueuedBytes = 64U * 1024U * 1024U;
 inline constexpr std::uint32_t kMaxSessionCreditReturns = 8U;
+// The envelope before every sealed post-AUTH record: schema, reserved bytes,
+// epoch and sequence (YTP_1.md, Post-AUTH record protection).
+inline constexpr std::size_t kProtectedEnvelopeBytes = 16U;
 
 enum class SessionState : std::uint8_t {
     Created,

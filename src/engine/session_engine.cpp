@@ -4267,8 +4267,17 @@ Status SessionEngine::Impl::process_rekey_init(
         inbound_epoch_records_ = 0U;
         --rekey_work_;
     }
-    return enqueue_record(ytp1::RecordType::RekeyAck,
-                          StreamId::control(), bytes.bytes(), false, true);
+    Status acknowledged =
+        enqueue_record(ytp1::RecordType::RekeyAck, StreamId::control(),
+                       bytes.bytes(), false, true);
+    if (!acknowledged.ok()) return acknowledged;
+    // A peer that rotates after a quiet spell is about to send, and the
+    // answer usually follows. When this direction's epoch is old enough that
+    // the answer's send would start a rotation anyway, it starts here, beside
+    // the ACK, so the answer does not wait a round trip for its own
+    // REKEY_ACK. Nothing is sent that the answer would not send, and nothing
+    // is sent in silence.
+    return rotate_aged_epoch(std::chrono::steady_clock::now());
 }
 
 Status SessionEngine::Impl::process_rekey_ack(

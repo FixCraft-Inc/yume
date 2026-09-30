@@ -527,7 +527,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `fast` and `max` presets set. Without it the next send rotates the epoch
   and a request after more than half a second of quiet waits a round trip
   for the new key. The measured preset rates were taken with the timer on in
-  every preset.
+  every preset. The side that answers such a request now starts its own
+  rotation beside its REKEY_ACK, so the answer does not wait another round
+  trip.
 - **More of Chrome's page load.** The client now sends its preface PING in a
   TLS record of its own, as the captured Chrome session does, and fetches
   `/favicon.ico` once the WebSocket is open, with the headers and priority of

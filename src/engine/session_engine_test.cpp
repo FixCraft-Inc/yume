@@ -2590,11 +2590,15 @@ void test_peer_epoch_stays_open_until_its_first_new_record() {
         const std::array<std::byte, 8> ping{};
         std::uint64_t sequence = 1U;
         const auto peer_init = rekey_payload(1U, std::byte{1});
+        const auto sent_before_init = session.carrier->sent.size();
         session.carrier->deliver(protected_wire(
             0U, sequence++,
             frame(ytp1::RecordType::RekeyInit, 0U, peer_init.bytes())));
-        CHECK(raw_record(session.carrier->sent.back()).header.type ==
-              ytp1::RecordType::RekeyAck);
+        // The ACK comes first. A slow run may age this side's epoch enough
+        // for its own INIT to follow.
+        CHECK(session.carrier->sent.size() > sent_before_init &&
+              raw_record(session.carrier->sent[sent_before_init]).header.type ==
+                  ytp1::RecordType::RekeyAck);
         // Records the peer sent before it saw the ACK.
         for (int i = 0; i < 2; ++i) {
             session.carrier->deliver(protected_wire(
@@ -2774,6 +2778,53 @@ void test_automatic_rekey_send_lifetime() {
         CHECK(session.engine->state() == SessionState::Active);
         CHECK((session.trace->sealed.back() ==
                RecordKeyToken{expired ? 1U : 0U, next_sequence + 1U}));
+    }
+}
+
+// A peer's REKEY_INIT starts this direction's rotation beside the ACK once
+// this epoch has sent for half its lifetime, so the answer to the peer's next
+// record does not wait for a REKEY_ACK of its own. A younger epoch only
+// acknowledges, and so does one whose rotation is already under way.
+void test_peer_rekey_starts_an_aged_rotation() {
+    for (const bool aged : {false, true}) {
+        TestSession session;
+        session.start_to_active();
+        if (aged) {
+            std::this_thread::sleep_for(ytp1::kEpochSendLifetime +
+                                        std::chrono::milliseconds(20));
+        }
+        const auto sent_before = session.carrier->sent.size();
+        const auto next_sequence = session.trace->sealed.back().sequence + 1U;
+        const auto peer_init = rekey_payload(1U, std::byte{1});
+        session.carrier->deliver(protected_wire(
+            0U, 1U, frame(ytp1::RecordType::RekeyInit, 0U, peer_init.bytes())));
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(session.carrier->sent.size() == sent_before + (aged ? 2U : 1U));
+        CHECK(raw_record(session.carrier->sent[sent_before]).header.type ==
+              ytp1::RecordType::RekeyAck);
+        if (!aged) {
+            CHECK(session.trace->rekey_begun.empty());
+            continue;
+        }
+        CHECK(session.trace->rekey_begun == std::vector<std::uint32_t>{1U});
+        CHECK(protected_record_type(session.carrier->sent.back()) ==
+              ytp1::RecordType::RekeyInit);
+        // The peer acknowledges this side's INIT.
+        const auto ack = rekey_payload(1U, std::byte{2});
+        session.carrier->deliver(
+            frame(ytp1::RecordType::RekeyAck, 0U, ack.bytes()));
+        CHECK(session.engine->state() == SessionState::Active);
+        // The peer's first record in its new epoch is answered at once in
+        // this side's new epoch.
+        const std::array<std::byte, 8> ping{};
+        session.carrier->deliver(
+            protected_wire(1U, 2U, frame(ytp1::RecordType::Ping, 0U, ping)));
+        CHECK(session.engine->state() == SessionState::Active);
+        CHECK(protected_record_type(session.carrier->sent.back()) ==
+              ytp1::RecordType::Pong);
+        CHECK((session.trace->sealed.back() ==
+               RecordKeyToken{1U, next_sequence + 1U}));
+        CHECK(session.trace->rekey_begun.size() == 1U);
     }
 }
 
@@ -4188,6 +4239,7 @@ void run_test() {
     test_peer_grants_are_bounded_by_the_protocol_not_local_windows();
     test_receive_windows_fit_the_queue_budget();
     test_aged_epoch_rotates_without_a_send();
+    test_peer_rekey_starts_an_aged_rotation();
     test_session_uses_the_smaller_advertised_epoch();
 }
 

@@ -32,6 +32,10 @@ for a new key on every hop it crosses. The option sets
 presets do, which rotates the key during quiet at the cost of a rekey
 exchange that captures show.
 
+`--preset NAME` gives every node and client the limits of one tuning
+preset from config/tuning_presets.json, as yume-setup writes them, so one
+run per preset measures the direct session and circuits under it.
+
 `--soak SECONDS` then keeps parallel downloads running through three-hop
 circuits under `--soak-condition` while it samples the resident memory and
 open descriptors of yume and every node. Circuits rotate every ten minutes,
@@ -558,7 +562,8 @@ def run_inside(arguments: argparse.Namespace) -> int:
         "host": {"name": os.uname().nodename, "kernel": os.uname().release, "cpus": os.cpu_count()},
         "binaries": {"yumed": session.file_digest(arguments.yumed), "yume": session.file_digest(arguments.yume)},
         "window_seconds": arguments.seconds, "repeats": arguments.repeats, "requests": arguments.requests,
-        "streams": arguments.streams, "idle_epoch_rotation": arguments.idle_epoch_rotation,
+        "streams": arguments.streams, "preset": arguments.preset,
+        "idle_epoch_rotation": arguments.idle_epoch_rotation,
         "nodes": {name: address(name) for name in NODES}, "exits": list(EXITS),
         "conditions": [],
     }
@@ -572,7 +577,10 @@ def run_inside(arguments: argparse.Namespace) -> int:
         report["tcp"] = {name: Path(f"/proc/sys/net/ipv4/{name}").read_text().strip()
                          for name in ("tcp_congestion_control", "tcp_rmem", "tcp_wmem")}
         with tempfile.TemporaryDirectory(prefix="yume-circuit-wan-", dir="/tmp") as temporary:
-            limits = {"idle_epoch_rotation": True} if arguments.idle_epoch_rotation else {}
+            limits = wan.preset_limits(arguments.preset) if arguments.preset else {}
+            if arguments.idle_epoch_rotation:
+                limits["idle_epoch_rotation"] = True
+            report["limits"] = limits
             cluster = Cluster(Path(temporary), environment, session.free_port(), limits)
             payload_log = arguments.output / "payload.log"
             logs.append(payload_log.open("wb"))
@@ -663,6 +671,8 @@ def main() -> int:
     parser.add_argument("--soak-condition", default="rtt=40", help="network condition of every hop in the soak")
     parser.add_argument("--tcp-buffer-mib", type=int, default=0,
                         help="raise every namespace's TCP buffer ceilings to this many MiB, 1..256")
+    parser.add_argument("--preset", choices=wan.preset_names(),
+                        help="give every node and client this tuning preset's limits")
     parser.add_argument("--idle-epoch-rotation", action="store_true",
                         help="set limits.idle_epoch_rotation on every node and client")
     arguments = parser.parse_args()

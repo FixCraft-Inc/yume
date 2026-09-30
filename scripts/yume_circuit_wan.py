@@ -36,6 +36,19 @@ exchange that captures show.
 preset from config/tuning_presets.json, as yume-setup writes them, so one
 run per preset measures the direct session and circuits under it.
 
+`--serve-at ADDRESS` measures nothing here. It builds the cluster under one
+condition, listens on one port of ADDRESS (`--serve-port`) outside the
+namespaces for the entry node and the destination, writes the clients' kits
+and serve.json, and waits for a stop file in the output directory. The nodes listen on the entry
+listener's port, because a client's HTTP/2 authority must name the port
+its node listens on. scripts/yume_circuit_cable.py runs the
+clients and the measurements on another host. Each accepted connection's
+descriptor passes into the namespaces over a UNIX socket and is joined there
+from the client side, so the remote client crosses the same emulated first
+hop as a local one, plus the real link and one relay. The relay ends TCP:
+the emulated first hop's TCP runs from the relay, and the remote client's
+own TCP sees only the real link.
+
 `--soak SECONDS` then keeps parallel downloads running through three-hop
 circuits under `--soak-condition` while it samples the resident memory and
 open descriptors of yume and every node. Circuits rotate every ten minutes,
@@ -73,6 +86,9 @@ import yume_native_session as session  # noqa: E402
 import yume_wan_emulation as wan  # noqa: E402
 
 INSIDE = "YUME_CIRCUIT_WAN_INSIDE"
+SERVE_DIRECTORY = "YUME_CIRCUIT_WAN_SERVE_DIRECTORY"
+SERVE_PORTS = "YUME_CIRCUIT_WAN_SERVE_PORTS"
+RELAY_BUFFER = 1 << 18
 NODES = ("node-a", "node-b", "node-c", "node-d")
 EXITS = ("node-c", "node-d")
 ENTRY = "node-a"
@@ -196,6 +212,133 @@ class Mesh:
                 holder.wait(timeout=5)
 
 
+class HostRelay:
+    """Listens outside the namespaces and hands each connection inward.
+
+    One listener on ADDRESS serves the entry node and the destination, so a
+    firewall that passes one port passes both. Both protocols speak first:
+    a connection whose first byte starts a TLS handshake record goes to the
+    entry and any other to the destination. Its descriptor goes to
+    NamespaceRelay over a UNIX socket in a private temporary directory,
+    which also holds the served kits and is removed on close.
+    """
+
+    TLS_HANDSHAKE = b"\x16"
+    FIRST_BYTE_SECONDS = 10.0
+
+    def __init__(self, host: str, port: int = 0) -> None:
+        self.directory = Path(tempfile.mkdtemp(prefix="yume-circuit-serve-", dir="/tmp"))
+        self.closed = threading.Event()
+        try:
+            self.listener = socket.create_server((host, port), backlog=64)
+        except BaseException:
+            shutil.rmtree(self.directory, ignore_errors=True)
+            raise
+        port = self.listener.getsockname()[1]
+        self.ports = {"entry": port, "destination": port}
+        threading.Thread(target=self.accept, daemon=True).start()
+
+    def accept(self) -> None:
+        while not self.closed.is_set():
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.hand_in, args=(connection,), daemon=True).start()
+
+    def hand_in(self, connection: socket.socket) -> None:
+        with connection:
+            try:
+                connection.settimeout(self.FIRST_BYTE_SECONDS)
+                first = connection.recv(1, socket.MSG_PEEK)
+                if not first:
+                    return
+                name = "entry" if first == self.TLS_HANDSHAKE else "destination"
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as handoff:
+                    handoff.settimeout(5)
+                    handoff.connect(str(self.directory / f"{name}.sock"))
+                    socket.send_fds(handoff, [b"c"], [connection.fileno()])
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.closed.set()
+        self.listener.close()
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+
+def pump(source: socket.socket, sink: socket.socket) -> None:
+    """Copies one direction until its end, then ends the other side's write.
+
+    The relay ends TCP on each side, so its sockets send without Nagle's
+    delay and a record leaves as soon as it arrives.
+    """
+    buffer = bytearray(RELAY_BUFFER)
+    view = memoryview(buffer)
+    try:
+        while count := source.recv_into(buffer):
+            sink.sendall(view[:count])
+        sink.shutdown(socket.SHUT_WR)
+    except OSError:
+        for side in (source, sink):
+            try:
+                side.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+class NamespaceRelay:
+    """Joins each connection HostRelay hands in to its target inside."""
+
+    def __init__(self, directory: Path, targets: dict[str, tuple[str, int]]) -> None:
+        self.servers: list[socket.socket] = []
+        for name, target in targets.items():
+            path = directory / f"{name}.sock"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(path))
+            os.chmod(path, 0o600)
+            server.listen(64)
+            self.servers.append(server)
+            threading.Thread(target=self.accept, args=(server, target), daemon=True).start()
+
+    def accept(self, server: socket.socket, target: tuple[str, int]) -> None:
+        while True:
+            try:
+                connection, _ = server.accept()
+            except OSError:
+                return
+            with connection:
+                try:
+                    _, descriptors, _, _ = socket.recv_fds(connection, 1, 1)
+                except OSError:
+                    continue
+            if len(descriptors) != 1:
+                for descriptor in descriptors:
+                    os.close(descriptor)
+                continue
+            threading.Thread(target=self.join, args=(descriptors[0], target), daemon=True).start()
+
+    @staticmethod
+    def join(descriptor: int, target: tuple[str, int]) -> None:
+        with socket.socket(fileno=descriptor) as outside:
+            try:
+                inside = socket.create_connection(target, timeout=10)
+            except OSError:
+                return
+            with inside:
+                for side in (inside, outside):
+                    side.settimeout(None)
+                    side.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                inward = threading.Thread(target=pump, args=(outside, inside), daemon=True)
+                inward.start()
+                pump(inside, outside)
+                inward.join()
+
+    def close(self) -> None:
+        for server in self.servers:
+            server.close()
+
+
 def timed_download(socks_port: int | None, host: str, port: int, seconds: float) -> dict[str, float]:
     """Reads the stream for a fixed time, as the WAN emulation's download does."""
     started = time.monotonic()
@@ -308,8 +451,9 @@ class Cluster:
     """The nodes' kits, the operator's signed list and the clients' kits."""
 
     def __init__(self, root: Path, environment: dict[str, str], target_port: int,
-                 limits: dict[str, object]) -> None:
+                 limits: dict[str, object], node_port: int = NODE_PORT) -> None:
         self.root = root
+        self.node_port = node_port
         self.sockets = root / "sockets"
         self.sockets.mkdir(mode=0o700)
         operator = root / "operator"
@@ -317,7 +461,7 @@ class Cluster:
         destination = f"{address('destination')}/32"
         for name in NODES:
             kit = root / name
-            session.provision_kit(kit, address(name), NODE_PORT, environment)
+            session.provision_kit(kit, address(name), node_port, environment)
 
             def serve(config: dict, name: str = name) -> None:
                 config["limits"].update(limits)
@@ -553,6 +697,37 @@ def run_soak(arguments: argparse.Namespace, mesh: Mesh, cluster: Cluster, enviro
     return result
 
 
+def serve(arguments: argparse.Namespace, mesh: Mesh, cluster: Cluster,
+          nodes: dict[str, subprocess.Popen]) -> dict[str, object]:
+    """Serves the cluster to a client on another host until the stop file."""
+    directory = Path(os.environ[SERVE_DIRECTORY])
+    ports = json.loads(os.environ[SERVE_PORTS])
+    netem = mesh.shape(wan.parse_condition(arguments.condition[0]))
+    relay = NamespaceRelay(directory, {"entry": (address(ENTRY), cluster.node_port),
+                                       "destination": (address("destination"), cluster.target_port)})
+    try:
+        kits = directory / "kits"
+        for path, config in cluster.clients.items():
+            shutil.copytree(config.parent, kits / path, symlinks=True)
+        served = {"address": arguments.serve_at, "ports": ports, "kits": str(kits),
+                  "target": [address("destination"), cluster.target_port], "node_port": cluster.node_port,
+                  "condition": arguments.condition[0], "netem": netem,
+                  "circuit_hops": CIRCUIT_HOPS, "entry": ENTRY, "exits": list(EXITS)}
+        (arguments.output / "serve.json").write_text(json.dumps(served, indent=2) + "\n", encoding="utf-8")
+        deadline = time.monotonic() + arguments.serve_seconds
+        stop = arguments.output / "stop"
+        while not stop.exists():
+            stopped = [name for name, process in nodes.items() if process.poll() is not None]
+            if stopped:
+                raise session.SessionFailure(f"{', '.join(stopped)} exited while serving")
+            if time.monotonic() > deadline:
+                raise session.SessionFailure("no stop file arrived before the serve limit")
+            time.sleep(0.5)
+        return {"condition": arguments.condition[0], "netem": netem, "ports": ports}
+    finally:
+        relay.close()
+
+
 def run_inside(arguments: argparse.Namespace) -> int:
     arguments.output.mkdir(parents=True, exist_ok=False)
     environment = session.openssl_environment(arguments.openssl)
@@ -581,7 +756,10 @@ def run_inside(arguments: argparse.Namespace) -> int:
             if arguments.idle_epoch_rotation:
                 limits["idle_epoch_rotation"] = True
             report["limits"] = limits
-            cluster = Cluster(Path(temporary), environment, session.free_port(), limits)
+            # A client's authority must name its node's listening port, so a
+            # served cluster's nodes listen on the relay's entry port.
+            node_port = json.loads(os.environ[SERVE_PORTS])["entry"] if arguments.serve_at else NODE_PORT
+            cluster = Cluster(Path(temporary), environment, session.free_port(), limits, node_port)
             payload_log = arguments.output / "payload.log"
             logs.append(payload_log.open("wb"))
             processes["payload"] = subprocess.Popen(
@@ -603,7 +781,14 @@ def run_inside(arguments: argparse.Namespace) -> int:
                 if time.monotonic() > linked_by:
                     raise session.SessionFailure("the nodes did not all link to each other")
                 time.sleep(0.25)
-            for index, text in enumerate(arguments.condition):
+            if arguments.serve_at:
+                nodes = {name: processes[name] for name in NODES}
+                try:
+                    report["serve"] = serve(arguments, mesh, cluster, nodes)
+                except (session.SessionFailure, OSError, ValueError) as error:
+                    report["serve"] = {"error": str(error)}
+                    code = 1
+            for index, text in enumerate([] if arguments.serve_at else arguments.condition):
                 try:
                     result = measure_condition(arguments, mesh, cluster, environment, text, index)
                 except (session.SessionFailure, OSError, subprocess.SubprocessError, ValueError) as error:
@@ -671,6 +856,13 @@ def main() -> int:
     parser.add_argument("--soak-condition", default="rtt=40", help="network condition of every hop in the soak")
     parser.add_argument("--tcp-buffer-mib", type=int, default=0,
                         help="raise every namespace's TCP buffer ceilings to this many MiB, 1..256")
+    parser.add_argument("--serve-at", metavar="ADDRESS",
+                        help="serve the cluster under the one --condition to a client on another host "
+                             "through listeners on ADDRESS, until OUTPUT/stop appears")
+    parser.add_argument("--serve-port", type=int, default=0,
+                        help="the one port a serve run listens on, default any free port")
+    parser.add_argument("--serve-seconds", type=float, default=3600.0,
+                        help="the longest a serve run waits for its stop file, 60..7200")
     parser.add_argument("--preset", choices=wan.preset_names(),
                         help="give every node and client this tuning preset's limits")
     parser.add_argument("--idle-epoch-rotation", action="store_true",
@@ -688,6 +880,11 @@ def main() -> int:
             not 0 <= arguments.tcp_buffer_mib <= 256:
         parser.error("seconds must be 2..60, repeats 1..20, requests 1..200, streams 1..64, "
                      "a soak 60..86400 seconds and TCP buffers 0..256 MiB")
+    if arguments.serve_at and (len(arguments.condition) != 1 or arguments.soak or
+                               not 60 <= arguments.serve_seconds <= 7200 or
+                               not 0 <= arguments.serve_port <= 65535):
+        parser.error("--serve-at takes exactly one --condition, no soak, 60..7200 serve seconds "
+                     "and a port 0..65535")
     for name in ("yumed", "yume", "openssl"):
         setattr(arguments, name, getattr(arguments, name).resolve(strict=True))
     arguments.output = arguments.output.resolve()
@@ -696,8 +893,16 @@ def main() -> int:
         if not unshare:
             parser.error("unshare is required")
         environment = dict(os.environ, **{INSIDE: "1"})
-        return subprocess.run([unshare, "-rn", sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]],
-                              env=environment, check=False).returncode
+        relay = HostRelay(arguments.serve_at, arguments.serve_port) if arguments.serve_at else None
+        try:
+            if relay:
+                environment[SERVE_DIRECTORY] = str(relay.directory)
+                environment[SERVE_PORTS] = json.dumps(relay.ports)
+            return subprocess.run([unshare, "-rn", sys.executable, str(Path(__file__).resolve()),
+                                   *sys.argv[1:]], env=environment, check=False).returncode
+        finally:
+            if relay:
+                relay.close()
     return run_inside(arguments)
 
 

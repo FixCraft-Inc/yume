@@ -136,7 +136,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `yume-setup add-client --circuits` writes the section and kit copies, and
   the C ABI refuses the section. `scripts/yume_circuit_wan.py` measures the
   direct session and circuits of two and three hops across emulated links,
-  under any tuning preset. `scripts/yume_circuit_capture.py` captures them and describes the client
+  under any tuning preset, and serves them to `scripts/yume_circuit_cable.py`
+  on another host. `scripts/yume_circuit_capture.py` captures them and describes the client
   session against a browser capture.
 - **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
   into one file and prints a 25-character code, and `yume --import-kit FILE

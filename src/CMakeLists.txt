@@ -1764,6 +1764,14 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_native_control_socket_test COMMAND yume_native_control_socket_test)
         set_tests_properties(yume_native_control_socket_test PROPERTIES
             TIMEOUT 30 LABELS "foundation;0.3;native-runtime")
+        add_executable(yume_circuit_pool_test runtime/circuit_pool_test.cpp)
+        target_link_libraries(yume_circuit_pool_test PRIVATE
+            yume_native_runtime yume_circuit_runtime yume_native_credentials
+            OpenSSL::Crypto Boost::system)
+        yume_apply_perf_opts(yume_circuit_pool_test)
+        add_test(NAME yume_circuit_pool_test COMMAND yume_circuit_pool_test)
+        set_tests_properties(yume_circuit_pool_test PROPERTIES
+            TIMEOUT 120 LABELS "foundation;0.3;circuit")
         add_executable(yume_native_socks5_request_test runtime/socks5_request_test.cpp)
         target_link_libraries(yume_native_socks5_request_test PRIVATE yume_native_runtime)
         yume_apply_perf_opts(yume_native_socks5_request_test)

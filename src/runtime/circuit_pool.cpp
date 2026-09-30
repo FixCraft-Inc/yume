@@ -98,7 +98,30 @@ std::string hex(std::span<const std::byte> bytes) {
     return text;
 }
 
+class EngineCircuitSession final : public CircuitSession {
+public:
+    explicit EngineCircuitSession(
+        std::shared_ptr<engine::SessionEngine> session)
+        : session_(std::move(session)) {}
+
+    void async_open(std::string_view service_name, engine::ServiceKind kind,
+                    std::optional<RouteDestination> destination,
+                    CancellationToken cancellation, Opened done) override {
+        session_->async_open(service_name, kind, std::move(destination),
+                             std::move(cancellation), std::move(done));
+    }
+
+private:
+    std::shared_ptr<engine::SessionEngine> session_;
+};
+
 }  // namespace
+
+std::shared_ptr<CircuitSession> engine_circuit_session(
+    std::shared_ptr<engine::SessionEngine> session) {
+    if (!session) return nullptr;
+    return std::make_shared<EngineCircuitSession>(std::move(session));
+}
 
 struct CircuitPool::State final : std::enable_shared_from_this<State> {
     struct Waiter final {
@@ -134,7 +157,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     CircuitPoolOptions options;
     Report report;
 
-    std::shared_ptr<engine::SessionEngine> session;
+    std::shared_ptr<CircuitSession> session;
     // Callbacks of an earlier session carry an older generation and change
     // nothing.
     std::uint64_t generation{0U};
@@ -270,7 +293,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         arm_tick();
     }
 
-    void set_session(std::shared_ptr<engine::SessionEngine> next) {
+    void set_session(std::shared_ptr<CircuitSession> next) {
         if (next == session) return;
         ++generation;
         session = std::move(next);
@@ -288,6 +311,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         const auto current = generation;
         session->async_open(
             common::kRoutesServiceName, engine::ServiceKind::ByteStream,
+            std::nullopt, {},
             [weak = weak_from_this(),
              current](Result<std::shared_ptr<StreamResponder>> opened) {
                 const auto self = weak.lock();
@@ -502,6 +526,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         const auto current = generation;
         session->async_open(
             common::kCircuitServiceName, engine::ServiceKind::PacketChannel,
+            std::nullopt, {},
             [weak = weak_from_this(), current, route = std::move(*route),
              probe](Result<std::shared_ptr<StreamResponder>> opened) mutable {
                 const auto self = weak.lock();
@@ -740,7 +765,7 @@ Result<std::shared_ptr<CircuitPool>> CircuitPool::create(
 }
 
 void CircuitPool::set_session(
-    std::shared_ptr<engine::SessionEngine> session) noexcept {
+    std::shared_ptr<CircuitSession> session) noexcept {
     try {
         state_->set_session(std::move(session));
         state_->arm_tick();

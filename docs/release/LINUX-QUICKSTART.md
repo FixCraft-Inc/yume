@@ -18,7 +18,18 @@ qualification. A generated archive alone is not a qualified release.
 ## Verify and unpack
 
 Verify the published checksum and detached signature before installation.
-Keep both downloaded artifacts from the same release, then unpack the client:
+Keep both downloaded artifacts from the same release.
+
+The executables also use systemd, zlib, Brotli, Zstandard and the C++ runtime
+as shared libraries. On a minimal Debian 13 system, install these along with
+Python, the OpenSSL command-line tool and xz for unpacking:
+
+```sh
+sudo apt-get install --no-install-recommends \
+  python3 openssl xz-utils libsystemd0 libbrotli1 zlib1g libzstd1 libstdc++6
+```
+
+Then unpack the client:
 
 ```sh
 tar -xJf yume-amd64-linux.tar.xz

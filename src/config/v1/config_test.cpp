@@ -600,9 +600,32 @@ void TestRunSettings() {
     misspelled["endpoint"]["hots"] = "origin.example.com";
     ExpectRunError(misspelled, host, "/endpoint/hots", "unknown key");
 
+    // The control socket setting adds the control object or replaces the
+    // file's, and its path meets the file's rules.
+    RunSettings control;
+    control.control_socket = "/run/user/1000/yume/work.sock";
+    const Config added = ParseJson(ClientDocument().dump(), control);
+    Check(added.control() &&
+              added.control()->socket_path == "/run/user/1000/yume/work.sock",
+          "the control socket run setting was not applied");
+    Json with_control = ClientDocument();
+    with_control["control"] = {{"socket", "/run/user/1000/yume/file.sock"}};
+    Check(ParseJson(with_control.dump(), control).control()->socket_path ==
+                  "/run/user/1000/yume/work.sock" &&
+              ParseJson(with_control.dump()).control()->socket_path ==
+                  "/run/user/1000/yume/file.sock",
+          "the control socket run setting did not replace the file's");
+    for (const char* path : {"relative.sock", "/run/../x.sock", ""}) {
+        RunSettings bad;
+        bad.control_socket = path;
+        ExpectRunError(ClientDocument(), bad, "/control/socket",
+                       "(set on the command line)");
+    }
+
     RunSettings everything = run;
+    everything.control_socket = "/run/user/1000/yume/work.sock";
     const Config server = ParseJson(ServerDocument().dump(), everything);
-    Check(server.role() == Role::Server,
+    Check(server.role() == Role::Server && !server.control(),
           "run settings changed a server document");
 }
 

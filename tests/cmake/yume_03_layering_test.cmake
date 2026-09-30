@@ -32,7 +32,8 @@ file(MAKE_DIRECTORY
     "${YUME_TEST_ROOT}/src/abi"
     "${YUME_TEST_ROOT}/src/runtime"
     "${YUME_TEST_ROOT}/src/providers"
-    "${YUME_TEST_ROOT}/src/admission")
+    "${YUME_TEST_ROOT}/src/admission"
+    "${YUME_TEST_ROOT}/src/gui")
 file(WRITE "${YUME_TEST_ROOT}/src/engine/clean.hpp" "#include <vector>\n")
 file(WRITE "${YUME_TEST_ROOT}/src/ytp/clean.hpp" "#include <span>\n")
 file(WRITE "${YUME_TEST_ROOT}/src/config/v1/clean.hpp" "#include <string>\n")
@@ -148,5 +149,24 @@ foreach(_forbidden IN ITEMS fs/secret_file.hpp providers/ytp1_h2_admission.hpp)
     run_layering_check(FALSE "Layering violation: src/admission/")
     file(REMOVE "${YUME_TEST_ROOT}/src/admission/forbidden.hpp")
 endforeach()
+
+# The GUI talks to yume through the control socket only, so it includes no
+# transport layer, and Qt stays inside the GUI.
+file(WRITE "${YUME_TEST_ROOT}/src/gui/clean.cpp"
+    "#include <QObject>\n#include \"common/version.hpp\"\n")
+run_layering_check(TRUE "")
+foreach(_forbidden IN ITEMS runtime/control_socket.hpp engine/status.hpp config/v1/config.hpp)
+    file(WRITE "${YUME_TEST_ROOT}/src/gui/forbidden.cpp"
+        "#include \"${_forbidden}\"\n")
+    run_layering_check(FALSE "Layering violation: src/gui/")
+    file(REMOVE "${YUME_TEST_ROOT}/src/gui/forbidden.cpp")
+endforeach()
+foreach(_layer IN ITEMS runtime engine abi)
+    file(WRITE "${YUME_TEST_ROOT}/src/${_layer}/forbidden.cpp"
+        "#include <QtCore/QString>\n")
+    run_layering_check(FALSE "Qt header outside the GUI")
+    file(REMOVE "${YUME_TEST_ROOT}/src/${_layer}/forbidden.cpp")
+endforeach()
+file(REMOVE "${YUME_TEST_ROOT}/src/gui/clean.cpp")
 
 file(REMOVE_RECURSE "${YUME_TEST_ROOT}")

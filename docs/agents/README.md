@@ -22,7 +22,8 @@ before advancing its pin.
 `cmake/YumeLayering.cmake` checks exact link dependencies and include direction
 at configure time. `abi/` may not include `gui/` or `modules/`, and the C ABI
 links the embedding layer. Engine and YTP code stay independent of
-sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
+sockets, TLS libraries, JSON, filesystem, CLI, and GUI code. `gui/` includes
+no transport layer, and no source outside it includes a Qt header.
 
 ## Checks and documentation
 
@@ -35,6 +36,8 @@ sockets, TLS libraries, JSON, filesystem, CLI, and GUI code.
 | YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](../development/ytp1/README.md), provider tests |
 | Product version or packaging | Version header, package metadata, README, [status](../IMPLEMENTATION_STATUS.md), [packaging](../PACKAGING.md), metadata tests |
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |
+| Control socket | [Control protocol 1](../protocol/CONTROL_1.md) and its additive rules, control socket, CLI and native runtime tests, and the GUI tests |
+| Desktop GUI | [Desktop GUI](../GUI.md), `yume_gui_test`, `yume_gui_ui_test`, `yume_gui_ui_rtl_test`, `yume_gui_live_test`, a page capture reviewed as images, and a build against Qt 6.4 |
 | Documentation | `docs/src` source, unified sync/drift and website catalog checks, affected links, manuals and CLI help/completion |
 
 Keep current behavior in the linked contracts and support limits in

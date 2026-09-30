@@ -30,6 +30,7 @@
 #include "common/version.hpp"
 #include "engine/buffer.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
+#include "providers/openssl_security_provider.hpp"
 #include "runtime/local_listener.hpp"
 
 namespace yume::runtime {
@@ -161,6 +162,24 @@ std::string utc_text(std::chrono::system_clock::time_point when) {
         static_cast<void>(
             std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &parts));
     return text;
+}
+
+// UTC with milliseconds, "2026-09-30T12:00:00.250Z".
+std::string utc_ms_text(std::chrono::system_clock::time_point when) {
+    const auto since = when.time_since_epoch();
+    const auto seconds = std::chrono::floor<std::chrono::seconds>(since);
+    const auto millis =
+        std::chrono::duration_cast<std::chrono::milliseconds>(since - seconds)
+            .count();
+    std::string text = utc_text(std::chrono::system_clock::time_point(
+        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+            seconds)));
+    if (text.size() != 20U) return text;
+    char fraction[8];
+    static_cast<void>(std::snprintf(fraction, sizeof(fraction), ".%03dZ",
+                                    static_cast<int>(millis)));
+    text.pop_back();
+    return text + fraction;
 }
 
 std::int64_t elapsed_ms(Clock::time_point since, Clock::time_point now) {
@@ -372,15 +391,23 @@ std::string server_text(const Json& status) {
 struct ControlServer::State final : std::enable_shared_from_this<State> {
     class Connection;
 
+    // A reply, and whether the program stops once it has been written.
+    struct Reply final {
+        std::string text;
+        bool stop{false};
+    };
+
     void adopt(LocalListener::Connection accepted) noexcept;
     void remove(const Connection* connection) noexcept;
     void stop(Status status) noexcept;
     void close() noexcept;
-    std::string reply_to(std::string_view line);
+    void stop_requested() noexcept;
+    std::string requests_field() const;
+    Reply reply_to(std::string_view line);
 
     std::shared_ptr<providers::AsioExecutionContext> context;
     ControlStatusSource status;
-    ControlRouteAcceptance accept_route;
+    ControlRequests requests;
     std::function<void(Status)> on_failure;
     std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
     std::shared_ptr<LocalListener> listener;
@@ -452,7 +479,7 @@ private:
                 return;
             }
             if (request_.size() >= kControlRequestBytes) {
-                send(error_reply("malformed", "the request is too long"));
+                send({error_reply("malformed", "the request is too long")});
                 return;
             }
         } catch (...) {
@@ -462,26 +489,37 @@ private:
         read();
     }
 
-    void send(std::string reply) noexcept {
+    // A stop reply stops the program once it is written, or once writing
+    // fails because the client left, since the request itself was valid.
+    void send(State::Reply reply) noexcept {
+        const bool stop = reply.stop;
         try {
-            reply.push_back('\n');
-            auto buffer = Buffer::copy_from(std::as_bytes(std::span(reply)),
-                                            reply.size());
+            reply.text.push_back('\n');
+            auto buffer = Buffer::copy_from(
+                std::as_bytes(std::span(reply.text)), reply.text.size());
             if (!buffer.ok()) {
                 finish();
+                if (stop) stop_owner();
                 return;
             }
             replying_ = true;
             channel_->async_write(
                 std::move(buffer).take_value(), {},
-                [self = shared_from_this()](Status, std::size_t) noexcept {
+                [self = shared_from_this(), stop](Status,
+                                                  std::size_t) noexcept {
                     if (self->channel_)
                         static_cast<void>(self->channel_->shutdown_write());
                     self->finish();
+                    if (stop) self->stop_owner();
                 });
         } catch (...) {
             finish();
+            if (stop) stop_owner();
         }
+    }
+
+    void stop_owner() noexcept {
+        if (const auto owner = owner_.lock()) owner->stop_requested();
     }
 
     void finish() noexcept {
@@ -505,68 +543,93 @@ private:
     bool done_{false};
 };
 
-std::string ControlServer::State::reply_to(std::string_view line) {
+// The requests this server takes, as the status reply's "requests" member.
+std::string ControlServer::State::requests_field() const {
+    std::string field = R"("requests":["status")";
+    if (requests.accept_route) field += R"(,"accept-route")";
+    if (requests.messages) field += R"(,"messages")";
+    if (requests.stop) field += R"(,"stop")";
+    return field + "]";
+}
+
+ControlServer::State::Reply ControlServer::State::reply_to(
+    std::string_view line) {
     const Json request = Json::parse(line, nullptr, false);
     if (request.is_discarded() || !request.is_object()) {
-        return error_reply("malformed", "the request is not a JSON object");
+        return {error_reply("malformed", "the request is not a JSON object")};
     }
     const auto version = request.find("control");
     if (version == request.end() || !version->is_number_unsigned() ||
         version->get<std::uint64_t>() != kControlProtocol) {
-        return error_reply("unsupported", "unsupported control protocol");
+        return {error_reply("unsupported", "unsupported control protocol")};
     }
     const auto name = request.find("request");
     if (name == request.end() || !name->is_string()) {
-        return error_reply("malformed",
-                           "a request holds exactly control and request");
+        return {error_reply("malformed",
+                            "a request holds exactly control and request")};
     }
     const auto& requested = name->get_ref<const std::string&>();
-    if (requested == "accept-route" && accept_route) {
+    if (requested == "accept-route" && requests.accept_route) {
         const auto id = request.find("id");
         if (request.size() != 3U || id == request.end() || !id->is_string() ||
             id->get_ref<const std::string&>().size() > 64U) {
-            return error_reply(
+            return {error_reply(
                 "malformed",
-                "accept-route holds exactly control, request and id");
+                "accept-route holds exactly control, request and id")};
         }
         Status accepted(StatusCode::Internal);
         try {
-            accepted = accept_route(id->get_ref<const std::string&>());
+            accepted = requests.accept_route(id->get_ref<const std::string&>());
         } catch (...) {
         }
         if (!accepted.ok()) {
-            return accepted.code() == StatusCode::NotFound
-                       ? error_reply("not_found",
-                                     "no route proposal has that id")
-                       : error_reply("failed",
-                                     "the route could not be accepted");
+            return {
+                accepted.code() == StatusCode::NotFound
+                    ? error_reply("not_found", "no route proposal has that id")
+                    : error_reply("failed", "the route could not be accepted")};
         }
-        return Json{{"control", kControlProtocol}, {"accepted", *id}}.dump();
+        return {Json{{"control", kControlProtocol}, {"accepted", *id}}.dump()};
+    }
+    if (requested == "messages" && requests.messages) {
+        const auto after = request.find("after");
+        if (request.size() != 3U || after == request.end() ||
+            !after->is_number_unsigned()) {
+            return {error_reply(
+                "malformed",
+                "messages holds exactly control, request and after")};
+        }
+        return {
+            messages_reply(*requests.messages, after->get<std::uint64_t>())};
+    }
+    if (requested == "stop" && requests.stop) {
+        if (request.size() != 2U) {
+            return {error_reply("malformed",
+                                "a request holds exactly control and request")};
+        }
+        return {Json{{"control", kControlProtocol}, {"stopping", true}}.dump(),
+                true};
     }
     if (requested != "status") {
-        return error_reply("unknown_request", "unknown request");
+        return {error_reply("unknown_request", "unknown request")};
     }
     if (request.size() != 2U) {
-        return error_reply("malformed",
-                           "a request holds exactly control and request");
+        return {error_reply("malformed",
+                            "a request holds exactly control and request")};
     }
     std::string reply;
     try {
         reply = status();
     } catch (...) {
-        return error_reply("unavailable", "status is unavailable");
+        return {error_reply("unavailable", "status is unavailable")};
     }
     // Every status reply names the requests this server takes, so a client
     // can tell what an older program lacks before it asks.
-    const std::string_view requests = accept_route
-                                          ? R"("requests":["status","accept-route"])"
-                                          : R"("requests":["status"])";
     if (reply.size() < 2U || reply.front() != '{' || reply.back() != '}')
-        return error_reply("unavailable", "status is unavailable");
-    reply.insert(1U, std::string(requests) + (reply.size() > 2U ? "," : ""));
+        return {error_reply("unavailable", "status is unavailable")};
+    reply.insert(1U, requests_field() + (reply.size() > 2U ? "," : ""));
     if (reply.size() >= kControlReplyBytes)
-        return error_reply("unavailable", "status is too large");
-    return reply;
+        return {error_reply("unavailable", "status is too large")};
+    return {std::move(reply)};
 }
 
 void ControlServer::State::adopt(LocalListener::Connection accepted) noexcept {
@@ -598,6 +661,14 @@ void ControlServer::State::stop(Status status) noexcept {
     }
 }
 
+void ControlServer::State::stop_requested() noexcept {
+    if (closing || !requests.stop) return;
+    try {
+        requests.stop();
+    } catch (...) {
+    }
+}
+
 void ControlServer::State::close() noexcept {
     if (closing) return;
     closing = true;
@@ -612,8 +683,7 @@ void ControlServer::State::close() noexcept {
 Result<std::shared_ptr<ControlServer>> ControlServer::open(
     std::shared_ptr<providers::AsioExecutionContext> context,
     const std::filesystem::path& path, ControlStatusSource status,
-    std::function<void(Status)> on_failure,
-    ControlRouteAcceptance accept_route) {
+    std::function<void(Status)> on_failure, ControlRequests requests) {
     using Opened = Result<std::shared_ptr<ControlServer>>;
     if (!context || !status || path.empty())
         return Opened(Status(StatusCode::InvalidArgument));
@@ -626,7 +696,7 @@ Result<std::shared_ptr<ControlServer>> ControlServer::open(
         auto state = std::make_shared<State>();
         state->context = std::move(context);
         state->status = std::move(status);
-        state->accept_route = std::move(accept_route);
+        state->requests = std::move(requests);
         state->channels = std::move(channels).take_value();
         auto listener =
             LocalListener::open(state->context, LocalListener::Unix{path},
@@ -712,6 +782,20 @@ std::string client_status_reply(
         forwards.push_back(endpoint_text(endpoint));
     for (const auto& path : view.unix_forwards) forwards.push_back(path);
     reply["forwards"] = std::move(forwards);
+    Json posture{
+        {"transport", kYtpVersion},
+        {"suite", kTransportSuite},
+        {"evidence_profile", kEvidenceProfile},
+        {"security", providers::kOpenSslSecurityProviderId},
+        {"crypto_backend", providers::openssl_crypto_backend()},
+        {"limits",
+         {{"max_queued_bytes", view.max_queued_bytes},
+          {"max_epoch_bytes", view.max_epoch_bytes},
+          {"credit_returns_per_window", view.credit_returns_per_window},
+          {"idle_epoch_rotation", view.idle_epoch_rotation}}}};
+    if (status.state == NativeClientState::Connected && status.epoch_bytes)
+        posture["epoch_bytes"] = *status.epoch_bytes;
+    reply["posture"] = std::move(posture);
     reply["circuits"] = nullptr;
     if (circuits) {
         Json routes = Json::array();
@@ -803,6 +887,30 @@ std::string server_status_reply(const NativeServerStatus& status,
             {"handshakes", circuits.refused_handshakes},
             {"streams", circuits.refused_streams}}}}}};
     return dump(reply);
+}
+
+std::string messages_reply(const MessageLog& log, std::uint64_t after) {
+    const auto page = log.after(after);
+    // The members around the messages, whose size the budget includes.
+    const std::string head = R"({"control":1,"instance":")" +
+                             std::string(log.instance()) + R"(","messages":[)";
+    std::string body;
+    std::size_t sent = 0U;
+    for (const auto& entry : page.entries) {
+        std::string item = dump(Json{{"seq", entry.seq},
+                                     {"time", utc_ms_text(entry.time)},
+                                     {"text", entry.text}});
+        // 64 bytes cover the closing members and a separating comma.
+        if (head.size() + body.size() + item.size() + 64U >
+            kControlMessagesReplyBytes)
+            break;
+        if (!body.empty()) body.push_back(',');
+        body += item;
+        ++sent;
+    }
+    return head + body + R"(],"missed":)" + std::to_string(page.missed) +
+           R"(,"more":)" + (sent < page.entries.size() ? "true" : "false") +
+           "}";
 }
 
 namespace {

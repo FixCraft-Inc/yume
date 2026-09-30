@@ -1,0 +1,172 @@
+#!yume-doc 1
+name:        yume_gui_1
+kind:        man
+title:       yume-gui
+summary:     desktop GUI that starts, stops and shows YUME client tunnels
+man:         docs/man/yume-gui.1
+man-section: 1
+man-date:    2026-09-30
+man-source:  YUME 0.3.0-dev1
+man-manual:  YUME Manual
+---
+@synopsis
+**yume-gui** [ **--kit** *name* ] [ **--page** *page* ] [ **--theme** *theme* ]
+[ **--layout-direction** *direction* ] [ **--size** *size* ] [ **--no-tray** ]
+[ **--yume** *path* ]
+**yume-gui** [ window options ] **--capture** *directory*
+**yume-gui** **--kit** *name* [ **--yume** *path* ] **--headless** *action*
+**yume-gui** [ **--yume** *path* ] **--import-kit** *file* **--name** *name*
+**yume-gui** **--version**
+**yume-gui** **--help**
+@end
+
+## DESCRIPTION
+
+**yume-gui** is the desktop window for YUME clients. It imports sealed kits,
+starts and stops each kit's man:yume(1), and shows what the running client
+reports: its connection, traffic, local listeners, circuits, proposals of a
+shorter route, printed lines and fixed security posture. It runs as an
+ordinary user and needs no privilege.
+
+Its tray icon shows the selected kit's state as a dot on the YUME mark: green
+while connected, amber while connecting or waiting, red when the running
+client reports a failure and grey when it is not running. The tray's menu
+connects or disconnects the kit and shows or hides the window.
+
+It talks to a running **yume** only through that client's control socket, as
+**docs/protocol/CONTROL_1.md** defines, and runs the **yume** program to
+validate, start and import kits. It starts **yume** as a detached process in
+its own session, so closing or killing the window leaves the tunnel running,
+and it stops **yume** with the control protocol's stop request. Opening the
+window again finds a running client by its socket.
+
+A kit is a directory under *$XDG_CONFIG_HOME/yume/kits* that holds a
+*yume.json*, as **yume --import-kit** writes it. **yume-gui** starts
+**yume --config** *kit*/yume.json **--control-socket**
+*$XDG_RUNTIME_DIR/yume/*kit*.sock*. A kit with a managed TUN adapter needs
+privileges that this user process does not have, so run such a kit as a
+system service instead.
+
+The Posture page states the protection the running client reports: the YTP/1
+composition, the evidence profile its outer layers follow, its tuning limits
+and the preset they match. It offers no switch that weakens a tunnel. A
+proposal of a shorter route is accepted only from its review dialog, for that
+exact proposal. Closing the dialog accepts nothing.
+
+## OPTIONS
+
+@options
+@opt **--kit** *name*
+@cli spell: --kit <name>
+@cli help: Show this kit first
+
+Select the kit named *name* when the window opens. With **--headless** it
+names the kit to act on.
+@opt **--page** *page*
+@cli values: overview connect logs posture
+@cli spell: --page <page>
+@cli help: Open this page: overview, connect, logs or posture
+
+Open the window on *page*: **overview**, **connect**, **logs** or
+**posture**.
+@opt **--theme** *theme*
+@cli values: light dark system
+@cli spell: --theme <theme>
+@cli help: Use light, dark or the system's theme for this run
+
+Use **light**, **dark** or the desktop's **system** theme for this run
+instead of the one chosen in the window, which is saved in
+*$XDG_CONFIG_HOME/yume/gui.conf*. Light is the default.
+@opt **--layout-direction** *direction*
+@cli values: ltr rtl
+@cli spell: --layout-direction <direction>
+@cli help: Lay the window out left to right or right to left
+
+Lay the window out **ltr** or **rtl**, mirroring it for right-to-left
+scripts. Text in any script is shaped either way.
+@opt **--size** *size*
+@cli spell: --size <size>
+@cli help: Open the window at this size, such as 1280x800
+
+Open the window at *size*, written as width **x** height in pixels.
+@opt **--no-tray**
+@cli spell: --no-tray
+@cli help: Show no tray icon, so closing the window quits the GUI
+
+Show no tray icon. With a tray icon, closing the window hides it and the GUI
+stays in the tray, and Quit in the tray's menu ends the GUI. Without one,
+closing the window ends the GUI. A tunnel keeps running either way.
+@opt **--yume** *path*
+@cli file: yes
+@cli spell: --yume <path>
+@cli help: Run this yume program instead of the one beside yume-gui
+
+Run the **yume** program at *path*. Without it, **yume-gui** runs the
+**yume** in its own directory and does not search **PATH**.
+@opt **--capture** *directory*
+@cli file: yes
+@cli spell: --capture <directory>
+@cli help: Save every page as an image, then exit
+
+Wait for the selected kit's first status, save each page and the route
+review dialog, when a proposal is shown, to *directory* as
+*page*-*theme*-*direction*.png, and the tray icon in each state as
+tray-*state*.png, and exit. The exit status is 1 when an image
+could not be written or a page raised a QML warning.
+@opt **--headless** *action*
+@cli values: status connect stop cycle
+@cli spell: --headless <action>
+@cli help: Act on --kit without a window: status, connect, stop or cycle
+
+Without a window, act on the kit that **--kit** names, as the window's
+buttons do, and print one JSON line per step with what the control socket
+reported. **status** asks once. **connect** starts the kit and waits up to 60
+seconds until **yume** reports **connected**, then exits and leaves the tunnel
+running. **stop** waits until the socket is gone and the process has ended.
+**cycle** connects, stops, connects and stops.
+@opt **--import-kit** *file*
+@cli file: yes
+@cli spell: --import-kit <file>
+@cli help: Import a sealed kit with the code on standard input, with --name
+
+Import the sealed kit in *file* as the kit **--name** names, reading its code
+from standard input, as the Connect page does. **yume --import-kit** opens
+and writes it.
+@opt **--name** *name*
+@cli spell: --name <name>
+@cli help: The name of the kit --import-kit creates
+
+The kit's name: 1 to 48 letters, digits, dots, dashes or underscores, not
+starting with a dot or a dash.
+@opt **--version**
+@cli spell: --version
+@cli help: Print the version and the Qt in use
+
+Print the product version, the Qt version in use and the control protocol.
+@opt **--help**
+@cli flags: -h --help
+@cli spell: -h, --help
+@cli help: Print this help and exit
+
+Print a short usage summary.
+@end
+
+## FILES
+
+*$XDG_CONFIG_HOME/yume/kits/*name** is a kit. *$XDG_RUNTIME_DIR/yume/*name*.sock*
+is its running client's control socket, and *$XDG_RUNTIME_DIR/yume/*name*.log*
+holds what that client printed since this GUI last started it. The runtime
+directory must be set, and *yume* in it is kept private to the user.
+
+## EXIT STATUS
+
+The window exits with 0. **--headless** and **--import-kit** exit with 0 when
+every step passed, 1 when a step failed and 2 when nothing could be done,
+such as for an unknown kit or a usage error. **--capture** exits with 0 or 1.
+
+## SEE ALSO
+
+man:yume(1), man:yumed(8)
+
+**docs/GUI.md** describes the pages, and **docs/protocol/CONTROL_1.md** the
+control protocol.

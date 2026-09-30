@@ -195,6 +195,14 @@ An optional callback reports each state change on the runtime context.
 `SessionEngine::traffic()` supplies the per-session payload and record byte
 counts. The endpoint test checks both across a reconnect.
 
+With `control.socket` or `yume --control-socket`, both programs serve
+[control protocol 1](protocol/CONTROL_1.md) on an owner-only UNIX socket:
+this snapshot with the fixed posture and tuning limits, circuits and route
+proposals, route acceptance, the last 256 lines the program printed and, for
+`yume`, a stop request. `yume_native_control_socket_test` covers each request,
+its refusals and bounds, and the native runtime test stops a running client
+over the socket.
+
 A server endpoint reloads its credential stores on request, and `yumed` does
 so on SIGHUP. Reload replaces the security factory that every later session
 takes its credentials from, including sessions on accepts armed before the
@@ -562,7 +570,17 @@ without raising the 256 MiB RSS growth guard. Other sanitizer tests keep their
 existing options. This finite workload does not measure live queue ownership,
 prove a memory plateau or observe automatic rekeys.
 
-There is no desktop GUI. CodeQL
+The optional desktop GUI, `yume-gui` (`YUME_BUILD_GUI=ON`, Qt 6.4 or later),
+starts each kit's `yume` detached, stops it with the control socket's stop
+request and shows its status, printed lines, posture and route proposals.
+It imports sealed kits through `yume --import-kit` and accepts a shorter route
+only from a review of that exact proposal. `yume_gui_test`,
+`yume_gui_ui_test`, `yume_gui_ui_rtl_test` and `yume_gui_live_test` cover the
+lifecycle, keyboard access, right-to-left layout and a live connect, stop,
+reconnect and stop against a real daemon. Its tray icon shows the selected
+kit's state. The GUI is not packaged, runs only on Linux, starts nothing at
+login and does not restart a crashed client.
+See [the desktop GUI](GUI.md). CodeQL
 analyzes the native programs, `libyume` and the module libraries. Debian definitions
 use the native config-only daemon, validate configuration before startup and
 leave the service disabled after installation. Native release archives carry

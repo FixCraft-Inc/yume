@@ -791,8 +791,9 @@ Config Parse(const nlohmann::json& document);
 // from the command line. Only keys whose values cannot change the wire image,
 // authentication, encryption, admission, destination policy or leak
 // protection are here: the numeric address dialled instead of resolving the
-// host, which TLS and admission still authenticate, and the loopback SOCKS5
-// listener. The SOCKS5 values need exactly one socks5 adapter. A server
+// host, which TLS and admission still authenticate, the loopback SOCKS5
+// listener and the path of the owner-only control socket. The SOCKS5 values
+// need exactly one socks5 adapter. A server
 // document, or one too malformed to hold a key, keeps its own content, so
 // Parse and the caller report the file's error.
 struct RunSettings final {
@@ -800,6 +801,9 @@ struct RunSettings final {
     std::optional<std::string> socks5_listen_address;
     // Decimal text. Anything else reaches Parse as a string and fails there.
     std::optional<std::string> socks5_listen_port;
+    // Replaces the control object, so a program that starts the client
+    // chooses where its control socket lives.
+    std::optional<std::string> control_socket;
 };
 
 // A host a client endpoint may name: an IP literal or a DNS name of at most

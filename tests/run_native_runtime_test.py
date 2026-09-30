@@ -521,23 +521,45 @@ def check_outer_carrier_evidence(yume: Path, kit: Path, environment: dict[str, s
     print(f"outer-carrier evidence verified: {len(events)} events, graceful close echoed")
 
 
+def control_request(path: Path, request: dict[str, object]) -> dict[str, object]:
+    """One control protocol 1 exchange: a request line, then one reply line."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(10)
+        connection.connect(str(path))
+        connection.sendall(json.dumps(request).encode() + b"\n")
+        reply = b""
+        while True:
+            chunk = connection.recv(65536)
+            if not chunk:
+                break
+            reply += chunk
+    if not reply.endswith(b"\n") or reply.count(b"\n") != 1:
+        raise session.SessionFailure(f"the control reply is not one line: {reply!r}")
+    value = json.loads(reply)
+    if not isinstance(value, dict) or value.get("control") != 1:
+        raise session.SessionFailure(f"the control reply is not protocol 1: {value!r}")
+    return value
+
+
 def check_control_status(yume: Path, kit: Path, environment: dict[str, str],
                          root: Path, socks_port: int, target_port: int) -> None:
-    """yume --status reads the running client's owner-only control socket."""
+    """The running client's owner-only control socket, at the path
+    --control-socket names: yume --status, the posture, the printed lines and
+    a stop request that ends the client as SIGTERM does."""
     control_dir = root / "control"
     control_dir.mkdir(mode=0o700)
     socket_path = control_dir / "control.sock"
-    config = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))
-    config["control"] = {"socket": str(socket_path)}
-    variant = kit / "client/yume-control.json"
-    variant.write_text(json.dumps(config), encoding="utf-8")
+    config = kit / "client/yume.json"
+    if "control" in json.loads(config.read_text(encoding="utf-8")):
+        raise session.SessionFailure("the setup kit already names a control socket")
+    flags = ["--config", str(config), "--control-socket", str(socket_path)]
 
     def status() -> subprocess.CompletedProcess[str]:
-        return subprocess.run([str(yume), "--config", str(variant), "--status"], env=environment,
+        return subprocess.run([str(yume), *flags, "--status"], env=environment,
                               capture_output=True, text=True, timeout=10, check=False)
 
     with (root / "yume-control.log").open("wb") as log:
-        client = subprocess.Popen([str(yume), "--config", str(variant)], env=environment,
+        client = subprocess.Popen([str(yume), *flags], env=environment,
                                   stdout=log, stderr=subprocess.STDOUT)
         try:
             session.wait_for_port("127.0.0.1", socks_port, client, time.monotonic() + 30)
@@ -552,18 +574,46 @@ def check_control_status(yume: Path, kit: Path, environment: dict[str, str],
                     f"SOCKS5: 127.0.0.1:{socks_port}" not in lines or
                     "sent: 0 bytes of payload" in result.stdout):
                 raise session.SessionFailure(f"yume --status reported {result!r}")
-            session.stop_process(client, "yume with a control socket")
+            reply = control_request(socket_path, {"control": 1, "request": "status"})
+            posture = reply.get("posture", {})
+            if (reply.get("requests") != ["status", "messages", "stop"] or
+                    posture.get("transport") != "YTP/1" or
+                    posture.get("limits", {}).get("max_epoch_bytes") != 1048576 or
+                    posture.get("epoch_bytes") != 1048576):
+                raise session.SessionFailure(f"the status reply is wrong: {reply!r}")
+            reply = control_request(socket_path,
+                                    {"control": 1, "request": "messages", "after": 0})
+            texts = [message["text"] for message in reply["messages"]]
+            if ("session authenticated" not in texts or
+                    f"SOCKS5 on 127.0.0.1 port {socks_port}" not in texts or
+                    reply["missed"] != 0 or reply["more"] is not False or
+                    [message["seq"] for message in reply["messages"]] !=
+                    list(range(1, len(texts) + 1))):
+                raise session.SessionFailure(f"the messages reply is wrong: {reply!r}")
+            later = control_request(socket_path, {"control": 1, "request": "messages",
+                                                  "after": len(texts)})
+            if later["messages"] or later["instance"] != reply["instance"]:
+                raise session.SessionFailure(f"messages after the last were {later!r}")
+            reply = control_request(socket_path, {"control": 1, "request": "stop"})
+            if reply != {"control": 1, "stopping": True}:
+                raise session.SessionFailure(f"the stop reply is wrong: {reply!r}")
+            code = client.wait(timeout=15)
             client = None
+            if code != 0:
+                raise session.SessionFailure(f"yume exited with {code} after a stop request")
         finally:
             if client is not None and client.poll() is None:
                 client.kill()
                 client.wait(timeout=5)
     if socket_path.exists():
         raise session.SessionFailure("yume left its control socket behind")
+    log_text = (root / "yume-control.log").read_text(encoding="utf-8", errors="replace")
+    if "yume: stopping on a control request" not in log_text:
+        raise session.SessionFailure("yume did not report the stop request")
     result = status()
     if result.returncode != 1 or "no yume is running on the control socket" not in result.stderr:
         raise session.SessionFailure(f"--status without a client reported {result!r}")
-    print("control socket verified: yume --status showed the connected session")
+    print("control socket verified: status, posture, messages and a stop request")
 
 
 def check_client_reconnects(yumed: Path, yume: Path, kit: Path, environment: dict[str, str],

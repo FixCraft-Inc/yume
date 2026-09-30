@@ -37,7 +37,9 @@ using yume::engine::Status;
 using yume::engine::StatusCode;
 using yume::providers::AsioExecutionContext;
 using yume::runtime::ClientControlView;
+using yume::runtime::ControlRequests;
 using yume::runtime::ControlServer;
+using yume::runtime::MessageLog;
 using yume::runtime::NativeClientState;
 using yume::runtime::NativeClientStatus;
 using yume::runtime::NativeLinkStatus;
@@ -152,6 +154,7 @@ NativeClientStatus connected_status(std::chrono::steady_clock::time_point now) {
     status.state = NativeClientState::Connected;
     status.server_identity = "sha256:0123";
     status.connected_since = now - 3723s;
+    status.epoch_bytes = 524288U;
     status.sessions = 3U;
     status.failed_attempts = 0U;
     status.last_failure = Status(StatusCode::Closed, "peer closed \xff");
@@ -167,6 +170,10 @@ ClientControlView view() {
     ClientControlView result;
     result.server_host = "origin.example.net";
     result.server_port = 443U;
+    result.max_queued_bytes = 4194304U;
+    result.max_epoch_bytes = 1048576U;
+    result.credit_returns_per_window = 2U;
+    result.idle_epoch_rotation = false;
     result.socks5.emplace_back(boost::asio::ip::make_address("127.0.0.1"),
                                1080U);
     result.forwards.emplace_back(boost::asio::ip::make_address("::1"), 2222U);
@@ -200,12 +207,35 @@ void test_status_reply_fields() {
     NativeClientStatus waiting;
     waiting.state = NativeClientState::Waiting;
     waiting.retry_delay = 4000ms;
+    // A stale epoch size is not reported outside a session.
+    waiting.epoch_bytes = 524288U;
     const Json retry =
         Json::parse(yume::runtime::client_status_reply(waiting, view(), now));
     check(retry.at("state") == "waiting" && retry.at("retry_ms") == 4000 &&
               retry.at("last_failure").is_null() &&
               !retry.contains("server_identity"),
           "the waiting reply is wrong");
+
+    // The posture names the fixed composition and the tuning limits the
+    // client runs with, and the session's epoch only while connected.
+    const auto& posture = connected.at("posture");
+    check(posture.at("transport") == std::string(yume::kYtpVersion) &&
+              posture.at("suite") == std::string(yume::kTransportSuite) &&
+              posture.at("evidence_profile") ==
+                  std::string(yume::kEvidenceProfile) &&
+              posture.at("security") == "openssl35.ytp1-security" &&
+              posture.at("crypto_backend")
+                  .get<std::string>()
+                  .starts_with("openssl-3.") &&
+              posture.at("limits") == Json({{"max_queued_bytes", 4194304},
+                                            {"max_epoch_bytes", 1048576},
+                                            {"credit_returns_per_window", 2},
+                                            {"idle_epoch_rotation", false}}) &&
+              posture.at("epoch_bytes") == 524288,
+          "the connected posture is wrong");
+    check(!retry.at("posture").contains("epoch_bytes") &&
+              retry.at("posture").at("limits") == posture.at("limits"),
+          "the waiting posture is wrong");
 }
 
 void test_status_text() {
@@ -479,15 +509,16 @@ void test_accept_route() {
     const auto path = directory.path / "control.sock";
     std::vector<std::string> accepted;
     auto server = runner.sync([&] {
+        ControlRequests requests;
+        requests.accept_route = [&accepted](std::string_view id) {
+            if (id != "00112233aabbccdd") return Status(StatusCode::NotFound);
+            accepted.emplace_back(id);
+            return Status::success();
+        };
         return require(ControlServer::open(
             runner.context, path,
             [] { return std::string(R"({"control":1})"); }, {},
-            [&accepted](std::string_view id) {
-                if (id != "00112233aabbccdd")
-                    return Status(StatusCode::NotFound);
-                accepted.emplace_back(id);
-                return Status::success();
-            }));
+            std::move(requests)));
     });
     const auto reply = yume::runtime::query_control_accept_route(
         path, "00112233aabbccdd", 2000ms);
@@ -527,6 +558,171 @@ void test_accept_route() {
     check(accepted == std::vector<std::string>{"00112233aabbccdd"},
           "acceptance saw something other than the one valid id");
     runner.sync([&] { server->close(); });
+}
+
+// The log numbers messages from 1, keeps the latest kCapacity, cuts long
+// text and counts what it no longer keeps.
+void test_message_log() {
+    MessageLog log;
+    check(log.instance().size() == 16U &&
+              log.instance().find_first_not_of("0123456789abcdef") ==
+                  std::string_view::npos,
+          "the log instance is not 16 hexadecimal digits");
+    check(MessageLog().instance() != log.instance(),
+          "two logs share an instance");
+    check(log.after(0U).entries.empty() && log.after(0U).missed == 0U,
+          "an empty log returned messages");
+    log.add("first");
+    log.add(std::string(MessageLog::kMaxTextBytes + 10U, 'x'));
+    const auto page = log.after(0U);
+    check(page.entries.size() == 2U && page.entries[0].seq == 1U &&
+              page.entries[0].text == "first" &&
+              page.entries[1].text.size() == MessageLog::kMaxTextBytes &&
+              page.missed == 0U,
+          "the log did not keep two messages");
+    check(log.after(1U).entries.size() == 1U &&
+              log.after(1U).entries[0].seq == 2U &&
+              log.after(2U).entries.empty() && log.after(9U).missed == 0U,
+          "the log did not page after a number");
+    for (std::size_t index = 0; index < MessageLog::kCapacity; ++index) {
+        log.add("message " + std::to_string(index));
+    }
+    const auto full = log.after(0U);
+    check(full.entries.size() == MessageLog::kCapacity &&
+              full.entries.front().seq == 3U && full.missed == 2U &&
+              log.after(1U).missed == 1U && log.after(2U).missed == 0U,
+          "the log did not drop its oldest messages");
+}
+
+// A messages reply pages by number within its byte bound, and says what
+// was dropped and what is left.
+void test_messages_request() {
+    Directory directory;
+    Runner runner;
+    const auto path = directory.path / "control.sock";
+    MessageLog log;
+    auto server = runner.sync([&] {
+        ControlRequests requests;
+        requests.messages = &log;
+        return require(ControlServer::open(
+            runner.context, path,
+            [] { return std::string(R"({"control":1})"); }, {},
+            std::move(requests)));
+    });
+    check(require(yume::runtime::query_control_status(path, 2000ms)) ==
+              R"({"requests":["status","messages"],"control":1})",
+          "the status reply does not name messages");
+    const auto ask = [&path](const std::string& after) {
+        const std::string request =
+            R"({"control":1,"request":"messages","after":)" + after + "}\n";
+        const auto reply = exchange(path, request);
+        check(!reply.empty() && reply.back() == '\n' &&
+                  reply.find('\n') == reply.size() - 1U,
+              "the messages reply is not one line");
+        return Json::parse(reply);
+    };
+    const Json empty = ask("0");
+    check(empty.at("control") == 1 &&
+              empty.at("instance") == std::string(log.instance()) &&
+              empty.at("messages") == Json::array() &&
+              empty.at("missed") == 0 && empty.at("more") == false,
+          "an empty log's reply is wrong");
+    log.add("session authenticated");
+    log.add("peer said \xff");
+    const Json two = ask("0");
+    const auto& messages = two.at("messages");
+    check(messages.size() == 2U && messages[0].at("seq") == 1 &&
+              messages[0].at("text") == "session authenticated" &&
+              messages[1].at("text") == "peer said \xef\xbf\xbd" &&
+              messages[0].at("time").get<std::string>().size() == 24U &&
+              messages[0].at("time").get<std::string>().back() == 'Z',
+          "the messages were not returned in order with their times");
+    check(
+        ask("1").at("messages").size() == 1U && ask("2").at("messages").empty(),
+        "the reply did not start after the given number");
+    // More than one reply's worth: the first stops within the bound and says
+    // more is left, and asking after its last number gets the rest.
+    for (std::size_t index = 0; index < MessageLog::kCapacity; ++index) {
+        log.add(std::string(400U, static_cast<char>('a' + index % 26U)));
+    }
+    std::uint64_t after = 0U;
+    std::size_t received = 0U;
+    std::size_t replies = 0U;
+    bool more = true;
+    std::uint64_t missed = 0U;
+    while (more) {
+        const std::string request =
+            R"({"control":1,"request":"messages","after":)" +
+            std::to_string(after) + "}\n";
+        const auto reply = exchange(path, request);
+        check(reply.size() < yume::runtime::kControlMessagesReplyBytes,
+              "a messages reply exceeded its bound");
+        const Json page = Json::parse(reply);
+        if (replies == 0U) missed = page.at("missed").get<std::uint64_t>();
+        more = page.at("more").get<bool>();
+        check(!page.at("messages").empty(), "a reply with more was empty");
+        received += page.at("messages").size();
+        after = page.at("messages").back().at("seq").get<std::uint64_t>();
+        check(++replies < 10U, "paging did not end");
+    }
+    check(replies >= 2U && received == MessageLog::kCapacity && missed == 2U &&
+              after == MessageLog::kCapacity + 2U,
+          "paging through the log lost or repeated messages");
+    const std::pair<std::string, std::string> cases[] = {
+        {"{\"control\":1,\"request\":\"messages\"}\n",
+         "malformed: messages holds exactly control, request and after"},
+        {"{\"control\":1,\"request\":\"messages\",\"after\":-1}\n",
+         "malformed: messages holds exactly control, request and after"},
+        {"{\"control\":1,\"request\":\"messages\",\"after\":\"3\"}\n",
+         "malformed: messages holds exactly control, request and after"},
+        {"{\"control\":1,\"request\":\"messages\",\"after\":0,\"x\":1}\n",
+         "malformed: messages holds exactly control, request and after"},
+        {"{\"control\":1,\"request\":\"stop\"}\n",
+         "unknown_request: unknown request"},
+    };
+    for (const auto& [request, error] : cases) {
+        check(error_of(exchange(path, request)) == error,
+              "a bad messages request got the wrong error");
+    }
+    runner.sync([&] { server->close(); });
+}
+
+// A stop request is answered first, then stops the program once.
+void test_stop_request() {
+    Directory directory;
+    Runner runner;
+    const auto path = directory.path / "control.sock";
+    std::atomic<int> stops{0};
+    auto server = runner.sync([&] {
+        ControlRequests requests;
+        requests.stop = [&stops] { ++stops; };
+        return require(ControlServer::open(
+            runner.context, path,
+            [] { return std::string(R"({"control":1})"); }, {},
+            std::move(requests)));
+    });
+    check(require(yume::runtime::query_control_status(path, 2000ms)) ==
+              R"({"requests":["status","stop"],"control":1})",
+          "the status reply does not name stop");
+    check(error_of(exchange(path,
+                            "{\"control\":1,\"request\":\"stop\","
+                            "\"now\":true}\n")) ==
+              "malformed: a request holds exactly control and request",
+          "a stop request with another field was accepted");
+    check(error_of(exchange(path,
+                            "{\"control\":1,\"request\":\"messages\","
+                            "\"after\":0}\n")) ==
+              "unknown_request: unknown request",
+          "a server without a log answered messages");
+    check(stops == 0, "a refused request stopped the program");
+    check(exchange(path, "{\"control\":1,\"request\":\"stop\"}\n") ==
+              "{\"control\":1,\"stopping\":true}\n",
+          "the stop reply is wrong");
+    for (int waited = 0; stops == 0 && waited < 200; ++waited)
+        std::this_thread::sleep_for(10ms);
+    check(stops == 1, "the stop request did not stop the program once");
+    runner.sync([&] { server->close(); });
+    check(stops == 1, "closing the server stopped the program again");
 }
 
 // A silent connection ends at the request deadline, and connections beyond
@@ -595,6 +791,9 @@ int main() {
         test_server_status();
         test_requests_and_errors();
         test_accept_route();
+        test_message_log();
+        test_messages_request();
+        test_stop_request();
         test_deadline_and_limit();
         test_open_refusals();
     } catch (const std::exception& error) {

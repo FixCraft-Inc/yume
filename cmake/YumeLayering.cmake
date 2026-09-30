@@ -95,8 +95,11 @@ function(yume_check_03_source_layering source_dir)
     set(_providers_forbidden runtime config abi gui modules basefwx)
     # The C ABI must not acquire the desktop application's dependencies.
     set(_abi_forbidden gui modules basefwx)
+    # The GUI is a client of the control socket. It may use common/'s
+    # std-only helpers and nothing that holds transport state or secrets.
+    set(_gui_forbidden admission engine ytp circuit stealth fs providers runtime config abi modules basefwx)
 
-    foreach(_layer IN ITEMS common fs stealth admission runtime providers abi)
+    foreach(_layer IN ITEMS common fs stealth admission runtime providers abi gui)
         file(GLOB_RECURSE _layer_sources
             "${source_dir}/src/${_layer}/*.cpp"
             "${source_dir}/src/${_layer}/*.hpp"
@@ -121,6 +124,25 @@ function(yume_check_03_source_layering source_dir)
                 endif()
             endforeach()
         endforeach()
+    endforeach()
+
+    # Qt stays in the GUI: no other source includes a Qt header.
+    file(GLOB_RECURSE _all_sources
+        "${source_dir}/src/*.cpp"
+        "${source_dir}/src/*.hpp"
+        "${source_dir}/src/*.cc"
+        "${source_dir}/src/*.c"
+        "${source_dir}/src/*.h")
+    foreach(_source IN LISTS _all_sources)
+        file(RELATIVE_PATH _relative "${source_dir}" "${_source}")
+        if(_relative MATCHES "^src/gui/")
+            continue()
+        endif()
+        file(READ "${_source}" _contents)
+        if(_contents MATCHES "#[ \t]*include[ \t]*<Q[A-Za-z0-9_]*(/[A-Za-z0-9_]+)?>")
+            message(FATAL_ERROR
+                "Qt header outside the GUI: ${_relative}. Only src/gui may use Qt.")
+        endif()
     endforeach()
 
     file(GLOB_RECURSE _config_headers

@@ -90,6 +90,47 @@ jobs:
                 -DYUME_ABI_HEADER=include/yume/yume.h \
                 -P cmake/check_yume_abi_header.cmake
 
+  gui:
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # This image's Qt is 6.4, so the job holds the GUI to Qt 6.4 interfaces.
+      # The GUI links no YUME library, so it builds without the native
+      # application and its OpenSSL, Boost and nghttp2.
+      - name: Install Qt 6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build python3 fonts-dejavu-core \
+            libgl1-mesa-dri libglx-mesa0 libegl-mesa0 \
+            qt6-base-dev qt6-declarative-dev qt6-qpa-plugins \
+            qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls \
+            qml6-module-qtquick-dialogs qml6-module-qtquick-layouts \
+            qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window
+
+      - name: Configure the GUI alone
+        run: |
+          cmake -S . -B build-gui -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_BUILD_NATIVE_APPLICATION=OFF \
+            -DYUME_BUILD_GUI=ON \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build-gui --target yume-gui yume_gui_ui_test
+
+      # The headless lifecycle, import, capture and keyboard tests against the
+      # fake yume. The live test needs yume and yumed and runs where they build.
+      - name: GUI tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build-gui --output-on-failure -L gui
+
   build-and-smoke:
     needs: [preflight]
     runs-on: ubuntu-24.04

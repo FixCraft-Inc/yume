@@ -25,7 +25,9 @@ in from outside.
 The HTTP/2 and WebSocket carrier code and the browser profile came from
 transport v2, the protocol before YTP/1, which has been removed. The relay
 channel, file transfer, codecs and the share container live on as module
-libraries. The transport-v2 GUI was removed, and a new one is planned.
+libraries. The transport-v2 GUI was removed. The native
+[desktop GUI](GUI.md) is a separate Qt program that talks to `yume` only
+through its control socket.
 A new protocol name proves neither better speed nor stronger security.
 [Implementation status](IMPLEMENTATION_STATUS.md) lists the open gates.
 

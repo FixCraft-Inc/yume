@@ -26,6 +26,9 @@ option(YUME_BUILD_BASEFWX_MODULES
     "Build module libraries that use BaseFWX, such as the end-to-end relay channel"
     OFF)
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
+# The Qt 6 Quick desktop GUI, yume-gui. It needs Qt 6.4 or later, and no
+# other target depends on it or on Qt.
+option(YUME_BUILD_GUI "Build the Qt 6 Quick desktop GUI, yume-gui" OFF)
 set(YUME_DEPENDENCY_MANIFEST
     "${CMAKE_CURRENT_SOURCE_DIR}/config/dependencies.json")
 if(NOT EXISTS "${YUME_DEPENDENCY_MANIFEST}")

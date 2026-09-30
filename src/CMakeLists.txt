@@ -837,6 +837,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
 
         add_library(yume_native_runtime STATIC
             runtime/control_socket.cpp runtime/control_socket.hpp
+            runtime/message_log.cpp runtime/message_log.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp
             runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
             runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
@@ -2174,6 +2175,12 @@ if(YUME_BUILD_FUZZERS)
     yume_add_fuzzer(yume_fuzz_ytp1_auth fuzz_ytp1_auth.cpp yume_ytp1)
     yume_add_fuzzer(yume_fuzz_config_v1 fuzz_config_v1.cpp yume_config_v1)
     yume_add_fuzzer(yume_fuzz_circuit1 fuzz_circuit1.cpp yume_circuit1)
+endif()
+
+# The desktop GUI links no YUME library, so it builds with or without the
+# native application, and only with Qt.
+if(YUME_BUILD_GUI)
+    add_subdirectory(gui)
 endif()
 
 # ---------------------------------------------------------------------------

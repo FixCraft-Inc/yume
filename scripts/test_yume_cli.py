@@ -340,17 +340,23 @@ class Tracked(unittest.TestCase):
         self.layouts = yume_cli.load_layouts()
 
     def test_each_native_binary_has_one_layout(self) -> None:
-        self.assertEqual(sorted(item.binary for item in self.layouts), ["yume", "yumed"])
+        self.assertEqual(sorted(item.binary for item in self.layouts),
+                         ["yume", "yume-gui", "yumed"])
 
     def test_native_help_has_exactly_the_parser_options(self) -> None:
         # native_cli.cpp's parser, kRunFlags and the evidence and kit
-        # options, which only the client accepts.
+        # options, which only the client accepts, and the GUI's parser in
+        # src/gui/main.cpp.
         shared = {"--config", "--validate", "--status", "--version", "--completion", "--help",
                   "-h"}
         expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port",
-                                      "--outer-carrier-evidence", "--accept-route",
+                                      "--control-socket", "--outer-carrier-evidence",
+                                      "--accept-route",
                                       "--seal-kit", "--output", "--import-kit", "--into"},
-                    "yumed": shared}
+                    "yumed": shared,
+                    "yume-gui": {"--kit", "--page", "--theme", "--layout-direction", "--size",
+                                 "--no-tray", "--yume", "--capture", "--headless",
+                                 "--import-kit", "--name", "--version", "--help", "-h"}}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):
                 ordered, _ = yume_cli.resolve(layout)

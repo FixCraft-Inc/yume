@@ -514,14 +514,17 @@ fingerprint string or successful request is not whole-session equivalence.
 
 The default topology is single hop:
 
-@code text
-application -> local adapter -> YTP session -> yumed -> authorized target
-@end
+@diagram direct_route
 
-The server terminates YTP cryptography and is the explicit exit. It is not an
-onion relay. Federation, transit, directory, reverse administration, command
-execution and host-controller modes are outside the first YTP/1 path. Chat and
-file relay are planned as modules on the relay channel library.
+The server terminates YTP cryptography and is the explicit exit. A client can
+instead carry its streams through a [circuit](protocol/CIRCUIT_1.md) of two or
+three servers of one operator's [cluster](protocol/CLUSTER_1.md), where the
+entry knows the client but not the destinations and the exit knows the
+destinations but not the client. The operator runs every server of a cluster
+and can match what they see. Circuits across operators, a decentralized
+directory, reverse administration, command execution and host-controller
+modes do not exist. Chat and file relay are planned as modules on the relay
+channel library.
 
 See [YTP/1](protocol/YTP_1.md), [C ABI](ABI.md), and the
 [threat model](THREAT_MODEL.md) for the normative boundaries.

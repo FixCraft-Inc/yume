@@ -501,14 +501,62 @@ fingerprint string or successful request is not whole-session equivalence.
 
 The default topology is single hop:
 
+<!-- yume-diagram: direct_route -->
+<img src="diagrams/direct_route-vertical.svg" alt="The direct YUME route" width="600" height="568">
+
+<details>
+<summary>What each part does</summary>
+
+- **Application**: Reaches yume through its SOCKS5 listener, a local forward or the managed TUN device, or embeds YUME through the C ABI. ([`src/runtime/native_socks5.cpp`](../src/runtime/native_socks5.cpp), [`src/runtime/native_forward.cpp`](../src/runtime/native_forward.cpp), [`src/runtime/native_packet_adapter.cpp`](../src/runtime/native_packet_adapter.cpp), [`include/yume/yume.h`](../include/yume/yume.h))
+- **yume**: Holds one authenticated YTP/1 session to the server and carries each connection or packet flow as a stream inside it. ([`src/runtime/native_client_runtime.cpp`](../src/runtime/native_client_runtime.cpp), [`src/runtime/native_endpoint.cpp`](../src/runtime/native_endpoint.cpp))
+- **yumed**: Decrypts the session, checks that the client may use the service and reach the destination, and opens the outbound socket. It sees what it forwards. ([`src/runtime/native_server_runtime.cpp`](../src/runtime/native_server_runtime.cpp), [`src/runtime/native_egress_policy.cpp`](../src/runtime/native_egress_policy.cpp), [`src/providers/asio_direct_route_provider.cpp`](../src/providers/asio_direct_route_provider.cpp))
+- **Destination**: Gets an ordinary connection from the server, and sees the application's own traffic, such as its TLS.
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
 ```text
-application -> local adapter -> YTP session -> yumed -> authorized target
++----------------------------------+
+|  Application                     |
+|  browser, curl, any program      |
++-----------------+----------------+
+                   \
+                    \
+                     v
+   +-----------------+----------------+
+   |  yume                            |
+   |  client                          |
+   +-----------------+----------------+
+                      \
+                       \
+                        v ==YUME==>
+      +-----------------+----------------+
+      |  yumed                           |
+      |  ends the tunnel, applies policy |
+      +-----------------+----------------+
+                         \
+                          \
+                           v
+         +-----------------+----------------+
+         |  Destination                     |
+         |  sees yumed's address            |
+         +----------------------------------+
 ```
 
-The server terminates YTP cryptography and is the explicit exit. It is not an
-onion relay. Federation, transit, directory, reverse administration, command
-execution and host-controller modes are outside the first YTP/1 path. Chat and
-file relay are planned as modules on the relay channel library.
+</details>
+<!-- /yume-diagram -->
+
+The server terminates YTP cryptography and is the explicit exit. A client can
+instead carry its streams through a [circuit](protocol/CIRCUIT_1.md) of two or
+three servers of one operator's [cluster](protocol/CLUSTER_1.md), where the
+entry knows the client but not the destinations and the exit knows the
+destinations but not the client. The operator runs every server of a cluster
+and can match what they see. Circuits across operators, a decentralized
+directory, reverse administration, command execution and host-controller
+modes do not exist. Chat and file relay are planned as modules on the relay
+channel library.
 
 See [YTP/1](protocol/YTP_1.md), [C ABI](ABI.md), and the
 [threat model](THREAT_MODEL.md) for the normative boundaries.

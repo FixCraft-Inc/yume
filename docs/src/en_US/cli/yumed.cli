@@ -3,7 +3,6 @@ binary:    yumed
 manual:    yumed_8
 output:    src/runtime/yumed_help_text.hpp
 namespace: yume::runtime::yumed_cli
-output-kind: static-help
 ---
 @usage
 yumed --config <path> [--validate]

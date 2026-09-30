@@ -3,7 +3,6 @@ binary:    yume
 manual:    yume_1
 output:    src/runtime/yume_help_text.hpp
 namespace: yume::runtime::yume_cli
-output-kind: static-help
 ---
 @usage
 yume --config <path> [--validate] [run settings] [evidence]

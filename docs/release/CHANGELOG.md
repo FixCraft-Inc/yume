@@ -28,6 +28,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   in the source to appear in its contract page and the reverse. The
   documentation drift checks and the documentation tooling tests are CTests
   as well as CI steps.
+- **Sequence diagrams.** The documentation compiler draws messages between two
+  to four parties from one JSON file, as an animated SVG in both themes and as
+  ASCII for manuals and Markdown. [YUME explained](../EXPLAINED.md) now shows
+  where traffic goes, how a connection opens and what wraps the data on the
+  wire, and the [architecture](../ARCHITECTURE.md) shows the direct route.
 - **Relay channel library.** The relay v2 end-to-end channel between two users
   (handshake, sealed records and hybrid ratchet) builds apart from transport
   v2 as `yume_module_relay` when `YUME_BUILD_BASEFWX_MODULES` is on. Its labels
@@ -992,6 +997,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   only mark the carrier), the four-argument `SessionEngine::async_open` that
   only tests called, and untested move assignments of `Kit` and
   `LayerCipher`, which hold secrets.
+- **The stream CLI help writer.** It served the transport-v2 CLI layouts, with
+  interpolated runtime constants from a header that no longer exists. Every
+  layout generates constant help and completion strings.
 - **Transport v2.** Its wire, AUTH v2, security modes, client and daemon, GUI
   facade and control API, federation, host controller, the Go Chrome TLS
   helper, the v2 benchmark and self-test drivers, the multi-target and Windows

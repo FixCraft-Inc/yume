@@ -1,0 +1,110 @@
+{
+  "name": "traffic_path",
+  "type": "flow",
+  "title": "Where YUME traffic goes",
+  "summary": "yume carries application traffic to yumed's front door. A valid admission proof reaches an authenticated YTP/1 session and its policy check. Anything else gets the cover website.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "application",
+      "kind": "app",
+      "title": "Application",
+      "sub": "any program"
+    },
+    {
+      "id": "yume",
+      "kind": "client",
+      "title": "yume",
+      "sub": "on your device",
+      "note": "Collects traffic from applications and sends it to the server inside one long-lived connection that looks like a browser visiting a website.",
+      "source": [
+        "src/runtime/native_client_runtime.cpp"
+      ]
+    },
+    {
+      "id": "front_door",
+      "kind": "gate",
+      "title": "Front door",
+      "sub": "checks the proof",
+      "note": "Answers every request without a valid admission proof from the static website, so a scanner sees an ordinary site.",
+      "source": [
+        "src/providers/h2_web_front_door.cpp",
+        "src/providers/ytp1_h2_admission.cpp"
+      ]
+    },
+    {
+      "id": "session",
+      "kind": "server",
+      "title": "YTP/1 session",
+      "sub": "authenticated",
+      "note": "Both identities are proven with Ed25519 and ML-DSA-87, and the session keys mix X25519, ML-KEM-1024, the client's access PSK and the TLS connection.",
+      "source": [
+        "src/engine/session_engine.cpp",
+        "src/providers/openssl_security_provider.cpp"
+      ]
+    },
+    {
+      "id": "policy",
+      "kind": "gate",
+      "title": "Policy check",
+      "sub": "service, destination",
+      "note": "Each stream names a service. yumed checks that this client may use it and that every address of the destination is allowed before it opens a socket.",
+      "source": [
+        "src/runtime/native_credentials.cpp",
+        "src/runtime/native_egress_policy.cpp"
+      ]
+    },
+    {
+      "id": "destination",
+      "kind": "target",
+      "title": "Destination",
+      "sub": "sees yumed's address"
+    },
+    {
+      "id": "cover",
+      "kind": "site",
+      "title": "Cover website",
+      "sub": "static pages",
+      "side": true,
+      "note": "The operator's own static site, loaded when yumed starts. There is no built-in fallback site.",
+      "source": [
+        "src/providers/cover_site.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "application",
+      "to": "yume",
+      "label": "SOCKS5, forward or TUN"
+    },
+    {
+      "from": "yume",
+      "to": "front_door",
+      "channel": "tunnel",
+      "label": "TLS 1.3 + HTTP/2"
+    },
+    {
+      "from": "front_door",
+      "to": "session",
+      "label": "valid proof"
+    },
+    {
+      "from": "session",
+      "to": "policy",
+      "label": "OPEN a stream"
+    },
+    {
+      "from": "policy",
+      "to": "destination",
+      "label": "allowed"
+    },
+    {
+      "from": "front_door",
+      "to": "cover",
+      "label": "no valid proof"
+    }
+  ]
+}

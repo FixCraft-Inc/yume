@@ -1,0 +1,80 @@
+{
+  "name": "record_layers",
+  "type": "layers",
+  "title": "What wraps your data on the wire",
+  "summary": "After authentication each YTP/1 frame is sealed, framed for the carrier and sent as WebSocket data on an HTTP/2 stream inside TLS 1.3.",
+  "comment": [
+    "Checked against docs/protocol/YTP_1.md (frame header, post-AUTH record",
+    "protection, H2-duplex carrier framing) and src/providers/h2_duplex_carrier.cpp."
+  ],
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "data",
+      "role": "data",
+      "title": "Your data",
+      "sub": "stream bytes or a packet",
+      "note": "What the application sent: bytes of a stream, or one whole packet for UDP and TUN.",
+      "source": ["src/engine/session_engine.cpp"]
+    },
+    {
+      "id": "frame",
+      "role": "neutral",
+      "title": "YTP/1 frame",
+      "sub": "type, stream, length",
+      "note": "A 12-byte header names the record type, the stream and the payload length. Frames are what both ends of a session exchange.",
+      "source": ["src/ytp/protocol.hpp"]
+    },
+    {
+      "id": "sealed",
+      "role": "keys",
+      "title": "Sealed record",
+      "sub": "AES-256-GCM, one-use key",
+      "note": "The frame is encrypted and authenticated with a key used for this record only, named by its direction, epoch and sequence.",
+      "source": ["src/providers/openssl_security_provider.cpp"]
+    },
+    {
+      "id": "envelope",
+      "role": "neutral",
+      "title": "Carrier envelope",
+      "sub": "12-byte length header",
+      "note": "Keeps each sealed record whole across partial reads and however WebSocket splits or joins messages.",
+      "source": ["src/providers/h2_duplex_carrier.cpp"]
+    },
+    {
+      "id": "websocket",
+      "role": "disguise",
+      "title": "WebSocket",
+      "sub": "binary messages",
+      "note": "The carrier speaks ordinary WebSocket, with client frames masked as a browser masks them.",
+      "source": ["src/stealth/websocket_codec.cpp"]
+    },
+    {
+      "id": "http2",
+      "role": "disguise",
+      "title": "HTTP/2",
+      "sub": "extended CONNECT stream",
+      "note": "One RFC 8441 CONNECT stream on a connection that has already loaded the cover site like a browser.",
+      "source": ["src/stealth/h2_carrier.cpp"]
+    },
+    {
+      "id": "tls",
+      "role": "disguise",
+      "title": "TLS 1.3",
+      "sub": "Chrome ClientHello",
+      "note": "The outer encryption, opened with the ClientHello of the pinned Chrome release. An observer sees this layer and its sizes and timing.",
+      "source": ["src/providers/tls13_secure_channel.cpp", "src/stealth/tls_client_profile.cpp"]
+    },
+    {
+      "id": "tcp",
+      "role": "outside",
+      "title": "TCP",
+      "sub": "to the server's port",
+      "note": "One connection to the server's address, which anyone on the path can see.",
+      "source": ["src/providers/asio_tcp_byte_channel_provider.cpp"]
+    }
+  ],
+  "edges": []
+}

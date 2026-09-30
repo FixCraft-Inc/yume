@@ -1567,6 +1567,10 @@ AppliedRunSettings ApplyRunSettings(Json& document, const RunSettings& run) {
             applied.pointers.emplace_back("/endpoint/connect_address");
         }
     }
+    if (run.control_socket) {
+        document["control"] = Json{{"socket", *run.control_socket}};
+        applied.pointers.emplace_back("/control/socket");
+    }
     if (!run.socks5_listen_address && !run.socks5_listen_port) return applied;
     const auto adapters = document.find("adapters");
     if (adapters == document.end() || !adapters->is_array()) return applied;

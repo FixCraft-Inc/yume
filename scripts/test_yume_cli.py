@@ -348,7 +348,8 @@ class Tracked(unittest.TestCase):
         shared = {"--config", "--validate", "--status", "--version", "--completion", "--help",
                   "-h"}
         expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port",
-                                      "--outer-carrier-evidence", "--accept-route",
+                                      "--control-socket", "--outer-carrier-evidence",
+                                      "--accept-route",
                                       "--seal-kit", "--output", "--import-kit", "--into"},
                     "yumed": shared}
         for layout in self.layouts:

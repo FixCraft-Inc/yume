@@ -39,6 +39,7 @@
 #include "providers/openssl_security_provider.hpp"
 #include "runtime/circuit_status.hpp"
 #include "runtime/control_socket.hpp"
+#include "runtime/message_log.hpp"
 #include "runtime/module_launcher.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
@@ -103,10 +104,17 @@ constexpr RunFlag kRunFlags[] = {
     {"--socks-address", "IP address",
      &config::v1::RunSettings::socks5_listen_address},
     {"--socks-port", "port", &config::v1::RunSettings::socks5_listen_port},
+    {"--control-socket", "path", &config::v1::RunSettings::control_socket},
 };
 
 std::string_view program(NativeCliRole role) noexcept {
     return role == NativeCliRole::Server ? "yumed" : "yume";
+}
+
+// What this process has printed, for the control socket's messages request.
+MessageLog& messages() noexcept {
+    static MessageLog log;
+    return log;
 }
 
 void say(NativeCliRole role, std::string_view text) noexcept {
@@ -114,9 +122,16 @@ void say(NativeCliRole role, std::string_view text) noexcept {
     std::fprintf(stderr, "%.*s: %.*s\n", static_cast<int>(name.size()), name.data(),
                  static_cast<int>(text.size()), text.data());
     std::fflush(stderr);
+    messages().add(text);
 }
 
 void say_stopped(NativeCliRole role, const Status& status) noexcept {
+    try {
+        messages().add("runtime stopped (status " +
+                       std::to_string(static_cast<int>(status.code())) +
+                       "): " + status.message());
+    } catch (...) {
+    }
     const auto name = program(role);
     const auto& message = status.message();
     std::fprintf(stderr, "%.*s: runtime stopped (status %d): %.*s\n",
@@ -240,7 +255,7 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             arguments.status || arguments.accept_route ||
             arguments.outer_carrier_evidence || arguments.run.connect_address ||
             arguments.run.socks5_listen_address ||
-            arguments.run.socks5_listen_port) {
+            arguments.run.socks5_listen_port || arguments.run.control_socket) {
             error =
                 "use --seal-kit DIR --output FILE or --import-kit FILE --into "
                 "DIR alone";
@@ -256,11 +271,15 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
         error = "--outer-carrier-evidence needs a run, not --validate";
         return std::nullopt;
     }
+    // Status and route acceptance find the running client by its socket, so
+    // they take the run setting that names it and no other.
     if (arguments.status &&
         (arguments.validate || arguments.outer_carrier_evidence ||
          arguments.run.connect_address || arguments.run.socks5_listen_address ||
          arguments.run.socks5_listen_port)) {
-        error = "--status takes only --config";
+        error = role == NativeCliRole::Client
+                    ? "--status takes only --config and --control-socket"
+                    : "--status takes only --config";
         return std::nullopt;
     }
     if (arguments.accept_route &&
@@ -268,7 +287,7 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
          arguments.outer_carrier_evidence || arguments.run.connect_address ||
          arguments.run.socks5_listen_address ||
          arguments.run.socks5_listen_port)) {
-        error = "--accept-route takes only --config";
+        error = "--accept-route takes only --config and --control-socket";
         return std::nullopt;
     }
     return arguments;
@@ -330,6 +349,10 @@ void report_run_settings(NativeCliRole role, const config::v1::Config& config,
     if (endpoint->connect_address()) {
         say(role, "/endpoint/connect_address " + *endpoint->connect_address() +
                       origin(run.connect_address, "--connect"));
+    }
+    if (config.control()) {
+        say(role, "/control/socket " + config.control()->socket_path +
+                      origin(run.control_socket, "--control-socket"));
     }
     const config::v1::Socks5Adapter* socks5 = nullptr;
     std::size_t socks5_index = 0;
@@ -592,7 +615,7 @@ int print_status(NativeCliRole role, const config::v1::Config& config) {
     return kExitStopped;
 }
 
-// yume --accept-route: the one control request that changes anything.
+// yume --accept-route: accepts the running client's route proposal.
 int accept_route(NativeCliRole role, const config::v1::Config& config,
                  std::string_view id) {
     if (!config.control()) {
@@ -665,16 +688,18 @@ int serve(NativeCliRole role, const config::v1::Config& config,
         context->finish();
     };
 
-    // Opens the control socket, or stops the program when it cannot.
+    // Opens the control socket, or stops the program when it cannot. Both
+    // programs serve what they have printed.
     const auto open_control = [&](const std::string& path,
                                   ControlStatusSource source,
-                                  ControlRouteAcceptance accept = {}) {
+                                  ControlRequests requests) {
+        requests.messages = &messages();
         auto opened = ControlServer::open(
             context, path, std::move(source),
             [role](Status status) noexcept {
                 say(role, describe("control socket stopped", status));
             },
-            std::move(accept));
+            std::move(requests));
         if (!opened.ok()) {
             say(role,
                 describe("cannot open the control socket", opened.status()));
@@ -739,15 +764,17 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                 }
                 if (config.control()) {
                     const std::weak_ptr<NativeServerRuntime> weak = server;
-                    if (!open_control(config.control()->socket_path, [weak] {
-                            const auto runtime = weak.lock();
-                            if (!runtime)
-                                throw std::runtime_error(
-                                    "the server has stopped");
-                            return server_status_reply(
-                                runtime->status(),
-                                std::chrono::steady_clock::now());
-                        }))
+                    if (!open_control(config.control()->socket_path,
+                                      [weak] {
+                                          const auto runtime = weak.lock();
+                                          if (!runtime)
+                                              throw std::runtime_error(
+                                                  "the server has stopped");
+                                          return server_status_reply(
+                                              runtime->status(),
+                                              std::chrono::steady_clock::now());
+                                      },
+                                      {}))
                         return;
                 }
                 return;
@@ -787,6 +814,11 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                 std::get<config::v1::ClientEndpoint>(config.endpoint());
             view.server_host = endpoint.host();
             view.server_port = endpoint.port();
+            const auto& limits = config.limits();
+            view.max_queued_bytes = limits.max_queued_bytes();
+            view.max_epoch_bytes = limits.max_epoch_bytes();
+            view.credit_returns_per_window = limits.credit_returns_per_window();
+            view.idle_epoch_rotation = limits.idle_epoch_rotation();
             view.socks5 = client->socks5_endpoints();
             view.forwards = client->forward_endpoints();
             for (const auto& adapter : config.adapters()) {
@@ -799,6 +831,21 @@ int serve(NativeCliRole role, const config::v1::Config& config,
             }
             if (config.control()) {
                 const std::weak_ptr<NativeClientRuntime> weak = client;
+                ControlRequests requests;
+                // Only a client with circuits takes accept-route.
+                if (config.circuits()) {
+                    requests.accept_route = [weak](std::string_view id) {
+                        const auto runtime = weak.lock();
+                        return runtime ? runtime->accept_route(id)
+                                       : Status(StatusCode::Closed);
+                    };
+                }
+                // A stop request ends the client as SIGTERM does, so a
+                // desktop program that started it can stop it too.
+                requests.stop = [&]() noexcept {
+                    say(role, "stopping on a control request");
+                    stop(kExitStopped);
+                };
                 static_cast<void>(open_control(
                     config.control()->socket_path,
                     [weak, view = std::move(view)] {
@@ -810,14 +857,7 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                             std::chrono::steady_clock::now(),
                             runtime->circuits());
                     },
-                    // Only a client with circuits takes accept-route.
-                    config.circuits()
-                        ? ControlRouteAcceptance([weak](std::string_view id) {
-                              const auto runtime = weak.lock();
-                              return runtime ? runtime->accept_route(id)
-                                             : Status(StatusCode::Closed);
-                          })
-                        : ControlRouteAcceptance{}));
+                    std::move(requests)));
             }
         } catch (...) {
             say(role, "startup failed");

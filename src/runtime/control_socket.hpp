@@ -21,6 +21,7 @@
 #include "engine/status.hpp"
 #include "providers/asio_execution_context.hpp"
 #include "runtime/circuit_status.hpp"
+#include "runtime/message_log.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_server_runtime.hpp"
 
@@ -34,12 +35,14 @@ namespace yume::runtime {
 // kControlRequestBytes, within kControlRequestTimeout. The server answers
 // with one JSON object and a newline, then closes the connection. The status
 // reply carries "control":1, the "requests" the server takes, "program" and
-// the fields client_status_reply or server_status_reply writes. A server with
-// route acceptance also takes {"control":1,"request":"accept-route","id":ID},
-// the only request that changes anything, and answers
-// {"control":1,"accepted":ID}. Any other request, or a malformed one, gets
-// {"control":1,"error":TEXT,"code":CODE}, where clients act on CODE. Replies
-// hold no key, credential or payload.
+// the fields client_status_reply or server_status_reply writes. Depending on
+// its ControlRequests, a server also takes
+// {"control":1,"request":"accept-route","id":ID}, answered with
+// {"control":1,"accepted":ID}; {"control":1,"request":"messages","after":N},
+// answered by messages_reply; and {"control":1,"request":"stop"}, answered
+// with {"control":1,"stopping":true} before the program stops. Any other
+// request, or a malformed one, gets {"control":1,"error":TEXT,"code":CODE},
+// where clients act on CODE. Replies hold no key, credential or payload.
 inline constexpr std::uint32_t kControlProtocol = 1U;
 inline constexpr std::size_t kControlRequestBytes = 512U;
 inline constexpr std::size_t kControlReplyBytes = std::size_t{64} * 1024U;
@@ -55,6 +58,24 @@ using ControlStatusSource = std::function<std::string()>;
 using ControlRouteAcceptance =
     std::function<engine::Status(std::string_view id)>;
 
+// Stops the program. It runs on the server's context once the stop request's
+// reply has been written, or has failed because the client left.
+using ControlStop = std::function<void()>;
+
+// The requests a control socket takes besides status. One left empty is not
+// offered: status replies leave it out of "requests", and asking for it gets
+// unknown_request. messages must outlive the server.
+struct ControlRequests final {
+    ControlRouteAcceptance accept_route;
+    const MessageLog* messages{nullptr};
+    ControlStop stop;
+};
+
+// A messages reply stays below this many bytes. Messages that do not fit are
+// left for the client's next request.
+inline constexpr std::size_t kControlMessagesReplyBytes =
+    kControlReplyBytes - 1024U;
+
 // A control socket. LocalListener's UNIX rules apply: the socket's
 // directory must belong to this user and be closed to writes by group and
 // others, the socket is mode 0600, and a peer of another user is closed. At
@@ -69,7 +90,7 @@ public:
         std::shared_ptr<providers::AsioExecutionContext> context,
         const std::filesystem::path& path, ControlStatusSource status,
         std::function<void(engine::Status)> on_failure = {},
-        ControlRouteAcceptance accept_route = {});
+        ControlRequests requests = {});
 
     ControlServer(const ControlServer&) = delete;
     ControlServer& operator=(const ControlServer&) = delete;
@@ -90,6 +111,11 @@ struct ClientControlView final {
     std::vector<boost::asio::ip::tcp::endpoint> socks5;
     std::vector<boost::asio::ip::tcp::endpoint> forwards;
     std::vector<std::string> unix_forwards;
+    // The configuration's limits that a tuning preset sets.
+    std::uint32_t max_queued_bytes{0U};
+    std::uint32_t max_epoch_bytes{0U};
+    std::uint32_t credit_returns_per_window{0U};
+    bool idle_epoch_rotation{false};
 };
 
 // The status reply for a client runtime at time now, with its circuits'
@@ -104,6 +130,12 @@ std::string client_status_reply(
 // outbound link and inbound sessions.
 std::string server_status_reply(const NativeServerStatus& status,
                                 std::chrono::steady_clock::time_point now);
+
+// The reply to a messages request: the messages numbered above after that
+// the log keeps, oldest first, as many as fit in kControlMessagesReplyBytes,
+// with the log's instance, how many numbered above after it no longer keeps
+// and whether kept messages were left out.
+std::string messages_reply(const MessageLog& log, std::uint64_t after);
 
 // Sends a status request to the control socket at path and returns the reply
 // without its newline. Refuses a socket whose peer runs as another user.

@@ -148,6 +148,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   owner-only directory. `yume-setup` names the command after it writes a
   client. The format replaces the BaseFWX `.yss` container library that
   transport v2 kept client settings in, and that library is removed.
+- **Control requests for the desktop GUI.** `yume --control-socket PATH`
+  names the control socket for one run, since an imported kit carries no
+  socket path, and `--status` and `--accept-route` take it too. Both
+  programs answer `messages`, the latest 256 lines they printed, numbered,
+  paged within 63 KiB and tagged with an instance that changes on restart.
+  `yume` answers `stop`, then stops as on `SIGTERM`. Its status gains
+  `posture`: the transport, suite, evidence profile, security provider and
+  crypto library, the tuning limits in use and, while connected, the
+  session's negotiated key epoch. All are additive under
+  [control protocol 1](../protocol/CONTROL_1.md)'s rules.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

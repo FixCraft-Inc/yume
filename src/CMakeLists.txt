@@ -837,6 +837,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
 
         add_library(yume_native_runtime STATIC
             runtime/control_socket.cpp runtime/control_socket.hpp
+            runtime/message_log.cpp runtime/message_log.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp
             runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
             runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp

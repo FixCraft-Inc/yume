@@ -26,9 +26,10 @@ what an older program lacks.
 
 ## The socket
 
-The configuration's `control.socket` names the socket's path. The directory
-that holds it must belong to the running user and be closed to writes by
-group and others. The socket is mode 0600, and a connection from another user
+The configuration's `control.socket` names the socket's path, and
+`yume --control-socket` names another for one run, so a program that starts
+`yume` chooses where to find it. The directory that holds it must belong to
+the running user and be closed to writes by group and others. The socket is mode 0600, and a connection from another user
 is closed before it is read. The server serves at most 4 connections at once,
 and later ones wait. Each ends after one reply, or after 2 seconds without a
 complete request.
@@ -95,8 +96,8 @@ A client acts on `code`. The text is for people and may change.
 
 `accept-route`, taken by a `yume` whose configuration has a `circuits`
 section, accepts the shorter route a status reply proposes, by its `id`, a
-string of at most 64 characters. It is the only request that changes
-anything. A proposal is described in [cluster 1](CLUSTER_1.md):
+string of at most 64 characters. It changes which routes the client uses. A
+proposal is described in [cluster 1](CLUSTER_1.md):
 
 @code text
 {"control": 1, "request": "accept-route", "id": "00112233aabbccdd"}
@@ -105,6 +106,37 @@ anything. A proposal is described in [cluster 1](CLUSTER_1.md):
 
 An id that no current proposal has gets `not_found`, so an answer to a
 proposal the user has not seen accepts nothing.
+
+`messages`, taken by both programs, changes nothing. It returns the lines
+the program has printed, numbered from 1 in order, after the number `after`:
+
+@code text
+{"control": 1, "request": "messages", "after": 0}
+{"control": 1, "instance": "5f0c9a3e11d2b746", "messages": [{"seq": 1, "time": "2026-09-30T12:00:00.250Z", "text": "session authenticated"}], "missed": 0, "more": false}
+@end
+
+A program keeps its latest 256 lines, each cut to 512 bytes. The reply holds
+the kept lines numbered above `after`, oldest first, each with its `seq`, its
+`time` in UTC and its `text`, as many as fit in 63 KiB. `missed` counts the
+lines numbered above `after` that the program no longer keeps, and `more` is
+`true` when kept lines were left out, so the client asks again after the last
+`seq` it received. `instance` is the same for the life of the program and
+changes when it starts again, when numbering restarts at 1. The lines are the
+ones the program writes to its standard error, and they hold no key,
+credential or payload.
+
+`stop`, taken by `yume`, changes the program's state: it answers, then stops
+the program as `SIGTERM` does, closing its sessions and listeners and
+removing the TUN networking it owns. A program that started `yume` stops it
+this way:
+
+@code text
+{"control": 1, "request": "stop"}
+{"control": 1, "stopping": true}
+@end
+
+The program stops also when the client leaves before reading the answer,
+since the request itself was valid.
 
 ## The status of yume
 
@@ -124,8 +156,19 @@ proposal the user has not seen accepts nothing.
 | `traffic` | `payload_bytes_sent`, `payload_bytes_received`, `record_bytes_sent` and `record_bytes_received`, summed over every session |
 | `socks5` | The SOCKS5 listeners, as `address:port` |
 | `forwards` | The forward listeners, as `address:port` or a socket path |
+| `posture` | The fixed composition and the tuning limits in use, below |
 | `circuits` | `null`, or the circuits below when the configuration has a `circuits` section |
 @end
+
+`posture` holds what this build and configuration run, for a display that
+states the posture rather than offering switches: the `transport` version
+(`YTP/1`), its `suite`, the captured `evidence_profile` the outer layers
+follow, the `security` provider and the `crypto_backend` library, as
+`yume --version` prints them, and `limits`, the configuration's
+`max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window` and
+`idle_epoch_rotation`, which the tuning presets set. When connected it also
+holds `epoch_bytes`, the session's key epoch: the smaller of this client's
+and the server's `max_epoch_bytes`.
 
 `circuits` holds `hops`, `min_hops`, `accepted_hops` (0 unless a shorter route
 was accepted), `current_hops` (the length new streams take, 0 while none can
@@ -164,9 +207,10 @@ circuit.
 ## Limits
 
 - Replies hold no key, credential, admission secret or payload. They do name
-  server identities, cluster node names and local listener addresses, which
-  the socket's permissions keep to the user who runs the program.
-- Any process of that user can send `accept-route`. That user could edit the
-  configuration anyway.
+  server identities, cluster node names, local listener addresses and the
+  program's printed lines, which the socket's permissions keep to the user
+  who runs the program.
+- Any process of that user can send `accept-route` and `stop`. That user could
+  edit the configuration or end the process anyway.
 - The socket is not a stable interface for other users or other hosts, and
   the C ABI does not serve it.

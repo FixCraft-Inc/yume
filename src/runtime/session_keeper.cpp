@@ -187,12 +187,14 @@ void SessionKeeper::on_session(
         counted_session_ = session_;
     }
     const auto peer = session_->authenticated_peer();
+    const auto epoch_bytes = session_->epoch_bytes();
     transition([&](NativeClientStatus& current) {
         current.state = NativeClientState::Connected;
         current.connected_since = authenticated_at_;
         current.retry_delay = std::chrono::milliseconds(0);
         ++current.sessions;
         current.failed_attempts = 0U;
+        current.epoch_bytes = epoch_bytes;
         current.server_identity.clear();
         if (peer.ok()) current.server_identity = peer.value().identity();
     });
@@ -214,6 +216,7 @@ void SessionKeeper::on_session_ended(
     retire_counted_session();
     transition([&](NativeClientStatus& current) {
         current.server_identity.clear();
+        current.epoch_bytes.reset();
         current.last_failure = reason;
     });
     say("session ended, reconnecting");
@@ -258,6 +261,7 @@ void SessionKeeper::schedule_reconnect(const Status* failure) noexcept {
     transition([&](NativeClientStatus& current) {
         current.state = NativeClientState::Waiting;
         current.server_identity.clear();
+        current.epoch_bytes.reset();
         current.retry_delay = delay;
         if (failure) {
             ++current.failed_attempts;
@@ -291,6 +295,7 @@ void SessionKeeper::close() noexcept {
     transition([](NativeClientStatus& current) {
         current.state = NativeClientState::Closed;
         current.server_identity.clear();
+        current.epoch_bytes.reset();
         current.retry_delay = std::chrono::milliseconds(0);
     });
 }

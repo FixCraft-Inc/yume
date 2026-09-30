@@ -275,6 +275,10 @@ The daemon's answer holds its listeners, the number of client sessions
 and, in a cluster, the list's serial and expiry, each peer's links and
 the circuits this server carries, counted per link and never per pair of
 neighbours.
+The daemon also takes
+{"control":\:1,\:"request":\:"messages",\:"after":\:N}, which returns
+the lines it printed after line
+.IR N .
 .SH EXAMPLES
 Validate an existing server kit, then start its configured listeners:
 .PP

@@ -103,16 +103,19 @@ class NativeCli(unittest.TestCase):
                     self.assert_usage_failure(name, arguments, "--completion needs bash")
 
     def test_status_is_an_action_on_its_own(self) -> None:
+        self.assert_usage_failure("yumed", ["--config", "x.json", "--status", "--validate"],
+                                  "--status takes only --config")
         for name in PROGRAMS:
             with self.subTest(binary=name):
                 self.assert_usage_failure(name, ["--status"], "--config is required")
-                self.assert_usage_failure(name, ["--config", "x.json", "--status", "--validate"],
-                                          "--status takes only --config")
-        for extra in (["--connect", "192.0.2.7"],
+        for extra in (["--validate"], ["--connect", "192.0.2.7"],
                       ["--outer-carrier-evidence", "/tmp/evidence.json"]):
             with self.subTest(extra=extra):
                 self.assert_usage_failure("yume", ["--config", "x.json", "--status", *extra],
-                                          "--status takes only --config")
+                                          "--status takes only --config and --control-socket")
+                self.assert_usage_failure(
+                    "yume", ["--config", "x.json", "--accept-route", "ab", *extra],
+                    "--accept-route takes only --config and --control-socket")
 
     def test_status_needs_a_control_socket_and_a_running_client(self) -> None:
         with tempfile.TemporaryDirectory(prefix="yume-cli-") as temporary:
@@ -131,6 +134,21 @@ class NativeCli(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertEqual(result.stderr,
                              f"yume: no yume is running on the control socket {socket_path}\n")
+            # --control-socket finds a client whose configuration names none,
+            # or another socket than the file names.
+            other = Path(temporary) / "other.sock"
+            for flags in (["--control-socket", str(other)],):
+                result = self.invoke("yume", "--config", str(path), "--status", *flags)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stderr,
+                                 f"yume: no yume is running on the control socket {other}\n")
+            del config["control"]
+            path.write_text(json.dumps(config), encoding="utf-8")
+            result = self.invoke("yume", "--config", str(path), "--accept-route", "ab",
+                                 "--control-socket", str(other))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(result.stderr,
+                             f"yume: no yume is running on the control socket {other}\n")
 
     def kit(self, root: Path, example: str = "config/yume.json") -> Path:
         kit = root / "kit"
@@ -196,7 +214,8 @@ class NativeCli(unittest.TestCase):
         for arguments in (["--seal-kit", "d"], ["--output", "f"], ["--import-kit", "f"],
                           ["--into", "d"], ["--seal-kit", "d", "--into", "e"],
                           ["--seal-kit", "d", "--output", "f", "--config", "c.json"],
-                          ["--import-kit", "f", "--into", "d", "--status"]):
+                          ["--import-kit", "f", "--into", "d", "--status"],
+                          ["--import-kit", "f", "--into", "d", "--control-socket", "/s"]):
             with self.subTest(arguments=arguments):
                 self.assert_usage_failure("yume", arguments, message)
         self.assert_usage_failure("yume", ["--seal-kit"], "--seal-kit needs exactly one path")
@@ -227,13 +246,13 @@ class NativeCli(unittest.TestCase):
                     self.assert_usage_failure(name, values, f"unknown argument: {values[0]}")
 
     def test_only_the_client_takes_run_settings(self) -> None:
-        for flag in ("--connect", "--socks-address", "--socks-port"):
+        for flag in ("--connect", "--socks-address", "--socks-port", "--control-socket"):
             with self.subTest(flag=flag):
                 self.assert_usage_failure("yumed", [flag, "1"], f"unknown argument: {flag}")
 
     def test_run_settings_take_exactly_one_value(self) -> None:
         for flag, value in (("--connect", "IP address"), ("--socks-address", "IP address"),
-                            ("--socks-port", "port")):
+                            ("--socks-port", "port"), ("--control-socket", "path")):
             for arguments in ([flag], ["--config", "client.json", flag, "1", flag, "2"]):
                 with self.subTest(arguments=arguments):
                     self.assert_usage_failure("yume", arguments, f"{flag} needs exactly one {value}")
@@ -249,6 +268,9 @@ class NativeCli(unittest.TestCase):
             (["--connect", "origin.example.com"], "/endpoint/connect_address", "IP literal"),
             (["--socks-address", "0.0.0.0"], "/adapters/0/listen_address", "127.0.0.1 or ::1"),
             (["--socks-port", "65536"], "/adapters/0/listen_port", ""),
+            (["--control-socket", "relative.sock"], "/control/socket",
+             "normalized absolute path"),
+            (["--control-socket", "/run/" + "x" * 120], "/control/socket", ""),
         )
         for flags, pointer, detail in cases:
             with self.subTest(flags=flags):
@@ -261,11 +283,13 @@ class NativeCli(unittest.TestCase):
     def test_validation_reports_where_each_run_setting_came_from(self) -> None:
         # The example's credential files are absent, so validation fails after
         # the report, before any file is read as a credential.
-        result = self.validate_example("--connect", "192.0.2.7", "--socks-port", "1081")
+        result = self.validate_example("--connect", "192.0.2.7", "--socks-port", "1081",
+                                       "--control-socket", "/run/user/1000/yume/a.sock")
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, "")
         self.assertTrue(result.stderr.startswith(
             "yume: /endpoint/connect_address 192.0.2.7 (from --connect)\n"
+            "yume: /control/socket /run/user/1000/yume/a.sock (from --control-socket)\n"
             "yume: /adapters/0/listen_address 127.0.0.1 (from the configuration)\n"
             "yume: /adapters/0/listen_port 1081 (from --socks-port)\n"
             "yume: credentials are invalid: "), result.stderr)

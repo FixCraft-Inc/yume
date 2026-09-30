@@ -12,9 +12,9 @@ man-manual:  YUME Manual
 @synopsis
 **yume** **--config** *path* [ **--validate** ] [ **--connect** *ip* ]
 [ **--socks-address** *ip* ] [ **--socks-port** *port* ]
-[ **--outer-carrier-evidence** *path* ]
-**yume** **--config** *path* **--status**
-**yume** **--config** *path* **--accept-route** *id*
+[ **--control-socket** *path* ] [ **--outer-carrier-evidence** *path* ]
+**yume** **--config** *path* [ **--control-socket** *path* ] **--status**
+**yume** **--config** *path* [ **--control-socket** *path* ] **--accept-route** *id*
 **yume** **--seal-kit** *directory* **--output** *file*
 **yume** **--import-kit** *file* **--into** *directory*
 **yume** **--version**
@@ -79,6 +79,16 @@ configuration's rule applies: 127.0.0.1 or ::1.
 @cli help: Listen for SOCKS5 on this port
 
 Set the listen port of the configuration's only SOCKS5 adapter, 1 to 65535.
+@opt **--control-socket** *path*
+@cli file: yes
+@cli spell: --control-socket <path>
+@cli help: Serve the control socket at this path
+
+Serve the control socket at *path* instead of **control.socket**, or add one
+to a configuration without it, so a program that starts **yume**, such as
+the desktop GUI, chooses where to find it. The path must be absolute and
+normalized, in a directory this user owns that is not group or world
+writable. With **--status** or **--accept-route** it names the socket to ask.
 @end
 
 The status option asks the running client of the same configuration for
@@ -89,13 +99,13 @@ its state.
 @cli spell: --status
 @cli help: Print the running client's state from its control socket
 
-Connect to the control socket that **control.socket** names, print the
-running client's state and exit. The report names the connection state, how
+Connect to the control socket that **control.socket** or
+**--control-socket** names, print the running client's state and exit. The report names the connection state, how
 long it has lasted or when the next attempt starts, the server and its
 verified identity, the sessions and failed attempts, payload and record bytes
 in each direction, the local listeners and the last failure. The exit status
-is 2 when the configuration names no control socket and 1 when no client
-answers on it. **--status** takes no option besides **--config**.
+is 2 when neither names a control socket and 1 when no client answers on it.
+**--status** takes no option besides **--config** and **--control-socket**.
 With circuits, it also shows each circuit's route by name, the hop count in
 use against the configured one, whether plain HTTP is refused, and any
 proposal of a shorter route with its id and what that route gives up.
@@ -108,9 +118,8 @@ Accept the shorter route that the running client of this configuration
 proposed, when no route of **circuits.hops** could be built. The *id* is the
 one **--status** shows, so an answer to an older proposal accepts nothing.
 The acceptance lasts until routes of the configured length work again or
-the client exits. It is the one control request that changes anything, and
-only a process of the client's own user can send it. Exit statuses follow
-**--status**, and an id no proposal has exits with status 2.
+the client exits. Only a process of the client's own user can send it. Exit
+statuses follow **--status**, and an id no proposal has exits with status 2.
 @end
 
 The kit options move a client kit to another device in one file, a sealed
@@ -180,11 +189,13 @@ gracefully. **--validate** does not accept this option.
 @include shared/native_control.part
 
 The client's answer holds its connection **state**, the server, traffic
-totals, its local listeners, the last failure and, with a **circuits**
-section, its routes and any proposal of a shorter route. The client with
-circuits also takes the request
+totals, its local listeners, the last failure, its fixed posture and tuning
+limits and, with a **circuits** section, its routes and any proposal of a
+shorter route. The client with circuits also takes the request
 {"control":1,"request":"accept-route","id":ID}, which **--accept-route**
-sends.
+sends. Both programs take {"control":1,"request":"messages","after":N}, which
+returns the lines they printed after line *N*, and the client takes
+{"control":1,"request":"stop"}, which stops it as **SIGTERM** does.
 
 ## SIGNALS
 

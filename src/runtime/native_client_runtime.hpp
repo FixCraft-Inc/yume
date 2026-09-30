@@ -47,6 +47,9 @@ struct NativeClientStatus final {
     std::string server_identity;
     // When the current session authenticated, set while Connected.
     std::chrono::steady_clock::time_point connected_since{};
+    // The session's key epoch, the smaller of the two sides'
+    // max_epoch_bytes, set while Connected.
+    std::optional<std::uint32_t> epoch_bytes;
     // Delay before the next attempt, set while Waiting.
     std::chrono::milliseconds retry_delay{0};
     // Sessions authenticated since start, and failed attempts since the most

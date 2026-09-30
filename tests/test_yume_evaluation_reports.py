@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import struct
@@ -204,6 +205,14 @@ class CircuitWanTest(unittest.TestCase):
             near, far = circuit_wan.address(side), circuit_wan.router_address(side)
             self.assertEqual(near.rsplit(".", 1)[0], far.rsplit(".", 1)[0])
             self.assertEqual((int(near.rsplit(".", 1)[1]), int(far.rsplit(".", 1)[1])), (1, 2))
+
+    def test_presets_come_from_the_tuning_table(self) -> None:
+        table = json.loads((ROOT / "config/tuning_presets.json").read_text())
+        self.assertEqual(wan.preset_names(), [item["id"] for item in table["presets"]])
+        for item in table["presets"]:
+            self.assertEqual(wan.preset_limits(item["id"]), item["limits"])
+        with self.assertRaises(ValueError):
+            wan.preset_limits("warp")
 
     def test_summary_compares_every_path_with_the_direct_session(self) -> None:
         downloads = {"direct": [{"tail_mbit_s": 80.0, "first_byte_ms": 400.0},

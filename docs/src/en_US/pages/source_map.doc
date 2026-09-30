@@ -57,7 +57,7 @@ Implementation paths below are relative to `src/`. The candidate header in
 | `fs/` | Bounded regular-file reads, and reading and writing owner-only secret files. Reads open nonblocking and refuse special files before reading |
 | `config/v1/` | The strict schema-1 parser with RFC 6901 error pointers |
 | `modules/` | Module programs, which link no YUME library, and the libraries they build on. `echo/` is the example module that the tests run. `relay/` is the relay channel between two users (handshake, records and hybrid ratchet), the stores its users keep (encrypted chat history, the password-derived relay secret and peer trust), and the invite and directory records with the policies that check them. `files/` holds relay file transfer on top of it: an outbound source pinned to one opened file and a confined receiver that publishes only a verified file. `codecs/` is the application codec core for a planned codec module: the HTTP request and response envelope, backend dialing rules and the Monero RPC descriptor. The libraries build only with `YUME_BUILD_BASEFWX_MODULES=ON` |
-| `test_support/` | Allocation-failure hooks, generated TLS identities and JA3/JA4 ClientHello analysis for isolated tests, with no production allocator or runtime dependency |
+| `test_support/` | Allocation-failure hooks, generated TLS identities, JA3/JA4 ClientHello analysis and the in-memory circuit fixtures (an execution thread, packet stream pairs, an echoing destination and node identities) for isolated tests, with no production allocator or runtime dependency |
 | `include/yume/` | The public candidate C header. It is unfrozen, and development SDK installation is opt-in |
 @end
 

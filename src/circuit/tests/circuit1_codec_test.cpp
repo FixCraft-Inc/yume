@@ -47,7 +47,7 @@ Direction direction_of(const std::string& name) {
 
 Bytes encode_relay(const std::string& name) {
     const auto bucket = vectors().number("relay." + name + ".bucket");
-    Bytes output(RelayCapacity(bucket));
+    Bytes output(RelayCapacity(direction_of(name), bucket));
     const auto status = EncodeRelayMessage(
         direction_of(name),
         static_cast<RelayType>(vectors().number("relay." + name + ".type")),
@@ -68,19 +68,33 @@ Bytes create_body() {
 }
 
 void TestBuckets() {
-    CHECK(RelayCapacity(512) == 460U);
-    CHECK(RelayCapacity(4096) == 4044U);
-    CHECK(RelayCapacity(16384) == 16332U);
-    CHECK(RelayCapacity(1024) == 0U);
-    CHECK(BucketForPayload(0U) == 512U);
-    CHECK(BucketForPayload(452U) == 512U);
-    CHECK(BucketForPayload(453U) == 4096U);
-    CHECK(BucketForPayload(4036U) == 4096U);
-    CHECK(BucketForPayload(4037U) == 16384U);
-    CHECK(BucketForPayload(16324U) == 16384U);
-    CHECK(!BucketForPayload(16325U).has_value());
-    CHECK(BucketForPayload(kExtendPayloadBytes) == 4096U);
-    CHECK(BucketForPayload(kHopHandshakeBytes) == 16384U);
+    constexpr auto kForward = Direction::Forward;
+    constexpr auto kBackward = Direction::Backward;
+    CHECK(RelayCapacity(kForward, 512) == 460U);
+    CHECK(RelayCapacity(kBackward, 4096) == 4044U);
+    CHECK(RelayCapacity(kForward, 16311) == 16259U);
+    CHECK(RelayCapacity(kBackward, 16315) == 16263U);
+    // Each largest bucket belongs to its own direction only.
+    CHECK(RelayCapacity(kForward, 16315) == 0U);
+    CHECK(RelayCapacity(kBackward, 16311) == 0U);
+    CHECK(RelayCapacity(kForward, 16384) == 0U);
+    CHECK(RelayCapacity(kForward, 1024) == 0U);
+    CHECK(!IsBucket(static_cast<Direction>(0), 512));
+    CHECK(MaxDataPayload(kForward) == 16251U);
+    CHECK(MaxDataPayload(kBackward) == 16255U);
+    CHECK(BucketForPayload(kForward, 0U) == 512U);
+    CHECK(BucketForPayload(kForward, 452U) == 512U);
+    CHECK(BucketForPayload(kBackward, 453U) == 4096U);
+    CHECK(BucketForPayload(kForward, 4036U) == 4096U);
+    CHECK(BucketForPayload(kForward, 4037U) == 16311U);
+    CHECK(BucketForPayload(kBackward, 4037U) == 16315U);
+    CHECK(BucketForPayload(kForward, 16251U) == 16311U);
+    CHECK(!BucketForPayload(kForward, 16252U).has_value());
+    CHECK(BucketForPayload(kBackward, 16255U) == 16315U);
+    CHECK(!BucketForPayload(kBackward, 16256U).has_value());
+    CHECK(!BucketForPayload(static_cast<Direction>(3), 0U).has_value());
+    CHECK(BucketForPayload(kForward, kExtendPayloadBytes) == 4096U);
+    CHECK(BucketForPayload(kBackward, kHopHandshakeBytes) == 16315U);
 }
 
 void TestHandshakes() {
@@ -118,8 +132,11 @@ void TestHandshakes() {
 void TestCells() {
     for (const auto* name :
          {"layers.forward0", "layers.forward1", "layers.backward0"}) {
+        const auto direction = std::string_view(name).ends_with("backward0")
+                                   ? Direction::Backward
+                                   : Direction::Forward;
         const auto cell = vectors().bytes(std::string(name) + ".cell");
-        const auto decoded = DecodeCell(cell);
+        const auto decoded = DecodeCell(direction, cell);
         CHECK(decoded.ok());
         if (!decoded.ok()) continue;
         CHECK(decoded.value->command == Command::Relay);
@@ -127,38 +144,59 @@ void TestCells() {
         CHECK(decoded.value->layers == 3U);
         CHECK(decoded.value->body.size() == 508U);
         const auto encoded =
-            EncodeCell(Command::Relay, 512U, decoded.value->body);
+            EncodeCell(direction, Command::Relay, 512U, decoded.value->body);
         CHECK(encoded.ok() && *encoded.value == cell);
     }
     const auto body = create_body();
-    const auto create = EncodeCell(Command::Create, 4096U, body);
+    const auto create =
+        EncodeCell(Direction::Forward, Command::Create, 4096U, body);
     CHECK(create.ok());
     if (create.ok()) {
-        const auto decoded = DecodeCell(*create.value);
+        const auto decoded = DecodeCell(Direction::Forward, *create.value);
         CHECK(decoded.ok() && decoded.value->command == Command::Create &&
               decoded.value->layers == 0U &&
               Bytes(decoded.value->body.begin(), decoded.value->body.end()) ==
                   body);
     }
     const auto hop = vectors().bytes("handshake.hop");
-    CHECK(EncodeCell(Command::Created, 16384U, hop).ok());
-    // A CREATE body fits a 16384-byte cell but that bucket is not allowed.
-    CHECK(EncodeCell(Command::Create, 16384U, body).status.code ==
-          ErrorCode::InvalidBucket);
+    const auto created =
+        EncodeCell(Direction::Backward, Command::Created, 16315U, hop);
+    CHECK(created.ok());
+    if (created.ok()) {
+        const auto decoded = DecodeCell(Direction::Backward, *created.value);
+        CHECK(decoded.ok() && decoded.value->command == Command::Created);
+        // Its size is not even a forward bucket.
+        CHECK(DecodeCell(Direction::Forward, *created.value).status.code ==
+              ErrorCode::InvalidBucket);
+    }
+    // CREATED only goes backward, CREATE only forward.
+    CHECK(EncodeCell(Direction::Forward, Command::Created, 16311U, hop)
+              .status.code == ErrorCode::WrongDirection);
+    CHECK(EncodeCell(Direction::Backward, Command::Create, 4096U, body)
+              .status.code == ErrorCode::WrongDirection);
+    // A CREATE body fits the largest cell but that bucket is not allowed.
+    CHECK(EncodeCell(Direction::Forward, Command::Create, 16311U, body)
+              .status.code == ErrorCode::InvalidBucket);
     // A hop handshake does not fit a 4096-byte cell at all, and the length
     // bound comes before the command's bucket rule.
-    CHECK(EncodeCell(Command::Created, 4096U, hop).status.code ==
-          ErrorCode::InvalidLength);
-    CHECK(EncodeCell(Command::Created, 512U, Bytes(10U)).status.code ==
-          ErrorCode::InvalidBucket);
-    CHECK(EncodeCell(Command::Relay, 512U, Bytes(460U)).status.code ==
-          ErrorCode::InvalidLength);
-    CHECK(EncodeCell(Command::Relay, 512U, Bytes(476U)).ok());
-    CHECK(EncodeCell(Command::Relay, 1000U, Bytes(16U)).status.code ==
-          ErrorCode::InvalidBucket);
+    CHECK(EncodeCell(Direction::Backward, Command::Created, 4096U, hop)
+              .status.code == ErrorCode::InvalidLength);
+    CHECK(EncodeCell(Direction::Backward, Command::Created, 512U, Bytes(10U))
+              .status.code == ErrorCode::InvalidBucket);
+    CHECK(EncodeCell(Direction::Forward, Command::Relay, 512U, Bytes(460U))
+              .status.code == ErrorCode::InvalidLength);
+    CHECK(
+        EncodeCell(Direction::Forward, Command::Relay, 512U, Bytes(476U)).ok());
+    CHECK(EncodeCell(Direction::Forward, Command::Relay, 16311U, Bytes(16307U))
+              .ok());
+    CHECK(EncodeCell(Direction::Backward, Command::Relay, 16311U, Bytes(16307U))
+              .status.code == ErrorCode::InvalidBucket);
+    CHECK(EncodeCell(Direction::Forward, Command::Relay, 1000U, Bytes(16U))
+              .status.code == ErrorCode::InvalidBucket);
     std::array<std::uint8_t, 511> small{};
-    CHECK(EncodeCell(Command::Relay, 512U, Bytes(476U), small).code ==
-          ErrorCode::OutputTooSmall);
+    CHECK(
+        EncodeCell(Direction::Forward, Command::Relay, 512U, Bytes(476U), small)
+            .code == ErrorCode::OutputTooSmall);
 }
 
 void TestRelayMessages() {
@@ -183,7 +221,9 @@ void TestRelayMessages() {
         if (vectors().number("relay." + name + ".bucket") == 512U) {
             CHECK(encoded == vectors().bytes("relay." + name + ".message"));
         }
-        // The opposite direction accepts only the types both may send.
+        // The opposite direction accepts only the types both may send, and
+        // no message of a largest bucket, whose capacity is its direction's
+        // own.
         const auto reversed = DecodeRelayMessage(
             direction_of(name) == Direction::Forward ? Direction::Backward
                                                      : Direction::Forward,
@@ -191,8 +231,15 @@ void TestRelayMessages() {
         const auto type = decoded.value->type;
         const bool both = type == RelayType::Data || type == RelayType::End ||
                           type == RelayType::StreamCredit;
-        CHECK(reversed.ok() == both);
-        if (!both) CHECK(reversed.status.code == ErrorCode::WrongDirection);
+        const auto bucket = vectors().number("relay." + name + ".bucket");
+        const bool largest =
+            bucket == kForwardBuckets[2] || bucket == kBackwardBuckets[2];
+        CHECK(reversed.ok() == (both && !largest));
+        if (largest) {
+            CHECK(reversed.status.code == ErrorCode::InvalidLength);
+        } else if (!both) {
+            CHECK(reversed.status.code == ErrorCode::WrongDirection);
+        }
     }
     for (const auto* name :
          {"layers.forward0.message", "layers.forward1.message"}) {
@@ -239,7 +286,7 @@ void TestRelayMessages() {
     }
 
     // Encoders refuse what decoders refuse.
-    Bytes capacity(RelayCapacity(512));
+    Bytes capacity(RelayCapacity(Direction::Forward, 512));
     CHECK(EncodeRelayMessage(Direction::Forward, RelayType::Connected, 1U, {},
                              capacity)
               .code == ErrorCode::WrongDirection);
@@ -269,8 +316,12 @@ void TestNegative(const std::string& name, const std::string& line) {
     Bytes bytes;
     if (base == "cell.forward") {
         bytes = vectors().bytes("layers.forward0.cell");
+    } else if (base == "cell.backward") {
+        bytes = vectors().bytes("layers.backward0.cell");
     } else if (base == "cell.create") {
-        bytes = *EncodeCell(Command::Create, 4096U, create_body()).value;
+        bytes = *EncodeCell(Direction::Forward, Command::Create, 4096U,
+                            create_body())
+                     .value;
     } else if (base == "create.body") {
         bytes = create_body();
     } else if (base == "handshake.client" || base == "handshake.hop") {
@@ -300,7 +351,10 @@ void TestNegative(const std::string& name, const std::string& line) {
 
     ErrorCode code = ErrorCode::Ok;
     if (base.starts_with("cell.")) {
-        code = DecodeCell(bytes).status.code;
+        code = DecodeCell(base == "cell.backward" ? Direction::Backward
+                                                  : Direction::Forward,
+                          bytes)
+                   .status.code;
     } else if (base == "create.body") {
         code = DecodeCreate(bytes).status.code;
     } else if (base == "handshake.client") {

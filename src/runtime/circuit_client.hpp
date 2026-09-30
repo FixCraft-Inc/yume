@@ -81,8 +81,9 @@ public:
     // naming the hop.
     void build(std::function<void(engine::Status)> done) noexcept;
     // Opens a TCP stream to destination through the exit. done runs once,
-    // with the stream after the exit connected or with status_for the exit's
-    // reason.
+    // with the stream as soon as BEGIN is on its way, so writes follow BEGIN
+    // at once. When the exit cannot reach the destination the stream's reads
+    // and writes end with status_for the exit's reason.
     void open_stream(const ytp1::Destination& destination,
                      Opened done) noexcept;
 

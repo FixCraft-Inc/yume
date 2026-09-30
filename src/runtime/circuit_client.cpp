@@ -37,8 +37,7 @@ using Timer = boost::asio::basic_waitable_timer<
     providers::AsioExecutionContext::Executor>;
 
 constexpr std::size_t kMaxWriteSize = 64U * 1024U;
-constexpr std::size_t kDataPerCell =
-    c1::RelayCapacity(c1::kBuckets[2]) - c1::kRelayHeaderBytes;
+constexpr std::size_t kDataPerCell = c1::MaxDataPayload(c1::Direction::Forward);
 
 std::span<const std::uint8_t> bytes_of(const Buffer& buffer) noexcept {
     return {reinterpret_cast<const std::uint8_t*>(buffer.bytes().data()),
@@ -46,7 +45,7 @@ std::span<const std::uint8_t> bytes_of(const Buffer& buffer) noexcept {
 }
 
 Result<Buffer> buffer_of(std::span<const std::uint8_t> bytes) {
-    return Buffer::copy_from(std::as_bytes(bytes), c1::kBuckets[2]);
+    return Buffer::copy_from(std::as_bytes(bytes), c1::kMaxCellBytes);
 }
 
 std::array<std::uint8_t, 4> u32(std::uint32_t value) noexcept {
@@ -165,9 +164,11 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
 
 namespace detail {
 
-// One stream through the circuit's exit, as a byte stream. Reads hold the
-// exit's window until their records are released, and writes send within
-// the window the exit granted. Every call runs on the circuit's context.
+// One stream through the circuit's exit, as a byte stream. It opens as soon
+// as BEGIN is on its way, and its first writes follow BEGIN within the window
+// the exit grants every new stream, so a request does not wait a circuit
+// round trip for CONNECTED. Reads hold the exit's window until their records
+// are released. Every call runs on the circuit's context.
 class ClientStream final : public StreamResponder,
                            public std::enable_shared_from_this<ClientStream> {
 public:
@@ -231,7 +232,7 @@ public:
 
     void async_write(Buffer payload, CancellationToken,
                      WriteCompletion completion) override {
-        if (terminated() || shutdown_ || !connected_) {
+        if (terminated() || shutdown_) {
             complete_write(std::move(completion), Status(StatusCode::Closed),
                            0U);
             return;
@@ -262,9 +263,8 @@ public:
         abort(Status(StatusCode::Cancelled));
     }
 
-    // From the circuit.
-    void connected() noexcept {
-        connected_ = true;
+    // From the circuit, once BEGIN is queued.
+    void begun() noexcept {
         auto opened = std::move(opened_);
         if (opened) {
             complete_open(
@@ -272,6 +272,8 @@ public:
                 Result<std::shared_ptr<StreamResponder>>(shared_from_this()));
         }
     }
+
+    void connected() noexcept { connected_ = true; }
 
     bool is_connected() const noexcept { return connected_; }
     std::uint32_t window() const noexcept { return window_; }
@@ -289,17 +291,9 @@ public:
     }
 
     void end(c1::StreamReason reason) noexcept {
-        if (!connected_) {
-            auto opened = std::move(opened_);
-            terminated_ = true;
-            forget();
-            if (opened)
-                complete_open(std::move(opened),
-                              Result<std::shared_ptr<StreamResponder>>(
-                                  status_for(reason)));
-            return;
-        }
-        if (reason != c1::StreamReason::Done) {
+        // Before CONNECTED the exit ends a stream only when it could not
+        // reach the destination, which ends the stream's reads and writes.
+        if (!connected_ || reason != c1::StreamReason::Done) {
             abort(status_for(reason));
             return;
         }
@@ -318,6 +312,12 @@ public:
     // The circuit ended, or this stream did.
     void abort(Status reason) noexcept {
         if (terminated_.exchange(true)) return;
+        // Reads that come later end the same way.
+        try {
+            end_status_ = reason;
+        } catch (...) {
+            end_status_ = Status(reason.code());
+        }
         auto opened = std::move(opened_);
         if (opened)
             complete_open(std::move(opened),
@@ -405,6 +405,12 @@ private:
         if (remote_done_) {
             finish_read(
                 Result<ReceivedRecord>(Status(StatusCode::EndOfStream)));
+        } else if (terminated()) {
+            try {
+                finish_read(Result<ReceivedRecord>(end_status_));
+            } catch (...) {
+                finish_read(Result<ReceivedRecord>(end_status_.code()));
+            }
         }
     }
 
@@ -513,6 +519,7 @@ private:
     bool end_sent_{false};
     bool closed_sent_{false};
     std::atomic<bool> terminated_{false};
+    Status end_status_{StatusCode::Closed};
     std::deque<Buffer> received_;
     ReadCompletion pending_read_;
     CancellationRegistration read_registration_;
@@ -551,8 +558,8 @@ void ClientCircuit::State::start_build(
             return;
         }
         sent_at = Clock::now();
-        queue_cell(c1::EncodeCell(c1::Command::Create, c1::kCreateBucket,
-                                  *body.value));
+        queue_cell(c1::EncodeCell(c1::Direction::Forward, c1::Command::Create,
+                                  c1::kCreateBucket, *body.value));
         read();
     } catch (...) {
         close(Status(StatusCode::Internal));
@@ -592,7 +599,8 @@ void ClientCircuit::State::on_cell(Result<ReceivedRecord> result) noexcept {
     }
     try {
         auto record = std::move(result).take_value();
-        const auto cell = c1::DecodeCell(bytes_of(record.payload()));
+        const auto cell =
+            c1::DecodeCell(c1::Direction::Backward, bytes_of(record.payload()));
         if (!cell.ok()) {
             fail(0U, c1::CircuitReason::Protocol);
             return;
@@ -760,11 +768,13 @@ void ClientCircuit::State::become_ready() noexcept {
 void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
                                         std::uint32_t stream,
                                         std::span<const std::uint8_t> payload) {
-    const auto bucket = c1::BucketForPayload(payload.size());
+    const auto bucket =
+        c1::BucketForPayload(c1::Direction::Forward, payload.size());
     if (!bucket || target == 0U || target > layers.size()) {
         throw Status(StatusCode::InvalidArgument);
     }
-    std::vector<std::uint8_t> body(c1::RelayCapacity(*bucket));
+    std::vector<std::uint8_t> body(
+        c1::RelayCapacity(c1::Direction::Forward, *bucket));
     if (!c1::EncodeRelayMessage(c1::Direction::Forward, type, stream, payload,
                                 body)
              .ok()) {
@@ -777,7 +787,8 @@ void ClientCircuit::State::send_message(std::size_t target, c1::RelayType type,
         }
         body = std::move(sealed);
     }
-    queue_cell(c1::EncodeCell(c1::Command::Relay, *bucket, body));
+    queue_cell(c1::EncodeCell(c1::Direction::Forward, c1::Command::Relay,
+                              *bucket, body));
 }
 
 void ClientCircuit::State::queue_cell(
@@ -858,6 +869,7 @@ void ClientCircuit::State::open_stream(const ytp1::Destination& destination,
             std::move(done));
         streams.emplace(id, stream);
         send_message(route.size(), c1::RelayType::Begin, id, *payload.value);
+        stream->begun();
     } catch (...) {
         close(Status(StatusCode::Internal));
     }

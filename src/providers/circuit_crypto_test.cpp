@@ -116,8 +116,10 @@ void TestDeterministicSteps() {
     }
     CHECK(layer_aad(Direction::Forward, 512U) ==
           vectors().bytes("aad.forward_512"));
-    CHECK(layer_aad(Direction::Backward, 16384U) ==
-          vectors().bytes("aad.backward_16384"));
+    CHECK(layer_aad(Direction::Forward, 16311U) ==
+          vectors().bytes("aad.forward_16311"));
+    CHECK(layer_aad(Direction::Backward, 16315U) ==
+          vectors().bytes("aad.backward_16315"));
 
     CHECK(fingerprint_bytes(std::string(64U, 'a')).has_value());
     CHECK(!fingerprint_bytes(std::string(64U, 'A')).has_value());
@@ -141,11 +143,11 @@ void TestEncodingDigests() {
         if (!key.ends_with(".type")) continue;
         const auto name = key.substr(6U, key.size() - 11U);
         const auto bucket = vectors().number("relay." + name + ".bucket");
-        Bytes message(circuit1::RelayCapacity(bucket));
         const auto direction =
             vectors().text("relay." + name + ".direction") == "forward"
                 ? Direction::Forward
                 : Direction::Backward;
+        Bytes message(circuit1::RelayCapacity(direction, bucket));
         CHECK(circuit1::EncodeRelayMessage(
                   direction,
                   static_cast<circuit1::RelayType>(
@@ -163,12 +165,13 @@ void TestEncodingDigests() {
     CHECK(body.ok());
     if (!body.ok()) return;
     CHECK(sha256(*body.value) == vectors().bytes("create.body_sha256"));
-    const auto create =
-        circuit1::EncodeCell(circuit1::Command::Create, 4096U, *body.value);
+    const auto create = circuit1::EncodeCell(
+        Direction::Forward, circuit1::Command::Create, 4096U, *body.value);
     CHECK(create.ok() &&
           sha256(*create.value) == vectors().bytes("cell.create_sha256"));
-    const auto created = circuit1::EncodeCell(
-        circuit1::Command::Created, 16384U, vectors().bytes("handshake.hop"));
+    const auto created =
+        circuit1::EncodeCell(Direction::Backward, circuit1::Command::Created,
+                             16315U, vectors().bytes("handshake.hop"));
     CHECK(created.ok() &&
           sha256(*created.value) == vectors().bytes("cell.created_sha256"));
 }
@@ -223,8 +226,8 @@ void TestLayerVectors() {
                   vectors().bytes(prefix + ".after_hop" + std::to_string(hop) +
                                   "_sha256"));
         }
-        const auto cell =
-            circuit1::EncodeCell(circuit1::Command::Relay, 512U, body);
+        const auto cell = circuit1::EncodeCell(
+            Direction::Forward, circuit1::Command::Relay, 512U, body);
         CHECK(cell.ok() && *cell.value == vectors().bytes(prefix + ".cell"));
         for (int hop = 1; hop <= 3; ++hop) {
             body = open_with(relays[hop - 1].forward, 512U, body);
@@ -237,25 +240,26 @@ void TestLayerVectors() {
         CHECK(sha256(body) == vectors().bytes("layers.backward0.after_hop" +
                                               std::to_string(hop) + "_sha256"));
     }
-    const auto cell =
-        circuit1::EncodeCell(circuit1::Command::Relay, 512U, body);
+    const auto cell = circuit1::EncodeCell(
+        Direction::Backward, circuit1::Command::Relay, 512U, body);
     CHECK(cell.ok() && *cell.value == vectors().bytes("layers.backward0.cell"));
     for (int hop = 1; hop <= 3; ++hop)
         body = open_with(client[hop - 1].backward, 512U, body);
     CHECK(body == vectors().bytes("layers.backward0.message"));
 
-    // EXTENDED from hop 2 in a 16384-byte cell, at each layer's counter 1.
-    Bytes extended(circuit1::RelayCapacity(16384U));
+    // EXTENDED from hop 2 in the largest backward cell, at each layer's
+    // counter 1.
+    Bytes extended(circuit1::RelayCapacity(Direction::Backward, 16315U));
     CHECK(circuit1::EncodeRelayMessage(
               Direction::Backward, circuit1::RelayType::Extended, 0U,
               vectors().bytes("handshake.hop"), extended)
               .ok());
     CHECK(sha256(extended) ==
           vectors().bytes("layers.extended.message_sha256"));
-    body = seal_with(relays[1].backward, 16384U, extended);
-    body = seal_with(relays[0].backward, 16384U, body);
-    const auto big =
-        circuit1::EncodeCell(circuit1::Command::Relay, 16384U, body);
+    body = seal_with(relays[1].backward, 16315U, extended);
+    body = seal_with(relays[0].backward, 16315U, body);
+    const auto big = circuit1::EncodeCell(
+        Direction::Backward, circuit1::Command::Relay, 16315U, body);
     CHECK(big.ok() &&
           sha256(*big.value) == vectors().bytes("layers.extended.cell_sha256"));
 }
@@ -278,6 +282,11 @@ void TestLayerRefusals() {
           StatusCode::FailedPrecondition);
     // Sizes and buckets.
     CHECK(sealer.forward.seal(513U, message, sealed).code() ==
+          StatusCode::InvalidArgument);
+    // The largest backward bucket is no forward bucket, and the reverse.
+    CHECK(sealer.forward.seal(16315U, message, sealed).code() ==
+          StatusCode::InvalidArgument);
+    CHECK(opener.backward.seal(16311U, message, sealed).code() ==
           StatusCode::InvalidArgument);
     Bytes short_output(message.size());
     CHECK(sealer.forward.seal(512U, message, short_output).code() ==

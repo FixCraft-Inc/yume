@@ -259,92 +259,22 @@ The program answers with one JSON object on one line and closes the
 connection, and
 .B --status
 refuses an answer over 64 KiB.
-Any other request gets an object that holds
-.B control
-and an
+A request that fails gets an object that holds
+.BR control ,
+an
 .B error
-text.
+text and a
+.BR code .
 No answer holds a key, credential or payload.
+.B docs/protocol/CONTROL_1.md
+is the protocol's contract: every request, every field of both programs'
+answers, and the rules by which later versions add fields and requests
+without breaking older clients.
 .PP
-The daemon's answer holds
-.B control
-(1),
-.BR program ,
-.BR version ,
-.BR listeners ,
-.B client_sessions
-and
-.BR cluster ,
-null outside a cluster.
-A member's
-.B cluster
-holds
-.BR id ,
-.BR serial ,
-.BR not_after ,
-.BR expired ,
-.BR self ,
-.B circuits
-and
-.BR links ,
-one per peer with
-.BR peer ,
-.BR identity ,
-.BR outbound ,
-.B inbound
-and
-.BR circuits .
-.B outbound
-holds
-.BR state ,
-.BR sessions ,
-.BR failed_attempts ,
-.B last_failure
-and, as for a client,
-.B connected_ms
-or
-.BR retry_ms .
-.B inbound
-holds
-.B sessions
-and, while there is one,
-.B connected_ms
-of the oldest.
-A link's
-.B circuits
-holds
-.BR in ,
-the circuits that arrive over the peer's link, and
-.BR out ,
-those this server extended over its link to the peer.
-The cluster's
-.B circuits
-holds
-.BR exit ,
-whether this server is an exit,
-.BR open ,
-.BR entry ,
-.BR relayed ,
-.BR exit_streams ,
-.B failed
-and
-.BR refused ,
-which counts refusals since start as
-.BR total ,
-.BR client_circuits ,
-.BR circuit_rate ,
-.B handshakes
-and
-.BR streams .
-.SH EXIT STATUS
-Zero indicates successful help, version or validation output, or
-shutdown requested by a handled signal with successful cleanup.
-Exit status 1 indicates a runtime or internal failure.
-Exit status 2 indicates invalid arguments, configuration or startup
-prerequisites.
-Diagnostics go to standard error; help and version output go to standard
-output.
-Argument errors also print usage on standard error.
+The daemon's answer holds its listeners, the number of client sessions
+and, in a cluster, the list's serial and expiry, each peer's links and
+the circuits this server carries, counted per link and never per pair of
+neighbours.
 .SH EXAMPLES
 Validate an existing server kit, then start its configured listeners:
 .PP

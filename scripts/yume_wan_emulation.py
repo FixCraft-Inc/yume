@@ -28,6 +28,10 @@ tunnel with the direct path measured in the same run. The report keeps each
 sample, the medians, the netem settings and the binary hashes. Results
 describe this emulation on this host: netem on veth is not a real path, and
 the run is no benchmark without matched repeats on an idle, pinned host.
+
+`--preset NAME` sets the limits of one tuning preset from
+config/tuning_presets.json for both roles, as yume-setup writes them. An
+explicit limit option overrides the preset's value.
 """
 
 from __future__ import annotations
@@ -103,6 +107,22 @@ server.daemon_threads = True
 print("ready", flush=True)
 server.serve_forever()
 '''
+
+
+PRESETS = Path(__file__).resolve().parents[1] / "config/tuning_presets.json"
+
+
+def preset_names() -> list[str]:
+    """The tuning presets, in the table's order."""
+    return [preset["id"] for preset in json.loads(PRESETS.read_text(encoding="utf-8"))["presets"]]
+
+
+def preset_limits(name: str) -> dict[str, object]:
+    """The limits one tuning preset sets on both sides."""
+    for preset in json.loads(PRESETS.read_text(encoding="utf-8"))["presets"]:
+        if preset["id"] == name:
+            return dict(preset["limits"])
+    raise ValueError(f"unknown tuning preset: {name}")
 
 
 def parse_condition(text: str) -> dict[str, float]:
@@ -538,6 +558,7 @@ def run_inside(arguments: argparse.Namespace) -> int:
             report["max_epoch_bytes"] = client_limits.get("max_epoch_bytes", 1 << 20)
             report["credit_returns_per_window"] = client_limits.get("credit_returns_per_window", 2)
             report["idle_epoch_rotation"] = client_limits.get("idle_epoch_rotation", False)
+            report["preset"] = arguments.preset
             logs = {name: (arguments.output / f"{name}.log").open("wb") for name in ("payload", "yumed")}
             processes.append(subprocess.Popen(
                 link.command("server", [sys.executable, "-c", PAYLOAD_SERVER, str(STREAM_BYTES),
@@ -613,6 +634,8 @@ def main() -> int:
                         help="limits.credit_returns_per_window for both roles")
     parser.add_argument("--idle-epoch-rotation", action="store_true",
                         help="set limits.idle_epoch_rotation for both roles, as the fast and max presets do")
+    parser.add_argument("--preset", choices=preset_names(),
+                        help="one tuning preset's limits for both roles, under any explicit limit option")
     parser.add_argument("--tcp-buffer-mib", type=int, default=0,
                         help="raise every namespace's TCP buffer ceilings to this many MiB, 1..256, "
                              "as on a host tuned for long paths. Default: the host's own settings")
@@ -627,6 +650,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=443, help="daemon port inside the namespace")
     arguments = parser.parse_args()
     arguments.condition = arguments.condition or list(DEFAULT_CONDITIONS)
+    if arguments.preset:
+        limits = preset_limits(arguments.preset)
+        if arguments.max_queued_bytes is None:
+            arguments.max_queued_bytes = limits["max_queued_bytes"]
+        if arguments.max_epoch_bytes is None:
+            arguments.max_epoch_bytes = limits["max_epoch_bytes"]
+        if arguments.credit_returns is None:
+            arguments.credit_returns = limits["credit_returns_per_window"]
+        arguments.idle_epoch_rotation = arguments.idle_epoch_rotation or bool(limits["idle_epoch_rotation"])
     try:
         for text in arguments.condition:
             parse_condition(text)

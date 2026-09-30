@@ -52,7 +52,12 @@ which the client reaches over its own session, then 2 and 3.
 
 ## Cells
 
-A cell is exactly 512, 4096 or 16384 bytes, its *bucket*:
+A cell's size is its *bucket*, one of three in each direction:
+
+| Direction | Buckets in bytes |
+| --- | --- |
+| forward | 512, 4096, 16311 |
+| backward | 512, 4096, 16315 |
 
 ```text
 u8  version = 1
@@ -62,21 +67,35 @@ u8  body[body_length]
 u8  filler[bucket - 4 - body_length] = 0
 ```
 
-A receiver MUST refuse a cell of another size, another version, an unknown
-command, a body longer than the bucket allows or a nonzero filler byte. The
-command fixes the body:
+A full cell of the largest bucket leaves the session or link it crosses as
+exactly one TLS record of 16384 bytes, the most TLS carries in one record.
+Around the cell go its YTP/1 PACKET record (a 12-byte frame header, the
+16-byte post-AUTH envelope and the 16-byte AES-GCM tag), the carrier's
+12-byte envelope, one WebSocket frame header and one 9-byte HTTP/2 DATA
+frame header. Forward cells always leave the side that dialed, the client on
+its session and the extending node on its own link, and that side masks its
+WebSocket frames, whose headers are then 8 bytes instead of 4. So the forward
+bucket is 4 bytes smaller. Browsers fill records to that size in bulk
+transfers in both directions, where a cell a few bytes too large would pair
+every full record with a small one.
 
-- CREATE carries a CREATE body of 1638 bytes and MUST use the 4096-byte
-  bucket.
-- CREATED carries a hop handshake of 6327 bytes and MUST use the 16384-byte
-  bucket.
+A receiver MUST refuse a cell whose size is not a bucket of its direction,
+another version, an unknown command, a command sent in the wrong direction,
+a body longer than the bucket allows or a nonzero filler byte. The command
+fixes the direction and the body:
+
+- CREATE goes forward, carries a CREATE body of 1638 bytes and MUST use the
+  4096-byte bucket.
+- CREATED goes backward, carries a hop handshake of 6327 bytes and MUST use
+  the 16315-byte bucket.
 - RELAY carries 1 to 3 layers around a relay message. Its body is the
   bucket's relay capacity plus 16 bytes for each layer, so its length MUST be
   that capacity plus 16, 32 or 48. The number of layers is the cell's *layer
   count*.
 
 The relay capacity of a bucket is the bucket less 52 bytes, the 4-byte cell
-header and room for three 16-byte layer tags: 460, 4044 or 16332 bytes. A
+header and room for three 16-byte layer tags: 460, 4044, and 16259 forward
+or 16263 backward. A
 relay message is padded to exactly this capacity before the first layer is
 applied, so a body's length depends only on its bucket and layer count and
 no hop learns a message's true length. A layer count does tell a hop how many
@@ -265,9 +284,13 @@ layer, so no other hop can read it.
 A stream starts when the client sends BEGIN. The exit answers CONNECTED once
 it has reached the destination, or END with the reason it could not. An
 exit that cannot tell a failed lookup from a failed connection answers name
-not found for a name and unreachable for an address. The client sends DATA
-only after CONNECTED. Messages for a stream the receiver has already ended
-are ignored, because they may have crossed its END.
+not found for a name and unreachable for an address. The client MAY send
+DATA, and END, right after BEGIN without waiting for CONNECTED, within the
+window below, so a request need not wait a circuit round trip. The exit
+holds that data until it has reached the destination and writes it there
+first, and discards it with the stream when it answers END. Messages for a
+stream the receiver has already ended are ignored, because they may have
+crossed its END.
 
 Each end grants the other a window of 262144 bytes for every stream's DATA
 when the stream starts and returns it with STREAM_CREDIT as it delivers the
@@ -312,6 +335,9 @@ signatures have no vectors here, because their keys are random.
 - The entry learns how many hops a circuit has from its layer count and from
   the rounds of the build. Middle and exit learn nothing new from theirs with
   at most three hops.
+- The largest buckets fit YTP/1's H2-duplex carrier framing. A carrier with
+  other framing still carries valid cells, but a full cell would then no
+  longer fill exactly one TLS record.
 - Layer tags cost 16 bytes per hop. A length-preserving layer would hide the
   layer count but lets a malicious entry mark cells for a colluding exit, and
   the construction that avoids that is not available in OpenSSL.

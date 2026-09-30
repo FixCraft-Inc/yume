@@ -28,7 +28,9 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
-BUCKETS = (512, 4096, 16384)
+# The largest bucket differs by direction (CIRCUIT_1.md, Cells).
+FORWARD_BUCKETS = (512, 4096, 16311)
+BACKWARD_BUCKETS = (512, 4096, 16315)
 CELL_HEADER = 4
 MAX_HOPS = 3
 TAG = 16
@@ -165,7 +167,7 @@ def generate() -> list[tuple[str, str]]:
     create_body = bytes([2, 0]) + client_handshake
     put("create.body_sha256", sha256(create_body))
     put("cell.create_sha256", sha256(cell(CREATE, 4096, create_body)))
-    put("cell.created_sha256", sha256(cell(CREATED, 16384, hop_handshake)))
+    put("cell.created_sha256", sha256(cell(CREATED, BACKWARD_BUCKETS[2], hop_handshake)))
 
     # Transcript, key schedule, confirmation and signed bytes, at depth 2 and
     # at depth 1 with a client predecessor.
@@ -200,7 +202,8 @@ def generate() -> list[tuple[str, str]]:
     for counter in (0, 1, 0xFFFFFFFF):
         put(f"nonce.{counter}", nonce(iv, counter))
     put("aad.forward_512", aad(FORWARD, 512))
-    put("aad.backward_16384", aad(BACKWARD, 16384))
+    put("aad.forward_16311", aad(FORWARD, FORWARD_BUCKETS[2]))
+    put("aad.backward_16315", aad(BACKWARD, BACKWARD_BUCKETS[2]))
 
     # A three-hop circuit with layer keys given directly, one forward DATA
     # cell at counter 0 and one at counter 1, and one backward CONNECTED cell.
@@ -233,14 +236,15 @@ def generate() -> list[tuple[str, str]]:
         put(f"layers.backward0.after_hop{index}_sha256", sha256(body))
     put("layers.backward0.message", message)
     put("layers.backward0.cell", cell(RELAY, 512, body))
-    # EXTENDED from hop 2 in a 16384-byte cell, two layers.
-    message = relay_message(EXTENDED, 0, hop_handshake, 16384)
+    # EXTENDED from hop 2 in the largest backward cell, two layers.
+    large = BACKWARD_BUCKETS[2]
+    message = relay_message(EXTENDED, 0, hop_handshake, large)
     body = message
     for index in (2, 1):
         hop = hops[index - 1]
-        body = seal(hop["backward_key"], hop["backward_iv"], 1, BACKWARD, 16384, body)
+        body = seal(hop["backward_key"], hop["backward_iv"], 1, BACKWARD, large, body)
     put("layers.extended.message_sha256", sha256(message))
-    put("layers.extended.cell_sha256", sha256(cell(RELAY, 16384, body)))
+    put("layers.extended.cell_sha256", sha256(cell(RELAY, large, body)))
 
     # Relay message encodings: type, stream, payload and direction, and the
     # message's bytes before padding.
@@ -258,7 +262,7 @@ def generate() -> list[tuple[str, str]]:
         ("credit", CREDIT, 7, struct.pack("!I", 65536), FORWARD, 512),
         ("connected", CONNECTED, 7, b"", BACKWARD, 512),
         ("extend", EXTEND, 0, extend_payload, FORWARD, 4096),
-        ("extended", EXTENDED, 0, hop_handshake, BACKWARD, 16384),
+        ("extended", EXTENDED, 0, hop_handshake, BACKWARD, BACKWARD_BUCKETS[2]),
         ("extend_failed", EXTEND_FAILED, 0, bytes([2]), BACKWARD, 512),
         ("circuit_failed", CIRCUIT_FAILED, 0, bytes([6]), BACKWARD, 512),
     ]
@@ -273,9 +277,10 @@ def generate() -> list[tuple[str, str]]:
         if bucket == 512:
             put(f"relay.{name}.message", encoded)
 
-    # Negative vectors. Bases: cell.forward (layers.forward0.cell), cell.create,
-    # handshake.client, handshake.hop, create.body, relay.NAME padded, and
-    # begin.NAME payloads.
+    # Negative vectors. Bases: cell.forward (layers.forward0.cell) and
+    # cell.create, both decoded forward, cell.backward (layers.backward0.cell),
+    # decoded backward, handshake.client, handshake.hop, create.body,
+    # relay.NAME padded, and begin.NAME payloads.
     negatives = [
         ("cell_version", "cell.forward", "xor:0:01", "UnsupportedVersion"),
         ("cell_command_zero", "cell.forward", "xor:1:03", "InvalidCommand"),
@@ -285,8 +290,13 @@ def generate() -> list[tuple[str, str]]:
         ("cell_layer_relabelled", "cell.forward", "xor:3:10", "NonzeroFiller"),
         ("cell_size", "cell.forward", "resize:513", "InvalidBucket"),
         ("cell_short", "cell.forward", "resize:511", "InvalidBucket"),
+        ("cell_old_largest", "cell.forward", "resize:16384", "InvalidBucket"),
+        ("cell_backward_size_forward", "cell.forward", "resize:16315", "InvalidBucket"),
+        ("cell_forward_size_backward", "cell.backward", "resize:16311", "InvalidBucket"),
+        ("cell_created_forward", "cell.forward", "xor:1:01", "WrongDirection"),
+        ("cell_create_backward", "cell.backward", "xor:1:02", "WrongDirection"),
         ("create_filler", "cell.create", "xor:4095:01", "NonzeroFiller"),
-        ("create_bucket", "cell.create", "resize:16384", "InvalidBucket"),
+        ("create_bucket", "cell.create", "resize:16311", "InvalidBucket"),
         ("create_length", "cell.create", "xor:3:01", "InvalidLength"),
         ("client_schema", "handshake.client", "xor:0:03", "UnsupportedVersion"),
         ("client_reserved", "handshake.client", "xor:2:01", "NonzeroReserved"),

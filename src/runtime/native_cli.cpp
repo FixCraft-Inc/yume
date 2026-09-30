@@ -810,11 +810,14 @@ int serve(NativeCliRole role, const config::v1::Config& config,
                             std::chrono::steady_clock::now(),
                             runtime->circuits());
                     },
-                    [weak](std::string_view id) {
-                        const auto runtime = weak.lock();
-                        return runtime ? runtime->accept_route(id)
-                                       : Status(StatusCode::Closed);
-                    }));
+                    // Only a client with circuits takes accept-route.
+                    config.circuits()
+                        ? ControlRouteAcceptance([weak](std::string_view id) {
+                              const auto runtime = weak.lock();
+                              return runtime ? runtime->accept_route(id)
+                                             : Status(StatusCode::Closed);
+                          })
+                        : ControlRouteAcceptance{}));
             }
         } catch (...) {
             say(role, "startup failed");

@@ -30,7 +30,6 @@ Status copy_failure(const Status& reason) noexcept {
     return Status::diagnostic(reason.code(), reason.message());
 }
 
-constexpr std::size_t kProtectedEnvelopeBytes = 16U;
 constexpr std::uint8_t kProtectedEnvelopeVersion = 1U;
 constexpr std::size_t kClosePayloadBytes = 1U;
 constexpr std::size_t kRekeyEpochBytes = 4U;
@@ -556,6 +555,9 @@ private:
         // opened.
         std::uint32_t max_receive_credit{0U};
         ReceiveWindow receive_window;
+        // The largest packet the peer has sent on a packet channel. A packet
+        // cannot be split to spend the last of the stream's credit.
+        std::uint64_t largest_packet{0U};
         std::size_t inbound_queued_bytes{0U};
         std::size_t outbound_queued_bytes{0U};
         std::size_t outbound_publications{0U};
@@ -669,8 +671,10 @@ private:
 
     void return_receive_credit(StreamId stream_id,
                                std::size_t bytes) noexcept;
-    std::uint64_t return_threshold(std::uint64_t window,
+    std::uint64_t return_threshold(std::uint64_t window, std::uint64_t packet,
                                    std::uint64_t maximum) const noexcept;
+    void note_packet_locked(StreamStateData& stream,
+                            std::size_t bytes) noexcept;
     std::uint64_t grow_window_locked(
         ReceiveWindow& window, std::uint64_t maximum,
         std::chrono::steady_clock::time_point now) const noexcept;
@@ -2799,6 +2803,7 @@ Status SessionEngine::Impl::process_application_data(
         if (discard_crossed_data) {
             stream->inbound_credit -= record.payload.size();
             inbound_connection_credit_ -= record.payload.size();
+            note_packet_locked(*stream, record.payload.size());
         }
         // Credit already keeps a stream's queue within its receive window and
         // the session's within max_queued_bytes. These checks stop a local
@@ -2873,6 +2878,7 @@ Status SessionEngine::Impl::process_application_data(
         }
         stream->inbound_credit -= record.payload.size();
         inbound_connection_credit_ -= record.payload.size();
+        note_packet_locked(*stream, record.payload.size());
         payload_bytes_received_.fetch_add(record.payload.size(), std::memory_order_relaxed);
         if (!discard_crossed_data) {
             application_record.emplace(std::move(copied).take_value(),
@@ -3773,7 +3779,8 @@ void SessionEngine::Impl::return_receive_credit(
                 ReceiveWindow& window = stream.receive_window;
                 window.unreturned += bytes;
                 if (window.unreturned >=
-                    return_threshold(window.size, stream.max_receive_credit)) {
+                    return_threshold(window.size, stream.largest_packet,
+                                     stream.max_receive_credit)) {
                     const std::uint64_t growth = grow_window_locked(
                         window, stream.max_receive_credit, now);
                     stream_increment = window.unreturned + growth;
@@ -3783,7 +3790,7 @@ void SessionEngine::Impl::return_receive_credit(
             }
             connection.unreturned += bytes;
             const bool due = connection.unreturned >=
-                             return_threshold(connection.size,
+                             return_threshold(connection.size, 0U,
                                               limits_.max_connection_credit);
             std::uint64_t growth =
                 due ? grow_window_locked(connection,
@@ -3840,7 +3847,8 @@ void SessionEngine::Impl::return_receive_credit(
 }
 
 std::uint64_t SessionEngine::Impl::return_threshold(
-    std::uint64_t window, std::uint64_t maximum) const noexcept {
+    std::uint64_t window, std::uint64_t packet,
+    std::uint64_t maximum) const noexcept {
     // Credit goes back once half a window is consumed, as Chromium and
     // nghttp2 return it. A peer blocked on credit holds less than one frame
     // of it, so a receiver whose application keeps up has consumed more than
@@ -3848,13 +3856,29 @@ std::uint64_t SessionEngine::Impl::return_threshold(
     // Consumed credit below the threshold stays parked here, so a window
     // that can no longer grow returns more often when configured to: a
     // sender it holds back then moves more than half of it per round trip.
+    const std::uint64_t updates =
+        window >= maximum ? limits_.credit_returns_per_window : 2U;
+    // A packet channel's peer can spend only the whole packets that fit, and
+    // keeps the rest of the window unused. Half of the usable part is what
+    // two returns per window need: half of the whole window can exceed it by
+    // less than a packet, and a peer that then waits for the second return
+    // moves only about half a window per round trip.
+    if (packet != 0U && packet <= window) {
+        window -= window % packet;
+    }
     const std::uint64_t frame = limits_.max_frame_payload;
     if (window <= frame) {
         return 1U;
     }
-    const std::uint64_t updates =
-        window >= maximum ? limits_.credit_returns_per_window : 2U;
     return std::min(window / updates, window - frame);
+}
+
+void SessionEngine::Impl::note_packet_locked(StreamStateData& stream,
+                                             std::size_t bytes) noexcept {
+    if (stream.kind == ServiceKind::PacketChannel) {
+        stream.largest_packet =
+            std::max<std::uint64_t>(stream.largest_packet, bytes);
+    }
 }
 
 std::uint64_t SessionEngine::Impl::grow_window_locked(
@@ -4243,8 +4267,17 @@ Status SessionEngine::Impl::process_rekey_init(
         inbound_epoch_records_ = 0U;
         --rekey_work_;
     }
-    return enqueue_record(ytp1::RecordType::RekeyAck,
-                          StreamId::control(), bytes.bytes(), false, true);
+    Status acknowledged =
+        enqueue_record(ytp1::RecordType::RekeyAck, StreamId::control(),
+                       bytes.bytes(), false, true);
+    if (!acknowledged.ok()) return acknowledged;
+    // A peer that rotates after a quiet spell is about to send, and the
+    // answer usually follows. When this direction's epoch is old enough that
+    // the answer's send would start a rotation anyway, it starts here, beside
+    // the ACK, so the answer does not wait a round trip for its own
+    // REKEY_ACK. Nothing is sent that the answer would not send, and nothing
+    // is sent in silence.
+    return rotate_aged_epoch(std::chrono::steady_clock::now());
 }
 
 Status SessionEngine::Impl::process_rekey_ack(

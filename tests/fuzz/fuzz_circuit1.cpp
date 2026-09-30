@@ -64,12 +64,14 @@ void check_relay(Direction direction, std::span<const std::uint8_t> input) {
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
                                       std::size_t size) {
     // One byte past the largest cell exercises the size refusal.
-    if (size > kBuckets[2] + 1U) return 0;
+    if (size > kMaxCellBytes + 1U) return 0;
     const std::span<const std::uint8_t> input(data, size);
 
-    if (const auto cell = DecodeCell(input); cell.ok()) {
-        const auto encoded = EncodeCell(cell.value->command, cell.value->bucket,
-                                        cell.value->body);
+    for (const auto direction : {Direction::Forward, Direction::Backward}) {
+        const auto cell = DecodeCell(direction, input);
+        if (!cell.ok()) continue;
+        const auto encoded = EncodeCell(direction, cell.value->command,
+                                        cell.value->bucket, cell.value->body);
         if (!encoded.ok()) __builtin_trap();
         same(input, *encoded.value);
         // The cell decoder checks a CREATE body's size only, so its contents

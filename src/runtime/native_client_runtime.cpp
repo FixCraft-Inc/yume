@@ -87,7 +87,13 @@ struct NativeClientRuntime::State final : std::enable_shared_from_this<State> {
     // and hands the session to the circuits.
     void on_authenticated(
         const std::shared_ptr<engine::SessionEngine>& session) noexcept {
-        if (pool && !closing) pool->set_session(session);
+        if (pool && !closing) {
+            try {
+                pool->set_session(engine_circuit_session(session));
+            } catch (...) {
+                pool->set_session(nullptr);
+            }
+        }
         try {
             for (const auto& [config, adapter] : packets) {
                 if (closing || active_session() != session) break;

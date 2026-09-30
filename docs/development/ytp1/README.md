@@ -261,8 +261,10 @@ New namespaces copy the host's TCP buffer ceilings, and those cap one
 connection on a long path, direct or tunnelled, at a few MiB per round trip.
 `--tcp-buffer-mib N` raises them in all three namespaces, as on a host tuned
 for long paths. `--max-queued-bytes`, `--max-epoch-bytes` and
-`--credit-returns` set those `limits` keys for both roles, and
-`--idle-epoch-rotation` sets `limits.idle_epoch_rotation`.
+`--credit-returns` set those `limits` keys for both roles,
+`--idle-epoch-rotation` sets `limits.idle_epoch_rotation`, and `--preset
+NAME` sets all four from a tuning preset, under any of them given
+explicitly.
 
 `scripts/yume_circuit_wan.py` measures [circuits](../../protocol/CLUSTER_1.md)
 the same way. Four clustered nodes, a destination and the client each get a
@@ -273,13 +275,15 @@ long each takes to carry its first stream, and alternates timed downloads
 and small requests over those paths and the destination reached without
 YUME. The workload sends a one-byte binary request, so circuits keep their
 plain-HTTP refusal. `--soak SECONDS` keeps parallel downloads running
-through three-hop circuits while it samples `yume` and every node, and
-`--idle-epoch-rotation` sets `limits.idle_epoch_rotation` on all of them.
+through three-hop circuits while it samples `yume` and every node,
+`--preset NAME` gives all of them one tuning preset's limits from
+`config/tuning_presets.json`, and `--idle-epoch-rotation` sets
+`limits.idle_epoch_rotation` on all of them.
 
 On the build host on 2026-09-29, one stream moved 35 Mbit/s through three
 hops at 40 ms each and 14 Mbit/s at 100 ms, 52 and 21 Mbit/s through two
-hops, and 175 and 78 Mbit/s through the direct session. At 100 ms per hop
-a small request after a download took 2.0 s through three hops, 0.8 s
+hops, and 174 and 77 Mbit/s through the direct session. At 100 ms per hop
+a small request after a quiet spell took 0.8 s through three hops, 0.5 s
 with idle rotation, and 0.4 s through the direct session.
 
 `scripts/yume_circuit_capture.py` captures the same cluster as a passive
@@ -460,7 +464,8 @@ Schema 1 is role tagged and contains these sections only:
   bytes that no forward uses. The running `yume` or `yumed` serves its status
   there to processes of its own user, and `--status` reads it. The socket's
   directory must belong to that user and be closed to writes by group and
-  others. yume(1) and yumed(8) describe the protocol;
+  others. [Control protocol 1](../../protocol/CONTROL_1.md) is its
+  contract;
 - `cluster`, optional and server-only: `operator_key`, `list`, `signature`,
   `routes`, `routes_signature`, `peers` and `state`, the file references of
   a cluster membership, and an optional `exit` whose `service` names the

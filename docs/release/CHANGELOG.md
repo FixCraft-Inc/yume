@@ -75,9 +75,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   verified identity, session counts, traffic, local listeners and the last
   failure. `yume --config PATH --status` prints it. The socket follows the
   owner-only rules of local UNIX listeners, serves at most four connections,
-  and answers one JSON request line with one JSON line (control protocol 1,
-  in yume(1)). The planned GUI reads it. `yume-doctor` checks the key, and
-  the embedding ABI refuses a configuration that names one.
+  and answers one JSON request line with one JSON line
+  ([control protocol 1](../protocol/CONTROL_1.md)). That page is the GUI's
+  contract: fields and requests are only added, every status reply lists
+  the requests its program takes, and an error names a stable `code` beside
+  its text. `yume-doctor` checks the key, and the embedding ABI refuses a
+  configuration that names one.
 - **Cluster links.** Servers of one operator form a cluster from a list the
   operator signs with a composite Ed25519 and ML-DSA-87 key
   ([cluster 1](../protocol/CLUSTER_1.md)). A server's `cluster` section names
@@ -120,16 +123,20 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   routes view: distinct nodes, an exit last and no shared network tag, with
   measured latency, a spare and rotation. UDP ASSOCIATE and packet adapters
   are refused with circuits, and plain HTTP is refused unless allowed. A
-  destination the exit cannot reach answers SOCKS5 as host unreachable, as
-  on the direct session. A client's stream windows grow from 256 KiB to
-  1 MiB as its reader drains them. The client never shortens a route on its
+  stream opens as soon as its BEGIN is on its way, so its first data
+  follows without a circuit round trip, and a destination the exit refuses
+  or cannot reach then ends the SOCKS5 connection. The client builds a
+  circuit when its session starts. The largest cell of each direction,
+  16311 bytes forward and 16315 backward, and its framing fill exactly one
+  TLS record. A client's stream windows grow from 256 KiB to 1 MiB as its
+  reader drains them. The client never shortens a route on its
   own: it proposes one, which `yume --accept-route ID` accepts over the
   control socket, or `circuits.min_hops` approves in advance.
   `yume --status` shows routes and proposals,
   `yume-setup add-client --circuits` writes the section and kit copies, and
   the C ABI refuses the section. `scripts/yume_circuit_wan.py` measures the
-  direct session and circuits of two and three hops across emulated links.
-  `scripts/yume_circuit_capture.py` captures them and describes the client
+  direct session and circuits of two and three hops across emulated links,
+  under any tuning preset. `scripts/yume_circuit_capture.py` captures them and describes the client
   session against a browser capture.
 - **Sealed kits.** `yume --seal-kit DIR --output FILE` seals a client kit
   into one file and prints a 25-character code, and `yume --import-kit FILE
@@ -484,6 +491,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   accepts none. `--validate` prints every key a run setting can replace, with
   its value and where it came from. The `yumed(8)` manual also printed the
   client's SIGNALS section beside its own and now has only its own.
+- **Packet channels return credit by whole packets.** A packet cannot be
+  split to spend the last of a stream's credit, so a sender whose packets do
+  not divide the receive window is left short of one packet while the
+  receiver waits for half the window. It then got one return, about half a
+  window, per round trip. On a packet channel the engine now returns at half
+  of the whole packets that fit, by the largest packet the peer has sent.
+  With circuit cells of 16311 and 16315 bytes, four streams through one
+  circuit moved 52 Mbit/s at 40 ms per hop without this and 98 with it.
 - **Key rotation without a pause.** A sender sent nothing protected between
   REKEY_INIT and REKEY_ACK, so every rotation cost a round trip, about 29 % of
   the time at 200 ms with 500 ms epochs, and a request that met a rotation
@@ -512,7 +527,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `fast` and `max` presets set. Without it the next send rotates the epoch
   and a request after more than half a second of quiet waits a round trip
   for the new key. The measured preset rates were taken with the timer on in
-  every preset.
+  every preset. The side that answers such a request now starts its own
+  rotation beside its REKEY_ACK, so the answer does not wait another round
+  trip.
 - **More of Chrome's page load.** The client now sends its preface PING in a
   TLS record of its own, as the captured Chrome session does, and fetches
   `/favicon.ico` once the WebSocket is open, with the headers and priority of

@@ -386,7 +386,11 @@ connection's at 4 MiB, both capped by the byte budget
 (`limits.max_queued_bytes`). It returns consumed credit in one update once half
 a window is consumed, or once the window less one frame is consumed if that
 comes first, so a peer holding less than a frame of credit never waits for it.
-When two returns on a window come less than two round trips apart, the window
+A packet cannot be split to spend the last of a window, so on a packet
+channel the halves are those of the whole packets that fit, measured by the
+largest packet the peer has sent. Half the whole window could exceed that by
+less than a packet, and a sender left short of one packet would then get a
+single return, about half its window, per round trip. When two returns on a window come less than two round trips apart, the window
 was limiting the sender, and the engine doubles it, as Chromium does. A stream
 window can reach two thirds of the budget and the connection window the whole
 budget. The connection window stays at least one and a half times the largest
@@ -663,6 +667,12 @@ epoch has room, so a path on which half an epoch lasts longer than a round trip
 never pauses for the ACK. Once a limit or the 500 ms lifetime is reached,
 later records wait for the new epoch and keep their order. INIT does not count
 toward these application thresholds.
+When the peer's REKEY_INIT arrives and this direction's epoch has carried a
+record and used half its send lifetime, the native engine starts this
+direction's rotation right after its REKEY_ACK. A peer that rekeys after a
+quiet spell is about to send, and the answer then needs no round trip of
+its own for a new key. This adds no exchange: the answer's send would have
+started the same rotation one round trip later.
 With `limits.idle_epoch_rotation`, the native endpoint also starts the
 rotation of an epoch that has carried a record once it is 250 ms old, without
 waiting for a send. It is off by default: that exchange follows every burst of

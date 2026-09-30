@@ -31,6 +31,28 @@
 // use that length.
 namespace yume::runtime {
 
+// What the pool uses of the client's session: opening one of the entry's
+// services. The runtime adapts its YTP/1 session with
+// engine_circuit_session, and tests open in-memory streams.
+class CircuitSession {
+public:
+    using Opened = std::function<void(
+        engine::Result<std::shared_ptr<engine::StreamResponder>>)>;
+
+    virtual ~CircuitSession() = default;
+    // Opens service_name on the entry, with a destination for a direct TCP
+    // service. done runs once, as SessionEngine::async_open's completion.
+    virtual void async_open(std::string_view service_name,
+                            engine::ServiceKind kind,
+                            std::optional<engine::RouteDestination> destination,
+                            engine::CancellationToken cancellation,
+                            Opened done) = 0;
+};
+
+// The pool's view of an authenticated YTP/1 session.
+std::shared_ptr<CircuitSession> engine_circuit_session(
+    std::shared_ptr<engine::SessionEngine> session);
+
 struct CircuitPoolOptions final {
     std::size_t hops{3U};
     std::size_t min_hops{3U};
@@ -70,7 +92,7 @@ public:
 
     // On the context: the client's current session, or null when it has
     // none. A new session's view is fetched again and earlier circuits end.
-    void set_session(std::shared_ptr<engine::SessionEngine> session) noexcept;
+    void set_session(std::shared_ptr<CircuitSession> session) noexcept;
     // On the context: opens a TCP stream to destination through a circuit,
     // or through direct_service on the session when the route in use is one
     // hop. PermissionDenied when the route needs the user's consent or the

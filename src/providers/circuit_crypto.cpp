@@ -229,7 +229,7 @@ Status LayerCipher::seal(std::size_t bucket,
     if (failed_ || context_ == nullptr || mode_ != Mode::Seal) {
         return Status(StatusCode::FailedPrecondition);
     }
-    if (!circuit1::IsBucket(bucket) || plaintext.size() > INT_MAX ||
+    if (!circuit1::IsBucket(direction_, bucket) || plaintext.size() > INT_MAX ||
         output.size() != plaintext.size() + circuit1::kLayerTagBytes) {
         return Status(StatusCode::InvalidArgument);
     }
@@ -267,7 +267,7 @@ Status LayerCipher::open(std::size_t bucket,
     if (failed_ || context_ == nullptr || mode_ != Mode::Open) {
         return Status(StatusCode::FailedPrecondition);
     }
-    if (!circuit1::IsBucket(bucket) ||
+    if (!circuit1::IsBucket(direction_, bucket) ||
         ciphertext.size() < circuit1::kLayerTagBytes ||
         ciphertext.size() > INT_MAX ||
         output.size() != ciphertext.size() - circuit1::kLayerTagBytes) {

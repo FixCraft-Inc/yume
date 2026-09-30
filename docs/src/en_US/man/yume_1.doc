@@ -179,22 +179,12 @@ gracefully. **--validate** does not accept this option.
 
 @include shared/native_control.part
 
-The client's answer holds **control** (1), **program**, **version**,
-**state** (**idle**, **connecting**, **connected**, **waiting** or
-**closed**), **server** with **host** and **port**, **sessions**,
-**failed_attempts**, **traffic** with payload and record bytes sent and
-received, **socks5** and **forwards** (the local listeners) and
-**last_failure** (null, or **code** and **message**). A connected client adds
-**server_identity** and **connected_ms**, and a waiting one adds
-**retry_ms**. **circuits** is null without a circuits section. Otherwise it
-holds **hops**, **min_hops**, **accepted_hops** (0 unless the user accepted a
-shorter route), **current_hops** (0 while none can be used), **plain_http**,
-**serial** of the routes view in use, **stopped** (null, or why circuits
-stopped), **routes**, one per circuit with **nodes**, **age_ms** and
-**streams**, and **proposal**: null, or **id**, **hops**, **nodes**,
-**serial**, **gives_up** and, when measured, **latency_ms**. The client also
-takes the request {"control":1,"request":"accept-route","id":ID}, which
-**--accept-route** sends.
+The client's answer holds its connection **state**, the server, traffic
+totals, its local listeners, the last failure and, with a **circuits**
+section, its routes and any proposal of a shorter route. The client with
+circuits also takes the request
+{"control":1,"request":"accept-route","id":ID}, which **--accept-route**
+sends.
 
 ## SIGNALS
 

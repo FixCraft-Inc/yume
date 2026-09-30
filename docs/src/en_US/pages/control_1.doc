@@ -1,0 +1,172 @@
+#!yume-doc 1
+name:     control_1
+kind:     page
+title:    Control protocol 1
+summary:  The owner-only local socket where yume and yumed report their state and take requests, and the rules that let the GUI and later tools extend it.
+markdown: docs/protocol/CONTROL_1.md
+web:      yes
+catalog-title: Control socket
+catalog-group: Reference and development
+catalog-home: Internals and status
+catalog-order: 144
+---
+Status: normative contract for `runtime/control_socket.*` and the status
+replies of `yume` and `yumed`. `yume --status`, `yume --accept-route` and
+`yumed --status` are its clients today, and the desktop GUI will be one. It is
+a local interface between processes of one user, not a network protocol.
+
+## Purpose
+
+A running `yume` or `yumed` answers questions about its state and takes a few
+requests on a UNIX socket. The GUI is a separate, unprivileged program that
+talks to the running `yume` only through this socket, so it can crash or be
+replaced without touching the tunnel. The rules below let newer programs add
+fields and requests without breaking an older GUI, and let a newer GUI see
+what an older program lacks.
+
+## The socket
+
+The configuration's `control.socket` names the socket's path. The directory
+that holds it must belong to the running user and be closed to writes by
+group and others. The socket is mode 0600, and a connection from another user
+is closed before it is read. The server serves at most 4 connections at once,
+and later ones wait. Each ends after one reply, or after 2 seconds without a
+complete request.
+
+A connection carries one request and one reply:
+
+1. The client sends one JSON object and a newline, at most 512 bytes.
+2. The server sends one JSON object and a newline, under 64 KiB, and closes
+   the connection.
+
+Replies are UTF-8. Text from a peer or the system that is not valid UTF-8 is
+replaced, so a reply is always one JSON line.
+
+## Versions and extension
+
+Every request and reply carries `"control": 1`. The number changes only for a
+change an older client cannot survive, which needs a new version of this
+document. Within protocol 1:
+
+- Fields and requests are only added. An existing field keeps its name, type
+  and meaning, and an existing request keeps its fields and its reply.
+- A request is closed: it holds exactly the fields its definition lists.
+- A reply is open: a client ignores fields it does not know and does not rely
+  on their order.
+- Every status reply lists, in `requests`, the requests that program takes. A
+  client sends only a listed request. Any other gets `unknown_request`.
+- A field described as present *when* something holds is absent otherwise. A
+  field that can be `null` is always present.
+
+A new request, such as a command the GUI needs later, gets a name, a closed
+list of fields and a reply that names its result in a field of its own. A
+request that changes anything says so in its definition here. No request
+keeps its connection open: a client that follows a state asks for status
+again.
+
+## Errors
+
+A request that fails gets an error reply:
+
+@code text
+{"control": 1, "error": "no route proposal has that id", "code": "not_found"}
+@end
+
+A client acts on `code`. The text is for people and may change.
+
+@table
+| Code | Meaning |
+| --- | --- |
+| `malformed` | The request is not a JSON object, is too long, or lacks or adds a field |
+| `unsupported` | `control` is missing or not 1 |
+| `unknown_request` | This program does not take that request |
+| `not_found` | The request names something that does not exist, such as a proposal id |
+| `failed` | The program could not carry out a well-formed request |
+| `unavailable` | The program could not produce its status |
+@end
+
+## Requests
+
+`status`, taken by both programs, changes nothing:
+
+@code text
+{"control": 1, "request": "status"}
+@end
+
+`accept-route`, taken by a `yume` whose configuration has a `circuits`
+section, accepts the shorter route a status reply proposes, by its `id`, a
+string of at most 64 characters. It is the only request that changes
+anything. A proposal is described in [cluster 1](CLUSTER_1.md):
+
+@code text
+{"control": 1, "request": "accept-route", "id": "00112233aabbccdd"}
+{"control": 1, "accepted": "00112233aabbccdd"}
+@end
+
+An id that no current proposal has gets `not_found`, so an answer to a
+proposal the user has not seen accepts nothing.
+
+## The status of yume
+
+@table
+| Field | Value |
+| --- | --- |
+| `control`, `requests` | 1, and the requests this program takes |
+| `program`, `version` | `"yume"`, and the product version |
+| `state` | `idle`, `connecting`, `connected`, `waiting` between attempts, or `closed` |
+| `server` | `host` and `port` of the server the kit names |
+| `server_identity` | When connected: the server's verified composite fingerprint |
+| `connected_ms` | When connected: how long the session has been up |
+| `retry_ms` | When waiting: the delay before the next attempt |
+| `sessions` | Sessions authenticated since the program started |
+| `failed_attempts` | Failed attempts since the last authenticated session |
+| `last_failure` | `null`, or the latest failure's `code` and `message` |
+| `traffic` | `payload_bytes_sent`, `payload_bytes_received`, `record_bytes_sent` and `record_bytes_received`, summed over every session |
+| `socks5` | The SOCKS5 listeners, as `address:port` |
+| `forwards` | The forward listeners, as `address:port` or a socket path |
+| `circuits` | `null`, or the circuits below when the configuration has a `circuits` section |
+@end
+
+`circuits` holds `hops`, `min_hops`, `accepted_hops` (0 unless a shorter route
+was accepted), `current_hops` (the length new streams take, 0 while none can
+be used), `plain_http` (`refuse` or `allow`), `serial` (the routes view's, 0
+before one is verified), `stopped` (`null`, or why circuits stopped), `routes`
+and `proposal`. Each route has its `nodes` by name, the entry first, its
+`age_ms` and its open `streams`. `proposal` is `null`, or a shorter route's
+`id`, `hops`, `nodes`, the view's `serial`, what the user `gives_up` in plain
+words, and `latency_ms` when every hop has been measured.
+
+## The status of yumed
+
+@table
+| Field | Value |
+| --- | --- |
+| `control`, `requests` | 1, and the requests this program takes |
+| `program`, `version` | `"yumed"`, and the product version |
+| `listeners` | The listening endpoints, as `address:port` |
+| `client_sessions` | Client sessions open now |
+| `cluster` | `null`, or the cluster below when the configuration names one |
+@end
+
+`cluster` holds the list's `id` (the operator's fingerprint), `serial`,
+`not_after` in UTC, whether it has `expired`, this server's name as `self`,
+its `links` and its `circuits`. Each link names the `peer` and its `identity`,
+the `outbound` link this server keeps (its `state`, `sessions`,
+`failed_attempts`, `last_failure`, and `connected_ms` or `retry_ms` as for
+`yume`), the `inbound` sessions the peer holds here (`sessions`, and
+`connected_ms` when there is one) and the `circuits` it carries `in` and
+`out`. `circuits` counts whether this server is an `exit`, circuits `open`,
+those it is the `entry` of, those it `relayed`, `exit_streams`, `failed`
+circuits and those `refused`, in total and by bound (`client_circuits`,
+`circuit_rate`, `handshakes`, `streams`). No count names both neighbours of a
+circuit.
+
+## Limits
+
+- Replies hold no key, credential, admission secret or payload. They do name
+  server identities, cluster node names and local listener addresses, which
+  the socket's permissions keep to the user who runs the program.
+- Any process of that user can send `accept-route`. That user could edit the
+  configuration anyway.
+- The socket is not a stable interface for other users or other hosts, and
+  the C ABI does not serve it.

@@ -7,7 +7,9 @@ once.
 A connection sends one line, the JSON object
 **{"control":1,"request":"status"}**, within two seconds and in at most 512
 bytes. The program answers with one JSON object on one line and closes the
-connection, and **--status** refuses an answer over 64 KiB. Any other request
-gets an object that holds
-**control** and an **error** text. No answer holds a key, credential or
-payload.
+connection, and **--status** refuses an answer over 64 KiB. A request that
+fails gets an object that holds **control**, an **error** text and a
+**code**. No answer holds a key, credential or payload.
+**docs/protocol/CONTROL_1.md** is the protocol's contract: every request,
+every field of both programs' answers, and the rules by which later versions
+add fields and requests without breaking older clients.

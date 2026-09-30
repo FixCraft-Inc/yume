@@ -137,12 +137,14 @@ std::string exchange(const std::filesystem::path& path,
     return reply;
 }
 
+// An error reply's code and text, as "code: text".
 std::string error_of(const std::string& reply) {
     check(!reply.empty() && reply.back() == '\n', "the reply is not one line");
     const Json value = Json::parse(reply);
-    check(value.at("control") == 1 && value.size() == 2U,
+    check(value.at("control") == 1 && value.size() == 3U,
           "the error reply has other keys");
-    return value.at("error").get<std::string>();
+    return value.at("code").get<std::string>() + ": " +
+           value.at("error").get<std::string>();
 }
 
 NativeClientStatus connected_status(std::chrono::steady_clock::time_point now) {
@@ -425,25 +427,30 @@ void test_requests_and_errors() {
     struct stat info{};
     check(::stat(path.c_str(), &info) == 0 && (info.st_mode & 0777) == 0600,
           "the control socket is not mode 0600");
+    // The server names the requests it takes in every status reply.
     check(require(yume::runtime::query_control_status(path, 2000ms)) ==
-              R"({"control":1,"state":"idle"})",
+              R"({"requests":["status"],"control":1,"state":"idle"})",
           "the status reply was not returned");
     check(
         error_of(exchange(path, "{\"control\":1,\"request\":\"status\"}\n")) ==
-            "status is unavailable",
+            "unavailable: status is unavailable",
         "a failed status source was not reported");
     const std::pair<std::string, std::string> cases[] = {
-        {"not json\n", "the request is not a JSON object"},
-        {"[1]\n", "the request is not a JSON object"},
+        {"not json\n", "malformed: the request is not a JSON object"},
+        {"[1]\n", "malformed: the request is not a JSON object"},
         {"{\"control\":2,\"request\":\"status\"}\n",
-         "unsupported control protocol"},
+         "unsupported: unsupported control protocol"},
         {"{\"control\":\"1\",\"request\":\"status\"}\n",
-         "unsupported control protocol"},
-        {"{\"control\":1}\n", "a request holds exactly control and request"},
+         "unsupported: unsupported control protocol"},
+        {"{\"control\":1}\n",
+         "malformed: a request holds exactly control and request"},
         {"{\"control\":1,\"request\":\"status\",\"all\":true}\n",
-         "a request holds exactly control and request"},
-        {"{\"control\":1,\"request\":\"stop\"}\n", "unknown request"},
-        {std::string(600U, ' '), "the request is too long"},
+         "malformed: a request holds exactly control and request"},
+        {"{\"control\":1,\"request\":\"stop\"}\n",
+         "unknown_request: unknown request"},
+        {"{\"control\":1,\"request\":\"stop\",\"now\":true}\n",
+         "unknown_request: unknown request"},
+        {std::string(600U, ' '), "malformed: the request is too long"},
     };
     for (const auto& [request, error] : cases) {
         check(error_of(exchange(path, request)) == error,
@@ -455,7 +462,7 @@ void test_requests_and_errors() {
         error_of(exchange(
             path,
             "{\"control\":1,\"request\":\"accept-route\",\"id\":\"ab\"}\n")) ==
-            "a request holds exactly control and request",
+            "unknown_request: unknown request",
         "accept-route reached a server without acceptance");
     runner.sync([&] { server->close(); });
     check(!std::filesystem::exists(path), "close left the control socket");
@@ -490,11 +497,15 @@ void test_accept_route() {
             require(yume::runtime::status_reply_text(reply.value())) ==
                 "accepted route 00112233aabbccdd\n",
         "a proposal's id was not accepted");
+    check(require(yume::runtime::query_control_status(path, 2000ms)) ==
+              R"({"requests":["status","accept-route"],"control":1})",
+          "the status reply does not name accept-route");
     const auto stale = yume::runtime::query_control_accept_route(
         path, "ffffffffffffffff", 2000ms);
     check(
         stale.ok() &&
-            error_of(stale.value() + "\n") == "no route proposal has that id" &&
+            error_of(stale.value() + "\n") ==
+                "not_found: no route proposal has that id" &&
             !yume::runtime::status_reply_text(stale.value()).ok(),
         "another id was accepted");
     check(!yume::runtime::query_control_accept_route(path, "NOT-HEX", 500ms)
@@ -503,11 +514,11 @@ void test_accept_route() {
           "a malformed id was sent");
     const std::pair<std::string, std::string> cases[] = {
         {"{\"control\":1,\"request\":\"accept-route\"}\n",
-         "accept-route holds exactly control, request and id"},
+         "malformed: accept-route holds exactly control, request and id"},
         {"{\"control\":1,\"request\":\"accept-route\",\"id\":7}\n",
-         "accept-route holds exactly control, request and id"},
+         "malformed: accept-route holds exactly control, request and id"},
         {"{\"control\":1,\"request\":\"accept-route\",\"id\":\"00\",\"x\":1}\n",
-         "accept-route holds exactly control, request and id"},
+         "malformed: accept-route holds exactly control, request and id"},
     };
     for (const auto& [request, error] : cases) {
         check(error_of(exchange(path, request)) == error,
@@ -548,7 +559,7 @@ void test_deadline_and_limit() {
     check(waited >= 1800ms && waited < 4500ms,
           "silent connections did not end at the request deadline");
     check(require(yume::runtime::query_control_status(path, 2000ms)) ==
-              R"({"control":1})",
+              R"({"requests":["status"],"control":1})",
           "the server did not resume after the deadline");
     runner.sync([&] { server->close(); });
 }

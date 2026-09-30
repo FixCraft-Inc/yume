@@ -134,22 +134,10 @@ admission key is refused.
 
 @include shared/native_control.part
 
-The daemon's answer holds **control** (1), **program**, **version**,
-**listeners**, **client_sessions** and **cluster**, null outside a cluster.
-A member's **cluster** holds **id**, **serial**, **not_after**, **expired**,
-**self**, **circuits** and **links**, one per peer with **peer**,
-**identity**, **outbound**, **inbound** and **circuits**. **outbound** holds
-**state**, **sessions**, **failed_attempts**, **last_failure** and, as for a
-client, **connected_ms** or **retry_ms**. **inbound** holds **sessions** and,
-while there is one, **connected_ms** of the oldest. A link's **circuits**
-holds **in**, the circuits that arrive over the peer's link, and **out**,
-those this server extended over its link to the peer. The cluster's
-**circuits** holds **exit**, whether this server is an exit, **open**,
-**entry**, **relayed**, **exit_streams**, **failed** and **refused**, which
-counts refusals since start as **total**, **client_circuits**,
-**circuit_rate**, **handshakes** and **streams**.
-
-@include shared/native_exit_status.part
+The daemon's answer holds its listeners, the number of client sessions
+and, in a cluster, the list's serial and expiry, each peer's links and the
+circuits this server carries, counted per link and never per pair of
+neighbours.
 
 ## EXAMPLES
 

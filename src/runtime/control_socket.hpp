@@ -27,17 +27,19 @@
 namespace yume::runtime {
 
 // Local control protocol 1, served on the control.socket of yume or yumed.
+// docs/protocol/CONTROL_1.md is the contract, including how it grows.
 //
 // A connection sends one request line, the JSON object
 // {"control":1,"request":"status"} and a newline, of at most
 // kControlRequestBytes, within kControlRequestTimeout. The server answers
 // with one JSON object and a newline, then closes the connection. The status
-// reply carries "control":1, "program" and the fields client_status_reply or
-// server_status_reply writes. A client with circuits also takes
-// {"control":1,"request":"accept-route","id":ID}, the only request that
-// changes anything, and answers {"control":1,"accepted":ID}. Any other
-// request, or a malformed one, gets {"control":1,"error":TEXT}. Replies hold
-// no key, credential or payload.
+// reply carries "control":1, the "requests" the server takes, "program" and
+// the fields client_status_reply or server_status_reply writes. A server with
+// route acceptance also takes {"control":1,"request":"accept-route","id":ID},
+// the only request that changes anything, and answers
+// {"control":1,"accepted":ID}. Any other request, or a malformed one, gets
+// {"control":1,"error":TEXT,"code":CODE}, where clients act on CODE. Replies
+// hold no key, credential or payload.
 inline constexpr std::uint32_t kControlProtocol = 1U;
 inline constexpr std::size_t kControlRequestBytes = 512U;
 inline constexpr std::size_t kControlReplyBytes = std::size_t{64} * 1024U;

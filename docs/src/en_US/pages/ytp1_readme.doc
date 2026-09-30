@@ -469,7 +469,8 @@ Schema 1 is role tagged and contains these sections only:
   bytes that no forward uses. The running `yume` or `yumed` serves its status
   there to processes of its own user, and `--status` reads it. The socket's
   directory must belong to that user and be closed to writes by group and
-  others. yume(1) and yumed(8) describe the protocol;
+  others. [Control protocol 1](../../protocol/CONTROL_1.md) is its
+  contract;
 - `cluster`, optional and server-only: `operator_key`, `list`, `signature`,
   `routes`, `routes_signature`, `peers` and `state`, the file references of
   a cluster membership, and an optional `exit` whose `service` names the

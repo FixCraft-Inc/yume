@@ -75,9 +75,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   verified identity, session counts, traffic, local listeners and the last
   failure. `yume --config PATH --status` prints it. The socket follows the
   owner-only rules of local UNIX listeners, serves at most four connections,
-  and answers one JSON request line with one JSON line (control protocol 1,
-  in yume(1)). The planned GUI reads it. `yume-doctor` checks the key, and
-  the embedding ABI refuses a configuration that names one.
+  and answers one JSON request line with one JSON line
+  ([control protocol 1](../protocol/CONTROL_1.md)). That page is the GUI's
+  contract: fields and requests are only added, every status reply lists
+  the requests its program takes, and an error names a stable `code` beside
+  its text. `yume-doctor` checks the key, and the embedding ABI refuses a
+  configuration that names one.
 - **Cluster links.** Servers of one operator form a cluster from a list the
   operator signs with a composite Ed25519 and ML-DSA-87 key
   ([cluster 1](../protocol/CLUSTER_1.md)). A server's `cluster` section names

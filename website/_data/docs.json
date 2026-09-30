@@ -143,6 +143,15 @@
     "home_group": "Internals and status"
   },
   {
+    "title": "Control socket",
+    "summary": "The owner-only local socket where yume and yumed report their state and take requests, and the rules that let the GUI and later tools extend it.",
+    "url": "/docs/protocol/CONTROL_1/",
+    "source": "docs/protocol/CONTROL_1.md",
+    "landing_group": "Reference and development",
+    "order": 144,
+    "home_group": "Internals and status"
+  },
+  {
     "title": "YTP/1 protocol",
     "summary": "The canonical transport kernel, native composition and qualification boundaries.",
     "url": "/docs/protocol/YTP_1/",

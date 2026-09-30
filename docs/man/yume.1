@@ -302,80 +302,25 @@ The program answers with one JSON object on one line and closes the
 connection, and
 .B --status
 refuses an answer over 64 KiB.
-Any other request gets an object that holds
-.B control
-and an
+A request that fails gets an object that holds
+.BR control ,
+an
 .B error
-text.
+text and a
+.BR code .
 No answer holds a key, credential or payload.
+.B docs/protocol/CONTROL_1.md
+is the protocol's contract: every request, every field of both programs'
+answers, and the rules by which later versions add fields and requests
+without breaking older clients.
 .PP
-The client's answer holds
-.B control
-(1),
-.BR program ,
-.BR version ,
-.B state
-.RB ( idle ,
-.BR connecting ,
-.BR connected ,
-.B waiting
-or
-.BR closed ),
-.B server
-with
-.B host
-and
-.BR port ,
-.BR sessions ,
-.BR failed_attempts ,
-.B traffic
-with payload and record bytes sent and received,
-.B socks5
-and
-.B forwards
-(the local listeners) and
-.B last_failure
-(null, or
-.B code
-and
-.BR message ).
-A connected client adds
-.B server_identity
-and
-.BR connected_ms ,
-and a waiting one adds
-.BR retry_ms .
+The client's answer holds its connection
+.BR state ,
+the server, traffic totals, its local listeners, the last failure and,
+with a
 .B circuits
-is null without a circuits section.
-Otherwise it holds
-.BR hops ,
-.BR min_hops ,
-.B accepted_hops
-(0 unless the user accepted a shorter route),
-.B current_hops
-(0 while none can be used),
-.BR plain_http ,
-.B serial
-of the routes view in use,
-.B stopped
-(null, or why circuits stopped),
-.BR routes ,
-one per circuit with
-.BR nodes ,
-.B age_ms
-and
-.BR streams ,
-and
-.BR proposal :
-null, or
-.BR id ,
-.BR hops ,
-.BR nodes ,
-.BR serial ,
-.B gives_up
-and, when measured,
-.BR latency_ms .
-The client also takes the request
+section, its routes and any proposal of a shorter route.
+The client with circuits also takes the request
 {"control":\:1,\:"request":\:"accept-route",\:"id":\:ID}, which
 .B --accept-route
 sends.

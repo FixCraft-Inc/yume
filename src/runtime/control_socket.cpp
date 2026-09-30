@@ -52,8 +52,10 @@ std::string dump(const Json& value) {
     return value.dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 
-std::string error_reply(std::string_view text) {
-    return dump(Json{{"control", kControlProtocol}, {"error", text}});
+// code is what a client acts on, and text is for people.
+std::string error_reply(std::string_view code, std::string_view text) {
+    return dump(
+        Json{{"control", kControlProtocol}, {"error", text}, {"code", code}});
 }
 
 std::string_view state_name(NativeClientState state) noexcept {
@@ -450,7 +452,7 @@ private:
                 return;
             }
             if (request_.size() >= kControlRequestBytes) {
-                send(error_reply("the request is too long"));
+                send(error_reply("malformed", "the request is too long"));
                 return;
             }
         } catch (...) {
@@ -506,22 +508,25 @@ private:
 std::string ControlServer::State::reply_to(std::string_view line) {
     const Json request = Json::parse(line, nullptr, false);
     if (request.is_discarded() || !request.is_object()) {
-        return error_reply("the request is not a JSON object");
+        return error_reply("malformed", "the request is not a JSON object");
     }
     const auto version = request.find("control");
     if (version == request.end() || !version->is_number_unsigned() ||
         version->get<std::uint64_t>() != kControlProtocol) {
-        return error_reply("unsupported control protocol");
+        return error_reply("unsupported", "unsupported control protocol");
     }
     const auto name = request.find("request");
     if (name == request.end() || !name->is_string()) {
-        return error_reply("a request holds exactly control and request");
+        return error_reply("malformed",
+                           "a request holds exactly control and request");
     }
-    if (name->get_ref<const std::string&>() == "accept-route" && accept_route) {
+    const auto& requested = name->get_ref<const std::string&>();
+    if (requested == "accept-route" && accept_route) {
         const auto id = request.find("id");
         if (request.size() != 3U || id == request.end() || !id->is_string() ||
             id->get_ref<const std::string&>().size() > 64U) {
             return error_reply(
+                "malformed",
                 "accept-route holds exactly control, request and id");
         }
         Status accepted(StatusCode::Internal);
@@ -530,26 +535,37 @@ std::string ControlServer::State::reply_to(std::string_view line) {
         } catch (...) {
         }
         if (!accepted.ok()) {
-            return error_reply(accepted.code() == StatusCode::NotFound
-                                   ? "no route proposal has that id"
-                                   : "the route could not be accepted");
+            return accepted.code() == StatusCode::NotFound
+                       ? error_reply("not_found",
+                                     "no route proposal has that id")
+                       : error_reply("failed",
+                                     "the route could not be accepted");
         }
         return Json{{"control", kControlProtocol}, {"accepted", *id}}.dump();
     }
-    if (request.size() != 2U) {
-        return error_reply("a request holds exactly control and request");
+    if (requested != "status") {
+        return error_reply("unknown_request", "unknown request");
     }
-    if (name->get_ref<const std::string&>() != "status") {
-        return error_reply("unknown request");
+    if (request.size() != 2U) {
+        return error_reply("malformed",
+                           "a request holds exactly control and request");
     }
     std::string reply;
     try {
         reply = status();
     } catch (...) {
-        return error_reply("status is unavailable");
+        return error_reply("unavailable", "status is unavailable");
     }
+    // Every status reply names the requests this server takes, so a client
+    // can tell what an older program lacks before it asks.
+    const std::string_view requests = accept_route
+                                          ? R"("requests":["status","accept-route"])"
+                                          : R"("requests":["status"])";
+    if (reply.size() < 2U || reply.front() != '{' || reply.back() != '}')
+        return error_reply("unavailable", "status is unavailable");
+    reply.insert(1U, std::string(requests) + (reply.size() > 2U ? "," : ""));
     if (reply.size() >= kControlReplyBytes)
-        return error_reply("status is too large");
+        return error_reply("unavailable", "status is too large");
     return reply;
 }
 

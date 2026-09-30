@@ -178,5 +178,48 @@ class NativeReleasePackageTests(unittest.TestCase):
         self.assertTrue(bundle_manifest["required_features"]["post_quantum"])
 
 
+class NativeLaneGuardTests(unittest.TestCase):
+    """The CI lanes that build the native graph embed the patched OpenSSL."""
+
+    SETUP = ("source scripts/ensure-openssl.sh\n"
+             "          yume_openssl_ensure\n"
+             "          source scripts/ensure-nghttp2.sh\n"
+             "          yume_nghttp2_ensure")
+
+    def lane(self, *options: str, setup: bool = True) -> str:
+        text = (self.SETUP + "\n") if setup else ""
+        body = " \\\n            ".join(options)
+        return text + "          cmake -S . -B build \\\n            " + body + "\n"
+
+    def native(self) -> str:
+        return "".join(self.lane("-DYUME_STATIC_OPENSSL=ON") for _ in range(3))
+
+    def test_three_native_lanes_pass(self) -> None:
+        preflight.check_native_lanes(self.native(), self.SETUP)
+
+    def test_a_gui_lane_needs_no_openssl(self) -> None:
+        gui = self.lane("-DYUME_BUILD_NATIVE_APPLICATION=OFF", "-DYUME_BUILD_GUI=ON",
+                        setup=False)
+        preflight.check_native_lanes(self.native() + gui, self.SETUP)
+
+    def test_a_native_lane_without_openssl_is_refused(self) -> None:
+        bare = self.lane("-DYUME_BUILD_GUI=ON", setup=False)
+        with self.assertRaises(SystemExit):
+            preflight.check_native_lanes(self.native() + bare, self.SETUP)
+        unembedded = self.lane("-DYUME_STATIC_OPENSSL=OFF")
+        with self.assertRaises(SystemExit):
+            preflight.check_native_lanes(self.native() + unembedded, self.SETUP)
+
+    def test_a_lane_without_the_application_builds_no_shared_abi(self) -> None:
+        abi = self.lane("-DYUME_BUILD_NATIVE_APPLICATION=OFF", "-DYUME_BUILD_SHARED_ABI=ON",
+                        setup=False)
+        with self.assertRaises(SystemExit):
+            preflight.check_native_lanes(self.native() + abi, self.SETUP)
+
+    def test_the_real_workflow_passes(self) -> None:
+        ci_yml = (preflight.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        preflight.check_native_lanes(ci_yml, self.SETUP)
+
+
 if __name__ == "__main__":
     unittest.main()

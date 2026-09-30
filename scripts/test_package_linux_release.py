@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -219,6 +220,125 @@ class NativeLaneGuardTests(unittest.TestCase):
     def test_the_real_workflow_passes(self) -> None:
         ci_yml = (preflight.ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         preflight.check_native_lanes(ci_yml, self.SETUP)
+
+
+class DependencyFallbackTests(unittest.TestCase):
+    """The source fallbacks stop at the first failed step and leave no prefix.
+
+    Their callers test the fallback's status, which turns set -e off inside
+    it, so each run reproduces that context with ``|| echo refused``. Fake
+    curl, make and cmake stand in for the network and the builds.
+    """
+
+    CURL = """#!/bin/sh
+[ -n "$FAKE_TARBALL" ] || exit 22
+while [ $# -gt 1 ]
+do
+    if [ "$1" = "--output" ]
+    then
+        exec cp "$FAKE_TARBALL" "$2"
+    fi
+    shift
+done
+exit 22
+"""
+    # OpenSSL: Configure records the prefix, the build passes and install_sw
+    # fails after creating part of the prefix.
+    CONFIGURE = """#!/bin/sh
+for arg in "$@"
+do
+    if [ "${arg#--prefix=}" != "$arg" ]
+    then
+        printf '%s\\n' "${arg#--prefix=}" > prefix.txt
+    fi
+done
+"""
+    MAKE = """#!/bin/sh
+if [ "$1" = "install_sw" ]
+then
+    mkdir -p "$(cat prefix.txt)/ssl" "$(cat prefix.txt)/bin"
+    exit 2
+fi
+"""
+    # nghttp2: configuring and building pass, installing fails after writing
+    # the pkg-config file that detection reads.
+    CMAKE = """#!/bin/sh
+if [ "$1" = "-S" ]
+then
+    mkdir -p "$4"
+    for arg in "$@"
+    do
+        if [ "${arg#-DCMAKE_INSTALL_PREFIX=}" != "$arg" ]
+        then
+            printf '%s\\n' "${arg#-DCMAKE_INSTALL_PREFIX=}" > "$4/prefix.txt"
+        fi
+    done
+elif [ "$1" = "--install" ]
+then
+    mkdir -p "$(cat "$2/prefix.txt")/lib/pkgconfig"
+    touch "$(cat "$2/prefix.txt")/lib/pkgconfig/libnghttp2.pc"
+    exit 2
+fi
+"""
+
+    def fallback(self, script: str, hash_name: str, call: str,
+                 source: dict[str, str] | None) -> tuple[str, list[str]]:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            for name, text in (("curl", self.CURL), ("make", self.MAKE), ("cmake", self.CMAKE)):
+                (bin_dir / name).write_text(text, encoding="utf-8")
+                (bin_dir / name).chmod(0o700)
+            env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": temp, "TMPDIR": temp}
+            digest = "0" * 64
+            if source is not None:
+                tarball = root / "source.tar.gz"
+                with tarfile.open(tarball, "w:gz") as archive:
+                    for name, text in source.items():
+                        data = text.encode("utf-8")
+                        info = tarfile.TarInfo(f"source/{name}")
+                        info.size = len(data)
+                        info.mode = 0o755
+                        archive.addfile(info, io.BytesIO(data))
+                env["FAKE_TARBALL"] = str(tarball)
+                digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
+            cache = root / "cache"
+            text = f"source {script}\n{hash_name}={digest}\n{call} || echo refused\n"
+            result = subprocess.run(["bash", "-c", text, "fallback", str(cache)],
+                                    cwd=preflight.ROOT, env=env, capture_output=True,
+                                    text=True, timeout=60, check=False)
+            return result.stdout + result.stderr, sorted(p.name for p in cache.iterdir())
+
+    def openssl(self, source: dict[str, str] | None) -> tuple[str, list[str]]:
+        prefix = '"$1/openssl-${YUME_OPENSSL_SOURCE_VERSION}-test"'
+        return self.fallback("scripts/ensure-openssl.sh", "YUME_OPENSSL_SOURCE_SHA256",
+                             f'yume_openssl_build_fallback "$1" {prefix} /nonexistent', source)
+
+    def nghttp2(self, source: dict[str, str] | None) -> tuple[str, list[str]]:
+        return self.fallback("scripts/ensure-nghttp2.sh", "YUME_NGHTTP2_SOURCE_SHA256",
+                             'yume_nghttp2_build_fallback "$1" "$1/nghttp2-test"', source)
+
+    def test_a_failed_download_is_named(self) -> None:
+        for label, run in (("OpenSSL", self.openssl), ("nghttp2", self.nghttp2)):
+            output, entries = run(None)
+            self.assertIn(f"Could not download the {label}", output)
+            self.assertIn("refused", output)
+            self.assertNotIn("sha256sum or shasum", output)
+            self.assertEqual(entries, ["downloads", "locks"])
+
+    def test_a_failed_openssl_install_fails_and_leaves_no_prefix(self) -> None:
+        output, entries = self.openssl({"Configure": self.CONFIGURE,
+                                        "apps/openssl.cnf": "# fake\n"})
+        self.assertIn("The OpenSSL 3.5.7 build failed", output)
+        self.assertIn("refused", output)
+        self.assertEqual(entries, ["downloads", "locks"])
+
+    def test_a_failed_nghttp2_install_fails_and_leaves_no_prefix(self) -> None:
+        output, entries = self.nghttp2({"CMakeLists.txt": "# fake\n"})
+        self.assertIn("build failed", output)
+        self.assertIn("refused", output)
+        self.assertEqual(entries, ["downloads", "locks"])
 
 
 if __name__ == "__main__":

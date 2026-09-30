@@ -140,7 +140,12 @@ yume_nghttp2_build_fallback() (
 
     if [[ ! -f "${archive}" ]]; then
         yume_nghttp2_log "Downloading pinned nghttp2 ${version} source archive..."
-        yume_nghttp2_download "${archive}" "${source_url}"
+        # The caller tests this function's status, which turns off set -e
+        # here, so a failed download must be checked explicitly.
+        if ! yume_nghttp2_download "${archive}" "${source_url}"; then
+            yume_nghttp2_error "Could not download the nghttp2 ${version} source archive from ${source_url}."
+            return 1
+        fi
     fi
     actual_hash="$(yume_nghttp2_hash_file "${archive}" || true)"
     if [[ -z "${actual_hash}" ]]; then
@@ -155,7 +160,10 @@ yume_nghttp2_build_fallback() (
 
     work_dir="$(mktemp -d "${TMPDIR:-/tmp}/yume-nghttp2-${version}-XXXXXX")"
     trap 'rm -rf -- "${work_dir}"' EXIT
-    tar -xzf "${archive}" -C "${work_dir}" --strip-components=1
+    if ! tar -xzf "${archive}" -C "${work_dir}" --strip-components=1; then
+        yume_nghttp2_error "Could not extract the nghttp2 ${version} source archive."
+        return 1
+    fi
 
     # The prefix is fixed beneath YUME_CACHE_ROOT. Refuse to remove anything
     # if that invariant changes, even if a caller supplies hostile variables.
@@ -167,21 +175,30 @@ yume_nghttp2_build_fallback() (
             ;;
     esac
 
+    # Each step is chained because set -e is off here (see the download
+    # above). Detection reads only pkg-config, so a partial prefix is removed
+    # before a later run can accept it.
     yume_nghttp2_log "Building nghttp2 ${version} (lib-only fallback)..."
-    cmake -S "${work_dir}" -B "${work_dir}/build" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="${prefix}" \
-        -DCMAKE_INSTALL_LIBDIR=lib \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-        -DENABLE_LIB_ONLY=ON \
-        -DENABLE_DOC=OFF \
-        -DENABLE_FAILMALLOC=OFF \
-        -DWITH_LIBXML2=OFF \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DBUILD_STATIC_LIBS=ON \
-        -DBUILD_TESTING=OFF
-    cmake --build "${work_dir}/build" --parallel "${jobs}"
-    cmake --install "${work_dir}/build"
+    if ! (
+        cmake -S "${work_dir}" -B "${work_dir}/build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${prefix}" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DENABLE_LIB_ONLY=ON \
+            -DENABLE_DOC=OFF \
+            -DENABLE_FAILMALLOC=OFF \
+            -DWITH_LIBXML2=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_TESTING=OFF &&
+            cmake --build "${work_dir}/build" --parallel "${jobs}" &&
+            cmake --install "${work_dir}/build"
+    ); then
+        rm -rf -- "${prefix}"
+        yume_nghttp2_error "The nghttp2 ${version} build failed, and its partial install was removed."
+        return 1
+    fi
 )
 
 yume_nghttp2_ensure() {

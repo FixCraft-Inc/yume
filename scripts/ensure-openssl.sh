@@ -263,7 +263,12 @@ yume_openssl_build_fallback() (
 
     if [[ ! -f "${archive}" ]]; then
         yume_openssl_log "Downloading pinned OpenSSL ${version} source archive..."
-        yume_openssl_download "${archive}" "${source_url}"
+        # The caller tests this function's status, which turns off set -e
+        # here, so a failed download must be checked explicitly.
+        if ! yume_openssl_download "${archive}" "${source_url}"; then
+            yume_openssl_error "Could not download the OpenSSL ${version} source archive from ${source_url}."
+            return 1
+        fi
     fi
     actual_hash="$(yume_openssl_hash_file "${archive}" || true)"
     if [[ -z "${actual_hash}" ]]; then
@@ -278,7 +283,10 @@ yume_openssl_build_fallback() (
 
     work_dir="$(mktemp -d "${TMPDIR:-/tmp}/yume-openssl-${version}-XXXXXX")"
     trap 'rm -rf -- "${work_dir}"' EXIT
-    tar -xzf "${archive}" -C "${work_dir}" --strip-components=1
+    if ! tar -xzf "${archive}" -C "${work_dir}" --strip-components=1; then
+        yume_openssl_error "Could not extract the OpenSSL ${version} source archive."
+        return 1
+    fi
 
     # Patch the verified source before configuring it. Order matters: the
     # checksum above covers the pristine upstream archive, and the series is
@@ -314,22 +322,28 @@ profile's brotli, which is visible in the ClientHello. Install libbrotli-dev to 
 close it."
     fi
 
+    # Each step is chained because set -e is off here (see the download
+    # above), and a partial prefix is removed so a later run cannot accept it.
+    # install_sw intentionally omits the request configuration.  CI uses this
+    # exact openssl binary to mint ephemeral fixture certificates, so keep the
+    # checksum-verified source configuration with the otherwise self-contained
+    # prefix instead of inheriting a host openssl.cnf.
     yume_openssl_log "Building OpenSSL ${version} with ${jobs} job(s)..."
-    (
-        cd "${work_dir}"
-        ./Configure \
-            --prefix="${prefix}" \
-            --openssldir="${prefix}/ssl" \
-            --libdir=lib \
-            shared zlib enable-zstd "${brotli_option}" no-tests
-        make -j"${jobs}" build_sw
-        make install_sw install_ssldirs
-        # install_sw intentionally omits the request configuration.  CI uses
-        # this exact openssl binary to mint ephemeral fixture certificates, so
-        # keep the checksum-verified source configuration with the otherwise
-        # self-contained prefix instead of inheriting a host openssl.cnf.
-        install -m 0644 apps/openssl.cnf "${prefix}/ssl/openssl.cnf"
-    )
+    if ! (
+        cd "${work_dir}" &&
+            ./Configure \
+                --prefix="${prefix}" \
+                --openssldir="${prefix}/ssl" \
+                --libdir=lib \
+                shared zlib enable-zstd "${brotli_option}" no-tests &&
+            make -j"${jobs}" build_sw &&
+            make install_sw install_ssldirs &&
+            install -m 0644 apps/openssl.cnf "${prefix}/ssl/openssl.cnf"
+    ); then
+        rm -rf -- "${prefix}"
+        yume_openssl_error "The OpenSSL ${version} build failed, and its partial install was removed."
+        return 1
+    fi
 )
 
 yume_openssl_export_github_env() {

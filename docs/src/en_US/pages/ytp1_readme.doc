@@ -289,6 +289,27 @@ through three-hop circuits while it samples `yume` and every node,
 `config/tuning_presets.json`, and `--idle-epoch-rotation` sets
 `limits.idle_epoch_rotation` on all of them.
 
+With `--serve-at ADDRESS` it measures nothing itself. It builds the cluster
+under one condition, serves its entry node and destination on one port of
+ADDRESS (`--serve-port`, for a firewall that passes few), and waits for a
+stop file. `scripts/yume_circuit_cable.py` runs the clients on another
+host: it starts that serve run over SSH, fetches the clients' kits, points
+them at ADDRESS and takes the same measurements there. A relay on the node
+host sends a connection that opens with a TLS handshake record to the entry
+and any other to the destination, so the client crosses the emulated first
+hop plus the real link. The relay ends TCP, so the first hop's emulated TCP
+runs from the node host. The served nodes listen on the relay's port,
+because a client's HTTP/2 authority must name the port its node listens
+on.
+
+On 2026-09-30 a laptop ran the clients against the build host over a
+1 Gbit/s cable. At `rtt=0` every path filled the link, 916 to 941 Mbit/s.
+At 40 and 100 ms per hop each tunnelled path's rate and request time came
+within 2 % of the build host's own run. At 200 ms one stream moved 40.2
+Mbit/s through the direct session and 5.5 Mbit/s through three hops, and
+four streams 20.1 Mbit/s through three hops. The four nodes still shared
+one host.
+
 On the build host on 2026-09-29, one stream moved 35 Mbit/s through three
 hops at 40 ms each and 14 Mbit/s at 100 ms, 52 and 21 Mbit/s through two
 hops, and 174 and 77 Mbit/s through the direct session. At 100 ms per hop

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
+import socket
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -16,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import yume_circuit_cable as circuit_cable  # noqa: E402
 import yume_circuit_capture as circuit_capture  # noqa: E402
 import yume_circuit_wan as circuit_wan  # noqa: E402
 import yume_ethernet_smoke as ethernet  # noqa: E402
@@ -246,6 +250,90 @@ class CircuitWanTest(unittest.TestCase):
             server.kill()
             server.wait(timeout=5)
             server.stdout.close()
+
+
+class CircuitCableTest(unittest.TestCase):
+    def test_the_relays_join_a_connection_and_end_each_direction(self) -> None:
+        # Each target answers only after the client's end arrives, so the
+        # reply shows both directions and both ends crossed the relays. A
+        # TLS handshake byte first reaches the entry, any other byte the
+        # destination, through the one served port.
+        targets = {}
+        for name in ("entry", "destination"):
+            target = socket.create_server(("127.0.0.1", 0))
+            self.addCleanup(target.close)
+            targets[name] = target
+
+            def answer(target: socket.socket = target, tag: bytes = name.encode()) -> None:
+                while True:
+                    try:
+                        connection, _ = target.accept()
+                    except OSError:
+                        return
+                    with connection:
+                        received = bytearray()
+                        while chunk := connection.recv(65536):
+                            received += chunk
+                        connection.sendall(tag + bytes(reversed(received)))
+
+            threading.Thread(target=answer, daemon=True).start()
+        outside = circuit_wan.HostRelay("127.0.0.1")
+        self.addCleanup(outside.close)
+        self.assertEqual(outside.ports["entry"], outside.ports["destination"])
+        inside = circuit_wan.NamespaceRelay(outside.directory,
+                                            {name: target.getsockname() for name, target in targets.items()})
+        self.addCleanup(inside.close)
+        for first, tag in ((b"\x16", b"entry"), (b"\x01", b"destination")):
+            message = first + bytes(range(256)) * 1024
+            with socket.create_connection(("127.0.0.1", outside.ports["entry"]), timeout=10) as client:
+                client.sendall(message)
+                client.shutdown(socket.SHUT_WR)
+                reply = bytearray()
+                while chunk := client.recv(65536):
+                    reply += chunk
+            self.assertEqual(bytes(reply), tag + bytes(reversed(message)))
+
+    def test_the_serve_run_detaches_from_a_bash_login(self) -> None:
+        # bash keeps a background list's output open until the list ends, so
+        # SSH would wait for the whole serve run.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "scripts").mkdir()
+            (root / "scripts/yume_circuit_wan.py").write_text("import time\ntime.sleep(3)\n")
+            arguments = argparse.Namespace(remote_yumed="yumed", remote_yume="yume", remote_openssl="openssl",
+                                           serve_at="127.0.0.1", serve_port=0, serve_seconds=60.0, preset=None,
+                                           idle_epoch_rotation=False, tcp_buffer_mib=0)
+            command = circuit_cable.serve_command(arguments, str(root / "run"), "rtt=0")
+            started = time.monotonic()
+            subprocess.run(["bash", "-c", f"cd {temporary} && {command}"], capture_output=True, timeout=10,
+                           check=True)
+            self.assertLess(time.monotonic() - started, 2.0)
+            status = root / "run.status"
+            deadline = time.monotonic() + 10
+            while not status.exists() and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertEqual(status.read_text().strip(), "0")
+
+    def test_kits_point_at_the_served_entry_with_local_ports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            kits = Path(temporary)
+            for path in ("direct", *circuit_wan.CIRCUIT_HOPS):
+                config = {"endpoint": {"host": "10.21.0.1", "port": 443},
+                          "adapters": [{"kind": "socks5", "listen_port": 1}]}
+                if path != "direct":
+                    config["control"] = {"socket": "/tmp/elsewhere.sock"}
+                (kits / path).mkdir()
+                (kits / path / "yume.json").write_text(json.dumps(config))
+            served = {"address": "10.77.77.1", "ports": {"entry": 40001, "destination": 40002}}
+            configs, socks = circuit_cable.point_kits(kits, served, kits / "sockets")
+            self.assertEqual(len(set(socks.values())), 3)
+            for path, location in configs.items():
+                config = json.loads(location.read_text())
+                self.assertEqual(config["endpoint"], {"host": "10.21.0.1", "port": 40001,
+                                                      "connect_address": "10.77.77.1"})
+                self.assertEqual(config["adapters"][0]["listen_port"], socks[path])
+                self.assertEqual(config.get("control"),
+                                 None if path == "direct" else {"socket": str(kits / "sockets" / f"{path}.sock")})
 
 
 def frame(source: str, source_port: int, target: str, target_port: int, sequence: int,

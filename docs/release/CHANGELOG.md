@@ -158,6 +158,17 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   crypto library, the tuning limits in use and, while connected, the
   session's negotiated key epoch. All are additive under
   [control protocol 1](../protocol/CONTROL_1.md)'s rules.
+- **Desktop GUI.** `yume-gui` (`YUME_BUILD_GUI=ON`, Qt 6.4 or later) is a new
+  Qt Quick window, an unprivileged client of the control socket that links no
+  YUME library. It imports sealed kits through `yume --import-kit`, starts a
+  kit's `yume` as a detached process that outlives the window, stops it with
+  the stop request and waits for the process to end, and shows the
+  connection, rates, listeners, circuits, printed lines and the fixed
+  posture with the tuning preset it matches. A tray icon shows the selected
+  kit's state and connects or disconnects it. A shorter route is accepted
+  only from a review of that exact proposal. Headless actions, a page
+  capture, keyboard and right-to-left tests and a live cycle against a real
+  daemon cover it ([desktop GUI](../GUI.md)). It is not packaged.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

@@ -1,0 +1,157 @@
+<!-- Generated from docs/src/en_US/pages/gui.doc by scripts/yume_docs.py. Edit that file, not this one. -->
+# YUME desktop GUI
+
+`yume-gui` is a desktop window for YUME clients on Linux. It imports sealed
+kits, starts and stops each kit's `yume`, and shows what the running client
+reports. It is optional: the client runs the same without it, and the window
+adds no capability to the tunnel. The manual is `docs/man/yume-gui.1`.
+
+## How it relates to yume
+
+The window is an ordinary user process with no privilege. It never holds a
+session, a key or the tunnel itself. It reaches a running `yume` only
+through that client's owner-only control socket, as
+[control protocol 1](protocol/CONTROL_1.md) defines, and it runs the `yume`
+program to validate, start and import kits.
+
+- **Start.** Connect runs `yume --config KIT/yume.json --control-socket
+  $XDG_RUNTIME_DIR/yume/KIT.sock --validate`, then starts the same command
+  without `--validate` as a detached process in its own session. Closing,
+  killing or crashing the window leaves the tunnel running. What `yume`
+  prints goes to `$XDG_RUNTIME_DIR/yume/KIT.log`, replaced at each start, so
+  a start that fails before its socket opens still says why.
+- **Find.** A kit's socket path follows from its name, so a window opened
+  later asks each kit's socket and shows a client that already runs.
+- **Stop.** Disconnect sends the protocol's `stop` request. `yume` answers,
+  closes its listeners and sessions as on `SIGTERM`, and the window reports
+  the tunnel stopped once the process has ended, not only its socket.
+- **Watch.** While a client runs, the window asks for its status every second
+  and for new printed lines every 1.5 seconds.
+
+The owner chose this design on 2026-09-30 over a systemd user service. It
+works on any Linux desktop and lets every lifecycle test run without a
+service manager. The costs: a `yume` that crashes is not restarted, and
+nothing starts a tunnel at login. A packaged user unit may take over starting
+later, as its own change. A kit with a managed TUN adapter needs privileges a
+user process does not have, so the window cannot start one. Run such a kit as
+a system service instead.
+
+## The tray
+
+Where the desktop shows tray icons, `yume-gui` adds one: the YUME mark with
+the selected kit's state as a dot, green while connected, amber while it
+connects, starts or waits to retry, red when the running client reports a
+failure and grey when it is not running. Its menu names the kit and state,
+connects or disconnects it, shows or hides the window and quits the GUI.
+With the tray, closing the window hides it. Without one, or with
+`--no-tray`, closing the window ends the GUI. Either way the tunnel keeps
+running.
+
+## Kits
+
+A kit is a directory under `$XDG_CONFIG_HOME/yume/kits`, one per client, with
+the `yume.json` and credential files that `yume-setup` wrote for it. The
+Connect page imports a [sealed kit](protocol/SEALED_KIT_1.md): choose the file,
+name the kit and type its code. The window runs `yume --import-kit FILE
+--into DIR` and hands it the code on its standard input, so the one
+implementation in `yume` opens, checks and writes the kit, and the window
+links no cryptography. The code never goes into a command line or a file.
+`yume-gui --import-kit FILE --name NAME` does the same without a window.
+
+A kit's name is 1 to 48 letters, digits, dots, dashes or underscores, and
+names its directory, socket and output file. Removing a kit deletes its
+directory, keys included, after a second confirmation, and only while it is
+stopped.
+
+## The pages
+
+**Overview** shows the connection as the status reply states it: connecting,
+connected and for how long, or waiting and when the next attempt starts. It
+shows the server's verified identity, send and receive rates with a
+90-second history, payload and on-the-wire totals, sessions and failed
+attempts, the last failure, the local SOCKS5 and forward listeners, and the
+route. A client without circuits says that one server carries its streams and
+sees their destinations. A client with circuits shows the length in use
+against the configured one, whether shorter routes need acceptance or were
+approved in the kit, the plain HTTP rule and each circuit by node name.
+
+**Route consent.** When no route of the configured length can be built,
+`yume` proposes a shorter one and connections wait. The Overview shows the
+proposal, and Review opens a dialog with its hop count, nodes, latency when
+measured and what the shorter route gives up, in `yume`'s own words. Accept
+sends `accept-route` with the id of that exact proposal. If `yume` proposes
+something else while the dialog is open, the dialog refuses to accept and
+asks for a new review. Closing it, Escape and no answer accept nothing, and
+Keep waiting has the focus.
+
+**Connect** lists the kits with their state, the import form and each kit's
+folder.
+
+**Logs** shows the latest lines the running `yume` printed, from the control
+socket's `messages` request, with a filter, following and copying. `yume`
+keeps its latest 256 lines, and the page says how many earlier ones it no
+longer keeps. When the client is not running, the page shows the output of
+its latest start instead.
+
+**Posture** states what protects the tunnel, from the status reply's
+`posture`: YTP/1 and its fixed composition (X25519 with ML-KEM-1024, Ed25519
+with ML-DSA-87 identities, AES-256-GCM with one-use message keys, TLS 1.3 and
+HTTP/2 after the captured evidence profile), the session's key epoch, and the
+tuning preset its limits match, with that preset's speed, security and
+stealth levels from `config/tuning_presets.json`. The page offers no switch
+that changes security. Presets are set when a kit is made, with `yume-setup
+init --preset`. The theme, light by default, dark or the system's, is the
+only setting.
+
+## Keyboard and languages
+
+Ctrl+1 to Ctrl+4 open the pages. Tab moves through every control, each with
+a name a screen reader can say. Space, Return and Enter activate the focused
+button, and Escape closes a dialog. `--layout-direction rtl` mirrors the
+whole window for right-to-left scripts, and text in any script is shaped.
+The interface itself is only in English so far.
+
+## Building and testing
+
+The GUI builds with `-DYUME_BUILD_GUI=ON` and Qt 6.4 or later: Core, Gui,
+Network, Qml, Quick and QuickControls2, plus Test for its tests. At run time
+it needs the QtQuick Controls, Layouts, Dialogs, Shapes and Window QML
+modules. It links no YUME library, so it also builds with
+`-DYUME_BUILD_NATIVE_APPLICATION=OFF`, and no other target links Qt.
+`cmake/YumeLayering.cmake` enforces both directions.
+
+- `yume_gui_test` drives the headless actions, the import, the command line
+  and the page capture against `tests/gui/fake_yume.py`, a stand-in that
+  speaks control protocol 1.
+- `yume_gui_ui_test` and `yume_gui_ui_rtl_test` drive the real pages with the
+  keyboard: page shortcuts, a focus order where every control has a name,
+  connect and disconnect, and route consent. The second checks the mirrored
+  layout.
+- `yume_gui_live_test` runs a real `yumed` and `yume`: a sealed kit imported
+  through the GUI, connect, stop, reconnect and stop with each leg's report
+  inspected and a payload fetched through the tunnel, and a killed window
+  whose tunnel keeps carrying traffic.
+
+`yume-gui --capture DIR` saves every page, and the route review dialog when a
+proposal is shown, as images for visual review. It fails when a page raises a
+QML warning. `yume-gui --headless ACTION --kit NAME` runs the window's
+lifecycle without a display and prints one JSON report per step. It exits 2
+when nothing could be exercised, so an empty run never reads as a pass.
+
+Measured with the offscreen platform on the development laptop (Qt 6.8.2,
+Release build without link-time optimization): the first frame renders 0.12
+seconds after start, the process uses about 78 MiB of resident memory with a
+running kit, 32 MiB of it its own and the rest shared Qt libraries, and the
+stripped program is 464 KiB beside 34 MiB of system Qt libraries. A real
+display and GPU add their own start-up time.
+
+## Limits
+
+- The GUI is not packaged, and no Debian package installs it.
+- Nothing starts it or a tunnel at login, and it does not restart a crashed
+  `yume`.
+- It runs only on Linux desktops and was checked with the offscreen platform,
+  not on each desktop environment, window system, tray or input method.
+- It has no benchmark, chat or file pages: no native benchmark exists yet, and
+  no program uses the chat and file module libraries.
+- It shows `yume` only. The server daemon's status is not in the window yet.

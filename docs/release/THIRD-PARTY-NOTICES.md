@@ -16,6 +16,10 @@ the following projects under their respective licenses:
 - systemd (libsystemd): LGPL-2.1-or-later.
 - nlohmann/json: MIT License.
 
+The optional desktop GUI is not part of this release. It links Qt 6
+(LGPL-3.0-only) and embeds the Jost font (SIL Open Font License 1.1, with its
+license text in `src/gui/assets/fonts/LICENSE-Jost.txt`).
+
 The matching source release and dependency repositories contain the complete
 license texts and copyright notices. This summary does not replace those
 terms.

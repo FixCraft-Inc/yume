@@ -1,0 +1,259 @@
+.\" Generated from docs/src/en_US/man/yume_gui_1.doc by scripts/yume_docs.py. Edit that file, not this one.
+.TH YUME-GUI 1 "2026-09-30" "YUME 0.3.0-dev1" "YUME Manual"
+.SH NAME
+yume-gui \- desktop GUI that starts, stops and shows YUME client tunnels
+.SH SYNOPSIS
+.B yume-gui
+[
+.B --kit
+.I name
+] [
+.B --page
+.I page
+] [
+.B --theme
+.I theme
+]
+.PP
+[
+.B --layout-direction
+.I direction
+] [
+.B --size
+.I size
+] [
+.B --no-tray
+]
+.PP
+[
+.B --yume
+.I path
+]
+.PP
+.B yume-gui
+[ window options ]
+.B --capture
+.I directory
+.PP
+.B yume-gui
+.B --kit
+.I name
+[
+.B --yume
+.I path
+]
+.B --headless
+.I action
+.PP
+.B yume-gui
+[
+.B --yume
+.I path
+]
+.B --import-kit
+.I file
+.B --name
+.I name
+.PP
+.B yume-gui
+.B --version
+.PP
+.B yume-gui
+.B --help
+.SH DESCRIPTION
+.B yume-gui
+is the desktop window for YUME clients.
+It imports sealed kits, starts and stops each kit's
+.BR yume (1),
+and shows what the running client reports: its connection, traffic,
+local listeners, circuits, proposals of a shorter route, printed lines
+and fixed security posture.
+It runs as an ordinary user and needs no privilege.
+.PP
+Its tray icon shows the selected kit's state as a dot on the YUME mark:
+green while connected, amber while connecting or waiting, red when the
+running client reports a failure and grey when it is not running.
+The tray's menu connects or disconnects the kit and shows or hides the
+window.
+.PP
+It talks to a running
+.B yume
+only through that client's control socket, as
+.B docs/protocol/CONTROL_1.md
+defines, and runs the
+.B yume
+program to validate, start and import kits.
+It starts
+.B yume
+as a detached process in its own session, so closing or killing the
+window leaves the tunnel running, and it stops
+.B yume
+with the control protocol's stop request.
+Opening the window again finds a running client by its socket.
+.PP
+A kit is a directory under
+.I $XDG_CONFIG_HOME/yume/kits
+that holds a
+.IR yume.json ,
+as
+.B yume
+.B --import-kit
+writes it.
+.B yume-gui
+starts
+.B yume
+.B --config
+.IR kit /yume.json
+.B --control-socket
+.IR $XDG_RUNTIME_DIR/yume/ kit .sock .
+A kit with a managed TUN adapter needs privileges that this user process
+does not have, so run such a kit as a system service instead.
+.PP
+The Posture page states the protection the running client reports: the
+YTP/1 composition, the evidence profile its outer layers follow, its
+tuning limits and the preset they match.
+It offers no switch that weakens a tunnel.
+A proposal of a shorter route is accepted only from its review dialog,
+for that exact proposal.
+Closing the dialog accepts nothing.
+.SH OPTIONS
+.TP
+.BI "--kit " name
+Select the kit named
+.I name
+when the window opens.
+With
+.B --headless
+it names the kit to act on.
+.TP
+.BI "--page " page
+Open the window on
+.IR page :
+.BR overview ,
+.BR connect ,
+.B logs
+or
+.BR posture .
+.TP
+.BI "--theme " theme
+Use
+.BR light ,
+.B dark
+or the desktop's
+.B system
+theme for this run instead of the one chosen in the window, which is
+saved in
+.IR $XDG_CONFIG_HOME/yume/gui.conf .
+Light is the default.
+.TP
+.BI "--layout-direction " direction
+Lay the window out
+.B ltr
+or
+.BR rtl ,
+mirroring it for right-to-left scripts.
+Text in any script is shaped either way.
+.TP
+.BI "--size " size
+Open the window at
+.IR size ,
+written as width
+.B x
+height in pixels.
+.TP
+.B --no-tray
+Show no tray icon.
+With a tray icon, closing the window hides it and the GUI stays in the
+tray, and Quit in the tray's menu ends the GUI.
+Without one, closing the window ends the GUI.
+A tunnel keeps running either way.
+.TP
+.BI "--yume " path
+Run the
+.B yume
+program at
+.IR path .
+Without it,
+.B yume-gui
+runs the
+.B yume
+in its own directory and does not search
+.BR PATH .
+.TP
+.BI "--capture " directory
+Wait for the selected kit's first status, save each page and the route
+review dialog, when a proposal is shown, to
+.I directory
+as
+.IR page - theme - direction .png,
+and the tray icon in each state as
+.RI tray- state .png,
+and exit.
+The exit status is 1 when an image could not be written or a page raised
+a QML warning.
+.TP
+.BI "--headless " action
+Without a window, act on the kit that
+.B --kit
+names, as the window's buttons do, and print one JSON line per step with
+what the control socket reported.
+.B status
+asks once.
+.B connect
+starts the kit and waits up to 60 seconds until
+.B yume
+reports
+.BR connected ,
+then exits and leaves the tunnel running.
+.B stop
+waits until the socket is gone and the process has ended.
+.B cycle
+connects, stops, connects and stops.
+.TP
+.BI "--import-kit " file
+Import the sealed kit in
+.I file
+as the kit
+.B --name
+names, reading its code from standard input, as the Connect page does.
+.B yume
+.B --import-kit
+opens and writes it.
+.TP
+.BI "--name " name
+The kit's name: 1 to 48 letters, digits, dots, dashes or underscores,
+not starting with a dot or a dash.
+.TP
+.B --version
+Print the product version, the Qt version in use and the control
+protocol.
+.TP
+.B --help
+Print a short usage summary.
+.SH FILES
+.IR $XDG_CONFIG_HOME/yume/kits/ name**
+is a kit.
+.IR $XDG_RUNTIME_DIR/yume/ name .sock
+is its running client's control socket, and
+.IR $XDG_RUNTIME_DIR/yume/ name .log
+holds what that client printed since this GUI last started it.
+The runtime directory must be set, and
+.I yume
+in it is kept private to the user.
+.SH EXIT STATUS
+The window exits with 0.
+.B --headless
+and
+.B --import-kit
+exit with 0 when every step passed, 1 when a step failed and 2 when
+nothing could be done, such as for an unknown kit or a usage error.
+.B --capture
+exits with 0 or 1.
+.SH SEE ALSO
+.BR yume (1),
+.BR yumed (8)
+.PP
+.B docs/GUI.md
+describes the pages, and
+.B docs/protocol/CONTROL_1.md
+the control protocol.

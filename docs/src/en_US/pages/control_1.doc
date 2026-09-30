@@ -11,9 +11,9 @@ catalog-home: Internals and status
 catalog-order: 144
 ---
 Status: normative contract for `runtime/control_socket.*` and the status
-replies of `yume` and `yumed`. `yume --status`, `yume --accept-route` and
-`yumed --status` are its clients today, and the desktop GUI will be one. It is
-a local interface between processes of one user, not a network protocol.
+replies of `yume` and `yumed`. `yume --status`, `yume --accept-route`,
+`yumed --status` and the [desktop GUI](../GUI.md) are its clients. It is a
+local interface between processes of one user, not a network protocol.
 
 ## Purpose
 

@@ -70,10 +70,11 @@ CA key off the server.
 | `yume-setup` | Creates server and client kits, adds and removes clients |
 | `yume-doctor` | Checks configuration and credential files |
 | `libyume` | Optional C library for embedding the client or server in another program |
+| `yume-gui` | Optional desktop window that imports kits and starts, stops and shows clients |
 
-There is no desktop GUI yet. A new one is planned for a later phase. Relay
-chat and file transfer exist as libraries for planned
-[modules](docs/MODULES.md). Transport v2, the protocol before YTP/1, has been
+The [desktop GUI](docs/GUI.md) builds with Qt 6 when enabled and talks to each
+client only through its control socket. It is not packaged yet. Relay chat and
+file transfer exist as libraries for planned [modules](docs/MODULES.md). Transport v2, the protocol before YTP/1, has been
 removed.
 
 ## Documentation

@@ -2177,6 +2177,12 @@ if(YUME_BUILD_FUZZERS)
     yume_add_fuzzer(yume_fuzz_circuit1 fuzz_circuit1.cpp yume_circuit1)
 endif()
 
+# The desktop GUI links no YUME library, so it builds with or without the
+# native application, and only with Qt.
+if(YUME_BUILD_GUI)
+    add_subdirectory(gui)
+endif()
+
 # ---------------------------------------------------------------------------
 # Warning-coverage audit.
 #

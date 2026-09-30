@@ -1,0 +1,40 @@
+#!yume-cli 1
+binary:    yume-gui
+manual:    yume_gui_1
+output:    src/gui/yume_gui_help_text.hpp
+namespace: yume::gui::help
+output-kind: static-help
+---
+@usage
+yume-gui [--kit <name>] [window options]
+yume-gui [--kit <name>] [window options] --capture <directory>
+yume-gui --kit <name> [--yume <path>] --headless <action>
+yume-gui [--yume <path>] --import-kit <file> --name <name>
+yume-gui --version
+yume-gui --help
+@end
+
+@section Options
+--kit
+--yume
+--version
+-h
+
+@section Window options
+--page
+--theme
+--layout-direction
+--size
+--no-tray
+
+@section Tests and automation
+--capture
+--headless
+--import-kit
+--name
+
+@gap
+@note
+The GUI talks to each yume only through its control socket.
+A tunnel keeps running when the window closes.
+@end

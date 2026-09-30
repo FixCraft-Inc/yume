@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=YUME
+GenericName=Stealth transport client
+Comment=Start, stop and watch YUME client tunnels and import sealed kits
+Exec=yume-gui
+Icon=yume-gui
+Terminal=false
+Categories=Network;Security;
+Keywords=vpn;proxy;tunnel;post-quantum;privacy;
+StartupNotify=true
+StartupWMClass=yume-gui

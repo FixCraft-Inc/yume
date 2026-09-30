@@ -18,7 +18,10 @@ speak YTP/1. Transport v2, the protocol before it, has been removed.
 - [Operations](OPERATIONS.md): server deployment, client identities, limits,
   reloads and troubleshooting.
 - [Preventing SOCKS bypass](LEAK_TIGHT.md): browser settings and route checks.
-- [Client manual](man/yume.1) and [daemon manual](man/yumed.8).
+- [Desktop GUI](GUI.md): importing kits and starting, stopping and watching
+  clients in a window.
+- [Client manual](man/yume.1), [daemon manual](man/yumed.8) and
+  [GUI manual](man/yume-gui.1).
 - [Packaging](PACKAGING.md): install layout and Debian packages.
 
 ## Understand YUME
@@ -43,6 +46,8 @@ speak YTP/1. Transport v2, the protocol before it, has been removed.
   module keeps for the planned chat and file modules.
 - [Sealed kit](protocol/SEALED_KIT_1.md): the one-file format that moves a
   client kit to another device.
+- [Control protocol 1](protocol/CONTROL_1.md): the owner-only socket through
+  which the GUI and `yume --status` talk to a running client or daemon.
 - [C ABI](ABI.md): embedding the client or server. The ABI is experimental and
   its install contract is not frozen.
 - [Modules](MODULES.md): running a program behind a stream service, and

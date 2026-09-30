@@ -71,6 +71,15 @@
     "home_group": "Operating"
   },
   {
+    "title": "Desktop GUI",
+    "summary": "The yume-gui window: importing kits, starting and stopping tunnels, and what each page shows and why.",
+    "url": "/docs/GUI/",
+    "source": "docs/GUI.md",
+    "landing_group": "Start here",
+    "order": 75,
+    "home_group": "Operating"
+  },
+  {
     "title": "Packaging",
     "summary": "Local installs, man pages, and the Debian package split.",
     "url": "/docs/PACKAGING/",

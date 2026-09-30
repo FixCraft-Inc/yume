@@ -570,7 +570,17 @@ without raising the 256 MiB RSS growth guard. Other sanitizer tests keep their
 existing options. This finite workload does not measure live queue ownership,
 prove a memory plateau or observe automatic rekeys.
 
-There is no desktop GUI. CodeQL
+The optional desktop GUI, `yume-gui` (`YUME_BUILD_GUI=ON`, Qt 6.4 or later),
+starts each kit's `yume` detached, stops it with the control socket's stop
+request and shows its status, printed lines, posture and route proposals.
+It imports sealed kits through `yume --import-kit` and accepts a shorter route
+only from a review of that exact proposal. `yume_gui_test`,
+`yume_gui_ui_test`, `yume_gui_ui_rtl_test` and `yume_gui_live_test` cover the
+lifecycle, keyboard access, right-to-left layout and a live connect, stop,
+reconnect and stop against a real daemon. Its tray icon shows the selected
+kit's state. The GUI is not packaged, runs only on Linux, starts nothing at
+login and does not restart a crashed client.
+See [the desktop GUI](GUI.md). CodeQL
 analyzes the native programs, `libyume` and the module libraries. Debian definitions
 use the native config-only daemon, validate configuration before startup and
 leave the service disabled after installation. Native release archives carry

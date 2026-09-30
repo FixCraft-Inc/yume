@@ -84,6 +84,12 @@ The module libraries (`YUME_BUILD_BASEFWX_MODULES=ON`) build the pinned
 BaseFWX checkout and need liboqs with ML-KEM-1024. `yume`, `yumed` and the C
 ABI never link them.
 
+The desktop GUI (`YUME_BUILD_GUI=ON`) needs Qt 6.4 or later: on Debian and
+Ubuntu `qt6-base-dev` and `qt6-declarative-dev`, and at run time the QtQuick
+Controls, Dialogs, Layouts, Shapes, Templates and Window QML modules. It links
+no YUME library, and nothing else links Qt. Keep it to Qt 6.4 interfaces,
+which CI's Ubuntu 24.04 image provides.
+
 The normal developer build is:
 
 ```bash

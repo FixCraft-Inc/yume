@@ -51,6 +51,49 @@ Files: debian/*
 Copyright: 2026 FixCraft Inc.
 License: AGPL-3+
 
+Files:
+ src/gui/assets/fonts/Jost-Regular.ttf
+ src/gui/assets/fonts/LICENSE-Jost.txt
+Copyright: 2020 The Jost Project Authors
+License: OFL-1.1
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of the Font Software, to use, study, copy, merge, embed, modify, redistribute,
+ and sell modified and unmodified copies of the Font Software, subject to the
+ following conditions:
+ .
+ 1. Neither the Font Software nor any of its individual components, in Original
+    or Modified Versions, may be sold by itself.
+ .
+ 2. Original or Modified Versions of the Font Software may be bundled,
+    redistributed and/or sold with any software, provided that each copy
+    contains the above copyright notice and this license. These can be included
+    either as stand-alone text files, human-readable headers or in the
+    appropriate machine-readable metadata fields within text or binary files as
+    long as those fields can be easily viewed by the user.
+ .
+ 4. The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+    Software shall not be used to promote, endorse or advertise any Modified
+    Version, except to acknowledge the contribution(s) of the Copyright
+    Holder(s) and the Author(s) or with their explicit written permission.
+ .
+ 5. The Font Software, modified or unmodified, in part or in whole, must be
+    distributed entirely under this license, and must not be distributed under
+    any other license. The requirement for fonts to remain under this license
+    does not apply to any document created using the Font Software.
+ .
+ TERMINATION: This license becomes null and void if any of the above
+ conditions are not met.
+ .
+ DISCLAIMER: The Font Software is provided "as is", without warranty of any
+ kind, express or implied, including but not limited to any warranties of
+ merchantability, fitness for a particular purpose and noninfringement of
+ copyright, patent, trademark, or other right. In no event shall the Copyright
+ Holder be liable for any claim, damages or other liability, including any
+ general, special, indirect, incidental, or consequential damages, whether in an
+ action of contract, tort or otherwise, arising from, out of the use or
+ inability to use the Font Software or from other dealings in the Font
+ Software.
+
 License: AGPL-3+
  This package is free software; you can redistribute it and/or modify it
  under the terms of the GNU Affero General Public License as published by the

@@ -244,8 +244,8 @@ A client with a `circuits` section sends every SOCKS5 CONNECT and every
 forward to a destination through circuits it builds itself: it verifies the
 routes view its entry serves against the kit's copy and a saved serial,
 chooses routes by the rules in cluster 1, builds a circuit when its session
-starts, keeps a spare, rotates circuits and refuses UDP, packet adapters and
-plain HTTP. It never shortens a route
+starts, keeps a spare, rotates circuits, opens streams as soon as BEGIN is
+on its way and refuses UDP, packet adapters and plain HTTP. It never shortens a route
 on its own: a proposal waits for `yume --accept-route` over the control
 socket, unless `circuits.min_hops` approves it in advance, and `yume
 --status` shows routes and proposals. `yume_circuit_routes_test`,

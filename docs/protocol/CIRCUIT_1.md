@@ -284,9 +284,13 @@ layer, so no other hop can read it.
 A stream starts when the client sends BEGIN. The exit answers CONNECTED once
 it has reached the destination, or END with the reason it could not. An
 exit that cannot tell a failed lookup from a failed connection answers name
-not found for a name and unreachable for an address. The client sends DATA
-only after CONNECTED. Messages for a stream the receiver has already ended
-are ignored, because they may have crossed its END.
+not found for a name and unreachable for an address. The client MAY send
+DATA, and END, right after BEGIN without waiting for CONNECTED, within the
+window below, so a request need not wait a circuit round trip. The exit
+holds that data until it has reached the destination and writes it there
+first, and discards it with the stream when it answers END. Messages for a
+stream the receiver has already ended are ignored, because they may have
+crossed its END.
 
 Each end grants the other a window of 262144 bytes for every stream's DATA
 when the stream starts and returns it with STREAM_CREDIT as it delivers the

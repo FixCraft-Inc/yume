@@ -263,9 +263,12 @@ to a destination, through a circuit whose entry is the server its kit names.
 A forward without a destination still opens its service on the entry.
 Circuits carry TCP only: UDP ASSOCIATE is refused and a packet adapter fails
 validation, so nothing leaves through the direct session by mistake. A
-SOCKS5 client gets the answer the direct session would give: not allowed
-for a destination the exit's policy refuses, host unreachable for one it
-cannot reach. The C ABI refuses the section until it has a way to ask the
+circuit stream opens as soon as its BEGIN is on its way, so a SOCKS5 client
+gets its success reply, and its first bytes follow BEGIN, without waiting a
+circuit round trip for the exit. A destination the exit's policy refuses, or
+one it cannot reach, then ends the connection. What the client refuses
+itself, plain HTTP by port and a route that needs consent, still answers
+not allowed. The C ABI refuses the section until it has a way to ask the
 user about a shorter route.
 
 **The routes view.** At each session the client reads the view from

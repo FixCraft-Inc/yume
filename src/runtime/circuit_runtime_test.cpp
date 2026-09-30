@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include <boost/asio/basic_waitable_timer.hpp>
 #include <boost/asio/post.hpp>
 
 #include "runtime/circuit_client.hpp"
@@ -197,6 +198,26 @@ struct Cluster {
                                     runtime.context(), sources_closed)));
                             return;
                         }
+                        // An echo that answers its connection late, so the
+                        // client's first data reaches the exit before it.
+                        if (to.port == 28) {
+                            using Timer = boost::asio::basic_waitable_timer<
+                                std::chrono::steady_clock,
+                                boost::asio::wait_traits<
+                                    std::chrono::steady_clock>,
+                                providers::AsioExecutionContext::Executor>;
+                            auto timer = std::make_shared<Timer>(
+                                runtime.context()->executor(), 200ms);
+                            timer->async_wait(
+                                [this, timer, done = std::move(done)](
+                                    const boost::system::error_code&) {
+                                    done(Result<
+                                         std::unique_ptr<engine::ByteChannel>>(
+                                        std::make_unique<EchoChannel>(
+                                            runtime.context())));
+                                });
+                            return;
+                        }
                         done(Result<std::unique_ptr<engine::ByteChannel>>(
                             std::make_unique<EchoChannel>(runtime.context())));
                     };
@@ -264,6 +285,31 @@ struct Cluster {
     Result<std::shared_ptr<StreamResponder>> open(
         const std::shared_ptr<ClientCircuit>& circuit, std::uint16_t port) {
         return open(circuit, destination(port));
+    }
+
+    // A stream opens before the exit answers, so the exit's refusal ends the
+    // stream. The read comes after that end, as an application's may, and
+    // must still report it. Success when a record arrives instead.
+    Status refusal(const std::shared_ptr<ClientCircuit>& circuit,
+                   const ytp1::Destination& to) {
+        auto stream = open(circuit, to);
+        if (!stream.ok()) return stream.status();
+        const auto deadline = std::chrono::steady_clock::now() + 5s;
+        while (!runtime.sync([&] { return stream.value()->terminated(); }) &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(10ms);
+        auto promise = std::make_shared<std::promise<Status>>();
+        auto future = promise->get_future();
+        runtime.sync([&] {
+            stream.value()->async_read(
+                {}, [promise](Result<ReceivedRecord> result) {
+                    promise->set_value(result.ok() ? Status::success()
+                                                   : result.status());
+                });
+        });
+        if (future.wait_for(20s) != std::future_status::ready)
+            return Status(StatusCode::Cancelled);
+        return future.get();
     }
     Result<std::shared_ptr<StreamResponder>> open(
         const std::shared_ptr<ClientCircuit>& circuit,
@@ -501,20 +547,32 @@ void test_dropped_after_done(Cluster& cluster) {
     cluster.runtime.sync([&] { circuit->close(); });
 }
 
+// A stream opens before the exit reaches its destination, and what the
+// client writes at once waits at the exit until the connection is up.
+void test_data_before_connected(Cluster& cluster) {
+    auto circuit = cluster.circuit({"north", "east", "west"});
+    CHECK(cluster.build(circuit).ok());
+    auto stream = cluster.open(circuit, 28);
+    CHECK(stream.ok());
+    if (stream.ok()) {
+        const auto data = pattern(40000U);
+        CHECK(echo(cluster.runtime, stream.value(), data) == data);
+    }
+    cluster.runtime.sync([&] { circuit->close(); });
+}
+
 void test_two_hops_and_refusals(Cluster& cluster) {
     auto circuit = cluster.circuit({"north", "west"});
     CHECK(cluster.build(circuit).ok());
-    auto refused = cluster.open(circuit, 25);
-    CHECK(!refused.ok() &&
-          refused.status().code() == StatusCode::PermissionDenied);
-    // A destination the exit could not reach is a route failure, which
-    // SOCKS5 answers as host unreachable, never as not allowed. Only a name
-    // can have failed to resolve.
+    CHECK(cluster.refusal(circuit, destination(25)).code() ==
+          StatusCode::PermissionDenied);
+    // A destination the exit could not reach is a route failure, never a
+    // refusal by policy. Only a name can have failed to resolve.
     const auto failed = [&](const ytp1::Destination& to,
                             std::string_view message) {
-        auto result = cluster.open(circuit, to);
-        return !result.ok() && result.status().code() == StatusCode::Internal &&
-               result.status().message() == message;
+        const auto status = cluster.refusal(circuit, to);
+        return status.code() == StatusCode::Internal &&
+               status.message() == message;
     };
     CHECK(failed(destination(26), "the destination could not be reached"));
     CHECK(failed(named(26), "the destination's name did not resolve"));
@@ -529,8 +587,8 @@ void test_two_hops_and_refusals(Cluster& cluster) {
     // A middle that is no exit refuses a stream.
     auto short_circuit = cluster.circuit({"north", "east"});
     CHECK(cluster.build(short_circuit).ok());
-    auto none = cluster.open(short_circuit, 443);
-    CHECK(!none.ok() && none.status().code() == StatusCode::PermissionDenied);
+    CHECK(cluster.refusal(short_circuit, destination(443)).code() ==
+          StatusCode::PermissionDenied);
     cluster.runtime.sync([&] { short_circuit->close(); });
 }
 
@@ -618,8 +676,8 @@ void test_circuit_window_total(Cluster& cluster) {
         CHECK(stream.ok());
         if (stream.ok()) held.push_back(stream.value());
     }
-    auto refused = cluster.open(circuit, 443);
-    CHECK(!refused.ok() && refused.status().code() == StatusCode::ResourceExhausted);
+    CHECK(cluster.refusal(circuit, destination(443)).code() ==
+          StatusCode::ResourceExhausted);
     const auto status = cluster.runtime.sync(
         [&] { return cluster.services["west"]->status(); });
     CHECK(status.refused_streams >= 1U && status.exit_streams == 32U);
@@ -634,9 +692,8 @@ void test_one_hop_exit_refused(IoRuntime& io) {
     Cluster everywhere(io, true);
     auto circuit = everywhere.circuit({"north"});
     CHECK(everywhere.build(circuit).ok());
-    auto refused = everywhere.open(circuit, 443);
-    CHECK(!refused.ok() &&
-          refused.status().code() == StatusCode::PermissionDenied);
+    CHECK(everywhere.refusal(circuit, destination(443)).code() ==
+          StatusCode::PermissionDenied);
     auto two = everywhere.circuit({"north", "east"});
     CHECK(everywhere.build(two).ok());
     auto allowed = everywhere.open(two, 443);
@@ -657,6 +714,7 @@ int main() {
             test_three_hops(cluster);
             test_window_growth(cluster);
             test_dropped_after_done(cluster);
+            test_data_before_connected(cluster);
             test_two_hops_and_refusals(cluster);
             test_extend_failures(cluster);
             test_client_bounds(cluster);

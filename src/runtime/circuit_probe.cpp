@@ -347,11 +347,20 @@ Status echo(Runner& runner, const std::shared_ptr<StreamResponder>& stream,
                     std::min<std::size_t>(data.size() - *offset, 16384U);
                 auto piece = Buffer::copy_from(
                     std::span(data).subspan(*offset, size), size);
-                if (!piece.ok()) return;
+                if (!piece.ok()) {
+                    *write = nullptr;
+                    return;
+                }
                 *offset += size;
+                // The function holds itself, so a failed write, such as to
+                // a destination the exit refused, clears it too.
                 stream->async_write(std::move(piece).take_value(), {},
                                     [write](Status status, std::size_t) {
-                                        if (status.ok() && *write) (*write)();
+                                        if (!status.ok()) {
+                                            *write = nullptr;
+                                        } else if (*write) {
+                                            (*write)();
+                                        }
                                     });
             };
             (*write)();

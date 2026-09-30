@@ -355,6 +355,19 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path) -> None:
                    "yume's status does not show a three-hop route", state)
             print("yume chose a three-hop route and carried 300000 bytes both ways")
 
+            # A circuit stream opens before the exit answers, so SOCKS5
+            # succeeds and the exit's refusal then ends the connection.
+            code, connection = session.socks_connect(rider.socks_port, "127.0.0.2", echo.port)
+            with connection:
+                connection.settimeout(20)
+                try:
+                    ended = connection.recv(1) == b""
+                except ConnectionResetError:
+                    ended = True
+            expect(code == 0 and ended,
+                   "a destination the exit refuses did not end its connection", code)
+            print("a destination the exit refuses ended its connection after SOCKS5 success")
+
             # Plain HTTP stops at the client, by port and by request line.
             code, connection = session.socks_connect(rider.socks_port, "127.0.0.1", 80)
             connection.close()

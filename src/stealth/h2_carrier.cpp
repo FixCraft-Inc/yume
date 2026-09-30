@@ -401,11 +401,6 @@ public:
         return !failed();
     }
 
-    bool RejectCarrier(std::int32_t stream_id, unsigned status,
-                       const H2Headers& headers, H2Bytes body) {
-        return RespondHttp(stream_id, status, headers, std::move(body), false);
-    }
-
     void Feed(const std::uint8_t* data, std::size_t size) {
         if (failed() || size == 0) return;
         last_inbound_at_ = clock_();
@@ -665,10 +660,6 @@ public:
         event.stream_class = OuterCarrierStreamClass::Carrier;
         event.completed = completed;
         outer_trace_->Record(std::move(event));
-    }
-
-    bool capture_observer_active() const noexcept {
-        return static_cast<bool>(outer_trace_);
     }
 
     bool priming_complete() const noexcept { return priming_complete_; }
@@ -2329,10 +2320,6 @@ bool H2Carrier::AcceptCarrier(std::int32_t stream_id,
 bool H2Carrier::EnableAdmittedReceiveWindow(std::size_t window_bytes) {
     return impl_->EnableAdmittedReceiveWindow(window_bytes);
 }
-bool H2Carrier::RejectCarrier(std::int32_t stream_id, unsigned status,
-                              const H2Headers& headers, H2Bytes body) {
-    return impl_->RejectCarrier(stream_id, status, headers, std::move(body));
-}
 void H2Carrier::Feed(const std::uint8_t* data, std::size_t size) {
     impl_->Feed(data, size);
 }
@@ -2375,9 +2362,6 @@ bool H2Carrier::websocket_close_received() const noexcept {
 
 void H2Carrier::RecordCloseWireResult(bool completed) noexcept {
     impl_->RecordCloseWireResult(completed);
-}
-bool H2Carrier::capture_observer_active() const noexcept {
-    return impl_->capture_observer_active();
 }
 bool H2Carrier::failed() const noexcept { return impl_->failed(); }
 const std::string& H2Carrier::error() const noexcept { return impl_->error(); }

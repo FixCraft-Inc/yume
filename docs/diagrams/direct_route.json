@@ -1,50 +1,57 @@
 {
   "name": "direct_route",
   "type": "route",
-  "title": "Direct YUME route",
-  "summary": "An application reaches the target through the YUME client and yumed, which opens the outbound socket.",
+  "title": "The direct YUME route",
+  "summary": "An application's traffic enters yume, crosses the YUME carrier to yumed, and yumed opens the connection to the destination.",
   "targets": {
     "web": true
   },
   "nodes": [
     {
-      "id": "human_app",
+      "id": "application",
       "kind": "app",
-      "title": "HUMAN APP",
-      "sub": "browser / curl"
+      "title": "Application",
+      "sub": "browser, curl, any program",
+      "note": "Reaches yume through its SOCKS5 listener, a local forward or the managed TUN device, or embeds YUME through the C ABI.",
+      "source": ["src/runtime/native_socks5.cpp", "src/runtime/native_forward.cpp", "src/runtime/native_packet_adapter.cpp", "include/yume/yume.h"]
     },
     {
-      "id": "yume_client",
+      "id": "yume",
       "kind": "client",
-      "title": "YUME CLIENT",
-      "sub": "TLS / H2 / YUME frames"
+      "title": "yume",
+      "sub": "client",
+      "note": "Holds one authenticated YTP/1 session to the server and carries each connection or packet flow as a stream inside it.",
+      "source": ["src/runtime/native_client_runtime.cpp", "src/runtime/native_endpoint.cpp"]
     },
     {
-      "id": "yumed_server",
+      "id": "yumed",
       "kind": "server",
-      "title": "YUMED SERVER",
-      "sub": "direct egress"
+      "title": "yumed",
+      "sub": "ends the tunnel, applies policy",
+      "note": "Decrypts the session, checks that the client may use the service and reach the destination, and opens the outbound socket. It sees what it forwards.",
+      "source": ["src/runtime/native_server_runtime.cpp", "src/runtime/native_egress_policy.cpp", "src/providers/asio_direct_route_provider.cpp"]
     },
     {
-      "id": "target_site",
+      "id": "destination",
       "kind": "target",
-      "title": "TARGET SITE",
-      "sub": "sees server IP"
+      "title": "Destination",
+      "sub": "sees yumed's address",
+      "note": "Gets an ordinary connection from the server, and sees the application's own traffic, such as its TLS."
     }
   ],
   "edges": [
     {
-      "from": "human_app",
-      "to": "yume_client"
+      "from": "application",
+      "to": "yume"
     },
     {
-      "from": "yume_client",
-      "to": "yumed_server",
+      "from": "yume",
+      "to": "yumed",
       "channel": "tunnel"
     },
     {
-      "from": "yumed_server",
-      "to": "target_site"
+      "from": "yumed",
+      "to": "destination"
     }
   ]
 }

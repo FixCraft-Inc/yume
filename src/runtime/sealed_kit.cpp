@@ -273,14 +273,6 @@ std::string random_suffix(const Crypto& crypto) {
 
 }  // namespace
 
-Kit& Kit::operator=(Kit&& other) noexcept {
-    if (this != &other) {
-        for (auto& file : files) security::secure_erase(file.bytes);
-        files = std::move(other.files);
-    }
-    return *this;
-}
-
 Kit::~Kit() noexcept {
     for (auto& file : files) security::secure_erase(file.bytes);
 }

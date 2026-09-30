@@ -130,8 +130,10 @@ public:
                                const H2Headers& additional_headers = {});
 
     // Server only. Ordinary GET/HEAD requests are returned by TakeRequests().
-    // The caller either answers one with RespondHttp(), or validates an
-    // extended CONNECT and calls AcceptCarrier()/RejectCarrier().
+    // The caller answers each with RespondHttp(), or validates an extended
+    // CONNECT and calls AcceptCarrier(). A CONNECT that fails validation gets
+    // the same cover answer as any other request, so the carrier has no
+    // separate refusal response.
     std::vector<H2Request> TakeRequests();
     // Server only. Reports peer resets and ordinary stream completion so an
     // asynchronous cover backend can cancel/release its matching work.
@@ -153,10 +155,6 @@ public:
     // control remains enabled. A repeated call with the same size does
     // nothing, and a different size fails the carrier.
     bool EnableAdmittedReceiveWindow(std::size_t window_bytes);
-    bool RejectCarrier(std::int32_t stream_id,
-                       unsigned status,
-                       const H2Headers& headers,
-                       H2Bytes body);
 
     void Feed(const std::uint8_t* data, std::size_t size);
     void Feed(const H2Bytes& data) { Feed(data.data(), data.size()); }
@@ -199,7 +197,6 @@ public:
     bool websocket_close_received() const noexcept;
 
     void RecordCloseWireResult(bool completed) noexcept;
-    bool capture_observer_active() const noexcept;
 
     bool failed() const noexcept;
     const std::string& error() const noexcept;

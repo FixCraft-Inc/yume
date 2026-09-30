@@ -3655,7 +3655,7 @@ void test_destination_policy_and_canonical_outbound_open() {
     int completions = 0;
     outbound.engine->async_open(
         "echo", ServiceKind::ByteStream,
-        std::optional<RouteDestination>(std::move(route)),
+        std::optional<RouteDestination>(std::move(route)), {},
         [&completions](Result<std::shared_ptr<StreamResponder>> result) {
             CHECK(result.ok());
             ++completions;

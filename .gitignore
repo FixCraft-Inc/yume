@@ -26,6 +26,7 @@ opencode.json
 .copilot/
 .private/
 AI_gen/
+.hallmark/
 
 # OS
 .DS_Store

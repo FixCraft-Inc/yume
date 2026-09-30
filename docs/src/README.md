@@ -152,34 +152,31 @@ The manual's `@opt` signature owns option spellings. Directly following `@cli`
 lines supply short help and completion details:
 
 ```text
-@opt **--relay-mode** *mode*
-@cli values: untrusted trusted
-@cli spell: --relay-mode <mode>
-@cli help: untrusted or trusted
+@opt **--completion** *shell*
+@cli values: bash
+@cli spell: --completion <shell>
+@cli help: Print the shell completion script and exit
 
-Whether this client accepts relayed streams from peers it has not pinned.
+Print the completion script for *shell*, which must be **bash**, and exit.
 ```
 
 `flags`, `file` (`yes`/`no`), and `values` describe completion. `spell` starts
 a printed entry; repeated `help` lines supply its text. `indent`, `column`,
 and `continuation` may adjust columns. Printed flags must belong to the
-option. The closed `{{name}}` interpolation table supplies runtime constants.
+option. Help text is constant, so a `{{name}}` template fails generation.
 Use `complete: no` for a documented, rejected option that should not be
 suggested by the shell; it cannot also declare file or value completions.
 
 `en_US/cli/*.cli` owns help grouping and free text, referencing options by
-flag. Every printed option must be referenced exactly once. Native layouts
-use `output-kind: static-help` to generate a constant help string in
-`src/runtime/yume_help_text.hpp` and `src/runtime/yumed_help_text.hpp`.
-Static help accepts no runtime interpolation and includes no completion writer.
-The native CLI supports only the options documented in these layouts.
-
-The `yume-v2-reference` and `yumed-v2-reference` layouts generate stream writers
-in `src/client/cli/display/help_text.hpp` and `src/server/cli/help_text.hpp`.
-Their manuals and Bash completion use those explicit reference binary names.
-The default output kind is `stream`; `output-kind` accepts only `stream` or
-`static-help`. Use `python3 scripts/yume_cli.py render yume --layer help` to
-preview native help, and select the reference binary name to preview its help.
+flag. Every printed option must be referenced exactly once. Each layout
+generates one header of two string constants, the help text and the Bash
+completion script: `src/runtime/yume_help_text.hpp`,
+`src/runtime/yumed_help_text.hpp` and `src/gui/yume_gui_help_text.hpp`. Each
+program prints its help for `--help`, and `yume` and `yumed` print the
+completion for `--completion bash`. The native parsers support only the
+options documented in these layouts. Use
+`python3 scripts/yume_cli.py render yume --layer help` to preview the help,
+and `--layer completion` for the completion script.
 
 ## Languages
 

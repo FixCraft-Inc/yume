@@ -257,6 +257,27 @@ ACKs and clamped to 5 to 30 seconds. A later offer's deadline is never earlier
 than the one before it. Deadlines bound liveness and how long ephemeral keys
 live, not the epoch limits.
 
+## Stored state
+
+The library also keeps three stores for the planned modules. They are files
+on the user's host, not part of the channel, and the vectors below do not
+cover their labels.
+
+- The relay secret is 32 bytes derived from a password with
+  PBKDF2-HMAC-SHA256, 600,000 iterations and the salt
+  `yume-relay-secret-v1/pbkdf2-sha256`. Its key file is owner-only JSON whose
+  `format` is `yume-relay-key-v1`, with the secret in base64, the KDF name
+  and the iteration count.
+- Peer trust keeps one owner-only record per endpoint, named by the
+  SHA-256 of the endpoint ID, with `format=`, `endpoint=` and `fingerprint=`
+  lines. `yume-relay-peer-pin-v1` is a pin learned on first use, and
+  `yume-relay-peer-explicit-v1` marks a pin from the configured list that a
+  verified handshake confirmed. A record that is not in canonical form is
+  refused.
+- Chat history is an encrypted, bounded log whose append is best effort and
+  never fails a relay. Reading it reports protection, I/O and integrity
+  failures instead of an empty history.
+
 ## Failure
 
 Every decoding, authentication, ordering and limit failure is fatal to the
@@ -266,9 +287,9 @@ ratchet.
 
 ## Tests
 
-`yume_module_relay_vectors_test` checks known answers for every label on this
-page, the nonce, associated data and envelope layouts, and the DATA record
-header. Its fixture, `src/modules/relay/testdata/relay_vectors.txt`, comes
+`yume_module_relay_vectors_test` checks known answers for every channel label
+on this page, the nonce, associated data and envelope layouts, and the DATA
+record header. Its fixture, `src/modules/relay/testdata/relay_vectors.txt`, comes
 from `generate_relay_vectors.py` beside it, which implements these formulas
 without YUME code. Before it writes anything, the generator reproduces the
 answers the transport-v2 ratchet computed, which `ratchet_test.cpp` also

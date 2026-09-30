@@ -141,7 +141,7 @@ field and package diagrams.
 | Key | Meaning |
 | --- | --- |
 | `name` | matches the file name, lowercase with underscores |
-| `type` | `route` (an ordered chain), `flow` (a chain whose nodes may branch to side nodes), or `layers` (one wrapping, innermost first) |
+| `type` | `route` (an ordered chain), `flow` (a chain whose nodes may branch to side nodes), `layers` (one wrapping, innermost first), or `sequence` (messages between parties, in order) |
 | `title` | the accessible name of the figure |
 | `summary` | one sentence, used as the SVG description and the web caption |
 | `comment` | optional notes for maintainers, never rendered |
@@ -190,6 +190,29 @@ A `layers` diagram has no edges, and every node names a `role` instead of a
 order, innermost first. Across the page each description sits in a column
 beside its ring. The ASCII form nests boxes outermost first with each
 description set flush right.
+
+### Sequences
+
+A `sequence` lists its parties as `nodes`, two to four of them from left to
+right, and its messages as `edges`, earliest first. Every message has a
+`label` of at most 40 characters, because an unlabelled arrow between two
+lifelines says nothing the parties do not. A message from a party to itself
+is a step that party takes alone, such as checking a proof, and crosses no
+channel. A repeated pair of parties is translated as `from->to#1`,
+`from->to#2` and so on, in order.
+
+The SVG sets the parties' cards across the top with a dashed lifeline down
+from each. A message is an arrow between two lifelines, a conduit when its
+`channel` is `tunnel`, with its label above it wrapped at 34 columns. A step
+loops off its lifeline towards the middle of the figure. One dot crosses each
+message in turn at the rate every packet moves, with a short pause between
+messages, so only the order of sending is animated. Time runs down the page,
+so both layout files carry the same drawing.
+
+The ASCII form draws the same parties as boxes over `|` lifelines. A message
+is a shaft of `-`, `=` for the YUME carrier with `YUME` at the sender's end,
+or `.` for an onion hop, and a step is a small loop with its label beside it.
+A figure wider than the budget is rejected, so shorten the labels.
 
 ### Roles and colour
 

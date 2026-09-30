@@ -243,10 +243,6 @@ public:
     void async_open(std::string_view service_name,
                     ServiceKind service_kind,
                     OpenCompletion completion);
-    void async_open(std::string_view service_name,
-                    ServiceKind service_kind,
-                    std::optional<RouteDestination> destination,
-                    OpenCompletion completion);
 
     // OPEN completes only after authenticated peer acceptance. Cancellation
     // before acceptance sends an abort and settles the pending callback once.

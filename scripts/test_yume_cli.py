@@ -125,9 +125,9 @@ class Grammar(Harness):
         with self.assertRaisesRegex(CliError, "unknown header key"):
             self.write(layout=LAYOUT.replace("namespace: yume::sample", "colour:    red"))
 
-    def test_an_unknown_output_kind_is_rejected(self) -> None:
-        with self.assertRaisesRegex(CliError, "output-kind must be"):
-            self.write(layout=LAYOUT.replace("---", "output-kind: arbitrary\n---"))
+    def test_the_retired_output_kind_key_is_rejected(self) -> None:
+        with self.assertRaisesRegex(CliError, "unknown header key"):
+            self.write(layout=LAYOUT.replace("---", "output-kind: static-help\n---"))
 
     def test_a_missing_header_key_is_rejected(self) -> None:
         with self.assertRaisesRegex(CliError, "the header has no"):
@@ -280,22 +280,12 @@ class Completion(Harness):
         self.assertEqual(first, second)
 
 
-class Interpolation(Harness):
-    def test_a_known_value_becomes_a_stream_expression(self) -> None:
-        manual = MANUAL.replace(
-            "@cli help: fast or slow", "@cli help: fast or slow (default {{reverse-port-min}})"
-        )
+class Templates(Harness):
+    def test_a_template_in_help_text_is_rejected(self) -> None:
+        manual = MANUAL.replace("@cli help: fast or slow", "@cli help: fast or slow {{default}}")
         layout = self.write(manual=manual)
         ordered, completed = yume_cli.resolve(layout)
-        text = yume_cli.render_header(layout, ordered, completed)
-        self.assertIn("<< yume::policy::kReversePortMinDefault", text)
-        self.assertIn('#include "core/protocol/runtime_policy.hpp"', text)
-
-    def test_an_unknown_value_is_rejected(self) -> None:
-        manual = MANUAL.replace("@cli help: fast or slow", "@cli help: fast or slow {{nonsense}}")
-        layout = self.write(manual=manual)
-        ordered, completed = yume_cli.resolve(layout)
-        with self.assertRaisesRegex(CliError, "unknown interpolation"):
+        with self.assertRaisesRegex(CliError, "help text is constant"):
             yume_cli.render_header(layout, ordered, completed)
 
     def test_a_single_brace_stays_literal(self) -> None:
@@ -308,7 +298,7 @@ class Interpolation(Harness):
 
 class StaticHelp(Harness):
     def layout(self, manual: str = MANUAL) -> yume_cli.Layout:
-        return self.write(manual=manual, layout=LAYOUT.replace("---", "output-kind: static-help\n---"))
+        return self.write(manual=manual)
 
     def test_static_help_is_an_include_free_literal(self) -> None:
         layout = self.layout()
@@ -324,13 +314,6 @@ class StaticHelp(Harness):
         layout = self.layout(MANUAL.replace("fast or slow", 'read "C:\\sample"'))
         text = yume_cli.build(layout)
         self.assertIn(r'read \"C:\\sample\"\n"', text)
-
-    def test_static_help_rejects_runtime_interpolation(self) -> None:
-        for value in ("reverse-port-min", "absent"):
-            with self.subTest(value=value):
-                layout = self.layout(MANUAL.replace("fast or slow", "{{" + value + "}}"))
-                with self.assertRaisesRegex(CliError, "static-help cannot interpolate"):
-                    yume_cli.build(layout)
 
 
 class Tracked(unittest.TestCase):
@@ -362,7 +345,6 @@ class Tracked(unittest.TestCase):
                 ordered, _ = yume_cli.resolve(layout)
                 self.assertEqual({flag for entry in ordered for flag in entry.flags},
                                  expected[layout.binary])
-                self.assertEqual(layout.output_kind, "static-help")
 
     def test_every_generated_header_is_current(self) -> None:
         # The same comparison `scripts/yume_cli.py check` runs in CI.

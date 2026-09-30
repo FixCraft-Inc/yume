@@ -39,6 +39,9 @@ no transport layer, and no source outside it includes a Qt header.
 | Control socket | [Control protocol 1](../protocol/CONTROL_1.md) and its additive rules, control socket, CLI and native runtime tests, and the GUI tests |
 | Desktop GUI | [Desktop GUI](../GUI.md), `yume_gui_test`, `yume_gui_ui_test`, `yume_gui_ui_rtl_test`, `yume_gui_live_test`, a page capture reviewed as images, and a build against Qt 6.4 |
 | Documentation | `docs/src` source, unified sync/drift and website catalog checks, affected links, manuals and CLI help/completion |
+| Wire, KDF or AAD labels | The label's contract page, `tests/test_wire_labels.py` and the protocol's vectors |
+| New directories, libraries or functions | The layer table in `cmake/YumeLayering.cmake`, an exact link assertion for each library, and `scripts/check_reachability.py` over a Debug gc-sections tree, as CI's `reachability` job runs it, with `config/reachability.json` for code kept on purpose |
+| Any commit | `scripts/check_repository_hygiene.py --staged` before committing: whitespace in staged files, and in CI each pushed commit's format and signature |
 
 Keep current behavior in the linked contracts and support limits in
 [implementation status](../IMPLEMENTATION_STATUS.md). Record behavior changes

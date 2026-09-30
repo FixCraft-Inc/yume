@@ -91,7 +91,6 @@ public:
     // How long each hop's handshake took, in hop order, as far as the build
     // got.
     std::vector<std::chrono::milliseconds> hop_times() const;
-    std::size_t hops() const noexcept;
     bool ready() const noexcept;
     bool closed() const noexcept;
     std::size_t streams() const noexcept;

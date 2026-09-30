@@ -70,6 +70,9 @@ qt_add_resources(yume_gui_core yume_gui_data PREFIX /yume FILES "${_yume_gui_pre
 foreach(_target IN LISTS _yume_gui_resource_targets _yume_gui_asset_targets _yume_gui_data_targets)
     yume_apply_warnings(${_target})
 endforeach()
+# The GUI links Qt and no YUME library.
+yume_assert_exact_link_dependencies(yume_gui_core
+    Qt6::Core Qt6::Gui Qt6::Network Qt6::Qml Qt6::Quick Qt6::Widgets)
 
 add_executable(yume-gui main.cpp)
 target_link_libraries(yume-gui PRIVATE yume_gui_core Qt6::QuickControls2)

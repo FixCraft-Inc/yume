@@ -169,4 +169,96 @@ foreach(_layer IN ITEMS runtime engine abi)
 endforeach()
 file(REMOVE "${YUME_TEST_ROOT}/src/gui/clean.cpp")
 
+# The layer list is closed. A directory nobody declared, or a source sitting
+# directly under src/, fails instead of escaping every rule.
+file(MAKE_DIRECTORY "${YUME_TEST_ROOT}/src/presence")
+file(WRITE "${YUME_TEST_ROOT}/src/presence/names.hpp" "#include <string>\n")
+run_layering_check(FALSE "src/presence/ is not a declared layer")
+file(REMOVE_RECURSE "${YUME_TEST_ROOT}/src/presence")
+file(WRITE "${YUME_TEST_ROOT}/src/stray.cpp" "#include <string>\n")
+run_layering_check(FALSE "Source outside a layer: src/stray.cpp")
+file(REMOVE "${YUME_TEST_ROOT}/src/stray.cpp")
+
+# Each layer includes only what it declares, including the layers the older
+# denylist never covered.
+file(MAKE_DIRECTORY
+    "${YUME_TEST_ROOT}/src/circuit"
+    "${YUME_TEST_ROOT}/src/modules/relay"
+    "${YUME_TEST_ROOT}/src/test_support")
+foreach(_case IN ITEMS
+        "engine/forbidden.hpp|runtime/native_endpoint.hpp"
+        "engine/forbidden.hpp|providers/control_task.hpp"
+        "ytp/forbidden.hpp|providers/ytp1_crypto.hpp"
+        "circuit/forbidden.hpp|stealth/cover_profile.hpp"
+        "config/v1/forbidden.hpp|runtime/native_credentials.hpp"
+        "modules/relay/forbidden.cpp|runtime/native_endpoint.hpp"
+        "modules/relay/forbidden.cpp|providers/composite_keys.hpp"
+        "providers/forbidden.cpp|test_support/tls_identity.hpp"
+        "runtime/forbidden.cpp|test_support/allocation_failure.hpp"
+        "abi/yume_c.cpp|runtime/native_endpoint.hpp"
+        "test_support/forbidden.hpp|runtime/native_endpoint.hpp")
+    string(REPLACE "|" ";" _parts "${_case}")
+    list(GET _parts 0 _file)
+    list(GET _parts 1 _include)
+    string(REGEX MATCH "^[^/]+" _layer "${_file}")
+    file(WRITE "${YUME_TEST_ROOT}/src/${_file}" "#include \"${_include}\"\n")
+    run_layering_check(FALSE "Layering violation: src/${_layer}/")
+    file(REMOVE "${YUME_TEST_ROOT}/src/${_file}")
+endforeach()
+
+# The embedding seam's one implementation may reach the runtime, and a test
+# may reach across layers to build its fixture.
+file(WRITE "${YUME_TEST_ROOT}/src/abi/native_backend.cpp"
+    "#include \"runtime/native_endpoint.hpp\"\n#include \"yume/yume.h\"\n")
+file(WRITE "${YUME_TEST_ROOT}/src/providers/fixture_test.cpp"
+    "#include \"runtime/native_endpoint.hpp\"\n")
+file(WRITE "${YUME_TEST_ROOT}/src/modules/relay/record.cpp"
+    "#include <basefwx/crypto.hpp>\n#include \"fs/secret_file.hpp\"\n")
+run_layering_check(TRUE "")
+file(REMOVE
+    "${YUME_TEST_ROOT}/src/abi/native_backend.cpp"
+    "${YUME_TEST_ROOT}/src/providers/fixture_test.cpp"
+    "${YUME_TEST_ROOT}/src/modules/relay/record.cpp")
+
+# A library without an exact link assertion fails configuration.
+function(run_link_assertion_check expect_success with_unasserted)
+    set(_project "${YUME_TEST_ROOT}/link-project")
+    file(REMOVE_RECURSE "${_project}")
+    file(MAKE_DIRECTORY "${_project}")
+    file(WRITE "${_project}/a.c" "int yume_fixture_a(void) { return 1; }\n")
+    set(_unasserted "")
+    if(with_unasserted)
+        set(_unasserted "add_library(unasserted STATIC a.c)\n")
+    endif()
+    file(WRITE "${_project}/CMakeLists.txt"
+        "cmake_minimum_required(VERSION 3.20)\n"
+        "project(yume_link_fixture LANGUAGES C)\n"
+        "include(\"${YUME_LAYERING_MODULE}\")\n"
+        "add_library(asserted STATIC a.c)\n"
+        "yume_assert_exact_link_dependencies(asserted)\n"
+        "add_library(interface_only INTERFACE)\n"
+        "${_unasserted}"
+        "yume_require_link_assertions(\"\${CMAKE_CURRENT_SOURCE_DIR}\")\n")
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -S "${_project}" -B "${_project}/build"
+        RESULT_VARIABLE _result
+        OUTPUT_VARIABLE _output
+        ERROR_VARIABLE _error)
+    set(_combined "${_output}${_error}")
+    if(expect_success AND NOT _result EQUAL 0)
+        message(FATAL_ERROR "Asserted fixture project was rejected:\n${_combined}")
+    endif()
+    if(NOT expect_success)
+        if(_result EQUAL 0)
+            message(FATAL_ERROR "A library without a link assertion was accepted")
+        endif()
+        if(NOT _combined MATCHES "unasserted has no exact link assertion")
+            message(FATAL_ERROR
+                "Missing link assertion failure omitted its target:\n${_combined}")
+        endif()
+    endif()
+endfunction()
+run_link_assertion_check(TRUE FALSE)
+run_link_assertion_check(FALSE TRUE)
+
 file(REMOVE_RECURSE "${YUME_TEST_ROOT}")

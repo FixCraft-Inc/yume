@@ -15,6 +15,24 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Guardrails that fail the build or CI.** `cmake/YumeLayering.cmake` is an
+  allowlist: every directory under `src/` declares the layers its production
+  sources may include, a new directory fails until it is declared, and every
+  static or shared library must pin its direct link list. The CI job
+  `reachability` builds the full graph at `-O0` with one section per function
+  and `--gc-sections`, and `scripts/check_reachability.py` then requires every
+  first-party function to survive in a shipped program or to be retained in
+  `config/reachability.json` with its reason. `scripts/check_repository_hygiene.py`
+  checks whitespace in every committed file and each pushed commit's format and
+  signature. `tests/test_wire_labels.py` requires every wire, KDF and AAD label
+  in the source to appear in its contract page and the reverse. The
+  documentation drift checks and the documentation tooling tests are CTests
+  as well as CI steps.
+- **Sequence diagrams.** The documentation compiler draws messages between two
+  to four parties from one JSON file, as an animated SVG in both themes and as
+  ASCII for manuals and Markdown. [YUME explained](../EXPLAINED.md) now shows
+  where traffic goes, how a connection opens and what wraps the data on the
+  wire, and the [architecture](../ARCHITECTURE.md) shows the direct route.
 - **Relay channel library.** The relay v2 end-to-end channel between two users
   (handshake, sealed records and hybrid ratchet) builds apart from transport
   v2 as `yume_module_relay` when `YUME_BUILD_BASEFWX_MODULES` is on. Its labels
@@ -479,6 +497,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **BaseFWX pin `5b9cb44`.** The module libraries build on BaseFWX with the
+  documentation tooling's sequence type and a B512 stream encoder that no
+  longer trips a false GCC 13 `-Wstringop-overflow` warning in CI's Release
+  build. The pin also takes the five BaseFWX commits after `8a8ab66`.
 - **Reload reaches armed accepts.** `yumed` keeps up to four accepts armed on
   each listener, and each held the credentials loaded before a SIGHUP. A
   client added by `add-client`, or a changed PSK, failed its first attempts
@@ -968,6 +990,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Removed
 
+- **Code no shipped program reached.** The reachability check found
+  `Tunnel::status_age_ms` in `yume-gui`, `ClientCircuit::hops`,
+  `H2Carrier::capture_observer_active`, `H2Carrier::RejectCarrier` (the front
+  door answers a failed CONNECT from the cover, so a separate refusal would
+  only mark the carrier), the four-argument `SessionEngine::async_open` that
+  only tests called, and untested move assignments of `Kit` and
+  `LayerCipher`, which hold secrets.
+- **The stream CLI help writer.** It served the transport-v2 CLI layouts, with
+  interpolated runtime constants from a header that no longer exists. Every
+  layout generates constant help and completion strings.
 - **Transport v2.** Its wire, AUTH v2, security modes, client and daemon, GUI
   facade and control API, federation, host controller, the Go Chrome TLS
   helper, the v2 benchmark and self-test drivers, the multi-target and Windows

@@ -3,7 +3,6 @@ binary:    yume-gui
 manual:    yume_gui_1
 output:    src/gui/yume_gui_help_text.hpp
 namespace: yume::gui::help
-output-kind: static-help
 ---
 @usage
 yume-gui [--kit <name>] [window options]

@@ -530,7 +530,8 @@ class SvgRendering(unittest.TestCase):
         rates = []
         for spec in [*yume_diagram_spec.load_all(), _grouped_spec()]:
             # A layers figure has no packet. Its rings light in wrapping order.
-            if not spec.web or spec.type == "layers":
+            # A sequence has one dot per message, which Sequences checks.
+            if not spec.web or spec.type in ("layers", "sequence"):
                 continue
             for layout in ("vertical", "horizontal"):
                 markup = yume_diagram_svg.render(spec, layout)
@@ -996,6 +997,178 @@ class ShippedSpecifications(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+
+
+SEQUENCE = {
+    "name": "opening",
+    "type": "sequence",
+    "title": "Example opening",
+    "summary": "Three parties exchange messages in order.",
+    "targets": {"web": True},
+    "nodes": [
+        {"id": "client", "kind": "client", "title": "yume", "sub": "client"},
+        {"id": "door", "kind": "gate", "title": "front door", "sub": "server"},
+        {"id": "site", "kind": "site", "title": "cover", "sub": "static site"},
+    ],
+    "edges": [
+        {"from": "client", "to": "door", "label": "CONNECT with a proof"},
+        {"from": "door", "to": "door", "label": "check the proof"},
+        {"from": "door", "to": "client", "label": "AUTH challenge", "channel": "tunnel"},
+        {"from": "client", "to": "site", "label": "GET the page"},
+        {"from": "site", "to": "site", "label": "look it up"},
+        {"from": "client", "to": "door", "label": "AUTH response", "channel": "tunnel"},
+    ],
+}
+
+
+class Sequences(unittest.TestCase):
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def parse(self, document: dict) -> yume_diagram_spec.Spec:
+        return yume_diagram_spec.parse(write_spec(self.root, document, document["name"]))
+
+    def changed(self, **fields) -> dict:
+        document = json.loads(json.dumps(SEQUENCE))
+        document.update(fields)
+        return document
+
+    def test_parties_and_messages_parse_in_order(self) -> None:
+        spec = self.parse(SEQUENCE)
+        self.assertEqual([node.id for node in spec.nodes], ["client", "door", "site"])
+        self.assertEqual(spec.edges[1].source, spec.edges[1].target)
+        self.assertEqual(spec.column("site"), 2)
+
+    def test_a_message_needs_a_label(self) -> None:
+        edges = [dict(SEQUENCE["edges"][0], label="")]
+        with self.assertRaisesRegex(SpecError, "message 1 has no label"):
+            self.parse(self.changed(edges=edges))
+
+    def test_a_long_message_label_is_rejected(self) -> None:
+        edges = [dict(SEQUENCE["edges"][0], label="x" * 41)]
+        with self.assertRaisesRegex(SpecError, "keep it within 40"):
+            self.parse(self.changed(edges=edges))
+
+    def test_party_count_is_bounded(self) -> None:
+        with self.assertRaisesRegex(SpecError, "2 to 4 parties"):
+            self.parse(self.changed(
+                nodes=SEQUENCE["nodes"] + [
+                    {"id": f"extra_{n}", "kind": "server", "title": "extra"} for n in range(2)
+                ]))
+
+    def test_a_step_crosses_no_channel(self) -> None:
+        edges = [{"from": "door", "to": "door", "label": "alone", "channel": "tunnel"}]
+        with self.assertRaisesRegex(SpecError, "crosses no channel"):
+            self.parse(self.changed(edges=edges))
+
+    def test_a_party_takes_no_group(self) -> None:
+        nodes = [dict(SEQUENCE["nodes"][0], group="ENDS"), dict(SEQUENCE["nodes"][1], group="ENDS"),
+                 SEQUENCE["nodes"][2]]
+        with self.assertRaisesRegex(SpecError, "has no groups"):
+            self.parse(self.changed(nodes=nodes))
+
+    def test_repeated_pairs_get_numbered_translation_keys(self) -> None:
+        spec = self.parse(SEQUENCE)
+        self.assertEqual(
+            yume_diagram_spec.edge_keys(spec),
+            ["client->door#1", "door->door", "door->client", "client->site", "site->site",
+             "client->door#2"],
+        )
+        translated = yume_diagram_spec.apply_strings(
+            spec, {"opening": {"edges": {"client->door#2": {"label": "AUTH-Antwort"}}}}, "de_DE"
+        )
+        self.assertEqual(translated.edges[5].label, "AUTH-Antwort")
+        self.assertEqual(translated.edges[0].label, "CONNECT with a proof")
+
+    def test_the_ascii_form_draws_lifelines_and_every_message(self) -> None:
+        drawn = yume_diagram_ascii.render(self.parse(SEQUENCE))
+        lines = drawn.splitlines()
+        self.assertTrue(all(len(line) <= yume_diagram_ascii.BUDGET for line in lines))
+        for edge in SEQUENCE["edges"]:
+            self.assertIn(edge["label"], drawn)
+        self.assertIn("|==YUME", drawn)
+        self.assertIn("YUME==|", drawn)
+        # Messages appear top to bottom in the order they are sent.
+        rows = [next(i for i, line in enumerate(lines) if e["label"] in line)
+                for e in SEQUENCE["edges"]]
+        self.assertEqual(rows, sorted(rows))
+        # A step loops beside its lifeline, towards the middle for the last party.
+        self.assertIn(".--|", drawn)
+        self.assertIn("|--.", drawn)
+
+    def test_a_label_too_wide_for_the_terminal_is_rejected(self) -> None:
+        edges = [{"from": "client", "to": "door", "label": "a" * 40},
+                 {"from": "door", "to": "site", "label": "b" * 40}]
+        spec = self.parse(self.changed(edges=edges))
+        with self.assertRaisesRegex(ValueError, "68-column budget"):
+            yume_diagram_ascii.render(spec)
+
+    def test_the_svg_has_one_dot_per_message_in_order(self) -> None:
+        spec = self.parse(SEQUENCE)
+        for layout in ("vertical", "horizontal"):
+            markup = yume_diagram_svg.render(spec, layout)
+            self.assertEqual(markup.count('class="dgm-lifeline"'), 3)
+            for index in range(len(SEQUENCE["edges"])):
+                self.assertEqual(markup.count(f"dgm-message-{index}\""), 2)
+            starts = [
+                float(match) for match in re.findall(
+                    rf"@keyframes dgm-opening-{layout}-message-\d+ \{{\n\s+0%, ([\d.]+)%", markup
+                )
+            ]
+            self.assertEqual(len(starts), len(SEQUENCE["edges"]))
+            self.assertEqual(starts, sorted(starts))
+            self.assertIn("dgm-conduit", _body(markup))
+            self.assertEqual(markup, yume_diagram_svg.render(spec, layout))
+
+    def test_each_dot_moves_at_the_rate_every_packet_moves(self) -> None:
+        markup = yume_diagram_svg.render(self.parse(SEQUENCE), "vertical")
+        seconds = float(re.search(r"--dgm-dur:([\d.]+)s", markup).group(1))
+        paths = re.findall(r'dgm-message-(\d+)" [^>]*--dgm-path:path\(\'([^\']+)\'\)', markup)
+        slots = {
+            index: (float(start), float(stop))
+            for index, start, stop in re.findall(
+                r"@keyframes dgm-opening-vertical-message-(\d+) \{\n\s+0%, ([\d.]+)%[^@]*?"
+                r"\n\s+([\d.]+)% \{ offset-distance: 100%; fill-opacity: 1",
+                markup,
+            )
+        }
+        self.assertEqual(len(slots), len(SEQUENCE["edges"]))
+        for index, path in paths:
+            points = [(float(x), float(y)) for x, y in re.findall(r"[ML](-?[\d.]+) (-?[\d.]+)", path)]
+            length = sum(math.dist(a, b) for a, b in zip(points, points[1:]))
+            start, stop = slots[index]
+            rate = length / ((stop - start) / 100 * seconds)
+            self.assertAlmostEqual(rate, yume_diagram_svg.PIXELS_PER_SECOND, delta=2.5)
+
+    def test_labels_sit_between_the_lifelines_they_join(self) -> None:
+        markup = yume_diagram_svg.render(self.parse(SEQUENCE), "vertical")
+        centres = [float(x) for x in re.findall(
+            r'class="dgm-lifeline"[^>]*d="M([\d.]+) ', markup)]
+        label = re.search(r'x="([\d.]+)" y="[\d.]+">CONNECT with a proof<', markup)
+        self.assertTrue(centres[0] < float(label.group(1)) < centres[1])
+
+    def test_rows_never_overlap(self) -> None:
+        markup = yume_diagram_svg.render(self.parse(SEQUENCE), "vertical")
+        baselines = [float(y) for y in re.findall(
+            r'class="dgm-edge-label[^"]*"[^>]*y="([\d.]+)"', markup)]
+        self.assertEqual(baselines, sorted(baselines))
+        self.assertTrue(all(b - a >= 13 for a, b in zip(baselines, baselines[1:])))
+
+    def test_a_man_block_starts_no_line_that_roff_reads_as_a_request(self) -> None:
+        block = yume_diagrams.render_block(self.parse(SEQUENCE), Path("docs/man/yume.1"))
+        self.assertEqual((block[0], block[-1]), (".nf", ".fi"))
+        for line in block[1:-1]:
+            self.assertFalse(line.startswith((".", "'")), line)
+
+    def test_motion_is_off_under_reduced_motion(self) -> None:
+        markup = yume_diagram_svg.render(self.parse(SEQUENCE), "vertical")
+        reduced = _stylesheet(markup).split("prefers-reduced-motion", 1)[1]
+        self.assertIn(".dgm-packet", reduced)
+        self.assertIn("display: none", reduced)
 
 if __name__ == "__main__":
     unittest.main()

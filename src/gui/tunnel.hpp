@@ -63,8 +63,6 @@ public:
     // What went wrong with the latest start, stop or status request, for
     // people. Empty when nothing did.
     const QString& error() const noexcept { return error_; }
-    // Milliseconds since the status was last received, for rates.
-    qint64 status_age_ms() const;
 
     // Validates the kit with yume, then starts yume detached with the kit's
     // control socket. Does nothing unless Stopped.
@@ -109,7 +107,6 @@ private:
     QString error_;
     bool error_from_status_{false};
     QTimer poll_timer_;
-    QElapsedTimer since_status_;
     QElapsedTimer since_phase_;
     int interval_ms_{kPollMs};
     bool status_in_flight_{false};

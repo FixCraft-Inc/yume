@@ -16,15 +16,7 @@ them inside one long-lived connection that looks like a browser visiting a
 website. The server authenticates the client, checks what it may reach, makes
 the real connection and sends the answer back the same way.
 
-@code text
-app --SOCKS5 or TUN--> yume ==TLS 1.3 + HTTP/2==> yumed front door
-                                                      |
-                                   valid admission?  no --> cover website
-                                                      | yes
-                                           YTP/1 session (authenticated)
-                                                      |
-                                           policy check --> destination
-@end
+@diagram traffic_path
 
 This page describes the default programs, which speak YTP/1 (YUME Transport
 Protocol 1). The [glossary](GLOSSARY.md) defines the terms, and the
@@ -55,6 +47,8 @@ public keys, so the client knows exactly which server it must reach.
    connection can be promoted once.
 5. Inside the carrier both sides run YTP/1 authentication, described next.
 
+@diagram connection_opening
+
 ## Keys
 
 Authentication proves both identities with both signature algorithms. Key
@@ -72,6 +66,8 @@ the peer confirms the new one, so rotating does not pause the connection. Both s
 may allow a larger epoch, up to 64 MiB. The session then uses the smaller
 of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.
+
+@diagram record_layers
 
 ## Streams and policy
 

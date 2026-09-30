@@ -1203,6 +1203,33 @@ if(YUME_BUILD_TESTING)
     add_test(NAME yume_project_metadata_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py")
+    add_test(NAME yume_repository_hygiene_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_repository_hygiene.py")
+    add_test(NAME yume_reachability_check_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_reachability.py")
+    add_test(NAME yume_wire_labels_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_wire_labels.py")
+    # The generated documents, CLI help and figures, and the tooling's own
+    # tests. CI's website job runs them too; registering them here lets a
+    # lane run catch a documentation break before the website mirror does.
+    add_test(NAME yume_docs_drift_check
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/yume_docs.py" check --all-languages)
+    add_test(NAME yume_cli_help_drift_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/yume_cli.py" check)
+    add_test(NAME yume_diagrams_drift_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/yume_diagrams.py" check)
+    add_test(NAME yume_ascii_figures_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/check_ascii_diagrams.py")
+    foreach(_yume_doc_tool_test IN ITEMS
+            test_yume_docs test_yume_doc_pipeline test_yume_diagrams test_yume_cli)
+        add_test(NAME yume_doc_tool_${_yume_doc_tool_test}
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/scripts/${_yume_doc_tool_test}.py")
+    endforeach()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME yume_linux_release_package_test
             COMMAND "${Python3_EXECUTABLE}"
@@ -2182,6 +2209,13 @@ endif()
 if(YUME_BUILD_GUI)
     add_subdirectory(gui)
 endif()
+
+# Every library above, the GUI's included, pins its direct link list.
+set(_yume_link_checked_directories "${CMAKE_CURRENT_SOURCE_DIR}")
+if(YUME_BUILD_GUI)
+    list(APPEND _yume_link_checked_directories "${CMAKE_CURRENT_SOURCE_DIR}/gui")
+endif()
+yume_require_link_assertions(${_yume_link_checked_directories})
 
 # ---------------------------------------------------------------------------
 # Warning-coverage audit.

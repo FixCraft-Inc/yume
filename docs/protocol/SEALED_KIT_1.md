@@ -2,9 +2,9 @@
 # Sealed kit 1
 
 Status: normative contract for `runtime/sealed_kit.*`, which `yume
---seal-kit` and `yume --import-kit` use. It needs only the core's OpenSSL 3.5
-primitives and no BaseFWX, so the embedding library can offer the same import
-later. This page is not a cryptographic proof.
+--seal-kit`, `yume --import-kit` and the C ABI's `yume_kit_open` use. It
+needs only the core's OpenSSL 3.5 primitives and no BaseFWX. This page is
+not a cryptographic proof.
 
 ## Purpose
 
@@ -62,6 +62,10 @@ blocks. A failed tag means a wrong code or a file that is not a sealed kit,
 and the importer does not say which. After the tag, the content length,
 zero padding shorter than one block, the version, every field and the file
 rules above must hold exactly, or the kit is malformed.
+
+The [C ABI](../ABI.md#sealed-kits) opens a kit in memory with the same
+checks and hands the files to the embedding application, which stores them
+as its platform requires and parses `yume.json` itself.
 
 `yume --import-kit` then checks `yume.json` as a client configuration,
 writes the files under a private temporary name beside the target directory,

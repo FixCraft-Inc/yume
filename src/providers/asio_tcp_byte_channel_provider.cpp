@@ -1186,8 +1186,8 @@ public:
     ~CreateOperation() noexcept override {
         boost::system::error_code ignored;
         socket_.close(ignored);
-        resolve_timer_.cancel(ignored);
-        connect_timer_.cancel(ignored);
+        cancel_timer(resolve_timer_);
+        cancel_timer(connect_timer_);
         if (!promoted_) {
             provider_->release(target_id_);
         }
@@ -1318,8 +1318,7 @@ private:
                 finish(Result<std::unique_ptr<ByteChannel>>(cancelled_status()));
                 return;
             }
-            boost::system::error_code ignored;
-            resolve_timer_.cancel(ignored);
+            cancel_timer(resolve_timer_);
             if (!addresses.ok()) {
                 finish(Result<std::unique_ptr<ByteChannel>>(
                     resolution_failure(addresses.status())));
@@ -1427,7 +1426,7 @@ private:
         }
         try {
             boost::system::error_code ignored;
-            connect_timer_.cancel(ignored);
+            cancel_timer(connect_timer_);
             socket_.set_option(Tcp::no_delay(true), ignored);
             auto state = std::make_shared<StreamChannelState<AsioTcpSocket>>(
                 std::move(socket_), provider_->channels(), target_id_);
@@ -1468,8 +1467,8 @@ private:
         boost::system::error_code ignored;
         socket_.cancel(ignored);
         socket_.close(ignored);
-        resolve_timer_.cancel(ignored);
-        connect_timer_.cancel(ignored);
+        cancel_timer(resolve_timer_);
+        cancel_timer(connect_timer_);
         finish(Result<std::unique_ptr<ByteChannel>>(cancelled_status()));
     }
 
@@ -1486,8 +1485,8 @@ private:
         cancellation_.unregister();
         cancel_lookup();
         boost::system::error_code ignored;
-        resolve_timer_.cancel(ignored);
-        connect_timer_.cancel(ignored);
+        cancel_timer(resolve_timer_);
+        cancel_timer(connect_timer_);
         if (!promoted_) {
             socket_.close(ignored);
             provider_->release(target_id_);

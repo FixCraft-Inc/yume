@@ -175,10 +175,7 @@ private:
         }
     }
 
-    void disarm_deadline() noexcept {
-        Error ignored;
-        timer_.cancel(ignored);
-    }
+    void disarm_deadline() noexcept { providers::cancel_timer(timer_); }
 
     void finish() noexcept {
         if (done_) return;

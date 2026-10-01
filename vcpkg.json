@@ -7,13 +7,23 @@
       "name": "boost-asio",
       "default-features": false,
       "features": [
-        "ssl"
+        {
+          "name": "ssl",
+          "platform": "!android"
+        }
       ]
     },
     "boost-beast",
     "boost-system",
+    {
+      "name": "brotli",
+      "platform": "android"
+    },
     "nghttp2",
-    "openssl",
+    {
+      "name": "openssl",
+      "platform": "!android"
+    },
     "zlib",
     "zstd"
   ]

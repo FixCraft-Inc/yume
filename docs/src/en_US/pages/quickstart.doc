@@ -123,6 +123,7 @@ its SOCKS5 listener.
 
 [The native development guide](development/ytp1/README.md) owns detailed
 credential, managed Linux TUN, packet policy, reconnect and embedding guidance.
-[ABI.md](ABI.md) describes the experimental SDK. GUI and Android migration,
-decentralized discovery and multi-hop routing are separate work; this quick
-start connects to an explicitly configured server.
+[ABI.md](ABI.md) describes the experimental SDK, which the Android client
+uses. `yume --seal-kit` turns a client directory into the one file and code
+that client imports. Decentralized discovery and multi-hop routing are separate
+work. This quick start connects to an explicitly configured server.

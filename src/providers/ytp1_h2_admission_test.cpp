@@ -162,8 +162,10 @@ void test_allocation_failure_is_refusal() {
     std::size_t failures = 0U;
     for (int allocation = 0; allocation < 16; ++allocation) {
         fail_after = allocation;
-        const auto result = build_ytp1_h2_admission_path(kKey,
-            "longer.carrier.example", kExporter, kNonce);
+        // Longer than the strings either standard library keeps inline, 15
+        // bytes in libstdc++ and 22 in libc++, so the copy allocates.
+        const auto result = build_ytp1_h2_admission_path(
+            kKey, "a-longer-name.carrier.example", kExporter, kNonce);
         fail_after = -1;
         if (result) {
             succeeded = true;

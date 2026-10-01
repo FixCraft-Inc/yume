@@ -287,8 +287,7 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     void close() noexcept {
         if (closing) return;
         closing = true;
-        boost::system::error_code ignored;
-        expiry.cancel(ignored);
+        providers::cancel_timer(expiry);
         if (circuits) circuits->close();
         close_links(links);
         if (link_resolver) link_resolver->close();
@@ -622,8 +621,7 @@ engine::Status NativeServerRuntime::reload() {
         for (std::size_t index = 0U; index < state->links.size(); ++index) {
             if (is_fresh[index]) state->links[index].keeper->start();
         }
-        boost::system::error_code ignored;
-        state->expiry.cancel(ignored);
+        providers::cancel_timer(state->expiry);
         state->arm_expiry();
     }
     return status;

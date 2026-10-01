@@ -14,15 +14,17 @@ CarrierCredit::CarrierCredit(std::size_t bytes,
                              ReleaseHandler release) noexcept
     : bytes_(bytes), release_(std::move(release)) {}
 
+// A moved-from std::function need not be empty (libc++ leaves a small
+// target in place), so the source is emptied explicitly.
 CarrierCredit::CarrierCredit(CarrierCredit&& other) noexcept
     : bytes_(std::exchange(other.bytes_, 0U)),
-      release_(std::move(other.release_)) {}
+      release_(std::exchange(other.release_, nullptr)) {}
 
 CarrierCredit& CarrierCredit::operator=(CarrierCredit&& other) noexcept {
     if (this != &other) {
         release_now();
         bytes_ = std::exchange(other.bytes_, 0U);
-        release_ = std::move(other.release_);
+        release_ = std::exchange(other.release_, nullptr);
     }
     return *this;
 }
@@ -33,7 +35,7 @@ CarrierCredit::~CarrierCredit() noexcept {
 
 void CarrierCredit::release_now() noexcept {
     const std::size_t bytes = std::exchange(bytes_, 0U);
-    ReleaseHandler release = std::move(release_);
+    ReleaseHandler release = std::exchange(release_, nullptr);
     if (bytes == 0U || !release) {
         return;
     }

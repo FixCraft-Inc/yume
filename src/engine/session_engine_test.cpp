@@ -69,7 +69,11 @@ bool armed() noexcept {
     return failure_size.load(std::memory_order_acquire) != kDisabled;
 }
 
+// The size of the most recent allocation request, for string_allocation.
+std::atomic<std::size_t> last_size{0U};
+
 bool consume_if_matching(std::size_t size) noexcept {
+    last_size.store(size, std::memory_order_relaxed);
     if (fail_all.load(std::memory_order_relaxed)) return true;
     const auto remaining = countdown.load(std::memory_order_relaxed);
     if (remaining != kDisabled && remaining != 0U &&
@@ -81,6 +85,17 @@ bool consume_if_matching(std::size_t size) noexcept {
     std::size_t expected = size;
     return failure_size.compare_exchange_strong(
         expected, kDisabled, std::memory_order_acq_rel);
+}
+
+// What the standard library requests when an empty string is assigned
+// length characters, as Status does with its message. libstdc++ asks for
+// length + 1 bytes, while libc++ grows from its inline capacity and rounds
+// up, so a test that fails that allocation asks the library itself.
+std::size_t string_allocation(std::size_t length) {
+    const std::string source(length, 'x');
+    std::string probe;
+    probe.assign(source.data(), source.size());
+    return last_size.load(std::memory_order_relaxed);
 }
 
 }  // namespace test_allocation_failure
@@ -1950,7 +1965,8 @@ void test_queue_refusal_survives_diagnostic_allocation_failure() {
         if (fail_diagnostic) {
             constexpr std::string_view kRefusal =
                 "session outbound queue is full";
-            test_allocation_failure::fail_once_for_size(kRefusal.size() + 1U);
+            test_allocation_failure::fail_once_for_size(
+                test_allocation_failure::string_allocation(kRefusal.size()));
         }
         session.handler->responder->async_write(std::move(payload), {},
                                                 std::move(completion));

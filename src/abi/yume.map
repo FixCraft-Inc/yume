@@ -12,9 +12,13 @@
         yume_endpoint_create;
         yume_endpoint_set_socket_protector;
         yume_endpoint_register_service;
+        yume_endpoint_set_device;
         yume_endpoint_start;
         yume_endpoint_stop;
         yume_endpoint_state;
+        yume_endpoint_get_status;
+        yume_endpoint_read_message;
+        yume_endpoint_retry_now;
         yume_endpoint_open_stream;
         yume_endpoint_accept_stream;
         yume_endpoint_open_packet;
@@ -31,6 +35,10 @@
         yume_packet_read_batch;
         yume_packet_close;
         yume_packet_destroy;
+        yume_kit_open;
+        yume_kit_file_count;
+        yume_kit_get_file;
+        yume_kit_destroy;
         yume_handle_get_diagnostic;
     local:
         *;

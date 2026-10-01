@@ -1173,8 +1173,7 @@ void CircuitService::close() noexcept {
     auto& node = *node_;
     if (node.closed) return;
     node.closed = true;
-    boost::system::error_code ignored;
-    node.sweep.cancel(ignored);
+    providers::cancel_timer(node.sweep);
     const auto circuits = node.circuits;
     for (const auto& weak : circuits) {
         if (const auto circuit = weak.lock()) circuit->close(false);

@@ -792,8 +792,11 @@ private:
             (handshake_completion_ || cover_completion_)) {
             action.kind = ActionKind::HandshakeFailure;
             action.status = copy_status(terminal_);
-            action.handshake = std::move(handshake_completion_);
-            action.cover = std::move(cover_completion_);
+            // A moved-from std::function need not be empty: libc++ copies a
+            // small target and leaves the source callable. Empty the members
+            // explicitly, or this branch would run again on every pass.
+            action.handshake = std::exchange(handshake_completion_, nullptr);
+            action.cover = std::exchange(cover_completion_, nullptr);
             return action;
         }
         if (phase_ == Phase::Failed || phase_ == Phase::Closed) {
@@ -915,8 +918,9 @@ private:
                 phase_ = Phase::Active;
                 handshake_cancellation_.unregister();
                 action.kind = ActionKind::HandshakeSuccess;
-                action.handshake = std::move(handshake_completion_);
-                action.cover = std::move(cover_completion_);
+                action.handshake =
+                    std::exchange(handshake_completion_, nullptr);
+                action.cover = std::exchange(cover_completion_, nullptr);
                 return action;
             }
             return tls_want_action_locked(result, "TLS handshake failed");

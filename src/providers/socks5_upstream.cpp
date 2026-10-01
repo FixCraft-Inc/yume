@@ -256,8 +256,7 @@ private:
     }
 
     void settle() noexcept {
-        boost::system::error_code ignored;
-        timer_.cancel(ignored);
+        cancel_timer(timer_);
         registration_.unregister();
     }
 

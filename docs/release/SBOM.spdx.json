@@ -10,7 +10,7 @@
   "documentDescribes": [
     "SPDXRef-Package-YUME"
   ],
-  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/28cedbfd9cbb9e3a68dba9067f68b1bbdeffa6d08d2c93ad11004aa485de7aa1",
+  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/90b0b46d479551c1db7783acc87b30a49b2a37a0144e8e006e769203204b8877",
   "name": "YUME source dependency SBOM",
   "packages": [
     {
@@ -99,6 +99,15 @@
       "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
     },
     {
+      "SPDXID": "SPDXRef-Package-vcpkg-brotli",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "brotli",
+      "versionInfo": "vcpkg-baseline-c2aeddd80357b17592e59ad965d2adf65a19b22f"
+    },
+    {
       "SPDXID": "SPDXRef-Package-vcpkg-nghttp2",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
@@ -163,6 +172,11 @@
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-vcpkg-boost-system",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-YUME"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-vcpkg-brotli",
       "relationshipType": "DEPENDS_ON",
       "spdxElementId": "SPDXRef-Package-YUME"
     },

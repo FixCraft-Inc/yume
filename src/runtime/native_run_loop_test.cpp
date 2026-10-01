@@ -57,7 +57,7 @@ bool failure_drains(bool exhaust_allocations) {
         on_context = context->running_in_this_thread();
         boost::system::error_code ignored;
         listener.close(ignored);
-        timer.cancel(ignored);
+        yume::providers::cancel_timer(timer);
         context->finish();
     });
     yume::test::fail_allocations.store(false);

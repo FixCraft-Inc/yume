@@ -1451,8 +1451,8 @@ public:
         boost::system::error_code ignored;
         tcp_socket_.close(ignored);
         udp_socket_.close(ignored);
-        resolve_timer_.cancel(ignored);
-        connect_timer_.cancel(ignored);
+        cancel_timer(resolve_timer_);
+        cancel_timer(connect_timer_);
         if (!promoted_) {
             provider_->release(target_id_);
         }
@@ -1733,8 +1733,7 @@ private:
             if (finished_) {
                 return;
             }
-            boost::system::error_code ignored;
-            resolve_timer_.cancel(ignored);
+            cancel_timer(resolve_timer_);
             if (cancellation_requested_.load(std::memory_order_acquire)) {
                 finish(Result<RouteConnection>(cancelled_status()));
                 return;
@@ -1883,7 +1882,7 @@ private:
         }
         try {
             boost::system::error_code ignored;
-            connect_timer_.cancel(ignored);
+            cancel_timer(connect_timer_);
             tcp_socket_.set_option(Tcp::no_delay(true), ignored);
             auto state = std::make_shared<TcpChannelState>(
                 std::move(tcp_socket_), provider_, target_id_);
@@ -1932,8 +1931,7 @@ private:
             return;
         }
         try {
-            boost::system::error_code ignored;
-            connect_timer_.cancel(ignored);
+            cancel_timer(connect_timer_);
             auto state = std::make_shared<UdpChannelState>(
                 std::move(udp_socket_), provider_, target_id_);
             auto promotion = provider_->promote(target_id_, reserved_epoch_, state);
@@ -1977,8 +1975,8 @@ private:
         tcp_socket_.close(ignored);
         udp_socket_.cancel(ignored);
         udp_socket_.close(ignored);
-        resolve_timer_.cancel(ignored);
-        connect_timer_.cancel(ignored);
+        cancel_timer(resolve_timer_);
+        cancel_timer(connect_timer_);
         finish(Result<RouteConnection>(cancelled_status()));
     }
 
@@ -2006,8 +2004,8 @@ private:
         // open's reservation can be returned now.
         cancel_lookup();
         boost::system::error_code ignored;
-        resolve_timer_.cancel(ignored);
-        connect_timer_.cancel(ignored);
+        cancel_timer(resolve_timer_);
+        cancel_timer(connect_timer_);
         if (!promoted_) {
             tcp_socket_.close(ignored);
             udp_socket_.close(ignored);

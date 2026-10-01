@@ -316,8 +316,7 @@ public:
         if (terminal_) return;
         terminal_ = true;
         cancellation_.cancel();
-        Error ignored;
-        timer_.cancel(ignored);
+        cancel_timer(timer_);
         if (tls_) tls_->close();
         reservation_.reset();
         if (const auto owner = owner_.lock()) {
@@ -497,8 +496,7 @@ private:
         }
         if (admitted_) {
             promoting_ = true;
-            Error ignored;
-            timer_.cancel(ignored);
+            cancel_timer(timer_);
             if (!timer_pending_) publish();
             return;
         }
@@ -625,7 +623,7 @@ void H2WebFrontDoor::State::settle_control() noexcept {
     if (closing.load()) {
         Error ignored;
         acceptor.close(ignored);
-        retry.cancel(ignored);
+        cancel_timer(retry);
         while (!connections.empty()) {
             const auto connection = connections.front();
             connection->stop();
@@ -696,10 +694,8 @@ H2Dispatch make_asio_h2_dispatch(
                 if (!error && task) task();
             });
         // The handle's last release cancels a wait that has not finished.
-        return std::shared_ptr<void>(timer.get(), [timer](void*) noexcept {
-            Error ignored;
-            timer->cancel(ignored);
-        });
+        return std::shared_ptr<void>(
+            timer.get(), [timer](void*) noexcept { cancel_timer(*timer); });
     };
     return dispatch;
 }

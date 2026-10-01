@@ -428,13 +428,11 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     void close_on_context() noexcept {
         for (const auto& listener : listeners) listener->close();
         for (const auto& timer : retry_timers) {
-            boost::system::error_code ignored;
-            timer->cancel(ignored);
+            providers::cancel_timer(*timer);
         }
         for (const auto& slot : slots) {
-            boost::system::error_code ignored;
-            slot->timer.cancel(ignored);
-            slot->rekey_timer.cancel(ignored);
+            providers::cancel_timer(slot->timer);
+            providers::cancel_timer(slot->rekey_timer);
             if (slot->bootstrap) slot->bootstrap->cancel();
             if (slot->session) slot->session->stop(Status(StatusCode::Closed));
         }
@@ -452,8 +450,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
             if (result.ok()) result.value()->stop(Status(StatusCode::Closed));
             return;
         }
-        boost::system::error_code ignored;
-        slot.timer.cancel(ignored);
+        providers::cancel_timer(slot.timer);
         slot.starting = false;
         --pending_starts;
         auto bootstrap = std::move(slot.bootstrap);
@@ -657,8 +654,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     void ended(std::size_t index, std::uint64_t generation, Status reason) noexcept {
         auto& slot = *slots[index];
         if (slot.generation != generation || !slot.session) return;
-        boost::system::error_code ignored;
-        slot.rekey_timer.cancel(ignored);
+        providers::cancel_timer(slot.rekey_timer);
         auto session = std::move(slot.session);
         if (options.session_ended) {
             try { options.session_ended(std::move(session), std::move(reason)); } catch (...) {}

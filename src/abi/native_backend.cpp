@@ -29,6 +29,7 @@
 
 #include <boost/asio/ip/address.hpp>
 
+#include "common/secure_erase.hpp"
 #include "config/v1/config.hpp"
 #include "engine/cancellation.hpp"
 #include "engine/session_engine.hpp"
@@ -37,7 +38,13 @@
 #include "providers/asio_execution_context.hpp"
 #include "providers/control_task.hpp"
 #include "providers/openssl_security_provider.hpp"
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+#include "runtime/device_bridge.hpp"
+#endif
+#include "runtime/message_log.hpp"
 #include "runtime/native_endpoint.hpp"
+#include "runtime/sealed_kit.hpp"
+#include "runtime/session_keeper.hpp"
 
 // The YTP/1 embedding backend. It adapts the asynchronous, single-runner
 // native endpoint to the blocking seam used by the C ABI.
@@ -51,6 +58,11 @@
 // Ownership: received records keep their receive credit until the application
 // has copied every byte. Releasing credit publishes engine records, so records
 // are destroyed on the runner, or anywhere once the endpoint has drained.
+//
+// A client with a device keeps its session up with the SessionKeeper yume
+// uses, and its DeviceBridge runs for as long as the endpoint is started, so
+// an application's connection fails at once while no session is active
+// instead of waiting. A client without one makes one attempt per start.
 namespace yume::embed {
 namespace {
 
@@ -155,6 +167,47 @@ BackendPeerIdentity identity_from(const engine::PeerEvidence& evidence,
     }
     return identity;
 }
+
+BackendTraffic add(BackendTraffic total,
+                   const engine::SessionTraffic& more) noexcept {
+    total.payload_bytes_sent += more.payload_bytes_sent;
+    total.payload_bytes_received += more.payload_bytes_received;
+    total.record_bytes_sent += more.record_bytes_sent;
+    total.record_bytes_received += more.record_bytes_received;
+    return total;
+}
+
+// What one backend keeps across its runs: the lines it has said and the
+// traffic of the sessions that ended with an earlier run.
+struct BackendRecord final {
+    void say(std::string_view text) noexcept { messages.add(text); }
+    // "what: why", or what alone without a reason.
+    void say(std::string_view what, std::string_view why) noexcept {
+        if (why.empty()) {
+            messages.add(what);
+            return;
+        }
+        try {
+            std::string text(what);
+            text += ": ";
+            text += why;
+            messages.add(text);
+        } catch (...) {
+            messages.add(what);
+        }
+    }
+
+    runtime::MessageLog messages;
+    std::mutex mutex;
+    BackendTraffic retired;
+};
+
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+using DeviceOptions = runtime::DeviceBridgeOptions;
+#else
+// No bridge on this platform, so no backend is ever made with a device.
+struct DeviceOptions final {};
+#endif
 
 class NativeRun;
 
@@ -275,7 +328,9 @@ public:
               std::filesystem::path base_directory,
               std::filesystem::path resolver,
               const std::vector<BackendService>& registrations,
-              providers::AsioTcpSocketProtector protector);
+              providers::AsioTcpSocketProtector protector,
+              std::shared_ptr<BackendRecord> log,
+              std::optional<DeviceOptions> device_options);
 
     NativeRun(const NativeRun&) = delete;
     NativeRun& operator=(const NativeRun&) = delete;
@@ -287,10 +342,23 @@ public:
     const std::filesystem::path resolver_program;
     const providers::AsioTcpSocketProtector socket_protector;
     const bool server;
+    const std::shared_ptr<BackendRecord> record;
+    // A client with a device keeps its session up and bridges the device.
+    const std::optional<DeviceOptions> device;
 
-    // Client state. Written on the runner before start reports success and
-    // unchanged afterwards.
+    // A client without a device: its one session. Written on the runner
+    // before start reports success and unchanged afterwards.
     std::shared_ptr<engine::SessionEngine> session;
+    Clock::time_point connected_since{};
+    // A client with a device: created with the endpoint, before start
+    // reports success, and unchanged afterwards.
+    std::shared_ptr<runtime::SessionKeeper> keeper;
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+    std::shared_ptr<runtime::DeviceBridge> bridge;
+#endif
+    // The authenticated server. Without a keeper it is written before start
+    // reports success and unchanged afterwards. With one it follows the
+    // current session and only the runner reads it.
     BackendPeerIdentity server_peer;
 
     bool running() const noexcept {
@@ -317,6 +385,22 @@ public:
     const std::shared_ptr<runtime::NativeEndpoint>& endpoint() const noexcept {
         return endpoint_;
     }
+    // The client's authenticated session, or nullptr while it has none.
+    std::shared_ptr<engine::SessionEngine> active_session() const noexcept;
+    // Opens the device bridge of a client that has a device.
+    Status start_bridge();
+    // Receives the keeper's state changes until an empty watcher replaces it.
+    using StatusWatcher =
+        std::function<void(const runtime::NativeClientStatus&)>;
+    void watch_status(StatusWatcher watcher) noexcept {
+        status_watcher_ = std::move(watcher);
+    }
+
+    // Any thread, once start has reported success.
+    void fill_status(BackendStatus& status) const;
+    engine::SessionTraffic traffic() const noexcept;
+    // Starts a waiting keeper's next attempt now.
+    void request_retry() noexcept;
     // Hands server accepts to the native endpoint. A later accept failure
     // stops this run.
     Status start_accepting() noexcept;
@@ -343,15 +427,32 @@ private:
     static void on_close(void* value) noexcept {
         static_cast<NativeRun*>(value)->close_on_runner();
     }
+    static void on_retry(void* value) noexcept {
+        const auto* self = static_cast<NativeRun*>(value);
+        if (self->running() && self->keeper) (void)self->keeper->retry_now();
+    }
 
     void close_on_runner() noexcept;
     void wake_waiters() noexcept;
     void on_accept_failure(Status status) noexcept;
+    void on_session_ended(const Status& reason) noexcept;
+    void on_keeper_status(const runtime::NativeClientStatus& status) noexcept;
+    void on_keeper_session(
+        const std::shared_ptr<engine::SessionEngine>& session) noexcept;
+    void on_keeper_failure(Status status) noexcept;
 
     std::atomic<Phase> phase_{Phase::Running};
     std::mutex phase_mutex_;
     std::condition_variable drained_cv_;
     providers::ControlTask close_task_;
+    providers::ControlTask retry_task_;
+    // Runner only.
+    StatusWatcher status_watcher_;
+    // Why a client's one session ended while the endpoint stayed started.
+    mutable std::mutex ended_mutex_;
+    bool ended_{false};
+    BackendIo ended_io_{BackendIo::Ok};
+    std::string ended_message_;
     std::atomic<std::size_t> runner_exceptions_{0U};
     std::atomic<bool> accept_failed_{false};
 
@@ -506,6 +607,7 @@ private:
     void start_on_runner() noexcept;
     void on_session(
         engine::Result<std::shared_ptr<engine::SessionEngine>> result) noexcept;
+    void on_kept(const runtime::NativeClientStatus& status) noexcept;
     void settle(Status status) noexcept;
 
     std::shared_ptr<NativeRun> run_;
@@ -1187,9 +1289,8 @@ void AcceptOperation::accept_on_runner() noexcept {
 }
 
 void OpenOperation::open_on_runner() noexcept {
-    const auto session = run_->session;
-    if (!run_->running() || !session ||
-        session->state() != engine::SessionState::Active) {
+    const auto session = run_->active_session();
+    if (!run_->running() || !session) {
         settle(BackendIo::NotRunning, "client session is not active");
         return;
     }
@@ -1252,10 +1353,8 @@ void OpenOperation::on_opened(
         }
     } else {
         failure = copy_status(result.status());
-        const auto& session = run_->session;
-        io = (!session || session->state() != engine::SessionState::Active)
-            ? BackendIo::NotRunning
-            : open_io_from(failure.code());
+        io = !run_->active_session() ? BackendIo::NotRunning
+                                     : open_io_from(failure.code());
     }
     bool close_late = false;
     {
@@ -1325,6 +1424,11 @@ bool StartOperation::wait(Clock::time_point limit, Status& result) {
 
 void StartOperation::start_on_runner() noexcept {
     try {
+        // A cancelled start reached the runner after its stop.
+        if (!run_->running()) {
+            settle(Status(StatusCode::Cancelled));
+            return;
+        }
         Status created = run_->create_endpoint(client_deadline_);
         if (!created.ok()) {
             settle(std::move(created));
@@ -1339,6 +1443,21 @@ void StartOperation::start_on_runner() noexcept {
                     : copy_status(run_->accept_failure());
             }
             settle(std::move(accepting));
+            return;
+        }
+        if (run_->keeper) {
+            Status bridged = run_->start_bridge();
+            if (!bridged.ok()) {
+                settle(std::move(bridged));
+                return;
+            }
+            // Start reports the first attempt. The keeper makes the later
+            // ones for as long as the endpoint stays started.
+            run_->watch_status([self = shared_from_this()](
+                                   const runtime::NativeClientStatus& status) {
+                self->on_kept(status);
+            });
+            run_->keeper->start();
             return;
         }
         Status accepted = run_->endpoint()->async_start_session(
@@ -1377,7 +1496,22 @@ void StartOperation::on_session(
         return;
     }
     run_->session = session;
+    run_->connected_since = Clock::now();
     settle(Status::success());
+}
+
+void StartOperation::on_kept(
+    const runtime::NativeClientStatus& status) noexcept {
+    using State = runtime::NativeClientState;
+    if (status.state == State::Connected) {
+        run_->watch_status({});
+        settle(Status::success());
+    } else if (status.state == State::Waiting ||
+               status.state == State::Closed) {
+        run_->watch_status({});
+        settle(status.last_failure.ok() ? Status(StatusCode::Internal)
+                                        : copy_status(status.last_failure));
+    }
 }
 
 void StartOperation::settle(Status status) noexcept {
@@ -1398,14 +1532,19 @@ NativeRun::NativeRun(std::shared_ptr<providers::AsioExecutionContext> execution,
                      std::filesystem::path base_directory,
                      std::filesystem::path resolver,
                      const std::vector<BackendService>& registrations,
-                     providers::AsioTcpSocketProtector protector)
+                     providers::AsioTcpSocketProtector protector,
+                     std::shared_ptr<BackendRecord> log,
+                     std::optional<DeviceOptions> device_options)
     : context(std::move(execution)),
       config(endpoint_config),
       base(std::move(base_directory)),
       resolver_program(std::move(resolver)),
       socket_protector(std::move(protector)),
       server(endpoint_config.role() == v1::Role::Server),
-      close_task_(&NativeRun::on_close) {
+      record(std::move(log)),
+      device(std::move(device_options)),
+      close_task_(&NativeRun::on_close),
+      retry_task_(&NativeRun::on_retry) {
     if (!server) return;
     for (const auto& registration : registrations) {
         waiting_.emplace_back(registration, std::deque<WaitingOpen>{});
@@ -1469,6 +1608,11 @@ void NativeRun::wake_waiters() noexcept {
 }
 
 void NativeRun::close_on_runner() noexcept {
+    status_watcher_ = {};
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+    if (bridge) bridge->close();
+#endif
+    if (keeper) keeper->close();
     if (endpoint_) endpoint_->close();
     // Refuse OPENs still waiting for the application while their sessions are
     // alive, so each peer sees a definite refusal before the sessions close.
@@ -1541,6 +1685,39 @@ Status NativeRun::create_endpoint(
         options.max_pending_starts = 1U;
         options.start_timeout = client_start_timeout;
         options.socket_protector = socket_protector;
+        const std::weak_ptr<NativeRun> weak = weak_from_this();
+        if (device) {
+            runtime::SessionKeeperOptions keeping;
+            keeping.report = [log = record](std::string_view text) {
+                log->say(text);
+            };
+            keeping.on_status =
+                [weak](const runtime::NativeClientStatus& status) {
+                    if (const auto self = weak.lock()) {
+                        self->on_keeper_status(status);
+                    }
+                };
+            keeping.on_authenticated =
+                [weak](const std::shared_ptr<engine::SessionEngine>& active) {
+                    if (const auto self = weak.lock()) {
+                        self->on_keeper_session(active);
+                    }
+                };
+            keeper = std::make_shared<runtime::SessionKeeper>(
+                context, std::move(keeping), [weak](Status status) {
+                    if (const auto self = weak.lock()) {
+                        self->on_keeper_failure(std::move(status));
+                    }
+                });
+            options.session_ended = keeper->session_ended();
+        } else {
+            options.session_ended =
+                [weak](std::shared_ptr<engine::SessionEngine>, Status reason) {
+                    if (const auto self = weak.lock()) {
+                        self->on_session_ended(reason);
+                    }
+                };
+        }
     }
     if (!resolver_program.empty()) {
         providers::SystemResolverOptions resolver_options;
@@ -1554,7 +1731,160 @@ Status NativeRun::create_endpoint(
         context, config, base, std::move(bindings), std::move(options));
     if (!created.ok()) return copy_status(created.status());
     endpoint_ = std::move(created).take_value();
+    if (keeper) keeper->attach(endpoint_);
     return Status::success();
+}
+
+std::shared_ptr<engine::SessionEngine> NativeRun::active_session()
+    const noexcept {
+    if (keeper) return keeper->active_session();
+    return session && session->state() == engine::SessionState::Active
+               ? session
+               : nullptr;
+}
+
+Status NativeRun::start_bridge() {
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+    if (!device) return Status::success();
+    const std::weak_ptr<NativeRun> weak = weak_from_this();
+    auto created = runtime::DeviceBridge::create(
+        context, *device,
+        [weak]() -> std::shared_ptr<engine::SessionEngine> {
+            const auto self = weak.lock();
+            return self ? self->active_session() : nullptr;
+        },
+        [weak](Status status) {
+            if (const auto self = weak.lock()) {
+                self->record->say("device bridge stopped", status.message());
+            }
+        });
+    if (!created.ok()) return copy_status(created.status());
+    bridge = std::move(created).take_value();
+#endif
+    return Status::success();
+}
+
+// A client's one session ended on its own. A stop ends it too, and that is
+// not a failure.
+void NativeRun::on_session_ended(const Status& reason) noexcept {
+    if (!running()) return;
+    {
+        std::lock_guard<std::mutex> lock(ended_mutex_);
+        if (ended_) return;
+        ended_ = true;
+        ended_io_ = reason.ok() ? BackendIo::Closed : io_from(reason.code());
+        describe(ended_message_, reason, "session ended");
+    }
+    record->say("session ended", reason.message());
+}
+
+void NativeRun::on_keeper_status(
+    const runtime::NativeClientStatus& status) noexcept {
+    try {
+        // The watcher may replace itself, so call a copy.
+        const StatusWatcher watcher = status_watcher_;
+        if (watcher) watcher(status);
+    } catch (...) {
+    }
+}
+
+void NativeRun::on_keeper_session(
+    const std::shared_ptr<engine::SessionEngine>& active) noexcept {
+    try {
+        auto peer = active->authenticated_peer();
+        server_peer =
+            peer.ok() ? identity_from(peer.value(), {}) : BackendPeerIdentity{};
+    } catch (...) {
+        server_peer = BackendPeerIdentity{};
+    }
+}
+
+// The keeper met a failure it cannot retry, so nothing would reconnect.
+void NativeRun::on_keeper_failure(Status status) noexcept {
+    if (keeper) keeper->record_failure(status);
+    record->say("session keeping stopped", status.message());
+    begin_stop();
+}
+
+engine::SessionTraffic NativeRun::traffic() const noexcept {
+    try {
+        if (keeper) return keeper->status().traffic;
+    } catch (...) {
+        return {};
+    }
+    return session ? session->traffic() : engine::SessionTraffic{};
+}
+
+void NativeRun::fill_status(BackendStatus& status) const {
+    status.traffic = add(status.traffic, traffic());
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+    if (bridge) {
+        status.device_tcp_connections = bridge->tcp_connections();
+        status.device_udp_destinations = bridge->udp_destinations();
+    }
+#endif
+    if (keeper) {
+        using State = runtime::NativeClientState;
+        const runtime::NativeClientStatus kept = keeper->status();
+        status.sessions = kept.sessions;
+        status.failed_attempts = kept.failed_attempts;
+        if (!kept.last_failure.ok()) {
+            status.failure = io_from(kept.last_failure.code());
+            describe(status.failure_message, kept.last_failure,
+                     "session failed");
+        }
+        if (!running()) return;
+        switch (kept.state) {
+            case State::Connecting:
+                status.session = BackendSession::Connecting;
+                break;
+            case State::Connected:
+                status.session = BackendSession::Active;
+                status.connected_ms = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        Clock::now() - kept.connected_since)
+                        .count());
+                status.epoch_bytes = kept.epoch_bytes.value_or(0U);
+                status.peer_fingerprint_sha256 = kept.server_identity;
+                break;
+            case State::Waiting:
+                status.session = BackendSession::Waiting;
+                status.retry_ms =
+                    static_cast<std::uint64_t>(kept.retry_delay.count());
+                break;
+            case State::Idle:
+            case State::Closed:
+                break;
+        }
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(ended_mutex_);
+        if (ended_) {
+            status.failure = ended_io_;
+            status.failure_message = ended_message_;
+        }
+    }
+    if (!session || !running()) return;
+    if (session->state() != engine::SessionState::Active) {
+        status.session = BackendSession::Ended;
+        return;
+    }
+    status.session = BackendSession::Active;
+    status.sessions = 1U;
+    status.connected_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                              connected_since)
+            .count());
+    status.epoch_bytes = session->epoch_bytes().value_or(0U);
+    status.peer_fingerprint_sha256 = server_peer.fingerprint_sha256;
+}
+
+void NativeRun::request_retry() noexcept {
+    try {
+        (void)submit(retry_task_, shared_from_this());
+    } catch (...) {
+    }
 }
 
 Status NativeRun::start_accepting() noexcept {
@@ -1573,6 +1903,7 @@ Status NativeRun::start_accepting() noexcept {
 // The native endpoint has already begun closing its sessions. Accept calls
 // report the stop until the application stops and restarts the endpoint.
 void NativeRun::on_accept_failure(Status status) noexcept {
+    record->say("stopped accepting", status.message());
     accept_failure_ = std::move(status);
     accept_failed_.store(true, std::memory_order_release);
     begin_stop();
@@ -1777,22 +2108,30 @@ private:
 class NativeBackend final : public EndpointBackend {
 public:
     NativeBackend(const v1::Config& config, std::filesystem::path base,
-                std::filesystem::path resolver_program,
-                std::vector<BackendService> registrations,
-                SocketProtector socket_protector)
+                  std::filesystem::path resolver_program,
+                  std::vector<BackendService> registrations,
+                  SocketProtector socket_protector,
+                  std::optional<DeviceOptions> device)
         : config_(config),
           base_(std::move(base)),
           resolver_program_(std::move(resolver_program)),
           registrations_(std::move(registrations)),
-          socket_protector_(std::move(socket_protector)) {}
+          socket_protector_(std::move(socket_protector)),
+          device_(std::move(device)),
+          record_(std::make_shared<BackendRecord>()) {}
 
     // A caller may drop the handle without stopping first. The runner is
     // joined before the endpoint state it drives is released.
     ~NativeBackend() override { stop(); }
 
-    BackendIo start(std::uint32_t timeout_ms, std::string& error) override;
+    BackendIo start(std::uint32_t timeout_ms,
+                    const std::shared_ptr<StartCancellation>& cancellation,
+                    std::string& error) override;
     void stop() noexcept override;
     bool running() const noexcept override;
+    BackendStatus status() const override;
+    BackendMessage message_after(std::uint64_t after) const override;
+    BackendIo retry_now() noexcept override;
     BackendIo open_stream(const std::string& service,
                           const std::optional<BackendDestination>& destination,
                           std::uint32_t timeout_ms,
@@ -1819,12 +2158,17 @@ private:
     }
     static void shutdown(const std::shared_ptr<NativeRun>& run,
                          std::thread& runner) noexcept;
+    BackendIo start_run(std::uint32_t timeout_ms,
+                        const std::shared_ptr<StartCancellation>& cancellation,
+                        std::string& error);
 
     const v1::Config config_;
     const std::filesystem::path base_;
     const std::filesystem::path resolver_program_;
     const std::vector<BackendService> registrations_;
     const SocketProtector socket_protector_;
+    const std::optional<DeviceOptions> device_;
+    const std::shared_ptr<BackendRecord> record_;
     std::mutex lifecycle_mutex_;
     mutable std::mutex run_mutex_;
     std::shared_ptr<NativeRun> run_;
@@ -1854,7 +2198,30 @@ void NativeBackend::shutdown(const std::shared_ptr<NativeRun>& run,
     }
 }
 
-BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
+BackendIo NativeBackend::start(
+    std::uint32_t timeout_ms,
+    const std::shared_ptr<StartCancellation>& cancellation,
+    std::string& error) {
+    const BackendIo io = start_run(timeout_ms, cancellation, error);
+    if (io == BackendIo::Ok) {
+        // A keeper has already said that its session authenticated.
+        if (config_.role() == v1::Role::Server) {
+            record_->say("accepting sessions");
+        } else if (!device_) {
+            record_->say("session authenticated");
+        }
+    } else if (cancellation && cancellation->cancelled()) {
+        record_->say("start cancelled");
+    } else {
+        record_->say("start failed", error);
+    }
+    return io;
+}
+
+BackendIo NativeBackend::start_run(
+    std::uint32_t timeout_ms,
+    const std::shared_ptr<StartCancellation>& cancellation,
+    std::string& error) {
     std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (current()) {
         describe(error, "endpoint is already running");
@@ -1925,9 +2292,9 @@ BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
                          "socket protector refused the outbound connection");
         };
     }
-    auto run = std::make_shared<NativeRun>(std::move(context).take_value(), config_,
-                                           base_, resolver_program_, registrations_,
-                                           std::move(protector));
+    auto run = std::make_shared<NativeRun>(
+        std::move(context).take_value(), config_, base_, resolver_program_,
+        registrations_, std::move(protector), record_, device_);
     auto operation = std::make_shared<StartOperation>(run, client_deadline);
     std::thread runner;
     try {
@@ -1940,6 +2307,23 @@ BackendIo NativeBackend::start(std::uint32_t timeout_ms, std::string& error) {
         shutdown(run, runner);
         describe(error, "endpoint runner refused startup");
         return BackendIo::Failed;
+    }
+    // From here another thread can end this start. Stopping the run closes
+    // its endpoint on the runner, which completes the attempt in flight.
+    struct Disarm final {
+        const std::shared_ptr<StartCancellation>& cancellation;
+        ~Disarm() {
+            if (cancellation) cancellation->disarm();
+        }
+    } disarm{cancellation};
+    if (cancellation) {
+        try {
+            cancellation->arm([run] { run->begin_stop(); });
+        } catch (...) {
+            shutdown(run, runner);
+            describe(error, "endpoint start could not be made cancellable");
+            return BackendIo::ResourceExhausted;
+        }
     }
 
     // Server creation is local work. A client start is bounded by the native
@@ -1978,10 +2362,20 @@ void NativeBackend::stop() noexcept {
         std::thread runner;
         {
             std::lock_guard<std::mutex> lock(run_mutex_);
-            run = std::move(run_);
+            run = run_;
             runner = std::move(runner_);
         }
+        // The run stays published while it winds down, so a status read in
+        // between still counts its traffic.
         shutdown(run, runner);
+        if (!run) return;
+        {
+            std::lock_guard<std::mutex> lock(run_mutex_);
+            std::lock_guard<std::mutex> record_lock(record_->mutex);
+            record_->retired = add(record_->retired, run->traffic());
+            run_.reset();
+        }
+        record_->say("stopped");
     } catch (...) {
         // Reached from the destructor and a noexcept ABI boundary.
     }
@@ -1990,8 +2384,47 @@ void NativeBackend::stop() noexcept {
 bool NativeBackend::running() const noexcept {
     const auto run = current();
     if (!run || !run->running()) return false;
-    return run->server || (run->session &&
-                           run->session->state() == engine::SessionState::Active);
+    // A client that keeps its session up is running between sessions too.
+    return run->server || run->keeper ||
+           (run->session &&
+            run->session->state() == engine::SessionState::Active);
+}
+
+BackendStatus NativeBackend::status() const {
+    BackendStatus status;
+    std::shared_ptr<NativeRun> run;
+    {
+        std::lock_guard<std::mutex> lock(run_mutex_);
+        std::lock_guard<std::mutex> record_lock(record_->mutex);
+        run = run_;
+        status.traffic = record_->retired;
+    }
+    if (run && !run->server) run->fill_status(status);
+    return status;
+}
+
+BackendMessage NativeBackend::message_after(std::uint64_t after) const {
+    BackendMessage message;
+    message.instance = record_->messages.instance();
+    auto next = record_->messages.next_after(after);
+    message.missed = next.missed;
+    if (next.entry) {
+        message.seq = next.entry->seq;
+        message.time_unix_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                next.entry->time.time_since_epoch())
+                .count();
+        message.text = std::move(next.entry->text);
+    }
+    return message;
+}
+
+BackendIo NativeBackend::retry_now() noexcept {
+    const auto run = current();
+    if (!run || !run->running()) return BackendIo::NotRunning;
+    if (!run->keeper) return BackendIo::Invalid;
+    run->request_retry();
+    return BackendIo::Ok;
 }
 
 BackendIo NativeBackend::open_stream(const std::string& service,
@@ -2199,19 +2632,230 @@ BackendIo NativeBackend::accept_packet(const std::string& service,
     return BackendIo::Ok;
 }
 
+bool declares(const v1::Config& config, std::string_view name,
+              v1::ServiceKind kind) {
+    return std::any_of(config.services().begin(), config.services().end(),
+                       [&](const v1::Service& entry) {
+                           return entry.name() == name && entry.kind() == kind;
+                       });
+}
+
+#if defined(YUME_HAS_DEVICE_BRIDGE)
+// One family's addresses as text. Two empty strings leave the family out.
+bool parse_pair(bool ipv6, const std::string& address, const std::string& peer,
+                std::optional<runtime::DeviceAddressPair>& out) {
+    out.reset();
+    if (address.empty() && peer.empty()) return true;
+    boost::system::error_code first;
+    boost::system::error_code second;
+    runtime::DeviceAddressPair pair;
+    if (ipv6) {
+        const auto device = boost::asio::ip::make_address_v6(address, first);
+        const auto other = boost::asio::ip::make_address_v6(peer, second);
+        if (first || second || device.scope_id() != 0U ||
+            other.scope_id() != 0U) {
+            return false;
+        }
+        pair.device = device.to_bytes();
+        pair.peer = other.to_bytes();
+    } else {
+        const auto device = boost::asio::ip::make_address_v4(address, first);
+        const auto other = boost::asio::ip::make_address_v4(peer, second);
+        if (first || second) return false;
+        const auto device_bytes = device.to_bytes();
+        const auto other_bytes = other.to_bytes();
+        std::copy(device_bytes.begin(), device_bytes.end(),
+                  pair.device.begin());
+        std::copy(other_bytes.begin(), other_bytes.end(), pair.peer.begin());
+    }
+    const runtime::DeviceAddress unspecified{};
+    if (pair.device == pair.peer || pair.device == unspecified ||
+        pair.peer == unspecified) {
+        return false;
+    }
+    out = pair;
+    return true;
+}
+#endif
+
+// Checks a device against a configuration and, with a bridge on this
+// platform, turns it into the bridge's options.
+BackendIo resolve_device(const v1::Config& config, const BackendDevice& device,
+                         std::optional<DeviceOptions>& out,
+                         std::string& error) {
+    out.reset();
+    if (config.role() != v1::Role::Client) {
+        describe(error, "only a client endpoint carries a device");
+        return BackendIo::Unsupported;
+    }
+#if !defined(YUME_HAS_DEVICE_BRIDGE)
+    (void)device;
+    describe(error, "this platform has no device bridge");
+    return BackendIo::Unsupported;
+#else
+    if (device.descriptor < 0) {
+        describe(error, "the device descriptor is not open");
+        return BackendIo::Invalid;
+    }
+    if (device.stream_service.empty() ||
+        !declares(config, device.stream_service, v1::ServiceKind::Stream)) {
+        describe(error,
+                 "the device's stream service is not a byte-stream "
+                 "service of the configuration");
+        return BackendIo::NotFound;
+    }
+    if (!device.packet_service.empty() &&
+        !declares(config, device.packet_service, v1::ServiceKind::Packet)) {
+        describe(error,
+                 "the device's packet service is not a packet service "
+                 "of the configuration");
+        return BackendIo::NotFound;
+    }
+    DeviceOptions options;
+    options.descriptor = device.descriptor;
+    options.mtu = device.mtu;
+    options.stream_service = device.stream_service;
+    options.packet_service = device.packet_service;
+    // The bridge keeps a quarter of the session's pending OPENs free for
+    // datagram destinations and the application's own opens.
+    options.max_pending_opens = std::max<std::size_t>(
+        1U, static_cast<std::size_t>(config.limits().max_pending_opens()) * 3U /
+                4U);
+    if (!parse_pair(false, device.ipv4_address, device.ipv4_peer,
+                    options.ipv4) ||
+        !parse_pair(true, device.ipv6_address, device.ipv6_peer,
+                    options.ipv6)) {
+        describe(error,
+                 "a device address pair needs two different IP "
+                 "literals of its family");
+        return BackendIo::Invalid;
+    }
+    if (!options.ipv4 && !options.ipv6) {
+        describe(error, "the device needs an address pair of one family");
+        return BackendIo::Invalid;
+    }
+    if (device.mtu < (options.ipv6 ? 1280U : 576U) || device.mtu > 65'535U) {
+        describe(error,
+                 "the device MTU is 576 to 65535, and at least 1280 "
+                 "with IPv6");
+        return BackendIo::Invalid;
+    }
+    out = std::move(options);
+    error.clear();
+    return BackendIo::Ok;
+#endif
+}
+
+class SealedKit final : public BackendKit {
+public:
+    explicit SealedKit(runtime::kit::Kit kit) noexcept : kit_(std::move(kit)) {}
+
+    std::size_t file_count() const noexcept override {
+        return kit_.files.size();
+    }
+    BackendKitFile file(std::size_t index) const noexcept override {
+        const auto& entry = kit_.files[index];
+        return BackendKitFile{entry.path, entry.bytes, entry.executable};
+    }
+
+private:
+    // Its destructor wipes every file.
+    runtime::kit::Kit kit_;
+};
+
 }  // namespace
 
+BackendIo check_backend_device(const config::v1::Config& config,
+                               const BackendDevice& device,
+                               std::string& error) {
+    try {
+        std::optional<DeviceOptions> ignored;
+        return resolve_device(config, device, ignored, error);
+    } catch (const std::bad_alloc&) {
+        describe(error, "allocation failed");
+        return BackendIo::ResourceExhausted;
+    } catch (...) {
+        describe(error, "the device could not be checked");
+        return BackendIo::Failed;
+    }
+}
+
+std::unique_ptr<BackendKit> open_sealed_kit(
+    std::span<const std::uint8_t> sealed, std::string_view typed_code,
+    BackendKitOutcome& outcome, std::string& error) {
+    namespace kit = runtime::kit;
+    outcome = BackendKitOutcome::Failed;
+    try {
+        if (sealed.size() > kit::kMaxSealedBytes) {
+            outcome = BackendKitOutcome::TooLarge;
+            describe(error, "the file is larger than a sealed kit can be");
+            return nullptr;
+        }
+        auto code = kit::normalize_code(typed_code);
+        if (!code) {
+            outcome = BackendKitOutcome::BadCode;
+            describe(error, "the kit code is not 25 code characters");
+            return nullptr;
+        }
+        const security::ScopedErase code_guard(*code);
+        // A file of another shape is refused like a wrong code, before the
+        // key derivation spends its time.
+        if (!kit::sealed_size(sealed.size())) {
+            outcome = BackendKitOutcome::Refused;
+            describe(error,
+                     "the code is wrong or the file is not a sealed kit");
+            return nullptr;
+        }
+        auto opened = kit::open(sealed, *code);
+        if (!opened.ok()) {
+            switch (opened.status().code()) {
+                case StatusCode::PermissionDenied:
+                    outcome = BackendKitOutcome::Refused;
+                    break;
+                case StatusCode::InvalidArgument:
+                    outcome = BackendKitOutcome::Malformed;
+                    break;
+                case StatusCode::ResourceExhausted:
+                    outcome = BackendKitOutcome::Exhausted;
+                    break;
+                default:
+                    outcome = BackendKitOutcome::Failed;
+                    break;
+            }
+            describe(error, opened.status(),
+                     "the sealed kit could not be opened");
+            return nullptr;
+        }
+        auto result =
+            std::make_unique<SealedKit>(std::move(opened).take_value());
+        outcome = BackendKitOutcome::Ok;
+        error.clear();
+        return result;
+    } catch (const std::bad_alloc&) {
+        outcome = BackendKitOutcome::Exhausted;
+        describe(error, "allocation failed");
+    } catch (...) {
+        describe(error, "the sealed kit could not be opened");
+    }
+    return nullptr;
+}
+
 std::unique_ptr<EndpointBackend> make_native_backend(
-    const config::v1::Config& config,
-    std::string_view base_dir,
+    const config::v1::Config& config, std::string_view base_dir,
     std::string_view resolver_program,
     std::vector<BackendService> registered_services,
     SocketProtector socket_protector,
-    BackendIo& outcome,
+    const std::optional<BackendDevice>& device, BackendIo& outcome,
     std::string& error) {
     outcome = BackendIo::Failed;
     try {
         const bool server = config.role() == v1::Role::Server;
+        std::optional<DeviceOptions> device_options;
+        if (device) {
+            outcome = resolve_device(config, *device, device_options, error);
+            if (outcome != BackendIo::Ok) return nullptr;
+            outcome = BackendIo::Failed;
+        }
         for (const auto& registration : registered_services) {
             const auto kind = registration.kind == BackendServiceKind::ByteStream
                 ? v1::ServiceKind::Stream : v1::ServiceKind::Packet;
@@ -2232,7 +2876,8 @@ std::unique_ptr<EndpointBackend> make_native_backend(
         auto backend = std::make_unique<NativeBackend>(
             config, std::filesystem::path(std::string(base_dir)),
             std::filesystem::path(std::string(resolver_program)),
-            std::move(registered_services), std::move(socket_protector));
+            std::move(registered_services), std::move(socket_protector),
+            std::move(device_options));
         outcome = BackendIo::Ok;
         error.clear();
         return backend;

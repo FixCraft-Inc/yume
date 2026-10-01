@@ -106,8 +106,20 @@ configuration.
 
 ## Android boundary
 
-The separate Android client uses `android.net.VpnService` and a TUN device, but
-its current native synchronization, connected routing, DNS, IPv6, bypass,
-revocation, reconnect, and kill-switch gates remain open. Do not rely on the
-present Android build as a YUME kill switch until those paths pass direct
-device tests against the same native candidate.
+The separate Android client runs this library through the C ABI's
+[device bridge](ABI.md): its `android.net.VpnService` interface takes every
+IPv4 route, and the library carries each connection and datagram on the kit's
+services. Name lookups go through the tunnel to the resolvers the client
+configures. Unless IPv6 is carried, the interface has no IPv6 address or
+route, so Android blocks IPv6 while the VPN is up. The transport's own socket
+is protected from the VPN's routes. When the session is lost, the interface
+stays in place and connections wait or are reset while the library
+reconnects, so nothing leaves beside the tunnel during the gap.
+
+Device tests on a Pixel 9 Pro running Android 17, against a real `yumed`,
+covered connecting, stopping, reconnecting, a server that stops and returns,
+and Wi-Fi that drops and returns. They have not covered VPN revocation,
+process death, a reboot, carried IPv6 or a signed release build, so those
+remain open. Between a stop and the next start Android routes traffic
+directly. To keep traffic from leaving outside YUME, also turn on Android's
+Always-on VPN and Block connections without VPN for the client.

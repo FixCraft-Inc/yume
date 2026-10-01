@@ -52,6 +52,19 @@
       "reason": "Test program: the consumer of the ABI route integration test."
     },
     {
+      "path": "src/abi/device_probe.cpp",
+      "reason": "Test program: the consumer of the ABI device bridge integration test."
+    },
+    {
+      "path": "src/abi/kit_probe.c",
+      "reason": "Test program: the C consumer of the ABI sealed kit integration test."
+    },
+    {
+      "path": "src/runtime/device_nat.cpp",
+      "functions": ["yume::runtime::DeviceNat::connections(bool)"],
+      "reason": "Test observer of the translator's bounded connection table."
+    },
+    {
       "path": "src/stealth/h2_opening_probe.cpp",
       "reason": "Evidence probe the tests run to record the carrier's HTTP/2 opening."
     },

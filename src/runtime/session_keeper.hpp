@@ -7,6 +7,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -71,6 +72,12 @@ public:
     NativeClientStatus status() const;
     // Records a failure the owner stops for, as the status's last failure.
     void record_failure(const engine::Status& failure) noexcept;
+    // On the context: when the keeper is waiting to retry, starts that
+    // attempt now and restarts the backoff, for an owner that learns the
+    // network is back. At most one per reconnect_initial, so repeated calls
+    // cannot redial faster than a first retry would. Returns whether an
+    // attempt started.
+    bool retry_now() noexcept;
     // Ends the loop without closing the endpoint, which its owner closes.
     void close() noexcept;
 
@@ -99,6 +106,12 @@ private:
     Timer timer_;
     std::chrono::milliseconds backoff_;
     Clock::time_point authenticated_at_{};
+    // A retry wait is pending. Each wait carries its number, so a wait that
+    // retry_now() replaced does nothing when its cancellation is delivered.
+    bool waiting_{false};
+    std::uint64_t wait_generation_{0U};
+    bool nudged_{false};
+    Clock::time_point last_nudge_{};
     std::shared_ptr<NativeEndpoint> endpoint_;
     std::shared_ptr<engine::SessionEngine> session_;
     bool closing_{false};

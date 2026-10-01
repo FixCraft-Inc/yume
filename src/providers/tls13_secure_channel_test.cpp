@@ -228,7 +228,7 @@ public:
         assert(buffer.size() <= max_write_size());
         const std::size_t count = buffer.size();
         if (peer.pending) {
-            auto reader = std::move(peer.pending);
+            auto reader = std::exchange(peer.pending, nullptr);
             const std::size_t amount = std::min(peer.pending_maximum, buffer.size());
             Buffer delivered = take(Buffer::copy_from(buffer.bytes().first(amount),
                                                       peer.pending_maximum));
@@ -253,7 +253,7 @@ public:
         auto& peer = state_->sides[1U - side_];
         local.write_shutdown = true;
         if (peer.pending) {
-            auto reader = std::move(peer.pending);
+            auto reader = std::exchange(peer.pending, nullptr);
             reader(Result<Buffer>(Status(StatusCode::Closed)));
         }
         return Status::success();
@@ -261,7 +261,7 @@ public:
     void cancel() noexcept override {
         auto& local = state_->sides[side_];
         if (local.pending) {
-            auto reader = std::move(local.pending);
+            auto reader = std::exchange(local.pending, nullptr);
             reader(Result<Buffer>(Status(StatusCode::Cancelled)));
         }
     }
@@ -271,15 +271,16 @@ public:
         if (local.closed) return;
         local.closed = true;
         if (local.pending_write) {
-            auto writer = std::move(local.pending_write);
+            // A moved-from std::function need not be empty under libc++.
+            auto writer = std::exchange(local.pending_write, nullptr);
             writer(Status(StatusCode::Closed), 0U);
         }
         if (local.pending) {
-            auto reader = std::move(local.pending);
+            auto reader = std::exchange(local.pending, nullptr);
             reader(Result<Buffer>(Status(StatusCode::Closed)));
         }
         if (peer.pending) {
-            auto reader = std::move(peer.pending);
+            auto reader = std::exchange(peer.pending, nullptr);
             reader(Result<Buffer>(Status(StatusCode::Closed)));
         }
     }
@@ -630,12 +631,12 @@ void test_upstream_failure_settles_during_allocation_denial(
     // already moved out of TLS state. Both pending directions must settle.
     Status upstream(StatusCode::FailedPrecondition, std::string(512U, 'x'));
     if (write_failure) {
-        auto completion = std::move(pair->sides[0].pending_write);
+        auto completion = std::exchange(pair->sides[0].pending_write, nullptr);
         assert(completion);
         AllocationDenial denial;
         completion(std::move(upstream), 0U);
     } else {
-        auto completion = std::move(pair->sides[0].pending);
+        auto completion = std::exchange(pair->sides[0].pending, nullptr);
         assert(completion);
         AllocationDenial denial;
         completion(Result<Buffer>(std::move(upstream)));

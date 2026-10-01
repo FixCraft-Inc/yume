@@ -39,6 +39,8 @@ extern "C" {
 #define YUME_MAX_IDENTITY_TEXT 96u
 #define YUME_MAX_DIAGNOSTIC_TEXT 512u
 #define YUME_MAX_JSON_POINTER 256u
+#define YUME_MAX_MESSAGE_TEXT 512u
+#define YUME_MESSAGE_INSTANCE_TEXT 17u
 
 typedef int32_t yume_status;
 
@@ -92,6 +94,17 @@ enum {
     YUME_EVENT_ENDPOINT_STATE = 1
 };
 
+/* A client's session. An endpoint with a device keeps its session up, so it
+ * reports CONNECTING and WAITING between sessions. One without makes one
+ * attempt per start and reports ENDED once its session has ended. */
+enum {
+    YUME_SESSION_NONE = 0,
+    YUME_SESSION_ACTIVE = 1,
+    YUME_SESSION_ENDED = 2,
+    YUME_SESSION_CONNECTING = 3,
+    YUME_SESSION_WAITING = 4
+};
+
 enum {
     YUME_DIAGNOSTIC_JSON_POINTER_TRUNCATED = 1u << 0,
     YUME_DIAGNOSTIC_MESSAGE_TRUNCATED = 1u << 1
@@ -102,6 +115,7 @@ typedef struct yume_config yume_config;
 typedef struct yume_endpoint yume_endpoint;
 typedef struct yume_stream yume_stream;
 typedef struct yume_packet yume_packet;
+typedef struct yume_kit yume_kit;
 
 typedef struct yume_string_view {
     const char* data;
@@ -283,6 +297,116 @@ typedef struct yume_packet_slot {
     size_t size;
 } yume_packet_slot;
 
+/*
+ * A point-in-time view of one endpoint. It holds no key, credential or
+ * payload. The session, identity and traffic fields describe a client and
+ * are zero for a server.
+ */
+typedef struct yume_endpoint_status {
+    size_t struct_size;
+    uint32_t abi_version;
+    uint32_t role;
+    uint32_t state;
+    /* One of YUME_SESSION_*. */
+    uint32_t session;
+    /* The latest failed start, failed attempt or ended session of this
+     * handle, or YUME_STATUS_OK when there has been none. A later success
+     * does not clear it. Stopping and a cancelled start record nothing. */
+    yume_status last_failure;
+    /* The session's key epoch while it is active, otherwise 0. */
+    uint32_t epoch_bytes;
+    /* How long the active session has been up, otherwise 0. */
+    uint64_t connected_ms;
+    /* While YUME_SESSION_WAITING: the delay before the next attempt. */
+    uint64_t retry_ms;
+    /* Sessions authenticated since the endpoint last started, and failed
+     * attempts since the latest of them. */
+    uint64_t sessions;
+    uint32_t failed_attempts;
+    uint32_t idle_epoch_rotation;
+    /* Totals over every session of this endpoint handle. */
+    uint64_t payload_bytes_sent;
+    uint64_t payload_bytes_received;
+    uint64_t record_bytes_sent;
+    uint64_t record_bytes_received;
+    /* With idle_epoch_rotation above: the configuration's limits that a
+     * tuning preset sets. */
+    uint32_t max_queued_bytes;
+    uint32_t max_epoch_bytes;
+    uint32_t credit_returns_per_window;
+    /* With a device: what its bridge carries now. */
+    uint32_t device_tcp_connections;
+    uint32_t device_udp_destinations;
+    uint32_t reserved;
+    /* The server's verified composite fingerprint while the session is
+     * active, otherwise zero bytes. */
+    uint8_t peer_fingerprint_sha256[32];
+    char last_failure_message[YUME_MAX_DIAGNOSTIC_TEXT];
+} yume_endpoint_status;
+
+#define YUME_ENDPOINT_STATUS_MIN_SIZE \
+    offsetof(yume_endpoint_status, peer_fingerprint_sha256)
+
+/*
+ * A TUN device the application owns, whose traffic a client endpoint carries
+ * as one stream OPEN per TCP connection and one packet OPEN per UDP
+ * destination. The descriptor reads and writes whole IP packets without a
+ * packet-information header. The library duplicates it and sets it
+ * non-blocking, which also applies to the caller's copy.
+ *
+ * Each address pair is the device's own address and a second address that
+ * routes to the device and nothing else uses, as IP literals. An empty IPv6
+ * pair drops IPv6, an empty packet service drops UDP, and at least one
+ * address family is required.
+ */
+typedef struct yume_device_options {
+    size_t struct_size;
+    uint32_t abi_version;
+    int32_t descriptor;
+    uint32_t mtu;
+    uint32_t reserved;
+    yume_string_view stream_service;
+    yume_string_view packet_service;
+    yume_string_view ipv4_address;
+    yume_string_view ipv4_peer;
+    yume_string_view ipv6_address;
+    yume_string_view ipv6_peer;
+} yume_device_options;
+
+#define YUME_DEVICE_OPTIONS_MIN_SIZE sizeof(yume_device_options)
+
+/* One line an endpoint has said about its lifecycle. */
+typedef struct yume_message {
+    size_t struct_size;
+    uint32_t abi_version;
+    uint32_t reserved;
+    /* Numbered from 1 in order, or 0 when no line was returned. */
+    uint64_t seq;
+    /* Lines numbered above the caller's `after` and below seq that the
+     * endpoint no longer keeps. */
+    uint64_t missed;
+    /* Milliseconds since the Unix epoch, UTC. */
+    int64_t time_unix_ms;
+    /* 16 hexadecimal digits that change when numbering starts again at 1. */
+    char instance[YUME_MESSAGE_INSTANCE_TEXT];
+    char text[YUME_MAX_MESSAGE_TEXT + 1u];
+} yume_message;
+
+#define YUME_MESSAGE_MIN_SIZE offsetof(yume_message, text)
+
+/* One file of an opened kit. path and data point into the kit and stay valid
+ * until yume_kit_destroy(). */
+typedef struct yume_kit_file {
+    size_t struct_size;
+    uint32_t abi_version;
+    uint32_t executable;
+    yume_string_view path;
+    const void* data;
+    size_t size;
+} yume_kit_file;
+
+#define YUME_KIT_FILE_MIN_SIZE sizeof(yume_kit_file)
+
 /* Version and manifest functions are side-effect free and thread-safe. */
 YUME_API uint32_t yume_abi_version(void) YUME_NOEXCEPT;
 YUME_API yume_status yume_get_build_info(yume_build_info* out,
@@ -341,10 +465,22 @@ YUME_API yume_status yume_endpoint_set_socket_protector(
 YUME_API yume_status yume_endpoint_register_service(
     yume_endpoint* endpoint,
     const yume_service_descriptor* service) YUME_NOEXCEPT;
+/* Attaches a device to a client endpoint, or detaches it with null options.
+ * Accepted while the endpoint is CREATED or STOPPED. The device stays
+ * attached across stop and start, and the bridge runs while the endpoint is
+ * RUNNING. An endpoint with a device keeps its session up: after a start
+ * that succeeded it replaces a lost session itself, as yume does, until it
+ * is stopped. A server returns UNSUPPORTED and an undeclared service
+ * NOT_FOUND. docs/ABI.md, "Device bridge", describes what crosses and its
+ * bounds. */
+YUME_API yume_status yume_endpoint_set_device(
+    yume_endpoint* endpoint, const yume_device_options* options) YUME_NOEXCEPT;
 /* Lifecycle timeouts are operation-specific while this ABI is experimental.
  * Client start accepts a finite millisecond deadline, and zero selects its
  * 30 s default. Server start, endpoint stop, and stream/packet close accept
  * only zero because they have no caller-bounded deadline.
+ * A stop or destroy on another thread cancels a client start in progress:
+ * the start returns YUME_STATUS_CANCELLED and leaves the endpoint STOPPED.
  * Only server endpoints register services. Registrations are made while
  * stopped, must match the immutable configuration, and remain attached across
  * stop and restart.
@@ -360,6 +496,30 @@ YUME_API yume_status yume_endpoint_start(yume_endpoint* endpoint,
 YUME_API yume_status yume_endpoint_stop(yume_endpoint* endpoint,
                                         uint32_t timeout_ms) YUME_NOEXCEPT;
 YUME_API uint32_t yume_endpoint_state(const yume_endpoint* endpoint)
+    YUME_NOEXCEPT;
+
+/*
+ * Status and messages never wait for a lifecycle call, so both may be read
+ * from another thread while a start is in progress. From a callback they
+ * return YUME_STATUS_INVALID_STATE.
+ *
+ * yume_endpoint_read_message copies the oldest kept line numbered above
+ * `after`. With none it returns YUME_STATUS_WOULD_BLOCK, seq 0 and the
+ * instance. An endpoint keeps its latest 256 lines, each cut to
+ * YUME_MAX_MESSAGE_TEXT bytes.
+ */
+YUME_API yume_status yume_endpoint_get_status(const yume_endpoint* endpoint,
+                                              yume_endpoint_status* out,
+                                              size_t out_size) YUME_NOEXCEPT;
+YUME_API yume_status yume_endpoint_read_message(const yume_endpoint* endpoint,
+                                                uint64_t after,
+                                                yume_message* out,
+                                                size_t out_size) YUME_NOEXCEPT;
+/* An endpoint with a device that is waiting to retry starts that attempt
+ * now, for an application that learns the network is back. At most one per
+ * second takes effect. INVALID_STATE unless the endpoint is RUNNING and has
+ * a device. */
+YUME_API yume_status yume_endpoint_retry_now(yume_endpoint* endpoint)
     YUME_NOEXCEPT;
 
 /* Clients open a named byte service, optionally with a TCP hostname,
@@ -475,10 +635,39 @@ YUME_API yume_status yume_packet_close(yume_packet* packet,
 YUME_API void yume_packet_destroy(yume_packet* packet) YUME_NOEXCEPT;
 
 /*
+ * Opens a sealed kit (docs/protocol/SEALED_KIT_1.md) in memory. `code` is
+ * the 25-character code as the user typed it, with or without separators,
+ * and is not kept. The call derives a key with Argon2id over 64 MiB, so it
+ * takes a noticeable time.
+ *
+ * YUME_STATUS_PERMISSION_DENIED means a wrong code or a file that is not a
+ * sealed kit, which cannot be told apart. YUME_STATUS_PARSE_ERROR means the
+ * code opened the file but its content is not a valid kit,
+ * YUME_STATUS_INVALID_ARGUMENT a missing pointer, an empty file or a code
+ * that is not 25 code characters, and YUME_STATUS_RESOURCE_EXHAUSTED a file
+ * larger than a sealed kit can be. A failure publishes no handle and leaves
+ * its text as the runtime's diagnostic.
+ *
+ * Files come in path order and yume.json is always present. The kit's layout
+ * is validated, its configuration is not. yume_kit_get_file returns
+ * YUME_STATUS_NOT_FOUND for an index at or above yume_kit_file_count.
+ * yume_kit_destroy wipes the files and accepts null.
+ */
+YUME_API yume_status yume_kit_open(yume_runtime* runtime, const void* sealed,
+                                   size_t sealed_size, const char* code,
+                                   size_t code_size,
+                                   yume_kit** out_kit) YUME_NOEXCEPT;
+YUME_API size_t yume_kit_file_count(const yume_kit* kit) YUME_NOEXCEPT;
+YUME_API yume_status yume_kit_get_file(const yume_kit* kit, size_t index,
+                                       yume_kit_file* out,
+                                       size_t out_size) YUME_NOEXCEPT;
+YUME_API void yume_kit_destroy(yume_kit* kit) YUME_NOEXCEPT;
+
+/*
  * Copies a handle-scoped diagnostic. A successful operation clears the
  * handle's prior diagnostic. Event callbacks may call this function and the
  * side-effect-free version/status queries. Pass runtime, config, endpoint,
- * stream, or packet.
+ * stream, packet, or kit.
  */
 YUME_API yume_status yume_handle_get_diagnostic(const void* handle,
                                                 yume_diagnostic* out,

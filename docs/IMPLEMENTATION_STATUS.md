@@ -353,7 +353,8 @@ but not its contents, and SIGHUP does not reload lists.
 The canonical network grammar shares test vectors with
 `yume-doctor`. Engine dispatch supplies the selected provider to the handler; it
 cannot accidentally validate one instance while the built-in handler uses
-another. The public ABI backend still rejects adapter declarations.
+another. The public ABI backend still rejects adapter declarations, and
+carries a device's traffic through its device bridge instead.
 Engine tests separately exercise acceptance and
 ordered terminal acknowledgement; bootstrap allocation sweeps cover client and
 server startup and selected teardown paths. These checks are not comprehensive
@@ -381,6 +382,38 @@ pauses execution to check deadline handling, acceptance rollback, partial-read
 credit lifetime and cleanup after an escaped delivery exception.
 The standalone programs compose NativeEndpoint directly. This embedding
 backend has no production qualification.
+
+A client endpoint of the ABI can carry a TUN device the application owns,
+such as an Android `VpnService`'s. `runtime/device_bridge.*` turns each TCP
+connection into a stream OPEN and each UDP destination into a packet OPEN
+on the kit's ordinary services, as the SOCKS5 adapter does for a local
+application, so no packet service or TUN is needed on the server.
+`runtime/device_nat.*` rewrites TCP segments so the host's kernel
+terminates each connection on the bridge's listener, and the library
+contains no TCP implementation. Such an endpoint keeps its session up with
+the `SessionKeeper` that `yume` uses. `yume_device_nat_test` checks the
+rewriting and its checksums against a full computation, and
+`yume_abi_device_integration` sends real TCP and UDP of sockets in one
+network namespace through a real `yumed` in another: 300 connections at
+once, shared name lookups, refused destinations, a lost and replaced
+session, an immediate retry, a path that stops answering, which ends the
+session at YTP/1's 30 s rotation acknowledgement deadline, a restart and a
+stop. IPv6 legs need a host kernel with IPv6. The Android client, in its
+own repository, runs on this bridge, and one device cycle on a Pixel 9 Pro
+with Android 17 against a real `yumed` passed the legs the
+[leak-tight page](LEAK_TIGHT.md#android-boundary) lists. Android links
+libc++, so the native suite was also run with clang and libc++ on the build
+host, which is not yet a CI job. It passes except for one allocation-failure
+case of `yume_native_endpoint_test`, whose injected failure lands on a status
+copy before the reconnect timer it aims at.
+
+The ABI also reports an endpoint's status snapshot and the lines it has
+said, cancels a client start from another thread, and opens a
+[sealed kit](protocol/SEALED_KIT_1.md) in memory.
+`yume_abi_stream_integration` reads the snapshot and the feed at each step
+of a real session and cancels a start against a server that never answers,
+and `yume_abi_kit_integration` opens a kit that the `yume` program sealed
+and checks what the library refuses instead.
 
 The native executables `yumed` and `yume` run schema-1 configurations.
 `YUME_BUILD_NATIVE_APPLICATION=ON` builds the complete provider graph, as does

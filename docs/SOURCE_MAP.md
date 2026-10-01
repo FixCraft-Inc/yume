@@ -123,7 +123,8 @@ through `providers/child_process.*`, as the module supervisor starts modules.
 and threads. The standalone `yume-resolver` program
 (`providers/system_resolver_main.cpp`) serves embedding hosts. `yume` and
 `yumed` dispatch to the same helper when started under that name. The test
-helper `yume_resolver_stall_helper` adds one name that never resolves.
+helper `yume_resolver_stall_helper` adds two names: one that never resolves
+and one that fails as unknown whatever the host's DNS does.
 
 `EndpointBackend` has one endpoint interface, and its service operations are
 directional: a server registers and accepts, and a client opens. YTP's engine

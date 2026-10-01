@@ -511,6 +511,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **The cover tools' tests run on the pinned Node.** They model the Node 24.18
+  cover server of the evidence profile, and ran on whatever Node was installed.
+  `scripts/ensure-node.sh` downloads that release and checks its SHA-256, test
+  builds and CI provision it, and on any other Node the tests fail with the
+  reason. The resolver test takes its missing name from its test helper, since
+  a host without DNS answers a missing name with a temporary failure.
 - **BaseFWX pin `5b9cb44`.** The module libraries build on BaseFWX with the
   documentation tooling's sequence type and a B512 stream encoder that no
   longer trips a false GCC 13 `-Wstringop-overflow` warning in CI's Release

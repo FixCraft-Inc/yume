@@ -176,6 +176,10 @@ jobs:
           yume_openssl_ensure
           source scripts/ensure-nghttp2.sh
           yume_nghttp2_ensure
+          # The cover tools' tests run on the Node their profile pins.
+          source scripts/ensure-node.sh
+          yume_node_ensure
+          echo "YUME_NODE_EXECUTABLE=${YUME_NODE_EXECUTABLE}" >> "$GITHUB_ENV"
 
       # The archive is no longer committed (it was purged from history on
       # 2026-07-24 because compiled objects embed builder paths). Fetch it from
@@ -274,6 +278,10 @@ jobs:
           yume_openssl_ensure
           source scripts/ensure-nghttp2.sh
           yume_nghttp2_ensure
+          # The cover tools' tests run on the Node their profile pins.
+          source scripts/ensure-node.sh
+          yume_node_ensure
+          echo "YUME_NODE_EXECUTABLE=${YUME_NODE_EXECUTABLE}" >> "$GITHUB_ENV"
 
       - name: Fetch and verify prebuilt vendor libs
         run: |
@@ -373,6 +381,10 @@ jobs:
           yume_openssl_ensure
           source scripts/ensure-nghttp2.sh
           yume_nghttp2_ensure
+          # The cover tools' tests run on the Node their profile pins.
+          source scripts/ensure-node.sh
+          yume_node_ensure
+          echo "YUME_NODE_EXECUTABLE=${YUME_NODE_EXECUTABLE}" >> "$GITHUB_ENV"
 
       - name: Fetch and verify prebuilt vendor libs
         run: |

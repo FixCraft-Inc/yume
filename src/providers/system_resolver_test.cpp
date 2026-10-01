@@ -58,6 +58,7 @@ int failures = 0;
     } while (false)
 
 constexpr std::string_view kStallHost = "resolver-stall.invalid";
+constexpr std::string_view kMissingHost = "resolver-missing.invalid";
 
 std::shared_ptr<AsioExecutionContext> make_context() {
     auto created = AsioExecutionContext::create(yume::engine::ExecutorAffinity(0x52534c56U));
@@ -225,7 +226,10 @@ void test_options() {
     CHECK(refused == StatusCode::FailedPrecondition && !invoked);
 }
 
-void test_lookup(const std::string& program) {
+// localhost resolves from the host's files. A missing name comes from the
+// test helper, since what the system answers for one depends on its DNS: a
+// namespace without a resolver reports a temporary failure instead.
+void test_lookup(const std::string& program, bool test_names) {
     const auto context = make_context();
     const auto resolver = make_resolver(context, program);
     std::optional<Result<Addresses>> localhost;
@@ -233,8 +237,12 @@ void test_lookup(const std::string& program) {
     boost::asio::post(context->executor(), [&] {
         CHECK(resolver->resolve("localhost", 8U, [&](Result<Addresses> result) {
             localhost = std::move(result);
-            // RFC 6761 reserves .invalid, so the system never resolves it.
-            CHECK(resolver->resolve("definitely-missing.invalid", 8U,
+            if (!test_names) {
+                resolver->close();
+                context->finish();
+                return;
+            }
+            CHECK(resolver->resolve(kMissingHost, 8U,
                 [&](Result<Addresses> second) {
                     missing = std::move(second);
                     resolver->close();
@@ -244,7 +252,8 @@ void test_lookup(const std::string& program) {
     });
     context->run();
     CHECK(localhost && localhost->ok() && is_loopback(localhost->value()));
-    CHECK(missing && missing->status().code() == StatusCode::NotFound);
+    CHECK(!test_names ||
+          (missing && missing->status().code() == StatusCode::NotFound));
     // A closed resolver refuses later lookups synchronously.
     std::optional<StatusCode> after_close;
     boost::asio::post(context->executor(), [&] {
@@ -363,8 +372,9 @@ int main(int argc, char** argv) {
     }
     test_protocol_codec();
     test_options();
-    test_lookup(YUME_TEST_RESOLVER_PROGRAM);
-    test_lookup("/proc/self/exe");
+    test_lookup(YUME_TEST_RESOLVER_PROGRAM, false);
+    test_lookup("/proc/self/exe", false);
+    test_lookup(YUME_TEST_STALL_RESOLVER_PROGRAM, true);
     test_stalled_lookup();
     test_saturation_replacement();
     test_non_helper_program();

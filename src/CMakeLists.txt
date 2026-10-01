@@ -1218,6 +1218,9 @@ if(YUME_BUILD_TESTING)
     add_test(NAME yume_doc_paths_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_doc_paths.py")
+    add_test(NAME yume_ensure_node_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_ensure_node.py")
     # The generated documents, CLI help and figures, and the tooling's own
     # tests. CI's website job runs them too; registering them here lets a
     # lane run catch a documentation break before the website mirror does.
@@ -1430,7 +1433,7 @@ if(YUME_BUILD_TESTING)
         add_executable(yume_resolver_stall_helper
             providers/system_resolver_helper.cpp providers/system_resolver_main.cpp)
         target_include_directories(yume_resolver_stall_helper PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-        target_compile_definitions(yume_resolver_stall_helper PRIVATE YUME_SYSTEM_RESOLVER_TEST_STALL=1)
+        target_compile_definitions(yume_resolver_stall_helper PRIVATE YUME_SYSTEM_RESOLVER_TEST_NAMES=1)
         target_link_libraries(yume_resolver_stall_helper PRIVATE yume_process_privileges Threads::Threads)
         yume_apply_perf_opts(yume_resolver_stall_helper)
         add_custom_command(TARGET yume_resolver_stall_helper POST_BUILD
@@ -2181,17 +2184,54 @@ if(YUME_BUILD_TESTING)
         add_test(NAME ${_yume_tool_test_name}
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/${_yume_tool_test_script}")
     endforeach()
-    find_program(YUME_NODE_EXECUTABLE NAMES node nodejs)
-    if(YUME_NODE_EXECUTABLE)
-        add_test(NAME yume_cover_node_workload_test
-            COMMAND "${YUME_NODE_EXECUTABLE}"
-                "${CMAKE_SOURCE_DIR}/tools/cover-node/workload_test.mjs")
-        add_test(NAME yume_chrome_navigation_test
-            COMMAND "${YUME_NODE_EXECUTABLE}" --test
-                "${CMAKE_SOURCE_DIR}/tools/cover-node/test_capture_chrome_navigation.mjs")
-        add_test(NAME yume_cover_server_protocols_test
-            COMMAND "${YUME_NODE_EXECUTABLE}" --test
-                "${CMAKE_SOURCE_DIR}/tools/cover-node/test_cover_server_protocols.mjs")
+    # The cover tools' tests run on the Node their evidence profile pins,
+    # which tools/cover-node/package.json names and scripts/ensure-node.sh
+    # provides. Another Node would test another HTTP/2 stack, so without the
+    # pinned one each test fails with the reason instead of passing.
+    # -DYUME_COVER_NODE_TESTS=OFF leaves them out on purpose.
+    option(YUME_COVER_NODE_TESTS "Run the cover tools' tests on the pinned Node" ON)
+    if(YUME_COVER_NODE_TESTS)
+        file(READ "${CMAKE_SOURCE_DIR}/tools/cover-node/package.json" _yume_cover_package)
+        string(JSON _yume_cover_node GET "${_yume_cover_package}" engines node)
+        if(NOT _yume_cover_node MATCHES "^([0-9]+)\\.([0-9]+)\\.x$")
+            message(FATAL_ERROR "tools/cover-node/package.json must pin engines.node as MAJOR.MINOR.x")
+        endif()
+        set(_yume_cover_node_prefix "v${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.")
+        if(NOT YUME_NODE_EXECUTABLE AND DEFINED ENV{YUME_NODE_EXECUTABLE})
+            set(YUME_NODE_EXECUTABLE "$ENV{YUME_NODE_EXECUTABLE}" CACHE FILEPATH
+                "The Node the cover tools' tests run on")
+        endif()
+        find_program(YUME_NODE_EXECUTABLE NAMES node nodejs)
+        set(_yume_node_version "none")
+        if(YUME_NODE_EXECUTABLE)
+            execute_process(COMMAND "${YUME_NODE_EXECUTABLE}" --version
+                OUTPUT_VARIABLE _yume_node_version
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        endif()
+        string(FIND "${_yume_node_version}" "${_yume_cover_node_prefix}" _yume_node_match)
+        foreach(_yume_cover_test IN ITEMS
+                "yume_cover_node_workload_test|workload_test.mjs"
+                "yume_chrome_navigation_test|--test|test_capture_chrome_navigation.mjs"
+                "yume_cover_server_protocols_test|--test|test_cover_server_protocols.mjs")
+            string(REPLACE "|" ";" _yume_cover_test "${_yume_cover_test}")
+            list(POP_FRONT _yume_cover_test _yume_cover_test_name)
+            list(POP_BACK _yume_cover_test _yume_cover_test_script)
+            if(_yume_node_match EQUAL 0)
+                add_test(NAME ${_yume_cover_test_name}
+                    COMMAND "${YUME_NODE_EXECUTABLE}" ${_yume_cover_test}
+                        "${CMAKE_SOURCE_DIR}/tools/cover-node/${_yume_cover_test_script}")
+            else()
+                add_test(NAME ${_yume_cover_test_name}
+                    COMMAND "${CMAKE_COMMAND}"
+                        "-DYUME_MESSAGE=needs Node ${_yume_cover_node} (tools/cover-node/package.json), found ${_yume_node_version}. Source scripts/ensure-node.sh, run yume_node_ensure and reconfigure, or configure with -DYUME_COVER_NODE_TESTS=OFF"
+                        -P "${CMAKE_SOURCE_DIR}/tests/cmake/fail_with_message.cmake")
+            endif()
+        endforeach()
+        if(NOT _yume_node_match EQUAL 0)
+            message(WARNING "The cover tools' tests need Node ${_yume_cover_node}, found "
+                "${_yume_node_version}, so they will fail. Source scripts/ensure-node.sh, "
+                "run yume_node_ensure and reconfigure.")
+        endif()
     endif()
 endif()
 

@@ -474,6 +474,20 @@ main() {
     source "${PWD}/scripts/ensure-nghttp2.sh"
     yume_nghttp2_ensure || { error "libnghttp2 dependency setup failed."; exit 1; }
 
+    # The cover tools' tests run on the Node their evidence profile pins. A
+    # test build gets the pinned, checksum-verified build in the user's cache.
+    if [[ $BUILD_TESTS -eq 1 ]]
+    then
+        # shellcheck disable=SC1091
+        source "${PWD}/scripts/ensure-node.sh"
+        if ! yume_node_ensure
+        then
+            error "Node setup for the cover tools' tests failed."
+            exit 1
+        fi
+        CMAKE_ARGS+=( "-DYUME_NODE_EXECUTABLE=${YUME_NODE_EXECUTABLE}" )
+    fi
+
     build_project
     if [[ $BUILD_DEB -eq 1 ]]; then
         package_deb

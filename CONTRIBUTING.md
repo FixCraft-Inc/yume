@@ -97,7 +97,9 @@ The normal developer build is:
 ```
 
 Tests are off by default; omit `--tests` only when you do not intend to run
-`ctest`.
+`ctest`. A test build also fetches the Node.js release the cover tools pin,
+checked against its SHA-256 by `scripts/ensure-node.sh`, and their tests fail
+with the reason on any other Node.
 
 This prepares YUME's checksum-pinned, default-off patched OpenSSL build.
 The native application does not use BaseFWX. Only the module libraries build

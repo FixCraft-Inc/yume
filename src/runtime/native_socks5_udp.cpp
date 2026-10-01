@@ -365,8 +365,7 @@ struct NativeSocks5UdpAssociation::State final : std::enable_shared_from_this<St
         const FlowPtr keep = flow;
         keep->phase = Phase::Closed;
         ++keep->timer_generation;
-        Error ignored;
-        keep->timer.cancel(ignored);
+        providers::cancel_timer(keep->timer);
         release(*keep);
         const Flow* raw = keep.get();
         flows.remove_if([raw](const FlowPtr& value) { return value.get() == raw; });
@@ -393,7 +392,7 @@ struct NativeSocks5UdpAssociation::State final : std::enable_shared_from_this<St
         for (const auto& flow : current) {
             flow->phase = Phase::Closed;
             ++flow->timer_generation;
-            flow->timer.cancel(ignored);
+            providers::cancel_timer(flow->timer);
             release(*flow);
         }
         pending_budget.close();

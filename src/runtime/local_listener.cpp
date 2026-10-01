@@ -127,7 +127,7 @@ public:
         closing_ = true;
         Error ignored;
         acceptor_.close(ignored);
-        retry_.cancel(ignored);
+        providers::cancel_timer(retry_);
         remove_socket_file();
         accepted_ = {};
         full_ = {};

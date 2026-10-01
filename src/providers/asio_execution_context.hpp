@@ -66,4 +66,15 @@ private:
     std::shared_ptr<State> state_;
 };
 
+// Cancels a timer's pending waits. Boost 1.87 removed the overload that
+// reports through an error_code, and the one that remains may throw. Close
+// and teardown paths must not, so they cancel through this.
+template <typename Timer>
+void cancel_timer(Timer& timer) noexcept {
+    try {
+        timer.cancel();
+    } catch (...) {
+    }
+}
+
 }  // namespace yume::providers

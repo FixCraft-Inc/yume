@@ -9,6 +9,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -218,6 +222,18 @@ Result<Kit> parse_content(std::span<const std::uint8_t> content) {
     const auto checked = check_kit(kit);
     if (!checked.ok()) return malformed();
     return Result<Kit>(std::move(kit));
+}
+
+// Renames from to to unless to exists. Android's C library declares
+// renameat2 only from API level 30, while its kernels have had the system
+// call since before the levels YUME builds for.
+int rename_new(const char* from, const char* to) noexcept {
+#if defined(__ANDROID__) && __ANDROID_API__ < 30
+    return static_cast<int>(::syscall(SYS_renameat2, AT_FDCWD, from, AT_FDCWD,
+                                      to, RENAME_NOREPLACE));
+#else
+    return ::renameat2(AT_FDCWD, from, AT_FDCWD, to, RENAME_NOREPLACE);
+#endif
 }
 
 // Writes all of bytes to a new file relative to a directory descriptor.
@@ -642,8 +658,7 @@ Status write_directory(const Kit& kit, const std::filesystem::path& directory) {
             }
             ok = ok && ::fsync(root.get()) == 0;
         }
-        if (ok && ::renameat2(AT_FDCWD, staging.c_str(), AT_FDCWD,
-                              target.c_str(), RENAME_NOREPLACE) == 0) {
+        if (ok && rename_new(staging.c_str(), target.c_str()) == 0) {
             const Descriptor parent(::open(target.parent_path().c_str(),
                                            O_RDONLY | O_DIRECTORY | O_CLOEXEC));
             if (parent.get() >= 0) static_cast<void>(::fsync(parent.get()));

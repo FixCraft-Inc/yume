@@ -287,8 +287,7 @@ void SessionKeeper::fail(Status status) noexcept {
 void SessionKeeper::close() noexcept {
     if (closing_) return;
     closing_ = true;
-    boost::system::error_code ignored;
-    timer_.cancel(ignored);
+    providers::cancel_timer(timer_);
     session_.reset();
     retire_counted_session();
     on_failure_ = {};

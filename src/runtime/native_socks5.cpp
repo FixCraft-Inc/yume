@@ -397,8 +397,7 @@ private:
     void disarm_deadline() noexcept {
         // cancel() cannot retract a timer handler already queued for delivery.
         ++deadline_generation_;
-        Error ignored;
-        timer_.cancel(ignored);
+        providers::cancel_timer(timer_);
     }
 
     void finish() noexcept {

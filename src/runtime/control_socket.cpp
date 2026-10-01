@@ -312,8 +312,7 @@ private:
         if (done_) return;
         done_ = true;
         const auto self = shared_from_this();
-        Error ignored;
-        timer_.cancel(ignored);
+        providers::cancel_timer(timer_);
         if (channel_) {
             channel_->cancel();
             channel_->close();

@@ -751,8 +751,7 @@ void ClientCircuit::State::extend() {
 
 void ClientCircuit::State::become_ready() noexcept {
     phase = Phase::Ready;
-    boost::system::error_code ignored;
-    build_timer.cancel(ignored);
+    providers::cancel_timer(build_timer);
     auto done = std::move(built);
     built = nullptr;
     if (done) {
@@ -897,8 +896,7 @@ void ClientCircuit::State::close(Status reason) noexcept {
     phase = Phase::Closed;
     if (!failure) failure = CircuitFailure{0U, c1::CircuitReason::Closing};
     cancel.cancel();
-    boost::system::error_code ignored;
-    build_timer.cancel(ignored);
+    providers::cancel_timer(build_timer);
     entry->close(Status(StatusCode::Cancelled));
     forward_queue.clear();
     exchange.reset();

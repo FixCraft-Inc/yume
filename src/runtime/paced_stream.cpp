@@ -354,9 +354,8 @@ private:
     }
 
     void settle_closed() noexcept {
-        boost::system::error_code ignored;
-        read_timer_.cancel(ignored);
-        write_timer_.cancel(ignored);
+        providers::cancel_timer(read_timer_);
+        providers::cancel_timer(write_timer_);
         if (held_read_) settle_read(Result<ReceivedRecord>(Status(StatusCode::Closed)));
         while (!held_writes_.empty()) {
             auto completion = std::move(held_writes_.front().completion);

@@ -252,8 +252,7 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
     void close() noexcept {
         if (closing) return;
         closing = true;
-        Error ignored;
-        restart_timer.cancel(ignored);
+        providers::cancel_timer(restart_timer);
         if (!child.running()) {
             finish_close();
             return;
@@ -278,8 +277,8 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
         closing = true;
         child.kill_and_reap();
         Error ignored;
-        stop_timer.cancel(ignored);
-        restart_timer.cancel(ignored);
+        providers::cancel_timer(stop_timer);
+        providers::cancel_timer(restart_timer);
         exit_watch.close(ignored);
         listener.reset();
         if (channels) channels->cancel();
@@ -383,8 +382,7 @@ private:
             return;
         }
         done_ = true;
-        Error ignored;
-        timer_.cancel(ignored);
+        providers::cancel_timer(timer_);
         complete(completion_, Status::success());
         auto connection = engine::RouteConnection::byte_stream(std::move(channel_));
         if (!connection.ok()) {
@@ -398,7 +396,7 @@ private:
         if (done_) return;
         done_ = true;
         Error ignored;
-        timer_.cancel(ignored);
+        providers::cancel_timer(timer_);
         socket_.close(ignored);
         cancellation_.cancel();
         if (channel_) {

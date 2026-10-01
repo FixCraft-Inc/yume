@@ -836,8 +836,7 @@ void CircuitPool::close() noexcept {
     auto& state = *state_;
     if (state.closed) return;
     state.closed = true;
-    boost::system::error_code ignored;
-    state.tick.cancel(ignored);
+    providers::cancel_timer(state.tick);
     for (auto& entry : state.entries) entry.circuit->close();
     state.entries.clear();
     state.fail_waiters(Status(StatusCode::Closed));

@@ -31,10 +31,13 @@ constexpr int kDescriptor = protocol::kHelperDescriptor;
 
 std::atomic<std::size_t> active_lookups{0U};
 
-#if defined(YUME_SYSTEM_RESOLVER_TEST_STALL)
-// Test builds only: a lookup of this name blocks forever, standing in for an
-// NSS module or DNS server that never answers. Only killing the helper ends it.
+#if defined(YUME_SYSTEM_RESOLVER_TEST_NAMES)
+// Test builds only. A lookup of the first name blocks forever, standing in for
+// an NSS module or DNS server that never answers, and only killing the helper
+// ends it. The second fails as a name the system does not know, so the
+// not-found path runs whatever the host's DNS does with a missing name.
 constexpr std::string_view kStallHost = "resolver-stall.invalid";
+constexpr std::string_view kMissingHost = "resolver-missing.invalid";
 #endif
 
 void send_message(const std::uint8_t* data, std::size_t size) noexcept {
@@ -74,7 +77,7 @@ protocol::LookupStatus lookup_status(int error) noexcept {
 }
 
 void lookup(std::uint32_t id, std::uint8_t max_addresses, const std::string& host) noexcept {
-#if defined(YUME_SYSTEM_RESOLVER_TEST_STALL)
+#if defined(YUME_SYSTEM_RESOLVER_TEST_NAMES)
     if (host == kStallHost) {
         for (;;) ::pause();
     }
@@ -84,7 +87,13 @@ void lookup(std::uint32_t id, std::uint8_t max_addresses, const std::string& hos
     // One entry per address. The caller chooses the transport protocol.
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* results = nullptr;
+#if defined(YUME_SYSTEM_RESOLVER_TEST_NAMES)
+    const int error = host == kMissingHost
+                          ? EAI_NONAME
+                          : ::getaddrinfo(host.c_str(), nullptr, &hints, &results);
+#else
     const int error = ::getaddrinfo(host.c_str(), nullptr, &hints, &results);
+#endif
     protocol::Response response;
     response.id = id;
     if (error != 0) {

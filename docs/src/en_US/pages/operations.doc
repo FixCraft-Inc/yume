@@ -48,7 +48,7 @@ every step succeeds, and files it adds to the server tree keep the store's
 owner. `--host` must be the name the server certificate was issued for.
 `--max-sessions` and `--weight` are optional, and `init` accepts both, as well
 as `--max-egress-mbps` for the server and `--preset` for the kit's tuning
-(the [native guide](development/ytp1/README.md#tuning-presets) lists the
+(the [configuration reference](CONFIGURATION.md#tuning-presets) lists the
 presets).
 
 To revoke a device, remove it and reload. Its sessions end at once:
@@ -159,7 +159,7 @@ refused and the previous credentials stay in force. The daemon logs the outcome
 either way. TLS certificate and admission key changes still need a restart,
 and a changed admission key is refused. The schema-1 `limits` object bounds each session's frames,
 streams, queued bytes, pending opens, rekey work, control messages and packets;
-the [native guide](development/ytp1/README.md#configuration-authority) owns
+the [configuration reference](CONFIGURATION.md#limits) owns
 those fields.
 
 For hard process ceilings, use systemd rather than in-process settings:

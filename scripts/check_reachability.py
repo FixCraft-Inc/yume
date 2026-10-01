@@ -183,6 +183,20 @@ def _arguments(entry: dict) -> list[str]:
     return entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
 
 
+def object_path(entry: dict) -> Path:
+    """The object the compiler writes: its -o, relative to the directory it
+    runs in. CMake's "output" is relative to that directory under Ninja but
+    to the top of the build tree under Makefiles, where each source directory
+    has its own."""
+    arguments = _arguments(entry)
+    for index, argument in enumerate(arguments):
+        if argument == "-o" and index + 1 < len(arguments):
+            return Path(entry["directory"], arguments[index + 1])
+        if argument.startswith("-o") and len(argument) > 2:
+            return Path(entry["directory"], argument[2:])
+    raise ReachabilityError(f"{entry['relative']}: the compile command names no -o output")
+
+
 def _optimization(arguments: list[str]) -> str:
     level = "-O0"
     for argument in arguments:
@@ -333,7 +347,7 @@ def check(build: Path, config: Config, jobs: int) -> Result:
     for entry in entries:
         if is_test_source(entry["relative"]):
             continue
-        output = Path(entry["directory"], entry["output"])
+        output = object_path(entry)
         if not output.is_file():
             raise ReachabilityError(f"{output} is missing, so build the tree first")
         objects.setdefault(entry["relative"], set()).add(output)

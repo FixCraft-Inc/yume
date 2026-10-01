@@ -20,6 +20,20 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Configuration reference.** [docs/CONFIGURATION.md](../CONFIGURATION.md)
+  lists every schema-1 key with its role, bounds and meaning, and the tuning
+  presets, which moved there from the development guide.
+  `tests/test_config_reference.py` requires every key the parser accepts to be
+  documented there and used by one of four complete documents under
+  `tests/fixtures/config`, and `yume_config_v1_closure` puts an unknown key into
+  every object of those documents and requires a failure at that object.
+  `tests/test_doc_paths.py` requires every repository path the documents name
+  to exist.
+- **Contract pages first.** CONTRIBUTING requires a recorded owner requirement
+  and the interface's contract page before a feature's code.
+  `tests/test_contract_pages.py` rejects a control request, control error code
+  or ABI export that its page does not state, and the ABI page now names every
+  exported function.
 - **Guardrails that fail the build or CI.** `cmake/YumeLayering.cmake` is an
   allowlist: every directory under `src/` declares the layers its production
   sources may include, a new directory fails until it is declared, and every
@@ -502,6 +516,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **The cover tools' tests run on the pinned Node.** They model the Node 24.18
+  cover server of the evidence profile, and ran on whatever Node was installed.
+  `scripts/ensure-node.sh` downloads that release and checks its SHA-256, test
+  builds and CI provision it, and on any other Node the tests fail with the
+  reason. The resolver test takes its missing name from its test helper, since
+  a host without DNS answers a missing name with a temporary failure.
 - **BaseFWX pin `5b9cb44`.** The module libraries build on BaseFWX with the
   documentation tooling's sequence type and a B512 stream encoder that no
   longer trips a false GCC 13 `-Wstringop-overflow` warning in CI's Release
@@ -995,6 +1015,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Removed
 
+- **The transport-v2 benchmark sandbox.** `yume_bench_isolation.py`,
+  `yume_bench_provenance.py` and `yume_bench_exec_guard.py` had no user after the
+  v2 benchmark went. The capture scripts' tests remain.
 - **Code no shipped program reached.** The reachability check found
   `Tunnel::status_age_ms` in `yume-gui`, `ClientCircuit::hops`,
   `H2Carrier::capture_observer_active`, `H2Carrier::RejectCarrier` (the front
@@ -1035,6 +1058,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 - **Unused dependency-manifest parsing in CMake.** The BaseFWX repository and
   revision fields were parsed and never used; `ezbuild.sh` remains the
   enforcement point for the pin.
+
+### Fixed
+
+- **yume-gui took a starting client for an ended one.** Right after starting
+  `yume`, the window read an empty command line for a process inside execve,
+  as a wrapper that runs `yume` is for a moment, reported "yume stopped while
+  starting" and failed the connect. A process with an empty command line now
+  counts as running unless it has ended or is a kernel thread.
 
 ## [Unreleased 0.2.0-dev6]
 

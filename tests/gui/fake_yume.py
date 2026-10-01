@@ -22,6 +22,8 @@ A kit's fake.json, beside its yume.json, shapes the run:
   last_failure     the status's last failure, {"code": ..., "message": ...}
   linger_ms        how long the run lives on after its socket is gone (500), as
                    yume does while it closes its sessions
+  blank_cmdline_ms how long the run shows an empty command line before its
+                   socket opens, as a wrapper that execs yume does for a moment
 
 A sealed kit for the fake is JSON {"code": CODE, "files": {NAME: TEXT}}.
 """
@@ -211,11 +213,32 @@ class Client:
         return {"control": 1, "error": "unknown request", "code": "unknown_request"}
 
 
+def blank_command_line(seconds: float) -> None:
+    """Show an empty /proc/PID/cmdline for a while, then restore it.
+
+    A process inside execve has one between the kernel replacing its memory
+    and laying out the new arguments. The run's own argument strings, which
+    the interpreter copied at startup, are zeroed through /proc/self/mem.
+    """
+    fields = Path("/proc/self/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()
+    start, end = int(fields[45]), int(fields[46])
+    with open("/proc/self/mem", "r+b", buffering=0) as memory:
+        memory.seek(start)
+        saved = memory.read(end - start)
+        memory.seek(start)
+        memory.write(bytes(end - start))
+        time.sleep(seconds)
+        memory.seek(start)
+        memory.write(saved)
+
+
 def serve(config: Path, socket_path: Path) -> int:
     client = Client(config, socket_path)
     if client.fake.get("start_error"):
         say(client.fake["start_error"])
         return 1
+    if client.fake.get("blank_cmdline_ms"):
+        blank_command_line(client.fake["blank_cmdline_ms"] / 1000)
     if socket_path.exists():
         socket_path.unlink()
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

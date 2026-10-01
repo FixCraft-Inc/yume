@@ -346,6 +346,22 @@ class Tracked(unittest.TestCase):
                 self.assertEqual({flag for entry in ordered for flag in entry.flags},
                                  expected[layout.binary])
 
+    def test_every_option_a_parser_names_is_documented(self) -> None:
+        # yume and yumed share native_cli.cpp's parser, so its option
+        # literals are the union of both layouts. A new option in a parser
+        # fails here until its help and manual state it.
+        documented = {binary: set() for binary in ("yume", "yumed", "yume-gui")}
+        for layout in self.layouts:
+            ordered, _ = yume_cli.resolve(layout)
+            documented[layout.binary] = {flag for entry in ordered for flag in entry.flags}
+        literal = re.compile(r'"(--?[a-z][a-z-]*)"')
+        parsers = {"src/runtime/native_cli.cpp": documented["yume"] | documented["yumed"],
+                   "src/gui/main.cpp": documented["yume-gui"]}
+        for parser, expected in parsers.items():
+            with self.subTest(parser=parser):
+                source = (yume_cli.REPO_ROOT / parser).read_text(encoding="utf-8")
+                self.assertEqual(set(literal.findall(source)), expected)
+
     def test_every_generated_header_is_current(self) -> None:
         # The same comparison `scripts/yume_cli.py check` runs in CI.
         for layout in self.layouts:

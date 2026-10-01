@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <iterator>
@@ -1683,6 +1684,42 @@ void TestTextBoundsAndSyntax() {
     TestFailure("malformed JSON did not fail");
 }
 
+// The JSON pointer of every object in a document, the root included.
+void CollectObjects(const Json& value, const std::string& pointer,
+                    std::vector<std::string>& pointers) {
+    if (value.is_object()) {
+        pointers.push_back(pointer);
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            CollectObjects(it.value(), pointer + "/" + it.key(), pointers);
+        }
+    } else if (value.is_array()) {
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            CollectObjects(value.at(index), pointer + "/" + std::to_string(index),
+                           pointers);
+        }
+    }
+}
+
+// Every object of a complete document is closed: a key the parser does not
+// know fails at that object, whichever object it is. The documents together
+// use every key the parser accepts, which tests/test_config_reference.py
+// checks, so a new object that forgets its closure check fails here.
+void CheckEveryObjectIsClosed(const std::string& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) TestFailure("cannot read " + path);
+    const std::string text((std::istreambuf_iterator<char>(stream)), {});
+    const Json document = Json::parse(text);
+    (void)ParseJson(text);
+    std::vector<std::string> pointers;
+    CollectObjects(document, "", pointers);
+    for (const auto& pointer : pointers) {
+        Json probe = document;
+        probe[Json::json_pointer(pointer)]["zz_unknown_probe"] = true;
+        ExpectError(probe, pointer + "/zz_unknown_probe", "unknown key");
+    }
+    std::cout << path << ": " << pointers.size() << " objects are closed\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1711,10 +1748,15 @@ int main(int argc, char** argv) {
         TestEgressRate();
         test_managed_tun_network();
         TestTextBoundsAndSyntax();
-        if (argc == 2) {
+        if (argc >= 2 && std::string_view(argv[1]) == "--closure") {
+            if (argc == 2) TestFailure("--closure needs at least one document");
+            for (int index = 2; index < argc; ++index) {
+                CheckEveryObjectIsClosed(argv[index]);
+            }
+        } else if (argc == 2) {
             const std::string mode(argv[1]);
             if (mode != "--stdin-client" && mode != "--stdin-server") {
-                TestFailure("usage: config-v1-test [--stdin-client|--stdin-server]");
+                TestFailure("usage: config-v1-test [--stdin-client|--stdin-server|--closure FILE...]");
             }
             const std::string text(std::istreambuf_iterator<char>(std::cin), {});
             const Config config = ParseJson(text);
@@ -1723,7 +1765,7 @@ int main(int argc, char** argv) {
             Check(config.role() == expected,
                   "checked-in example has the wrong role");
         } else if (argc != 1) {
-            TestFailure("usage: config-v1-test [--stdin-client|--stdin-server]");
+            TestFailure("usage: config-v1-test [--stdin-client|--stdin-server|--closure FILE...]");
         }
     } catch (const std::exception& error) {
         std::cerr << "config v1 test failure: " << error.what() << '\n';

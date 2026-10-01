@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "role": "client",
+  "endpoint": {
+    "host": "origin.example.com",
+    "port": 443,
+    "connect_address": "203.0.113.10",
+    "socks5_proxy": {
+      "address": "127.0.0.1",
+      "port": 9050,
+      "credentials": {
+        "file": "credentials/socks5-proxy.txt"
+      }
+    }
+  },
+  "suite": {
+    "id": "ytp1-tls13-h2",
+    "secure_channel": "tls13-native",
+    "front_door": "h2-web",
+    "carrier": "h2-duplex",
+    "session": "ytp1-hybrid"
+  },
+  "credentials": {
+    "composite_key": {
+      "file": "credentials/client-composite.pem"
+    },
+    "access_psk": {
+      "file": "credentials/client-access.psk"
+    },
+    "admission_key": {
+      "file": "credentials/admission.key"
+    },
+    "server_trust": {
+      "file": "credentials/server-trust.pem"
+    },
+    "server_identity": {
+      "file": "credentials/server-composite.pub.pem"
+    },
+    "server_mlkem": {
+      "file": "credentials/server-mlkem.pub"
+    }
+  },
+  "cover": {
+    "profile": "chrome151-node24-v1"
+  },
+  "services": [
+    {
+      "name": "tcp",
+      "kind": "stream",
+      "max_concurrent_streams": 256
+    },
+    {
+      "name": "udp",
+      "kind": "packet",
+      "max_concurrent_streams": 256
+    },
+    {
+      "name": "packet",
+      "kind": "packet",
+      "max_concurrent_streams": 16
+    }
+  ],
+  "adapters": [
+    {
+      "kind": "socks5",
+      "service": "tcp",
+      "listen_address": "127.0.0.1",
+      "listen_port": 1080,
+      "udp_service": "udp"
+    },
+    {
+      "kind": "forward",
+      "service": "tcp",
+      "listen_address": "::1",
+      "listen_port": 2222,
+      "destination": {
+        "host": "internal.example.com",
+        "port": 22
+      }
+    },
+    {
+      "kind": "forward",
+      "service": "tcp",
+      "listen_path": "/run/user/1000/yume/web.sock"
+    }
+  ],
+  "limits": {
+    "max_frame_bytes": 262144,
+    "max_streams": 256,
+    "max_queued_bytes": 4194304,
+    "max_pending_opens": 64,
+    "max_rekey_jobs": 4,
+    "max_control_messages": 128,
+    "max_packet_bytes": 65535,
+    "max_packet_batch": 64,
+    "max_epoch_bytes": 4194304,
+    "credit_returns_per_window": 4,
+    "idle_epoch_rotation": true
+  },
+  "control": {
+    "socket": "/run/user/1000/yume/control.sock"
+  },
+  "circuits": {
+    "hops": 3,
+    "min_hops": 2,
+    "plain_http": "allow",
+    "operator_key": {
+      "file": "cluster/operator.pub"
+    },
+    "routes": {
+      "file": "cluster/routes.json"
+    },
+    "routes_signature": {
+      "file": "cluster/routes.sig"
+    },
+    "state": {
+      "file": "cluster/client-state.json"
+    }
+  }
+}

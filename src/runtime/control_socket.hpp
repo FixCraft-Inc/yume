@@ -150,8 +150,4 @@ engine::Result<std::string> query_control_accept_route(
     const std::filesystem::path& path, std::string_view id,
     std::chrono::milliseconds timeout);
 
-// The lines yume --status or yumed --status prints for a status reply, or an
-// error for a reply that is not one.
-engine::Result<std::string> status_reply_text(std::string_view reply);
-
 }  // namespace yume::runtime

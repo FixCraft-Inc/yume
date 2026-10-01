@@ -5,6 +5,7 @@
  */
 
 #include "runtime/control_socket.hpp"
+#include "runtime/control_status_text.hpp"
 
 #include <sys/socket.h>
 #include <sys/stat.h>

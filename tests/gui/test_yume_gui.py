@@ -141,6 +141,16 @@ class Gui(unittest.TestCase):
                          ("stop", True, "stopped", True))
         self.assertFalse(alive(pid), "stop reported before the process ended")
 
+    def test_a_start_inside_execve_is_not_taken_for_an_end(self) -> None:
+        # A wrapper that execs yume shows an empty command line for a moment,
+        # which the fake stretches over several status polls.
+        self.kit("work", {"blank_cmdline_ms": 1500, "connect_after_ms": 100})
+        result = self.gui("--kit", "work", "--headless", "connect")
+        self.assertEqual(result.returncode, PASSED, result.stdout + result.stderr)
+        [leg] = self.legs(result)
+        self.assertEqual((leg["leg"], leg["ok"], leg["state"]), ("connect", True, "connected"))
+        self.assertGreater(leg["elapsed_ms"], 1500)
+
     def test_cycle_reports_four_passing_legs(self) -> None:
         self.kit("work")
         result = self.gui("--kit", "work", "--headless", "cycle")

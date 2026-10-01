@@ -1,0 +1,278 @@
+#!yume-doc 1
+name:     configuration
+kind:     page
+title:    Configuration reference
+summary:  Every key of the schema-1 configuration that yume and yumed read, with its role, bounds and meaning.
+markdown: docs/CONFIGURATION.md
+web:      yes
+catalog-title: Configuration
+catalog-group: Reference and development
+catalog-home: Operating
+catalog-order: 72
+---
+`yume` and `yumed` each read one JSON document in schema 1. `yume-setup`
+writes both, and `--validate` checks one without starting anything. This
+page lists every key. The parser, `src/config/v1/config.cpp`, is the
+authority, and `tests/test_config_reference.py` fails when a key it accepts
+is missing here.
+
+Every object is closed: an unknown or misspelled key fails with its JSON
+pointer, as do a wrong type, a value out of range and an unsupported value.
+The document is at most 1 MiB and 16 levels deep. Network and security policy
+come only from this file. No command-line option overrides them.
+
+## File references
+
+Keys that name a file take an object with one key, `file`, such as
+`{"file": "credentials/admission.key"}`. A relative path resolves against the
+configuration file's directory. The path is at most 4096 bytes and may not be
+empty, contain control characters or surrounding space, start with `~`, be a
+URI or contain `..`. Text that looks like key material, a PEM block or 64
+hexadecimal characters, is refused as an inline secret. When the program
+loads a secret, the file must be a regular file owned by its user with no
+group or other permission bits.
+
+## Top level
+
+@table
+| Key | Roles | Required | Meaning |
+| --- | --- | --- | --- |
+| `schema` | both | yes | `1` |
+| `role` | both | yes | `client` or `server` |
+| `endpoint` | both | yes | Where the client connects, or where the server listens |
+| `suite` | both | yes | The one YTP/1 composition, spelled out |
+| `credentials` | both | yes | File references to keys and trust stores |
+| `cover` | both | yes | The browser profile, and a server's cover site |
+| `services` | both | yes | The named services a session may open |
+| `adapters` | both | yes | What connects each service to the host, up to 16 |
+| `limits` | both | yes | Resource bounds of each session |
+| `control` | both | no | The owner-only control socket |
+| `cluster` | server | no | Membership of an operator's cluster |
+| `circuits` | client | no | Routing through a cluster's circuits |
+@end
+
+## endpoint
+
+A client names its server:
+
+@table
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `host` | yes | The server's DNS name or IP literal, at most 253 bytes. TLS and admission authenticate this name |
+| `port` | yes | 1 to 65535 |
+| `connect_address` | no | An IP literal dialled instead of resolving `host`. Managed TUN default routing needs it, or a numeric `host`, to exclude the transport |
+| `socks5_proxy` | no | A SOCKS5 proxy to reach the server through: `address` (an IP literal), `port`, and optional `credentials`, a protected file of a username line and a password line of 1 to 255 bytes each. The proxy resolves `host` unless `connect_address` is set |
+@end
+
+A server lists where it listens: `listen_addresses`, 1 to 16 distinct IP
+literals, and `port`.
+
+## suite
+
+YTP/1 has one composition, so every value is fixed: `id` is
+`ytp1-tls13-h2`, `secure_channel` is `tls13-native`, `front_door` is
+`h2-web`, `carrier` is `h2-duplex` and `session` is `ytp1-hybrid`. Another
+value fails rather than selecting a different provider.
+
+## credentials
+
+A client names six files:
+
+@table
+| Key | Holds |
+| --- | --- |
+| `composite_key` | The client's composite Ed25519 and ML-DSA-87 private key |
+| `access_psk` | The client's 32-byte access PSK, which must differ from the admission key |
+| `admission_key` | The server's 32-byte admission key |
+| `server_trust` | The TLS trust the client verifies the server's certificate with |
+| `server_identity` | The server's composite public identity |
+| `server_mlkem` | The server's ML-KEM-1024 public key |
+@end
+
+A server names seven:
+
+@table
+| Key | Holds |
+| --- | --- |
+| `composite_key` | The server's composite private key |
+| `authorized_keys` | The client identities allowed traffic, each with its access PSK, granted services and optional `max_sessions` and `weight` |
+| `admin_keys` | The identities allowed administration, a different file from `authorized_keys`, so one edit cannot give a traffic identity the second factor |
+| `tls_certificate`, `tls_key` | The TLS certificate chain and its private key |
+| `admission_key` | The 32-byte admission key |
+| `mlkem_key` | The server's ML-KEM-1024 private key |
+@end
+
+[Operations](OPERATIONS.md) describes the identity stores.
+
+## cover
+
+`profile` names the captured browser profile, which must be the one this
+build qualifies, `chrome151-node24-v1`. A client has nothing else here. A
+server adds exactly one of:
+
+- `root`, a file reference to the directory of the static cover site. It
+  must hold an index and a not-found page, and `yumed` loads it at start.
+- `reverse_proxy`, with `url` `http://127.0.0.1:PORT` or
+  `http://[::1]:PORT`. The parser accepts it, and `yumed` refuses to start
+  with it, because the reverse-proxy cover is not implemented yet.
+
+## services
+
+1 to 64 services, unique by name and kind:
+
+@table
+| Key | Meaning |
+| --- | --- |
+| `name` | 1 to 128 bytes of dot-separated segments of lowercase ASCII letters and digits, with `-` and `_` allowed inside a segment. Names whose first segment is `yume` belong to the daemon and are refused |
+| `kind` | `stream` or `packet` |
+| `max_concurrent_streams` | 1 to 65535 open streams of this service per session |
+@end
+
+## adapters
+
+Each adapter has a `kind` and the `service` it serves, which must be declared
+with the kind the adapter needs. At most one `direct_tcp` or `module` adapter
+handles a stream service.
+
+@table
+| Kind | Role | Keys |
+| --- | --- | --- |
+| `socks5` | client | `listen_address` (`127.0.0.1` or `::1`), `listen_port`, and optional `udp_service`, the packet service UDP ASSOCIATE opens. Without it UDP ASSOCIATE is refused |
+| `forward` | client | Either `listen_address` (`127.0.0.1` or `::1`) with `listen_port`, or `listen_path`, an absolute normalized socket path of at most 107 bytes. Optional `destination` with `host` and `port`. SOCKS5 and forward listeners may not share an address and port |
+| `packet` | both | `interface_name` (at most 15 bytes), `mtu` (576 to 65535, at most `limits.max_packet_bytes`) and `network`: `addresses`, `routes`, `local_networks`, `peer_networks` and `dns` with `servers` and `domains`, described in [managed TUN](development/ytp1/README.md#managed-linux-tun-networking) |
+| `module` | server | `program`, an absolute normalized path, and optional `arguments`, at most 32 strings of up to 1024 bytes. [Modules](MODULES.md) describes the protocol |
+| `direct_tcp`, `direct_udp` | server | `destinations`, below. `direct_tcp` serves a stream service and `direct_udp` a packet service |
+@end
+
+`destinations` says where a direct adapter may connect:
+
+@table
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `public` | yes | `true` permits globally reachable unicast addresses |
+| `networks` | yes | Up to 64 canonical prefixes, such as `10.0.0.0/8`. At least one of `public` and `networks` must permit something |
+| `lists` | no | Up to 16 egress lists, each `{"action": "deny" or "allow", "format": "json" or "vpdb", "file": path}`, which only narrow what `public` and `networks` permit |
+| `country_database` | no | A MaxMind country database file, needed by a list that names countries |
+@end
+
+Public space excludes private, shared, loopback, link-local, documentation,
+benchmarking, 6to4, Teredo and NAT64 prefixes, and unspecified, multicast and
+reserved addresses are always refused. IPv4-mapped IPv6 is evaluated as IPv4.
+Every address a destination name resolves to is checked before a socket
+opens. In an egress list the most specific entry decides and a deny wins a
+tie. A JSON list holds `ips`, addresses or networks with zero host bits, and
+`countries`, two-letter codes, and a country entry loses to any address
+entry. A `vpdb` file is the binary VPN provider database, format 1. A JSON
+list may hold 16 MiB, the other files 128 MiB, and all lists together
+2,097,152 ranges. List files are read when `yumed` starts or validates.
+
+## limits
+
+@table
+| Key | Range | Meaning |
+| --- | --- | --- |
+| `max_frame_bytes` | 1676 to 1048576 | The largest frame, at most `max_queued_bytes`. The minimum fits a rekey INIT |
+| `max_streams` | 1 to 65535 | Open streams per session |
+| `max_queued_bytes` | 65536 to 67108864 | The session's byte budget. Receive windows grow up to it, so a far path is faster with more. A session holds up to the budget of outbound data and twice the budget, at least 8 MiB, of received records |
+| `max_pending_opens` | 1 to 1024 | OPENs waiting for an answer, at most `max_streams` |
+| `max_rekey_jobs` | 2 to 64 | Rekey operations in flight, two for a crossed rotation |
+| `max_control_messages` | 8 to 4096 | Control records queued for sending |
+| `max_packet_bytes` | 576 to 65535 | The largest packet, at most `max_frame_bytes` |
+| `max_packet_batch` | 1 to 256 | The most packets one C ABI packet read or write call moves |
+| `max_epoch_bytes` | 1 MiB to 64 MiB, a power of two, 1 MiB when absent | The most payload one directional key epoch protects. A session uses the smaller of the two sides' values |
+| `credit_returns_per_window` | 2, 4 or 8, 2 when absent | How often a receive window at its maximum returns credit. More lets a far sender use more of the window, and sends more small records upstream |
+| `idle_epoch_rotation` | `true` or `false`, false when absent | Whether this side rotates a key epoch that has carried records once it is 250 ms old, without waiting for its next send. The first send after a pause then needs no extra round trip, but each burst ends with a rekey exchange of about 1.7 KB each way, which the browser captures do not show |
+| `max_egress_mbps` | 1 to 1000000, server only | The rate stream payload shares between busy identities by their weight |
+@end
+
+## control
+
+`socket` is an absolute normalized path of at most 107 bytes that no forward
+uses. The running program serves its status there to processes of its own
+user, and `--status` reads it. The socket's directory must belong to that
+user and be closed to writes by group and others.
+[Control protocol 1](protocol/CONTROL_1.md) is the contract.
+
+## cluster
+
+A server in an operator's [cluster](protocol/CLUSTER_1.md) names the files of
+its membership: `operator_key`, `list`, `signature`, `routes`,
+`routes_signature`, `peers` and `state`. The daemon writes `state` itself,
+so its directory must be writable. An optional `exit` with `service` names
+the `direct_tcp` adapter a circuit exit leaves through.
+
+## circuits
+
+A client that routes through a cluster's [circuits](protocol/CIRCUIT_1.md):
+
+@table
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `hops` | yes | 2 or 3 servers per circuit |
+| `min_hops` | no | The shortest route used without asking, 1 to `hops`, `hops` when absent |
+| `plain_http` | no | `refuse`, the default, ends plain HTTP before it leaves the client. `allow` lets it through |
+| `operator_key`, `routes`, `routes_signature`, `state` | yes | File references to the operator's key, the routes view and its signature, and the client's state |
+@end
+
+With circuits, every SOCKS5 CONNECT and forward to a destination leaves
+through a circuit, UDP ASSOCIATE is refused and a packet adapter is not
+allowed. `yume-setup add-client --circuits` writes this section.
+
+## Tuning presets
+
+`yume-setup init --preset NAME` writes one of four settings for
+`max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window` and
+`idle_epoch_rotation` into both configurations, and `add-client` gives a new
+client the server's settings. `yume-doctor` names the preset a configuration
+matches, or reports `custom`. `config/tuning_presets.json` holds the same
+table for other tools.
+
+@table
+| Preset | Budget | Epoch | Credit returns | Idle rotation | Speed | Security | Stealth |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `stealth`, the default | 4 MiB | 1 MiB | 2 | off | 1 | 4 | 4 |
+| `balanced` | 16 MiB | 4 MiB | 2 | off | 2 | 3 | 3 |
+| `fast` | 32 MiB | 16 MiB | 4 | on | 3 | 2 | 2 |
+| `max` | 64 MiB | 64 MiB | 8 | on | 4 | 1 | 1 |
+@end
+
+Each level, 1 to 4, stands for a measured or stated effect. Speed ranks
+far-path throughput in emulator runs. Security follows how much data one key
+epoch protects: 1, 4, 16 or 64 MiB, and never more than 500 ms of sending.
+Stealth is 4 for the settings the browser captures describe. Lower levels use
+a larger HTTP/2 receive window or send more small credit records upstream,
+changes that have no capture or classifier evidence yet. `fast` and `max`
+also rotate idle keys, whose rekey exchange after each burst the captures
+show a browser session does not send. Without it a request after more than
+half a second of quiet waits one round trip for the new key. Moving along the
+table trades one against the others, so a later interface can offer three
+coupled sliders over these four points.
+
+One emulator run on one host measured these rates for a single download, in
+Mbit/s at 40, 100 and 200 ms round trips without loss, each preset with its
+own idle rotation setting:
+
+@table
+| Preset | Default host TCP buffers | 64 MiB host TCP buffers |
+| --- | --- | --- |
+| `stealth` | 176, 78, 39 | 180, 78, 40 |
+| `balanced` | 423, 176, 94 | 653, 284, 155 |
+| `fast` | 417, 179, 93 | 2384, 1095, 579 |
+| `max` | 415, 177, 92 | 3038, 2499, 1333 |
+@end
+
+An earlier run with idle rotation on in every preset measured rates within
+10 % of these, and a small request took the same time. With Linux's
+default 6 MiB ceilings, one TCP connection holds about 2 MiB per round trip
+whether it is tunnelled or not, and the untunnelled download moved 434 to
+437, 186 to 189 and 98 Mbit/s. `balanced` already reaches about 95 % of
+that, so `fast` and `max` are faster only on a host with raised ceilings. The
+emulator handles packets in software, which caps its rates below a real
+network card, and none of these rates is a claim about a real path.
+
+Some limits hold for every preset. Keys always rotate, a session uses the
+smaller epoch that either side allows, and a server can therefore hold its
+clients to a stricter setting than theirs. A larger budget needs memory, and
+far-path speed above a few MiB per round trip also needs the host's TCP
+buffer ceilings raised, for the tunnel as for any other single TCP
+connection.

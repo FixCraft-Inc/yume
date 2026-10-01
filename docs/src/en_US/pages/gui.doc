@@ -28,7 +28,10 @@ program to validate, start and import kits.
   without `--validate` as a detached process in its own session. Closing,
   killing or crashing the window leaves the tunnel running. What `yume`
   prints goes to `$XDG_RUNTIME_DIR/yume/KIT.log`, replaced at each start, so
-  a start that fails before its socket opens still says why.
+  a start that fails before its socket opens still says why. Until the
+  socket opens, the window counts the process as the kit's client while its
+  command line names the kit's socket, or while it runs with an empty command
+  line, as a process does inside execve.
 - **Find.** A kit's socket path follows from its name, so a window opened
   later asks each kit's socket and shows a client that already runs.
 - **Stop.** Disconnect sends the protocol's `stop` request. `yume` answers,

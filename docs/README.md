@@ -9,6 +9,8 @@ speak YTP/1. Transport v2, the protocol before it, has been removed.
 - [Quick start](QUICKSTART.md): build, create a kit, and connect.
 - [Operations](OPERATIONS.md): server deployment, client identities, limits,
   reloads and troubleshooting.
+- [Configuration reference](CONFIGURATION.md): every key of the schema-1
+  configuration and the tuning presets.
 - [Preventing SOCKS bypass](LEAK_TIGHT.md): browser settings and route checks.
 - [Desktop GUI](GUI.md): importing kits and starting, stopping and watching
   clients in a window.

@@ -279,7 +279,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential clang libc++-dev libc++abi-dev cmake ninja-build pkg-config perl iproute2 iputils-ping util-linux \
+            build-essential clang-18 llvm-18 libc++-18-dev libc++abi-18-dev cmake ninja-build pkg-config perl iproute2 iputils-ping util-linux \
             zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev libsystemd-dev \
             libboost-all-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
@@ -299,7 +299,14 @@ jobs:
         run: |
           test "$(pkg-config --modversion openssl)" = "3.5.7"
           openssl list -signature-algorithms | grep -F 'ML-DSA-87'
-          CC=clang CXX=clang++ cmake -S . -B build-libcxx \
+          # GNU ar can load an older runner-image LLVM plugin and silently
+          # omit symbols from Clang 18 bitcode archives. Match all LLVM tools.
+          /usr/bin/clang++-18 --version
+          /usr/bin/llvm-ar-18 --version
+          /usr/bin/llvm-ranlib-18 --version
+          CC=/usr/bin/clang-18 CXX=/usr/bin/clang++-18 cmake -S . -B build-libcxx \
+            -DCMAKE_AR=/usr/bin/llvm-ar-18 \
+            -DCMAKE_RANLIB=/usr/bin/llvm-ranlib-18 \
             "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -fexperimental-library" \
             "-DCMAKE_EXE_LINKER_FLAGS=-stdlib=libc++ -lc++abi" \
             "-DCMAKE_SHARED_LINKER_FLAGS=-stdlib=libc++ -lc++abi" \

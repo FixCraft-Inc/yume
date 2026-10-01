@@ -50,7 +50,9 @@ layers.
 @end
 
 CI’s `libcxx` job builds the native application, optional module libraries
-and shared ABI with Clang and libc++, and runs their tests. A moved-from
+and shared ABI with Clang 18 and libc++, and runs their tests. Its archive
+tools use the same LLVM version so runner-image GNU ar plugins cannot index
+new bitcode with an older reader. A moved-from
 `std::function` may remain callable under that library; callbacks taken from
 stored state must be explicitly emptied before that state can be settled again.
 

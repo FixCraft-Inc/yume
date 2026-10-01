@@ -71,12 +71,20 @@ jobs:
           # The commit format check reads every pushed commit.
           fetch-depth: 0
 
-      # Every committed file, new ones included, and each pushed commit's
-      # message and signature.
+      # Every committed file, new ones included. A push also has each of its
+      # commits checked for the maintainer's message format and a signature,
+      # which a pull request from elsewhere is not held to.
       - name: Check whitespace and commit format
         env:
-          RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || format('{0}..{1}', github.event.before, github.sha) }}
-        run: python3 scripts/check_repository_hygiene.py --commits "$RANGE"
+          EVENT: ${{ github.event_name }}
+          RANGE: ${{ format('{0}..{1}', github.event.before, github.sha) }}
+        run: |
+          if [ "$EVENT" = push ]
+          then
+            python3 scripts/check_repository_hygiene.py --commits "$RANGE"
+          else
+            python3 scripts/check_repository_hygiene.py
+          fi
 
       - name: Validate pinned BaseFWX ref and crypto guards
         run: |

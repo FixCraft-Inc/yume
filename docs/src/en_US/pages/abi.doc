@@ -281,7 +281,8 @@ delivery is bounded; excess simultaneous observations may be dropped. The
 current event surface reports endpoint-state changes only. Secrets, raw
 credentials, PSKs, plaintext, and packet contents are never callback fields.
 
-The socket-protection callback is endpoint-scoped. It runs synchronously after
+The socket-protection callback, which `yume_endpoint_set_socket_protector`
+installs, is endpoint-scoped. It runs synchronously after
 an outbound socket is created and before connect. Its `uintptr_t` argument
 holds the platform-native socket value. Returning zero fails closed, and a
 client start then reports `YUME_STATUS_IO_ERROR` with a
@@ -290,7 +291,9 @@ endpoint destruction finishes. No ABI re-entry is allowed from this callback.
 
 ## Strict configuration
 
-`yume_config_parse_json` accepts a pointer plus explicit byte count; the input
+`yume_config_role` reports a parsed document's role, `YUME_ROLE_CLIENT` or
+`YUME_ROLE_SERVER`. `yume_config_parse_json` accepts a pointer plus explicit
+byte count; the input
 does not need a trailing NUL and is copied before return. Input is limited to
 1 MiB and 16 nesting levels before any object model is built. Every document
 requires a `client` or `server` role and a numeric `"schema": 1`. The strict
@@ -318,7 +321,9 @@ fallback.
 
 ## Endpoint lifecycle
 
-An endpoint moves through these visible states:
+An endpoint moves through these visible states, which
+`yume_endpoint_state` reports as `YUME_ENDPOINT_CREATED` to
+`YUME_ENDPOINT_FAILED`:
 
 @code text
 CREATED -> STARTING -> RUNNING -> STOPPING -> STOPPED
@@ -425,7 +430,8 @@ stream. At most 256 OPENs wait per endpoint, and they hold no receive credit.
 An OPEN that its client abandons is skipped. Taking an OPEN that is already
 waiting finishes on the execution thread, even with a zero timeout.
 
-Each stream exposes a sized `yume_peer_identity`: authenticated state, peer
+Each stream exposes a sized `yume_peer_identity`, which
+`yume_stream_get_peer_identity` copies: authenticated state, peer
 role, an optional composite fingerprint, an opaque transport `peer_label`, and
 service. The label carries no application meaning: it is not a device, account,
 or enrollment record. A stream in either role reports the composite fingerprint that YTP/1 authentication established for its
@@ -484,19 +490,23 @@ may outlive its endpoint's stop. Its operations then report
 
 ## Packet I/O
 
-Packet writes take an array of borrowed views. The implementation validates
-the count, every pointer and length, total bytes, and queue capacity before it
-copies or admits any packet. Batches contain 1–256 nonempty packets of at most
-65535 bytes each and at most 16 MiB in total; negotiated limits may be smaller.
-Writes exceeding `limits.max_packet_batch` return `RESOURCE_EXHAUSTED`
-without admission, and reads deliver no more than that configured count.
-A successful batch preserves every packet
-boundary; a failed batch admits none.
+A client opens a packet channel with `yume_endpoint_open_packet` for a service
+of kind packet, and a server takes one with `yume_endpoint_accept_packet`.
+`yume_packet_write_batch` takes an array of borrowed views. The implementation
+validates the count, every pointer and length, total bytes, and queue
+capacity before it copies or admits any packet. Batches contain 1–256
+nonempty packets of at most 65535 bytes each and at most 16 MiB in total;
+negotiated limits may be smaller. Writes exceeding `limits.max_packet_batch`
+return `RESOURCE_EXHAUSTED` without admission, and reads deliver no more than
+that configured count. A successful batch preserves every packet boundary; a
+failed batch admits none.
 
-Packet reads copy complete packets into caller storage and report their
-offsets/sizes in caller-owned slots. If the first queued packet does not fit,
-`BUFFER_TOO_SMALL` reports the required storage and leaves it queued. Later
-packets are not skipped to manufacture a partial success.
+`yume_packet_read_batch` copies complete packets into caller storage and
+reports their offsets/sizes in caller-owned slots. If the first queued packet
+does not fit, `BUFFER_TOO_SMALL` reports the required storage and leaves it
+queued. Later packets are not skipped to manufacture a partial success.
+`yume_packet_close` and `yume_packet_destroy` end a channel as the stream
+functions do, and `yume_packet_get_peer_identity` reports its peer.
 
 ## Sized structures
 
@@ -540,6 +550,7 @@ as `YUME_STATUS_INTERNAL_ERROR` after local state is made safe.
 
 ## Compatibility manifest
 
+`yume_abi_version` returns `YUME_ABI_VERSION`, 1, and
 `yume_get_compatibility` reports together:
 
 - product version;

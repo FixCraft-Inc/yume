@@ -1222,6 +1222,9 @@ if(YUME_BUILD_TESTING)
     add_test(NAME yume_ensure_node_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_ensure_node.py")
+    add_test(NAME yume_contract_pages_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_contract_pages.py")
     # The generated documents, CLI help and figures, and the tooling's own
     # tests. CI's website job runs them too; registering them here lets a
     # lane run catch a documentation break before the website mirror does.

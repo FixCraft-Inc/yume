@@ -24,6 +24,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   every object of those documents and requires a failure at that object.
   `tests/test_doc_paths.py` requires every repository path the documents name
   to exist.
+- **Contract pages first.** CONTRIBUTING requires a recorded owner requirement
+  and the interface's contract page before a feature's code.
+  `tests/test_contract_pages.py` rejects a control request, control error code
+  or ABI export that its page does not state, and the ABI page now names every
+  exported function.
 - **Guardrails that fail the build or CI.** `cmake/YumeLayering.cmake` is an
   allowlist: every directory under `src/` declares the layers its production
   sources may include, a new directory fails until it is declared, and every

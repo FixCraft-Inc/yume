@@ -1212,6 +1212,12 @@ if(YUME_BUILD_TESTING)
     add_test(NAME yume_wire_labels_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_wire_labels.py")
+    add_test(NAME yume_config_reference_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_config_reference.py")
+    add_test(NAME yume_doc_paths_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_doc_paths.py")
     # The generated documents, CLI help and figures, and the tooling's own
     # tests. CI's website job runs them too; registering them here lets a
     # lane run catch a documentation break before the website mirror does.
@@ -1224,8 +1230,9 @@ if(YUME_BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/yume_diagrams.py" check)
     add_test(NAME yume_ascii_figures_check
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/check_ascii_diagrams.py")
+    # test_yume_diagrams.py already runs as yume_diagrams_test.
     foreach(_yume_doc_tool_test IN ITEMS
-            test_yume_docs test_yume_doc_pipeline test_yume_diagrams test_yume_cli)
+            test_yume_docs test_yume_doc_pipeline test_yume_cli)
         add_test(NAME yume_doc_tool_${_yume_doc_tool_test}
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/scripts/${_yume_doc_tool_test}.py")
@@ -1950,6 +1957,11 @@ if(YUME_BUILD_TESTING)
             "-DYUME_ARGUMENT=--stdin-server"
             "-DYUME_INPUT=${CMAKE_SOURCE_DIR}/config/yumed.json"
             -P "${CMAKE_SOURCE_DIR}/cmake/run_with_stdin.cmake")
+    # Every object of the complete documents rejects a key it does not know.
+    file(GLOB _yume_complete_configs CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/tests/fixtures/config/*.json")
+    add_test(NAME yume_config_v1_closure
+        COMMAND yume_config_v1_test --closure ${_yume_complete_configs})
 
     if(YUME_BUILD_SHARED_ABI)
         add_executable(yume_c_abi_contract_test
@@ -2100,6 +2112,7 @@ if(YUME_BUILD_TESTING)
         yume_config_v1_test
         yume_config_v1_client_example
         yume_config_v1_server_example
+        yume_config_v1_closure
         yume_03_layering_check
         yume_03_layering_guard_test
         PROPERTIES LABELS "foundation;0.3")

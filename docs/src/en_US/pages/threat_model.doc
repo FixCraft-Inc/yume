@@ -58,8 +58,8 @@ credentials copied before installation.
 
 Admission must be cheap, bounded, keyed, and replay protected before expensive
 YTP authentication work. Missing, malformed, expired, replayed, wrong-key,
-profile-mismatched, or authority-mismatched input stays on genuine website or
-reverse-proxy behavior. It must not expose an AUTH parser, YUME error, retry
+profile-mismatched, or authority-mismatched input stays on the configured
+cover's genuine website behavior. It must not expose an AUTH parser, YUME error, retry
 hint, or protocol downgrade to an unauthenticated peer.
 
 The cover backend receives only bounded ordinary HTTP behavior and is isolated
@@ -165,10 +165,12 @@ indistinguishability, or anonymity.
 ## Replacement scope
 
 The first YTP/1 endpoint targets direct routing, forwards, named services,
-modules and packet adapters. Federation and host-controller modes left with
-transport v2, and native YTP/1 has no command execution. Chat and file relay
-are planned as modules on the relay channel library, and a desktop GUI is
-planned. Each needs its own design before it ships. See
+modules and packet adapters, and a client can route its streams through a
+circuit in one operator's cluster. Transport v2's federation and
+host-controller modes are gone, and native YTP/1 has no command execution.
+Chat and file relay are planned as modules on the relay channel library, and
+each needs its own design before it ships. The desktop GUI is a separate
+client of the control socket. See
 [implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Evidence required for release

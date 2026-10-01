@@ -411,97 +411,8 @@ utilities; unavailable prerequisites fail instead of silently skipping.
 
 ## Configuration authority
 
-Schema 1 is role tagged and contains these sections only:
-
-- `endpoint`: one client target or bounded server listeners. A client may add
-  `connect_address`, a numeric address dialled instead of resolving `host`,
-  while TLS and admission still authenticate `host`. A client may also add
-  `socks5_proxy` with a numeric `address`, a `port` and an optional protected
-  `credentials` file holding a username line and a password line of 1 to 255
-  bytes each. The client then reaches its server through that proxy, which
-  resolves `host` unless `connect_address` is set, and offers only
-  username and password authentication when credentials are given;
-- `suite`: the exact mandatory provider composition;
-- `credentials`: references to files, never inline private material;
-- `cover`: the profile this build qualifies, the only one it accepts, and the
-  server cover root;
-- `services` and `adapters`: explicit named-service exposure, unique by
-  `(name, kind)`. Several adapters of one kind are valid when their concrete
-  resources differ; exact resource collisions are rejected. Names whose first
-  segment is `yume` belong to services the daemon provides and are refused;
-- `destinations` on each server `direct_tcp` or `direct_udp` adapter:
-  `public` permits globally reachable unicast addresses, and `networks` lists
-  up to 64 canonical prefixes such as `10.0.0.0/8` or `fd00::/8`. At least one
-  destination must be permitted. Public space excludes private, shared,
-  loopback, link-local, documentation, benchmarking, 6to4, Teredo and NAT64
-  prefixes. Unspecified, multicast and reserved addresses are always refused,
-  IPv4-mapped IPv6 is evaluated as IPv4, and ports and hostnames are not policy
-  inputs. A network that no destination could match is rejected. Optional
-  `lists` hold up to 16 egress lists, each `{"action": "deny" or "allow",
-  "format": "json" or "vpdb", "file": path}`. They only narrow what `public`
-  and `networks` permit: the most specific entry decides and a deny wins a
-  tie, so an allow entry exempts an address from a broader deny and nothing
-  more. A JSON list holds `ips`, addresses or networks with zero host bits,
-  and `countries`, two-letter codes. A `vpdb` file is the binary VPN provider
-  database, format 1. Lists that name countries need `country_database`, a
-  MaxMind DB file such as GeoLite2-Country, and a country entry loses to any
-  address entry. List files resolve like credential references, must not be
-  symbolic links and are read when `yumed` starts or validates. A JSON list may
-  hold 16 MiB, the other files 128 MiB, and all lists together
-  2,097,152 ranges;
-- `udp_service` on a client `socks5` adapter: the packet service that UDP
-  ASSOCIATE opens. Without it the adapter refuses UDP ASSOCIATE;
-- a client `forward` adapter: a stream `service`, either `listen_address` (127.0.0.1
-  or ::1) with `listen_port` or an absolute, normalized `listen_path` of at most
-  107 bytes, and an optional `destination` with `host` and `port`. SOCKS5 and
-  forward listeners may not share an address and port;
-- a server `module` adapter: a stream `service`, an absolute, normalized
-  `program` and optional `arguments` of at most 32 strings of up to 1024
-  bytes. A stream service has at most one `direct_tcp` or `module` adapter;
-- `limits`: bounded frames, streams, queues, opens, rekeys, controls, and
-  packets. Frames allow 1676–1048576 bytes so hybrid rekey INIT fits;
-  concurrent rekey jobs allow 2–64 so crossed rotation has both slots.
-  `max_queued_bytes`, 64 KiB to 64 MiB, is the session's byte budget: its
-  receive windows grow up to it, so on a far path a larger budget is faster.
-  A session holds at most its outbound queue, up to the budget, and received
-  records, in the carrier or waiting for a reader, up to twice the budget and
-  at least 8 MiB. A server's sessions times that should fit its memory.
-  `credit_returns_per_window`, optional, 2 by default, 4 or 8, is how often a
-  receive window that has reached its maximum returns credit: a far sender
-  then uses more of the window each round trip, and the receiver sends more
-  small records upstream.
-  `idle_epoch_rotation`, optional, false by default, lets this side rotate a
-  key epoch that has carried records once it is 250 ms old, without waiting
-  for its next send. The first send after a pause then needs no extra round
-  trip, but every burst of traffic ends with a rekey exchange of about 1.7 KB
-  each way, which the browser captures do not show.
-  `max_epoch_bytes`, optional, is the most protected payload one directional
-  key epoch carries, a power of two from 1 MiB, the default, through 64 MiB.
-  The session uses the smaller of the client's and the server's values. A
-  server may also set `max_egress_mbps`, from 1 to 1000000: the rate in
-  megabits per second that stream payload shares between busy identities by
-  their `weight`;
-- `control`, optional: `socket`, an absolute, normalized path of at most 107
-  bytes that no forward uses. The running `yume` or `yumed` serves its status
-  there to processes of its own user, and `--status` reads it. The socket's
-  directory must belong to that user and be closed to writes by group and
-  others. [Control protocol 1](../../protocol/CONTROL_1.md) is its
-  contract;
-- `cluster`, optional and server-only: `operator_key`, `list`, `signature`,
-  `routes`, `routes_signature`, `peers` and `state`, the file references of
-  a cluster membership, and an optional `exit` whose `service` names the
-  `direct_tcp` adapter a circuit exit leaves through. The daemon writes
-  `state` itself, so it needs a writable directory.
-- `circuits`, optional and client-only: `hops` (2 or 3), `min_hops` (1 to
-  `hops`, the shortest route used without asking, `hops` by default),
-  `plain_http` (`refuse`, the default, or `allow`) and the file references
-  `operator_key`, `routes`, `routes_signature` and `state`. With it, every
-  SOCKS5 CONNECT and forward to a destination leaves through a circuit, UDP
-  ASSOCIATE is refused and a packet adapter is not allowed.
-  `yume-setup add-client --circuits` writes it.
-  `yume-setup`'s cluster commands write them, and
-  [cluster 1](../../protocol/CLUSTER_1.md) gives their format and what the
-  daemon checks.
+The [configuration reference](../../CONFIGURATION.md) lists every schema-1
+key, its role, bounds and meaning, and the tuning presets.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
 and unsafe combinations. The CLIs accept config selection, validation, the
@@ -511,62 +422,6 @@ should invoke only `yumed --config /etc/yume/yumed.json` as a dedicated
 unprivileged identity, prefer a high port or grant only
 `CAP_NET_BIND_SERVICE`, and restrict filesystem access to the generated
 server tree and the cover root.
-
-### Tuning presets
-
-`yume-setup init --preset NAME` writes one of four settings for
-`max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window` and
-`idle_epoch_rotation` into both configurations, and `add-client` gives a new
-client the server's settings. `yume-doctor` names the preset a configuration
-matches, or reports `custom`. `config/tuning_presets.json` holds the same
-table for other tools.
-
-| Preset | Budget | Epoch | Credit returns | Idle rotation | Speed | Security | Stealth |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `stealth`, the default | 4 MiB | 1 MiB | 2 | off | 1 | 4 | 4 |
-| `balanced` | 16 MiB | 4 MiB | 2 | off | 2 | 3 | 3 |
-| `fast` | 32 MiB | 16 MiB | 4 | on | 3 | 2 | 2 |
-| `max` | 64 MiB | 64 MiB | 8 | on | 4 | 1 | 1 |
-
-Each level, 1 to 4, stands for a measured or stated effect. Speed ranks
-far-path throughput in emulator runs. Security follows how much data one key
-epoch protects: 1, 4, 16 or 64 MiB, and never more than 500 ms of sending.
-Stealth is 4 for the settings the browser captures describe. Lower levels use
-a larger HTTP/2 receive window or send more small credit records upstream,
-changes that have no capture or classifier evidence yet. `fast` and `max`
-also rotate idle keys, whose rekey exchange after each burst the captures
-show a browser session does not send. Without it a request after more than
-half a second of quiet waits one round trip for the new key. Moving along the
-table trades one against the others, so a later interface can offer three
-coupled sliders over these four points.
-
-One emulator run on one host measured these rates for a single download, in
-Mbit/s at 40, 100 and 200 ms round trips without loss, each preset with its
-own idle rotation setting:
-
-| Preset | Default host TCP buffers | 64 MiB host TCP buffers |
-| --- | --- | --- |
-| `stealth` | 176, 78, 39 | 180, 78, 40 |
-| `balanced` | 423, 176, 94 | 653, 284, 155 |
-| `fast` | 417, 179, 93 | 2384, 1095, 579 |
-| `max` | 415, 177, 92 | 3038, 2499, 1333 |
-
-An earlier run with idle rotation on in every preset measured rates within
-10 % of these, and a small request took the same time. With Linux's
-default 6 MiB ceilings, one TCP connection holds about 2 MiB per round trip
-whether it is tunnelled or not, and the untunnelled download moved 434 to
-437, 186 to 189 and 98 Mbit/s. `balanced` already reaches about 95 % of
-that, so `fast` and `max` are faster only on a host with raised ceilings. The
-emulator handles packets in software, which caps its rates below a real
-network card, and none of these rates is a claim about a real path.
-
-Some limits hold for every preset. Keys always rotate, a session uses the
-smaller epoch that either side allows, and a server can therefore hold its
-clients to a stricter setting than theirs. A larger budget needs memory: a
-session can hold its budget of outbound data and twice the budget, at least
-8 MiB, of received records. Far-path speed above a few MiB per round trip also
-needs the host's TCP buffer ceilings raised, for the tunnel as for any other
-single TCP connection.
 
 ## Identity and authorization
 
@@ -605,9 +460,10 @@ checked against the authenticated identity and role, the exact authenticated
 capability bytes, the registered service kind and policy, destination policy
 for the built-in TCP/UDP encodings, and stream, pending-open, queue, packet,
 and route limits. A `RouteProvider` receives only an `AuthorizedRouteRequest`
-built after those checks. Federation, directory, relay applications, reverse
-administration, command execution, host-controller modes, product codecs, and
-dynamic plugins are outside the first YTP/1 path and have no schema-1 aliases.
+built after those checks. Circuits across operators, a decentralized
+directory, relay applications, reverse administration, command execution,
+host-controller modes, product codecs, and dynamic plugins are outside the
+first YTP/1 path and have no schema-1 aliases.
 
 ## Packet channels
 
@@ -680,7 +536,7 @@ Before the tunnel can be described as usable, tests must exercise the real
 TLS 1.3 front door, genuine HTTP/2 cover behavior, replay-protected admission,
 duplex carrier flow control, direct TCP/UDP routes, SOCKS5, named services,
 packet batches, and the public ABI data path, and invalid admission must
-receive the same website or reverse-proxy behavior as ordinary traffic. Clean
+receive the same cover behavior as ordinary traffic. Clean
 Linux environments must run setup through the first authenticated stream,
 including permission failures and a normal non-YUME browser request.
 Resource and failure qualification exercises slow consumers, stalled front

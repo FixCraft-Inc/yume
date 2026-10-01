@@ -15,6 +15,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Configuration reference.** [docs/CONFIGURATION.md](../CONFIGURATION.md)
+  lists every schema-1 key with its role, bounds and meaning, and the tuning
+  presets, which moved there from the development guide.
+  `tests/test_config_reference.py` requires every key the parser accepts to be
+  documented there and used by one of four complete documents under
+  `tests/fixtures/config`, and `yume_config_v1_closure` puts an unknown key into
+  every object of those documents and requires a failure at that object.
+  `tests/test_doc_paths.py` requires every repository path the documents name
+  to exist.
 - **Guardrails that fail the build or CI.** `cmake/YumeLayering.cmake` is an
   allowlist: every directory under `src/` declares the layers its production
   sources may include, a new directory fails until it is declared, and every

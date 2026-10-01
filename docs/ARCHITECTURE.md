@@ -15,8 +15,8 @@ in from outside.
 
 The HTTP/2 and WebSocket carrier code and the browser profile came from
 transport v2, the protocol before YTP/1, which has been removed. The relay
-channel, file transfer, codecs and the share container live on as module
-libraries. The transport-v2 GUI was removed. The native
+channel, file transfer and codecs live on as module libraries, and sealed
+kits replaced the share container. The transport-v2 GUI was removed. The native
 [desktop GUI](GUI.md) is a separate Qt program that talks to `yume` only
 through its control socket.
 A new protocol name proves neither better speed nor stronger security.
@@ -400,7 +400,7 @@ YTP/1 ships one mandatory suite:
 | Layer | Required implementation |
 | --- | --- |
 | secure channel | native TLS 1.3 |
-| front door | genuine HTTP/2 website or loopback reverse proxy |
+| front door | genuine HTTP/2 static website (a loopback reverse proxy is planned) |
 | carrier | bounded duplex HTTP/2 |
 | session | YTP/1 hybrid security and multiplexing |
 | authentication | Ed25519 **and** ML-DSA-87 |
@@ -426,7 +426,7 @@ Native source is organized by dependency:
 | `src/admission/` | protocol-neutral H2 path/authority parsing, HMAC and replay reservations; each protocol owns its encoding |
 | `src/abi/` | experimental exception-contained C ABI handles, validation, diagnostics, and backend leasing. It accepts schema-1 documents only and reaches the runtime through the embedding seam |
 | `src/abi/native_backend.cpp` | experimental schema-1 embedding backend that runs `NativeEndpoint` on its own thread behind the blocking ABI |
-| `src/modules/` | module programs and the libraries planned modules build on: the relay channel with its stores, file transfer, application codecs and the share container. Only these libraries use BaseFWX |
+| `src/modules/` | module programs and the libraries planned modules build on: the relay channel with its stores, file transfer and application codecs. Only these libraries use BaseFWX |
 | `tools/` | provisioning and evidence tooling |
 
 The installed `yumed` and `yume` build from `src/runtime/` with every native

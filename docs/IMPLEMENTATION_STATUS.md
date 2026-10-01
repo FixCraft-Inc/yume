@@ -398,8 +398,14 @@ network namespace through a real `yumed` in another: 300 connections at
 once, shared name lookups, refused destinations, a lost and replaced
 session, an immediate retry, a path that stops answering, which ends the
 session at YTP/1's 30 s rotation acknowledgement deadline, a restart and a
-stop. The bridge has run only on Linux in those namespaces. IPv6 legs need a
-host kernel with IPv6.
+stop. IPv6 legs need a host kernel with IPv6. The Android client, in its
+own repository, runs on this bridge, and one device cycle on a Pixel 9 Pro
+with Android 17 against a real `yumed` passed the legs the
+[leak-tight page](LEAK_TIGHT.md#android-boundary) lists. Android links
+libc++, so the native suite was also run with clang and libc++ on the build
+host, which is not yet a CI job. It passes except for one allocation-failure
+case of `yume_native_endpoint_test`, whose injected failure lands on a status
+copy before the reconnect timer it aims at.
 
 The ABI also reports an endpoint's status snapshot and the lines it has
 said, cancels a client start from another thread, and opens a

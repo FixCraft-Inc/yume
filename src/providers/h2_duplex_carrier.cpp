@@ -502,8 +502,9 @@ private:
                 return;
             }
             const std::uint64_t id = next_operation_id_++;
-            pending_receive_.emplace(
-                PendingReceive{id, std::move(completion), {}, cancellation});
+            // As for sends: the handlers below must not complete it again.
+            pending_receive_.emplace(PendingReceive{
+                id, std::exchange(completion, nullptr), {}, cancellation});
             const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
             auto registration = cancellation.register_callback([weak] {
                 if (auto self = weak.lock()) self->notify_control();
@@ -602,8 +603,15 @@ private:
 
             const std::uint64_t id = next_operation_id_++;
             const std::size_t record_bytes = record.size();
+            // Empty the parameter as the pending send takes it: the handlers
+            // below complete through it, and a moved-from std::function need
+            // not be empty (libc++ leaves a small target in place).
             pending_send_.emplace(
-                PendingSend{id, record_bytes, std::move(completion), {}, cancellation});
+                PendingSend{id,
+                            record_bytes,
+                            std::exchange(completion, nullptr),
+                            {},
+                            cancellation});
             const std::weak_ptr<H2DuplexCarrierState> weak = weak_from_this();
             auto registration = cancellation.register_callback([weak] {
                 if (auto self = weak.lock()) self->notify_control();
@@ -1265,8 +1273,10 @@ private:
                         : Status::diagnostic(status.code(), status.message());
         create_cancellation_.unregister();
 
+        // Empty the member, which a move need not do (libc++ leaves a small
+        // target in place), so the creation completes once.
         engine::CarrierProvider::Completion create =
-            std::move(create_completion_);
+            std::exchange(create_completion_, nullptr);
         Carrier::ReceiveCompletion receive;
         Carrier::SendCompletion send;
         if (pending_receive_.has_value()) {
@@ -1411,8 +1421,9 @@ void H2DuplexCarrierState::finish_client_opening() {
     }
     opening_ = false;
     create_cancellation_.unregister();
+    // fail() below settles create_completion_ again, so it must be empty.
     engine::CarrierProvider::Completion completion =
-        std::move(create_completion_);
+        std::exchange(create_completion_, nullptr);
     try {
         std::unique_ptr<Carrier> carrier =
             std::make_unique<H2DuplexCarrier>(shared_from_this());

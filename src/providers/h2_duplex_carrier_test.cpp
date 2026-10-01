@@ -270,7 +270,10 @@ struct TestPipe final : public std::enable_shared_from_this<TestPipe> {
             }
             auto completion = std::move(endpoint.pending->completion);
             endpoint.pending.reset();
-            completion(Result<Buffer>(Status(
+            // diagnostic() cannot throw. The constructor's allocation could
+            // receive an allocation sweep's injected failure meant for the
+            // carrier and escape this fixture.
+            completion(Result<Buffer>(Status::diagnostic(
                 StatusCode::Closed, "test secure channel is closed")));
             return;
         }

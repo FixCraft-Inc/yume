@@ -27,7 +27,19 @@ inline thread_local void (*before_deallocate)(void*) noexcept = nullptr;
 // duplicate release. Returning true transfers eventual free() to that probe.
 inline thread_local bool (*retain_deallocation)(void*) noexcept = nullptr;
 
+// Set while check_allocation runs. Throwing std::bad_alloc allocates the
+// exception object, and libc++abi takes it from aligned_alloc, which the
+// aligned opt-in below routes back here. An injected failure would then fail
+// its own exception's storage without end. Allocations made while a check is
+// running are therefore not checked. GCC's runtime uses malloc there.
+inline thread_local bool checking_allocation = false;
+
 inline void check_allocation(std::size_t size) {
+    if (checking_allocation) return;
+    checking_allocation = true;
+    struct Reset final {
+        ~Reset() { checking_allocation = false; }
+    } reset;
     if (fail_allocations.load(std::memory_order_relaxed)) throw std::bad_alloc();
     if (const auto hook = before_allocate_on_any_thread.load(std::memory_order_relaxed)) hook(size);
     if (before_allocate) before_allocate(size);

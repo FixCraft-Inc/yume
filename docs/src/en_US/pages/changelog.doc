@@ -1088,6 +1088,21 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **Callbacks that ran twice under libc++.** Several components moved a
+  callback out of a member and later tested or settled that member again,
+  relying on the moved-from `std::function` being empty. libstdc++ empties
+  it, but libc++, which Android links, leaves a small target in place. A
+  closing TLS channel then delivered its spent handshake completion without
+  end, so stopping an Android endpoint never returned. Records deferred
+  across a rekey completed a second time with Cancelled, which ended a busy
+  stream mid-transfer. A session's start and a stream's OPEN, the HTTP/2
+  carrier's creation, sends and receives under allocation failure, a route
+  bridge's acceptance and a circuit stream's open could each complete twice.
+  Each now empties the member explicitly. The whole suite was run against
+  clang and libc++, and against libc++ headers patched to abort on any use of
+  a moved-from callback. Four tests that assumed libstdc++'s allocation sizes
+  or moved-from state were corrected, and the tests' allocation hook no
+  longer fails the storage of the exception it throws.
 - **yume-gui took a starting client for an ended one.** Right after starting
   `yume`, the window read an empty command line for a process inside execve,
   as a wrapper that runs `yume` is for a moment, reported "yume stopped while

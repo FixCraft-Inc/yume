@@ -265,7 +265,9 @@ public:
 
     // From the circuit, once BEGIN is queued.
     void begun() noexcept {
-        auto opened = std::move(opened_);
+        // Empty the member, which a move need not do (libc++ leaves a small
+        // target in place), or a later abort would complete the open again.
+        auto opened = std::exchange(opened_, nullptr);
         if (opened) {
             complete_open(
                 std::move(opened),
@@ -318,7 +320,7 @@ public:
         } catch (...) {
             end_status_ = Status(reason.code());
         }
-        auto opened = std::move(opened_);
+        auto opened = std::exchange(opened_, nullptr);
         if (opened)
             complete_open(std::move(opened),
                           Result<std::shared_ptr<StreamResponder>>(reason));

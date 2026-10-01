@@ -2088,8 +2088,13 @@ Status SessionEngine::Impl::flush_deferred_records() {
         Status status;
         try {
             if (record.completion) {
-                completion = std::make_shared<Carrier::SendCompletion>(
-                    std::move(record.completion));
+                // Allocate first, then empty the record into the holder. The
+                // drain completes every record left in the queue, and a
+                // moved-from std::function need not be empty (libc++ leaves a
+                // small target in place), so a sent record's completion would
+                // otherwise run a second time with Cancelled.
+                completion = std::make_shared<Carrier::SendCompletion>();
+                *completion = std::exchange(record.completion, nullptr);
             }
             Carrier::SendCompletion submitted;
             if (completion) {
@@ -2527,7 +2532,9 @@ Status SessionEngine::Impl::process_capabilities(
         }
         peer_manifest_ = *decoded.value;
         state_ = SessionState::Active;
-        completion = std::move(start_completion_);
+        // Empty the member, which a move need not do (libc++ leaves a small
+        // target in place), or stop() would complete the start a second time.
+        completion = std::exchange(start_completion_, nullptr);
     }
     Status success = Status::success();
     invoke_noexcept(completion, success);
@@ -3093,7 +3100,10 @@ Status SessionEngine::Impl::process_stream_credit(const ytp1::RecordView& record
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!stream->closed) {
-                completion = std::move(stream->open_completion);
+                // Empty the field, which a move need not do (libc++ leaves a
+                // small target in place), or removing the stream would
+                // complete this OPEN a second time.
+                completion = std::exchange(stream->open_completion, nullptr);
                 registration = std::move(stream->open_cancellation);
             }
         }
@@ -3924,7 +3934,7 @@ void SessionEngine::Impl::remove_stream(StreamId stream_id,
             stream->opening = false;
             --pending_opens_;
         }
-        open = std::move(stream->open_completion);
+        open = std::exchange(stream->open_completion, nullptr);
         registration = std::move(stream->open_cancellation);
         if (stream->pending_read) {
             read = std::move(stream->pending_read->completion);
@@ -4354,7 +4364,7 @@ void SessionEngine::Impl::stop(Status reason, bool failed) noexcept {
         state_ = SessionState::Closing;
         retired_observer = std::move(epoch_observer_);
         terminal_status_ = copy_failure(reason);
-        start = std::move(start_completion_);
+        start = std::exchange(start_completion_, nullptr);
         for (auto& [_, stream] : streams_) {
             stream->closed = true;
         }

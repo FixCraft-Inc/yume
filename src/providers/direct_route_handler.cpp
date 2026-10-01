@@ -768,7 +768,10 @@ private:
         engine::StreamHandler::AcceptanceCompletion completion;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            completion = std::move(acceptance_);
+            // Empty the member, which a move need not do (libc++ leaves a
+            // small target in place): fail() settles the acceptance again
+            // after a successful open.
+            completion = std::exchange(acceptance_, nullptr);
         }
         if (completion) {
             try { completion(std::move(status)); } catch (...) {}

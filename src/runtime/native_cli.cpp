@@ -39,6 +39,7 @@
 #include "providers/openssl_security_provider.hpp"
 #include "runtime/circuit_status.hpp"
 #include "runtime/control_socket.hpp"
+#include "runtime/control_status_text.hpp"
 #include "runtime/message_log.hpp"
 #include "runtime/module_launcher.hpp"
 #include "runtime/native_client_runtime.hpp"

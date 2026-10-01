@@ -18,6 +18,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <span>
 #include <stdexcept>
@@ -314,6 +315,13 @@ public:
             try {
                 boost::system::error_code error;
                 acceptor_.accept(socket_, error);
+                {
+                    const std::lock_guard lock(mutex_);
+                    if (stopping_) {
+                        return;
+                    }
+                    accepted_ = !error;
+                }
                 if (error) {
                     throw TestFailure("TCP accept failed: " + error.message());
                 }
@@ -330,16 +338,27 @@ public:
 
     TcpServer(const TcpServer&) = delete;
     TcpServer& operator=(const TcpServer&) = delete;
+    // A failed check can unwind here before any client connected. Closing
+    // the listener does not wake the thread blocked in accept(2), so the join
+    // would wait forever and hide the failure, and the accepting thread still
+    // uses both sockets. The listener is shut down instead, which ends the
+    // accept, the accepted connection is shut down only once the thread has
+    // published it, and nothing is closed before the join.
     ~TcpServer() noexcept {
-        boost::system::error_code ignored;
-        acceptor_.cancel(ignored);
-        acceptor_.close(ignored);
-        socket_.cancel(ignored);
-        socket_.shutdown(Tcp::socket::shutdown_both, ignored);
-        socket_.close(ignored);
+        {
+            const std::lock_guard lock(mutex_);
+            stopping_ = true;
+            if (accepted_) {
+                ::shutdown(socket_.native_handle(), SHUT_RDWR);
+            }
+        }
+        ::shutdown(acceptor_.native_handle(), SHUT_RDWR);
         if (thread_.joinable()) {
             thread_.join();
         }
+        boost::system::error_code ignored;
+        acceptor_.close(ignored);
+        socket_.close(ignored);
     }
 
     std::uint16_t port() const noexcept { return port_; }
@@ -362,6 +381,9 @@ private:
     std::future<std::exception_ptr> future_;
     std::thread thread_;
     std::uint16_t port_{0U};
+    std::mutex mutex_;
+    bool stopping_{false};
+    bool accepted_{false};
 };
 
 std::shared_ptr<AsioTcpByteChannelProvider> make_provider(
@@ -759,6 +781,17 @@ void test_accepted_socket_owner_lifetime_and_active_close() {
     run_barrier(runtime);
     CHECK(active.calls->load(std::memory_order_relaxed) == 1U);
     CHECK(queued.calls->load(std::memory_order_relaxed) == 1U);
+}
+
+// A test that fails before its client connects destroys the server with
+// its accept still blocked. That must end the accept, not wait for it.
+void test_tcp_server_teardown_without_a_client() {
+    const auto started = std::chrono::steady_clock::now();
+    {
+        TcpServer server([](Tcp::socket&) { CHECK(false); });
+        std::this_thread::sleep_for(50ms);
+    }
+    CHECK(std::chrono::steady_clock::now() - started < 3s);
 }
 
 void test_dns_round_trip_order_and_half_close() {
@@ -1658,6 +1691,7 @@ int main() {
         yume::providers::test_accepted_unix_socket_traffic_and_capacity();
         yume::providers::test_accepted_socket_allocation_rollback();
         yume::providers::test_accepted_socket_owner_lifetime_and_active_close();
+        yume::providers::test_tcp_server_teardown_without_a_client();
         yume::providers::test_dns_round_trip_order_and_half_close();
         yume::providers::test_protector_fail_throw_and_refused_connect();
         yume::providers::test_connect_deadline_covers_protection_and_attempts();

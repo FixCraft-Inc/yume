@@ -98,6 +98,8 @@ private:
     void spawn();
     // Whether pid_ still runs yume for this kit.
     bool process_alive() const;
+    // Whether pid_, whose command line is empty, is a process inside execve.
+    bool process_between_programs() const;
     QString output_reason(const QString& fallback) const;
 
     Places places_;

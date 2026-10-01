@@ -22,6 +22,8 @@ using Outcome = ControlReply::Outcome;
 constexpr qint64 kOutputTailBytes = 16 * 1024;
 constexpr qint64 kMaxCommandLineBytes = 16 * 1024;
 constexpr int kValidationMs = 30'000;
+// PF_KTHREAD in the flags field of /proc/PID/stat.
+constexpr qulonglong kKernelThreadFlag = 0x00200000;
 
 QString strip_program(QString line) {
     line = line.trimmed();
@@ -241,18 +243,44 @@ void Tunnel::spawn() {
 
 // The process counts as this kit's client only while its command line names
 // this kit's control socket, so a process id the kernel has since reused is
-// neither waited for nor signalled. An exited process has no command line.
+// neither waited for nor signalled. An exited process has no command line,
+// and neither has one inside execve, between replacing its memory and laying
+// out its new arguments, as a wrapper that runs yume is for a moment. Its
+// state tells the two apart.
 bool Tunnel::process_alive() const {
     if (pid_ <= 0) return false;
     QFile file(QStringLiteral("/proc/%1/cmdline").arg(pid_));
     if (!file.open(QIODevice::ReadOnly)) return false;
-    const QList<QByteArray> words = file.read(kMaxCommandLineBytes).split('\0');
+    const QByteArray line = file.read(kMaxCommandLineBytes);
+    if (line.count('\0') == line.size()) return process_between_programs();
+    const QList<QByteArray> words = line.split('\0');
     const QByteArray socket = QFile::encodeName(socket_path());
     for (qsizetype at = 0; at + 1 < words.size(); ++at) {
         if (words[at] == "--control-socket" && words[at + 1] == socket)
             return true;
     }
     return false;
+}
+
+// A process with an empty command line still runs, and is inside execve,
+// unless it has ended and awaits its parent (Z, X) or is a kernel thread,
+// which never had arguments.
+bool Tunnel::process_between_programs() const {
+    QFile file(QStringLiteral("/proc/%1/stat").arg(pid_));
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const QByteArray stat = file.read(kMaxCommandLineBytes);
+    // The name in parentheses may hold spaces, so fields follow its last ')'.
+    const qsizetype name_end = stat.lastIndexOf(')');
+    if (name_end < 0) return false;
+    const QList<QByteArray> fields =
+        stat.mid(name_end + 1).simplified().split(' ');
+    // state, ppid, pgrp, session, tty_nr, tpgid, flags, ...
+    if (fields.size() < 7 || fields[0].size() != 1) return false;
+    const char state = fields[0][0];
+    if (state == 'Z' || state == 'X' || state == 'x') return false;
+    bool parsed = false;
+    const qulonglong flags = fields[6].toULongLong(&parsed);
+    return parsed && (flags & kKernelThreadFlag) == 0;
 }
 
 void Tunnel::stop() {

@@ -1054,6 +1054,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   revision fields were parsed and never used; `ezbuild.sh` remains the
   enforcement point for the pin.
 
+### Fixed
+
+- **yume-gui took a starting client for an ended one.** Right after starting
+  `yume`, the window read an empty command line for a process inside execve,
+  as a wrapper that runs `yume` is for a moment, reported "yume stopped while
+  starting" and failed the connect. A process with an empty command line now
+  counts as running unless it has ended or is a kernel thread.
+
 ## [Unreleased 0.2.0-dev6]
 
 Product and transport versions were rebaselined to reflect YUME's experimental

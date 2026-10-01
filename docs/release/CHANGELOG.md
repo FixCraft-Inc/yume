@@ -37,6 +37,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `yume --messages` shows. `yume_kit_open` opens a kit `yume --seal-kit`
   sealed, so an application imports one file and a code instead of copying
   keys. A stop now cancels a client start in progress on another thread.
+- **Android build of the library.** `tools/build_android_shared_abi.sh`
+  builds `libyume.so` for the Android ABIs with the pinned NDK, the patched
+  OpenSSL built static for each ABI and the vcpkg manifest's dependencies.
+  It no longer fails closed for want of that OpenSSL build. The sources also
+  build with Boost 1.90, whose timers lost the error-code form of `cancel`.
 - **Configuration reference.** [docs/CONFIGURATION.md](../CONFIGURATION.md)
   lists every schema-1 key with its role, bounds and meaning, and the tuning
   presets, which moved there from the development guide.

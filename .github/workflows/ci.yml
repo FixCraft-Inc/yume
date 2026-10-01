@@ -248,6 +248,91 @@ jobs:
           ldd ./build-ci/bin/yumed
           find build-ci -name 'libyume.so*' -print -exec file {} \;
 
+  # Android links libc++. Its moved-from small std::function can remain
+  # callable, which every libstdc++ lane misses. Run the same native graph
+  # and shared-ABI tests with that standard library as a separate gate.
+  libcxx:
+    needs: [preflight]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
+          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+          fi
+          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+          echo "Using BaseFWX ref: $(git -C basefwx rev-parse HEAD)"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang libc++-dev libc++abi-dev cmake ninja-build pkg-config perl iproute2 iputils-ping util-linux \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev libsystemd-dev \
+            libboost-all-dev nlohmann-json3-dev
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
+          # The cover tools' tests run on the Node their profile pins.
+          source scripts/ensure-node.sh
+          yume_node_ensure
+          echo "YUME_NODE_EXECUTABLE=${YUME_NODE_EXECUTABLE}" >> "$GITHUB_ENV"
+
+      - name: Fetch and verify prebuilt vendor libs
+        run: |
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Configure (libc++)
+        run: |
+          test "$(pkg-config --modversion openssl)" = "3.5.7"
+          openssl list -signature-algorithms | grep -F 'ML-DSA-87'
+          CC=clang CXX=clang++ cmake -S . -B build-libcxx \
+            "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -fexperimental-library" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-stdlib=libc++ -lc++abi" \
+            "-DCMAKE_SHARED_LINKER_FLAGS=-stdlib=libc++ -lc++abi" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_INSTALL_EXPERIMENTAL_SDK=ON \
+            -DYUME_TEST_LINUX_NAMESPACES=ON \
+            -DYUME_STATIC_OPENSSL=ON \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DYUME_BUILD_BASEFWX_MODULES=ON \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+
+      - name: Build
+        run: |
+          cmake --build build-libcxx --parallel "${CI_SANITIZER_BUILD_JOBS}"
+
+      # ubuntu-24.04's AppArmor refuses unprivileged user namespaces, and the
+      # TUN integration test creates one with unshare --map-root-user. The
+      # runner is disposable, so lift the restriction instead of losing the
+      # namespace coverage.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run unit tests
+        run: |
+          ctest --test-dir build-libcxx --output-on-failure --parallel 4
+
+
   # Address + undefined behaviour sanitizers over the same unit suite.
   # Separate job because it needs a Debug build with LTO disabled, and because
   # a sanitizer failure should be distinguishable at a glance from a plain
@@ -517,7 +602,7 @@ jobs:
   # harnesses still build and that the seeded corpus produces no crash. A
   # sustained campaign is a separate, longer-running exercise.
   #
-  # Clang-only, so this is the one job that does not use the default compiler.
+  # Clang-only, like the separate libc++ job.
   # It builds the three harness targets by name rather than the whole tree,
   # which keeps it well inside the runner budget.
   fuzz:

@@ -24,6 +24,8 @@ replaced without touching the tunnel. The rules below let newer programs add
 fields and requests without breaking an older GUI, and let a newer GUI see
 what an older program lacks.
 
+@diagram gui_lifecycle
+
 ## The socket
 
 The configuration's `control.socket` names the socket's path, and

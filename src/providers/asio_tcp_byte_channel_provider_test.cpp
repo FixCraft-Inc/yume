@@ -21,6 +21,7 @@
 #include <mutex>
 #include <new>
 #include <span>
+#include <source_location>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -151,9 +152,11 @@ std::shared_ptr<SystemResolver> make_resolver(
 
 class IoRuntime final {
 public:
-    IoRuntime()
-        : context_(require(AsioExecutionContext::create(ExecutorAffinity(93U)))),
-          resolver_(make_resolver(context_)) {
+    explicit IoRuntime(
+        const char* resolver_program = YUME_TEST_RESOLVER_PROGRAM)
+        : context_(
+              require(AsioExecutionContext::create(ExecutorAffinity(93U)))),
+          resolver_(make_resolver(context_, resolver_program)) {
         std::promise<void> started;
         auto ready = started.get_future();
         thread_ = std::thread([this, &started]() {
@@ -221,9 +224,12 @@ struct AsyncTicket final {
 };
 
 template <typename T>
-T await(AsyncTicket<T>& ticket, std::chrono::milliseconds timeout = 3s) {
+T await(AsyncTicket<T>& ticket, std::chrono::milliseconds timeout = 3s,
+        const std::source_location where = std::source_location::current()) {
     if (ticket.future.wait_for(timeout) != std::future_status::ready) {
-        throw TestFailure("asynchronous operation timed out");
+        throw TestFailure(std::string("asynchronous operation timed out in ") +
+                          where.function_name() + ":" +
+                          std::to_string(where.line()));
     }
     T result = ticket.future.get();
     CHECK(ticket.calls->load(std::memory_order_relaxed) == 1U);
@@ -813,9 +819,11 @@ void test_dns_round_trip_order_and_half_close() {
         CHECK(!error);
         socket.shutdown(Tcp::socket::shutdown_send, error);
     });
-    IoRuntime runtime;
+    // The server listens on IPv4 only. Host localhost can resolve to ::1
+    // first, where an unrelated listener could accept the same port.
+    IoRuntime runtime(YUME_TEST_STALL_RESOLVER_PROGRAM);
     auto provider = make_provider(
-        runtime, "localhost", server.port(), {},
+        runtime, "resolver-loopback.invalid", server.port(), {},
         [&protector_calls](std::uintptr_t handle) {
             CHECK(handle != 0U);
             protector_calls.fetch_add(1U, std::memory_order_release);
@@ -824,6 +832,7 @@ void test_dns_round_trip_order_and_half_close() {
     auto create = start_create(runtime, provider);
     auto created = await(create);
     CHECK(created.ok());
+    CHECK(provider->remote_host() == "resolver-loopback.invalid");
     CHECK(runtime.is_worker(*create.callback_thread));
     std::unique_ptr<ByteChannel> channel = std::move(created).take_value();
     CHECK(channel->executor_affinity() == ExecutorAffinity(93U));

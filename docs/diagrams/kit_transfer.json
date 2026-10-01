@@ -1,0 +1,96 @@
+{
+  "name": "kit_transfer",
+  "type": "flow",
+  "title": "A client kit becomes one sealed file and a code",
+  "summary": "Setup writes credentials. Sealing produces a file and a separate code. Import verifies and decrypts before publishing a private directory, or returns files to an embedding application.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "setup",
+      "kind": "process",
+      "title": "yume-setup",
+      "sub": "init or add-client",
+      "note": "Creates a distinct client identity and access PSK, plus the server's public material and admission key.",
+      "source": [
+        "tools/yume_setup.py"
+      ]
+    },
+    {
+      "id": "kit",
+      "kind": "file",
+      "title": "Client kit",
+      "sub": "config and secrets",
+      "note": "The client directory contains secrets. Sealing refuses a server configuration, links, special files or a deeper directory.",
+      "source": [
+        "src/runtime/sealed_kit.cpp"
+      ]
+    },
+    {
+      "id": "seal",
+      "kind": "client",
+      "title": "Seal kit",
+      "sub": "Argon2id, AES-256-GCM",
+      "note": "Generates a random code, salt and nonce, derives a key with fixed Argon2id costs and encrypts the bounded kit.",
+      "source": [
+        "src/runtime/sealed_kit.cpp"
+      ]
+    },
+    {
+      "id": "file",
+      "kind": "file",
+      "title": "Sealed file",
+      "sub": "no readable header",
+      "note": "Only the salt, nonce, ciphertext and tag leave in the file. Its length still reveals the kit size within one KiB.",
+      "source": [
+        "src/runtime/sealed_kit.cpp"
+      ]
+    },
+    {
+      "id": "import",
+      "kind": "client",
+      "title": "Import with code",
+      "sub": "verify tag, validate kit",
+      "note": "The CLI decrypts, validates client configuration and publishes an owner-only directory without replacement. The ABI returns files for the app to store.",
+      "source": [
+        "src/runtime/sealed_kit.cpp",
+        "src/abi/yume_c.cpp"
+      ]
+    },
+    {
+      "id": "code",
+      "kind": "key",
+      "title": "25-character code",
+      "sub": "send separately",
+      "note": "Whoever holds both the file and code holds the client credentials. Send the code through another channel.",
+      "source": [
+        "src/runtime/sealed_kit.cpp"
+      ],
+      "side": true
+    }
+  ],
+  "edges": [
+    {
+      "from": "setup",
+      "to": "kit"
+    },
+    {
+      "from": "kit",
+      "to": "seal"
+    },
+    {
+      "from": "seal",
+      "to": "file"
+    },
+    {
+      "from": "file",
+      "to": "import"
+    },
+    {
+      "from": "seal",
+      "to": "code",
+      "label": "code"
+    }
+  ]
+}

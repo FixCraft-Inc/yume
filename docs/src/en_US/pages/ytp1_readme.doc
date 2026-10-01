@@ -497,7 +497,7 @@ their bounds and ownership. Production qualification remains open.
 ## Diagnostics and evidence
 
 Diagnostics are typed and scoped to the object that failed; they are not a
-second control channel. Every ABI operation returns a stable `yume_status`,
+second control channel. ABI operations that can fail return a stable `yume_status`,
 `yume_get_status_info()` gives its name and retry class, and
 `yume_handle_get_diagnostic()` returns bounded text and the relevant JSON
 pointer for a runtime, config, endpoint, stream, or packet handle. Never

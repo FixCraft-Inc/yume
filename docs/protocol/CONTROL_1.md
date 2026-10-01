@@ -15,6 +15,72 @@ replaced without touching the tunnel. The rules below let newer programs add
 fields and requests without breaking an older GUI, and let a newer GUI see
 what an older program lacks.
 
+<!-- yume-diagram: gui_lifecycle -->
+<img src="../diagrams/gui_lifecycle-vertical.svg" alt="The GUI controls a separate client process" width="456" height="709">
+
+<details>
+<summary>What each part does</summary>
+
+- **yume-gui**: Owns the display and kit selection. It links no YUME library and sends no traffic through the tunnel itself. ([`src/gui/tunnel.cpp`](../../src/gui/tunnel.cpp), [`src/gui/control_client.cpp`](../../src/gui/control_client.cpp))
+- **yume**: Owns credentials, adapters, session and the control socket. The same user can ask status, follow messages and request stop. ([`src/runtime/native_cli.cpp`](../../src/runtime/native_cli.cpp), [`src/runtime/control_socket.cpp`](../../src/runtime/control_socket.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++-----------------+                 +-----------------+
+|  yume-gui       |                 |  yume           |
+|  window         |                 |  tunnel process |
++-----------------+                 +-----------------+
+         |                                   |
+         |  run with --validate              |
+         |---------------------------------->|
+         |                                   |
+         |  validation result                |
+         |<----------------------------------|
+         |                                   |
+         |  start detached, socket path      |
+         |---------------------------------->|
+         |                                   |
+         |                                .--|
+         | listen, connect, serve socket  |  |
+         |                                '->|
+         |                                   |
+         |  status and messages              |
+         |---------------------------------->|
+         |                                   |
+         |  state and printed lines          |
+         |<----------------------------------|
+         |                                   |
+         |--.                                |
+         |  | close window, client runs      |
+         |<-'                                |
+         |                                   |
+         |--.                                |
+         |  | reopen window, find client     |
+         |<-'                                |
+         |                                   |
+         |  Disconnect: stop                 |
+         |---------------------------------->|
+         |                                   |
+         |  acknowledge stop                 |
+         |<----------------------------------|
+         |                                   |
+         |                                .--|
+         |                drain and exit  |  |
+         |                                '->|
+         |                                   |
+         |--.                                |
+         |  | process ended: stopped         |
+         |<-'                                |
+         |                                   |
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## The socket
 
 The configuration's `control.socket` names the socket's path, and

@@ -1,0 +1,91 @@
+{
+  "name": "relay_channel",
+  "type": "sequence",
+  "title": "The relay library protects a channel between users",
+  "summary": "This is a library flow for planned module clients. No shipped program routes it yet. The relay sees both identities in the handshake, then ciphertext, sizes and timing.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "a",
+      "kind": "client",
+      "title": "User A",
+      "sub": "initiator",
+      "note": "Signs its handshake with both identity keys, checks the expected peer and derives relay keys from X25519 and ML-KEM, plus the optional agreed PSK.",
+      "source": [
+        "src/modules/relay/handshake.cpp",
+        "src/modules/relay/ratchet.cpp"
+      ]
+    },
+    {
+      "id": "relay",
+      "kind": "process",
+      "title": "Relay",
+      "sub": "planned router",
+      "note": "Routes records without a channel key. The library handshake exposes both identities and invite context to it.",
+      "source": [
+        "docs/protocol/RELAY_CHANNEL.md",
+        "src/modules/relay/relay_policy.cpp"
+      ]
+    },
+    {
+      "id": "b",
+      "kind": "client",
+      "title": "User B",
+      "sub": "responder",
+      "note": "Checks context and both signatures before deriving the channel keys. Its own YTP session, when integrated, ends at the relay server.",
+      "source": [
+        "src/modules/relay/handshake.cpp",
+        "src/modules/relay/record.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "a",
+      "to": "relay",
+      "label": "request: identities"
+    },
+    {
+      "from": "relay",
+      "to": "b",
+      "label": "forward request"
+    },
+    {
+      "from": "b",
+      "to": "relay",
+      "label": "reply: identities"
+    },
+    {
+      "from": "relay",
+      "to": "a",
+      "label": "forward response"
+    },
+    {
+      "from": "a",
+      "to": "a",
+      "label": "check peer, keys"
+    },
+    {
+      "from": "b",
+      "to": "b",
+      "label": "derive keys"
+    },
+    {
+      "from": "a",
+      "to": "relay",
+      "label": "sealed record"
+    },
+    {
+      "from": "relay",
+      "to": "b",
+      "label": "forward record"
+    },
+    {
+      "from": "b",
+      "to": "b",
+      "label": "verify record"
+    }
+  ]
+}

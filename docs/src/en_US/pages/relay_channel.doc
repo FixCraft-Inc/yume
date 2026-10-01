@@ -27,6 +27,8 @@ that transport v2 used, and all of them are frozen. A semantic change needs a
 new protocol version and new labels, with every writer, reader and test vector
 changed together.
 
+@diagram relay_channel
+
 ## Primitives
 
 - Identity: a composite Ed25519 and ML-DSA-87 key pair. It travels as two PEM

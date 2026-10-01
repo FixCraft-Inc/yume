@@ -109,6 +109,42 @@ refused as not allowed until the user accepts its proposal with
 unless
 .B circuits.min_hops
 approves the shorter length in advance.
+.\" yume-diagram: three_hop_circuit
+.nf
++--------------------------------+
+|  Client                        |
+|  knows chosen route            |
++----------------+---------------+
+                  \e
+                   \e
+                    v ==YUME==> three layers
+   +----------------+---------------+
+   |  Entry                         |
+   |  client and middle, not target |
+   +----------------+---------------+
+                     \e
+                      \e
+                       v ==YUME==> two layers on link
+      +----------------+---------------+
+      |  Middle                        |
+      |  entry and exit, not client    |
+      +----------------+---------------+
+                        \e
+                         \e
+                          v ==YUME==> one layer on link
+         +----------------+---------------+
+         |  Exit                          |
+         |  target, not client identity   |
+         +----------------+---------------+
+                           \e
+                            \e
+                             v ordinary TCP
+            +----------------+---------------+
+            |  Destination                   |
+            |  sees exit address             |
+            +--------------------------------+
+.fi
+.\" /yume-diagram
 .SH OPTIONS
 .TP
 .BI "--config " path
@@ -398,6 +434,84 @@ Their
 .B --help
 output describes their arguments.
 Setup and doctor are separate programs.
+.SH RECORD PROTECTION
+Each direction rotates its root independently, beginning halfway to its
+byte, record or 500 ms lifetime limit.
+Records wait if the old epoch runs out before the new root is confirmed.
+.\" yume-diagram: key_rotation
+.nf
++--------------------+           +--------------------+
+|  Sender            |           |  Receiver          |
+|  sending direction |           |  receive direction |
++--------------------+           +--------------------+
+           |                                |
+           |--.                             |
+           |  | fresh hybrid material       |
+           |<-'                             |
+           |                                |
+           |  REKEY_INIT, old-root seal     |
+           |==YUME=========================>|
+           |                                |
+           |                             .--|
+           |    check INIT, derive root  |  |
+           |                             '->|
+           |                                |
+           |  REKEY_ACK, confirm new root   |
+           |<=========================YUME==|
+           |                                |
+           |--.                             |
+           |  | verify ACK, commit root     |
+           |<-'                             |
+           |                                |
+           |  first new-epoch record        |
+           |==YUME=========================>|
+           |                                |
+           |                             .--|
+           | open record, wipe old root  |  |
+           |                             '->|
+           |                                |
+.fi
+.\" /yume-diagram
+.SH KIT TRANSFER
+A sealed client kit moves to another device with its code sent
+separately.
+Whoever holds both holds that client's credentials.
+.\" yume-diagram: kit_transfer
+.nf
++---------------------------+
+|  yume-setup               |
+|  init or add-client       |
++-------------+-------------+
+               \e
+                \e
+                 v
+   +-------------+-------------+
+   |  Client kit               |
+   |  config and secrets       |
+   +-------------+-------------+
+                  \e
+                   \e
+                    v
+      +-------------+-------------+        +--------------------+
+      |  Seal kit                 +------->|  25-character code |
+      |  Argon2id, AES-256-GCM    |  code  |  send separately   |
+      +-------------+-------------+        +--------------------+
+                     \e
+                      \e
+                       v
+         +-------------+-------------+
+         |  Sealed file              |
+         |  no readable header       |
+         +-------------+-------------+
+                        \e
+                         \e
+                          v
+            +-------------+-------------+
+            |  Import with code         |
+            |  verify tag, validate kit |
+            +---------------------------+
+.fi
+.\" /yume-diagram
 .SH SEE ALSO
 .BR yumed (8)
 .PP

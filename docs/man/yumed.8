@@ -183,6 +183,41 @@ When the list's
 .B not_after
 passes, the daemon closes its links and ends the peers' sessions until a
 reload loads a newer list.
+.\" yume-diagram: cluster_links
+.nf
++--------------+      +--------------+             +--------------+
+|  Operator    |      |  Node A      |             |  Node B      |
+|  offline key |      |  member      |             |  member      |
++--------------+      +--------------+             +--------------+
+        |                     |                            |
+        |  signed membership  |                            |
+        |-------------------->|                            |
+        |                     |                            |
+        |  signed membership  |                            |
+        |------------------------------------------------->|
+        |                     |                            |
+        |                     |--.                         |
+        |                     |  | verify list and serial  |
+        |                     |<-'                         |
+        |                     |                            |
+        |                     |                         .--|
+        |                     | verify list and serial  |  |
+        |                     |                         '->|
+        |                     |                            |
+        |                     |  A dials and proves PSK    |
+        |                     |--------------------------->|
+        |                     |                            |
+        |                     |  B dials, separate PSK     |
+        |                     |<---------------------------|
+        |                     |                            |
+        |                     |  circuit packet OPEN       |
+        |                     |==YUME=====================>|
+        |                     |                            |
+        |                     |  circuit packet OPEN       |
+        |                     |<=====================YUME==|
+        |                     |                            |
+.fi
+.\" /yume-diagram
 .SH COVER AND ADMISSION
 The daemon loads an operator-provided static site with explicit index
 and not-found files.
@@ -192,6 +227,42 @@ Ordinary cover requests can use HTTP/1.1 or HTTP/2 over TLS 1.2 or TLS
 YTP/1 promotion requires TLS 1.3, HTTP/2 and authenticated admission
 bound to the connection's TLS exporter.
 Failed admission remains cover traffic.
+.SH MODULE STREAMS
+A configured module receives an authorized service stream through a
+private UNIX socket.
+It runs as the daemon's user and must be trusted with that user's
+credentials.
+.B docs/MODULES.md
+defines its header and lifecycle.
+.\" yume-diagram: module_bridge
+.nf
++--------------------------+
+|  Client                  |
+|  OPEN named service      |
++-------------+------------+
+               \e
+                \e
+                 v ==YUME==> service OPEN and DATA
+   +-------------+------------+
+   |  yumed                   |
+   |  identity grant first    |
+   +-------------+------------+
+                  \e
+                   \e
+                    v authorized stream
+      +-------------+------------+
+      |  Module bridge           |
+      |  private UNIX connection |
+      +-------------+------------+
+                     \e
+                      \e
+                       v header, then bytes
+         +-------------+------------+
+         |  Module program          |
+         |  accepts on descriptor 3 |
+         +--------------------------+
+.fi
+.\" /yume-diagram
 .SH PRIVILEGE
 Run as an unprivileged user.
 Prefer a high listen port or grant only the low-port binding capability

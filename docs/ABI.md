@@ -261,10 +261,13 @@ YUME does not hold state or diagnostic mutexes while invoking application
 callbacks. It may retain endpoint lifecycle sequencing across a callback so
 state-event order cannot interleave. Callback arguments and strings are
 borrowed for that invocation only. To avoid self-deadlock, callbacks may
-re-enter only the side-effect-free version/status queries and
-`yume_handle_get_diagnostic`. Lifecycle, I/O, and registration calls return
+re-enter only the global version, build, compatibility and status-info queries
+and `yume_handle_get_diagnostic`. Endpoint state, status and message queries
+are forbidden from a callback, as are lifecycle, I/O and registration calls.
+Status-returning calls report
 `YUME_STATUS_INVALID_STATE`; the `void` destroy functions are ignored and
-ownership remains with the caller. Exceptions thrown by C++ callbacks are
+ownership remains with the caller, and `yume_endpoint_state` returns 0.
+Exceptions thrown by C++ callbacks are
 contained before returning through the C boundary.
 
 ## Runtime callbacks and bounds
@@ -611,6 +614,77 @@ The application routes traffic to the device and both peer addresses with
 it, keeps the transport's own connection outside it with
 `yume_endpoint_set_socket_protector`, and lets its own process's replies to
 the peer address reach the device.
+
+<!-- yume-diagram: device_bridge -->
+<img src="diagrams/device_bridge-vertical.svg" alt="How a phone connection crosses the device bridge" width="400" height="976">
+
+<details>
+<summary>What each part does</summary>
+
+- **Phone application**: The application asks its own kernel to connect to a destination. Its packets enter the VPN interface. ([`docs/ABI.md`](ABI.md))
+- **VPN interface**: The embedding app owns the TUN descriptor, addresses and routes. Android supplies it through VpnService. ([`include/yume/yume.h`](../include/yume/yume.h), [`src/abi/native_backend.cpp`](../src/abi/native_backend.cpp))
+- **Rewrite and reinject**: DeviceNat remembers the destination, rewrites addresses and ports, updates checksums and sends the segment back into the device. ([`src/runtime/device_nat.cpp`](../src/runtime/device_nat.cpp), [`src/runtime/device_bridge.cpp`](../src/runtime/device_bridge.cpp))
+- **Host TCP listener**: The host kernel terminates TCP at the bridge listener. The listener rejects connections the translator did not create. ([`src/runtime/device_bridge.cpp`](../src/runtime/device_bridge.cpp))
+- **libyume stream OPEN**: The bridge joins the local socket to one authenticated stream OPEN on the kit's TCP service. UDP uses packet OPENs instead. ([`src/runtime/device_bridge.cpp`](../src/runtime/device_bridge.cpp), [`src/abi/native_backend.cpp`](../src/abi/native_backend.cpp))
+- **yumed**: The ordinary server checks the identity grant and destination policy before opening a socket. It needs no phone-specific service. ([`src/runtime/native_endpoint.cpp`](../src/runtime/native_endpoint.cpp), [`src/providers/direct_route_handler.cpp`](../src/providers/direct_route_handler.cpp))
+- **Destination**: The destination gets a connection from the server. Application HTTPS, when used, still ends at the destination. ([`docs/THREAT_MODEL.md`](THREAT_MODEL.md))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++-------------------------------+
+|  Phone application            |
+|  TCP to a destination         |
++---------------+---------------+
+                 \
+                  \
+                   v
+   +---------------+---------------+
+   |  VPN interface                |
+   |  whole IP packets             |
+   +---------------+---------------+
+                    \
+                     \
+                      v
+      +---------------+---------------+
+      |  Rewrite and reinject         |
+      |  peer port to local listener  |
+      +---------------+---------------+
+                       \
+                        \
+                         v rewritten TCP
+         +---------------+---------------+
+         |  Host TCP listener            |
+         |  kernel supplies stream bytes |
+         +---------------+---------------+
+                          \
+                           \
+                            v stream bytes
+            +---------------+---------------+
+            |  libyume stream OPEN          |
+            |  original destination         |
+            +---------------+---------------+
+                             \
+                              \
+                               v ==YUME==> YTP/1 records
+               +---------------+---------------+
+               |  yumed                        |
+               |  grant, policy, outbound TCP  |
+               +---------------+---------------+
+                                \
+                                 \
+                                  v
+                  +---------------+---------------+
+                  |  Destination                  |
+                  |  reply returns through bridge |
+                  +-------------------------------+
+```
+
+</details>
+<!-- /yume-diagram -->
 
 ## Endpoint status
 

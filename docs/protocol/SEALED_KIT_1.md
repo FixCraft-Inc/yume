@@ -14,6 +14,62 @@ public material. A sealed kit carries that directory to the client's device
 as one file. Whoever holds the file and its code holds the client identity,
 so the code travels by another channel than the file.
 
+<!-- yume-diagram: kit_transfer -->
+<img src="../diagrams/kit_transfer-vertical.svg" alt="A client kit becomes one sealed file and a code" width="472" height="788">
+
+<details>
+<summary>What each part does</summary>
+
+- **yume-setup**: Creates a distinct client identity and access PSK, plus the server's public material and admission key. ([`tools/yume_setup.py`](../../tools/yume_setup.py))
+- **Client kit**: The client directory contains secrets. Sealing refuses a server configuration, links, special files or a deeper directory. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))
+- **Seal kit**: Generates a random code, salt and nonce, derives a key with fixed Argon2id costs and encrypts the bounded kit. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))
+- **Sealed file**: Only the salt, nonce, ciphertext and tag leave in the file. Its length still reveals the kit size within one KiB. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))
+- **Import with code**: The CLI decrypts, validates client configuration and publishes an owner-only directory without replacement. The ABI returns files for the app to store. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp), [`src/abi/yume_c.cpp`](../../src/abi/yume_c.cpp))
+- **25-character code**: Whoever holds both the file and code holds the client credentials. Send the code through another channel. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++---------------------------+
+|  yume-setup               |
+|  init or add-client       |
++-------------+-------------+
+               \
+                \
+                 v
+   +-------------+-------------+
+   |  Client kit               |
+   |  config and secrets       |
+   +-------------+-------------+
+                  \
+                   \
+                    v
+      +-------------+-------------+        +--------------------+
+      |  Seal kit                 +------->|  25-character code |
+      |  Argon2id, AES-256-GCM    |  code  |  send separately   |
+      +-------------+-------------+        +--------------------+
+                     \
+                      \
+                       v
+         +-------------+-------------+
+         |  Sealed file              |
+         |  no readable header       |
+         +-------------+-------------+
+                        \
+                         \
+                          v
+            +-------------+-------------+
+            |  Import with code         |
+            |  verify tag, validate kit |
+            +---------------------------+
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## Format
 
 A sealed kit has no plaintext header:

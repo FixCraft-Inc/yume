@@ -1,0 +1,87 @@
+{
+  "name": "cluster_links",
+  "type": "sequence",
+  "title": "How two cluster servers establish their links",
+  "summary": "An offline operator signs membership. Each server verifies it and maintains its own outbound YTP/1 session to every peer, with distinct directional PSKs.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "operator",
+      "kind": "key",
+      "title": "Operator",
+      "sub": "offline key",
+      "note": "Signs the cluster list and routes view. Its private key stays off the servers.",
+      "source": [
+        "tools/yume_setup.py"
+      ]
+    },
+    {
+      "id": "a",
+      "kind": "server",
+      "title": "Node A",
+      "sub": "member",
+      "note": "Checks both signatures, expiry and serial. Its outbound session uses B's TLS trust, admission key and the A-to-B PSK.",
+      "source": [
+        "src/runtime/cluster_list.cpp",
+        "src/runtime/native_server_runtime.cpp"
+      ]
+    },
+    {
+      "id": "b",
+      "kind": "server",
+      "title": "Node B",
+      "sub": "member",
+      "note": "Authenticates A as a peer with its inbound PSK and grants only yume.circuit. Its own outbound session to A is separate.",
+      "source": [
+        "src/runtime/native_credentials.cpp",
+        "src/runtime/native_server_runtime.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "operator",
+      "to": "a",
+      "label": "signed membership"
+    },
+    {
+      "from": "operator",
+      "to": "b",
+      "label": "signed membership"
+    },
+    {
+      "from": "a",
+      "to": "a",
+      "label": "verify list and serial"
+    },
+    {
+      "from": "b",
+      "to": "b",
+      "label": "verify list and serial"
+    },
+    {
+      "from": "a",
+      "to": "b",
+      "label": "A dials and proves PSK"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "label": "B dials, separate PSK"
+    },
+    {
+      "from": "a",
+      "to": "b",
+      "label": "circuit packet OPEN",
+      "channel": "tunnel"
+    },
+    {
+      "from": "b",
+      "to": "a",
+      "label": "circuit packet OPEN",
+      "channel": "tunnel"
+    }
+  ]
+}

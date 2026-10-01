@@ -1,0 +1,506 @@
+<svg class="dgm dgm-horizontal" data-dgm="three_hop_circuit-horizontal" width="1576" height="210" viewBox="0 0 1576 210" role="img" aria-labelledby="dgm-three_hop_circuit-horizontal-title dgm-three_hop_circuit-horizontal-desc" style="--dgm-dur:9.81s" xmlns="http://www.w3.org/2000/svg">
+<title id="dgm-three_hop_circuit-horizontal-title">A three-hop circuit and what each server knows</title>
+<desc id="dgm-three_hop_circuit-horizontal-desc">The client applies three circuit layers. Each node removes its own. All three servers belong to one operator, who can correlate their observations.</desc>
+<style>
+.dgm {
+  --dgm-plate: var(--color-paper, #fff9fd);
+  --dgm-card: var(--color-cloud, #fffcfe);
+  --dgm-ink: var(--color-ink, #392c35);
+  --dgm-muted: var(--color-muted, #6c5a67);
+  --dgm-rule: var(--color-rule, #e3d2dd);
+  --dgm-accent: var(--color-accent, #e899d3);
+  --dgm-strong: var(--color-accent-strong, #9c4088);
+  --dgm-soft: var(--color-accent-soft, #fad4ef);
+  --dgm-client: var(--color-role-client, #e899d3);
+  --dgm-client-strong: var(--color-role-client-strong, #9c4088);
+  --dgm-client-soft: var(--color-role-client-soft, #fad4ef);
+  --dgm-server: var(--color-role-server, #b5a4ea);
+  --dgm-server-strong: var(--color-role-server-strong, #674ea1);
+  --dgm-server-soft: var(--color-role-server-soft, #ebe5ff);
+  --dgm-data: var(--color-role-data, #7cb8ea);
+  --dgm-data-strong: var(--color-role-data-strong, #1b659a);
+  --dgm-data-soft: var(--color-role-data-soft, #dbeefe);
+  --dgm-disguise: var(--color-role-disguise, #f1ad71);
+  --dgm-disguise-strong: var(--color-role-disguise-strong, #985521);
+  --dgm-disguise-soft: var(--color-role-disguise-soft, #ffe8d2);
+  --dgm-keys: var(--color-role-keys, #f0ce65);
+  --dgm-keys-strong: var(--color-role-keys-strong, #7d5e07);
+  --dgm-keys-soft: var(--color-role-keys-soft, #fcf2cd);
+  --dgm-outside: var(--color-role-outside, #82c9aa);
+  --dgm-outside-strong: var(--color-role-outside-strong, #25694f);
+  --dgm-outside-soft: var(--color-role-outside-soft, #dbf4e8);
+  --dgm-refused: var(--color-role-refused, #ec928b);
+  --dgm-refused-strong: var(--color-role-refused-strong, #a73e3b);
+  --dgm-refused-soft: var(--color-role-refused-soft, #ffe3df);
+  --dgm-neutral: var(--color-role-neutral, #e3d2dd);
+  --dgm-neutral-strong: var(--color-role-neutral-strong, #6c5a67);
+  --dgm-neutral-soft: var(--color-role-neutral-soft, #f4e7f0);
+}
+
+/* Only the fallbacks change. Where the tokens exist this block resolves to
+   the same values as the one above, so an explicit theme still decides. */
+@media (prefers-color-scheme: dark) {
+  .dgm {
+    --dgm-plate: var(--color-paper, #10080e);
+    --dgm-card: var(--color-cloud, #21171e);
+    --dgm-ink: var(--color-ink, #f0e4ec);
+    --dgm-muted: var(--color-muted, #958891);
+    --dgm-rule: var(--color-rule, #40343c);
+    --dgm-accent: var(--color-accent, #e596d0);
+    --dgm-strong: var(--color-accent-strong, #ffb2ee);
+    --dgm-soft: var(--color-accent-soft, #3e1935);
+    --dgm-client: var(--color-role-client, #e596d0);
+    --dgm-client-strong: var(--color-role-client-strong, #ffb2ee);
+    --dgm-client-soft: var(--color-role-client-soft, #3e1935);
+    --dgm-server: var(--color-role-server, #a392d6);
+    --dgm-server-strong: var(--color-role-server-strong, #d1c4fd);
+    --dgm-server-soft: var(--color-role-server-soft, #2b243f);
+    --dgm-data: var(--color-role-data, #6da4d3);
+    --dgm-data-strong: var(--color-role-data-strong, #a8d3f9);
+    --dgm-data-soft: var(--color-role-data-soft, #12283b);
+    --dgm-disguise: var(--color-role-disguise, #dd9b5f);
+    --dgm-disguise-strong: var(--color-role-disguise-strong, #f8c696);
+    --dgm-disguise-soft: var(--color-role-disguise-soft, #3c220f);
+    --dgm-keys: var(--color-role-keys, #e0c262);
+    --dgm-keys-strong: var(--color-role-keys-strong, #f3de90);
+    --dgm-keys-soft: var(--color-role-keys-soft, #352a09);
+    --dgm-outside: var(--color-role-outside, #73b598);
+    --dgm-outside-strong: var(--color-role-outside-strong, #aadfc6);
+    --dgm-outside-soft: var(--color-role-outside-soft, #112d21);
+    --dgm-refused: var(--color-role-refused, #da827b);
+    --dgm-refused-strong: var(--color-role-refused-strong, #febab4);
+    --dgm-refused-soft: var(--color-role-refused-soft, #401d1b);
+    --dgm-neutral: var(--color-role-neutral, #40343c);
+    --dgm-neutral-strong: var(--color-role-neutral-strong, #958891);
+    --dgm-neutral-soft: var(--color-role-neutral-soft, #2a2127);
+  }
+}
+
+.dgm-plate {
+  fill: var(--dgm-plate);
+  stroke: var(--dgm-rule);
+  stroke-width: 1;
+  opacity: var(--dgm-plate-opacity, 1);
+}
+
+/* The shadow is its own shape behind the card, never a filter on the card
+   itself. A renderer that cannot resolve the filter drops only the shadow;
+   SVG says a reference to a missing filter hides the element that names it,
+   which would take the card with it. */
+/* The halo under a card and the chip behind its glyph are the presence
+   channel: they say the packet is in this node right now. The card's border
+   is left alone, because that already says whether the node is YUME software
+   and one mark cannot carry two meanings. */
+/* The glow and the chip light up with different tokens because they are
+   doing different things. A glow is read as colour, not as brightness: on a
+   near-white page nothing can be brighter than the page, so it uses accent,
+   which stays a mid pink in both themes. Accent-strong there would be a dark
+   bloom, which reads as weight rather than attention. */
+.dgm-lift {
+  fill: var(--dgm-rest);
+  opacity: 0.85;
+  --dgm-rest: var(--dgm-rule);
+  --dgm-live: var(--dgm-tone, var(--dgm-accent));
+}
+
+.dgm-card {
+  fill: var(--dgm-card);
+  stroke: var(--dgm-rule);
+  stroke-width: 1.5;
+}
+
+/* A card YUME itself runs is outlined in its role colour, and everything the
+   route only reaches keeps a neutral outline, so the eye follows the part of
+   the path this project is responsible for. It is a software boundary, not a
+   trust claim: yumed still terminates the tunnel and sees what it forwards. */
+.dgm-node-owned .dgm-card {
+  stroke: var(--dgm-tone, var(--dgm-accent));
+  stroke-width: 2;
+}
+
+/* The chip carries the role on every card, owned or not. It is a filled shape
+   with the glyph knocked out of it, so when lit it takes the role's strong
+   tone, which contrasts with the card in both themes. */
+.dgm-chip {
+  fill: var(--dgm-rest);
+  --dgm-rest: var(--dgm-tone-soft, var(--dgm-rule));
+  --dgm-live: var(--dgm-tone-strong, var(--dgm-strong));
+}
+
+/* The glyph goes with its chip. Leaving it on the accent while the chip fills
+   with the accent puts light on light, and the icon smears instead of
+   reading, so it is knocked out to the card it sits on. */
+.dgm-glyph {
+  --dgm-rest: none;
+  --dgm-live: none;
+  --dgm-rest-line: var(--dgm-tone-strong, var(--dgm-muted));
+  --dgm-live-line: var(--dgm-card);
+}
+
+.dgm-glyph-fill {
+  --dgm-rest: var(--dgm-tone-strong, var(--dgm-muted));
+  --dgm-live: var(--dgm-card);
+  --dgm-rest-line: none;
+  --dgm-live-line: none;
+}
+
+.dgm-ring,
+.dgm-lift,
+.dgm-chip,
+.dgm-glyph,
+.dgm-glyph-fill {
+  animation-duration: var(--dgm-dur, 6s);
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.dgm-lift,
+.dgm-chip {
+  --dgm-rest-line: none;
+  --dgm-live-line: none;
+}
+
+.dgm-glyph {
+  fill: none;
+  stroke: var(--dgm-tone-strong, var(--dgm-muted));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dgm-glyph-fill {
+  fill: var(--dgm-tone-strong, var(--dgm-muted));
+  stroke: none;
+}
+
+.dgm-title {
+  fill: var(--dgm-ink);
+  font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dgm-sub,
+.dgm-edge-label {
+  fill: var(--dgm-muted);
+  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-size: 11px;
+}
+
+.dgm-centred {
+  text-anchor: middle;
+}
+
+.dgm-end {
+  text-anchor: end;
+}
+
+/* An enclosure holds a run of nodes the specification says belong together,
+   and carries the name it gives them. */
+.dgm-group {
+  fill: var(--dgm-rule);
+  fill-opacity: 0.22;
+  stroke: var(--dgm-muted);
+  stroke-opacity: 0.5;
+  stroke-width: 1.5;
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+}
+
+.dgm-group-title {
+  fill: var(--dgm-muted);
+  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+/* An ordinary hop is quiet plumbing. Colour is kept for the protected hop,
+   which carries the brand accent, and for a branch, which takes the role of
+   the node it turns towards. */
+.dgm-link {
+  fill: none;
+  stroke: var(--dgm-muted);
+  stroke-opacity: 0.55;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.dgm-link-onion {
+  stroke-dasharray: 2 5;
+}
+
+.dgm-link-branch {
+  stroke: var(--dgm-tone);
+  stroke-opacity: 1;
+  stroke-dasharray: 6 6;
+}
+
+/* The protected hop is drawn as a conduit: a soft bore, two walls, and the
+   carrier moving between them. Each is one stroked line, so the treatment
+   holds at whatever angle the hop runs. This is the ==YUME==> of the ASCII. */
+.dgm-conduit {
+  fill: none;
+  stroke: var(--dgm-soft);
+  stroke-width: 20;
+  stroke-linecap: round;
+}
+
+.dgm-conduit-wall {
+  fill: none;
+  stroke: var(--dgm-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.dgm-conduit-flow {
+  fill: none;
+  stroke: var(--dgm-strong);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 12 26;
+  animation: dgm-flow 2.4s linear infinite;
+}
+
+/* The stroke rounds the triangle's corners, which is the same softening the
+   cards and the chips carry. */
+.dgm-arrow {
+  fill: var(--dgm-muted);
+  stroke: var(--dgm-muted);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+/* The head of the protected hop keeps the accent its conduit carries. */
+.dgm-conduit-head {
+  fill: var(--dgm-strong);
+  stroke: var(--dgm-strong);
+}
+
+.dgm-junction {
+  fill: var(--dgm-muted);
+}
+
+.dgm-branch .dgm-arrow {
+  fill: var(--dgm-tone-strong);
+  stroke: var(--dgm-tone-strong);
+}
+
+.dgm-role-client {
+  --dgm-tone: var(--dgm-client);
+  --dgm-tone-strong: var(--dgm-client-strong);
+  --dgm-tone-soft: var(--dgm-client-soft);
+}
+
+.dgm-role-server {
+  --dgm-tone: var(--dgm-server);
+  --dgm-tone-strong: var(--dgm-server-strong);
+  --dgm-tone-soft: var(--dgm-server-soft);
+}
+
+.dgm-role-data {
+  --dgm-tone: var(--dgm-data);
+  --dgm-tone-strong: var(--dgm-data-strong);
+  --dgm-tone-soft: var(--dgm-data-soft);
+}
+
+.dgm-role-disguise {
+  --dgm-tone: var(--dgm-disguise);
+  --dgm-tone-strong: var(--dgm-disguise-strong);
+  --dgm-tone-soft: var(--dgm-disguise-soft);
+}
+
+.dgm-role-keys {
+  --dgm-tone: var(--dgm-keys);
+  --dgm-tone-strong: var(--dgm-keys-strong);
+  --dgm-tone-soft: var(--dgm-keys-soft);
+}
+
+.dgm-role-outside {
+  --dgm-tone: var(--dgm-outside);
+  --dgm-tone-strong: var(--dgm-outside-strong);
+  --dgm-tone-soft: var(--dgm-outside-soft);
+}
+
+.dgm-role-refused {
+  --dgm-tone: var(--dgm-refused);
+  --dgm-tone-strong: var(--dgm-refused-strong);
+  --dgm-tone-soft: var(--dgm-refused-soft);
+}
+
+.dgm-role-neutral {
+  --dgm-tone: var(--dgm-neutral);
+  --dgm-tone-strong: var(--dgm-neutral-strong);
+  --dgm-tone-soft: var(--dgm-neutral-soft);
+}
+
+/* A layer is a ring, filled with its role's tint and outlined in its tone.
+   On the loop the rings light in wrapping order, innermost first, which is
+   the only thing the motion in a layers figure says. */
+.dgm-ring {
+  fill: var(--dgm-rest);
+  stroke: var(--dgm-rest-line);
+  stroke-width: 1.5;
+  --dgm-rest: var(--dgm-tone-soft);
+  --dgm-live: var(--dgm-tone);
+  --dgm-rest-line: var(--dgm-tone);
+  --dgm-live-line: var(--dgm-tone-strong);
+}
+
+.dgm-ring-title {
+  fill: var(--dgm-tone-strong);
+  font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* A party's lifeline is the time axis for that party, so it is drawn as
+   quietly as a leader and never competes with a message. */
+.dgm-lifeline {
+  fill: none;
+  stroke: var(--dgm-rule);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 6;
+  stroke-linecap: round;
+}
+
+.dgm-leader {
+  fill: none;
+  stroke: var(--dgm-rule);
+  stroke-width: 1.5;
+  stroke-dasharray: 1 4;
+  stroke-linecap: round;
+}
+
+.dgm-packet-core {
+  fill: var(--dgm-strong);
+}
+
+.dgm-packet-glow {
+  fill: var(--dgm-accent);
+  opacity: 0.38;
+}
+
+@keyframes dgm-travel {
+  from { offset-distance: 0%; }
+  to { offset-distance: 100%; }
+}
+
+@keyframes dgm-flow {
+  to { stroke-dashoffset: -38; }
+}
+
+/* The packets are hidden by the markup and revealed only where the property
+   that positions them exists. */
+@supports (offset-path: path("M0 0")) {
+  .dgm-packet {
+    display: block;
+    offset-path: var(--dgm-path);
+    offset-rotate: 0deg;
+    offset-distance: 0%;
+    animation: dgm-travel var(--dgm-dur, 6s) linear infinite;
+  }
+
+  @keyframes dgm-three_hop_circuit-horizontal-here-0 {
+    0%, 6.11% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    7.95%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="three_hop_circuit-horizontal"] .dgm-here-0 { animation-name: dgm-three_hop_circuit-horizontal-here-0; }
+
+  @keyframes dgm-three_hop_circuit-horizontal-here-1 {
+    0%, 19.74% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    21.57%, 33.8% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    35.64%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="three_hop_circuit-horizontal"] .dgm-here-1 { animation-name: dgm-three_hop_circuit-horizontal-here-1; }
+
+  @keyframes dgm-three_hop_circuit-horizontal-here-2 {
+    0%, 44.19% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    46.03%, 58.26% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    60.09%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="three_hop_circuit-horizontal"] .dgm-here-2 { animation-name: dgm-three_hop_circuit-horizontal-here-2; }
+
+  @keyframes dgm-three_hop_circuit-horizontal-here-3 {
+    0%, 68.65% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    70.48%, 82.71% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+    84.55%, 100% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+  }
+
+  [data-dgm="three_hop_circuit-horizontal"] .dgm-here-3 { animation-name: dgm-three_hop_circuit-horizontal-here-3; }
+
+  @keyframes dgm-three_hop_circuit-horizontal-here-4 {
+    0%, 92.05% { fill: var(--dgm-rest); stroke: var(--dgm-rest-line); }
+    93.89%, 100% { fill: var(--dgm-live); stroke: var(--dgm-live-line); }
+  }
+
+  [data-dgm="three_hop_circuit-horizontal"] .dgm-here-4 { animation-name: dgm-three_hop_circuit-horizontal-here-4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dgm-packet {
+    display: none;
+  }
+
+  .dgm-conduit-flow,
+  .dgm-ring,
+  .dgm-lift,
+  .dgm-chip,
+  .dgm-glyph,
+  .dgm-glyph-fill {
+    animation: none;
+  }
+}
+</style>
+<defs><filter id="dgm-three_hop_circuit-horizontal-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
+<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="1575" height="209" rx="18"/>
+<g class="dgm-groups"><rect class="dgm-group" fill="#e3d2dd" fill-opacity="0.22" stroke="#6c5a67" stroke-opacity="0.5" stroke-width="1.5" stroke-dasharray="1 5" stroke-linecap="round" x="384" y="20" width="868" height="154" rx="20"/><text class="dgm-group-title dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" letter-spacing="0.08em" text-anchor="middle" x="818" y="42">One operator&#x27;s cluster</text></g>
+<g class="dgm-links">
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M202.87 136.41L358.27 111.34"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M201.28 126.54L356.68 101.47"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M204.46 146.28L359.86 121.22"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M202.87 136.41L358.27 111.34"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M369.1 115.68L367.18 103.83L379 108Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="286" y="89">three layers</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M581 108L708 108"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M581 98L708 98"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M581 118L708 118"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M581 108L708 108"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M718 114L718 102L729 108Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="650" y="89">two layers on link</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M917 108L1044 108"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M917 98L1044 98"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M917 118L1044 118"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M917 108L1044 108"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M1054 114L1054 102L1065 108Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="986" y="89">one layer on link</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M1257 108L1372.3 135.45"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M1370.91 141.29L1373.69 129.62L1383 138Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="1320" y="89">ordinary TCP</text>
+</g>
+<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M 104 138 L 193 138 L 379 108 L 482 108 L 571 108 L 729 108 L 818 108 L 907 108 L 1065 108 L 1154 108 L 1257 108 L 1383 138 L 1472 138')"/><circle class="dgm-packet dgm-packet-core" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M 104 138 L 193 138 L 379 108 L 482 108 L 571 108 L 729 108 L 818 108 L 907 108 L 1065 108 L 1154 108 L 1257 108 L 1383 138 L 1472 138')"/></g>
+<g class="dgm-nodes">
+<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="client"><rect class="dgm-lift dgm-here-0" fill="#e3d2dd" opacity="0.85" x="17" y="86" width="174" height="110" rx="19" filter="url(#dgm-three_hop_circuit-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="2" x="20" y="86" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-0" fill="#fad4ef" x="88" y="100" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-0" fill="none" stroke="#9c4088" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="92" y="104" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="104" y="152">Client</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="104" y="168">knows chosen route</text>
+</g>
+<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="entry"><rect class="dgm-lift dgm-here-1" fill="#e3d2dd" opacity="0.85" x="395" y="56" width="174" height="110" rx="19" filter="url(#dgm-three_hop_circuit-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="2" x="398" y="56" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-1" fill="#ebe5ff" x="466" y="70" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-1" fill="none" stroke="#674ea1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="470" y="74" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill dgm-here-1" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill dgm-here-1" fill="#674ea1" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="482" y="122">Entry</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="482" y="138">client and middle,</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="482" y="151">not target</text>
+</g>
+<g class="dgm-node dgm-node-relay dgm-role-server dgm-node-owned" data-node="middle"><rect class="dgm-lift dgm-here-2" fill="#e3d2dd" opacity="0.85" x="731" y="56" width="174" height="110" rx="19" filter="url(#dgm-three_hop_circuit-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="2" x="734" y="56" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-2" fill="#ebe5ff" x="802" y="70" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-2" fill="none" stroke="#674ea1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="806" y="74" width="24" height="24" viewBox="0 0 24 24"><path d="M12 3.2 20 7.6v8.8L12 20.8 4 16.4V7.6z"/><circle cx="12" cy="12" r="1.5" class="dgm-glyph-fill dgm-here-2" fill="#674ea1" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="818" y="122">Middle</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="818" y="138">entry and exit, not</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="818" y="151">client</text>
+</g>
+<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="exit"><rect class="dgm-lift dgm-here-3" fill="#e3d2dd" opacity="0.85" x="1067" y="56" width="174" height="110" rx="19" filter="url(#dgm-three_hop_circuit-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="2" x="1070" y="56" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-3" fill="#ebe5ff" x="1138" y="70" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-3" fill="none" stroke="#674ea1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="1142" y="74" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill dgm-here-3" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill dgm-here-3" fill="#674ea1" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="1154" y="122">Exit</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="1154" y="138">target, not client</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="1154" y="151">identity</text>
+</g>
+<g class="dgm-node dgm-node-target dgm-role-outside" data-node="target"><rect class="dgm-lift dgm-here-4" fill="#e3d2dd" opacity="0.85" x="1385" y="86" width="174" height="110" rx="19" filter="url(#dgm-three_hop_circuit-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e3d2dd" stroke-width="1.5" x="1388" y="86" width="168" height="104" rx="16"/><rect class="dgm-chip dgm-here-4" fill="#dbf4e8" x="1456" y="100" width="32" height="32" rx="11"/><svg class="dgm-glyph dgm-here-4" fill="none" stroke="#25694f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="1460" y="104" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c4 4.5 4 12.5 0 17c-4-4.5-4-12.5 0-17z"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="1472" y="152">Destination</text>
+<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="1472" y="168">sees exit address</text>
+</g>
+</g>
+</svg>

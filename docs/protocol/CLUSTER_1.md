@@ -191,6 +191,58 @@ below and, for each peer, the outbound link's state, the peer's inbound
 sessions and the circuits that arrive over the peer's link and leave over
 this server's link to it, counted apart. yumed(8) gives the fields.
 
+<!-- yume-diagram: cluster_links -->
+<img src="../diagrams/cluster_links-vertical.svg" alt="How two cluster servers establish their links" width="602" height="569">
+
+<details>
+<summary>What each part does</summary>
+
+- **Operator**: Signs the cluster list and routes view. Its private key stays off the servers. ([`tools/yume_setup.py`](../../tools/yume_setup.py))
+- **Node A**: Checks both signatures, expiry and serial. Its outbound session uses B's TLS trust, admission key and the A-to-B PSK. ([`src/runtime/cluster_list.cpp`](../../src/runtime/cluster_list.cpp), [`src/runtime/native_server_runtime.cpp`](../../src/runtime/native_server_runtime.cpp))
+- **Node B**: Authenticates A as a peer with its inbound PSK and grants only yume.circuit. Its own outbound session to A is separate. ([`src/runtime/native_credentials.cpp`](../../src/runtime/native_credentials.cpp), [`src/runtime/native_server_runtime.cpp`](../../src/runtime/native_server_runtime.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++--------------+      +--------------+             +--------------+
+|  Operator    |      |  Node A      |             |  Node B      |
+|  offline key |      |  member      |             |  member      |
++--------------+      +--------------+             +--------------+
+        |                     |                            |
+        |  signed membership  |                            |
+        |-------------------->|                            |
+        |                     |                            |
+        |  signed membership  |                            |
+        |------------------------------------------------->|
+        |                     |                            |
+        |                     |--.                         |
+        |                     |  | verify list and serial  |
+        |                     |<-'                         |
+        |                     |                            |
+        |                     |                         .--|
+        |                     | verify list and serial  |  |
+        |                     |                         '->|
+        |                     |                            |
+        |                     |  A dials and proves PSK    |
+        |                     |--------------------------->|
+        |                     |                            |
+        |                     |  B dials, separate PSK     |
+        |                     |<---------------------------|
+        |                     |                            |
+        |                     |  circuit packet OPEN       |
+        |                     |==YUME=====================>|
+        |                     |                            |
+        |                     |  circuit packet OPEN       |
+        |                     |<=====================YUME==|
+        |                     |                            |
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## Circuit service
 
 Every member serves two services of its own, whose names no configuration may

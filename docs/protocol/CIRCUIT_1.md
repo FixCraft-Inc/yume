@@ -25,6 +25,61 @@ watches both the client and the exit and matches the timing of their traffic.
 The exit sees each destination and any content not protected by TLS or
 another end-to-end layer.
 
+<!-- yume-diagram: three_hop_circuit -->
+<img src="../diagrams/three_hop_circuit-vertical.svg" alt="A three-hop circuit and what each server knows" width="428" height="870">
+
+<details>
+<summary>What each part does</summary>
+
+- **Client**: Chooses the entry, middle and exit from the signed routes view, verifies each hop handshake and applies one layer per hop. ([`src/runtime/circuit_pool.cpp`](../../src/runtime/circuit_pool.cpp), [`src/runtime/circuit_client.cpp`](../../src/runtime/circuit_client.cpp))
+- **Entry**: Authenticates the client on its session and removes the entry layer. It knows the next hop and can infer the circuit length. ([`src/runtime/circuit_node.cpp`](../../src/runtime/circuit_node.cpp))
+- **Middle**: Removes the middle layer and passes the remaining exit ciphertext over its outbound link. It learns its two neighbours. ([`src/runtime/circuit_node.cpp`](../../src/runtime/circuit_node.cpp))
+- **Exit**: Removes the final layer, checks its egress policy and reaches the destination. It sees content the application did not encrypt. ([`src/runtime/circuit_node.cpp`](../../src/runtime/circuit_node.cpp), [`src/runtime/circuit_host.cpp`](../../src/runtime/circuit_host.cpp))
+- **Destination**: The circuit protects the path between client and exit. Application encryption has its own trust boundary. ([`docs/protocol/CIRCUIT_1.md`](CIRCUIT_1.md))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++--------------------------------+
+|  Client                        |
+|  knows chosen route            |
++----------------+---------------+
+                  \
+                   \
+                    v ==YUME==> three layers
+   +----------------+---------------+
+   |  Entry                         |
+   |  client and middle, not target |
+   +----------------+---------------+
+                     \
+                      \
+                       v ==YUME==> two layers on link
+      +----------------+---------------+
+      |  Middle                        |
+      |  entry and exit, not client    |
+      +----------------+---------------+
+                        \
+                         \
+                          v ==YUME==> one layer on link
+         +----------------+---------------+
+         |  Exit                          |
+         |  target, not client identity   |
+         +----------------+---------------+
+                           \
+                            \
+                             v ordinary TCP
+            +----------------+---------------+
+            |  Destination                   |
+            |  sees exit address             |
+            +--------------------------------+
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## Conventions
 
 The key words **MUST**, **MUST NOT**, **SHOULD** and **MAY** describe what the

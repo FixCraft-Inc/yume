@@ -32,6 +32,14 @@ YUME protects a session to its terminating endpoint. It is not an anonymity
 network, endpoint sandbox, traffic-volume concealment system, or substitute for
 application-layer encryption.
 
+@diagram trust_boundary
+
+With a circuit, the entry authenticates the client, the middle knows its
+neighbours and the exit opens the destination. All nodes belong to one
+operator, who can combine their observations. Circuit layers do not hide
+timing or protect unencrypted application content from the exit. See
+[circuit 1](protocol/CIRCUIT_1.md).
+
 ## Credential boundary
 
 Each authorized client identity has:
@@ -57,10 +65,15 @@ credentials copied before installation.
 ## Public admission and cover
 
 Admission must be cheap, bounded, keyed, and replay protected before expensive
-YTP authentication work. Missing, malformed, expired, replayed, wrong-key,
-profile-mismatched, or authority-mismatched input stays on the configured
+YTP authentication work. Missing, malformed, replayed, wrong-key,
+exporter-mismatched, or authority-mismatched input stays on the configured
 cover's genuine website behavior. It must not expose an AUTH parser, YUME error, retry
 hint, or protocol downgrade to an unauthenticated peer.
+
+The current admission proof carries neither a wall-clock expiry nor a
+profile ID. Its nonce reservation expires by monotonic time, and its TLS
+exporter prevents reuse on another connection. Saturated replay or promotion
+capacity also stays on the cover path.
 
 The cover backend receives only bounded ordinary HTTP behavior and is isolated
 from key material and promoted channels. Backend failure still produces
@@ -134,17 +147,14 @@ size, fields, service names, stream IDs/count, pending opens, per-stream and
 connection credit, queued bytes, control messages, packet size/batch, admission
 replay state, handshake work, and rekey work.
 
-Receive-credit tokens release their credit on destruction and contain release
-callback exceptions. Client queue admission reserves capacity after successful
-insertion. `try_send_data` reports refusal through its completion, while
-`wait_send_data` returns an admission status without invoking the completion.
-TransportCore shutdown drains queued writes without allocating. Session close
-falls back to closing the socket if the close deadline cannot be armed.
-Server TLS dispatch preserves ownership through batch assembly and retains
-undelivered completions until terminal close. Asynchronous delivery failure
-does not itself close the session, as described in
-[implementation status](IMPLEMENTATION_STATUS.md). These fixes do not prove
-complete cleanup under arbitrary allocation, callback or lifecycle failure.
+The native engine and providers own admission, retained buffers and credit.
+Receive-credit tokens return credit on destruction and contain callback
+exceptions. The carrier and TCP providers use reserved control dispatch for
+close, cancellation and credit return. Their caller closes owners, finishes
+the execution context and drains accepted completions. Terminal session
+failure clears deferred records and pending security work. Focused tests
+exercise allocation failure, cancellation and callback exceptions at these
+boundaries. They do not prove complete cleanup under every possible failure.
 
 Bounds reduce supported-process blast radius. They do not guarantee
 availability against an attacker controlling the link or external OS/resource

@@ -69,6 +69,8 @@ rotation at its own setting.
 
 @diagram record_layers
 
+@diagram key_rotation
+
 ## Streams and policy
 
 The client opens streams by service name, `tcp` or `udp` in a default kit, and
@@ -104,7 +106,10 @@ deciding where traffic comes from. The ABI is experimental and not yet frozen.
 | The destination | The server's address and the application's own traffic |
 @end
 
-`yumed` is a single-hop proxy that ends the tunnel. Use TLS inside the tunnel,
+The direct route uses one `yumed` that ends the tunnel. TCP circuits can use
+two or three servers inside one operator's cluster; the exit ends that route,
+and the operator can correlate its hops. Across-operator transit is planned.
+Use TLS inside the tunnel,
 as browsers do, to keep content private from the server. YUME cannot help when
 the server's address itself is blocked, and it makes no claim to be
 undetectable. The [threat model](THREAT_MODEL.md) and

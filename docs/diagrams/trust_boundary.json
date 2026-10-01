@@ -1,0 +1,87 @@
+{
+  "name": "trust_boundary",
+  "type": "flow",
+  "title": "Where application encryption ends",
+  "summary": "YUME protection ends at yumed. Application HTTPS can continue through it to the origin. An outside observer still sees the tunnel endpoint and encrypted sizes and timing.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "application",
+      "kind": "app",
+      "title": "Application HTTPS",
+      "sub": "TLS to origin",
+      "note": "The application authenticates and encrypts to its own destination independently of YUME.",
+      "source": [
+        "docs/THREAT_MODEL.md"
+      ]
+    },
+    {
+      "id": "client",
+      "kind": "client",
+      "title": "yume or libyume",
+      "sub": "YTP/1 over TLS",
+      "note": "Seals the application's bytes into YTP records inside TLS to yumed. It does not replace the application's TLS.",
+      "source": [
+        "src/engine/session_engine.cpp",
+        "src/providers/tls13_secure_channel.cpp"
+      ]
+    },
+    {
+      "id": "server",
+      "kind": "server",
+      "title": "yumed",
+      "sub": "YUME ends here",
+      "note": "Reads identities and destinations and removes YUME protection. HTTPS content remains encrypted, while plain application content is readable.",
+      "source": [
+        "src/providers/direct_route_handler.cpp",
+        "src/runtime/native_egress_policy.cpp"
+      ]
+    },
+    {
+      "id": "origin",
+      "kind": "target",
+      "title": "Origin",
+      "sub": "HTTPS ends here",
+      "note": "Authenticates the application connection and decrypts its HTTPS content. It sees the exit server's address.",
+      "source": [
+        "docs/THREAT_MODEL.md"
+      ]
+    },
+    {
+      "id": "observer",
+      "kind": "cloud",
+      "title": "Path observer",
+      "sub": "IP, sizes, timing",
+      "note": "Observes the client-to-server connection. TLS hides payloads, but ClientHello, site name, endpoint IP and traffic geometry remain visible.",
+      "source": [
+        "docs/STEALTH.md"
+      ],
+      "side": true
+    }
+  ],
+  "edges": [
+    {
+      "from": "application",
+      "to": "client",
+      "label": "HTTPS bytes"
+    },
+    {
+      "from": "client",
+      "to": "server",
+      "label": "YTP inside TLS",
+      "channel": "tunnel"
+    },
+    {
+      "from": "server",
+      "to": "origin",
+      "label": "same HTTPS bytes"
+    },
+    {
+      "from": "client",
+      "to": "observer",
+      "label": "metadata"
+    }
+  ]
+}

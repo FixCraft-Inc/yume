@@ -1,0 +1,91 @@
+{
+  "name": "three_hop_circuit",
+  "type": "route",
+  "title": "A three-hop circuit and what each server knows",
+  "summary": "The client applies three circuit layers. Each node removes its own. All three servers belong to one operator, who can correlate their observations.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "client",
+      "kind": "client",
+      "title": "Client",
+      "sub": "knows chosen route",
+      "note": "Chooses the entry, middle and exit from the signed routes view, verifies each hop handshake and applies one layer per hop.",
+      "source": [
+        "src/runtime/circuit_pool.cpp",
+        "src/runtime/circuit_client.cpp"
+      ]
+    },
+    {
+      "id": "entry",
+      "kind": "server",
+      "title": "Entry",
+      "sub": "client and middle, not target",
+      "note": "Authenticates the client on its session and removes the entry layer. It knows the next hop and can infer the circuit length.",
+      "source": [
+        "src/runtime/circuit_node.cpp"
+      ],
+      "group": "One operator's cluster"
+    },
+    {
+      "id": "middle",
+      "kind": "relay",
+      "title": "Middle",
+      "sub": "entry and exit, not client",
+      "note": "Removes the middle layer and passes the remaining exit ciphertext over its outbound link. It learns its two neighbours.",
+      "source": [
+        "src/runtime/circuit_node.cpp"
+      ],
+      "group": "One operator's cluster"
+    },
+    {
+      "id": "exit",
+      "kind": "server",
+      "title": "Exit",
+      "sub": "target, not client identity",
+      "note": "Removes the final layer, checks its egress policy and reaches the destination. It sees content the application did not encrypt.",
+      "source": [
+        "src/runtime/circuit_node.cpp",
+        "src/runtime/circuit_host.cpp"
+      ],
+      "group": "One operator's cluster"
+    },
+    {
+      "id": "target",
+      "kind": "target",
+      "title": "Destination",
+      "sub": "sees exit address",
+      "note": "The circuit protects the path between client and exit. Application encryption has its own trust boundary.",
+      "source": [
+        "docs/protocol/CIRCUIT_1.md"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "client",
+      "to": "entry",
+      "label": "three layers",
+      "channel": "tunnel"
+    },
+    {
+      "from": "entry",
+      "to": "middle",
+      "label": "two layers on link",
+      "channel": "tunnel"
+    },
+    {
+      "from": "middle",
+      "to": "exit",
+      "label": "one layer on link",
+      "channel": "tunnel"
+    },
+    {
+      "from": "exit",
+      "to": "target",
+      "label": "ordinary TCP"
+    }
+  ]
+}

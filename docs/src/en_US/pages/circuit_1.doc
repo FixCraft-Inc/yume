@@ -34,6 +34,8 @@ watches both the client and the exit and matches the timing of their traffic.
 The exit sees each destination and any content not protected by TLS or
 another end-to-end layer.
 
+@diagram three_hop_circuit
+
 ## Conventions
 
 The key words **MUST**, **MUST NOT**, **SHOULD** and **MAY** describe what the

@@ -49,6 +49,11 @@ layers.
 | Any commit | `scripts/check_repository_hygiene.py --staged` before committing: whitespace in staged files, and in CI each pushed commit's format and signature |
 @end
 
+CI’s `libcxx` job builds the native application, optional module libraries
+and shared ABI with Clang and libc++, and runs their tests. A moved-from
+`std::function` may remain callable under that library; callbacks taken from
+stored state must be explicitly emptied before that state can be settled again.
+
 Keep current behavior in the linked contracts and support limits in
 [implementation status](../IMPLEMENTATION_STATUS.md). Record behavior changes
 in [development notes](../release/CHANGELOG.md).

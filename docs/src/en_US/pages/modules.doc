@@ -101,6 +101,8 @@ taken the connection within 10 seconds fails the open. Streams are refused
 while the module is down, and one module receives at most 1024 connections at
 once.
 
+@diagram module_bridge
+
 ## Restarts and stopping
 
 When the module exits, its connections close and their streams end. The

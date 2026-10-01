@@ -228,6 +228,56 @@ rotation at its own setting.
 </details>
 <!-- /yume-diagram -->
 
+<!-- yume-diagram: key_rotation -->
+<img src="diagrams/key_rotation-vertical.svg" alt="How one sending direction changes its root" width="436" height="519">
+
+<details>
+<summary>What each part does</summary>
+
+- **Sender**: Starts rotation at half the epoch's byte, record or 500 ms lifetime limit. Later data waits if the old epoch runs out. ([`src/engine/session_engine.cpp`](../src/engine/session_engine.cpp))
+- **Receiver**: Checks the old-root proof, contributes fresh hybrid material and confirms the candidate new root. A malformed or late exchange ends the session. ([`src/providers/openssl_security_provider.cpp`](../src/providers/openssl_security_provider.cpp), [`src/providers/ytp1_crypto.cpp`](../src/providers/ytp1_crypto.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++--------------------+           +--------------------+
+|  Sender            |           |  Receiver          |
+|  sending direction |           |  receive direction |
++--------------------+           +--------------------+
+           |                                |
+           |--.                             |
+           |  | fresh hybrid material       |
+           |<-'                             |
+           |                                |
+           |  REKEY_INIT, old-root seal     |
+           |==YUME=========================>|
+           |                                |
+           |                             .--|
+           |    check INIT, derive root  |  |
+           |                             '->|
+           |                                |
+           |  REKEY_ACK, confirm new root   |
+           |<=========================YUME==|
+           |                                |
+           |--.                             |
+           |  | verify ACK, commit root     |
+           |<-'                             |
+           |                                |
+           |  first new-epoch record        |
+           |==YUME=========================>|
+           |                                |
+           |                             .--|
+           | open record, wipe old root  |  |
+           |                             '->|
+           |                                |
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## Streams and policy
 
 The client opens streams by service name, `tcp` or `udp` in a default kit, and
@@ -261,7 +311,10 @@ deciding where traffic comes from. The ABI is experimental and not yet frozen.
 | The hosting provider | The server's outbound connections |
 | The destination | The server's address and the application's own traffic |
 
-`yumed` is a single-hop proxy that ends the tunnel. Use TLS inside the tunnel,
+The direct route uses one `yumed` that ends the tunnel. TCP circuits can use
+two or three servers inside one operator's cluster; the exit ends that route,
+and the operator can correlate its hops. Across-operator transit is planned.
+Use TLS inside the tunnel,
 as browsers do, to keep content private from the server. YUME cannot help when
 the server's address itself is blocked, and it makes no claim to be
 undetectable. The [threat model](THREAT_MODEL.md) and

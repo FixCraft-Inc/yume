@@ -48,6 +48,8 @@ later, as its own change. A kit with a managed TUN adapter needs privileges a
 user process does not have, so the window cannot start one. Run such a kit as
 a system service instead.
 
+@diagram gui_lifecycle
+
 ## The tray
 
 Where the desktop shows tray icons, `yume-gui` adds one: the YUME mark with

@@ -270,10 +270,13 @@ YUME does not hold state or diagnostic mutexes while invoking application
 callbacks. It may retain endpoint lifecycle sequencing across a callback so
 state-event order cannot interleave. Callback arguments and strings are
 borrowed for that invocation only. To avoid self-deadlock, callbacks may
-re-enter only the side-effect-free version/status queries and
-`yume_handle_get_diagnostic`. Lifecycle, I/O, and registration calls return
+re-enter only the global version, build, compatibility and status-info queries
+and `yume_handle_get_diagnostic`. Endpoint state, status and message queries
+are forbidden from a callback, as are lifecycle, I/O and registration calls.
+Status-returning calls report
 `YUME_STATUS_INVALID_STATE`; the `void` destroy functions are ignored and
-ownership remains with the caller. Exceptions thrown by C++ callbacks are
+ownership remains with the caller, and `yume_endpoint_state` returns 0.
+Exceptions thrown by C++ callbacks are
 contained before returning through the C boundary.
 
 ## Runtime callbacks and bounds
@@ -622,6 +625,8 @@ The application routes traffic to the device and both peer addresses with
 it, keeps the transport's own connection outside it with
 `yume_endpoint_set_socket_protector`, and lets its own process's replies to
 the peer address reach the device.
+
+@diagram device_bridge
 
 ## Endpoint status
 

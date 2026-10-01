@@ -57,8 +57,8 @@ requires at least one.
 
 Servers of one operator can form a cluster: each checks a server list the
 operator signs and keeps an authenticated link to every other server, and
-circuits run over the links through two or three servers. The `yume` client
-does not build circuits yet. Keep the operator directory, which holds the
+circuits run over the links through two or three servers. A `yume` client
+with configured circuits builds its routes over those links. Keep the operator directory, which holds the
 signing key, off the servers, and run the commands on the operator's copies
 of the server directories:
 

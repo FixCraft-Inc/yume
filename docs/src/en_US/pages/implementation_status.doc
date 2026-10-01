@@ -412,9 +412,10 @@ own repository, runs on this bridge, and one device cycle on a Pixel 9 Pro
 with Android 17 against a real `yumed` passed the legs the
 [leak-tight page](LEAK_TIGHT.md#android-boundary) lists. Android links
 libc++, so the native suite was also run with clang and libc++ on the build
-host, which is not yet a CI job. It passes except for one allocation-failure
-case of `yume_native_endpoint_test`, whose injected failure lands on a status
-copy before the reconnect timer it aims at.
+host. CI's `libcxx` job builds the same native and module graph with libc++
+and runs the shared-ABI and native tests. Retry-timer failure fixtures cover
+Asio's POSIX aligned allocation route as well as its C++ and `aligned_alloc`
+routes, so a fault cannot silently miss timer initiation on that library.
 
 The ABI also reports an endpoint's status snapshot and the lines it has
 said, cancels a client start from another thread, and opens a

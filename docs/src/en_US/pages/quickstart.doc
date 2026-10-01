@@ -125,5 +125,7 @@ its SOCKS5 listener.
 credential, managed Linux TUN, packet policy, reconnect and embedding guidance.
 [ABI.md](ABI.md) describes the experimental SDK, which the Android client
 uses. `yume --seal-kit` turns a client directory into the one file and code
-that client imports. Decentralized discovery and multi-hop routing are separate
-work. This quick start connects to an explicitly configured server.
+that client imports. This quick start connects directly to an explicitly
+configured server. TCP circuits through two or three servers of one operator's
+cluster are also implemented, with their own setup and consent rules in
+[cluster 1](protocol/CLUSTER_1.md). Decentralized discovery remains planned.

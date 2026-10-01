@@ -206,6 +206,8 @@ below and, for each peer, the outbound link's state, the peer's inbound
 sessions and the circuits that arrive over the peer's link and leave over
 this server's link to it, counted apart. yumed(8) gives the fields.
 
+@diagram cluster_links
+
 ## Circuit service
 
 Every member serves two services of its own, whose names no configuration may

@@ -2120,7 +2120,8 @@ if(YUME_BUILD_TESTING)
                 # A TUN device through the device bridge: real sockets in one
                 # network namespace reach destinations behind a yumed in
                 # another, across session loss, retry, restart and stop.
-                if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET yume_device_bridge)
+                if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND YUME_TEST_LINUX_NAMESPACES
+                        AND TARGET yume_device_bridge)
                     add_executable(yume_abi_device_probe abi/device_probe.cpp)
                     target_link_libraries(yume_abi_device_probe PRIVATE yume_abi)
                     yume_apply_warnings(yume_abi_device_probe)

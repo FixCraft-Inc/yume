@@ -416,7 +416,10 @@ It starts a private bus and resolved service, verifies the per-link policy,
 queries DNS through the tunnel before and after reconnect, and checks that
 shutdown removes the DNS settings. The host service and network remain outside
 these namespaces. The test requires `busctl`, `dbus-daemon` and Linux namespace
-utilities; unavailable prerequisites fail instead of silently skipping.
+utilities; unavailable prerequisites fail instead of silently skipping. In a
+build with the C ABI, the same option registers `yume_abi_device_integration`,
+which carries a TUN device's traffic through the ABI's device bridge in the
+same kind of namespaces.
 
 ## Configuration authority
 

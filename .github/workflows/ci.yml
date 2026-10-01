@@ -382,7 +382,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config perl \
+            build-essential cmake ninja-build pkg-config perl iproute2 iputils-ping util-linux \
             zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev libsystemd-dev \
             libboost-all-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
@@ -398,6 +398,8 @@ jobs:
         run: |
           bash scripts/vendor_prebuilt.sh ensure linux-x86_64
 
+      # The namespace tests drive the device bridge and the TUN runtime from
+      # several threads, so they run under ThreadSanitizer too.
       - name: Configure (ThreadSanitizer)
         run: |
           test "$(pkg-config --modversion openssl)" = "3.5.7"
@@ -405,6 +407,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DYUME_BUILD_TESTING=ON \
             -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_TEST_LINUX_NAMESPACES=ON \
             -DYUME_STATIC_OPENSSL=ON \
             -DYUME_WARNINGS_AS_ERRORS=ON \
             -DYUME_SANITIZE=thread \
@@ -418,6 +421,10 @@ jobs:
       - name: Build
         run: |
           cmake --build build-tsan --parallel "${CI_SANITIZER_BUILD_JOBS}"
+
+      # Same AppArmor restriction as in build-and-smoke.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Run unit tests under ThreadSanitizer
         env:

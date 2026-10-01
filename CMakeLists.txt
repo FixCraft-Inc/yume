@@ -153,7 +153,7 @@ option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
 option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
 option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
-option(YUME_TEST_LINUX_NAMESPACES "Run native TUN tests in unprivileged Linux network namespaces" OFF)
+option(YUME_TEST_LINUX_NAMESPACES "Run native TUN and device bridge tests in unprivileged Linux network namespaces" OFF)
 # libFuzzer harnesses for the parsers an untrusted peer or file reaches.
 # Clang-only and never installed; the corpora live outside the tree.
 option(YUME_BUILD_FUZZERS "Build libFuzzer harnesses (requires Clang)" OFF)

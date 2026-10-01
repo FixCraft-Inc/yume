@@ -790,6 +790,45 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     yume_assert_exact_link_dependencies(yume_sealed_kit
         yume_engine yume_bounded_files OpenSSL::Crypto)
 
+    # The lines a program or an embedded endpoint has said, kept for the
+    # control socket's messages request and the ABI's message feed.
+    add_library(yume_message_log STATIC
+        runtime/message_log.cpp runtime/message_log.hpp)
+    target_include_directories(yume_message_log PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    yume_apply_perf_opts(yume_message_log)
+    yume_assert_exact_link_dependencies(yume_message_log)
+
+    # Keeps one outbound session of a client endpoint up, for the client
+    # runtime, each cluster link and an embedded client with a device.
+    add_library(yume_session_keeper STATIC
+        runtime/session_keeper.cpp runtime/session_keeper.hpp)
+    target_include_directories(yume_session_keeper PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_session_keeper
+        PUBLIC yume_native_endpoint yume_asio_execution_context PRIVATE Boost::system)
+    yume_apply_perf_opts(yume_session_keeper)
+    yume_assert_exact_link_dependencies(yume_session_keeper
+        yume_native_endpoint yume_asio_execution_context Boost::system)
+
+    if(UNIX)
+        # The device bridge: IP packets of a TUN device become streams and
+        # datagrams on a client's services. DeviceNat is its packet half and
+        # depends on nothing but the standard library.
+        add_library(yume_device_bridge STATIC
+            runtime/device_bridge.cpp runtime/device_bridge.hpp
+            runtime/device_nat.cpp runtime/device_nat.hpp
+            runtime/native_session_source.hpp)
+        target_include_directories(yume_device_bridge PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(yume_device_bridge
+            PUBLIC yume_session_engine yume_asio_execution_context
+            PRIVATE yume_asio_tcp_byte_channel_provider yume_direct_route_handler
+                Boost::system)
+        yume_apply_perf_opts(yume_device_bridge)
+        yume_assert_exact_link_dependencies(yume_device_bridge
+            yume_session_engine yume_asio_execution_context
+            yume_asio_tcp_byte_channel_provider yume_direct_route_handler
+            Boost::system)
+    endif()
+
     # yume --outer-carrier-evidence writes this report about its carrier.
     add_library(yume_outer_carrier_evidence STATIC
         runtime/outer_carrier_evidence.cpp runtime/outer_carrier_evidence.hpp)
@@ -838,7 +877,6 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         add_library(yume_native_runtime STATIC
             runtime/control_socket.cpp runtime/control_socket.hpp
             runtime/control_status_text.cpp runtime/control_status_text.hpp
-            runtime/message_log.cpp runtime/message_log.hpp
             runtime/native_cli.cpp runtime/native_cli.hpp
             runtime/native_client_runtime.cpp runtime/native_client_runtime.hpp
             runtime/native_server_runtime.cpp runtime/native_server_runtime.hpp
@@ -850,11 +888,11 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
             runtime/native_socks5_udp.cpp runtime/native_socks5_udp.hpp
             runtime/circuit_host.cpp runtime/circuit_host.hpp
             runtime/circuit_pool.cpp runtime/circuit_pool.hpp runtime/circuit_status.hpp
-            runtime/session_keeper.cpp runtime/session_keeper.hpp
             runtime/socks5_request.cpp runtime/socks5_request.hpp)
         target_include_directories(yume_native_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(yume_native_runtime
             PUBLIC yume_config_v1 yume_session_bootstrap yume_asio_execution_context
+                yume_message_log yume_session_keeper
             PRIVATE yume_native_endpoint yume_native_egress_policy yume_native_credentials
                 yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
                 yume_system_resolver yume_system_resolver_helper
@@ -864,6 +902,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         yume_apply_perf_opts(yume_native_runtime)
         yume_assert_exact_link_dependencies(yume_native_runtime
             yume_config_v1 yume_session_bootstrap yume_asio_execution_context
+            yume_message_log yume_session_keeper
             yume_native_endpoint yume_native_egress_policy yume_native_credentials
             yume_asio_direct_route_provider yume_asio_tcp_byte_channel_provider
             yume_system_resolver yume_system_resolver_helper
@@ -897,12 +936,19 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     target_include_directories(yume_embed PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     # The backend reports the security provider's identity and OpenSSL
     # release, so it names that provider rather than reaching it through
-    # the runtime's private links.
-    target_link_libraries(yume_embed PRIVATE
-        yume_native_endpoint yume_openssl_security_provider Threads::Threads Boost::system)
+    # the runtime's private links. It keeps each endpoint's message feed,
+    # opens sealed kits with the implementation yume --import-kit uses, and
+    # keeps the session of a client with a device up as yume does.
+    set(_yume_embed_links
+        yume_native_endpoint yume_openssl_security_provider yume_message_log
+        yume_sealed_kit yume_session_keeper Threads::Threads Boost::system)
+    if(TARGET yume_device_bridge)
+        list(APPEND _yume_embed_links yume_device_bridge)
+        target_compile_definitions(yume_embed PRIVATE YUME_HAS_DEVICE_BRIDGE=1)
+    endif()
+    target_link_libraries(yume_embed PRIVATE ${_yume_embed_links})
     yume_apply_perf_opts(yume_embed)
-    yume_assert_exact_link_dependencies(yume_embed
-        yume_native_endpoint yume_openssl_security_provider Threads::Threads Boost::system)
+    yume_assert_exact_link_dependencies(yume_embed ${_yume_embed_links})
 endif()
 
 # Module libraries built on BaseFWX. They link nothing of the transport core,
@@ -1017,9 +1063,13 @@ if(YUME_BUILD_SHARED_ABI)
             yume_h2_web_front_door yume_cover_site yume_h2_duplex_carrier
             yume_ytp1_h2_admission yume_h2_admission
             yume_tls13_secure_channel yume_tls_client_profile
-            yume_cover_profile yume_openssl_security_provider yume_private_files)
+            yume_cover_profile yume_openssl_security_provider yume_private_files
+            yume_message_log yume_sealed_kit yume_session_keeper)
         yume_prepare_static_for_shared_abi(${_yume_absorbed})
     endforeach()
+    if(TARGET yume_device_bridge)
+        yume_prepare_static_for_shared_abi(yume_device_bridge)
+    endif()
 
     if(YUME_INSTALL_EXPERIMENTAL_SDK)
         include(CMakePackageConfigHelpers)
@@ -1793,6 +1843,14 @@ if(YUME_BUILD_TESTING)
         add_test(NAME yume_cluster_list_test COMMAND yume_cluster_list_test)
         set_tests_properties(yume_cluster_list_test PROPERTIES
             TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
+        if(TARGET yume_device_bridge)
+            add_executable(yume_device_nat_test runtime/device_nat_test.cpp)
+            target_link_libraries(yume_device_nat_test PRIVATE yume_device_bridge)
+            yume_apply_perf_opts(yume_device_nat_test)
+            add_test(NAME yume_device_nat_test COMMAND yume_device_nat_test)
+            set_tests_properties(yume_device_nat_test PROPERTIES
+                TIMEOUT 60 LABELS "foundation;0.3;native-runtime")
+        endif()
         add_executable(yume_sealed_kit_test runtime/sealed_kit_test.cpp)
         target_link_libraries(yume_sealed_kit_test PRIVATE yume_sealed_kit OpenSSL::Crypto)
         yume_apply_perf_opts(yume_sealed_kit_test)
@@ -1927,10 +1985,13 @@ if(YUME_BUILD_TESTING)
         add_executable(yume_native_backend_test abi/native_backend_test.cpp)
         # The test compiles the private backend implementation with paused
         # execution; linking its archive too would duplicate the definitions.
-        target_link_libraries(yume_native_backend_test PRIVATE
-            yume_native_endpoint yume_openssl_security_provider Threads::Threads)
+        target_link_libraries(yume_native_backend_test PRIVATE ${_yume_embed_links})
         target_compile_definitions(yume_native_backend_test PRIVATE
             YUME_TEST_RESOLVER_PROGRAM="$<TARGET_FILE:yume-resolver>")
+        if(TARGET yume_device_bridge)
+            target_compile_definitions(yume_native_backend_test PRIVATE
+                YUME_HAS_DEVICE_BRIDGE=1)
+        endif()
         add_dependencies(yume_native_backend_test yume-resolver)
         yume_apply_perf_opts(yume_native_backend_test)
         add_test(NAME yume_native_backend_test COMMAND yume_native_backend_test
@@ -2041,6 +2102,37 @@ if(YUME_BUILD_TESTING)
                         --openssl "${YUME_NATIVE_TEST_OPENSSL}")
                 set_tests_properties(yume_abi_route_integration PROPERTIES
                     TIMEOUT 150 LABELS "foundation;0.3;abi;integration;native-runtime")
+                # A kit sealed by the yume program, opened through the
+                # ABI, and what the ABI refuses instead of opening.
+                add_executable(yume_abi_kit_probe abi/kit_probe.c)
+                target_link_libraries(yume_abi_kit_probe PRIVATE yume_abi)
+                target_include_directories(yume_abi_kit_probe
+                    PRIVATE "${CMAKE_SOURCE_DIR}/include")
+                yume_apply_warnings(yume_abi_kit_probe)
+                add_test(NAME yume_abi_kit_integration
+                    COMMAND "${Python3_EXECUTABLE}"
+                        "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_kit.py"
+                        --probe "$<TARGET_FILE:yume_abi_kit_probe>"
+                        --yume "$<TARGET_FILE:yume>"
+                        --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                set_tests_properties(yume_abi_kit_integration PROPERTIES
+                    TIMEOUT 300 LABELS "foundation;0.3;abi;integration;native-runtime")
+                # A TUN device through the device bridge: real sockets in one
+                # network namespace reach destinations behind a yumed in
+                # another, across session loss, retry, restart and stop.
+                if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET yume_device_bridge)
+                    add_executable(yume_abi_device_probe abi/device_probe.cpp)
+                    target_link_libraries(yume_abi_device_probe PRIVATE yume_abi)
+                    yume_apply_warnings(yume_abi_device_probe)
+                    add_test(NAME yume_abi_device_integration
+                        COMMAND "${Python3_EXECUTABLE}"
+                            "${CMAKE_SOURCE_DIR}/tests/run_abi_device_test.py"
+                            --probe "$<TARGET_FILE:yume_abi_device_probe>"
+                            --yumed "$<TARGET_FILE:yumed>"
+                            --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+                    set_tests_properties(yume_abi_device_integration PROPERTIES
+                        TIMEOUT 300 LABELS "abi;device;native;namespace")
+                endif()
             endif()
         endif()
 

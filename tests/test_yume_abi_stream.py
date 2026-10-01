@@ -140,11 +140,23 @@ def run(probe: Path, openssl: Path, resolver: Path) -> None:
         server_fingerprint = composite_fingerprint(
             openssl, kit / "server/credentials/server-composite.pub.pem"
         )
-        result = subprocess.run(
-            [str(probe), str(kit / "server"), str(kit / "client"),
-             client_fingerprint, server_fingerprint, str(resolver)],
-            cwd=temporary, env=environment, timeout=150, check=False,
-        )
+        # A server that takes the connection and never answers, so a start
+        # against it waits until its deadline or a stop. Nothing accepts: the
+        # kernel completes each connection and the hello stays unread.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as silent:
+            silent.bind(("127.0.0.1", 0))
+            silent.listen(8)
+            waiting = json.loads((kit / "client/yume.json").read_text(encoding="utf-8"))
+            waiting["endpoint"]["port"] = silent.getsockname()[1]
+            waiting["endpoint"]["connect_address"] = "127.0.0.1"
+            silent_config = kit / "client/silent-server.json"
+            silent_config.write_text(json.dumps(waiting), encoding="utf-8")
+            result = subprocess.run(
+                [str(probe), str(kit / "server"), str(kit / "client"),
+                 client_fingerprint, server_fingerprint, str(resolver),
+                 str(silent_config)],
+                cwd=temporary, env=environment, timeout=170, check=False,
+            )
         if result.returncode:
             raise RuntimeError(f"schema-1 ABI probe failed with exit {result.returncode}")
 

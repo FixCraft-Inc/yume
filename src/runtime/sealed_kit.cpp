@@ -475,9 +475,7 @@ Result<Kit> open(std::span<const std::uint8_t> sealed, std::string_view code) {
     }
     // The size is checked before the KDF runs, so an arbitrary file costs
     // nothing but its length check.
-    if (sealed.size() < overhead + kPaddingBlock ||
-        sealed.size() > kMaxSealedBytes ||
-        (sealed.size() - overhead) % kPaddingBlock != 0U) {
+    if (!sealed_size(sealed.size())) {
         return Result<Kit>(Status::diagnostic(StatusCode::InvalidArgument,
                                               "the file is not a sealed kit"));
     }

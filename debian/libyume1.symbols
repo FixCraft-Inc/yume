@@ -9,9 +9,13 @@ libyume.so.1 libyume1 #MINVER#
  yume_endpoint_accept_stream@Base 1:0.3.0~dev1-1
  yume_endpoint_create@Base 1:0.3.0~dev1-1
  yume_endpoint_destroy@Base 1:0.3.0~dev1-1
+ yume_endpoint_get_status@Base 1:0.3.0~dev1-1
  yume_endpoint_open_packet@Base 1:0.3.0~dev1-1
  yume_endpoint_open_stream@Base 1:0.3.0~dev1-1
+ yume_endpoint_read_message@Base 1:0.3.0~dev1-1
  yume_endpoint_register_service@Base 1:0.3.0~dev1-1
+ yume_endpoint_retry_now@Base 1:0.3.0~dev1-1
+ yume_endpoint_set_device@Base 1:0.3.0~dev1-1
  yume_endpoint_set_socket_protector@Base 1:0.3.0~dev1-1
  yume_endpoint_start@Base 1:0.3.0~dev1-1
  yume_endpoint_state@Base 1:0.3.0~dev1-1
@@ -20,6 +24,10 @@ libyume.so.1 libyume1 #MINVER#
  yume_get_compatibility@Base 1:0.3.0~dev1-1
  yume_get_status_info@Base 1:0.3.0~dev1-1
  yume_handle_get_diagnostic@Base 1:0.3.0~dev1-1
+ yume_kit_destroy@Base 1:0.3.0~dev1-1
+ yume_kit_file_count@Base 1:0.3.0~dev1-1
+ yume_kit_get_file@Base 1:0.3.0~dev1-1
+ yume_kit_open@Base 1:0.3.0~dev1-1
  yume_packet_close@Base 1:0.3.0~dev1-1
  yume_packet_destroy@Base 1:0.3.0~dev1-1
  yume_packet_get_peer_identity@Base 1:0.3.0~dev1-1

@@ -36,8 +36,11 @@ cancellation, and teardown. It starts a client or server through
 accept, read, write, half-close, close, and destroy. Clients can also open TCP
 destinations through a native daemon's configured direct TCP service. Packet
 handles support named packet services and UDP destinations, with whole-packet
-batch I/O and endpoint cancellation. The backend is not qualified end to end,
-and the library remains experimental and unfrozen.
+batch I/O and endpoint cancellation. A client can also carry the traffic of
+a TUN device the application owns as streams and datagrams on its services.
+An endpoint reports a status snapshot and the lines it has said about its
+lifecycle, and the library opens a sealed kit with its code. The backend is not qualified end to end, and the library
+remains experimental and unfrozen.
 
 The remaining sections state the candidate contract and the gates that still
 must pass before installation or ABI freeze.
@@ -216,13 +219,14 @@ required public link flag.
 
 ## Handles and ownership
 
-The five opaque handle types are:
+The six opaque handle types are:
 
 - `yume_runtime`: callback delivery and child-endpoint coordination;
 - `yume_config`: one immutable, validated schema-1 configuration;
 - `yume_endpoint`: a role-neutral client or server endpoint;
-- `yume_stream`: one authenticated named byte stream; and
-- `yume_packet`: one authenticated named packet channel.
+- `yume_stream`: one authenticated named byte stream;
+- `yume_packet`: one authenticated named packet channel; and
+- `yume_kit`: the files of one opened sealed kit.
 
 Every successful `*_create`, `*_parse`, `*_open`, or `*_accept` transfers one
 handle to the caller. The matching destroy function accepts null. A config is
@@ -249,7 +253,12 @@ and packets before their endpoint and destroy endpoints before the runtime.
 Version and manifest functions are thread-safe and have no mutable state.
 Config handles are immutable and may be inspected concurrently. Endpoint
 lifecycle, service registration, open, and accept calls are serialized inside
-the endpoint and may be called from different application threads.
+the endpoint and may be called from different application threads. A stop
+does not wait behind a client start: it cancels it, as
+[Endpoint lifecycle](#endpoint-lifecycle) describes. `yume_endpoint_get_status`
+and `yume_endpoint_read_message` may be called from any thread at any time,
+during a start included, and never wait for a lifecycle call. A kit handle is
+immutable and may be read concurrently.
 
 A stream supports one active reader and one active writer concurrently.
 Write-side shutdown belongs to the write direction. Callers must not overlap
@@ -273,7 +282,8 @@ contained before returning through the C boundary.
 an optional endpoint-event callback. Zero selects the bounded default. The ABI layer
 does not expose an executor-count knob: execution resources belong to the
 selected backend. Endpoint-state events are currently delivered synchronously
-on the initiating lifecycle thread. This ABI has no logging callback.
+on the initiating lifecycle thread. This ABI has no logging callback. An
+application reads what an endpoint has said with `yume_endpoint_read_message`.
 
 Event callbacks are observational and must not be used as the source of
 an authentication, authorization, close, or resource-limit decision. Callback
@@ -384,6 +394,14 @@ It closes the endpoint's sessions, wakes blocked calls, and joins the backend's
 execution threads before `STOPPED` is published. Registrations remain. A
 client whose session ends later stays `RUNNING`, and its OPENs report
 `YUME_STATUS_INVALID_STATE` until the application stops and starts it again.
+
+A stop, an endpoint destroy or a runtime destroy on another thread cancels a
+client start that is still in progress. The start ends its connection
+attempt, returns `YUME_STATUS_CANCELLED` and leaves the endpoint `STOPPED`,
+with one `STOPPED` event that carries `YUME_STATUS_CANCELLED`. The stop then
+returns `YUME_STATUS_OK`. An application can therefore give up a start that
+waits on a dead network without waiting out its deadline. A cancelled start
+is not recorded as the endpoint's latest failure.
 Explicit stop, runtime destruction, or endpoint destruction may take an
 endpoint directly from `CREATED` through `STOPPING` to `STOPPED` without
 starting a backend.
@@ -508,6 +526,220 @@ queued. Later packets are not skipped to manufacture a partial success.
 `yume_packet_close` and `yume_packet_destroy` end a channel as the stream
 functions do, and `yume_packet_get_peer_identity` reports its peer.
 
+## Device bridge
+
+A client endpoint can carry everything that enters a TUN device the
+application owns, such as the device of an Android `VpnService`, over the
+same services `yume` uses for SOCKS5: one stream OPEN for each TCP
+connection and one packet OPEN for each UDP destination, each with its
+destination. A kit made for `yume` therefore works without a packet service
+on the server, and the server's egress policy and per-identity weights apply
+as they do to any other client.
+
+`yume_endpoint_set_device` takes a sized `yume_device_options`:
+
+@table
+| Field | Value |
+| --- | --- |
+| `descriptor` | An open TUN descriptor that reads and writes whole IP packets without a packet-information header |
+| `mtu` | The device's MTU, 576 to 65535, and at least 1280 with an IPv6 address |
+| `stream_service` | The byte-stream service TCP connections open, which the configuration must declare |
+| `packet_service` | The packet service UDP destinations open. Empty drops UDP |
+| `ipv4_address`, `ipv4_peer` | The device's own IPv4 address and a second address that routes to the device and nothing else uses, as IP literals |
+| `ipv6_address`, `ipv6_peer` | The same pair for IPv6. Empty drops IPv6. At least one family is required |
+@end
+
+The library duplicates the descriptor and sets it non-blocking, which also
+applies to the caller's copy because both name one open device. The caller
+keeps and closes its own. The call is accepted while the endpoint is
+`CREATED` or `STOPPED`, the device stays attached across stop and start, and
+a null `options` detaches it. A server endpoint returns
+`YUME_STATUS_UNSUPPORTED`, and a service the configuration does not declare
+with the right kind `YUME_STATUS_NOT_FOUND`.
+
+The bridge runs while the endpoint is `RUNNING`. Nothing reads the device
+otherwise, so its traffic waits and then drops inside the device and never
+leaves another way. A start fails with `YUME_STATUS_INVALID_ARGUMENT` when
+the device's address is not usable for the bridge's listener.
+
+An endpoint with a device keeps its session up. Its start still returns when
+the first session has authenticated, or fails with that attempt. After that
+the endpoint stays `RUNNING` and replaces a lost session itself, as `yume`
+does: at once after a session that lasted 30 seconds, otherwise after a wait
+that doubles from 1 to 30 seconds. While it has no session the bridge still
+answers, so an application's new connection is reset at once instead of
+waiting. `yume_endpoint_retry_now` starts a waiting endpoint's next attempt
+without the rest of its wait, for an application that learns the network is
+back, and takes effect at most once a second. The server's address stays the
+one the configuration names, so an application that must dial another one
+stops the endpoint and starts it with a new configuration.
+
+How traffic crosses:
+
+- **TCP.** The bridge rewrites each packet's addresses so the host's own
+  kernel accepts the application's connection on a listener the library owns
+  at the device's address, then opens `stream_service` with the connection's
+  destination and joins the two. No TCP is implemented in the library. The
+  listener accepts only peers the bridge translated, so no other local
+  process can use it. An application's connection is accepted locally at
+  once and is reset when no session is active. With a session it waits for
+  its OPEN, and closes if that is refused or fails, or if the connection has
+  no stream 30 seconds after its accept. The bridge keeps at most three
+  quarters of `limits.max_pending_opens` in flight, so a burst of
+  connections queues inside the bridge and none is refused by the session's
+  own bound, and a connection that finds every stream of the session in use
+  waits for one within the same 30 seconds. At most 1024 connections are
+  open at once, and further ones wait in the kernel's accept queue. A
+  segment of a connection the bridge does not know, such as one from before
+  a restart, is answered with a reset.
+- **UDP.** A datagram from a local port to a destination opens
+  `packet_service` with that destination, as a SOCKS5 UDP association does,
+  and replies return to that port from that destination. A local port
+  reaches at most 32 destinations at once and the device 512 in total.
+  Datagrams waiting for their stream hold at most 64 datagrams and 1 MiB
+  for the whole device, and a full queue drops the newest. A reply the
+  device cannot take at once is dropped. A destination without traffic for
+  60 seconds closes, and after a refused or failed OPEN its datagrams are
+  dropped for one second. Fragments and replies larger than the MTU are
+  dropped.
+- **Name lookups.** Datagrams to port 53 of one address share one packet
+  OPEN, whatever local port they come from. A resolver would otherwise get
+  an OPEN for every query, because each uses a new port, and every lookup
+  would wait for it. The bridge gives each query a random DNS identifier of
+  its own and returns the reply to the port that asked with the identifier
+  it used. At most 1024 queries of one resolver wait for a reply, each for
+  10 seconds.
+- **Everything else** is dropped: ICMP and other protocols, IPv6 packets
+  with extension headers, and packets whose source is not the device's
+  address.
+
+Destinations are addresses, never names: a name lookup is a datagram to
+whatever resolver the application configured for the device. Streams end
+when the session ends or the endpoint stops, so applications reconnect
+after a restart.
+
+The application routes traffic to the device and both peer addresses with
+it, keeps the transport's own connection outside it with
+`yume_endpoint_set_socket_protector`, and lets its own process's replies to
+the peer address reach the device.
+
+## Endpoint status
+
+`yume_endpoint_get_status` copies a point-in-time snapshot into a sized
+`yume_endpoint_status`. It is what [control protocol 1](protocol/CONTROL_1.md)
+reports for `yume`. An endpoint without a device makes one attempt per
+start, so the fields of a retry loop stay zero for it. The call changes
+nothing, waits for no lifecycle call and holds no key, credential or
+payload.
+
+@table
+| Field | Value |
+| --- | --- |
+| `role`, `state` | `YUME_ROLE_*` and the `YUME_ENDPOINT_*` state |
+| `session` | `YUME_SESSION_NONE`, or `YUME_SESSION_ACTIVE` while a client's session is authenticated. Without a device, `YUME_SESSION_ENDED` once it has ended while the endpoint stays `RUNNING`. With one, `YUME_SESSION_CONNECTING` during an attempt and `YUME_SESSION_WAITING` before the next |
+| `connected_ms` | While the session is active: how long it has been up |
+| `retry_ms` | While waiting: the delay before the next attempt |
+| `sessions`, `failed_attempts` | Sessions authenticated since the endpoint last started, and failed attempts since the latest of them |
+| `peer_fingerprint_sha256` | While the session is active: the server's verified composite fingerprint, otherwise zero bytes |
+| `epoch_bytes` | While the session is active: its key epoch, the smaller of the two sides' `max_epoch_bytes`, otherwise 0 |
+| `payload_bytes_sent`, `payload_bytes_received`, `record_bytes_sent`, `record_bytes_received` | Totals over every session of this endpoint handle |
+| `last_failure`, `last_failure_message` | The latest failed start, failed attempt or ended session of this handle as a typed status and its text, or `YUME_STATUS_OK` and an empty text when there has been none |
+| `max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window`, `idle_epoch_rotation` | The configuration's limits that a tuning preset sets, the last as 0 or 1 |
+| `device_tcp_connections`, `device_udp_destinations` | With a device bridge: the TCP connections and UDP destinations it carries now |
+@end
+
+A later success does not clear `last_failure`, so a display can still say
+why the previous session ended. Stopping the endpoint is not a
+failure and records nothing. The fixed composition that a posture display
+states with these limits comes from `yume_get_compatibility`.
+
+A server endpoint reports its role, state, limits and latest failed start.
+Its session, identity and traffic fields are zero, because the ABI does not
+report a server's sessions yet. From a callback the call returns
+`YUME_STATUS_INVALID_STATE`.
+
+## Endpoint messages
+
+An endpoint keeps the lines it has said about its lifecycle, as `yume` keeps
+the lines it prints: its latest 256, each cut to 512 bytes and numbered from
+1 in order. A client says when its session authenticated, why a start failed
+and why a session ended, and a server says when it accepts sessions and why
+it stopped accepting. The lines hold no key, credential or payload.
+
+`yume_endpoint_read_message` copies the oldest kept line numbered above
+`after` into a sized `yume_message`: its `seq`, its `time_unix_ms` in UTC
+and its `text`. `missed` counts the lines numbered above `after` and below
+`seq` that the endpoint no longer keeps. `instance` is 16 hexadecimal digits
+that stay the same while the numbering continues and change when it starts
+again at 1, which happens when the endpoint's services or socket protector
+change while it is stopped. When no kept line is numbered above `after`, the
+call returns `YUME_STATUS_WOULD_BLOCK` with `seq` 0 and the `instance`. An
+application follows the feed by asking again after the last `seq` it read:
+
+@code c
+yume_message message;
+uint64_t after = 0;
+for (;;) {
+    memset(&message, 0, sizeof(message));
+    message.struct_size = sizeof(message);
+    message.abi_version = YUME_ABI_VERSION;
+    if (yume_endpoint_read_message(endpoint, after, &message,
+                                   sizeof(message)) != YUME_STATUS_OK) break;
+    after = message.seq;
+    /* message.text is NUL-terminated. */
+}
+@end
+
+The call never waits. From a callback it returns `YUME_STATUS_INVALID_STATE`.
+
+## Sealed kits
+
+A [sealed kit](protocol/SEALED_KIT_1.md) is a client's `yume.json` and
+credential files in one file, opened with a 25-character code. `yume
+--import-kit` writes one to a directory. `yume_kit_open` opens one in memory
+with the same implementation, so an embedder stores the files as its
+platform requires, for example under a hardware-backed key.
+
+@code c
+yume_kit* kit = NULL;
+yume_status status = yume_kit_open(runtime, sealed, sealed_size,
+                                   code, code_size, &kit);
+for (size_t index = 0; index < yume_kit_file_count(kit); ++index) {
+    yume_kit_file file;
+    memset(&file, 0, sizeof(file));
+    file.struct_size = sizeof(file);
+    file.abi_version = YUME_ABI_VERSION;
+    yume_kit_get_file(kit, index, &file, sizeof(file));
+    /* file.path, file.data, file.size and file.executable */
+}
+yume_kit_destroy(kit);   /* wipes the files */
+@end
+
+`code` is what the user typed: separators and spaces are dropped, letters
+are upper-cased, and `O` reads as `0` and `I` or `L` as `1`. It is not kept
+after the call. Opening derives a key with Argon2id over 64 MiB, so the call
+takes a noticeable time and belongs off an interface thread.
+
+@table
+| Status | Meaning |
+| --- | --- |
+| `YUME_STATUS_INVALID_ARGUMENT` | A pointer is missing, the file is empty or the code is not 25 code characters |
+| `YUME_STATUS_RESOURCE_EXHAUSTED` | The file is larger than a sealed kit can be, or memory ran out |
+| `YUME_STATUS_PERMISSION_DENIED` | The code is wrong or the file is not a sealed kit. The two cannot be told apart |
+| `YUME_STATUS_PARSE_ERROR` | The code opened the file, but its content is not a valid kit |
+@end
+
+A failure publishes no handle and leaves its text as the runtime handle's
+diagnostic. `yume_kit_file_count` returns the number of files, at most 32,
+and 0 for a null handle. `yume_kit_get_file` fills a sized `yume_kit_file`
+for an index below that count and returns `YUME_STATUS_NOT_FOUND` for any
+other. Files come in path order. A path is one or two components of ASCII
+letters, digits, `.`, `_` and `-`, such as `credentials/admission.key`, and
+`yume.json` is always present. `path` and `data` point into the kit and stay
+valid until `yume_kit_destroy`, which wipes the files before it releases
+them. The library validates the kit's layout, not its configuration: pass
+`yume.json` to `yume_config_parse_json` before relying on it.
+
 ## Sized structures
 
 Every extensible structure starts with `struct_size` and `abi_version`. Callers
@@ -541,7 +773,8 @@ Each handle stores its own last diagnostic. A successful status-returning
 operation clears the previous diagnostic on that handle; side-effect-free
 queries and the diagnostic query itself do not. `yume_handle_get_diagnostic`
 copies the status, truncation flags, optional JSON pointer, and bounded human
-message into caller storage. Diagnostics contain no private key, PSK, token,
+message into caller storage. It takes a runtime, config, endpoint, stream,
+packet or kit handle. Diagnostics contain no private key, PSK, token,
 plaintext, destination payload, or raw peer credential.
 
 No C++ exception may cross the ABI, callback, thread entry, destructor, or
@@ -570,7 +803,7 @@ negotiates a weaker suite and never retries through another provider.
 
 ## Export and freeze gates
 
-`src/abi/yume.map` is the canonical 32-symbol set. CMake derives the Mach-O
+`src/abi/yume.map` is the canonical 40-symbol set. CMake derives the Mach-O
 list and validates the built ELF/Mach-O/PE surface from it. The same change
 must update:
 
@@ -586,7 +819,10 @@ The build-tree gate checks the exact symbol set,
 header/map/Debian-symbol agreement, strict C/C++ header consumption, metadata,
 strict configuration and its refusals, lifecycle/callback containment,
 diagnostics, ownership, named-stream and packet traffic, native client
-destination streams against a separate daemon, and the intentional typed
+destination streams against a separate daemon, a TUN device whose TCP and
+UDP traffic crosses a real session, the status snapshot and message feed of
+a real session, a start cancelled by a stop, a sealed kit opened and
+refused, and the intentional typed
 `UNSUPPORTED` boundary for declared adapters and the control socket. The clean-prefix CMake and pkg-config fixtures are future acceptance material, not
 a claim that the candidate is currently installed.
 

@@ -239,18 +239,24 @@ void SessionKeeper::schedule_reconnect(const Status* failure) noexcept {
     if (closing_) return;
     const auto delay = backoff_;
     backoff_ = std::min(backoff_ * 2, options_.reconnect_max);
+    const std::uint64_t generation = ++wait_generation_;
     try {
         timer_.expires_after(delay);
-        timer_.async_wait(
-            [weak = weak_from_this()](const boost::system::error_code& error) {
-                const auto self = weak.lock();
-                if (!self || self->closing_) return;
-                if (error) {
-                    self->fail(Status(StatusCode::Internal));
-                    return;
-                }
-                self->connect();
-            });
+        timer_.async_wait([weak = weak_from_this(),
+                           generation](const boost::system::error_code& error) {
+            const auto self = weak.lock();
+            if (!self || self->closing_ ||
+                generation != self->wait_generation_) {
+                return;
+            }
+            self->waiting_ = false;
+            if (error) {
+                self->fail(Status(StatusCode::Internal));
+                return;
+            }
+            self->connect();
+        });
+        waiting_ = true;
     } catch (const std::bad_alloc&) {
         fail(Status(StatusCode::ResourceExhausted));
         return;
@@ -270,6 +276,21 @@ void SessionKeeper::schedule_reconnect(const Status* failure) noexcept {
     });
 }
 
+bool SessionKeeper::retry_now() noexcept {
+    if (closing_ || !waiting_ || !endpoint_) return false;
+    const auto now = Clock::now();
+    if (nudged_ && now - last_nudge_ < options_.reconnect_initial) return false;
+    nudged_ = true;
+    last_nudge_ = now;
+    // The replaced wait sees a newer generation and returns.
+    ++wait_generation_;
+    waiting_ = false;
+    providers::cancel_timer(timer_);
+    backoff_ = options_.reconnect_initial;
+    connect();
+    return true;
+}
+
 void SessionKeeper::fail(Status status) noexcept {
     if (closing_) return;
     auto failure = std::exchange(on_failure_, {});
@@ -287,6 +308,7 @@ void SessionKeeper::fail(Status status) noexcept {
 void SessionKeeper::close() noexcept {
     if (closing_) return;
     closing_ = true;
+    waiting_ = false;
     providers::cancel_timer(timer_);
     session_.reset();
     retire_counted_session();

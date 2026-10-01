@@ -58,6 +58,14 @@ inline constexpr std::size_t kMaxSealedBytes = kSaltBytes + kNonceBytes + 4U +
 // five groups of five.
 inline constexpr std::size_t kCodeCharacters = 25U;
 
+// Whether a file of this size can be a sealed kit: the salt, nonce and tag
+// around one to kMaxContentBytes of whole padding blocks.
+constexpr bool sealed_size(std::size_t bytes) noexcept {
+    constexpr std::size_t overhead = kSaltBytes + kNonceBytes + kTagBytes;
+    return bytes >= overhead + kPaddingBlock && bytes <= kMaxSealedBytes &&
+           (bytes - overhead) % kPaddingBlock == 0U;
+}
+
 struct KitFile final {
     std::string path;
     bool executable{false};

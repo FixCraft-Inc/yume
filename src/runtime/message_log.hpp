@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -43,12 +44,21 @@ public:
     MessageLog(const MessageLog&) = delete;
     MessageLog& operator=(const MessageLog&) = delete;
 
+    // The oldest kept message numbered above a point, when one is kept, and
+    // how many numbered above that point and below it are no longer kept.
+    struct Next final {
+        std::optional<Entry> entry;
+        std::uint64_t missed{0U};
+    };
+
     // Keeps text, cut to kMaxTextBytes, as the next message. Beyond
     // kCapacity the oldest message goes. A message that cannot be stored
     // still takes its number and counts as missed.
     void add(std::string_view text) noexcept;
     // An empty page when the copy cannot be made.
     Page after(std::uint64_t seq) const noexcept;
+    // No entry when the copy cannot be made.
+    Next next_after(std::uint64_t seq) const noexcept;
     // 16 hexadecimal digits chosen when the log is made, so a client can tell
     // a restarted program's numbers from the ones it has already seen.
     std::string_view instance() const noexcept {

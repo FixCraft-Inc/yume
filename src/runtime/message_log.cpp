@@ -56,4 +56,21 @@ MessageLog::Page MessageLog::after(std::uint64_t seq) const noexcept {
     return page;
 }
 
+MessageLog::Next MessageLog::next_after(std::uint64_t seq) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Next next;
+    for (const auto& entry : entries_) {
+        if (entry.seq <= seq) continue;
+        try {
+            next.entry = entry;
+            next.missed = entry.seq - seq - 1U;
+        } catch (...) {
+            next.entry.reset();
+        }
+        return next;
+    }
+    next.missed = next_ - 1U > seq ? next_ - 1U - seq : 0U;
+    return next;
+}
+
 }  // namespace yume::runtime

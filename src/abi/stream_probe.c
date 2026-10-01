@@ -10,7 +10,9 @@
  * embedder sees it: registration and lifecycle rules, authenticated peer
  * identity, refused opens, deadlines, half-close, an end of stream that a lost
  * session cannot imitate, stop, restart, and stream handles that outlive
- * their endpoint.
+ * their endpoint. Along the way it reads the status snapshot and the message
+ * feed at each step, and it cancels a start that waits on a server which
+ * never answers.
  */
 
 #include <yume/yume.h>
@@ -111,6 +113,79 @@ fail:
     free(buffer);
     fclose(file);
     return NULL;
+}
+
+static int read_status(const yume_endpoint* endpoint,
+                       yume_endpoint_status* out) {
+    yume_status status;
+    memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(*out);
+    out->abi_version = YUME_ABI_VERSION;
+    status = yume_endpoint_get_status(endpoint, out, sizeof(*out));
+    if (status != YUME_STATUS_OK) {
+        fprintf(stderr, "yume_endpoint_get_status: status=%d\n", (int)status);
+        return 0;
+    }
+    return 1;
+}
+
+static int expect_status_fields(const yume_endpoint* endpoint, uint32_t state,
+                                uint32_t session, yume_status last_failure,
+                                const char* what) {
+    yume_endpoint_status status;
+    if (!read_status(endpoint, &status)) return 0;
+    if (status.state != state || status.session != session ||
+        status.last_failure != last_failure ||
+        (last_failure == YUME_STATUS_OK) !=
+            (status.last_failure_message[0] == '\0')) {
+        fprintf(stderr,
+                "%s: state=%u session=%u last_failure=%d '%s', expected "
+                "state=%u session=%u last_failure=%d\n",
+                what, (unsigned)status.state, (unsigned)status.session,
+                (int)status.last_failure, status.last_failure_message,
+                (unsigned)state, (unsigned)session, (int)last_failure);
+        return 0;
+    }
+    return 1;
+}
+
+/* Reads the whole feed after `after` and reports whether a line contains
+ * text. The lines must be numbered in order without gaps. */
+static int feed_has(const yume_endpoint* endpoint, const char* text,
+                    uint64_t* last_seq) {
+    yume_message message;
+    uint64_t after = 0u;
+    int found = 0;
+    for (;;) {
+        yume_status status;
+        memset(&message, 0, sizeof(message));
+        message.struct_size = sizeof(message);
+        message.abi_version = YUME_ABI_VERSION;
+        status = yume_endpoint_read_message(endpoint, after, &message,
+                                            sizeof(message));
+        if (status == YUME_STATUS_WOULD_BLOCK) {
+            if (message.seq != 0u) {
+                fprintf(stderr, "an empty read names a message\n");
+                return 0;
+            }
+            break;
+        }
+        if (status != YUME_STATUS_OK || message.seq != after + 1u ||
+            message.missed != 0u || message.time_unix_ms <= 0 ||
+            strlen(message.instance) != 16u || message.text[0] == '\0') {
+            fprintf(stderr,
+                    "message feed: status=%d seq=%llu after=%llu missed=%llu\n",
+                    (int)status, (unsigned long long)message.seq,
+                    (unsigned long long)after,
+                    (unsigned long long)message.missed);
+            return 0;
+        }
+        after = message.seq;
+        if (strstr(message.text, text) != NULL) found = 1;
+    }
+    if (last_seq != NULL) *last_seq = after;
+    if (!found) fprintf(stderr, "no message contains '%s'\n", text);
+    return found;
 }
 
 static yume_runtime* make_runtime(const char* base_dir, const char* resolver) {
@@ -382,6 +457,92 @@ static void* deadline_worker(void* opaque) {
     return NULL;
 }
 
+struct start_context {
+    yume_endpoint* endpoint;
+    uint32_t timeout_ms;
+    yume_status status;
+};
+
+static void* start_worker(void* opaque) {
+    struct start_context* context = (struct start_context*)opaque;
+    context->status =
+        yume_endpoint_start(context->endpoint, context->timeout_ms);
+    return NULL;
+}
+
+/* A start that waits on a server which accepts the connection and then says
+ * nothing ends when another thread stops the endpoint, long before its
+ * deadline, and is not recorded as a failure. The same start left alone
+ * runs into its deadline, which is one. */
+static int test_cancelled_start(yume_runtime* runtime, const char* path) {
+    yume_endpoint* endpoint = make_endpoint(runtime, path, YUME_ROLE_CLIENT);
+    struct start_context start;
+    pthread_t thread;
+    yume_endpoint_status status;
+    struct timespec begun;
+    long waited = 0L;
+    int ok = 0;
+    if (endpoint == NULL) return 0;
+    start.endpoint = endpoint;
+    start.timeout_ms = 120000u;
+    start.status = YUME_STATUS_OK;
+    if (pthread_create(&thread, NULL, start_worker, &start) != 0) {
+        fprintf(stderr, "cannot start the start worker\n");
+        yume_endpoint_destroy(endpoint);
+        return 0;
+    }
+    begun = monotonic_now();
+    while (yume_endpoint_state(endpoint) != YUME_ENDPOINT_STARTING &&
+           elapsed_milliseconds(begun, monotonic_now()) < 10000L) {
+        sched_yield();
+    }
+    pause_milliseconds(300L);
+    /* The snapshot and the feed answer while the start holds the lifecycle. */
+    begun = monotonic_now();
+    if (!read_status(endpoint, &status) ||
+        status.state != YUME_ENDPOINT_STARTING ||
+        status.session != YUME_SESSION_NONE ||
+        elapsed_milliseconds(begun, monotonic_now()) > 1000L) {
+        fprintf(stderr, "status during a start was wrong or slow\n");
+        (void)yume_endpoint_stop(endpoint, 0u);
+        (void)pthread_join(thread, NULL);
+        yume_endpoint_destroy(endpoint);
+        return 0;
+    }
+    begun = monotonic_now();
+    if (!expect_status(yume_endpoint_stop(endpoint, 0u), YUME_STATUS_OK,
+                       "stop during a start", endpoint)) {
+        (void)pthread_join(thread, NULL);
+        yume_endpoint_destroy(endpoint);
+        return 0;
+    }
+    waited = elapsed_milliseconds(begun, monotonic_now());
+    if (pthread_join(thread, NULL) != 0) {
+        fprintf(stderr, "cannot join the start worker\n");
+        yume_endpoint_destroy(endpoint);
+        return 0;
+    }
+    if (waited > 5000L) {
+        fprintf(stderr, "a stop waited %ld ms behind a start\n", waited);
+    } else if (start.status != YUME_STATUS_CANCELLED) {
+        report("cancelled start", start.status, endpoint);
+    } else if (expect_status_fields(endpoint, YUME_ENDPOINT_STOPPED,
+                                    YUME_SESSION_NONE, YUME_STATUS_OK,
+                                    "status after a cancelled start") &&
+               feed_has(endpoint, "start cancelled", NULL) &&
+               expect_status(yume_endpoint_start(endpoint, 1500u),
+                             YUME_STATUS_TIMEOUT, "start left to its deadline",
+                             endpoint) &&
+               expect_status_fields(endpoint, YUME_ENDPOINT_FAILED,
+                                    YUME_SESSION_NONE, YUME_STATUS_TIMEOUT,
+                                    "status after an expired start") &&
+               feed_has(endpoint, "start failed", NULL)) {
+        ok = 1;
+    }
+    yume_endpoint_destroy(endpoint);
+    return ok;
+}
+
 struct accept_context {
     yume_endpoint* endpoint;
     uint32_t timeout_ms;
@@ -475,6 +636,7 @@ int main(int argc, char** argv) {
     int pairing_started = 0;
     int blocked_started = 0;
     yume_status status;
+    uint64_t traffic_before_restart = 0u;
     int result = 1;
 
     memset(&echo, 0, sizeof(echo));
@@ -485,10 +647,10 @@ int main(int argc, char** argv) {
     atomic_init(&pairing.entered, 0);
     atomic_init(&blocked.entered, 0);
 
-    if (argc != 6) {
+    if (argc != 7) {
         fprintf(stderr,
                 "usage: %s SERVER_DIR CLIENT_DIR CLIENT_FINGERPRINT "
-                "SERVER_FINGERPRINT RESOLVER_PROGRAM\n",
+                "SERVER_FINGERPRINT RESOLVER_PROGRAM SILENT_SERVER_CONFIG\n",
                 argv[0]);
         return 2;
     }
@@ -524,6 +686,66 @@ int main(int argc, char** argv) {
     server = make_endpoint(server_runtime, server_path, YUME_ROLE_SERVER);
     client = make_endpoint(client_runtime, client_path, YUME_ROLE_CLIENT);
     if (server == NULL || client == NULL) goto cleanup;
+
+    /* Before any start an endpoint reports its role and limits, no session
+     * and no failure, and has said nothing. */
+    {
+        yume_endpoint_status before;
+        yume_message message;
+        yume_endpoint_status prefix;
+        if (!expect_status_fields(client, YUME_ENDPOINT_CREATED,
+                                  YUME_SESSION_NONE, YUME_STATUS_OK,
+                                  "status of a new client") ||
+            !read_status(client, &before)) {
+            goto cleanup;
+        }
+        if (before.role != YUME_ROLE_CLIENT || before.max_queued_bytes == 0u ||
+            before.max_epoch_bytes == 0u ||
+            before.credit_returns_per_window == 0u ||
+            before.payload_bytes_sent != 0u || before.record_bytes_sent != 0u ||
+            before.sessions != 0u || before.connected_ms != 0u) {
+            fprintf(stderr, "a new client's status is not empty\n");
+            goto cleanup;
+        }
+        memset(&message, 0, sizeof(message));
+        message.struct_size = sizeof(message);
+        message.abi_version = YUME_ABI_VERSION;
+        if (!expect_status(yume_endpoint_read_message(client, 0u, &message,
+                                                      sizeof(message)),
+                           YUME_STATUS_WOULD_BLOCK, "message of a new client",
+                           client) ||
+            message.seq != 0u) {
+            goto cleanup;
+        }
+        /* A caller that knows only the numeric prefix gets that prefix, and
+         * one whose storage is smaller than it is refused. */
+        memset(&prefix, 0xa5, sizeof(prefix));
+        prefix.struct_size = YUME_ENDPOINT_STATUS_MIN_SIZE;
+        prefix.abi_version = YUME_ABI_VERSION;
+        if (!expect_status(yume_endpoint_get_status(
+                               client, &prefix, YUME_ENDPOINT_STATUS_MIN_SIZE),
+                           YUME_STATUS_BUFFER_TOO_SMALL, "status prefix",
+                           client) ||
+            prefix.state != YUME_ENDPOINT_CREATED ||
+            prefix.max_queued_bytes != before.max_queued_bytes ||
+            prefix.last_failure_message[0] != (char)0xa5) {
+            fprintf(stderr, "a status prefix was not copied as a prefix\n");
+            goto cleanup;
+        }
+        prefix.struct_size = YUME_ENDPOINT_STATUS_MIN_SIZE - 1u;
+        if (!expect_status(yume_endpoint_get_status(
+                               client, &prefix, YUME_ENDPOINT_STATUS_MIN_SIZE),
+                           YUME_STATUS_INVALID_ARGUMENT, "truncated status",
+                           client) ||
+            !expect_status(yume_endpoint_get_status(client, NULL, 0u),
+                           YUME_STATUS_INVALID_ARGUMENT,
+                           "status without storage", client) ||
+            !expect_status(
+                yume_endpoint_retry_now(client), YUME_STATUS_INVALID_STATE,
+                "retry of an endpoint that is not running", client)) {
+            goto cleanup;
+        }
+    }
 
     /* Schema-1 registration happens on a stopped server and must name a
      * service its immutable configuration declares. */
@@ -586,6 +808,13 @@ int main(int argc, char** argv) {
         report("fail-closed socket protector", status, client);
         goto cleanup;
     }
+    /* The failed start is the endpoint's latest failure, and it said so. */
+    if (!expect_status_fields(client, YUME_ENDPOINT_FAILED, YUME_SESSION_NONE,
+                              YUME_STATUS_IO_ERROR,
+                              "status after a failed start") ||
+        !feed_has(client, "start failed", NULL)) {
+        goto cleanup;
+    }
     if (!expect_status(
             yume_endpoint_set_socket_protector(client, protect_socket, NULL),
             YUME_STATUS_OK, "replace failed socket protector", client) ||
@@ -598,6 +827,45 @@ int main(int argc, char** argv) {
     if (atomic_load_explicit(&protected_sockets, memory_order_relaxed) == 0u) {
         fprintf(stderr, "client socket protector was never invoked\n");
         goto cleanup;
+    }
+
+    /* A running client names its server and its key epoch. The earlier
+     * failure stays the latest one, and the replaced backend started a new
+     * feed. A server reports its role and state and nothing of a session. */
+    {
+        yume_endpoint_status running;
+        yume_endpoint_status serving;
+        if (!expect_status_fields(client, YUME_ENDPOINT_RUNNING,
+                                  YUME_SESSION_ACTIVE, YUME_STATUS_IO_ERROR,
+                                  "status of a running client") ||
+            !read_status(client, &running) || !read_status(server, &serving)) {
+            goto cleanup;
+        }
+        if (!fingerprint_matches(running.peer_fingerprint_sha256,
+                                 server_fingerprint) ||
+            running.epoch_bytes == 0u ||
+            running.epoch_bytes > running.max_epoch_bytes ||
+            running.sessions != 1u || running.record_bytes_sent == 0u ||
+            running.record_bytes_received == 0u ||
+            running.device_tcp_connections != 0u) {
+            fprintf(stderr, "a running client's status is wrong\n");
+            goto cleanup;
+        }
+        if (serving.role != YUME_ROLE_SERVER ||
+            serving.state != YUME_ENDPOINT_RUNNING ||
+            serving.session != YUME_SESSION_NONE ||
+            serving.record_bytes_sent != 0u ||
+            serving.last_failure != YUME_STATUS_OK) {
+            fprintf(stderr, "a running server's status is wrong\n");
+            goto cleanup;
+        }
+        if (!feed_has(client, "session authenticated", NULL) ||
+            !feed_has(server, "accepting sessions", NULL) ||
+            !expect_status(yume_endpoint_retry_now(client),
+                           YUME_STATUS_INVALID_STATE,
+                           "retry of an endpoint without a device", client)) {
+            goto cleanup;
+        }
     }
 
     /* Direction, declaration and authorization refusals keep the session. */
@@ -686,6 +954,20 @@ int main(int argc, char** argv) {
     }
     yume_stream_destroy(stream);
     stream = NULL;
+
+    /* The exchange is counted: payload both ways, inside larger records. */
+    {
+        yume_endpoint_status counted;
+        if (!read_status(client, &counted)) goto cleanup;
+        if (counted.payload_bytes_sent < sizeof(kClientPayload) - 1u ||
+            counted.payload_bytes_received < sizeof(kServerPayload) - 1u ||
+            counted.record_bytes_sent <= counted.payload_bytes_sent ||
+            counted.record_bytes_received <= counted.payload_bytes_received) {
+            fprintf(stderr, "the client's traffic totals are wrong\n");
+            goto cleanup;
+        }
+        traffic_before_restart = counted.record_bytes_sent;
+    }
 
     /* An expired read keeps no caller storage and loses no later data. An
      * abort after data is closure for the peer, not end of stream. */
@@ -819,6 +1101,41 @@ int main(int argc, char** argv) {
     yume_stream_destroy(retained_server);
     retained_server = NULL;
 
+    /* The client without a device stays RUNNING with its session ended, and
+     * says why. The server that was stopped on purpose records no failure. */
+    {
+        yume_endpoint_status ended;
+        const struct timespec begun = monotonic_now();
+        for (;;) {
+            if (!read_status(client, &ended)) goto cleanup;
+            if (ended.session == YUME_SESSION_ENDED ||
+                elapsed_milliseconds(begun, monotonic_now()) > 10000L) {
+                break;
+            }
+            pause_milliseconds(20L);
+        }
+        if (ended.state != YUME_ENDPOINT_RUNNING ||
+            ended.session != YUME_SESSION_ENDED ||
+            ended.last_failure == YUME_STATUS_OK ||
+            ended.last_failure == YUME_STATUS_IO_ERROR ||
+            ended.last_failure_message[0] == '\0' || ended.connected_ms != 0u ||
+            ended.epoch_bytes != 0u) {
+            fprintf(stderr,
+                    "status after a lost session: state=%u session=%u "
+                    "last_failure=%d '%s'\n",
+                    (unsigned)ended.state, (unsigned)ended.session,
+                    (int)ended.last_failure, ended.last_failure_message);
+            goto cleanup;
+        }
+        if (!feed_has(client, "session ended", NULL) ||
+            !expect_status_fields(server, YUME_ENDPOINT_STOPPED,
+                                  YUME_SESSION_NONE, YUME_STATUS_OK,
+                                  "status of a stopped server") ||
+            !feed_has(server, "stopped", NULL)) {
+            goto cleanup;
+        }
+    }
+
     /* Registrations survive restart. The restarted pair carries traffic. */
     if (!expect_status(yume_endpoint_start(server, 0u), YUME_STATUS_OK,
                        "server restart", server) ||
@@ -863,6 +1180,20 @@ int main(int argc, char** argv) {
     }
     discard_stream(&pairing.stream);
 
+    /* The handle's totals continue across the restart, and the ended session
+     * stays its latest failure while the new one is active. */
+    {
+        yume_endpoint_status restarted;
+        if (!read_status(client, &restarted)) goto cleanup;
+        if (restarted.session != YUME_SESSION_ACTIVE ||
+            restarted.last_failure == YUME_STATUS_OK ||
+            restarted.record_bytes_sent <= traffic_before_restart) {
+            fprintf(stderr, "status after a restart lost the earlier run\n");
+            goto cleanup;
+        }
+        traffic_before_restart = restarted.record_bytes_sent;
+    }
+
     /* Client handles from both runs outlive client stop and endpoint
      * destruction. They report closure and release cleanly afterwards. */
     if (!expect_status(yume_endpoint_stop(client, 0u), YUME_STATUS_OK,
@@ -873,8 +1204,22 @@ int main(int argc, char** argv) {
                      "read on an earlier run's stream")) {
         goto cleanup;
     }
+    /* A stopped client keeps its totals and says it stopped. */
+    {
+        yume_endpoint_status stopped;
+        if (!read_status(client, &stopped)) goto cleanup;
+        if (stopped.state != YUME_ENDPOINT_STOPPED ||
+            stopped.session != YUME_SESSION_NONE ||
+            stopped.record_bytes_sent < traffic_before_restart ||
+            !feed_has(client, "stopped", NULL)) {
+            fprintf(stderr, "a stopped client's status is wrong\n");
+            goto cleanup;
+        }
+    }
     yume_endpoint_destroy(client);
     client = NULL;
+
+    if (!test_cancelled_start(client_runtime, argv[6])) goto cleanup;
     if (!expect_status(yume_stream_close(restarted_client, 0u), YUME_STATUS_OK,
                        "close after endpoint destruction", restarted_client)) {
         goto cleanup;

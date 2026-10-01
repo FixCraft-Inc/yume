@@ -114,11 +114,13 @@ struct Fixture final {
         : responder(std::make_shared<TestResponder>(kind, max_write)) {
         auto context = providers::AsioExecutionContext::create(engine::ExecutorAffinity(77U));
         CHECK(context.ok());
-        run = std::make_shared<NativeRun>(std::move(context).take_value(), config,
-            std::filesystem::path{}, std::filesystem::path{},
+        run = std::make_shared<NativeRun>(
+            std::move(context).take_value(), config, std::filesystem::path{},
+            std::filesystem::path{},
             std::vector<BackendService>{{"tcp", BackendServiceKind::ByteStream},
                                         {"tcp", BackendServiceKind::Packet}},
-            providers::AsioTcpSocketProtector{});
+            providers::AsioTcpSocketProtector{},
+            std::make_shared<BackendRecord>(), std::nullopt);
     }
     ~Fixture() {
         for (const auto& stream : streams) stream->close();
@@ -537,7 +539,8 @@ struct PausedClient final {
         run = std::make_shared<NativeRun>(
             std::move(context).take_value(), config, base,
             std::filesystem::path(YUME_TEST_RESOLVER_PROGRAM),
-            std::vector<BackendService>{}, providers::AsioTcpSocketProtector{});
+            std::vector<BackendService>{}, providers::AsioTcpSocketProtector{},
+            std::make_shared<BackendRecord>(), std::nullopt);
         auto startup =
             std::make_shared<StartOperation>(run, std::chrono::seconds(10));
         CHECK(run->submit(startup->task, startup));
@@ -588,9 +591,9 @@ void test_open_deadline_admission(const std::filesystem::path& kit,
         std::vector<BackendService>{
             {"echo", packet ? BackendServiceKind::Packet
                             : BackendServiceKind::ByteStream}},
-        {});
+        {}, std::nullopt);
     std::string error;
-    CHECK(server.start(0U, error) == BackendIo::Ok);
+    CHECK(server.start(0U, nullptr, error) == BackendIo::Ok);
     PausedClient client(
         read_kit_config(client_base /
                         (packet ? "routes-udp.json" : "yume.json")),

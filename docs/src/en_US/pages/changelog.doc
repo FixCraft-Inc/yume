@@ -1010,6 +1010,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Removed
 
+- **The transport-v2 benchmark sandbox.** `yume_bench_isolation.py`,
+  `yume_bench_provenance.py` and `yume_bench_exec_guard.py` had no user after the
+  v2 benchmark went. The capture scripts' tests remain.
 - **Code no shipped program reached.** The reachability check found
   `Tunnel::status_age_ms` in `yume-gui`, `ClientCircuit::hops`,
   `H2Carrier::capture_observer_active`, `H2Carrier::RejectCarrier` (the front

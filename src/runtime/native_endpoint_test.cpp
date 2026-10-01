@@ -20,6 +20,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
 #include <fstream>
 #include <functional>
 #include <future>
@@ -29,6 +30,7 @@
 #include <optional>
 #include <semaphore>
 #include <span>
+#include <source_location>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -56,12 +58,30 @@
 namespace {
 thread_local bool allocation_failure_sustained = false;
 thread_local unsigned injected_allocation_failures = 0U;
+thread_local bool intercept_posix_allocation = false;
+thread_local unsigned injected_posix_failures = 0U;
 
 void fail_runtime_allocation(std::size_t) {
     ++injected_allocation_failures;
     if (!allocation_failure_sustained) yume::test::before_allocate = nullptr;
     throw std::bad_alloc();
 }
+}
+#endif
+
+#if defined(YUME_TEST_WRAP_POSIX_MEMALIGN) && defined(YUME_NATIVE_TEST_ROUTES)
+extern "C" int __real_posix_memalign(void**, std::size_t, std::size_t);
+extern "C" int __wrap_posix_memalign(void** storage, std::size_t alignment,
+                                     std::size_t size) {
+    // This is Asio's allocation route with Boost.Align and libc++. Preserve
+    // the POSIX error channel; the timer itself converts ENOMEM to bad_alloc.
+    try {
+        if (intercept_posix_allocation) yume::test::check_allocation(size);
+    } catch (...) {
+        ++injected_posix_failures;
+        return ENOMEM;
+    }
+    return __real_posix_memalign(storage, alignment, size);
 }
 #endif
 
@@ -81,6 +101,7 @@ extern "C" int __wrap_accept(int socket, sockaddr* address, socklen_t* length) {
     if (const int failure = std::exchange(injected_accept_error, 0)) {
 #ifdef YUME_NATIVE_TEST_ROUTES
         if (std::exchange(fail_accept_retry_allocation, false)) {
+            intercept_posix_allocation = true;
             yume::test::before_allocate = fail_runtime_allocation;
         }
 #endif
@@ -105,8 +126,14 @@ template <typename T> T take(Result<T> result) {
     return std::move(result).take_value();
 }
 
-template <typename T> T await(std::future<T>& future) {
-    CHECK(future.wait_for(10s) == std::future_status::ready);
+template <typename T>
+T await(std::future<T>& future,
+        const std::source_location where = std::source_location::current()) {
+    if (future.wait_for(10s) != std::future_status::ready) {
+        throw std::runtime_error(
+            std::string("native endpoint wait timed out in ") +
+            where.function_name() + ":" + std::to_string(where.line()));
+    }
     return future.get();
 }
 
@@ -2079,6 +2106,7 @@ void test_client_reconnect_timer_failure(const std::filesystem::path& kit, bool 
     auto completed = stopped.get_future();
     unsigned notifications = 0U;
     unsigned allocation_failures = 0U;
+    unsigned posix_failures = 0U;
     bool on_context = false;
     bool already_closed = false;
     // Hold every cached Asio block so the next retry must allocate. Otherwise
@@ -2095,10 +2123,14 @@ void test_client_reconnect_timer_failure(const std::filesystem::path& kit, bool 
                 for (auto& block : cached) if (!block) block = allocator.allocate(1U);
                 allocation_failure_sustained = sustained;
                 injected_allocation_failures = 0U;
+                injected_posix_failures = 0U;
+                intercept_posix_allocation = true;
                 yume::test::before_allocate = fail_runtime_allocation;
             }, options, [&](Status status) {
                 // Cleanup has already run while allocations were failing.
                 yume::test::before_allocate = nullptr;
+                intercept_posix_allocation = false;
+                posix_failures = injected_posix_failures;
                 for (auto*& block : cached) {
                     if (block) allocator.deallocate(std::exchange(block, nullptr), 1U);
                 }
@@ -2119,6 +2151,7 @@ void test_client_reconnect_timer_failure(const std::filesystem::path& kit, bool 
     if (ready != std::future_status::ready) {
         runner.sync([&] {
             yume::test::before_allocate = nullptr;
+            intercept_posix_allocation = false;
             for (auto*& block : cached) {
                 if (block) allocator.deallocate(std::exchange(block, nullptr), 1U);
             }
@@ -2129,6 +2162,14 @@ void test_client_reconnect_timer_failure(const std::filesystem::path& kit, bool 
     CHECK(ready == std::future_status::ready);
     CHECK(completed.get() == StatusCode::ResourceExhausted);
     CHECK(notifications == 1U && allocation_failures != 0U && on_context && already_closed);
+    // Verify that this build's allocation route actually saw the fault.
+#if defined(YUME_TEST_WRAP_POSIX_MEMALIGN) && \
+    defined(BOOST_ASIO_HAS_BOOST_ALIGN) &&    \
+    !defined(BOOST_ASIO_HAS_STD_ALIGNED_ALLOC)
+    CHECK(posix_failures == 1U);
+#else
+    CHECK(posix_failures == 0U);
+#endif
     CHECK(!client);
     boost::asio::io_context io;
     boost::asio::ip::tcp::socket probe(io);
@@ -2154,6 +2195,7 @@ void test_socks5_accept_retry(bool fail_retry, bool sustained) {
             {"echo", "127.0.0.1", 0U}, [] { return std::shared_ptr<SessionEngine>{}; }, {},
             [&](Status status) {
                 yume::test::before_allocate = nullptr;
+                intercept_posix_allocation = false;
                 allocation_failures = injected_allocation_failures;
                 ++notifications;
                 on_context = runner.context->running_in_this_thread();
@@ -2181,6 +2223,7 @@ void test_socks5_accept_retry(bool fail_retry, bool sustained) {
         if (ready != std::future_status::ready) {
             runner.sync([&] {
                 yume::test::before_allocate = nullptr;
+                intercept_posix_allocation = false;
                 adapter->close();
             });
         }
@@ -2265,7 +2308,7 @@ void test_forward_adapter(const std::filesystem::path& kit) {
     };
     const auto accept_held = [&](Status status) {
         runner.sync([&] {
-            auto acceptance = std::move(handler->acceptance);
+            auto acceptance = std::exchange(handler->acceptance, {});
             if (acceptance) acceptance(std::move(status));
         });
     };
@@ -2454,7 +2497,7 @@ void test_socks5_deadlines(const std::filesystem::path& kit) {
     };
     auto settle = [&](Status status) {
         runner.sync([&, status = std::move(status)]() mutable {
-            auto completion = std::move(handler->acceptance);
+            auto completion = std::exchange(handler->acceptance, {});
             CHECK(completion);
             completion(std::move(status));
         });

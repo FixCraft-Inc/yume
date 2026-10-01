@@ -149,16 +149,17 @@ flattened evidence files that installed diagnostics consume.
    python3 tests/test_project_metadata.py
    ```
 
-8. Bind the new ID only in a deliberate development protocol revision, update
-   KATs and wire documentation, then run same-session capture, matched
+8. Select the new profile ID in a deliberate profile change, update its
+   registry, fixture tests and documentation, then run same-session capture, matched
    performance, sanitizer, classifier/active-probe, soak, packaging, and
-   independent-review gates.
+   independent-review gates. A profile refresh does not change YTP/1, its
+   key schedule or the relay channel's frozen labels. A separate protocol
+   change updates its own contract and vectors.
 
 The registry can hold several immutable profiles, but the current transport
 activates exactly the profile named by `src/common/version.hpp`. Runtime
-negotiation or accepting a
-second ID is not a cosmetic configuration change and is not introduced by this
-registry refactor.
+selection of another profile is not implemented. Adding it would need an
+explicit interface and evidence for each profile.
 
 ## Installed-browser updates
 

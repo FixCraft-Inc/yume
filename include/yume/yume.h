@@ -666,8 +666,10 @@ YUME_API void yume_kit_destroy(yume_kit* kit) YUME_NOEXCEPT;
 /*
  * Copies a handle-scoped diagnostic. A successful operation clears the
  * handle's prior diagnostic. Event callbacks may call this function and the
- * side-effect-free version/status queries. Pass runtime, config, endpoint,
- * stream, packet, or kit.
+ * global version, build, compatibility and status-info queries. Endpoint
+ * state returns 0 in a callback; endpoint status and message queries return
+ * YUME_STATUS_INVALID_STATE. Pass runtime, config, endpoint, stream, packet,
+ * or kit.
  */
 YUME_API yume_status yume_handle_get_diagnostic(const void* handle,
                                                 yume_diagnostic* out,

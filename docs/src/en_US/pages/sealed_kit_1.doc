@@ -23,6 +23,8 @@ public material. A sealed kit carries that directory to the client's device
 as one file. Whoever holds the file and its code holds the client identity,
 so the code travels by another channel than the file.
 
+@diagram kit_transfer
+
 ## Format
 
 A sealed kit has no plaintext header:

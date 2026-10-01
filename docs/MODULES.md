@@ -92,6 +92,53 @@ taken the connection within 10 seconds fails the open. Streams are refused
 while the module is down, and one module receives at most 1024 connections at
 once.
 
+<!-- yume-diagram: module_bridge -->
+<img src="diagrams/module_bridge-vertical.svg" alt="An authorized stream reaches a module program" width="400" height="568">
+
+<details>
+<summary>What each part does</summary>
+
+- **Client**: Opens a configured byte-stream service without a destination, for example through a local forward or the C ABI. ([`src/runtime/native_forward.cpp`](../src/runtime/native_forward.cpp), [`src/abi/native_backend.cpp`](../src/abi/native_backend.cpp))
+- **yumed**: Checks the authenticated identity's service grant before handing the stream to its module adapter. ([`src/runtime/native_endpoint.cpp`](../src/runtime/native_endpoint.cpp), [`src/runtime/native_credentials.cpp`](../src/runtime/native_credentials.cpp))
+- **Module bridge**: Connects to the module listener and writes the version, identity and service header before the stream bytes. It preserves both half-closes. ([`src/runtime/module_supervisor.cpp`](../src/runtime/module_supervisor.cpp))
+- **Module program**: Accepts the connection and serves it without linking YUME. It runs as the daemon's user, so it can read that user's credential files. ([`src/runtime/module_launcher.cpp`](../src/runtime/module_launcher.cpp), [`src/modules/echo/echo_module.cpp`](../src/modules/echo/echo_module.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++--------------------------+
+|  Client                  |
+|  OPEN named service      |
++-------------+------------+
+               \
+                \
+                 v ==YUME==> service OPEN and DATA
+   +-------------+------------+
+   |  yumed                   |
+   |  identity grant first    |
+   +-------------+------------+
+                  \
+                   \
+                    v authorized stream
+      +-------------+------------+
+      |  Module bridge           |
+      |  private UNIX connection |
+      +-------------+------------+
+                     \
+                      \
+                       v header, then bytes
+         +-------------+------------+
+         |  Module program          |
+         |  accepts on descriptor 3 |
+         +--------------------------+
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## Restarts and stopping
 
 When the module exits, its connections close and their streams end. The

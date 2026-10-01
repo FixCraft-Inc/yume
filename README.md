@@ -17,8 +17,9 @@ x86-64 is the first target.
 
 Applications reach `yume` through a local SOCKS5 listener (TCP CONNECT and UDP
 ASSOCIATE), or the whole Linux machine routes through a managed TUN device.
-`yume` carries every connection over one session to `yumed`, which opens the
-destination sockets allowed by its policy.
+By default, `yume` carries connections over one session to `yumed`, which
+opens the destination sockets allowed by its policy. Configured TCP circuits
+can instead leave through two or three servers in one operator's cluster.
 
 On the wire the session is TLS 1.3 with a pinned Chrome ClientHello, HTTP/2
 and WebSocket framing. A connection without a valid admission proof gets the

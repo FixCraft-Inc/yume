@@ -91,6 +91,8 @@ the peer may hold two at once and may open no stream. When the list's
 **not_after** passes, the daemon closes its links and ends the peers'
 sessions until a reload loads a newer list.
 
+@diagram cluster_links
+
 ## COVER AND ADMISSION
 
 The daemon loads an operator-provided static site with explicit index and
@@ -98,6 +100,14 @@ not-found files. It has no built-in fallback site or reverse-proxy backend.
 Ordinary cover requests can use HTTP/1.1 or HTTP/2 over TLS 1.2 or TLS 1.3.
 YTP/1 promotion requires TLS 1.3, HTTP/2 and authenticated admission bound to
 the connection's TLS exporter. Failed admission remains cover traffic.
+
+## MODULE STREAMS
+
+A configured module receives an authorized service stream through a private
+UNIX socket. It runs as the daemon's user and must be trusted with that
+user's credentials. **docs/MODULES.md** defines its header and lifecycle.
+
+@diagram module_bridge
 
 ## PRIVILEGE
 

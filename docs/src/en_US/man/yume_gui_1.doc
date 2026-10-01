@@ -53,6 +53,8 @@ and the preset they match. It offers no switch that weakens a tunnel. A
 proposal of a shorter route is accepted only from its review dialog, for that
 exact proposal. Closing the dialog accepts nothing.
 
+@diagram gui_lifecycle
+
 ## OPTIONS
 
 @options

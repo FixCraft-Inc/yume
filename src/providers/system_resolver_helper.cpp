@@ -38,6 +38,9 @@ std::atomic<std::size_t> active_lookups{0U};
 // not-found path runs whatever the host's DNS does with a missing name.
 constexpr std::string_view kStallHost = "resolver-stall.invalid";
 constexpr std::string_view kMissingHost = "resolver-missing.invalid";
+// A named, IPv4-only answer for provider fixtures with IPv4-only listeners.
+// It still crosses the real helper protocol, without depending on NSS/DNS.
+constexpr std::string_view kLoopbackHost = "resolver-loopback.invalid";
 #endif
 
 void send_message(const std::uint8_t* data, std::size_t size) noexcept {
@@ -88,9 +91,11 @@ void lookup(std::uint32_t id, std::uint8_t max_addresses, const std::string& hos
     hints.ai_socktype = SOCK_STREAM;
     addrinfo* results = nullptr;
 #if defined(YUME_SYSTEM_RESOLVER_TEST_NAMES)
-    const int error = host == kMissingHost
-                          ? EAI_NONAME
-                          : ::getaddrinfo(host.c_str(), nullptr, &hints, &results);
+    const int error =
+        host == kMissingHost
+            ? EAI_NONAME
+            : ::getaddrinfo(host == kLoopbackHost ? "127.0.0.1" : host.c_str(),
+                            nullptr, &hints, &results);
 #else
     const int error = ::getaddrinfo(host.c_str(), nullptr, &hints, &results);
 #endif

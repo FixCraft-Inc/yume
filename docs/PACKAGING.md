@@ -14,7 +14,8 @@ tools remain experimental. Setup and doctor require Python 3 and an OpenSSL
 3.5 or newer command-line executable, including when the native binaries
 embed their own patched OpenSSL.
 
-There is no desktop GUI yet, so no package carries one.
+The optional Linux desktop GUI exists and builds with `YUME_BUILD_GUI=ON`.
+It is not included in the release archive or Debian packages.
 
 After activating the pinned patched OpenSSL described in
 [CONTRIBUTING.md](../CONTRIBUTING.md), a native development install is:

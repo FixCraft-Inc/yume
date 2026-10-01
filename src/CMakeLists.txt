@@ -1785,8 +1785,12 @@ if(YUME_BUILD_TESTING)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             # Inject one OS accept error in this test process without changing
             # host limits or the production listener interface.
-            target_compile_definitions(yume_native_endpoint_test PRIVATE YUME_TEST_WRAP_ACCEPT=1)
-            target_link_options(yume_native_endpoint_test PRIVATE "-Wl,--wrap=accept")
+            target_compile_definitions(yume_native_endpoint_test PRIVATE
+                YUME_TEST_WRAP_ACCEPT=1 YUME_TEST_WRAP_POSIX_MEMALIGN=1)
+            # Asio with libc++ can allocate through Boost.Align's
+            # posix_memalign rather than aligned_alloc or operator new.
+            target_link_options(yume_native_endpoint_test PRIVATE
+                "-Wl,--wrap=accept" "-Wl,--wrap=posix_memalign")
         endif()
         yume_apply_perf_opts(yume_native_endpoint_test)
         add_test(NAME yume_native_endpoint_test

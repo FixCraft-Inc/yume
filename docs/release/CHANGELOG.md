@@ -15,6 +15,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Explanatory diagrams.** Device bridge, circuits, cluster links, directional
+  key rotation, GUI lifecycle, module streams, relay library, sealed kits and
+  trust boundaries share one JSON source across web, Markdown and manuals.
+- **libc++ CI gate.** The native application, module libraries and shared ABI
+  are built and tested with Clang and libc++, which Android uses. Retry-timer
+  allocation fixtures intercept the POSIX path Asio can select with libc++.
+  The TCP provider's DNS round-trip fixture uses a named IPv4 loopback answer
+  through the resolver helper, and timeout diagnostics name the test and wait.
 - **Device bridge in the C ABI.** `yume_endpoint_set_device` attaches a TUN
   descriptor to a client endpoint, which then carries what enters the device
   on the kit's ordinary services: one byte-stream OPEN per TCP connection and

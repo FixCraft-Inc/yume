@@ -1,0 +1,95 @@
+{
+  "name": "gui_lifecycle",
+  "type": "sequence",
+  "title": "The GUI controls a separate client process",
+  "summary": "The window validates and starts a detached client, then uses its owner-only UNIX socket. Closing the window leaves the tunnel running. Disconnect waits for the client to exit.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "gui",
+      "kind": "app",
+      "title": "yume-gui",
+      "sub": "window",
+      "note": "Owns the display and kit selection. It links no YUME library and sends no traffic through the tunnel itself.",
+      "source": [
+        "src/gui/tunnel.cpp",
+        "src/gui/control_client.cpp"
+      ]
+    },
+    {
+      "id": "client",
+      "kind": "client",
+      "title": "yume",
+      "sub": "tunnel process",
+      "note": "Owns credentials, adapters, session and the control socket. The same user can ask status, follow messages and request stop.",
+      "source": [
+        "src/runtime/native_cli.cpp",
+        "src/runtime/control_socket.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "gui",
+      "to": "client",
+      "label": "run with --validate"
+    },
+    {
+      "from": "client",
+      "to": "gui",
+      "label": "validation result"
+    },
+    {
+      "from": "gui",
+      "to": "client",
+      "label": "start detached, socket path"
+    },
+    {
+      "from": "client",
+      "to": "client",
+      "label": "listen, connect, serve socket"
+    },
+    {
+      "from": "gui",
+      "to": "client",
+      "label": "status and messages"
+    },
+    {
+      "from": "client",
+      "to": "gui",
+      "label": "state and printed lines"
+    },
+    {
+      "from": "gui",
+      "to": "gui",
+      "label": "close window, client runs"
+    },
+    {
+      "from": "gui",
+      "to": "gui",
+      "label": "reopen window, find client"
+    },
+    {
+      "from": "gui",
+      "to": "client",
+      "label": "Disconnect: stop"
+    },
+    {
+      "from": "client",
+      "to": "gui",
+      "label": "acknowledge stop"
+    },
+    {
+      "from": "client",
+      "to": "client",
+      "label": "drain and exit"
+    },
+    {
+      "from": "gui",
+      "to": "gui",
+      "label": "process ended: stopped"
+    }
+  ]
+}

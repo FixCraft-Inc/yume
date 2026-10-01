@@ -1,0 +1,72 @@
+{
+  "name": "key_rotation",
+  "type": "sequence",
+  "title": "How one sending direction changes its root",
+  "summary": "The sender begins before its epoch fills, uses the old root within its limits until the acknowledgement verifies, then sends with the new root. The other direction rotates independently.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "sender",
+      "kind": "client",
+      "title": "Sender",
+      "sub": "sending direction",
+      "note": "Starts rotation at half the epoch's byte, record or 500 ms lifetime limit. Later data waits if the old epoch runs out.",
+      "source": [
+        "src/engine/session_engine.cpp"
+      ]
+    },
+    {
+      "id": "receiver",
+      "kind": "server",
+      "title": "Receiver",
+      "sub": "receive direction",
+      "note": "Checks the old-root proof, contributes fresh hybrid material and confirms the candidate new root. A malformed or late exchange ends the session.",
+      "source": [
+        "src/providers/openssl_security_provider.cpp",
+        "src/providers/ytp1_crypto.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "sender",
+      "to": "sender",
+      "label": "fresh hybrid material"
+    },
+    {
+      "from": "sender",
+      "to": "receiver",
+      "label": "REKEY_INIT, old-root seal",
+      "channel": "tunnel"
+    },
+    {
+      "from": "receiver",
+      "to": "receiver",
+      "label": "check INIT, derive root"
+    },
+    {
+      "from": "receiver",
+      "to": "sender",
+      "label": "REKEY_ACK, confirm new root",
+      "channel": "tunnel"
+    },
+    {
+      "from": "sender",
+      "to": "sender",
+      "label": "verify ACK, commit root"
+    },
+    {
+      "from": "sender",
+      "to": "receiver",
+      "label": "first new-epoch record",
+      "channel": "tunnel"
+    },
+    {
+      "from": "receiver",
+      "to": "receiver",
+      "label": "open record, wipe old root"
+    }
+  ]
+}

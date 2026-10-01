@@ -39,6 +39,72 @@ later, as its own change. A kit with a managed TUN adapter needs privileges a
 user process does not have, so the window cannot start one. Run such a kit as
 a system service instead.
 
+<!-- yume-diagram: gui_lifecycle -->
+<img src="diagrams/gui_lifecycle-vertical.svg" alt="The GUI controls a separate client process" width="456" height="709">
+
+<details>
+<summary>What each part does</summary>
+
+- **yume-gui**: Owns the display and kit selection. It links no YUME library and sends no traffic through the tunnel itself. ([`src/gui/tunnel.cpp`](../src/gui/tunnel.cpp), [`src/gui/control_client.cpp`](../src/gui/control_client.cpp))
+- **yume**: Owns credentials, adapters, session and the control socket. The same user can ask status, follow messages and request stop. ([`src/runtime/native_cli.cpp`](../src/runtime/native_cli.cpp), [`src/runtime/control_socket.cpp`](../src/runtime/control_socket.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++-----------------+                 +-----------------+
+|  yume-gui       |                 |  yume           |
+|  window         |                 |  tunnel process |
++-----------------+                 +-----------------+
+         |                                   |
+         |  run with --validate              |
+         |---------------------------------->|
+         |                                   |
+         |  validation result                |
+         |<----------------------------------|
+         |                                   |
+         |  start detached, socket path      |
+         |---------------------------------->|
+         |                                   |
+         |                                .--|
+         | listen, connect, serve socket  |  |
+         |                                '->|
+         |                                   |
+         |  status and messages              |
+         |---------------------------------->|
+         |                                   |
+         |  state and printed lines          |
+         |<----------------------------------|
+         |                                   |
+         |--.                                |
+         |  | close window, client runs      |
+         |<-'                                |
+         |                                   |
+         |--.                                |
+         |  | reopen window, find client     |
+         |<-'                                |
+         |                                   |
+         |  Disconnect: stop                 |
+         |---------------------------------->|
+         |                                   |
+         |  acknowledge stop                 |
+         |<----------------------------------|
+         |                                   |
+         |                                .--|
+         |                drain and exit  |  |
+         |                                '->|
+         |                                   |
+         |--.                                |
+         |  | process ended: stopped         |
+         |<-'                                |
+         |                                   |
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## The tray
 
 Where the desktop shows tray icons, `yume-gui` adds one: the YUME mark with

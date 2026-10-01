@@ -1,0 +1,115 @@
+{
+  "name": "device_bridge",
+  "type": "route",
+  "title": "How a phone connection crosses the device bridge",
+  "summary": "TCP packets enter the VPN interface, are rewritten back to the host kernel, and become one destination stream OPEN through libyume. Replies reverse the same path.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "app",
+      "kind": "app",
+      "title": "Phone application",
+      "sub": "TCP to a destination",
+      "note": "The application asks its own kernel to connect to a destination. Its packets enter the VPN interface.",
+      "source": [
+        "docs/ABI.md"
+      ]
+    },
+    {
+      "id": "device",
+      "kind": "process",
+      "title": "VPN interface",
+      "sub": "whole IP packets",
+      "note": "The embedding app owns the TUN descriptor, addresses and routes. Android supplies it through VpnService.",
+      "source": [
+        "include/yume/yume.h",
+        "src/abi/native_backend.cpp"
+      ]
+    },
+    {
+      "id": "rewrite",
+      "kind": "client",
+      "title": "Rewrite and reinject",
+      "sub": "peer port to local listener",
+      "note": "DeviceNat remembers the destination, rewrites addresses and ports, updates checksums and sends the segment back into the device.",
+      "source": [
+        "src/runtime/device_nat.cpp",
+        "src/runtime/device_bridge.cpp"
+      ]
+    },
+    {
+      "id": "kernel",
+      "kind": "process",
+      "title": "Host TCP listener",
+      "sub": "kernel supplies stream bytes",
+      "note": "The host kernel terminates TCP at the bridge listener. The listener rejects connections the translator did not create.",
+      "source": [
+        "src/runtime/device_bridge.cpp"
+      ]
+    },
+    {
+      "id": "open",
+      "kind": "client",
+      "title": "libyume stream OPEN",
+      "sub": "original destination",
+      "note": "The bridge joins the local socket to one authenticated stream OPEN on the kit's TCP service. UDP uses packet OPENs instead.",
+      "source": [
+        "src/runtime/device_bridge.cpp",
+        "src/abi/native_backend.cpp"
+      ]
+    },
+    {
+      "id": "server",
+      "kind": "server",
+      "title": "yumed",
+      "sub": "grant, policy, outbound TCP",
+      "note": "The ordinary server checks the identity grant and destination policy before opening a socket. It needs no phone-specific service.",
+      "source": [
+        "src/runtime/native_endpoint.cpp",
+        "src/providers/direct_route_handler.cpp"
+      ]
+    },
+    {
+      "id": "destination",
+      "kind": "target",
+      "title": "Destination",
+      "sub": "reply returns through bridge",
+      "note": "The destination gets a connection from the server. Application HTTPS, when used, still ends at the destination.",
+      "source": [
+        "docs/THREAT_MODEL.md"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "app",
+      "to": "device"
+    },
+    {
+      "from": "device",
+      "to": "rewrite"
+    },
+    {
+      "from": "rewrite",
+      "to": "kernel",
+      "label": "rewritten TCP"
+    },
+    {
+      "from": "kernel",
+      "to": "open",
+      "label": "stream bytes"
+    },
+    {
+      "from": "open",
+      "to": "server",
+      "label": "YTP/1 records",
+      "channel": "tunnel"
+    },
+    {
+      "from": "server",
+      "to": "destination"
+    }
+  ]
+}

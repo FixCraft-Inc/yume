@@ -1,0 +1,72 @@
+{
+  "name": "module_bridge",
+  "type": "route",
+  "title": "An authorized stream reaches a module program",
+  "summary": "yumed authorizes the OPEN and bridges stream bytes over a private UNIX socket. The module is a trusted program running as the daemon's user.",
+  "targets": {
+    "web": true
+  },
+  "nodes": [
+    {
+      "id": "client",
+      "kind": "client",
+      "title": "Client",
+      "sub": "OPEN named service",
+      "note": "Opens a configured byte-stream service without a destination, for example through a local forward or the C ABI.",
+      "source": [
+        "src/runtime/native_forward.cpp",
+        "src/abi/native_backend.cpp"
+      ]
+    },
+    {
+      "id": "daemon",
+      "kind": "server",
+      "title": "yumed",
+      "sub": "identity grant first",
+      "note": "Checks the authenticated identity's service grant before handing the stream to its module adapter.",
+      "source": [
+        "src/runtime/native_endpoint.cpp",
+        "src/runtime/native_credentials.cpp"
+      ]
+    },
+    {
+      "id": "bridge",
+      "kind": "server",
+      "title": "Module bridge",
+      "sub": "private UNIX connection",
+      "note": "Connects to the module listener and writes the version, identity and service header before the stream bytes. It preserves both half-closes.",
+      "source": [
+        "src/runtime/module_supervisor.cpp"
+      ]
+    },
+    {
+      "id": "program",
+      "kind": "process",
+      "title": "Module program",
+      "sub": "accepts on descriptor 3",
+      "note": "Accepts the connection and serves it without linking YUME. It runs as the daemon's user, so it can read that user's credential files.",
+      "source": [
+        "src/runtime/module_launcher.cpp",
+        "src/modules/echo/echo_module.cpp"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "client",
+      "to": "daemon",
+      "label": "service OPEN and DATA",
+      "channel": "tunnel"
+    },
+    {
+      "from": "daemon",
+      "to": "bridge",
+      "label": "authorized stream"
+    },
+    {
+      "from": "bridge",
+      "to": "program",
+      "label": "header, then bytes"
+    }
+  ]
+}

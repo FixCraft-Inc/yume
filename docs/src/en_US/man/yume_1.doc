@@ -48,6 +48,8 @@ be built, the client does not shorten it on its own: connections are refused
 as not allowed until the user accepts its proposal with **--accept-route**,
 unless **circuits.min_hops** approves the shorter length in advance.
 
+@diagram three_hop_circuit
+
 ## OPTIONS
 
 @include shared/native_cli.part
@@ -219,6 +221,21 @@ yume --config /path/to/client.json
 The separately installed **yume-setup** and **yume-doctor** tools
 provision and inspect schema-1 kits. Their **--help** output describes their
 arguments. Setup and doctor are separate programs.
+
+## RECORD PROTECTION
+
+Each direction rotates its root independently, beginning halfway to its
+byte, record or 500 ms lifetime limit. Records wait if the old epoch runs
+out before the new root is confirmed.
+
+@diagram key_rotation
+
+## KIT TRANSFER
+
+A sealed client kit moves to another device with its code sent separately.
+Whoever holds both holds that client's credentials.
+
+@diagram kit_transfer
 
 ## SEE ALSO
 

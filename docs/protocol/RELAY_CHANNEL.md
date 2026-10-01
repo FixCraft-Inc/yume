@@ -18,6 +18,62 @@ that transport v2 used, and all of them are frozen. A semantic change needs a
 new protocol version and new labels, with every writer, reader and test vector
 changed together.
 
+<!-- yume-diagram: relay_channel -->
+<img src="../diagrams/relay_channel-vertical.svg" alt="The relay library protects a channel between users" width="592" height="581">
+
+<details>
+<summary>What each part does</summary>
+
+- **User A**: Signs its handshake with both identity keys, checks the expected peer and derives relay keys from X25519 and ML-KEM, plus the optional agreed PSK. ([`src/modules/relay/handshake.cpp`](../../src/modules/relay/handshake.cpp), [`src/modules/relay/ratchet.cpp`](../../src/modules/relay/ratchet.cpp))
+- **Relay**: Routes records without a channel key. The library handshake exposes both identities and invite context to it. ([`docs/protocol/RELAY_CHANNEL.md`](RELAY_CHANNEL.md), [`src/modules/relay/relay_policy.cpp`](../../src/modules/relay/relay_policy.cpp))
+- **User B**: Checks context and both signatures before deriving the channel keys. Its own YTP session, when integrated, ends at the relay server. ([`src/modules/relay/handshake.cpp`](../../src/modules/relay/handshake.cpp), [`src/modules/relay/record.cpp`](../../src/modules/relay/record.cpp))
+
+</details>
+
+<details>
+<summary>Text version</summary>
+
+```text
++-----------------+     +-----------------+   +-----------------+
+|  User A         |     |  Relay          |   |  User B         |
+|  initiator      |     |  planned router |   |  responder      |
++-----------------+     +-----------------+   +-----------------+
+         |                       |                     |
+         |  request: identities  |                     |
+         |---------------------->|                     |
+         |                       |                     |
+         |                       |  forward request    |
+         |                       |-------------------->|
+         |                       |                     |
+         |                       |  reply: identities  |
+         |                       |<--------------------|
+         |                       |                     |
+         |  forward response     |                     |
+         |<----------------------|                     |
+         |                       |                     |
+         |--.                    |                     |
+         |  | check peer, keys   |                     |
+         |<-'                    |                     |
+         |                       |                     |
+         |                       |                  .--|
+         |                       |     derive keys  |  |
+         |                       |                  '->|
+         |                       |                     |
+         |  sealed record        |                     |
+         |---------------------->|                     |
+         |                       |                     |
+         |                       |  forward record     |
+         |                       |-------------------->|
+         |                       |                     |
+         |                       |                  .--|
+         |                       |   verify record  |  |
+         |                       |                  '->|
+         |                       |                     |
+```
+
+</details>
+<!-- /yume-diagram -->
+
 ## Primitives
 
 - Identity: a composite Ed25519 and ML-DSA-87 key pair. It travels as two PEM

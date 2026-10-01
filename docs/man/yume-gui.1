@@ -116,6 +116,56 @@ It offers no switch that weakens a tunnel.
 A proposal of a shorter route is accepted only from its review dialog,
 for that exact proposal.
 Closing the dialog accepts nothing.
+.\" yume-diagram: gui_lifecycle
+.nf
++-----------------+                 +-----------------+
+|  yume-gui       |                 |  yume           |
+|  window         |                 |  tunnel process |
++-----------------+                 +-----------------+
+         |                                   |
+         |  run with --validate              |
+         |---------------------------------->|
+         |                                   |
+         |  validation result                |
+         |<----------------------------------|
+         |                                   |
+         |  start detached, socket path      |
+         |---------------------------------->|
+         |                                   |
+         |                                .--|
+         | listen, connect, serve socket  |  |
+         |                                '->|
+         |                                   |
+         |  status and messages              |
+         |---------------------------------->|
+         |                                   |
+         |  state and printed lines          |
+         |<----------------------------------|
+         |                                   |
+         |--.                                |
+         |  | close window, client runs      |
+         |<-'                                |
+         |                                   |
+         |--.                                |
+         |  | reopen window, find client     |
+         |<-'                                |
+         |                                   |
+         |  Disconnect: stop                 |
+         |---------------------------------->|
+         |                                   |
+         |  acknowledge stop                 |
+         |<----------------------------------|
+         |                                   |
+         |                                .--|
+         |                drain and exit  |  |
+         |                                '->|
+         |                                   |
+         |--.                                |
+         |  | process ended: stopped         |
+         |<-'                                |
+         |                                   |
+.fi
+.\" /yume-diagram
 .SH OPTIONS
 .TP
 .BI "--kit " name

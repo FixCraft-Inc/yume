@@ -133,6 +133,21 @@ class Reachability(unittest.TestCase):
         self.assertTrue(result.failed)
         self.assertEqual(sorted(result.stale), ["src/app/main.c", "src/lib/library.c: yume_used"])
 
+    def test_objects_are_found_under_a_makefile_layout(self) -> None:
+        # Makefiles compile in each source directory's build directory, and
+        # CMake writes "output" relative to the top of the build tree.
+        commands = json.loads((self.build / "compile_commands.json").read_text())
+        library = next(entry for entry in commands if entry["file"].endswith("library.c"))
+        subdirectory = self.build / "src"
+        (subdirectory / "obj").mkdir(parents=True)
+        (self.build / library["output"]).rename(subdirectory / library["output"])
+        library["directory"] = str(subdirectory)
+        library["output"] = "src/" + library["output"]
+        (self.build / "compile_commands.json").write_text(json.dumps(commands))
+        result = self.run_check([])
+        self.assertEqual(self.unretained(result),
+                         {("yume_tests_only", True), ("yume_nowhere", False)})
+
     def test_a_tree_built_without_gc_sections_is_refused(self) -> None:
         cache = self.build / "CMakeCache.txt"
         cache.write_text(cache.read_text().replace("-Wl,--gc-sections", ""), encoding="utf-8")

@@ -10,6 +10,7 @@ yume-gui [--kit <name>] [window options] --capture <directory>
 yume-gui --kit <name> [--yume <path>] --headless <action>
 yume-gui [--yume <path>] --import-kit <file> --name <name>
 yume-gui --version
+yume-gui --completion bash
 yume-gui --help
 @end
 
@@ -17,6 +18,7 @@ yume-gui --help
 --kit
 --yume
 --version
+--completion
 -h
 
 @section Window options

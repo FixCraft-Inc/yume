@@ -17,6 +17,7 @@ man-manual:  YUME Manual
 **yume-gui** **--kit** *name* [ **--yume** *path* ] **--headless** *action*
 **yume-gui** [ **--yume** *path* ] **--import-kit** *file* **--name** *name*
 **yume-gui** **--version**
+**yume-gui** **--completion** **bash**
 **yume-gui** **--help**
 @end
 
@@ -145,6 +146,15 @@ starting with a dot or a dash.
 @cli help: Print the version and the Qt in use
 
 Print the product version, the Qt version in use and the control protocol.
+@opt **--completion** *shell*
+@cli values: bash
+@cli spell: --completion <shell>
+@cli help: Print the shell completion script and exit
+
+Print the completion script for *shell*, which must be **bash**, and exit.
+The script completes this program's options, their fixed values and file
+arguments. To load it for one user, save it as
+*~/.local/share/bash-completion/completions/yume-gui*. This opens no window.
 @opt **--help**
 @cli flags: -h --help
 @cli spell: -h, --help
@@ -164,7 +174,9 @@ directory must be set, and *yume* in it is kept private to the user.
 
 The window exits with 0. **--headless** and **--import-kit** exit with 0 when
 every step passed, 1 when a step failed and 2 when nothing could be done,
-such as for an unknown kit or a usage error. **--capture** exits with 0 or 1.
+such as for an unknown kit or a usage error. **--capture** exits with 0 or
+1. **--help**, **--version** and **--completion** exit with 0, and a usage
+error exits with 2.
 
 ## SEE ALSO
 

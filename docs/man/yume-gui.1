@@ -59,6 +59,10 @@ yume-gui \- desktop GUI that starts, stops and shows YUME client tunnels
 .B --version
 .PP
 .B yume-gui
+.B --completion
+.B bash
+.PP
+.B yume-gui
 .B --help
 .SH DESCRIPTION
 .B yume-gui
@@ -278,6 +282,18 @@ not starting with a dot or a dash.
 Print the product version, the Qt version in use and the control
 protocol.
 .TP
+.BI "--completion " shell
+Print the completion script for
+.IR shell ,
+which must be
+.BR bash ,
+and exit.
+The script completes this program's options, their fixed values and file
+arguments.
+To load it for one user, save it as
+.IR ~/\:.local/\:share/\:bash-completion/\:completions/\:yume-gui .
+This opens no window.
+.TP
 .B --help
 Print a short usage summary.
 .SH FILES
@@ -299,6 +315,11 @@ exit with 0 when every step passed, 1 when a step failed and 2 when
 nothing could be done, such as for an unknown kit or a usage error.
 .B --capture
 exits with 0 or 1.
+.BR --help ,
+.B --version
+and
+.B --completion
+exit with 0, and a usage error exits with 2.
 .SH SEE ALSO
 .BR yume (1),
 .BR yumed (8)

@@ -339,7 +339,8 @@ class Tracked(unittest.TestCase):
                     "yumed": shared,
                     "yume-gui": {"--kit", "--page", "--theme", "--layout-direction", "--size",
                                  "--no-tray", "--yume", "--capture", "--headless",
-                                 "--import-kit", "--name", "--version", "--help", "-h"}}
+                                 "--import-kit", "--name", "--version", "--completion",
+                                 "--help", "-h"}}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):
                 ordered, _ = yume_cli.resolve(layout)

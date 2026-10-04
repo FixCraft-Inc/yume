@@ -135,7 +135,7 @@ its access PSK file, and the configured services it may open. An entry may add
 would exceed it, the daemon ends the identity's oldest session. A client that
 reconnects after a network change therefore replaces its own half-open session
 instead of being refused. Without the field an identity is bounded only by the
-daemon's 128-session capacity. `admin-keys.json` is a separate store of
+daemon's session capacity below. `admin-keys.json` is a separate store of
 second-factor identities and grants no traffic.
 
 The server's `limits.max_egress_mbps`, from 1 to 1000000 megabits per second,
@@ -161,6 +161,23 @@ and a changed admission key is refused. The schema-1 `limits` object bounds each
 streams, queued bytes, pending opens, rekey work, control messages and packets;
 the [configuration reference](CONFIGURATION.md#limits) owns
 those fields.
+
+## Capacity
+
+One `yumed` holds up to 1024 client sessions. The connections their direct
+routes open to destinations share one pool of up to 16384, of which up to 1024
+may be connecting at once. Each session and connection takes a descriptor, so
+the daemon raises its soft open-file limit to the hard one at start, keeps 512
+descriptors for itself, gives sessions at most half of the rest and the pool
+what remains. The packaged unit's `LimitNOFILE=65536` allows the full sizes,
+and a limit of 1024 leaves 256 sessions and 256 connections.
+
+All sessions run on the daemon's one event-loop thread, so the clients'
+traffic together moves at what one CPU core encrypts. An idle connection holds
+no read buffer. A session streaming to a slower client can hold its
+`limits.max_queued_bytes` of outbound data, and up to twice that, at least
+8 MiB, of records it received, so plan memory for the sessions that stream at
+the same time, not for every session, and bound the process as below.
 
 For hard process ceilings, use systemd rather than in-process settings:
 
@@ -216,7 +233,9 @@ destination names that clients request through direct TCP/UDP adapters and
 SOCKS5. Both use the system resolver configuration, including `/etc/hosts` and
 NSS modules, in a separate helper process. It appears as a `yume-resolver`
 child after the first lookup. The helper holds no connections, keeps no
-capabilities, and runs each lookup on its own thread. Stopping `yume` or
+capabilities, and runs each lookup on its own thread, up to 64 at once. Later
+lookups wait for a free thread, up to 1024 of them, instead of failing their
+connections. Stopping `yume` or
 `yumed` kills it, so a stalled DNS server or NSS module never delays shutdown.
 A numeric host or `endpoint.connect_address` needs no lookup. A client with
 `endpoint.socks5_proxy` looks nothing up either: it connects to the proxy's

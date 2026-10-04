@@ -113,9 +113,11 @@ canonical TLS SNI, an exporter from this TLS connection and a random nonce
 ([YTP admission](protocol/YTP_1.md#h2-admission-v1)). Wall-clock time and the
 evidence profile are not part of it, and one TLS connection can promote at
 most one carrier. The nonce enters a replay cache that every listener in the
-process shares. It keeps at most 4096 nonces for two hours of monotonic time
-and refuses new admissions when full rather than dropping live entries. A
-restart loses that state. TLS SNI and HTTP/2 `:authority` must agree.
+process shares. It keeps each nonce for twice the 30-second connection
+deadline, after which no connection can present that proof, and holds 65536
+of them, about a thousand admissions a second. When full it refuses new
+admissions rather than dropping live entries. A restart loses that state. TLS
+SNI and HTTP/2 `:authority` must agree.
 
 A missing, malformed, wrong-key, replayed or cache-saturated proof, or a
 request beyond promotion capacity, gets the cover site and never an AUTH

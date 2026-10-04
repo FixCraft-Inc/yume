@@ -1676,7 +1676,8 @@ Status NativeRun::create_endpoint(
             return Status(StatusCode::InvalidArgument,
                           "server endpoint has no listen address");
         }
-        const auto sizing = runtime::native_server_sizing(listener_count);
+        const auto sizing = runtime::native_server_sizing(
+            listener_count, runtime::open_file_limit());
         accept_ = sizing.accept;
         options.max_sessions = sizing.max_sessions;
         options.max_pending_starts = sizing.max_pending_starts;

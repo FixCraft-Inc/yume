@@ -352,8 +352,8 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                 has_direct = true;
             }
         }
-        const auto sizing =
-            native_server_sizing(endpoint.listen_addresses().size());
+        const auto sizing = native_server_sizing(
+            endpoint.listen_addresses().size(), open_file_limit());
         state->accept = sizing.accept;
 
         NativeEndpointOptions options;
@@ -372,6 +372,9 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                 if (!resolver.ok()) return Created(resolver.status());
                 options.resolver = std::move(resolver).take_value();
             }
+            providers::AsioDirectRouteLimits route_limits;
+            route_limits.max_active_connections = sizing.max_route_connections;
+            route_limits.max_pending_opens = sizing.max_pending_route_opens;
             auto provider = providers::AsioDirectRouteProvider::create(
                 context,
                 [policy = options.egress_policy](
@@ -379,7 +382,7 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                     const engine::RouteDestination& resolved) {
                     return policy->authorize_resolved(request, resolved);
                 },
-                {}, {}, options.resolver);
+                route_limits, {}, options.resolver);
             if (!provider.ok()) return Created(provider.status());
             options.route_provider = std::move(provider).take_value();
         }

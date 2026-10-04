@@ -705,7 +705,11 @@ void test_replay_and_cache_saturation_use_cover() {
 }
 
 void test_one_promotion_per_tls_lifetime_after_replay_expiry() {
-    Fixture fixture({}, 64U, 1U);
+    // The replay lifetime must outlast the connection deadline, so a short
+    // deadline lets a short lifetime expire within the test.
+    H2WebFrontDoorLimits limits;
+    limits.connection_timeout = 1500ms;
+    Fixture fixture(limits, 64U, 3U);
     auto accepted = fixture.accept();
     TlsPeer tls(fixture.port(), fixture.identity.certificate);
     H2Peer h2(tls, fixture.port());
@@ -718,10 +722,10 @@ void test_one_promotion_per_tls_lifetime_after_replay_expiry() {
     auto server = std::move(take(await(accepted))).take_carrier();
     auto second_accept = fixture.accept();
 
-    // A one-second cache TTL has certainly expired after this bounded wait.
+    // A three-second cache TTL has certainly expired after this bounded wait.
     // Both the old proof and a fresh proof on the original live TLS session
     // still use ordinary cover; the promoted connection can never re-admit.
-    std::this_thread::sleep_for(1100ms);
+    std::this_thread::sleep_for(3100ms);
     check_cover(h2.response(h2.submit("CONNECT", path, true)));
     nonce[0] = std::byte{32U};
     check_cover(h2.response(h2.submit("CONNECT", tls.admission_path(nonce), true)));
@@ -780,6 +784,35 @@ void test_configuration_and_initiation_bounds() {
     try { fixture.door->async_accept({}, [&](Result<AcceptedCarrier>) { called = true; }); }
     catch (const std::logic_error&) { rejected = true; }
     CHECK(rejected && !called);
+}
+
+// A nonce must stay reserved while its connection may still present a
+// proof, so a replay lifetime that does not outlast the connection deadline
+// in whole seconds is refused.
+void test_replay_lifetime_must_outlast_connection_deadline() {
+    Fixture fixture;
+    fixture.runtime.sync([&] {
+        const auto create = [&](std::chrono::milliseconds deadline, std::uint64_t ttl) {
+            H2WebFrontDoorConfig config;
+            config.listen_endpoint = {boost::asio::ip::address_v4::loopback(), 0U};
+            config.limits.connection_timeout = deadline;
+            return H2WebFrontDoor::create(fixture.runtime.context(), config, fixture.tls,
+                fixture.cover, std::make_shared<admission::ReplayCache>(64U, ttl),
+                kAdmissionKey);
+        };
+        for (const auto& [deadline, ttl] : {std::pair{30'000ms, std::uint64_t{30U}},
+                                            std::pair{1500ms, std::uint64_t{2U}},
+                                            std::pair{1ms, std::uint64_t{1U}}}) {
+            const auto refused = create(deadline, ttl);
+            CHECK(!refused.ok() && refused.status().code() == StatusCode::InvalidArgument);
+        }
+        for (const auto& [deadline, ttl] : {std::pair{30'000ms, std::uint64_t{31U}},
+                                            std::pair{1500ms, std::uint64_t{3U}}}) {
+            auto created = create(deadline, ttl);
+            CHECK(created.ok());
+            created.value()->close();
+        }
+    });
 }
 
 void test_listener_conflict_preserves_existing_listener() {
@@ -1059,6 +1092,7 @@ int main() {
         yume::providers::test_one_promotion_per_tls_lifetime_after_replay_expiry();
         yume::providers::test_cross_connection_replay_after_promotion();
         yume::providers::test_configuration_and_initiation_bounds();
+        yume::providers::test_replay_lifetime_must_outlast_connection_deadline();
         yume::providers::test_listener_conflict_preserves_existing_listener();
 #ifdef YUME_TEST_WRAP_BIND
         yume::providers::test_listener_os_failure_classification_and_retry();

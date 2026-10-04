@@ -720,6 +720,17 @@ Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create(
         limits.connection_timeout <= std::chrono::milliseconds::zero() ||
         limits.connection_timeout > std::chrono::minutes(10))
         return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::InvalidArgument));
+    // A proof binds the exporter of its TLS connection, so it cannot pass on
+    // another one, and a connection promotes once. Its nonce must stay
+    // reserved while that connection may still present a proof, which the
+    // absolute connection deadline bounds. Reservations count whole seconds
+    // and may expire a second early, hence the strict comparison.
+    const auto deadline_seconds = static_cast<std::uint64_t>(
+        std::chrono::ceil<std::chrono::seconds>(limits.connection_timeout).count());
+    if (replay->ttl_ticks() <= deadline_seconds)
+        return Result<std::shared_ptr<H2WebFrontDoor>>(Status::diagnostic(
+            StatusCode::InvalidArgument,
+            "admission replay lifetime is shorter than the connection deadline"));
     try {
         const auto carrier_status = validate_h2_duplex_carrier_limits(config.carrier_limits);
         if (!carrier_status.ok()) return Result<std::shared_ptr<H2WebFrontDoor>>(carrier_status);

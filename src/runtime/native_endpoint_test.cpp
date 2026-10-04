@@ -1108,7 +1108,8 @@ std::unique_ptr<Carrier> promote_eventually(AdmissionOnlyClient& admission) {
 }
 
 // Every configurable listener count keeps a pending start on each listener
-// within the 32-start total, as start_accepting requires.
+// within the 32-start total, as start_accepting requires. Sessions and route
+// connections fit the open-file limit with 512 descriptors to spare.
 void test_server_sizing() {
     struct Expected {
         std::size_t listeners, per_listener, total;
@@ -1116,19 +1117,54 @@ void test_server_sizing() {
     for (const auto expected :
          {Expected{0U, 4U, 0U}, Expected{1U, 4U, 4U}, Expected{8U, 4U, 32U},
           Expected{9U, 3U, 27U}, Expected{16U, 2U, 32U}}) {
-        const auto sizing = native_server_sizing(expected.listeners);
-        CHECK(sizing.max_sessions == 128U);
+        const auto sizing = native_server_sizing(expected.listeners, 65536U);
+        CHECK(sizing.max_sessions == 1024U);
         CHECK(sizing.accept.pending_per_listener == expected.per_listener);
         CHECK(sizing.max_pending_starts == expected.total);
         CHECK(sizing.accept.retry_delay == NativeAcceptOptions{}.retry_delay);
     }
+    struct Descriptors {
+        std::size_t limit, sessions, routes, pending;
+    };
+    // 65536 is the packaged unit's LimitNOFILE and 1024 a common soft limit.
+    for (const auto expected :
+         {Descriptors{0U, 256U, 256U, 256U}, Descriptors{1024U, 256U, 256U, 256U},
+          Descriptors{4096U, 1024U, 2560U, 1024U},
+          Descriptors{65536U, 1024U, 16384U, 1024U},
+          Descriptors{std::size_t{1} << 20U, 1024U, 16384U, 1024U}}) {
+        const auto sizing = native_server_sizing(1U, expected.limit);
+        CHECK(sizing.max_sessions == expected.sessions);
+        CHECK(sizing.max_route_connections == expected.routes);
+        CHECK(sizing.max_pending_route_opens == expected.pending);
+        CHECK(sizing.max_sessions + sizing.max_route_connections + 512U <=
+              std::max<std::size_t>(expected.limit, 1024U));
+    }
     for (std::size_t listeners = 1U;
          listeners <= yume::config::v1::kMaxListenAddresses; ++listeners) {
-        const auto sizing = native_server_sizing(listeners);
-        CHECK(sizing.accept.pending_per_listener >= 1U);
-        CHECK(sizing.accept.pending_per_listener <=
-              sizing.max_pending_starts / listeners);
-        CHECK(sizing.max_pending_starts <= 32U);
+        for (const std::size_t limit : {1024U, 65536U}) {
+            const auto sizing = native_server_sizing(listeners, limit);
+            CHECK(sizing.accept.pending_per_listener >= 1U);
+            CHECK(sizing.accept.pending_per_listener <=
+                  sizing.max_pending_starts / listeners);
+            CHECK(sizing.max_pending_starts <= 32U);
+            CHECK(sizing.max_pending_starts <= sizing.max_sessions);
+        }
+    }
+    const auto before = open_file_limit();
+    const auto raised = raise_open_file_limit();
+    CHECK(raised >= before && raised == open_file_limit());
+    // The admission replay cache keeps each nonce past the front door's
+    // connection deadline and holds about a thousand admissions a second.
+    const auto replay = native_admission_replay_sizing(
+        yume::providers::H2WebFrontDoorLimits{}.connection_timeout);
+    CHECK(replay.ttl_seconds == 60U);
+    CHECK(replay.max_entries / replay.ttl_seconds >= 1000U);
+    for (const auto deadline :
+         {std::chrono::milliseconds(1), std::chrono::milliseconds(1500),
+          std::chrono::milliseconds(30'000), std::chrono::milliseconds(600'000)}) {
+        const auto sized = native_admission_replay_sizing(deadline);
+        CHECK(sized.ttl_seconds > static_cast<std::uint64_t>(
+                  std::chrono::ceil<std::chrono::seconds>(deadline).count()));
     }
 }
 

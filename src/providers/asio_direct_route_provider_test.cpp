@@ -90,7 +90,17 @@ bool consume() noexcept {
 }  // namespace test_allocation_failure
 
 namespace {
-void check_test_allocation(std::size_t) {
+// The largest allocation any thread makes while a test watches.
+std::atomic<bool> watch_allocation_sizes{false};
+std::atomic<std::size_t> largest_watched_allocation{0U};
+
+void check_test_allocation(std::size_t size) {
+    if (watch_allocation_sizes.load(std::memory_order_acquire)) {
+        std::size_t largest = largest_watched_allocation.load(std::memory_order_relaxed);
+        while (size > largest && !largest_watched_allocation.compare_exchange_weak(
+                                     largest, size, std::memory_order_relaxed)) {
+        }
+    }
     if (test_allocation_failure::consume()) throw std::bad_alloc();
 }
 }
@@ -1209,6 +1219,129 @@ void test_tcp_round_trip_and_half_close(RequestFactory& requests) {
     server.wait();
 }
 
+// A read takes its buffer only once the socket has something to report. The
+// cases a plain readiness wait would get wrong: bytes already queued when a
+// read starts (the reactor reported their arrival before anything waited),
+// and a burst larger than one read, whose rest arrives with no new edge.
+void test_tcp_read_waits_for_data(RequestFactory& requests) {
+    std::promise<void> first_read, second_queued, third_waiting, burst_queued_gate;
+    auto first_read_done = first_read.get_future();
+    auto second_queued_done = second_queued.get_future();
+    auto third_waiting_done = third_waiting.get_future();
+    std::promise<void> server_wrote_second, server_wrote_burst;
+    auto second_written = server_wrote_second.get_future();
+    auto burst_written = server_wrote_burst.get_future();
+    auto burst_gate = burst_queued_gate.get_future();
+    TcpServer server([&](Tcp::socket& socket) {
+        boost::system::error_code error;
+        CHECK(boost::asio::write(socket, boost::asio::buffer("ab", 2U), error) == 2U);
+        first_read_done.wait();
+        CHECK(boost::asio::write(socket, boost::asio::buffer("cd", 2U), error) == 2U);
+        server_wrote_second.set_value();
+        second_queued_done.wait();
+        third_waiting_done.wait();
+        CHECK(boost::asio::write(socket, boost::asio::buffer("ef", 2U), error) == 2U);
+        burst_gate.wait();
+        CHECK(boost::asio::write(socket, boost::asio::buffer("0123456789ABCDEFGHIJ", 20U),
+                                 error) == 20U);
+        server_wrote_burst.set_value();
+        std::array<char, 1> eof_probe{};
+        socket.read_some(boost::asio::buffer(eof_probe), error);
+        CHECK(error == boost::asio::error::eof);
+        socket.shutdown(Tcp::socket::shutdown_send, error);
+    });
+
+    IoRuntime runtime;
+    AsioDirectRouteLimits limits;
+    limits.max_tcp_read_bytes = 8U;
+    auto provider = make_provider(runtime, limits);
+    auto opened = open_route(runtime, provider, requests.make(ipv4_destination(
+        ytp1::TransportProtocol::Tcp, server.port())));
+    CHECK(opened.ok());
+    RouteConnection connection = std::move(opened).take_value();
+    std::unique_ptr<ByteChannel> channel = connection.take_byte_channel();
+    CHECK(channel);
+
+    auto read_text = [&](std::size_t max_bytes) {
+        auto ticket = start_read(runtime, *channel, max_bytes);
+        auto result = await(ticket);
+        CHECK(result.ok());
+        return buffer_text(*result.value_if());
+    };
+    CHECK(read_text(8U) == "ab");
+    first_read.set_value();
+    // "cd" is in the socket before the read starts.
+    CHECK(second_written.wait_for(3s) == std::future_status::ready);
+    std::this_thread::sleep_for(50ms);
+    second_queued.set_value();
+    CHECK(read_text(8U) == "cd");
+    // Nothing is queued, so this read waits until "ef" arrives.
+    auto waiting = start_read(runtime, *channel, 8U);
+    CHECK(waiting.future.wait_for(100ms) == std::future_status::timeout);
+    third_waiting.set_value();
+    auto waited = await(waiting);
+    CHECK(waited.ok() && buffer_text(*waited.value_if()) == "ef");
+    // A 20-byte burst queued before the reads drains 8, 8 and 4 bytes with no
+    // further arrival to wake a wait.
+    burst_queued_gate.set_value();
+    CHECK(burst_written.wait_for(3s) == std::future_status::ready);
+    std::this_thread::sleep_for(50ms);
+    CHECK(read_text(8U) == "01234567");
+    CHECK(read_text(8U) == "89ABCDEF");
+    CHECK(read_text(8U) == "GHIJ");
+    CHECK(runtime.invoke([&]() { return channel->shutdown_write(); }).ok());
+    auto eof_read = start_read(runtime, *channel, 8U);
+    auto eof = await(eof_read);
+    CHECK(!eof.ok() && eof.status().code() == StatusCode::Closed);
+    channel->close();
+    server.wait();
+}
+
+#if !defined(_WIN32)
+// An idle connection's pending read holds no read buffer. Phones keep many
+// idle connections open, and each used to hold max_tcp_read_bytes.
+void test_idle_tcp_read_holds_no_buffer(RequestFactory& requests) {
+    constexpr std::size_t kReadBytes = 64U * 1024U;
+    std::promise<void> release;
+    auto released = release.get_future();
+    TcpServer server([&](Tcp::socket& socket) {
+        released.wait();
+        boost::system::error_code error;
+        CHECK(boost::asio::write(socket, boost::asio::buffer("z", 1U), error) == 1U);
+        std::array<char, 1> eof_probe{};
+        socket.read_some(boost::asio::buffer(eof_probe), error);
+    });
+
+    IoRuntime runtime;
+    AsioDirectRouteLimits limits;
+    limits.max_tcp_read_bytes = kReadBytes;
+    auto provider = make_provider(runtime, limits);
+    auto opened = open_route(runtime, provider, requests.make(ipv4_destination(
+        ytp1::TransportProtocol::Tcp, server.port())));
+    CHECK(opened.ok());
+    RouteConnection connection = std::move(opened).take_value();
+    std::unique_ptr<ByteChannel> channel = connection.take_byte_channel();
+    CHECK(channel);
+
+    largest_watched_allocation.store(0U, std::memory_order_relaxed);
+    watch_allocation_sizes.store(true, std::memory_order_release);
+    auto waiting = start_read(runtime, *channel, kReadBytes);
+    const bool pending = waiting.future.wait_for(100ms) == std::future_status::timeout;
+    runtime.invoke([] {});
+    watch_allocation_sizes.store(false, std::memory_order_release);
+    // Release the server before any check, so a failure cannot leave its
+    // thread waiting.
+    release.set_value();
+    CHECK(pending);
+    CHECK(largest_watched_allocation.load(std::memory_order_relaxed) < kReadBytes / 4U);
+    auto read = await(waiting);
+    CHECK(read.ok() && buffer_text(*read.value_if()) == "z");
+    CHECK(runtime.invoke([&]() { return channel->shutdown_write(); }).ok());
+    channel->close();
+    server.wait();
+}
+#endif
+
 void test_udp_round_trip_and_truncation(RequestFactory& requests) {
     UdpServer server([](Udp::socket& socket) {
         std::array<char, 32> input{};
@@ -1894,6 +2027,10 @@ int main() {
         yume::providers::RequestFactory requests;
         yume::providers::test_request_factory_across_epoch_lifetime(requests);
         yume::providers::test_tcp_round_trip_and_half_close(requests);
+        yume::providers::test_tcp_read_waits_for_data(requests);
+#if !defined(_WIN32)
+        yume::providers::test_idle_tcp_read_holds_no_buffer(requests);
+#endif
         yume::providers::test_udp_round_trip_and_truncation(requests);
         yume::providers::test_dns_and_connect_errors(requests);
         yume::providers::test_active_capacity_and_release(requests);

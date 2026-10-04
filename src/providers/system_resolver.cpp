@@ -8,8 +8,10 @@
 
 #include <array>
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
 #include <csignal>
+#include <list>
 #include <map>
 #include <new>
 #include <optional>
@@ -116,6 +118,15 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         bool cancelled{false};
     };
 
+    // A lookup waiting for an outstanding slot. Its identifier is reserved,
+    // so it keeps the handle resolve() returned when it starts.
+    struct Waiting final {
+        std::uint32_t id;
+        std::string host;
+        std::size_t max_addresses;
+        Completion completion;
+    };
+
     State(std::shared_ptr<AsioExecutionContext> execution, SystemResolverOptions settings)
         : context(std::move(execution)),
           options(std::move(settings)),
@@ -149,49 +160,98 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
                                    "program or a numeric address"));
         }
         if (lookups.size() >= options.max_outstanding) {
-            // Every slot is in use. Abandoned lookups may never return, and
-            // only a new helper reclaims them. Replace it outside this call
-            // so other lookups never complete inside a caller's resolve().
-            if (cancelled_lookups != 0U) request_replacement();
+            // Abandoned lookups may never return, and only a new helper
+            // reclaims them. Replace it outside this call so other lookups
+            // never complete inside a caller's resolve().
+            if (cancelled_lookups != 0U) {
+                request_replacement();
+                return Result<std::uint64_t>(
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "too many outstanding system lookups"));
+            }
+            // Live lookups fill every slot, so this one waits for the first
+            // to answer. A burst of connections to named destinations from
+            // many clients would otherwise fail beyond the helper's slots.
+            if (waiting.size() >= options.max_waiting) {
+                return Result<std::uint64_t>(
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "too many system lookups waiting"));
+            }
+            const std::uint32_t id = next_id();
+            waiting.push_back(Waiting{id, std::string(host), max_addresses,
+                                      std::move(completion)});
             return Result<std::uint64_t>(
-                Status::diagnostic(StatusCode::ResourceExhausted,
-                                   "too many outstanding system lookups"));
+                (static_cast<std::uint64_t>(helper->generation) << 32U) | id);
         }
         if (!helper) {
             Status started = start_helper();
             if (!started.ok()) return Result<std::uint64_t>(std::move(started));
         }
         const std::uint32_t id = next_id();
+        Status sent = send_lookup(id, host, max_addresses, completion);
+        if (!sent.ok()) return Result<std::uint64_t>(std::move(sent));
+        return Result<std::uint64_t>(
+            (static_cast<std::uint64_t>(helper->generation) << 32U) | id);
+    }
+
+    // Sends one lookup to the helper and takes its completion on success.
+    // Refusal invokes nothing. A helper that exited is replaced when its
+    // receive observes the end of the socket.
+    Status send_lookup(std::uint32_t id, std::string_view host, std::size_t max_addresses,
+                       Completion& completion) {
         std::array<std::uint8_t, protocol::kMaxRequestBytes> message{};
         const std::size_t size = protocol::encode_request(
             {id, static_cast<std::uint8_t>(std::min(max_addresses, protocol::kMaxAddresses)),
              host},
             message);
         if (size == 0U) {
-            return Result<std::uint64_t>(Status::diagnostic(
-                StatusCode::InvalidArgument, "invalid system lookup"));
+            return Status::diagnostic(StatusCode::InvalidArgument, "invalid system lookup");
         }
-        const auto inserted = lookups.try_emplace(id, Lookup{std::move(completion), false});
+        // Insert before taking the completion, so a failed allocation leaves
+        // it with the caller.
+        const auto inserted = lookups.try_emplace(id);
+        inserted.first->second.completion = std::move(completion);
         boost::system::error_code error;
         helper->socket.send(boost::asio::buffer(message.data(), size), 0, error);
-        if (!error) {
-            return Result<std::uint64_t>(
-                (static_cast<std::uint64_t>(helper->generation) << 32U) | id);
-        }
-        // Refusal invokes nothing. A helper that exited is replaced when its
-        // receive observes the end of the socket.
+        if (!error) return Status::success();
+        completion = std::move(inserted.first->second.completion);
         lookups.erase(inserted.first);
-        return Result<std::uint64_t>(Status::diagnostic(
+        return Status::diagnostic(
             error == boost::asio::error::would_block ||
                     error == boost::asio::error::no_buffer_space
                 ? StatusCode::ResourceExhausted
                 : StatusCode::NotFound,
-            "system resolver helper did not accept the lookup"));
+            "system resolver helper did not accept the lookup");
+    }
+
+    // Starts waiting lookups while slots are free. Runs from a helper's
+    // answer, never inside a caller's resolve(), so a failed start may
+    // complete its lookup here.
+    void start_waiting() noexcept {
+        while (helper && !waiting.empty() && lookups.size() < options.max_outstanding) {
+            Waiting next = std::move(waiting.front());
+            waiting.pop_front();
+            Status sent = Status(StatusCode::ResourceExhausted);
+            try {
+                sent = send_lookup(next.id, next.host, next.max_addresses, next.completion);
+            } catch (...) {
+            }
+            if (!sent.ok()) invoke_contained(next.completion, Result<Addresses>(std::move(sent)));
+        }
     }
 
     void cancel(std::uint64_t lookup) noexcept {
         if (!helper || (lookup >> 32U) != helper->generation) return;
-        const auto found = lookups.find(static_cast<std::uint32_t>(lookup));
+        const auto id = static_cast<std::uint32_t>(lookup);
+        const auto queued = std::find_if(waiting.begin(), waiting.end(),
+                                         [id](const Waiting& entry) { return entry.id == id; });
+        if (queued != waiting.end()) {
+            // It never reached the helper, so it simply leaves the queue.
+            Completion released = std::move(queued->completion);
+            waiting.erase(queued);
+            return;
+        }
+        const auto found = lookups.find(id);
         if (found == lookups.end() || found->second.cancelled) return;
         // The entry keeps the helper slot until its response arrives.
         Completion released = std::move(found->second.completion);
@@ -229,9 +289,14 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
     }
 
     std::uint32_t next_id() noexcept {
+        const auto taken = [this](std::uint32_t id) {
+            return lookups.find(id) != lookups.end() ||
+                   std::any_of(waiting.begin(), waiting.end(),
+                               [id](const Waiting& entry) { return entry.id == id; });
+        };
         do {
             ++last_id;
-        } while (last_id == 0U || lookups.find(last_id) != lookups.end());
+        } while (last_id == 0U || taken(last_id));
         return last_id;
     }
 
@@ -337,22 +402,33 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
         if (node.mapped().cancelled) --cancelled_lookups;
         // Rearm first: the completion may start or cancel other lookups.
         receive(current);
+        start_waiting();
         if (!node.mapped().cancelled) {
             invoke_contained(node.mapped().completion, lookup_result(*response));
         }
     }
 
-    // Ends the current helper and fails its live lookups with status.
-    // Completions run after the state is settled and may start new lookups.
+    // Ends the current helper and fails its live and waiting lookups with
+    // status. Their handles name this helper's generation, so none carries
+    // over to the next one. Completions run after the state is settled and
+    // may start new lookups.
     void replace_helper(const Status& status) noexcept {
         if (helper) stop_helper();
         std::map<std::uint32_t, Lookup> failed;
         failed.swap(lookups);
+        // An empty list allocates nothing, unlike libstdc++'s deque, so this
+        // stays safe when allocation fails.
+        std::list<Waiting> queued;
+        queued.swap(waiting);
         cancelled_lookups = 0U;
         for (auto& [id, lookup] : failed) {
             if (lookup.cancelled) continue;
             Status copy = Status::diagnostic(status.code(), status.message());
             invoke_contained(lookup.completion, Result<Addresses>(std::move(copy)));
+        }
+        for (auto& entry : queued) {
+            Status copy = Status::diagnostic(status.code(), status.message());
+            invoke_contained(entry.completion, Result<Addresses>(std::move(copy)));
         }
     }
 
@@ -372,6 +448,7 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
     bool replacement_requested{false};
     std::shared_ptr<Helper> helper;
     std::map<std::uint32_t, Lookup> lookups;
+    std::list<Waiting> waiting;
     std::size_t cancelled_lookups{0U};
     std::uint32_t last_id{0U};
     std::uint32_t generation{0U};
@@ -380,7 +457,8 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
 Result<std::shared_ptr<SystemResolver>> SystemResolver::create(
     std::shared_ptr<AsioExecutionContext> context, SystemResolverOptions options) {
     if (!context || options.max_outstanding == 0U ||
-        options.max_outstanding > protocol::kMaxOutstanding) {
+        options.max_outstanding > protocol::kMaxOutstanding ||
+        options.max_waiting > 65536U) {
         return Result<std::shared_ptr<SystemResolver>>(Status::diagnostic(
             StatusCode::InvalidArgument, "invalid system resolver options"));
     }

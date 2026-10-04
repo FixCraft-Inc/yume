@@ -45,6 +45,7 @@
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
+#include "runtime/native_endpoint.hpp"
 #include "runtime/native_run_loop.hpp"
 #include "runtime/native_server_runtime.hpp"
 #include "runtime/outer_carrier_evidence.hpp"
@@ -647,6 +648,10 @@ int accept_route(NativeCliRole role, const config::v1::Config& config,
 int serve(NativeCliRole role, const config::v1::Config& config,
           const std::filesystem::path& base,
           const std::optional<std::filesystem::path>& evidence_path) {
+    // Each session and stream holds descriptors, and a soft limit of 1024 is
+    // common even where the hard limit is far higher. The server sizes its
+    // sessions and route connections inside what this leaves.
+    raise_open_file_limit();
     report_routes(role, config);
     // The evidence file is reserved before anything connects, so a bad path
     // fails the run instead of a finished session.

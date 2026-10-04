@@ -22,7 +22,7 @@ network, endpoint sandbox, traffic-volume concealment system, or substitute for
 application-layer encryption.
 
 <!-- yume-diagram: trust_boundary -->
-<img src="diagrams/trust_boundary-vertical.svg" alt="Where application encryption ends" width="472" height="696">
+<img src="diagrams/trust_boundary-vertical.svg" alt="Where application encryption ends" width="388" height="480">
 
 <details>
 <summary>What each part does</summary>
@@ -43,27 +43,24 @@ application-layer encryption.
 |  Application HTTPS |
 |  TLS to origin     |
 +----------+---------+
-            \
-             \
-              v HTTPS bytes
-   +----------+---------+            +--------------------+
-   |  yume or libyume   +----------->|  Path observer     |
-   |  YTP/1 over TLS    |  metadata  |  IP, sizes, timing |
-   +----------+---------+            +--------------------+
-               \
-                \
-                 v ==YUME==> YTP inside TLS
-      +----------+---------+
-      |  yumed             |
-      |  YUME ends here    |
-      +----------+---------+
-                  \
-                   \
-                    v same HTTPS bytes
-         +----------+---------+
-         |  Origin            |
-         |  HTTPS ends here   |
-         +--------------------+
+           |
+           v HTTPS bytes
++----------+---------+            +--------------------+
+|  yume or libyume   +----------->|  Path observer     |
+|  YTP/1 over TLS    |  metadata  |  IP, sizes, timing |
++----------+---------+            +--------------------+
+           |
+           v ==YUME==> YTP inside TLS
++----------+---------+
+|  yumed             |
+|  YUME ends here    |
++----------+---------+
+           |
+           v same HTTPS bytes
++----------+---------+
+|  Origin            |
+|  HTTPS ends here   |
++--------------------+
 ```
 
 </details>

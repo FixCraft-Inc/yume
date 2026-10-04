@@ -47,13 +47,10 @@ With a
 .B cluster
 section the daemon is a member of its operator's cluster and keeps an
 authenticated link to every other member it holds secrets for.
-The links carry no traffic yet.
-.PP
-The daemon is not yet qualified for production, and routes over several
-servers are not yet available.
-Check
-.B docs/IMPLEMENTATION_STATUS.md
-before deployment.
+The links carry the circuits that clients build through two or three
+members.
+.B docs/OPERATIONS.md
+covers deployment.
 .SH OPTIONS
 .TP
 .BI "--config " path
@@ -178,7 +175,10 @@ Once its listeners accept, the daemon keeps one outbound link to each
 peer, a YTP/1 session like a client's that offers no service, and
 reconnects with backoff when it ends.
 Each peer's own link arrives like a client's session: the peer may hold
-two at once and may open no stream.
+two at once and may open only
+.B yume.circuit
+streams, which carry circuits
+.RB ( docs/protocol/CIRCUIT_1.md ).
 When the list's
 .B not_after
 passes, the daemon closes its links and ends the peers' sessions until a
@@ -240,27 +240,24 @@ defines its header and lifecycle.
 |  Client                  |
 |  OPEN named service      |
 +-------------+------------+
-               \e
-                \e
-                 v ==YUME==> service OPEN and DATA
-   +-------------+------------+
-   |  yumed                   |
-   |  identity grant first    |
-   +-------------+------------+
-                  \e
-                   \e
-                    v authorized stream
-      +-------------+------------+
-      |  Module bridge           |
-      |  private UNIX connection |
-      +-------------+------------+
-                     \e
-                      \e
-                       v header, then bytes
-         +-------------+------------+
-         |  Module program          |
-         |  accepts on descriptor 3 |
-         +--------------------------+
+              |
+              v ==YUME==> service OPEN and DATA
++-------------+------------+
+|  yumed                   |
+|  identity grant first    |
++-------------+------------+
+              |
+              v authorized stream
++-------------+------------+
+|  Module bridge           |
+|  private UNIX connection |
++-------------+------------+
+              |
+              v header, then bytes
++-------------+------------+
+|  Module program          |
+|  accepts on descriptor 3 |
++--------------------------+
 .fi
 .\" /yume-diagram
 .SH PRIVILEGE

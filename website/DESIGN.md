@@ -88,8 +88,9 @@ primary action uses the pink fill. Secondary actions use a quiet paper surface.
 
 Homepage pages may use generated figures and the YUME mark. A figure and its key
 come from `docs/diagrams/*.json` through the documentation sync, so the page
-includes them and never hand-draws a route. On a phone the stacked drawing
-replaces the band. Documentation uses typography and generated figures only. All pages share the same header, footer, focus treatment,
+includes them and never hand-draws a route. The homepage sets stacked drawings
+at their drawn size, two side by side on a wide screen, because a long band
+scaled into the reading column shrinks its labels past legibility. Documentation uses typography and generated figures only. All pages share the same header, footer, focus treatment,
 fonts, and colour tokens.
 
 ## Exports

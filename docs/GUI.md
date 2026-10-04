@@ -40,7 +40,7 @@ user process does not have, so the window cannot start one. Run such a kit as
 a system service instead.
 
 <!-- yume-diagram: gui_lifecycle -->
-<img src="diagrams/gui_lifecycle-vertical.svg" alt="The GUI controls a separate client process" width="456" height="709">
+<img src="diagrams/gui_lifecycle-vertical.svg" alt="The GUI controls a separate client process" width="410" height="644.5">
 
 <details>
 <summary>What each part does</summary>

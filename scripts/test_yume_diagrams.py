@@ -110,7 +110,7 @@ def _cards(markup: str) -> list[tuple[float, float]]:
     return [
         (float(x), float(y))
         for x, y in re.findall(
-            r'class="dgm-card"[^>]*? x="([\d.]+)" y="([\d.]+)"', markup
+            r'class="dgm-card[^"]*"[^>]*? x="([\d.]+)" y="([\d.]+)"', markup
         )
     ]
 
@@ -364,6 +364,8 @@ class AsciiRendering(unittest.TestCase):
         widths = set()
         for line in lines:
             body = line.strip()
+            if body == "|":
+                continue  # a hop's shaft, not a box
             if body.startswith(("+", "|")) and body.endswith(("+", "|")):
                 widths.add(len(body))
             if body.startswith("|"):
@@ -386,26 +388,28 @@ class AsciiRendering(unittest.TestCase):
         self.assertIn("+", borders[1].strip()[1:-1], borders[1])
         self.assertNotIn("+", borders[-1].strip()[1:-1], borders[-1])
 
-    def test_a_leaning_hop_is_drawn_with_diagonals(self) -> None:
-        drawing = yume_diagram_ascii.render(self.spec)
-        self.assertGreater(yume_diagram_ascii.step_for(self.spec), 0)
-        self.assertIn("\\", drawing)
+    def test_every_hop_runs_down_one_column(self) -> None:
+        # The boxes share one port column, so every shaft and arrow head of
+        # the chain sits in it and no hop drifts sideways.
+        lines = yume_diagram_ascii.render(self.spec).rstrip("\n").split("\n")
+        columns = {len(line) - len(line.lstrip()) for line in lines
+                   if line.strip() == "|" or line.lstrip().startswith("v")}
+        self.assertEqual(len(columns), 1, columns)
+        self.assertNotIn("\\", "\n".join(lines))
 
-    def test_a_route_that_cannot_lean_falls_back_to_a_descent(self) -> None:
-        # A figure a terminal would fold is worse than a straight one, so the
-        # layout gives up the stairs rather than the budget.
+    def test_a_box_as_wide_as_the_budget_still_fits(self) -> None:
         spec = yume_diagram_spec.parse(write_spec(Path(self._temp.name), MINIMAL))
-        # A box exactly as wide as the budget leaves no room to step sideways.
         spec.nodes[0].title = "W" * (yume_diagram_ascii.BUDGET - 5)
-        self.assertEqual(yume_diagram_ascii.step_for(spec), 0)
         block = yume_diagram_ascii.render(spec).rstrip("\n").split("\n")
         self.assertLessEqual(max(len(line) for line in block), yume_diagram_ascii.BUDGET)
 
     def test_a_roff_figure_escapes_its_backslashes(self) -> None:
         # roff reads a backslash as an escape, and one at the end of a line
-        # joins that line to the next. An unescaped diagonal therefore
-        # disappears from the rendered manual and takes its arrow with it.
-        block = yume_diagrams.render_block(self.spec, Path("manual.1"))
+        # joins that line to the next, so a label's backslash would vanish
+        # from the rendered manual.
+        spec = yume_diagram_spec.parse(write_spec(Path(self._temp.name), MINIMAL))
+        spec.nodes[0].sub = "C:\\kits\\"
+        block = yume_diagrams.render_block(spec, Path("manual.1"))
         drawing = "\n".join(block)
         self.assertIn("\\e", drawing)
         for line in block:
@@ -416,7 +420,9 @@ class AsciiRendering(unittest.TestCase):
 
     def test_a_markdown_figure_keeps_its_backslashes(self) -> None:
         # Markdown has no escape to undo, so the same drawing is literal.
-        block = yume_diagrams.render_block(self.spec, Path("page.md"))
+        spec = yume_diagram_spec.parse(write_spec(Path(self._temp.name), MINIMAL))
+        spec.nodes[0].sub = "C:\\kits\\"
+        block = yume_diagrams.render_block(spec, Path("page.md"))
         self.assertNotIn("\\e", "\n".join(block))
         self.assertIn("\\", "\n".join(block))
 
@@ -575,7 +581,7 @@ class SvgRendering(unittest.TestCase):
         cards = [
             (float(x), float(y), float(w), float(h))
             for x, y, w, h in re.findall(
-                r'class="dgm-card"[^>]*? x="([\d.]+)" y="([\d.]+)" '
+                r'class="dgm-card[^"]*"[^>]*? x="([\d.]+)" y="([\d.]+)" '
                 r'width="([\d.]+)" height="([\d.]+)"',
                 markup,
             )
@@ -601,14 +607,19 @@ class SvgRendering(unittest.TestCase):
                 run += span
         self.assertAlmostEqual(lit, inside / 2000, delta=0.02)
 
-    def test_the_glyph_changes_with_the_chip_it_sits_on(self) -> None:
-        # Leaving the glyph on the accent while the chip fills with the accent
-        # puts light on light and the icon smears instead of reading.
+    def test_a_lit_card_takes_its_role_tint_and_keeps_its_border(self) -> None:
+        # Presence is the card's fill. Its border already says whether the
+        # node is YUME software, so lighting must not change it, and the
+        # glyph stays in its ink whatever the card behind it does.
         style = _stylesheet(yume_diagram_svg.render(self.spec))
-        self.assertIn("--dgm-live-line: var(--dgm-card)", style)
+        self.assertIn("--dgm-live: var(--dgm-tone-soft, var(--dgm-soft))", style)
+        self.assertIn("--dgm-live-line: var(--dgm-rule)", style)
+        self.assertIn("--dgm-live-line: var(--dgm-tone, var(--dgm-accent))", style)
         body = _body(yume_diagram_svg.render(self.spec))
-        for element in re.findall(r'<(?:svg|circle) class="dgm-glyph[^"]*"', body):
+        for element in re.findall(r'<rect class="dgm-card[^"]*"', body):
             self.assertIn("dgm-here-", element, element)
+        for element in re.findall(r'<(?:svg|circle) class="dgm-glyph[^"]*"', body):
+            self.assertNotIn("dgm-here-", element, element)
 
     def test_presence_rules_are_scoped_to_their_own_figure(self) -> None:
         # Keyframe names are global to the page that inlines the SVG, and two
@@ -928,12 +939,12 @@ class FlowsAndLayers(unittest.TestCase):
             " --text: oklch(20% 0.01 305); --text-3: oklch(50% 0.01 305);"
             " --rule: oklch(85% 0.01 305); --accent: oklch(60% 0.15 306);"
             " --accent-hover: oklch(70% 0.12 306); --accent-wash: oklch(95% 0.03 306);"
-            ' --font-display: "A"; --font-mono: "B"; }'
+            ' --font-display: "A"; --font-body: "C"; --font-mono: "B"; }'
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tokens.css"
             path.write_text(css, encoding="utf-8")
-            palette, _display, _mono = yume_diagram_theme.load(path, yume_diagram_spec.ROLES)
+            palette, _display, _body, _mono = yume_diagram_theme.load(path, yume_diagram_spec.ROLES)
         tokens = {local: token for local, token, _light, _dark in palette}
         self.assertEqual(tokens["server"], "--accent")
         self.assertEqual(tokens["neutral-strong"], "--text-3")

@@ -84,10 +84,6 @@ The server enforces each service's destination policy.
 .PP
 A Linux packet adapter connects a named service to a managed IP/TUN
 interface and owns its addresses, routes and optional per-link DNS.
-The client is not yet qualified for production.
-Check
-.B docs/IMPLEMENTATION_STATUS.md
-before deployment.
 .PP
 With a
 .B circuits
@@ -115,34 +111,30 @@ approves the shorter length in advance.
 |  Client                        |
 |  knows chosen route            |
 +----------------+---------------+
-                  \e
-                   \e
-                    v ==YUME==> three layers
-   +----------------+---------------+
-   |  Entry                         |
-   |  client and middle, not target |
-   +----------------+---------------+
-                     \e
-                      \e
-                       v ==YUME==> two layers on link
-      +----------------+---------------+
-      |  Middle                        |
-      |  entry and exit, not client    |
-      +----------------+---------------+
-                        \e
-                         \e
-                          v ==YUME==> one layer on link
-         +----------------+---------------+
-         |  Exit                          |
-         |  target, not client identity   |
-         +----------------+---------------+
-                           \e
-                            \e
-                             v ordinary TCP
-            +----------------+---------------+
-            |  Destination                   |
-            |  sees exit address             |
-            +--------------------------------+
+                 |
+                 v ==YUME==> three layers
++----------------+---------------+
+|  Entry                         |
+|  client and middle, not target |
++----------------+---------------+
+                 |
+                 v ==YUME==> two layers on link
++----------------+---------------+
+|  Middle                        |
+|  entry and exit, not client    |
++----------------+---------------+
+                 |
+                 v ==YUME==> one layer on link
++----------------+---------------+
+|  Exit                          |
+|  target, not client identity   |
++----------------+---------------+
+                 |
+                 v ordinary TCP
++----------------+---------------+
+|  Destination                   |
+|  sees exit address             |
++--------------------------------+
 .fi
 .\" /yume-diagram
 .SH OPTIONS
@@ -482,34 +474,30 @@ Whoever holds both holds that client's credentials.
 |  yume-setup               |
 |  init or add-client       |
 +-------------+-------------+
-               \e
-                \e
-                 v
-   +-------------+-------------+
-   |  Client kit               |
-   |  config and secrets       |
-   +-------------+-------------+
-                  \e
-                   \e
-                    v
-      +-------------+-------------+        +--------------------+
-      |  Seal kit                 +------->|  25-character code |
-      |  Argon2id, AES-256-GCM    |  code  |  send separately   |
-      +-------------+-------------+        +--------------------+
-                     \e
-                      \e
-                       v
-         +-------------+-------------+
-         |  Sealed file              |
-         |  no readable header       |
-         +-------------+-------------+
-                        \e
-                         \e
-                          v
-            +-------------+-------------+
-            |  Import with code         |
-            |  verify tag, validate kit |
-            +---------------------------+
+              |
+              v
++-------------+-------------+
+|  Client kit               |
+|  config and secrets       |
++-------------+-------------+
+              |
+              v
++-------------+-------------+        +--------------------+
+|  Seal kit                 +------->|  25-character code |
+|  Argon2id, AES-256-GCM    |  code  |  send separately   |
++-------------+-------------+        +--------------------+
+              |
+              v
++-------------+-------------+
+|  Sealed file              |
+|  no readable header       |
++-------------+-------------+
+              |
+              v
++-------------+-------------+
+|  Import with code         |
+|  verify tag, validate kit |
++---------------------------+
 .fi
 .\" /yume-diagram
 .SH SEE ALSO

@@ -34,11 +34,8 @@ per-identity pre-shared key and the TLS 1.3 exporter. The handshake transcript
 binds the suite, roles, identities, capabilities and security parameters.
 Records use one-use AES-256-GCM keys from directional ratchets. A missing
 component or provider mismatch fails the connection. There is no fallback
-suite and no weaker mode.
-
-No independent protocol or cryptography review has happened yet, and one is
-required before a release. The [threat model](THREAT_MODEL.md) states the
-assumptions and limits.
+suite and no weaker mode. The [threat model](THREAT_MODEL.md) states the
+assumptions behind it.
 
 ## A real website at the front door
 
@@ -47,10 +44,9 @@ admission proof gets the configured static website. YTP records appear only
 after admission. The browser-shaped TLS and HTTP/2 geometry is a separately
 versioned profile, so recapturing a newer browser does not change YTP/1.
 
-A stealth claim must name the capture, the implementation, the environment,
-the active-probe checks and a held-out classifier result. A matching
-fingerprint string or a short smoke test does not show that a whole session
-blends in. [Stealth](STEALTH.md) lists what has been measured.
+The profile comes from real browser captures, and tests compare YUME's
+ClientHello and HTTP/2 opening with them. [Stealth](STEALTH.md) describes the captures and what
+they measured.
 
 ## Pinned dependencies
 

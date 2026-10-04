@@ -1,4 +1,4 @@
-<svg class="dgm dgm-vertical" data-dgm="connection_opening-vertical" width="462" height="825" viewBox="0 0 462 825" role="img" aria-labelledby="dgm-connection_opening-vertical-title dgm-connection_opening-vertical-desc" style="--dgm-dur:23.96s" xmlns="http://www.w3.org/2000/svg">
+<svg class="dgm dgm-vertical" data-dgm="connection_opening-vertical" width="403" height="707.5" viewBox="0 0 403 707.5" role="img" aria-labelledby="dgm-connection_opening-vertical-title dgm-connection_opening-vertical-desc" style="--dgm-dur:23.09s" xmlns="http://www.w3.org/2000/svg">
 <title id="dgm-connection_opening-vertical-title">How a YUME connection opens</title>
 <desc id="dgm-connection_opening-vertical-desc">yume loads the cover site like a browser, proves it holds the admission key, and only then runs YTP/1 authentication inside the carrier.</desc>
 <style>
@@ -78,35 +78,20 @@
 
 .dgm-plate {
   fill: var(--dgm-plate);
-  stroke: var(--dgm-rule);
-  stroke-width: 1;
   opacity: var(--dgm-plate-opacity, 1);
 }
 
-/* The shadow is its own shape behind the card, never a filter on the card
-   itself. A renderer that cannot resolve the filter drops only the shadow;
-   SVG says a reference to a missing filter hides the element that names it,
-   which would take the card with it. */
-/* The halo under a card and the chip behind its glyph are the presence
-   channel: they say the packet is in this node right now. The card's border
-   is left alone, because that already says whether the node is YUME software
-   and one mark cannot carry two meanings. */
-/* The glow and the chip light up with different tokens because they are
-   doing different things. A glow is read as colour, not as brightness: on a
-   near-white page nothing can be brighter than the page, so it uses accent,
-   which stays a mid pink in both themes. Accent-strong there would be a dark
-   bloom, which reads as weight rather than attention. */
-.dgm-lift {
-  fill: var(--dgm-rest);
-  opacity: 0.85;
-  --dgm-rest: var(--dgm-rule);
-  --dgm-live: var(--dgm-tone, var(--dgm-accent));
-}
-
+/* A card is lit while the packet is inside it: its fill takes the soft tint
+   of its role. The border takes no part, because it already says whether the
+   node is YUME software and one mark cannot carry two meanings. */
 .dgm-card {
-  fill: var(--dgm-card);
-  stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  fill: var(--dgm-rest);
+  stroke: var(--dgm-rest-line);
+  stroke-width: 1.25;
+  --dgm-rest: var(--dgm-card);
+  --dgm-live: var(--dgm-tone-soft, var(--dgm-soft));
+  --dgm-rest-line: var(--dgm-rule);
+  --dgm-live-line: var(--dgm-rule);
 }
 
 /* A card YUME itself runs is outlined in its role colour, and everything the
@@ -114,56 +99,23 @@
    the path this project is responsible for. It is a software boundary, not a
    trust claim: yumed still terminates the tunnel and sees what it forwards. */
 .dgm-node-owned .dgm-card {
-  stroke: var(--dgm-tone, var(--dgm-accent));
-  stroke-width: 2;
-}
-
-/* The chip carries the role on every card, owned or not. It is a filled shape
-   with the glyph knocked out of it, so when lit it takes the role's strong
-   tone, which contrasts with the card in both themes. */
-.dgm-chip {
-  fill: var(--dgm-rest);
-  --dgm-rest: var(--dgm-tone-soft, var(--dgm-rule));
-  --dgm-live: var(--dgm-tone-strong, var(--dgm-strong));
-}
-
-/* The glyph goes with its chip. Leaving it on the accent while the chip fills
-   with the accent puts light on light, and the icon smears instead of
-   reading, so it is knocked out to the card it sits on. */
-.dgm-glyph {
-  --dgm-rest: none;
-  --dgm-live: none;
-  --dgm-rest-line: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live-line: var(--dgm-card);
-}
-
-.dgm-glyph-fill {
-  --dgm-rest: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live: var(--dgm-card);
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
+  stroke-width: 1.75;
+  --dgm-rest-line: var(--dgm-tone, var(--dgm-accent));
+  --dgm-live-line: var(--dgm-tone, var(--dgm-accent));
 }
 
 .dgm-ring,
-.dgm-lift,
-.dgm-chip,
-.dgm-glyph,
-.dgm-glyph-fill {
+.dgm-card {
   animation-duration: var(--dgm-dur, 6s);
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
 
-.dgm-lift,
-.dgm-chip {
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
-}
-
+/* The glyph names what kind of thing a node is, in its role's strong ink. */
 .dgm-glyph {
   fill: none;
   stroke: var(--dgm-tone-strong, var(--dgm-muted));
-  stroke-width: 1.5;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -176,16 +128,16 @@
 .dgm-title {
   fill: var(--dgm-ink);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .dgm-sub,
 .dgm-edge-label {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
-  font-size: 11px;
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
+  font-size: 11.5px;
 }
 
 .dgm-centred {
@@ -200,19 +152,19 @@
    and carries the name it gives them. */
 .dgm-group {
   fill: var(--dgm-rule);
-  fill-opacity: 0.22;
+  fill-opacity: 0.14;
   stroke: var(--dgm-muted);
   stroke-opacity: 0.5;
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 5;
   stroke-linecap: round;
 }
 
 .dgm-group-title {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.02em;
 }
 
 /* An ordinary hop is quiet plumbing. Colour is kept for the protected hop,
@@ -221,8 +173,8 @@
 .dgm-link {
   fill: none;
   stroke: var(--dgm-muted);
-  stroke-opacity: 0.55;
-  stroke-width: 2.5;
+  stroke-opacity: 0.6;
+  stroke-width: 1.5;
   stroke-linecap: round;
 }
 
@@ -236,38 +188,39 @@
   stroke-dasharray: 6 6;
 }
 
-/* The protected hop is drawn as a conduit: a soft bore, two walls, and the
-   carrier moving between them. Each is one stroked line, so the treatment
-   holds at whatever angle the hop runs. This is the ==YUME==> of the ASCII. */
+/* The protected hop is drawn as a slim tube: a soft bore, two hairline walls,
+   and the carrier moving between them. Each is one stroked line, so the
+   treatment holds at whatever angle the hop runs. This is the ==YUME==> of
+   the ASCII. */
 .dgm-conduit {
   fill: none;
   stroke: var(--dgm-soft);
-  stroke-width: 20;
+  stroke-width: 10;
   stroke-linecap: round;
 }
 
 .dgm-conduit-wall {
   fill: none;
   stroke: var(--dgm-accent);
-  stroke-width: 2;
+  stroke-width: 1.25;
   stroke-linecap: round;
 }
 
 .dgm-conduit-flow {
   fill: none;
   stroke: var(--dgm-strong);
-  stroke-width: 4;
+  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: 12 26;
-  animation: dgm-flow 2.4s linear infinite;
+  stroke-dasharray: 7 15;
+  animation: dgm-flow 1.6s linear infinite;
 }
 
 /* The stroke rounds the triangle's corners, which is the same softening the
-   cards and the chips carry. */
+   cards carry. */
 .dgm-arrow {
   fill: var(--dgm-muted);
   stroke: var(--dgm-muted);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linejoin: round;
 }
 
@@ -340,7 +293,7 @@
 .dgm-ring {
   fill: var(--dgm-rest);
   stroke: var(--dgm-rest-line);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   --dgm-rest: var(--dgm-tone-soft);
   --dgm-live: var(--dgm-tone);
   --dgm-rest-line: var(--dgm-tone);
@@ -350,7 +303,7 @@
 .dgm-ring-title {
   fill: var(--dgm-tone-strong);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -360,7 +313,7 @@
 .dgm-lifeline {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 4 6;
   stroke-linecap: round;
 }
@@ -368,7 +321,7 @@
 .dgm-leader {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 4;
   stroke-linecap: round;
 }
@@ -379,7 +332,7 @@
 
 .dgm-packet-glow {
   fill: var(--dgm-accent);
-  opacity: 0.38;
+  opacity: 0.3;
 }
 
 @keyframes dgm-travel {
@@ -388,7 +341,7 @@
 }
 
 @keyframes dgm-flow {
-  to { stroke-dashoffset: -38; }
+  to { stroke-dashoffset: -22; }
 }
 
 /* The packets are hidden by the markup and revealed only where the property
@@ -405,8 +358,8 @@
   @keyframes dgm-connection_opening-vertical-message-0 {
     0%, 0% { offset-distance: 0%; fill-opacity: 0; }
     0.1% { fill-opacity: 1; }
-    7.33% { offset-distance: 100%; fill-opacity: 1; }
-    7.43%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    7.27% { offset-distance: 100%; fill-opacity: 1; }
+    7.37%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-0 { animation-name: dgm-connection_opening-vertical-message-0; }
@@ -414,60 +367,60 @@
   @keyframes dgm-connection_opening-vertical-message-1 {
     0%, 8.79% { offset-distance: 0%; fill-opacity: 0; }
     8.89% { fill-opacity: 1; }
-    16.13% { offset-distance: 100%; fill-opacity: 1; }
-    16.23%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    16.06% { offset-distance: 100%; fill-opacity: 1; }
+    16.16%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-1 { animation-name: dgm-connection_opening-vertical-message-1; }
 
   @keyframes dgm-connection_opening-vertical-message-2 {
-    0%, 17.59% { offset-distance: 0%; fill-opacity: 0; }
-    17.69% { fill-opacity: 1; }
-    24.92% { offset-distance: 100%; fill-opacity: 1; }
-    25.02%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 17.57% { offset-distance: 0%; fill-opacity: 0; }
+    17.67% { fill-opacity: 1; }
+    24.84% { offset-distance: 100%; fill-opacity: 1; }
+    24.94%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-2 { animation-name: dgm-connection_opening-vertical-message-2; }
 
   @keyframes dgm-connection_opening-vertical-message-3 {
-    0%, 26.38% { offset-distance: 0%; fill-opacity: 0; }
-    26.48% { fill-opacity: 1; }
-    33.72% { offset-distance: 100%; fill-opacity: 1; }
-    33.82%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 26.36% { offset-distance: 0%; fill-opacity: 0; }
+    26.46% { fill-opacity: 1; }
+    33.63% { offset-distance: 100%; fill-opacity: 1; }
+    33.73%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-3 { animation-name: dgm-connection_opening-vertical-message-3; }
 
   @keyframes dgm-connection_opening-vertical-message-4 {
-    0%, 35.18% { offset-distance: 0%; fill-opacity: 0; }
-    35.28% { fill-opacity: 1; }
-    36.97% { offset-distance: 100%; fill-opacity: 1; }
-    37.07%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 35.14% { offset-distance: 0%; fill-opacity: 0; }
+    35.24% { fill-opacity: 1; }
+    37% { offset-distance: 100%; fill-opacity: 1; }
+    37.1%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-4 { animation-name: dgm-connection_opening-vertical-message-4; }
 
   @keyframes dgm-connection_opening-vertical-message-5 {
-    0%, 38.43% { offset-distance: 0%; fill-opacity: 0; }
-    38.53% { fill-opacity: 1; }
-    45.76% { offset-distance: 100%; fill-opacity: 1; }
-    45.86%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 38.51% { offset-distance: 0%; fill-opacity: 0; }
+    38.61% { fill-opacity: 1; }
+    45.78% { offset-distance: 100%; fill-opacity: 1; }
+    45.88%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-5 { animation-name: dgm-connection_opening-vertical-message-5; }
 
   @keyframes dgm-connection_opening-vertical-message-6 {
-    0%, 47.22% { offset-distance: 0%; fill-opacity: 0; }
-    47.32% { fill-opacity: 1; }
-    54.56% { offset-distance: 100%; fill-opacity: 1; }
-    54.66%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 47.3% { offset-distance: 0%; fill-opacity: 0; }
+    47.4% { fill-opacity: 1; }
+    54.57% { offset-distance: 100%; fill-opacity: 1; }
+    54.67%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-6 { animation-name: dgm-connection_opening-vertical-message-6; }
 
   @keyframes dgm-connection_opening-vertical-message-7 {
-    0%, 56.02% { offset-distance: 0%; fill-opacity: 0; }
-    56.12% { fill-opacity: 1; }
+    0%, 56.08% { offset-distance: 0%; fill-opacity: 0; }
+    56.18% { fill-opacity: 1; }
     63.35% { offset-distance: 100%; fill-opacity: 1; }
     63.45%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
@@ -475,8 +428,8 @@
   [data-dgm="connection_opening-vertical"] .dgm-message-7 { animation-name: dgm-connection_opening-vertical-message-7; }
 
   @keyframes dgm-connection_opening-vertical-message-8 {
-    0%, 64.81% { offset-distance: 0%; fill-opacity: 0; }
-    64.91% { fill-opacity: 1; }
+    0%, 64.87% { offset-distance: 0%; fill-opacity: 0; }
+    64.97% { fill-opacity: 1; }
     72.14% { offset-distance: 100%; fill-opacity: 1; }
     72.24%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
@@ -484,28 +437,28 @@
   [data-dgm="connection_opening-vertical"] .dgm-message-8 { animation-name: dgm-connection_opening-vertical-message-8; }
 
   @keyframes dgm-connection_opening-vertical-message-9 {
-    0%, 73.6% { offset-distance: 0%; fill-opacity: 0; }
-    73.7% { fill-opacity: 1; }
-    80.94% { offset-distance: 100%; fill-opacity: 1; }
-    81.04%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 73.66% { offset-distance: 0%; fill-opacity: 0; }
+    73.76% { fill-opacity: 1; }
+    80.93% { offset-distance: 100%; fill-opacity: 1; }
+    81.03%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-9 { animation-name: dgm-connection_opening-vertical-message-9; }
 
   @keyframes dgm-connection_opening-vertical-message-10 {
-    0%, 82.4% { offset-distance: 0%; fill-opacity: 0; }
-    82.5% { fill-opacity: 1; }
-    89.73% { offset-distance: 100%; fill-opacity: 1; }
-    89.83%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 82.44% { offset-distance: 0%; fill-opacity: 0; }
+    82.54% { fill-opacity: 1; }
+    89.71% { offset-distance: 100%; fill-opacity: 1; }
+    89.81%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-10 { animation-name: dgm-connection_opening-vertical-message-10; }
 
   @keyframes dgm-connection_opening-vertical-message-11 {
-    0%, 91.19% { offset-distance: 0%; fill-opacity: 0; }
-    91.29% { fill-opacity: 1; }
-    98.53% { offset-distance: 100%; fill-opacity: 1; }
-    98.63%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 91.23% { offset-distance: 0%; fill-opacity: 0; }
+    91.33% { fill-opacity: 1; }
+    98.5% { offset-distance: 100%; fill-opacity: 1; }
+    98.6%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="connection_opening-vertical"] .dgm-message-11 { animation-name: dgm-connection_opening-vertical-message-11; }
@@ -518,83 +471,79 @@
 
   .dgm-conduit-flow,
   .dgm-ring,
-  .dgm-lift,
-  .dgm-chip,
-  .dgm-glyph,
-  .dgm-glyph-fill {
+  .dgm-card {
     animation: none;
   }
 }
 </style>
-<defs><filter id="dgm-connection_opening-vertical-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
-<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="461" height="824" rx="18"/>
+<rect class="dgm-plate" fill="#fff9fd" x="0" y="0" width="403" height="707.5" rx="16"/>
 <g class="dgm-lifelines">
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="4 6" stroke-linecap="round" d="M104 129L104 805"/>
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="4 6" stroke-linecap="round" d="M358 129L358 805"/>
+<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M80 72L80 691.5"/>
+<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M323 72L323 691.5"/>
 </g>
 <g class="dgm-links">
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 171L343 171"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M343 177L343 165L354 171Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="162">TLS 1.3, Chrome ClientHello, h2</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 219L343 219"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M343 225L343 213L354 219Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="210">GET the cover page and its assets</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M354 267L119 267"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 261L119 273L108 267Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="258">the static site answers</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 315L343 315"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M343 321L343 309L354 315Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="306">CONNECT websocket with the proof</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M354 341L334 341L334 361L343 361"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M343 355L343 367L354 361Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="end" x="318" y="355">check proof, reserve its nonce</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M354 403L119 403"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 397L119 409L108 403Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="394">200: this stream is the carrier</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M344 461L129 461"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M344 471L129 471"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M344 451L129 451"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M344 461L129 461"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M119 455L119 467L108 461Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="442">AUTH challenge: identity, keys</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M118 523L333 523"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 513L333 513"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 533L333 533"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M118 523L333 523"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M343 529L343 517L354 523Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="504">AUTH response: PSK proof, keys</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M344 585L129 585"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M344 595L129 595"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M344 575L129 575"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M344 585L129 585"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M119 579L119 591L108 585Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="566">AUTH_RESULT: accepted</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M344 647L129 647"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M344 657L129 657"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M344 637L129 637"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M344 647L129 647"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M119 641L119 653L108 647Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="628">CAPABILITIES, sealed from here</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M118 709L333 709"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 699L333 699"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 719L333 719"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M118 709L333 709"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M343 715L343 703L354 709Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="690">CAPABILITIES, sealed</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M118 771L333 771"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 761L333 761"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 781L333 781"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M118 771L333 771"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M343 777L343 765L354 771Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="231" y="752">OPEN a service, then DATA</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M84 115L311 115"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311 119.5L311 110.5L319 115Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="106">TLS 1.3, Chrome ClientHello, h2</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M84 162.5L311 162.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311 167L311 158L319 162.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="153.5">GET the cover page and its assets</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319 210L92 210"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M92 205.5L92 214.5L84 210Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="201">the static site answers</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M84 257.5L311 257.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311 262L311 253L319 257.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="248.5">CONNECT websocket with the proof</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319 282L299 282L299 302L311 302"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311 297.5L311 306.5L319 302Z"/>
+<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283" y="296">check proof, reserve its nonce</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319 345L92 345"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M92 340.5L92 349.5L84 345Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="336">200: this stream is the carrier</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M314 397.5L97 397.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M314 402.5L97 402.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M314 392.5L97 392.5"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M314 397.5L97 397.5"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M92 393L92 402L84 397.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="383.5">AUTH challenge: identity, keys</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M89 450.5L306 450.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M89 445.5L306 445.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M89 455.5L306 455.5"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M89 450.5L306 450.5"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M311 455L311 446L319 450.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="436.5">AUTH response: PSK proof, keys</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M314 503.5L97 503.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M314 508.5L97 508.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M314 498.5L97 498.5"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M314 503.5L97 503.5"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M92 499L92 508L84 503.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="489.5">AUTH_RESULT: accepted</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M314 556.5L97 556.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M314 561.5L97 561.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M314 551.5L97 551.5"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M314 556.5L97 556.5"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M92 552L92 561L84 556.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="542.5">CAPABILITIES, sealed from here</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M89 609.5L306 609.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M89 604.5L306 604.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M89 614.5L306 614.5"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M89 609.5L306 609.5"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M311 614L311 605L319 609.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="595.5">CAPABILITIES, sealed</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M89 662.5L306 662.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M89 657.5L306 657.5"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M89 667.5L306 667.5"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M89 662.5L306 662.5"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M311 667L311 658L319 662.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="201.5" y="648.5">OPEN a service, then DATA</text>
 </g>
-<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 171L354 171')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 171L354 171')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 219L354 219')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 219L354 219')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M354 267L108 267')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M354 267L108 267')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 315L354 315')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 315L354 315')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M354 341L334 341L334 361L354 361')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M354 341L334 341L334 361L354 361')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M354 403L108 403')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M354 403L108 403')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M354 461L108 461')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M354 461L108 461')"/><circle class="dgm-packet dgm-packet-glow dgm-message-7" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 523L354 523')"/><circle class="dgm-packet dgm-packet-core dgm-message-7" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 523L354 523')"/><circle class="dgm-packet dgm-packet-glow dgm-message-8" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M354 585L108 585')"/><circle class="dgm-packet dgm-packet-core dgm-message-8" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M354 585L108 585')"/><circle class="dgm-packet dgm-packet-glow dgm-message-9" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M354 647L108 647')"/><circle class="dgm-packet dgm-packet-core dgm-message-9" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M354 647L108 647')"/><circle class="dgm-packet dgm-packet-glow dgm-message-10" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 709L354 709')"/><circle class="dgm-packet dgm-packet-core dgm-message-10" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 709L354 709')"/><circle class="dgm-packet dgm-packet-glow dgm-message-11" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 771L354 771')"/><circle class="dgm-packet dgm-packet-core dgm-message-11" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 771L354 771')"/></g>
+<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M84 115L319 115')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M84 115L319 115')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M84 162.5L319 162.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M84 162.5L319 162.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319 210L84 210')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319 210L84 210')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M84 257.5L319 257.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M84 257.5L319 257.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319 282L299 282L299 302L319 302')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319 282L299 282L299 302L319 302')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319 345L84 345')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319 345L84 345')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319 397.5L84 397.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319 397.5L84 397.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-7" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M84 450.5L319 450.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-7" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M84 450.5L319 450.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-8" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319 503.5L84 503.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-8" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319 503.5L84 503.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-9" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319 556.5L84 556.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-9" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319 556.5L84 556.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-10" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M84 609.5L319 609.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-10" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M84 609.5L319 609.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-11" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M84 662.5L319 662.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-11" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M84 662.5L319 662.5')"/></g>
 <g class="dgm-nodes">
-<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="yume"><rect class="dgm-lift" fill="#e3d2dd" opacity="0.85" x="17" y="20" width="174" height="110" rx="19" filter="url(#dgm-connection_opening-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="2" x="20" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip" fill="#fad4ef" x="88" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="92" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="104" y="86">yume</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="104" y="102">client</text>
+<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="yume"><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="1.75" x="16" y="16" width="128" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="29" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="56" y="38">yume</text>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="56" y="54">client</text>
 </g>
-<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="yumed"><rect class="dgm-lift" fill="#e3d2dd" opacity="0.85" x="271" y="20" width="174" height="110" rx="19" filter="url(#dgm-connection_opening-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="2" x="274" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip" fill="#ebe5ff" x="342" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph" fill="none" stroke="#674ea1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="346" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="358" y="86">yumed</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="358" y="102">server</text>
+<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="yumed"><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="1.75" x="259" y="16" width="128" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#674ea1" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="272" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="299" y="38">yumed</text>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="299" y="54">server</text>
 </g>
 </g>
 </svg>

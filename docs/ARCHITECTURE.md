@@ -502,7 +502,7 @@ fingerprint string or successful request is not whole-session equivalence.
 The default topology is single hop:
 
 <!-- yume-diagram: direct_route -->
-<img src="diagrams/direct_route-vertical.svg" alt="The direct YUME route" width="600" height="568">
+<img src="diagrams/direct_route-vertical.svg" alt="The direct YUME route" width="492" height="392">
 
 <details>
 <summary>What each part does</summary>
@@ -522,27 +522,24 @@ The default topology is single hop:
 |  Application                     |
 |  browser, curl, any program      |
 +-----------------+----------------+
-                   \
-                    \
-                     v
-   +-----------------+----------------+
-   |  yume                            |
-   |  client                          |
-   +-----------------+----------------+
-                      \
-                       \
-                        v ==YUME==>
-      +-----------------+----------------+
-      |  yumed                           |
-      |  ends the tunnel, applies policy |
-      +-----------------+----------------+
-                         \
-                          \
-                           v
-         +-----------------+----------------+
-         |  Destination                     |
-         |  sees yumed's address            |
-         +----------------------------------+
+                  |
+                  v
++-----------------+----------------+
+|  yume                            |
+|  client                          |
++-----------------+----------------+
+                  |
+                  v ==YUME==>
++-----------------+----------------+
+|  yumed                           |
+|  ends the tunnel, applies policy |
++-----------------+----------------+
+                  |
+                  v
++-----------------+----------------+
+|  Destination                     |
+|  sees yumed's address            |
++----------------------------------+
 ```
 
 </details>

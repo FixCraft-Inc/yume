@@ -1692,12 +1692,6 @@ tbody tr:last-child td {
   border-block: var(--rule-hairline) solid var(--color-rule);
 }
 
-/* The homepage hero is a two-column grid on wide viewports. A route reads as a
-   full-width band across it. */
-.hero > .diagram {
-  grid-column: 1 / -1;
-}
-
 /* A diagram is drawn at the size it should be read at. It scales down on a
    narrow screen and never scales up, so its labels keep their relationship to
    the body text. */
@@ -1708,32 +1702,27 @@ tbody tr:last-child td {
   margin-inline: auto;
 }
 
-/* Wide routes keep their drawn size and scroll inside the figure, because
-   shrinking a nine-node route to the reading column makes its labels unreadable. */
-.diagram-wide {
-  overflow-x: auto;
+/* Two figures side by side, each at the size it was drawn at, so neither is
+   shrunk to share a row. They stack once the column is too narrow for both. */
+.figure-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xl);
+  align-items: start;
+  margin-block: var(--space-xl);
+  padding-block: var(--space-lg);
+  border-block: var(--rule-hairline) solid var(--color-rule);
 }
 
-/* A grouped route is taller than a plain one, so the figure keeps whatever
-   height it was drawn at rather than being pinned to one. */
-.diagram-wide .dgm-horizontal {
-  width: auto;
-  max-width: none;
-}
-
-/* A figure that carries both drawings shows the band across a wide column
-   and the stack on a phone, where the band could only scroll sideways. */
-.diagram-responsive .dgm-vertical {
-  display: none;
+.figure-pair > .diagram {
+  margin-block: 0;
+  padding-block: 0;
+  border-block: 0;
 }
 
 @media (max-width: 47.99rem) {
-  .diagram-responsive .dgm-horizontal {
-    display: none;
-  }
-
-  .diagram-responsive .dgm-vertical {
-    display: block;
+  .figure-pair {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

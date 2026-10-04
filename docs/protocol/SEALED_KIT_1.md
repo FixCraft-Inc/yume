@@ -15,7 +15,7 @@ as one file. Whoever holds the file and its code holds the client identity,
 so the code travels by another channel than the file.
 
 <!-- yume-diagram: kit_transfer -->
-<img src="../diagrams/kit_transfer-vertical.svg" alt="A client kit becomes one sealed file and a code" width="472" height="788">
+<img src="../diagrams/kit_transfer-vertical.svg" alt="A client kit becomes one sealed file and a code" width="388" height="540">
 
 <details>
 <summary>What each part does</summary>
@@ -37,34 +37,30 @@ so the code travels by another channel than the file.
 |  yume-setup               |
 |  init or add-client       |
 +-------------+-------------+
-               \
-                \
-                 v
-   +-------------+-------------+
-   |  Client kit               |
-   |  config and secrets       |
-   +-------------+-------------+
-                  \
-                   \
-                    v
-      +-------------+-------------+        +--------------------+
-      |  Seal kit                 +------->|  25-character code |
-      |  Argon2id, AES-256-GCM    |  code  |  send separately   |
-      +-------------+-------------+        +--------------------+
-                     \
-                      \
-                       v
-         +-------------+-------------+
-         |  Sealed file              |
-         |  no readable header       |
-         +-------------+-------------+
-                        \
-                         \
-                          v
-            +-------------+-------------+
-            |  Import with code         |
-            |  verify tag, validate kit |
-            +---------------------------+
+              |
+              v
++-------------+-------------+
+|  Client kit               |
+|  config and secrets       |
++-------------+-------------+
+              |
+              v
++-------------+-------------+        +--------------------+
+|  Seal kit                 +------->|  25-character code |
+|  Argon2id, AES-256-GCM    |  code  |  send separately   |
++-------------+-------------+        +--------------------+
+              |
+              v
++-------------+-------------+
+|  Sealed file              |
+|  no readable header       |
++-------------+-------------+
+              |
+              v
++-------------+-------------+
+|  Import with code         |
+|  verify tag, validate kit |
++---------------------------+
 ```
 
 </details>

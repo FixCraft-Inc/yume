@@ -67,16 +67,12 @@ as a presentation attribute. Those lose to any stylesheet rule, so they change
 nothing in a browser, and they are what a renderer without CSS support draws
 instead of SVG's default black fill.
 
-The two themes separate a card from the ground differently, which is what
-`website/assets/tokens.css` says they should. Dark steps the lightness, so a
-card is plainly a lighter shape on a darker one. Light has `--color-paper` and
-`--color-cloud` within a percent of each other, so the shadow behind a card is
-what makes it an object rather than a hairline outline. That is why the soft
-shape behind a card stands proud of it and sits a little below it, and why a
-node lighting up uses `--color-accent` for its glow, which is a mid pink in
-both themes, but `--color-accent-strong` for the filled chip, which has to
-carry a knocked-out glyph. On a near-white page nothing can be brighter than
-the page, so a glow there is read as colour rather than as brightness.
+The drawing is deliberately quiet. A card is a hairline outline on
+`--color-cloud` with a small glyph beside its title and the subtitle under it,
+links are thin, and the YUME carrier is one slim two-walled tube. There are no
+chips, halos or shadows: colour is spent on meaning, a node's role and the
+protected hop. A figure's cards share one height, taken from the most
+subtitle lines any card needs, so a route reads as one even row or column.
 
 `website/assets/site.css` keeps only what the figure cannot know about the page
 around it: it hides the standalone ground, because the page already has one,
@@ -87,7 +83,7 @@ figure draws both. One packet travels the route along the line each hop is
 actually drawn along, rather than from card centre to card centre, so it stays
 on the arrow through a diagonal. It is drawn under the cards, so it disappears
 into one node and comes out of the next. While it is inside a card, that card
-is lit: a glow around it and its glyph knocked out of a filled chip. The two
+is lit: its fill takes the soft tint of its role. The two
 halves run off one clock and are exactly complementary, so nothing is ever
 happening off-screen and no two nodes are ever lit at once. The card's border
 takes no part in this, because it already says whether the node is YUME
@@ -118,17 +114,16 @@ and escaped ASCII in roff. Do not edit the markers or their contents.
 
 ## How the ASCII form is drawn
 
-The ASCII figure is drawn on a character canvas rather than assembled from
-rows of equal boxes, so a route descends across the page instead of straight
-down it. Each hop leaves a `+` port on the box border below it, runs diagonally when space permits, and lands on the port of the box it reaches. A figure
-that is connected reads as one drawing, where a line merely passing near a
-box reads as two.
+The ASCII figure is drawn on a character canvas. A route runs straight down
+one column of equal boxes: each hop leaves a `+` port on the box border below
+it, drops one shaft row, and lands with its arrow head on the port of the box
+it reaches, with the hop's label beside the head. A figure that is connected
+reads as one drawing, where a line merely passing near a box reads as two.
 
 Two rules bound the drawing. A box is sized to the longest label in its own
 figure, and the whole block stays inside `yume_diagram_ascii.BUDGET` columns
-so a manual's literal indent still leaves it inside a terminal at eighty. A
-route wide enough that leaning would break the budget uses a
-straight descent when the diagonal layout does not fit, and rejects labels too wide even for that layout.
+so a manual's literal indent still leaves it inside a terminal at eighty.
+Labels too wide for that are rejected, so shorten them in the JSON.
 
 `scripts/check_ascii_diagrams.py` owns the property no specification can
 state, which is that a literal region renders as a figure at all: one box's
@@ -157,7 +152,7 @@ need:
 | Node key | Meaning |
 | --- | --- |
 | `role` | What the node's colour means: `client`, `server`, `data`, `disguise`, `keys`, `outside`, `refused`, or `neutral`. Defaults from `kind`. |
-| `note` | One plain sentence on what the part does, at most 280 characters. Markdown and documentation pages show the notes in a collapsed "What each part does" list under the figure. The homepage and companion pages show them open. |
+| `note` | One plain sentence on what the part does, at most 280 characters. Markdown, documentation pages and the homepage show the notes in a collapsed "What each part does" list under the figure. The companion pages show them open. |
 | `source` | Up to four repository-relative files or directories that back the note. `check` fails when one disappears. |
 | `side` | `true` for a flow node that is not on the main path: a branch target, or an input. |
 

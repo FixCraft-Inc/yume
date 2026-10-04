@@ -103,8 +103,8 @@ def check(path: Path) -> list[str]:
 def _check_figure(path: Path, block: list[tuple[int, str]]) -> list[str]:
     errors: list[str] = []
     # One box is a run of adjacent border and row lines. Comparing inside the
-    # run is what lets a staircase indent each box differently while still
-    # proving that no single box is ragged.
+    # run is what lets a hand-drawn figure indent each box differently while
+    # still proving that no single box is ragged.
     run: list[tuple[int, str]] = []
 
     def close_run() -> None:

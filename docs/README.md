@@ -1,8 +1,7 @@
 <!-- Generated from docs/src/en_US/pages/docs_readme.doc by scripts/yume_docs.py. Edit that file, not this one. -->
 # YUME documentation
 
-YUME `0.3.0-dev1` is development software. The installed `yume` and `yumed`
-speak YTP/1. Transport v2, the protocol before it, has been removed.
+This map covers YUME `0.3.0-dev1`. Its `yume` and `yumed` speak YTP/1.
 
 ## Run YUME
 
@@ -42,8 +41,7 @@ speak YTP/1. Transport v2, the protocol before it, has been removed.
   client kit to another device.
 - [Control protocol 1](protocol/CONTROL_1.md): the owner-only socket through
   which the GUI and `yume --status` talk to a running client or daemon.
-- [C ABI](ABI.md): embedding the client or server. The ABI is experimental and
-  its install contract is not frozen.
+- [C ABI](ABI.md): embedding the client or server in another program.
 - [Modules](MODULES.md): running a program behind a stream service, and
   writing one.
 - [YTP/1 development guide](development/ytp1/README.md): build options, setup

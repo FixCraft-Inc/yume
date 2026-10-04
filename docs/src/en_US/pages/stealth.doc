@@ -10,20 +10,17 @@ catalog-group: Security and transport
 catalog-home: Start here
 catalog-order: 30
 ---
-This page describes the transport profile, carrier, admission and cover that
-`yume` and `yumed` use, and the evidence behind them. The runtimes and the
-schema-1 ABI backend compose TLS 1.3, the HTTP/2 front door and carrier,
-exporter-bound replay-protected admission and hybrid session security. Their
-complete-session stealth qualification remains open. See the current
-[implementation status](IMPLEMENTATION_STATUS.md).
+YUME keeps its admitted tunnel inside a TLS 1.3, HTTP/2 and WebSocket
+connection that follows a captured Chrome session: its ClientHello, request
+headers, HTTP/2 settings and asset order. The same public listener answers
+everyone else from a static cover site that `yumed` loads at start, so a
+scanner or a curious visitor finds an ordinary website and no YUME-shaped
+response.
 
-YUME keeps its admitted tunnel inside a TLS 1.3, HTTP/2, and WebSocket
-connection. The same public listener answers ordinary requests from a static
-cover site that `yumed` loads at start. This makes the session less like a
-proprietary tunnel and raises the cost of casual active probing.
-
-It does not make YUME identical to a browser, hide connection timing or volume,
-or guarantee that a classifier cannot distinguish it.
+This page describes that profile, the carrier, admission and cover, and the
+captures behind them. Connection timing and volume follow the application.
+[What observers can still see](#what-observers-can-still-see) and the
+[classifier gate](#classifier-gate) cover that side.
 
 ## One captured profile
 

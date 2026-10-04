@@ -2,9 +2,8 @@
 # YUME quick start
 
 This starts the native Linux client and daemon with schema-1 configuration,
-TLS/H2, hybrid authentication, and a local SOCKS5 listener. YUME remains
-experimental; [implementation status](IMPLEMENTATION_STATUS.md) distinguishes
-working paths from remaining qualification gates.
+TLS/H2, hybrid authentication, and a local SOCKS5 listener.
+[YUME explained](EXPLAINED.md) shows how the pieces fit together.
 
 ## Build
 

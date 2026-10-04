@@ -93,7 +93,7 @@ listener and TUN routes stay in place.
 
 Applications can embed the same endpoint through the [C ABI](ABI.md): named
 byte streams, packet channels and routed TCP/UDP, with the application
-deciding where traffic comes from. The ABI is experimental and not yet frozen.
+deciding where traffic comes from.
 
 ## What stays visible
 
@@ -110,10 +110,10 @@ The direct route uses one `yumed` that ends the tunnel. TCP circuits can use
 two or three servers inside one operator's cluster; the exit ends that route,
 and the operator can correlate its hops. Across-operator transit is planned.
 Use TLS inside the tunnel,
-as browsers do, to keep content private from the server. YUME cannot help when
-the server's address itself is blocked, and it makes no claim to be
-undetectable. The [threat model](THREAT_MODEL.md) and
-[stealth transport](STEALTH.md) cover these limits.
+as browsers do, to keep content private from the server. The server's address
+stays visible, so blocking that address blocks its tunnel. The
+[threat model](THREAT_MODEL.md) and [stealth transport](STEALTH.md) go into
+detail.
 
 ## Where to start reading
 

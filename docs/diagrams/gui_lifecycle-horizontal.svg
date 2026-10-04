@@ -1,4 +1,4 @@
-<svg class="dgm dgm-horizontal" data-dgm="gui_lifecycle-horizontal" width="456" height="709" viewBox="0 0 456 709" role="img" aria-labelledby="dgm-gui_lifecycle-horizontal-title dgm-gui_lifecycle-horizontal-desc" style="--dgm-dur:18.34s" xmlns="http://www.w3.org/2000/svg">
+<svg class="dgm dgm-horizontal" data-dgm="gui_lifecycle-horizontal" width="410" height="644.5" viewBox="0 0 410 644.5" role="img" aria-labelledby="dgm-gui_lifecycle-horizontal-title dgm-gui_lifecycle-horizontal-desc" style="--dgm-dur:17.79s" xmlns="http://www.w3.org/2000/svg">
 <title id="dgm-gui_lifecycle-horizontal-title">The GUI controls a separate client process</title>
 <desc id="dgm-gui_lifecycle-horizontal-desc">The window validates and starts a detached client, then uses its owner-only UNIX socket. Closing the window leaves the tunnel running. Disconnect waits for the client to exit.</desc>
 <style>
@@ -78,35 +78,20 @@
 
 .dgm-plate {
   fill: var(--dgm-plate);
-  stroke: var(--dgm-rule);
-  stroke-width: 1;
   opacity: var(--dgm-plate-opacity, 1);
 }
 
-/* The shadow is its own shape behind the card, never a filter on the card
-   itself. A renderer that cannot resolve the filter drops only the shadow;
-   SVG says a reference to a missing filter hides the element that names it,
-   which would take the card with it. */
-/* The halo under a card and the chip behind its glyph are the presence
-   channel: they say the packet is in this node right now. The card's border
-   is left alone, because that already says whether the node is YUME software
-   and one mark cannot carry two meanings. */
-/* The glow and the chip light up with different tokens because they are
-   doing different things. A glow is read as colour, not as brightness: on a
-   near-white page nothing can be brighter than the page, so it uses accent,
-   which stays a mid pink in both themes. Accent-strong there would be a dark
-   bloom, which reads as weight rather than attention. */
-.dgm-lift {
-  fill: var(--dgm-rest);
-  opacity: 0.85;
-  --dgm-rest: var(--dgm-rule);
-  --dgm-live: var(--dgm-tone, var(--dgm-accent));
-}
-
+/* A card is lit while the packet is inside it: its fill takes the soft tint
+   of its role. The border takes no part, because it already says whether the
+   node is YUME software and one mark cannot carry two meanings. */
 .dgm-card {
-  fill: var(--dgm-card);
-  stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  fill: var(--dgm-rest);
+  stroke: var(--dgm-rest-line);
+  stroke-width: 1.25;
+  --dgm-rest: var(--dgm-card);
+  --dgm-live: var(--dgm-tone-soft, var(--dgm-soft));
+  --dgm-rest-line: var(--dgm-rule);
+  --dgm-live-line: var(--dgm-rule);
 }
 
 /* A card YUME itself runs is outlined in its role colour, and everything the
@@ -114,56 +99,23 @@
    the path this project is responsible for. It is a software boundary, not a
    trust claim: yumed still terminates the tunnel and sees what it forwards. */
 .dgm-node-owned .dgm-card {
-  stroke: var(--dgm-tone, var(--dgm-accent));
-  stroke-width: 2;
-}
-
-/* The chip carries the role on every card, owned or not. It is a filled shape
-   with the glyph knocked out of it, so when lit it takes the role's strong
-   tone, which contrasts with the card in both themes. */
-.dgm-chip {
-  fill: var(--dgm-rest);
-  --dgm-rest: var(--dgm-tone-soft, var(--dgm-rule));
-  --dgm-live: var(--dgm-tone-strong, var(--dgm-strong));
-}
-
-/* The glyph goes with its chip. Leaving it on the accent while the chip fills
-   with the accent puts light on light, and the icon smears instead of
-   reading, so it is knocked out to the card it sits on. */
-.dgm-glyph {
-  --dgm-rest: none;
-  --dgm-live: none;
-  --dgm-rest-line: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live-line: var(--dgm-card);
-}
-
-.dgm-glyph-fill {
-  --dgm-rest: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live: var(--dgm-card);
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
+  stroke-width: 1.75;
+  --dgm-rest-line: var(--dgm-tone, var(--dgm-accent));
+  --dgm-live-line: var(--dgm-tone, var(--dgm-accent));
 }
 
 .dgm-ring,
-.dgm-lift,
-.dgm-chip,
-.dgm-glyph,
-.dgm-glyph-fill {
+.dgm-card {
   animation-duration: var(--dgm-dur, 6s);
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
 
-.dgm-lift,
-.dgm-chip {
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
-}
-
+/* The glyph names what kind of thing a node is, in its role's strong ink. */
 .dgm-glyph {
   fill: none;
   stroke: var(--dgm-tone-strong, var(--dgm-muted));
-  stroke-width: 1.5;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -176,16 +128,16 @@
 .dgm-title {
   fill: var(--dgm-ink);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .dgm-sub,
 .dgm-edge-label {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
-  font-size: 11px;
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
+  font-size: 11.5px;
 }
 
 .dgm-centred {
@@ -200,19 +152,19 @@
    and carries the name it gives them. */
 .dgm-group {
   fill: var(--dgm-rule);
-  fill-opacity: 0.22;
+  fill-opacity: 0.14;
   stroke: var(--dgm-muted);
   stroke-opacity: 0.5;
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 5;
   stroke-linecap: round;
 }
 
 .dgm-group-title {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.02em;
 }
 
 /* An ordinary hop is quiet plumbing. Colour is kept for the protected hop,
@@ -221,8 +173,8 @@
 .dgm-link {
   fill: none;
   stroke: var(--dgm-muted);
-  stroke-opacity: 0.55;
-  stroke-width: 2.5;
+  stroke-opacity: 0.6;
+  stroke-width: 1.5;
   stroke-linecap: round;
 }
 
@@ -236,38 +188,39 @@
   stroke-dasharray: 6 6;
 }
 
-/* The protected hop is drawn as a conduit: a soft bore, two walls, and the
-   carrier moving between them. Each is one stroked line, so the treatment
-   holds at whatever angle the hop runs. This is the ==YUME==> of the ASCII. */
+/* The protected hop is drawn as a slim tube: a soft bore, two hairline walls,
+   and the carrier moving between them. Each is one stroked line, so the
+   treatment holds at whatever angle the hop runs. This is the ==YUME==> of
+   the ASCII. */
 .dgm-conduit {
   fill: none;
   stroke: var(--dgm-soft);
-  stroke-width: 20;
+  stroke-width: 10;
   stroke-linecap: round;
 }
 
 .dgm-conduit-wall {
   fill: none;
   stroke: var(--dgm-accent);
-  stroke-width: 2;
+  stroke-width: 1.25;
   stroke-linecap: round;
 }
 
 .dgm-conduit-flow {
   fill: none;
   stroke: var(--dgm-strong);
-  stroke-width: 4;
+  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: 12 26;
-  animation: dgm-flow 2.4s linear infinite;
+  stroke-dasharray: 7 15;
+  animation: dgm-flow 1.6s linear infinite;
 }
 
 /* The stroke rounds the triangle's corners, which is the same softening the
-   cards and the chips carry. */
+   cards carry. */
 .dgm-arrow {
   fill: var(--dgm-muted);
   stroke: var(--dgm-muted);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linejoin: round;
 }
 
@@ -340,7 +293,7 @@
 .dgm-ring {
   fill: var(--dgm-rest);
   stroke: var(--dgm-rest-line);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   --dgm-rest: var(--dgm-tone-soft);
   --dgm-live: var(--dgm-tone);
   --dgm-rest-line: var(--dgm-tone);
@@ -350,7 +303,7 @@
 .dgm-ring-title {
   fill: var(--dgm-tone-strong);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -360,7 +313,7 @@
 .dgm-lifeline {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 4 6;
   stroke-linecap: round;
 }
@@ -368,7 +321,7 @@
 .dgm-leader {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 4;
   stroke-linecap: round;
 }
@@ -379,7 +332,7 @@
 
 .dgm-packet-glow {
   fill: var(--dgm-accent);
-  opacity: 0.38;
+  opacity: 0.3;
 }
 
 @keyframes dgm-travel {
@@ -388,7 +341,7 @@
 }
 
 @keyframes dgm-flow {
-  to { stroke-dashoffset: -38; }
+  to { stroke-dashoffset: -22; }
 }
 
 /* The packets are hidden by the markup and revealed only where the property
@@ -405,107 +358,107 @@
   @keyframes dgm-gui_lifecycle-horizontal-message-0 {
     0%, 0% { offset-distance: 0%; fill-opacity: 0; }
     0.1% { fill-opacity: 1; }
-    9.35% { offset-distance: 100%; fill-opacity: 1; }
-    9.45%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    9.19% { offset-distance: 100%; fill-opacity: 1; }
+    9.29%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-0 { animation-name: dgm-gui_lifecycle-horizontal-message-0; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-1 {
-    0%, 11.26% { offset-distance: 0%; fill-opacity: 0; }
-    11.36% { fill-opacity: 1; }
-    20.6% { offset-distance: 100%; fill-opacity: 1; }
-    20.7%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 11.16% { offset-distance: 0%; fill-opacity: 0; }
+    11.26% { fill-opacity: 1; }
+    20.36% { offset-distance: 100%; fill-opacity: 1; }
+    20.46%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-1 { animation-name: dgm-gui_lifecycle-horizontal-message-1; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-2 {
-    0%, 22.51% { offset-distance: 0%; fill-opacity: 0; }
-    22.61% { fill-opacity: 1; }
-    31.86% { offset-distance: 100%; fill-opacity: 1; }
-    31.96%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 22.32% { offset-distance: 0%; fill-opacity: 0; }
+    22.42% { fill-opacity: 1; }
+    31.52% { offset-distance: 100%; fill-opacity: 1; }
+    31.62%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-2 { animation-name: dgm-gui_lifecycle-horizontal-message-2; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-3 {
-    0%, 33.77% { offset-distance: 0%; fill-opacity: 0; }
-    33.87% { fill-opacity: 1; }
-    36.1% { offset-distance: 100%; fill-opacity: 1; }
-    36.2%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 33.49% { offset-distance: 0%; fill-opacity: 0; }
+    33.59% { fill-opacity: 1; }
+    35.89% { offset-distance: 100%; fill-opacity: 1; }
+    35.99%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-3 { animation-name: dgm-gui_lifecycle-horizontal-message-3; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-4 {
-    0%, 38.01% { offset-distance: 0%; fill-opacity: 0; }
-    38.11% { fill-opacity: 1; }
-    47.36% { offset-distance: 100%; fill-opacity: 1; }
-    47.46%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 37.86% { offset-distance: 0%; fill-opacity: 0; }
+    37.96% { fill-opacity: 1; }
+    47.06% { offset-distance: 100%; fill-opacity: 1; }
+    47.16%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-4 { animation-name: dgm-gui_lifecycle-horizontal-message-4; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-5 {
-    0%, 49.27% { offset-distance: 0%; fill-opacity: 0; }
-    49.37% { fill-opacity: 1; }
-    58.62% { offset-distance: 100%; fill-opacity: 1; }
-    58.72%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 49.02% { offset-distance: 0%; fill-opacity: 0; }
+    49.12% { fill-opacity: 1; }
+    58.22% { offset-distance: 100%; fill-opacity: 1; }
+    58.32%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-5 { animation-name: dgm-gui_lifecycle-horizontal-message-5; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-6 {
-    0%, 60.52% { offset-distance: 0%; fill-opacity: 0; }
-    60.62% { fill-opacity: 1; }
-    62.86% { offset-distance: 100%; fill-opacity: 1; }
-    62.96%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 60.19% { offset-distance: 0%; fill-opacity: 0; }
+    60.29% { fill-opacity: 1; }
+    62.6% { offset-distance: 100%; fill-opacity: 1; }
+    62.7%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-6 { animation-name: dgm-gui_lifecycle-horizontal-message-6; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-7 {
-    0%, 64.77% { offset-distance: 0%; fill-opacity: 0; }
-    64.87% { fill-opacity: 1; }
-    67.11% { offset-distance: 100%; fill-opacity: 1; }
-    67.21%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 64.56% { offset-distance: 0%; fill-opacity: 0; }
+    64.66% { fill-opacity: 1; }
+    66.97% { offset-distance: 100%; fill-opacity: 1; }
+    67.07%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-7 { animation-name: dgm-gui_lifecycle-horizontal-message-7; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-8 {
-    0%, 69.01% { offset-distance: 0%; fill-opacity: 0; }
-    69.11% { fill-opacity: 1; }
-    78.36% { offset-distance: 100%; fill-opacity: 1; }
-    78.46%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 68.94% { offset-distance: 0%; fill-opacity: 0; }
+    69.04% { fill-opacity: 1; }
+    78.13% { offset-distance: 100%; fill-opacity: 1; }
+    78.23%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-8 { animation-name: dgm-gui_lifecycle-horizontal-message-8; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-9 {
-    0%, 80.27% { offset-distance: 0%; fill-opacity: 0; }
-    80.37% { fill-opacity: 1; }
-    89.62% { offset-distance: 100%; fill-opacity: 1; }
-    89.72%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 80.1% { offset-distance: 0%; fill-opacity: 0; }
+    80.2% { fill-opacity: 1; }
+    89.3% { offset-distance: 100%; fill-opacity: 1; }
+    89.4%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-9 { animation-name: dgm-gui_lifecycle-horizontal-message-9; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-10 {
-    0%, 91.53% { offset-distance: 0%; fill-opacity: 0; }
-    91.63% { fill-opacity: 1; }
-    93.86% { offset-distance: 100%; fill-opacity: 1; }
-    93.96%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 91.26% { offset-distance: 0%; fill-opacity: 0; }
+    91.36% { fill-opacity: 1; }
+    93.67% { offset-distance: 100%; fill-opacity: 1; }
+    93.77%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-10 { animation-name: dgm-gui_lifecycle-horizontal-message-10; }
 
   @keyframes dgm-gui_lifecycle-horizontal-message-11 {
-    0%, 95.77% { offset-distance: 0%; fill-opacity: 0; }
-    95.87% { fill-opacity: 1; }
-    98.11% { offset-distance: 100%; fill-opacity: 1; }
-    98.21%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 95.64% { offset-distance: 0%; fill-opacity: 0; }
+    95.74% { fill-opacity: 1; }
+    98.05% { offset-distance: 100%; fill-opacity: 1; }
+    98.15%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="gui_lifecycle-horizontal"] .dgm-message-11 { animation-name: dgm-gui_lifecycle-horizontal-message-11; }
@@ -518,65 +471,61 @@
 
   .dgm-conduit-flow,
   .dgm-ring,
-  .dgm-lift,
-  .dgm-chip,
-  .dgm-glyph,
-  .dgm-glyph-fill {
+  .dgm-card {
     animation: none;
   }
 }
 </style>
-<defs><filter id="dgm-gui_lifecycle-horizontal-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
-<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="455" height="708" rx="18"/>
+<rect class="dgm-plate" fill="#fff9fd" x="0" y="0" width="410" height="644.5" rx="16"/>
 <g class="dgm-lifelines">
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="4 6" stroke-linecap="round" d="M104 129L104 689"/>
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="4 6" stroke-linecap="round" d="M352 129L352 689"/>
+<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M86.5 72L86.5 628.5"/>
+<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M323.5 72L323.5 628.5"/>
 </g>
 <g class="dgm-links">
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 171L337 171"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M337 177L337 165L348 171Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="162">run with --validate</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M348 219L119 219"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 213L119 225L108 219Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="210">validation result</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 267L337 267"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M337 273L337 261L348 267Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="258">start detached, socket path</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M348 293L328 293L328 313L337 313"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M337 307L337 319L348 313Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="end" x="312" y="307">listen, connect, serve socket</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 355L337 355"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M337 361L337 349L348 355Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="346">status and messages</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M348 403L119 403"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 397L119 409L108 403Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="394">state and printed lines</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 429L128 429L128 449L119 449"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 443L119 455L108 449Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="144" y="443">close window, client runs</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 469L128 469L128 489L119 489"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 483L119 495L108 489Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="144" y="483">reopen window, find client</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 531L337 531"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M337 537L337 525L348 531Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="522">Disconnect: stop</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M348 579L119 579"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 573L119 585L108 579Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="228" y="570">acknowledge stop</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M348 605L328 605L328 625L337 625"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M337 619L337 631L348 625Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="end" x="312" y="619">drain and exit</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 645L128 645L128 665L119 665"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 659L119 671L108 665Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="144" y="659">process ended: stopped</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 115L311.5 115"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 119.5L311.5 110.5L319.5 115Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="106">run with --validate</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 162.5L98.5 162.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 158L98.5 167L90.5 162.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="153.5">validation result</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 210L311.5 210"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 214.5L311.5 205.5L319.5 210Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="201">start detached, socket path</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 234.5L299.5 234.5L299.5 254.5L311.5 254.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 250L311.5 259L319.5 254.5Z"/>
+<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283.5" y="248.5">listen, connect, serve socket</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 297.5L311.5 297.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 302L311.5 293L319.5 297.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="288.5">status and messages</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 345L98.5 345"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 340.5L98.5 349.5L90.5 345Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="336">state and printed lines</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 369.5L110.5 369.5L110.5 389.5L98.5 389.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 385L98.5 394L90.5 389.5Z"/>
+<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="383.5">close window, client runs</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 409.5L110.5 409.5L110.5 429.5L98.5 429.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 425L98.5 434L90.5 429.5Z"/>
+<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="423.5">reopen window, find client</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 472.5L311.5 472.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 477L311.5 468L319.5 472.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="463.5">Disconnect: stop</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 520L98.5 520"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 515.5L98.5 524.5L90.5 520Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="511">acknowledge stop</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 544.5L299.5 544.5L299.5 564.5L311.5 564.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 560L311.5 569L319.5 564.5Z"/>
+<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283.5" y="558.5">drain and exit</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 584.5L110.5 584.5L110.5 604.5L98.5 604.5"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 600L98.5 609L90.5 604.5Z"/>
+<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="598.5">process ended: stopped</text>
 </g>
-<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 171L348 171')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 171L348 171')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M348 219L108 219')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M348 219L108 219')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 267L348 267')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 267L348 267')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M348 293L328 293L328 313L348 313')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M348 293L328 293L328 313L348 313')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 355L348 355')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 355L348 355')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M348 403L108 403')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M348 403L108 403')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 429L128 429L128 449L108 449')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 429L128 429L128 449L108 449')"/><circle class="dgm-packet dgm-packet-glow dgm-message-7" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 469L128 469L128 489L108 489')"/><circle class="dgm-packet dgm-packet-core dgm-message-7" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 469L128 469L128 489L108 489')"/><circle class="dgm-packet dgm-packet-glow dgm-message-8" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 531L348 531')"/><circle class="dgm-packet dgm-packet-core dgm-message-8" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 531L348 531')"/><circle class="dgm-packet dgm-packet-glow dgm-message-9" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M348 579L108 579')"/><circle class="dgm-packet dgm-packet-core dgm-message-9" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M348 579L108 579')"/><circle class="dgm-packet dgm-packet-glow dgm-message-10" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M348 605L328 605L328 625L348 625')"/><circle class="dgm-packet dgm-packet-core dgm-message-10" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M348 605L328 605L328 625L348 625')"/><circle class="dgm-packet dgm-packet-glow dgm-message-11" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 645L128 645L128 665L108 665')"/><circle class="dgm-packet dgm-packet-core dgm-message-11" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 645L128 645L128 665L108 665')"/></g>
+<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 115L319.5 115')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 115L319.5 115')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 162.5L90.5 162.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 162.5L90.5 162.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 210L319.5 210')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 210L319.5 210')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 234.5L299.5 234.5L299.5 254.5L319.5 254.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 234.5L299.5 234.5L299.5 254.5L319.5 254.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 297.5L319.5 297.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 297.5L319.5 297.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 345L90.5 345')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 345L90.5 345')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 369.5L110.5 369.5L110.5 389.5L90.5 389.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 369.5L110.5 369.5L110.5 389.5L90.5 389.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-7" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 409.5L110.5 409.5L110.5 429.5L90.5 429.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-7" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 409.5L110.5 409.5L110.5 429.5L90.5 429.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-8" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 472.5L319.5 472.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-8" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 472.5L319.5 472.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-9" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 520L90.5 520')"/><circle class="dgm-packet dgm-packet-core dgm-message-9" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 520L90.5 520')"/><circle class="dgm-packet dgm-packet-glow dgm-message-10" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 544.5L299.5 544.5L299.5 564.5L319.5 564.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-10" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 544.5L299.5 544.5L299.5 564.5L319.5 564.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-11" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 584.5L110.5 584.5L110.5 604.5L90.5 604.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-11" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 584.5L110.5 584.5L110.5 604.5L90.5 604.5')"/></g>
 <g class="dgm-nodes">
-<g class="dgm-node dgm-node-app dgm-role-data" data-node="gui"><rect class="dgm-lift" fill="#e3d2dd" opacity="0.85" x="17" y="20" width="174" height="110" rx="19" filter="url(#dgm-gui_lifecycle-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e3d2dd" stroke-width="1.5" x="20" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip" fill="#dbeefe" x="88" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph" fill="none" stroke="#1b659a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="92" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M2.5 9.5h19"/><circle cx="5.6" cy="7" r="0.9" class="dgm-glyph-fill" fill="#1b659a" stroke="none"/><circle cx="8.4" cy="7" r="0.9" class="dgm-glyph-fill" fill="#1b659a" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="104" y="86">yume-gui</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="104" y="102">window</text>
+<g class="dgm-node dgm-node-app dgm-role-data" data-node="gui"><rect class="dgm-card" fill="#fffcfe" stroke="#e3d2dd" stroke-width="1.25" x="16" y="16" width="141" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#1b659a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="29" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M2.5 9.5h19"/><circle cx="5.6" cy="7" r="0.9" class="dgm-glyph-fill" fill="#1b659a" stroke="none"/><circle cx="8.4" cy="7" r="0.9" class="dgm-glyph-fill" fill="#1b659a" stroke="none"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="56" y="38">yume-gui</text>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="56" y="54">window</text>
 </g>
-<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="client"><rect class="dgm-lift" fill="#e3d2dd" opacity="0.85" x="265" y="20" width="174" height="110" rx="19" filter="url(#dgm-gui_lifecycle-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="2" x="268" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip" fill="#fad4ef" x="336" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="340" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="352" y="86">yume</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="352" y="102">tunnel process</text>
+<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="client"><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="1.75" x="253" y="16" width="141" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="266" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="293" y="38">yume</text>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="293" y="54">tunnel process</text>
 </g>
 </g>
 </svg>

@@ -35,6 +35,10 @@ fi
 
 cd "${repo_root}"
 
+# scripts/check_source_archive_listing.py owns the list of excluded paths and
+# validates the finished archive. This filter and the fallback's pruning below
+# are an independent copy of it, which tests/test_project_metadata.py checks
+# against that owner, so a gap here fails validation instead of shipping.
 archive_path_is_public() {
   local path="${1#./}"
   local root="${path%%/*}"
@@ -53,6 +57,7 @@ archive_path_is_public() {
   esac
   case "${path}" in
     AGENTS.md|AI_NOTES.md|opencode.json|website/_site|website/_site/*|\
+    website/_includes/diagrams|website/_includes/diagrams/*|\
     *.log|*.trace|*.out|*.pyc|*.tar.xz)
       return 1
       ;;
@@ -118,6 +123,7 @@ archive_paths() {
        -o -path './yume-lan-kit' \
        -o -path './website/.jekyll-cache' \
        -o -path './website/_site' \
+       -o -path './website/_includes/diagrams' \
        -o -path './scripts/__pycache__' \) -prune \
     -o \( -name '*.pyc' \
           -o -name '*.log' \

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Reject private, generated, and malformed paths in a source archive."""
+"""Reject private, generated, and malformed paths in a source archive.
+
+These sets are the one list of what a source archive leaves out.
+scripts/make_debian_orig.sh filters with its own copy, so a gap in that copy
+fails this validation instead of shipping. debian/copyright (Files-Excluded)
+and debian/source/options (extend-diff-ignore) state the same boundary for
+Debian's tools. tests/test_project_metadata.py checks all three against these
+sets, so a new entry goes here first.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +29,9 @@ FORBIDDEN_ANYWHERE = {
 FORBIDDEN_BASENAMES = {".DS_Store"}
 FORBIDDEN_ROOT_FILES = {"AGENTS.md", "AI_NOTES.md", "opencode.json"}
 FORBIDDEN_SUFFIXES = (".log", ".trace", ".out", ".pyc", ".tar.xz")
+# Generated website trees that Git ignores: Jekyll's output and the diagram
+# SVG copies scripts/yume_diagrams.py writes for the site.
+FORBIDDEN_PREFIXES = (("website", "_site"), ("website", "_includes", "diagrams"))
 GENERATED_ROOT_RE = re.compile(r"(?:build(?:-[^/]+)?|obj-[^/]+)")
 
 
@@ -46,7 +57,8 @@ def rejected_paths(names: list[str], prefix: str) -> list[str]:
                 GENERATED_ROOT_RE.fullmatch(root) is not None or
                 any(part in FORBIDDEN_ANYWHERE for part in relative) or
                 any(part in FORBIDDEN_BASENAMES for part in relative) or
-                relative[:2] == ["website", "_site"] or
+                any(tuple(relative[:len(prefix_parts)]) == prefix_parts
+                    for prefix_parts in FORBIDDEN_PREFIXES) or
                 name.endswith(FORBIDDEN_SUFFIXES)):
             rejected.append(original)
     return rejected

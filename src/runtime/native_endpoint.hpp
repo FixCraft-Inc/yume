@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -148,6 +149,27 @@ inline NativeServerSizing native_server_sizing(
     sizing.max_pending_starts =
         sizing.accept.pending_per_listener * listener_count;
     return sizing;
+}
+
+// The admission replay cache every listener of a server shares. A proof binds
+// the exporter of the TLS connection it arrives on, so it cannot pass on
+// another connection, and a connection promotes once. A nonce therefore only
+// needs to stay reserved while its own connection may still present a proof,
+// which the front door's absolute connection deadline bounds, and twice that
+// deadline leaves margin. 65536 entries over that lifetime hold about a
+// thousand admissions a second, so reconnecting clients do not fill the cache,
+// and a client holding the shared admission key that fills it on purpose locks
+// the others out for one lifetime instead of hours.
+struct NativeAdmissionReplaySizing final {
+    std::size_t max_entries{0U};
+    std::uint64_t ttl_seconds{0U};
+};
+
+inline NativeAdmissionReplaySizing native_admission_replay_sizing(
+    std::chrono::milliseconds connection_deadline) noexcept {
+    const auto deadline = std::chrono::ceil<std::chrono::seconds>(connection_deadline);
+    return {65536U, 2U * static_cast<std::uint64_t>(std::max<std::int64_t>(
+                             1, static_cast<std::int64_t>(deadline.count())))};
 }
 
 // One immutable native YTP endpoint composition, shared by application layers.

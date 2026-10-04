@@ -58,11 +58,13 @@ enum class ReplayDecision : std::uint8_t {
 // Process owners share one instance across every admission session. Callers
 // supply monotonic ticks in one fixed unit and a TTL in that same unit. A tick
 // regression, duplicate, saturation, expiry overflow, or allocation failure
-// rejects without evicting a live nonce or leaving a partial reservation.
+// rejects without evicting a live nonce or leaving a partial reservation. A
+// reservation expires once the tick reaches its expiry, so on whole ticks it
+// may live one tick less than the TTL. The owner sizes both bounds, since
+// they decide how many admissions a second the cache can hold.
 class ReplayCache final {
 public:
-    explicit ReplayCache(std::size_t max_entries = 4096U,
-                         std::uint64_t ttl_ticks = 2U * 3600U);
+    ReplayCache(std::size_t max_entries, std::uint64_t ttl_ticks);
 
     ReplayCache(const ReplayCache&) = delete;
     ReplayCache& operator=(const ReplayCache&) = delete;
@@ -70,6 +72,8 @@ public:
     ReplayDecision reserve(const Nonce& nonce,
                            std::uint64_t monotonic_now) noexcept;
     std::size_t size() const noexcept;
+    std::size_t max_entries() const noexcept { return max_entries_; }
+    std::uint64_t ttl_ticks() const noexcept { return ttl_ticks_; }
 
 private:
     struct NonceHash final {

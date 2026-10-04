@@ -1132,7 +1132,10 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                     throw Status(StatusCode::InvalidArgument,
                         "cover site is missing a required browser profile asset");
             }
-            auto replay = std::make_shared<admission::ReplayCache>();
+            const auto replay_sizing = native_admission_replay_sizing(
+                H2WebFrontDoorLimits{}.connection_timeout);
+            auto replay = std::make_shared<admission::ReplayCache>(
+                replay_sizing.max_entries, replay_sizing.ttl_seconds);
             const auto& endpoint = std::get<config::v1::ServerEndpoint>(config.endpoint());
             state->listeners.reserve(endpoint.listen_addresses().size());
             for (const auto& address : endpoint.listen_addresses()) {

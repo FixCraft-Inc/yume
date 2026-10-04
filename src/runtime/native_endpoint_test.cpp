@@ -1130,6 +1130,19 @@ void test_server_sizing() {
               sizing.max_pending_starts / listeners);
         CHECK(sizing.max_pending_starts <= 32U);
     }
+    // The admission replay cache keeps each nonce past the front door's
+    // connection deadline and holds about a thousand admissions a second.
+    const auto replay = native_admission_replay_sizing(
+        yume::providers::H2WebFrontDoorLimits{}.connection_timeout);
+    CHECK(replay.ttl_seconds == 60U);
+    CHECK(replay.max_entries / replay.ttl_seconds >= 1000U);
+    for (const auto deadline :
+         {std::chrono::milliseconds(1), std::chrono::milliseconds(1500),
+          std::chrono::milliseconds(30'000), std::chrono::milliseconds(600'000)}) {
+        const auto sized = native_admission_replay_sizing(deadline);
+        CHECK(sized.ttl_seconds > static_cast<std::uint64_t>(
+                  std::chrono::ceil<std::chrono::seconds>(deadline).count()));
+    }
 }
 
 void test_accept_loop(const std::filesystem::path& kit) {

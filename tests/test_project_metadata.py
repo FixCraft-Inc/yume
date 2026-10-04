@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import fnmatch
 import hashlib
 import json
 import os
@@ -28,12 +29,32 @@ from generate_transport_profiles import (  # noqa: E402
     carrier_sections,
     generate,
 )
+import check_source_archive_listing as archive_boundary  # noqa: E402
 from check_source_archive_listing import rejected_paths  # noqa: E402
 from yume_dependencies import (  # noqa: E402
     DEFAULT_MANIFEST,
     DependencyError,
     load_dependencies,
 )
+
+
+def excluded_examples() -> list[str]:
+    """One path for each entry the archive owner excludes.
+
+    check_source_archive_listing.py owns the boundary, so the fixture and the
+    Debian checks follow its sets rather than a list of their own. `.git`
+    is left out because a fixture directory of that name would read as a
+    nested repository.
+    """
+    paths = [f"{root}/file" for root in sorted(archive_boundary.FORBIDDEN_ROOTS)]
+    for name in sorted(archive_boundary.FORBIDDEN_ANYWHERE - {".git"}):
+        paths += [f"{name}/file", f"nested/{name}/file"]
+    paths += [f"docs/{name}" for name in sorted(archive_boundary.FORBIDDEN_BASENAMES)]
+    paths += sorted(archive_boundary.FORBIDDEN_ROOT_FILES)
+    paths += [f"docs/example{suffix}" for suffix in archive_boundary.FORBIDDEN_SUFFIXES]
+    paths += ["build/file", "build-release/file", "obj-x86_64-linux-gnu/file"]
+    paths += ["/".join(parts) + "/file" for parts in archive_boundary.FORBIDDEN_PREFIXES]
+    return paths
 
 
 class MetadataTests(unittest.TestCase):
@@ -82,6 +103,11 @@ class MetadataTests(unittest.TestCase):
         (root / "yume-bench-results/report.json").write_text(
             "{}\n", encoding="utf-8")
         (root / ".DS_Store").write_text("metadata\n", encoding="utf-8")
+        for relative in excluded_examples():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text("excluded\n", encoding="utf-8")
 
     def create_source_archive(
             self, root: pathlib.Path,
@@ -103,21 +129,11 @@ class MetadataTests(unittest.TestCase):
         self.assertIn(f"{prefix}/README.md", names)
         self.assertIn(f"{prefix}/docs/AGENTS.md", names)
         self.assertIn(f"{prefix}/docs/_site/manual.txt", names)
-        for name in names:
-            parts = pathlib.PurePosixPath(name).parts
-            self.assertEqual(parts[0], prefix)
-            relative = parts[1:]
-            if not relative:
-                continue
-            self.assertNotIn(
-                relative[0],
-                {"AGENTS.md", "AI_NOTES.md", "opencode.json",
-                 "yume-bench-results"})
-            for forbidden in {
-                    ".agents", ".cache", ".claude", ".codex", ".private",
-                    ".pytest_cache", ".secrets", ".wrangler", ".DS_Store"}:
-                self.assertNotIn(forbidden, relative)
-            self.assertNotEqual(relative[:2], ("website", "_site"))
+        # The archive creator's own filter left out every path its owner
+        # excludes. A gap would have failed creation at validation instead.
+        self.assertEqual(rejected_paths(names, prefix), [])
+        for relative in excluded_examples():
+            self.assertNotIn(f"{prefix}/{relative}", names)
 
     def test_current_metadata_is_coherent(self) -> None:
         dependencies = load_dependencies()
@@ -655,6 +671,12 @@ class MetadataTests(unittest.TestCase):
             "unexpected-root/file",
         ])
 
+    def test_source_archive_rejects_every_owner_example(self) -> None:
+        prefix = "yume-0.3.0~dev1"
+        names = [f"{prefix}/{path}" for path in excluded_examples()]
+        self.assertEqual(rejected_paths(names, prefix), names)
+        self.assertIn("website/_includes/diagrams/file", excluded_examples())
+
     def test_orig_archive_creation_excludes_secret_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary) / "repo"
@@ -770,25 +792,37 @@ exec "${REAL_LN}" "$@"
                     self.assertTrue(archive.is_symlink())
                 self.assertEqual(list(archive.iterdir()), [])
 
-    def test_dpkg_source_ignores_secret_roots(self) -> None:
-        options = (ROOT / "debian/source/options").read_text(encoding="utf-8")
-        self.assertIn(r"\.private", options)
-        self.assertIn(r"\.secrets", options)
-        self.assertIn(r"website/docs/.*\.md", options)
-        # The diagram tool and the website sync write Jekyll's SVG copies here.
-        self.assertIn(r"_site|_includes/diagrams)(/|$)", options)
-        self.assertIn(r"(^|/)\.DS_Store$", options)
-        self.assertIn(r"^(AGENTS\.md|AI_NOTES\.md|opencode\.json)$", options)
+    def test_debian_files_exclude_what_the_archive_owner_excludes(self) -> None:
+        # debian/ is the packaging itself, never part of upstream's tarball,
+        # so neither Debian tool is asked to drop it.
+        examples = [path for path in excluded_examples()
+                    if not path.startswith("debian/")]
 
+        # Files-Excluded globs match whole paths, and `*` crosses `/`, as
+        # mk-origtargz applies them. Dropping a directory drops its files.
         copyright_text = (ROOT / "debian/copyright").read_text(encoding="utf-8")
-        self.assertIn("\n AGENTS.md\n", copyright_text)
-        self.assertIn("\n opencode.json\n", copyright_text)
-        self.assertIn("\n .pytest_cache\n", copyright_text)
-        self.assertIn("\n .secrets\n", copyright_text)
-        self.assertIn("\n .DS_Store\n", copyright_text)
-        self.assertIn("\n website/_site\n", copyright_text)
-        self.assertIn("\n website/_includes/diagrams\n", copyright_text)
+        block = copyright_text.split("Files-Excluded:\n", 1)[1].split("\n\n", 1)[0]
+        patterns = [line.strip() for line in block.splitlines() if line.strip()]
+        for path in examples:
+            with self.subTest(files_excluded=path):
+                parts = path.split("/")
+                prefixes = ["/".join(parts[:end]) for end in range(1, len(parts) + 1)]
+                self.assertTrue(
+                    any(fnmatch.fnmatchcase(prefix, pattern)
+                        for prefix in prefixes for pattern in patterns),
+                    f"debian/copyright Files-Excluded misses {path}")
 
+        options = (ROOT / "debian/source/options").read_text(encoding="utf-8")
+        match = re.fullmatch(r"extend-diff-ignore = (.+)\n", options)
+        self.assertIsNotNone(match)
+        ignore = re.compile(match.group(1))
+        for path in examples:
+            with self.subTest(extend_diff_ignore=path):
+                self.assertIsNotNone(
+                    ignore.search(path),
+                    f"debian/source/options extend-diff-ignore misses {path}")
+        # Generated website copies are rebuilt, so their diff is ignored too.
+        self.assertIsNotNone(ignore.search("website/docs/QUICKSTART.md"))
 
 if __name__ == "__main__":
     unittest.main()

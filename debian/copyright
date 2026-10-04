@@ -6,18 +6,31 @@ Files-Excluded:
  AI_NOTES.md
  opencode.json
  .agents
+ */.agents
  .pytest_cache
+ */.pytest_cache
  basefwx
  basefwx/*
  build
  build/*
  build-*/*
+ obj-*
  .cache
+ */.cache
  .claude
+ */.claude
  .codex
+ */.codex
  .private
+ */.private
  .secrets
+ */.secrets
  .wrangler
+ */.wrangler
+ .jekyll-cache
+ */.jekyll-cache
+ __pycache__
+ */__pycache__
  .DS_Store
  */.DS_Store
  DEV_services
@@ -31,8 +44,6 @@ Files-Excluded:
  *.trace
  *.out
  *.tar.xz
- scripts/__pycache__
- website/.jekyll-cache
  website/_site
  website/_includes/diagrams
  *.pyc

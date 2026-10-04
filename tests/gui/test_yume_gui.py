@@ -339,7 +339,16 @@ class Gui(unittest.TestCase):
         result = self.gui("--version")
         self.assertEqual(result.returncode, 0)
         self.assertTrue(result.stdout.startswith("yume-gui 0.3.0-dev1\nQt "))
+        # The completion script is the generated one, and it completes the
+        # option that printed it.
+        result = self.gui("--completion", "bash")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("# bash completion for yume-gui\n"))
+        self.assertIn("--completion)", result.stdout)
+        self.assertIn("complete -F", result.stdout)
         for arguments, message in (
+                (["--completion", "zsh"], "--completion takes bash"),
+                (["--completion"], "--completion needs exactly one value"),
                 (["--bogus"], "unknown argument: --bogus"),
                 (["--page", "chat"], "--page takes overview, connect, logs, posture"),
                 (["--theme", "blue"], "--theme takes light, dark or system"),

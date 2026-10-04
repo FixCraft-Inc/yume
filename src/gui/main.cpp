@@ -56,6 +56,7 @@ struct Arguments final {
     QString headless;
     QString import_kit;
     QString name;
+    QString completion;
     bool version{false};
     bool help{false};
     bool no_tray{false};
@@ -77,6 +78,7 @@ constexpr ValueFlag kValueFlags[] = {
     {"--headless", &Arguments::headless},
     {"--import-kit", &Arguments::import_kit},
     {"--name", &Arguments::name},
+    {"--completion", &Arguments::completion},
 };
 
 bool one_of(const QString& value, std::initializer_list<const char*> allowed) {
@@ -133,6 +135,11 @@ std::optional<Arguments> parse(const QStringList& list, QString& error) {
              .match(arguments.size)
              .hasMatch()) {
         error = QStringLiteral("--size takes WIDTHxHEIGHT, such as 1280x800");
+        return std::nullopt;
+    }
+    if (!arguments.completion.isEmpty() &&
+        arguments.completion != QLatin1String("bash")) {
+        error = QStringLiteral("--completion takes bash");
         return std::nullopt;
     }
     if (!arguments.headless.isEmpty() &&
@@ -273,6 +280,10 @@ int run_console(int argc, char** argv) {
         print_version();
         return 0;
     }
+    if (!arguments->completion.isEmpty()) {
+        std::fputs(yume::gui::help::kBashCompletion, stdout);
+        return 0;
+    }
     const auto places = find_places(arguments->yume, error);
     if (!places) {
         std::fprintf(stderr, "yume-gui: %s\n", qPrintable(error));
@@ -292,7 +303,8 @@ int main(int argc, char** argv) {
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--headless" || argument == "--import-kit" ||
-            argument == "--version" || argument == "--help" || argument == "-h")
+            argument == "--version" || argument == "--completion" ||
+            argument == "--help" || argument == "-h")
             console = true;
     }
     return console ? run_console(argc, argv) : run_window(argc, argv);

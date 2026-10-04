@@ -13,6 +13,10 @@
 #include <optional>
 #include <utility>
 
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
+
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 
@@ -1277,6 +1281,43 @@ std::vector<NativePeerSession> NativeEndpoint::authenticated_sessions() const {
 void NativeEndpoint::end_unrecognized_sessions() noexcept {
     if (state_->closing.load(std::memory_order_acquire)) return;
     state_->end_unrecognized();
+}
+
+namespace {
+
+constexpr std::size_t kMaxOpenFileLimit = 1U << 20U;
+// What a process without a readable limit is assumed to have.
+constexpr std::size_t kDefaultOpenFileLimit = 1024U;
+
+}  // namespace
+
+std::size_t open_file_limit() noexcept {
+#if defined(_WIN32)
+    return kDefaultOpenFileLimit;
+#else
+    rlimit limit{};
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return kDefaultOpenFileLimit;
+    if (limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > kMaxOpenFileLimit)
+        return kMaxOpenFileLimit;
+    return static_cast<std::size_t>(limit.rlim_cur);
+#endif
+}
+
+std::size_t raise_open_file_limit() noexcept {
+#if !defined(_WIN32)
+    rlimit limit{};
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY &&
+        limit.rlim_cur < kMaxOpenFileLimit && limit.rlim_cur < limit.rlim_max) {
+        rlimit raised = limit;
+        raised.rlim_cur = limit.rlim_max == RLIM_INFINITY
+                              ? static_cast<rlim_t>(kMaxOpenFileLimit)
+                              : std::min<rlim_t>(limit.rlim_max, kMaxOpenFileLimit);
+        // A refusal, such as a hard limit above the kernel's nr_open, keeps
+        // the soft limit as it was.
+        static_cast<void>(setrlimit(RLIMIT_NOFILE, &raised));
+    }
+#endif
+    return open_file_limit();
 }
 
 }  // namespace yume::runtime

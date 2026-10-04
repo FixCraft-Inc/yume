@@ -126,22 +126,43 @@ struct NativeAcceptOptions final {
     std::chrono::milliseconds retry_delay{100};
 };
 
-// yumed and the embedding backend size their servers alike: 128 sessions, and
-// up to 4 pending starts on each listener, fewer when the total would pass 32
-// but never none. Refused and immediately failed starts keep the default retry
-// delay. No listeners give no pending starts.
+// yumed and the embedding backend size their servers alike, inside the
+// process's open-file limit. 512 descriptors stay for listeners, connections
+// not yet admitted, the control socket, the resolver, modules and files. Of
+// the rest, sessions take at most half, up to 1024, and the direct routes of
+// all sessions share what remains, 16 connections a session up to 16384,
+// with up to 1024 of them connecting at once. A limit below 1024 sizes as
+// 1024. Up to 4 starts may be pending on each listener, fewer when the total
+// would pass 32 but never none. Refused and immediately failed starts keep
+// the default retry delay. No listeners give no pending starts.
 struct NativeServerSizing final {
     std::size_t max_sessions{0U};
     std::size_t max_pending_starts{0U};
     NativeAcceptOptions accept;
+    // Outbound TCP connections and UDP sockets that every session's direct
+    // routes hold together, and how many of them may be connecting at once.
+    std::size_t max_route_connections{0U};
+    std::size_t max_pending_route_opens{0U};
 };
 
+inline constexpr std::size_t kNativeServerMaxSessions = 1024U;
+
 inline NativeServerSizing native_server_sizing(
-    std::size_t listener_count) noexcept {
+    std::size_t listener_count, std::size_t descriptor_limit) noexcept {
     constexpr std::size_t kMaxPendingStarts = 32U;
     constexpr std::size_t kPendingStartsPerListener = 4U;
+    constexpr std::size_t kReservedDescriptors = 512U;
+    constexpr std::size_t kMinDescriptors = 1024U;
+    constexpr std::size_t kRouteConnectionsPerSession = 16U;
     NativeServerSizing sizing;
-    sizing.max_sessions = 128U;
+    const std::size_t shared =
+        std::max(descriptor_limit, kMinDescriptors) - kReservedDescriptors;
+    sizing.max_sessions = std::min(kNativeServerMaxSessions, shared / 2U);
+    sizing.max_route_connections =
+        std::min(shared - sizing.max_sessions,
+                 kNativeServerMaxSessions * kRouteConnectionsPerSession);
+    sizing.max_pending_route_opens =
+        std::min(sizing.max_route_connections, kNativeServerMaxSessions);
     sizing.accept.pending_per_listener = std::max<std::size_t>(
         1U, std::min(
                 kPendingStartsPerListener,
@@ -150,6 +171,12 @@ inline NativeServerSizing native_server_sizing(
         sizing.accept.pending_per_listener * listener_count;
     return sizing;
 }
+
+// The process's open-file limit, at most 1048576. raise_open_file_limit lifts
+// the soft limit to the hard one first, as a standalone program does at
+// start. A library leaves the process's limits alone.
+std::size_t open_file_limit() noexcept;
+std::size_t raise_open_file_limit() noexcept;
 
 // The admission replay cache every listener of a server shares. A proof binds
 // the exporter of the TLS connection it arrives on, so it cannot pass on

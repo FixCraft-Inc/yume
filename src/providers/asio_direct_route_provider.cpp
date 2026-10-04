@@ -402,7 +402,13 @@ public:
           target_id_(target_id),
           control_([](void* owner) noexcept {
               static_cast<TcpChannelState*>(owner)->handle_control();
-          }) {}
+          }) {
+        // Reads peek and read synchronously once the socket is ready. This
+        // mode leaves asynchronous operations as they are.
+        boost::system::error_code error;
+        socket_.non_blocking(true, error);
+        nonblocking_ = !error;
+    }
 
     ~TcpChannelState() noexcept override {
         boost::system::error_code ignored;
@@ -486,16 +492,20 @@ public:
     }
 
 private:
+    // A read takes its buffer only once the socket has data, an end or an
+    // error to report, so an idle connection holds no read buffer. Phones
+    // keep many idle connections open, and each held up to
+    // max_tcp_read_bytes while it waited.
     struct PendingRead final {
         PendingRead(std::uint64_t operation_id,
-                    Buffer owned_buffer,
+                    std::size_t requested_bytes,
                     ByteChannel::ReadCompletion owned_completion) noexcept
             : id(operation_id),
-              buffer(std::move(owned_buffer)),
+              max_bytes(requested_bytes),
               completion(std::move(owned_completion)) {}
 
         std::uint64_t id;
-        Buffer buffer;
+        std::size_t max_bytes;
         ByteChannel::ReadCompletion completion;
         CancellationRegistration cancellation;
         bool cancelled{false};
@@ -536,17 +546,8 @@ private:
                 complete_read(std::move(completion), cancelled_status());
                 return;
             }
-            auto allocated = Buffer::allocate(max_bytes, max_read_size());
-            if (!allocated.ok()) {
-                complete_read(std::move(completion),
-                              Status::diagnostic(allocated.status().code(),
-                                                 allocated.status().message()));
-                return;
-            }
             const std::uint64_t id = next_operation_id_++;
-            pending_read_.emplace(
-                id, std::move(allocated).take_value(),
-                std::move(completion));
+            pending_read_.emplace(id, max_bytes, std::move(completion));
             auto registration = cancellation.register_callback(
                 [weak = weak_from_this(), id]() noexcept {
                     if (auto self = weak.lock()) {
@@ -561,14 +562,7 @@ private:
             }
             pending_read_->cancellation =
                 std::move(registration).take_value();
-            const auto read_bytes = pending_read_->buffer.mutable_bytes();
-            socket_.async_read_some(
-                boost::asio::buffer(read_bytes.data(), read_bytes.size()),
-                [self = shared_from_this(), id](
-                    const boost::system::error_code& error,
-                    std::size_t transferred) noexcept {
-                    self->complete_socket_read(id, error, transferred);
-                });
+            read_when_ready(id);
         } catch (const std::bad_alloc&) {
             if (pending_read_) {
                 settle_read(allocation_status(
@@ -586,6 +580,134 @@ private:
                               Status::diagnostic(StatusCode::Internal,
                                                  "TCP read setup failed"));
             }
+        }
+    }
+
+    // Reads at once when the socket has something to report, and otherwise
+    // waits for readability without a buffer. The peek means a read never
+    // depends on whether the reactor reports bytes that arrived before the
+    // wait began. It runs in the handler that starts the wait, on the
+    // context's only runner, so any later arrival reaches the queued wait.
+    void read_when_ready(std::uint64_t id) noexcept {
+        if (!nonblocking_) {
+            settle_read(Status::diagnostic(
+                StatusCode::Internal, "TCP socket could not be made non-blocking"));
+            return;
+        }
+        // A read that filled its buffer most likely left more queued, so a
+        // busy stream reads again without the extra peek.
+        if (last_read_filled_) {
+            read_now(id);
+            return;
+        }
+        try {
+            std::byte probe{};
+            boost::system::error_code error;
+            socket_.receive(boost::asio::buffer(&probe, 1U),
+                            Tcp::socket::message_peek, error);
+            if (error == boost::asio::error::would_block ||
+                error == boost::asio::error::try_again) {
+                socket_.async_wait(
+                    Tcp::socket::wait_read,
+                    [self = shared_from_this(), id](
+                        const boost::system::error_code& waited) noexcept {
+                        self->complete_socket_wait(id, waited);
+                    });
+                return;
+            }
+            // Data, the end of the stream or a socket error: the read reports it.
+            read_now(id);
+        } catch (const std::bad_alloc&) {
+            settle_read(allocation_status("TCP read wait allocation failed"));
+        } catch (...) {
+            settle_read(Status::diagnostic(StatusCode::Internal,
+                                           "TCP read wait failed"));
+        }
+    }
+
+    void complete_socket_wait(std::uint64_t id,
+                              const boost::system::error_code& error) noexcept {
+        if (!pending_read_ || pending_read_->id != id) {
+            return;
+        }
+        if (close_requested_.load(std::memory_order_acquire)) {
+            settle_read(closed_status());
+            return;
+        }
+        if (pending_read_->cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
+            id == cancelled_read_.load(std::memory_order_acquire)) {
+            settle_read(cancelled_status());
+            return;
+        }
+        if (error) {
+            settle_read(socket_operation_status(
+                error, closed_, pending_read_->cancelled, "TCP read failed"));
+            return;
+        }
+        read_now(id);
+    }
+
+    // The socket is non-blocking for synchronous calls, so a wake-up with
+    // nothing to read waits again instead of blocking the context.
+    void read_now(std::uint64_t id) noexcept {
+        try {
+            if (!pending_read_ || pending_read_->id != id) {
+                return;
+            }
+            auto allocated = Buffer::allocate(pending_read_->max_bytes, max_read_size());
+            if (!allocated.ok()) {
+                settle_read(Status::diagnostic(allocated.status().code(),
+                                               allocated.status().message()));
+                return;
+            }
+            Buffer buffer = std::move(allocated).take_value();
+            const auto read_bytes = buffer.mutable_bytes();
+            boost::system::error_code error;
+            const std::size_t transferred = socket_.read_some(
+                boost::asio::buffer(read_bytes.data(), read_bytes.size()), error);
+            if (error == boost::asio::error::would_block ||
+                error == boost::asio::error::try_again) {
+                // The buffer is released as this returns, so the wait holds none.
+                last_read_filled_ = false;
+                socket_.async_wait(
+                    Tcp::socket::wait_read,
+                    [self = shared_from_this(), id](
+                        const boost::system::error_code& waited) noexcept {
+                        self->complete_socket_wait(id, waited);
+                    });
+                return;
+            }
+            if (error) {
+                if (error == boost::asio::error::eof) {
+                    read_eof_ = true;
+                }
+                settle_read(socket_operation_status(
+                    error, closed_, pending_read_->cancelled,
+                    "TCP read failed"));
+                return;
+            }
+            if (transferred > buffer.size()) {
+                settle_read(Status::diagnostic(
+                    StatusCode::Internal,
+                    "TCP read completion exceeded its buffer"));
+                return;
+            }
+            last_read_filled_ = transferred == buffer.size();
+            const Status resized = buffer.resize(transferred);
+            if (!resized.ok()) {
+                settle_read(
+                    Status::diagnostic(resized.code(), resized.message()));
+                return;
+            }
+            ByteChannel::ReadCompletion completion =
+                std::move(pending_read_->completion);
+            pending_read_.reset();
+            complete_read(std::move(completion), std::move(buffer));
+        } catch (const std::bad_alloc&) {
+            settle_read(allocation_status("TCP read allocation failed"));
+        } catch (...) {
+            settle_read(Status::diagnostic(StatusCode::Internal,
+                                           "TCP read failed"));
         }
     }
 
@@ -678,54 +800,6 @@ private:
             (pending_write_ && (pending_write_->id <= through ||
              pending_write_->id == cancelled_write_.load(std::memory_order_acquire))))
             cancel_on_context();
-    }
-
-    void complete_socket_read(std::uint64_t id,
-                              const boost::system::error_code& error,
-                              std::size_t transferred) noexcept {
-        try {
-            if (!pending_read_ || pending_read_->id != id) {
-                return;
-            }
-            if (close_requested_.load(std::memory_order_acquire)) {
-                settle_read(closed_status());
-                return;
-            }
-            if (pending_read_->cancelled || id <= cancel_through_.load(std::memory_order_acquire) ||
-                id == cancelled_read_.load(std::memory_order_acquire)) {
-                settle_read(cancelled_status());
-                return;
-            }
-            if (error) {
-                if (error == boost::asio::error::eof) {
-                    read_eof_ = true;
-                }
-                settle_read(socket_operation_status(
-                    error, closed_, pending_read_->cancelled,
-                    "TCP read failed"));
-                return;
-            }
-            if (transferred > pending_read_->buffer.size()) {
-                settle_read(Status::diagnostic(
-                    StatusCode::Internal,
-                    "TCP read completion exceeded its buffer"));
-                return;
-            }
-            const Status resized = pending_read_->buffer.resize(transferred);
-            if (!resized.ok()) {
-                settle_read(
-                    Status::diagnostic(resized.code(), resized.message()));
-                return;
-            }
-            ByteChannel::ReadCompletion completion =
-                std::move(pending_read_->completion);
-            Buffer buffer = std::move(pending_read_->buffer);
-            pending_read_.reset();
-            complete_read(std::move(completion), std::move(buffer));
-        } catch (...) {
-            settle_read(Status::diagnostic(StatusCode::Internal,
-                                           "TCP read completion failed"));
-        }
     }
 
     void continue_write() noexcept {
@@ -878,6 +952,8 @@ private:
     bool shutdown_after_write_{false};
     bool closed_{false};
     bool registered_{true};
+    bool nonblocking_{false};
+    bool last_read_filled_{false};
 
     // Terminal publication and control admission share this gate. A cancel
     // racing close must enqueue before close returns, never after final drain.

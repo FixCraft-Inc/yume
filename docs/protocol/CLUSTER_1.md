@@ -192,7 +192,7 @@ sessions and the circuits that arrive over the peer's link and leave over
 this server's link to it, counted apart. yumed(8) gives the fields.
 
 <!-- yume-diagram: cluster_links -->
-<img src="../diagrams/cluster_links-vertical.svg" alt="How two cluster servers establish their links" width="602" height="569">
+<img src="../diagrams/cluster_links-vertical.svg" alt="How two cluster servers establish their links" width="505" height="488">
 
 <details>
 <summary>What each part does</summary>

@@ -8,7 +8,7 @@ website. The server authenticates the client, checks what it may reach, makes
 the real connection and sends the answer back the same way.
 
 <!-- yume-diagram: traffic_path -->
-<img src="diagrams/traffic_path-vertical.svg" alt="Where YUME traffic goes" width="472" height="968">
+<img src="diagrams/traffic_path-vertical.svg" alt="Where YUME traffic goes" width="388" height="664">
 
 <details>
 <summary>What each part does</summary>
@@ -29,41 +29,36 @@ the real connection and sends the answer back the same way.
 |  Application          |
 |  any program          |
 +-----------+-----------+
-             \
-              \
-               v SOCKS5, forward or TUN
-   +-----------+-----------+
-   |  yume                 |
-   |  on your device       |
-   +-----------+-----------+
-                \
-                 \
-                  v ==YUME==> TLS 1.3 + HTTP/2
-      +-----------+-----------+                  +----------------+
-      |  Front door           +----------------->|  Cover website |
-      |  checks the proof     |  no valid proof  |  static pages  |
-      +-----------+-----------+                  +----------------+
-                   \
-                    \
-                     v valid proof
-         +-----------+-----------+
-         |  YTP/1 session        |
-         |  authenticated        |
-         +-----------+-----------+
-                      \
-                       \
-                        v OPEN a stream
-            +-----------+-----------+
-            |  Policy check         |
-            |  service, destination |
-            +-----------+-----------+
-                         \
-                          \
-                           v allowed
-               +-----------+-----------+
-               |  Destination          |
-               |  sees yumed's address |
-               +-----------------------+
+            |
+            v SOCKS5, forward or TUN
++-----------+-----------+
+|  yume                 |
+|  on your device       |
++-----------+-----------+
+            |
+            v ==YUME==> TLS 1.3 + HTTP/2
++-----------+-----------+                  +----------------+
+|  Front door           +----------------->|  Cover website |
+|  checks the proof     |  no valid proof  |  static pages  |
++-----------+-----------+                  +----------------+
+            |
+            v valid proof
++-----------+-----------+
+|  YTP/1 session        |
+|  authenticated        |
++-----------+-----------+
+            |
+            v OPEN a stream
++-----------+-----------+
+|  Policy check         |
+|  service, destination |
++-----------+-----------+
+            |
+            v allowed
++-----------+-----------+
+|  Destination          |
+|  sees yumed's address |
++-----------------------+
 ```
 
 </details>
@@ -99,7 +94,7 @@ public keys, so the client knows exactly which server it must reach.
 5. Inside the carrier both sides run YTP/1 authentication, described next.
 
 <!-- yume-diagram: connection_opening -->
-<img src="diagrams/connection_opening-vertical.svg" alt="How a YUME connection opens" width="462" height="825">
+<img src="diagrams/connection_opening-vertical.svg" alt="How a YUME connection opens" width="403" height="707.5">
 
 <details>
 <summary>What each part does</summary>
@@ -179,7 +174,7 @@ of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.
 
 <!-- yume-diagram: record_layers -->
-<img src="diagrams/record_layers-vertical.svg" alt="What wraps your data on the wire" width="451" height="504">
+<img src="diagrams/record_layers-vertical.svg" alt="What wraps your data on the wire" width="378" height="432">
 
 <details>
 <summary>What each part does</summary>
@@ -229,7 +224,7 @@ rotation at its own setting.
 <!-- /yume-diagram -->
 
 <!-- yume-diagram: key_rotation -->
-<img src="diagrams/key_rotation-vertical.svg" alt="How one sending direction changes its root" width="436" height="519">
+<img src="diagrams/key_rotation-vertical.svg" alt="How one sending direction changes its root" width="410" height="431">
 
 <details>
 <summary>What each part does</summary>
@@ -300,7 +295,7 @@ listener and TUN routes stay in place.
 
 Applications can embed the same endpoint through the [C ABI](ABI.md): named
 byte streams, packet channels and routed TCP/UDP, with the application
-deciding where traffic comes from. The ABI is experimental and not yet frozen.
+deciding where traffic comes from.
 
 ## What stays visible
 
@@ -315,10 +310,10 @@ The direct route uses one `yumed` that ends the tunnel. TCP circuits can use
 two or three servers inside one operator's cluster; the exit ends that route,
 and the operator can correlate its hops. Across-operator transit is planned.
 Use TLS inside the tunnel,
-as browsers do, to keep content private from the server. YUME cannot help when
-the server's address itself is blocked, and it makes no claim to be
-undetectable. The [threat model](THREAT_MODEL.md) and
-[stealth transport](STEALTH.md) cover these limits.
+as browsers do, to keep content private from the server. The server's address
+stays visible, so blocking that address blocks its tunnel. The
+[threat model](THREAT_MODEL.md) and [stealth transport](STEALTH.md) go into
+detail.
 
 ## Where to start reading
 

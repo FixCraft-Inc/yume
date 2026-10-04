@@ -16,7 +16,7 @@ fields and requests without breaking an older GUI, and let a newer GUI see
 what an older program lacks.
 
 <!-- yume-diagram: gui_lifecycle -->
-<img src="../diagrams/gui_lifecycle-vertical.svg" alt="The GUI controls a separate client process" width="456" height="709">
+<img src="../diagrams/gui_lifecycle-vertical.svg" alt="The GUI controls a separate client process" width="410" height="644.5">
 
 <details>
 <summary>What each part does</summary>

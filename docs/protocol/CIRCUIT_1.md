@@ -26,7 +26,7 @@ The exit sees each destination and any content not protected by TLS or
 another end-to-end layer.
 
 <!-- yume-diagram: three_hop_circuit -->
-<img src="../diagrams/three_hop_circuit-vertical.svg" alt="A three-hop circuit and what each server knows" width="428" height="870">
+<img src="../diagrams/three_hop_circuit-vertical.svg" alt="A three-hop circuit and what each server knows" width="356" height="616">
 
 <details>
 <summary>What each part does</summary>
@@ -47,34 +47,30 @@ another end-to-end layer.
 |  Client                        |
 |  knows chosen route            |
 +----------------+---------------+
-                  \
-                   \
-                    v ==YUME==> three layers
-   +----------------+---------------+
-   |  Entry                         |
-   |  client and middle, not target |
-   +----------------+---------------+
-                     \
-                      \
-                       v ==YUME==> two layers on link
-      +----------------+---------------+
-      |  Middle                        |
-      |  entry and exit, not client    |
-      +----------------+---------------+
-                        \
-                         \
-                          v ==YUME==> one layer on link
-         +----------------+---------------+
-         |  Exit                          |
-         |  target, not client identity   |
-         +----------------+---------------+
-                           \
-                            \
-                             v ordinary TCP
-            +----------------+---------------+
-            |  Destination                   |
-            |  sees exit address             |
-            +--------------------------------+
+                 |
+                 v ==YUME==> three layers
++----------------+---------------+
+|  Entry                         |
+|  client and middle, not target |
++----------------+---------------+
+                 |
+                 v ==YUME==> two layers on link
++----------------+---------------+
+|  Middle                        |
+|  entry and exit, not client    |
++----------------+---------------+
+                 |
+                 v ==YUME==> one layer on link
++----------------+---------------+
+|  Exit                          |
+|  target, not client identity   |
++----------------+---------------+
+                 |
+                 v ordinary TCP
++----------------+---------------+
+|  Destination                   |
+|  sees exit address             |
++--------------------------------+
 ```
 
 </details>

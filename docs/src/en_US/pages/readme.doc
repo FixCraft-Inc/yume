@@ -11,8 +11,7 @@ connection that looks like a browser visiting an ordinary HTTPS site. The
 client is `yume` and the server is `yumed`. Both speak YTP/1, the YUME
 Transport Protocol.
 
-The product version is `0.3.0-dev1`. There is no stable release yet, and Linux
-x86-64 is the first target.
+The current version is `0.3.0-dev1`. It builds from source on Linux x86-64.
 
 - Website: <https://yume.fixcraft.jp>
 - Source: <https://github.com/FixCraft-Inc/yume>
@@ -32,10 +31,10 @@ server's cover website. Clients authenticate with composite Ed25519 and
 ML-DSA-87 identities. Session keys combine ML-KEM-1024, X25519, a pre-shared
 key and the TLS exporter, and every record uses a one-use AES-256-GCM key.
 
-`yumed` sees which client connected and which destinations it opens. Use TLS
-inside the tunnel when content must stay private from the server operator.
-[Implementation status](docs/IMPLEMENTATION_STATUS.md) lists what is tested
-and what still blocks a release.
+`yumed` ends the tunnel, so it knows which client connected and where its
+traffic goes. HTTPS inside the tunnel keeps page content between the
+application and the site. [Implementation status](docs/IMPLEMENTATION_STATUS.md)
+lists what each part is tested with.
 
 ## Build
 
@@ -81,9 +80,9 @@ CA key off the server.
 @end
 
 The [desktop GUI](docs/GUI.md) builds with Qt 6 when enabled and talks to each
-client only through its control socket. It is not packaged yet. Relay chat and
-file transfer exist as libraries for planned [modules](docs/MODULES.md). Transport v2, the protocol before YTP/1, has been
-removed.
+client only through its control socket. Relay chat and file transfer exist as
+libraries for planned [modules](docs/MODULES.md). Transport v2, the protocol
+before YTP/1, has been removed.
 
 ## Documentation
 

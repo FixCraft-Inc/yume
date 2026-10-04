@@ -33,9 +33,7 @@ service, optionally to a fixed destination. The server enforces each service's
 destination policy.
 
 A Linux packet adapter connects a named service to a managed IP/TUN
-interface and owns its addresses, routes and optional per-link DNS. The client
-is not yet qualified for production. Check **docs/IMPLEMENTATION_STATUS.md**
-before deployment.
+interface and owns its addresses, routes and optional per-link DNS.
 
 With a **circuits** section, every SOCKS5 CONNECT and every forward to a
 destination leaves through a circuit of two or three servers of the entry's

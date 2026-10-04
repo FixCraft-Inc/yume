@@ -616,7 +616,7 @@ it, keeps the transport's own connection outside it with
 the peer address reach the device.
 
 <!-- yume-diagram: device_bridge -->
-<img src="diagrams/device_bridge-vertical.svg" alt="How a phone connection crosses the device bridge" width="400" height="976">
+<img src="diagrams/device_bridge-vertical.svg" alt="How a phone connection crosses the device bridge" width="332" height="668">
 
 <details>
 <summary>What each part does</summary>
@@ -639,48 +639,42 @@ the peer address reach the device.
 |  Phone application            |
 |  TCP to a destination         |
 +---------------+---------------+
-                 \
-                  \
-                   v
-   +---------------+---------------+
-   |  VPN interface                |
-   |  whole IP packets             |
-   +---------------+---------------+
-                    \
-                     \
-                      v
-      +---------------+---------------+
-      |  Rewrite and reinject         |
-      |  peer port to local listener  |
-      +---------------+---------------+
-                       \
-                        \
-                         v rewritten TCP
-         +---------------+---------------+
-         |  Host TCP listener            |
-         |  kernel supplies stream bytes |
-         +---------------+---------------+
-                          \
-                           \
-                            v stream bytes
-            +---------------+---------------+
-            |  libyume stream OPEN          |
-            |  original destination         |
-            +---------------+---------------+
-                             \
-                              \
-                               v ==YUME==> YTP/1 records
-               +---------------+---------------+
-               |  yumed                        |
-               |  grant, policy, outbound TCP  |
-               +---------------+---------------+
-                                \
-                                 \
-                                  v
-                  +---------------+---------------+
-                  |  Destination                  |
-                  |  reply returns through bridge |
-                  +-------------------------------+
+                |
+                v
++---------------+---------------+
+|  VPN interface                |
+|  whole IP packets             |
++---------------+---------------+
+                |
+                v
++---------------+---------------+
+|  Rewrite and reinject         |
+|  peer port to local listener  |
++---------------+---------------+
+                |
+                v rewritten TCP
++---------------+---------------+
+|  Host TCP listener            |
+|  kernel supplies stream bytes |
++---------------+---------------+
+                |
+                v stream bytes
++---------------+---------------+
+|  libyume stream OPEN          |
+|  original destination         |
++---------------+---------------+
+                |
+                v ==YUME==> YTP/1 records
++---------------+---------------+
+|  yumed                        |
+|  grant, policy, outbound TCP  |
++---------------+---------------+
+                |
+                v
++---------------+---------------+
+|  Destination                  |
+|  reply returns through bridge |
++-------------------------------+
 ```
 
 </details>

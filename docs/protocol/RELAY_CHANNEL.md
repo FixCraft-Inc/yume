@@ -19,7 +19,7 @@ new protocol version and new labels, with every writer, reader and test vector
 changed together.
 
 <!-- yume-diagram: relay_channel -->
-<img src="../diagrams/relay_channel-vertical.svg" alt="The relay library protects a channel between users" width="592" height="581">
+<img src="../diagrams/relay_channel-vertical.svg" alt="The relay library protects a channel between users" width="503" height="517">
 
 <details>
 <summary>What each part does</summary>

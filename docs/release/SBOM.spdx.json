@@ -10,7 +10,7 @@
   "documentDescribes": [
     "SPDXRef-Package-YUME"
   ],
-  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/90b0b46d479551c1db7783acc87b30a49b2a37a0144e8e006e769203204b8877",
+  "documentNamespace": "https://github.com/FixCraft-Inc/yume/sbom/b744c879608038121b4e42bb508589aa2a959daf74d3e29ca46cf6300c310bc0",
   "name": "YUME source dependency SBOM",
   "packages": [
     {
@@ -28,7 +28,7 @@
       "externalRefs": [
         {
           "referenceCategory": "PACKAGE-MANAGER",
-          "referenceLocator": "5b9cb44f01b7c5ce489ee104885fbb2ce5892ecf",
+          "referenceLocator": "52523d71915d439d7c9fd3a5b00ad64e08c0d78f",
           "referenceType": "git"
         }
       ],

@@ -93,7 +93,7 @@ while the module is down, and one module receives at most 1024 connections at
 once.
 
 <!-- yume-diagram: module_bridge -->
-<img src="diagrams/module_bridge-vertical.svg" alt="An authorized stream reaches a module program" width="400" height="568">
+<img src="diagrams/module_bridge-vertical.svg" alt="An authorized stream reaches a module program" width="332" height="392">
 
 <details>
 <summary>What each part does</summary>
@@ -113,27 +113,24 @@ once.
 |  Client                  |
 |  OPEN named service      |
 +-------------+------------+
-               \
-                \
-                 v ==YUME==> service OPEN and DATA
-   +-------------+------------+
-   |  yumed                   |
-   |  identity grant first    |
-   +-------------+------------+
-                  \
-                   \
-                    v authorized stream
-      +-------------+------------+
-      |  Module bridge           |
-      |  private UNIX connection |
-      +-------------+------------+
-                     \
-                      \
-                       v header, then bytes
-         +-------------+------------+
-         |  Module program          |
-         |  accepts on descriptor 3 |
-         +--------------------------+
+              |
+              v ==YUME==> service OPEN and DATA
++-------------+------------+
+|  yumed                   |
+|  identity grant first    |
++-------------+------------+
+              |
+              v authorized stream
++-------------+------------+
+|  Module bridge           |
+|  private UNIX connection |
++-------------+------------+
+              |
+              v header, then bytes
++-------------+------------+
+|  Module program          |
+|  accepts on descriptor 3 |
++--------------------------+
 ```
 
 </details>

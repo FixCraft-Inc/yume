@@ -32,11 +32,8 @@ restarts it with backoff when it exits. See **docs/MODULES.md**.
 
 With a **cluster** section the daemon is a member of its operator's
 cluster and keeps an authenticated link to every other member it holds
-secrets for. The links carry no traffic yet.
-
-The daemon is not yet qualified for production, and routes over several
-servers are not yet available. Check **docs/IMPLEMENTATION_STATUS.md** before
-deployment.
+secrets for. The links carry the circuits that clients build through two or
+three members. **docs/OPERATIONS.md** covers deployment.
 
 ## OPTIONS
 
@@ -87,7 +84,8 @@ saved one, after a restart too, and a state file of another cluster.
 Once its listeners accept, the daemon keeps one outbound link to each peer, a
 YTP/1 session like a client's that offers no service, and reconnects with
 backoff when it ends. Each peer's own link arrives like a client's session:
-the peer may hold two at once and may open no stream. When the list's
+the peer may hold two at once and may open only **yume.circuit** streams,
+which carry circuits (**docs/protocol/CIRCUIT_1.md**). When the list's
 **not_after** passes, the daemon closes its links and ends the peers'
 sessions until a reload loads a newer list.
 

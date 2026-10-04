@@ -1,4 +1,4 @@
-<svg class="dgm dgm-vertical" data-dgm="key_rotation-vertical" width="436" height="519" viewBox="0 0 436 519" role="img" aria-labelledby="dgm-key_rotation-vertical-title dgm-key_rotation-vertical-desc" style="--dgm-dur:8.88s" xmlns="http://www.w3.org/2000/svg">
+<svg class="dgm dgm-vertical" data-dgm="key_rotation-vertical" width="410" height="431" viewBox="0 0 410 431" role="img" aria-labelledby="dgm-key_rotation-vertical-title dgm-key_rotation-vertical-desc" style="--dgm-dur:8.66s" xmlns="http://www.w3.org/2000/svg">
 <title id="dgm-key_rotation-vertical-title">How one sending direction changes its root</title>
 <desc id="dgm-key_rotation-vertical-desc">The sender begins before its epoch fills, uses the old root within its limits until the acknowledgement verifies, then sends with the new root. The other direction rotates independently.</desc>
 <style>
@@ -78,35 +78,20 @@
 
 .dgm-plate {
   fill: var(--dgm-plate);
-  stroke: var(--dgm-rule);
-  stroke-width: 1;
   opacity: var(--dgm-plate-opacity, 1);
 }
 
-/* The shadow is its own shape behind the card, never a filter on the card
-   itself. A renderer that cannot resolve the filter drops only the shadow;
-   SVG says a reference to a missing filter hides the element that names it,
-   which would take the card with it. */
-/* The halo under a card and the chip behind its glyph are the presence
-   channel: they say the packet is in this node right now. The card's border
-   is left alone, because that already says whether the node is YUME software
-   and one mark cannot carry two meanings. */
-/* The glow and the chip light up with different tokens because they are
-   doing different things. A glow is read as colour, not as brightness: on a
-   near-white page nothing can be brighter than the page, so it uses accent,
-   which stays a mid pink in both themes. Accent-strong there would be a dark
-   bloom, which reads as weight rather than attention. */
-.dgm-lift {
-  fill: var(--dgm-rest);
-  opacity: 0.85;
-  --dgm-rest: var(--dgm-rule);
-  --dgm-live: var(--dgm-tone, var(--dgm-accent));
-}
-
+/* A card is lit while the packet is inside it: its fill takes the soft tint
+   of its role. The border takes no part, because it already says whether the
+   node is YUME software and one mark cannot carry two meanings. */
 .dgm-card {
-  fill: var(--dgm-card);
-  stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  fill: var(--dgm-rest);
+  stroke: var(--dgm-rest-line);
+  stroke-width: 1.25;
+  --dgm-rest: var(--dgm-card);
+  --dgm-live: var(--dgm-tone-soft, var(--dgm-soft));
+  --dgm-rest-line: var(--dgm-rule);
+  --dgm-live-line: var(--dgm-rule);
 }
 
 /* A card YUME itself runs is outlined in its role colour, and everything the
@@ -114,56 +99,23 @@
    the path this project is responsible for. It is a software boundary, not a
    trust claim: yumed still terminates the tunnel and sees what it forwards. */
 .dgm-node-owned .dgm-card {
-  stroke: var(--dgm-tone, var(--dgm-accent));
-  stroke-width: 2;
-}
-
-/* The chip carries the role on every card, owned or not. It is a filled shape
-   with the glyph knocked out of it, so when lit it takes the role's strong
-   tone, which contrasts with the card in both themes. */
-.dgm-chip {
-  fill: var(--dgm-rest);
-  --dgm-rest: var(--dgm-tone-soft, var(--dgm-rule));
-  --dgm-live: var(--dgm-tone-strong, var(--dgm-strong));
-}
-
-/* The glyph goes with its chip. Leaving it on the accent while the chip fills
-   with the accent puts light on light, and the icon smears instead of
-   reading, so it is knocked out to the card it sits on. */
-.dgm-glyph {
-  --dgm-rest: none;
-  --dgm-live: none;
-  --dgm-rest-line: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live-line: var(--dgm-card);
-}
-
-.dgm-glyph-fill {
-  --dgm-rest: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live: var(--dgm-card);
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
+  stroke-width: 1.75;
+  --dgm-rest-line: var(--dgm-tone, var(--dgm-accent));
+  --dgm-live-line: var(--dgm-tone, var(--dgm-accent));
 }
 
 .dgm-ring,
-.dgm-lift,
-.dgm-chip,
-.dgm-glyph,
-.dgm-glyph-fill {
+.dgm-card {
   animation-duration: var(--dgm-dur, 6s);
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
 
-.dgm-lift,
-.dgm-chip {
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
-}
-
+/* The glyph names what kind of thing a node is, in its role's strong ink. */
 .dgm-glyph {
   fill: none;
   stroke: var(--dgm-tone-strong, var(--dgm-muted));
-  stroke-width: 1.5;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -176,16 +128,16 @@
 .dgm-title {
   fill: var(--dgm-ink);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .dgm-sub,
 .dgm-edge-label {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
-  font-size: 11px;
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
+  font-size: 11.5px;
 }
 
 .dgm-centred {
@@ -200,19 +152,19 @@
    and carries the name it gives them. */
 .dgm-group {
   fill: var(--dgm-rule);
-  fill-opacity: 0.22;
+  fill-opacity: 0.14;
   stroke: var(--dgm-muted);
   stroke-opacity: 0.5;
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 5;
   stroke-linecap: round;
 }
 
 .dgm-group-title {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.02em;
 }
 
 /* An ordinary hop is quiet plumbing. Colour is kept for the protected hop,
@@ -221,8 +173,8 @@
 .dgm-link {
   fill: none;
   stroke: var(--dgm-muted);
-  stroke-opacity: 0.55;
-  stroke-width: 2.5;
+  stroke-opacity: 0.6;
+  stroke-width: 1.5;
   stroke-linecap: round;
 }
 
@@ -236,38 +188,39 @@
   stroke-dasharray: 6 6;
 }
 
-/* The protected hop is drawn as a conduit: a soft bore, two walls, and the
-   carrier moving between them. Each is one stroked line, so the treatment
-   holds at whatever angle the hop runs. This is the ==YUME==> of the ASCII. */
+/* The protected hop is drawn as a slim tube: a soft bore, two hairline walls,
+   and the carrier moving between them. Each is one stroked line, so the
+   treatment holds at whatever angle the hop runs. This is the ==YUME==> of
+   the ASCII. */
 .dgm-conduit {
   fill: none;
   stroke: var(--dgm-soft);
-  stroke-width: 20;
+  stroke-width: 10;
   stroke-linecap: round;
 }
 
 .dgm-conduit-wall {
   fill: none;
   stroke: var(--dgm-accent);
-  stroke-width: 2;
+  stroke-width: 1.25;
   stroke-linecap: round;
 }
 
 .dgm-conduit-flow {
   fill: none;
   stroke: var(--dgm-strong);
-  stroke-width: 4;
+  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: 12 26;
-  animation: dgm-flow 2.4s linear infinite;
+  stroke-dasharray: 7 15;
+  animation: dgm-flow 1.6s linear infinite;
 }
 
 /* The stroke rounds the triangle's corners, which is the same softening the
-   cards and the chips carry. */
+   cards carry. */
 .dgm-arrow {
   fill: var(--dgm-muted);
   stroke: var(--dgm-muted);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linejoin: round;
 }
 
@@ -340,7 +293,7 @@
 .dgm-ring {
   fill: var(--dgm-rest);
   stroke: var(--dgm-rest-line);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   --dgm-rest: var(--dgm-tone-soft);
   --dgm-live: var(--dgm-tone);
   --dgm-rest-line: var(--dgm-tone);
@@ -350,7 +303,7 @@
 .dgm-ring-title {
   fill: var(--dgm-tone-strong);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -360,7 +313,7 @@
 .dgm-lifeline {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 4 6;
   stroke-linecap: round;
 }
@@ -368,7 +321,7 @@
 .dgm-leader {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 4;
   stroke-linecap: round;
 }
@@ -379,7 +332,7 @@
 
 .dgm-packet-glow {
   fill: var(--dgm-accent);
-  opacity: 0.38;
+  opacity: 0.3;
 }
 
 @keyframes dgm-travel {
@@ -388,7 +341,7 @@
 }
 
 @keyframes dgm-flow {
-  to { stroke-dashoffset: -38; }
+  to { stroke-dashoffset: -22; }
 }
 
 /* The packets are hidden by the markup and revealed only where the property
@@ -405,62 +358,62 @@
   @keyframes dgm-key_rotation-vertical-message-0 {
     0%, 0% { offset-distance: 0%; fill-opacity: 0; }
     0.1% { fill-opacity: 1; }
-    4.83% { offset-distance: 100%; fill-opacity: 1; }
-    4.93%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    4.95% { offset-distance: 100%; fill-opacity: 1; }
+    5.05%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-0 { animation-name: dgm-key_rotation-vertical-message-0; }
 
   @keyframes dgm-key_rotation-vertical-message-1 {
-    0%, 8.77% { offset-distance: 0%; fill-opacity: 0; }
-    8.87% { fill-opacity: 1; }
-    26.46% { offset-distance: 100%; fill-opacity: 1; }
-    26.56%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 8.99% { offset-distance: 0%; fill-opacity: 0; }
+    9.09% { fill-opacity: 1; }
+    26.31% { offset-distance: 100%; fill-opacity: 1; }
+    26.41%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-1 { animation-name: dgm-key_rotation-vertical-message-1; }
 
   @keyframes dgm-key_rotation-vertical-message-2 {
-    0%, 30.41% { offset-distance: 0%; fill-opacity: 0; }
-    30.51% { fill-opacity: 1; }
-    35.23% { offset-distance: 100%; fill-opacity: 1; }
-    35.33%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 30.35% { offset-distance: 0%; fill-opacity: 0; }
+    30.45% { fill-opacity: 1; }
+    35.3% { offset-distance: 100%; fill-opacity: 1; }
+    35.4%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-2 { animation-name: dgm-key_rotation-vertical-message-2; }
 
   @keyframes dgm-key_rotation-vertical-message-3 {
-    0%, 39.17% { offset-distance: 0%; fill-opacity: 0; }
-    39.27% { fill-opacity: 1; }
-    56.87% { offset-distance: 100%; fill-opacity: 1; }
-    56.97%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 39.34% { offset-distance: 0%; fill-opacity: 0; }
+    39.44% { fill-opacity: 1; }
+    56.66% { offset-distance: 100%; fill-opacity: 1; }
+    56.76%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-3 { animation-name: dgm-key_rotation-vertical-message-3; }
 
   @keyframes dgm-key_rotation-vertical-message-4 {
-    0%, 60.81% { offset-distance: 0%; fill-opacity: 0; }
-    60.91% { fill-opacity: 1; }
-    65.64% { offset-distance: 100%; fill-opacity: 1; }
-    65.74%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 60.71% { offset-distance: 0%; fill-opacity: 0; }
+    60.81% { fill-opacity: 1; }
+    65.65% { offset-distance: 100%; fill-opacity: 1; }
+    65.75%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-4 { animation-name: dgm-key_rotation-vertical-message-4; }
 
   @keyframes dgm-key_rotation-vertical-message-5 {
-    0%, 69.58% { offset-distance: 0%; fill-opacity: 0; }
-    69.68% { fill-opacity: 1; }
-    87.27% { offset-distance: 100%; fill-opacity: 1; }
-    87.37%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 69.7% { offset-distance: 0%; fill-opacity: 0; }
+    69.8% { fill-opacity: 1; }
+    87.02% { offset-distance: 100%; fill-opacity: 1; }
+    87.12%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-5 { animation-name: dgm-key_rotation-vertical-message-5; }
 
   @keyframes dgm-key_rotation-vertical-message-6 {
-    0%, 91.22% { offset-distance: 0%; fill-opacity: 0; }
-    91.32% { fill-opacity: 1; }
-    96.04% { offset-distance: 100%; fill-opacity: 1; }
-    96.14%, 100% { offset-distance: 100%; fill-opacity: 0; }
+    0%, 91.06% { offset-distance: 0%; fill-opacity: 0; }
+    91.16% { fill-opacity: 1; }
+    96.01% { offset-distance: 100%; fill-opacity: 1; }
+    96.11%, 100% { offset-distance: 100%; fill-opacity: 0; }
   }
 
   [data-dgm="key_rotation-vertical"] .dgm-message-6 { animation-name: dgm-key_rotation-vertical-message-6; }
@@ -473,59 +426,55 @@
 
   .dgm-conduit-flow,
   .dgm-ring,
-  .dgm-lift,
-  .dgm-chip,
-  .dgm-glyph,
-  .dgm-glyph-fill {
+  .dgm-card {
     animation: none;
   }
 }
 </style>
-<defs><filter id="dgm-key_rotation-vertical-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
-<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="435" height="518" rx="18"/>
+<rect class="dgm-plate" fill="#fff9fd" x="0" y="0" width="410" height="431" rx="16"/>
 <g class="dgm-lifelines">
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="4 6" stroke-linecap="round" d="M104 129L104 499"/>
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="4 6" stroke-linecap="round" d="M332 129L332 499"/>
+<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M96 72L96 415"/>
+<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M314 72L314 415"/>
 </g>
 <g class="dgm-links">
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 149L128 149L128 169L119 169"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 163L119 175L108 169Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="144" y="163">fresh hybrid material</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M118 221L307 221"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 211L307 211"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 231L307 231"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M118 221L307 221"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M317 227L317 215L328 221Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="218" y="202">REKEY_INIT, old-root seal</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M328 251L308 251L308 271L317 271"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M317 265L317 277L328 271Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="end" x="292" y="265">check INIT, derive root</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M318 323L129 323"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M318 333L129 333"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M318 313L129 313"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M318 323L129 323"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M119 317L119 329L108 323Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="218" y="304">REKEY_ACK, confirm new root</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M108 353L128 353L128 373L119 373"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M119 367L119 379L108 373Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="144" y="367">verify ACK, commit root</text>
-<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="20" stroke-linecap="round" d="M118 425L307 425"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 415L307 415"/>
-<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="2" stroke-linecap="round" d="M118 435L307 435"/>
-<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="4" stroke-linecap="round" stroke-dasharray="12 26" d="M118 425L307 425"/>
-<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="2" stroke-linejoin="round" d="M317 431L317 419L328 425Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="218" y="406">first new-epoch record</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.55" stroke-width="2.5" stroke-linecap="round" d="M328 455L308 455L308 475L317 475"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="2" stroke-linejoin="round" d="M317 469L317 481L328 475Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="end" x="292" y="469">open record, wipe old root</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M100 92L120 92L120 112L108 112"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M108 107.5L108 116.5L100 112Z"/>
+<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="136" y="106">fresh hybrid material</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M105 160L297 160"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M105 155L297 155"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M105 165L297 165"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M105 160L297 160"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M302 164.5L302 155.5L310 160Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="146">REKEY_INIT, old-root seal</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M310 185L290 185L290 205L302 205"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M302 200.5L302 209.5L310 205Z"/>
+<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="274" y="199">check INIT, derive root</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M305 253L113 253"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M305 258L113 258"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M305 248L113 248"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M305 253L113 253"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M108 248.5L108 257.5L100 253Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="239">REKEY_ACK, confirm new root</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M100 278L120 278L120 298L108 298"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M108 293.5L108 302.5L100 298Z"/>
+<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="136" y="292">verify ACK, commit root</text>
+<path class="dgm-conduit" fill="none" stroke="#fad4ef" stroke-width="10" stroke-linecap="round" d="M105 346L297 346"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M105 341L297 341"/>
+<path class="dgm-conduit-wall" fill="none" stroke="#e899d3" stroke-width="1.25" stroke-linecap="round" d="M105 351L297 351"/>
+<path class="dgm-conduit-flow" fill="none" stroke="#9c4088" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="7 15" d="M105 346L297 346"/>
+<path class="dgm-arrow dgm-conduit-head" fill="#9c4088" stroke="#9c4088" stroke-width="1.5" stroke-linejoin="round" d="M302 350.5L302 341.5L310 346Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="332">first new-epoch record</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M310 371L290 371L290 391L302 391"/>
+<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M302 386.5L302 395.5L310 391Z"/>
+<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="274" y="385">open record, wipe old root</text>
 </g>
-<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 149L128 149L128 169L108 169')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 149L128 149L128 169L108 169')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 221L328 221')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 221L328 221')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M328 251L308 251L308 271L328 271')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M328 251L308 251L308 271L328 271')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M328 323L108 323')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M328 323L108 323')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 353L128 353L128 373L108 373')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 353L128 353L128 373L108 373')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M108 425L328 425')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M108 425L328 425')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.38" cx="0" cy="0" r="9" style="--dgm-path:path('M328 455L308 455L308 475L328 475')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="4" style="--dgm-path:path('M328 455L308 455L308 475L328 475')"/></g>
+<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M100 92L120 92L120 112L100 112')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M100 92L120 92L120 112L100 112')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M100 160L310 160')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M100 160L310 160')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M310 185L290 185L290 205L310 205')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M310 185L290 185L290 205L310 205')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M310 253L100 253')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M310 253L100 253')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M100 278L120 278L120 298L100 298')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M100 278L120 278L120 298L100 298')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M100 346L310 346')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M100 346L310 346')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M310 371L290 371L290 391L310 391')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M310 371L290 371L290 391L310 391')"/></g>
 <g class="dgm-nodes">
-<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="sender"><rect class="dgm-lift" fill="#e3d2dd" opacity="0.85" x="17" y="20" width="174" height="110" rx="19" filter="url(#dgm-key_rotation-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="2" x="20" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip" fill="#fad4ef" x="88" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="92" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="104" y="86">Sender</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="104" y="102">sending direction</text>
+<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="sender"><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="1.75" x="16" y="16" width="160" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="29" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="56" y="38">Sender</text>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="56" y="54">sending direction</text>
 </g>
-<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="receiver"><rect class="dgm-lift" fill="#e3d2dd" opacity="0.85" x="245" y="20" width="174" height="110" rx="19" filter="url(#dgm-key_rotation-horizontal-lift)"/><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="2" x="248" y="20" width="168" height="104" rx="16"/><rect class="dgm-chip" fill="#ebe5ff" x="316" y="34" width="32" height="32" rx="11"/><svg class="dgm-glyph" fill="none" stroke="#674ea1" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" x="320" y="38" width="24" height="24" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/></svg><text class="dgm-title dgm-centred" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="14px" font-weight="600" letter-spacing="0.02em" text-anchor="middle" x="332" y="86">Receiver</text>
-<text class="dgm-sub dgm-centred" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" text-anchor="middle" x="332" y="102">receive direction</text>
+<g class="dgm-node dgm-node-server dgm-role-server dgm-node-owned" data-node="receiver"><rect class="dgm-card" fill="#fffcfe" stroke="#b5a4ea" stroke-width="1.75" x="234" y="16" width="160" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#674ea1" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="247" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="7" rx="1.8"/><rect x="3.5" y="13.5" width="17" height="7" rx="1.8"/><circle cx="7" cy="7" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/><circle cx="7" cy="17" r="1" class="dgm-glyph-fill" fill="#674ea1" stroke="none"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="274" y="38">Receiver</text>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="274" y="54">receive direction</text>
 </g>
 </g>
 </svg>

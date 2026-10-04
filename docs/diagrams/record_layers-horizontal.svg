@@ -1,4 +1,4 @@
-<svg class="dgm dgm-horizontal" data-dgm="record_layers-horizontal" width="609" height="382" viewBox="0 0 609 382" role="img" aria-labelledby="dgm-record_layers-horizontal-title dgm-record_layers-horizontal-desc" style="--dgm-dur:8.8s" xmlns="http://www.w3.org/2000/svg">
+<svg class="dgm dgm-horizontal" data-dgm="record_layers-horizontal" width="532" height="324" viewBox="0 0 532 324" role="img" aria-labelledby="dgm-record_layers-horizontal-title dgm-record_layers-horizontal-desc" style="--dgm-dur:8.8s" xmlns="http://www.w3.org/2000/svg">
 <title id="dgm-record_layers-horizontal-title">What wraps your data on the wire</title>
 <desc id="dgm-record_layers-horizontal-desc">After authentication each YTP/1 frame is sealed, framed for the carrier and sent as WebSocket data on an HTTP/2 stream inside TLS 1.3.</desc>
 <style>
@@ -78,35 +78,20 @@
 
 .dgm-plate {
   fill: var(--dgm-plate);
-  stroke: var(--dgm-rule);
-  stroke-width: 1;
   opacity: var(--dgm-plate-opacity, 1);
 }
 
-/* The shadow is its own shape behind the card, never a filter on the card
-   itself. A renderer that cannot resolve the filter drops only the shadow;
-   SVG says a reference to a missing filter hides the element that names it,
-   which would take the card with it. */
-/* The halo under a card and the chip behind its glyph are the presence
-   channel: they say the packet is in this node right now. The card's border
-   is left alone, because that already says whether the node is YUME software
-   and one mark cannot carry two meanings. */
-/* The glow and the chip light up with different tokens because they are
-   doing different things. A glow is read as colour, not as brightness: on a
-   near-white page nothing can be brighter than the page, so it uses accent,
-   which stays a mid pink in both themes. Accent-strong there would be a dark
-   bloom, which reads as weight rather than attention. */
-.dgm-lift {
-  fill: var(--dgm-rest);
-  opacity: 0.85;
-  --dgm-rest: var(--dgm-rule);
-  --dgm-live: var(--dgm-tone, var(--dgm-accent));
-}
-
+/* A card is lit while the packet is inside it: its fill takes the soft tint
+   of its role. The border takes no part, because it already says whether the
+   node is YUME software and one mark cannot carry two meanings. */
 .dgm-card {
-  fill: var(--dgm-card);
-  stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  fill: var(--dgm-rest);
+  stroke: var(--dgm-rest-line);
+  stroke-width: 1.25;
+  --dgm-rest: var(--dgm-card);
+  --dgm-live: var(--dgm-tone-soft, var(--dgm-soft));
+  --dgm-rest-line: var(--dgm-rule);
+  --dgm-live-line: var(--dgm-rule);
 }
 
 /* A card YUME itself runs is outlined in its role colour, and everything the
@@ -114,56 +99,23 @@
    the path this project is responsible for. It is a software boundary, not a
    trust claim: yumed still terminates the tunnel and sees what it forwards. */
 .dgm-node-owned .dgm-card {
-  stroke: var(--dgm-tone, var(--dgm-accent));
-  stroke-width: 2;
-}
-
-/* The chip carries the role on every card, owned or not. It is a filled shape
-   with the glyph knocked out of it, so when lit it takes the role's strong
-   tone, which contrasts with the card in both themes. */
-.dgm-chip {
-  fill: var(--dgm-rest);
-  --dgm-rest: var(--dgm-tone-soft, var(--dgm-rule));
-  --dgm-live: var(--dgm-tone-strong, var(--dgm-strong));
-}
-
-/* The glyph goes with its chip. Leaving it on the accent while the chip fills
-   with the accent puts light on light, and the icon smears instead of
-   reading, so it is knocked out to the card it sits on. */
-.dgm-glyph {
-  --dgm-rest: none;
-  --dgm-live: none;
-  --dgm-rest-line: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live-line: var(--dgm-card);
-}
-
-.dgm-glyph-fill {
-  --dgm-rest: var(--dgm-tone-strong, var(--dgm-muted));
-  --dgm-live: var(--dgm-card);
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
+  stroke-width: 1.75;
+  --dgm-rest-line: var(--dgm-tone, var(--dgm-accent));
+  --dgm-live-line: var(--dgm-tone, var(--dgm-accent));
 }
 
 .dgm-ring,
-.dgm-lift,
-.dgm-chip,
-.dgm-glyph,
-.dgm-glyph-fill {
+.dgm-card {
   animation-duration: var(--dgm-dur, 6s);
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
 
-.dgm-lift,
-.dgm-chip {
-  --dgm-rest-line: none;
-  --dgm-live-line: none;
-}
-
+/* The glyph names what kind of thing a node is, in its role's strong ink. */
 .dgm-glyph {
   fill: none;
   stroke: var(--dgm-tone-strong, var(--dgm-muted));
-  stroke-width: 1.5;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -176,16 +128,16 @@
 .dgm-title {
   fill: var(--dgm-ink);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
 .dgm-sub,
 .dgm-edge-label {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
-  font-size: 11px;
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
+  font-size: 11.5px;
 }
 
 .dgm-centred {
@@ -200,19 +152,19 @@
    and carries the name it gives them. */
 .dgm-group {
   fill: var(--dgm-rule);
-  fill-opacity: 0.22;
+  fill-opacity: 0.14;
   stroke: var(--dgm-muted);
   stroke-opacity: 0.5;
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 5;
   stroke-linecap: round;
 }
 
 .dgm-group-title {
   fill: var(--dgm-muted);
-  font-family: var(--font-mono, 'IBM Plex Mono', ui-monospace, monospace);
+  font-family: var(--font-body, 'Nunito Sans', 'Avenir Next', ui-sans-serif, sans-serif);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.02em;
 }
 
 /* An ordinary hop is quiet plumbing. Colour is kept for the protected hop,
@@ -221,8 +173,8 @@
 .dgm-link {
   fill: none;
   stroke: var(--dgm-muted);
-  stroke-opacity: 0.55;
-  stroke-width: 2.5;
+  stroke-opacity: 0.6;
+  stroke-width: 1.5;
   stroke-linecap: round;
 }
 
@@ -236,38 +188,39 @@
   stroke-dasharray: 6 6;
 }
 
-/* The protected hop is drawn as a conduit: a soft bore, two walls, and the
-   carrier moving between them. Each is one stroked line, so the treatment
-   holds at whatever angle the hop runs. This is the ==YUME==> of the ASCII. */
+/* The protected hop is drawn as a slim tube: a soft bore, two hairline walls,
+   and the carrier moving between them. Each is one stroked line, so the
+   treatment holds at whatever angle the hop runs. This is the ==YUME==> of
+   the ASCII. */
 .dgm-conduit {
   fill: none;
   stroke: var(--dgm-soft);
-  stroke-width: 20;
+  stroke-width: 10;
   stroke-linecap: round;
 }
 
 .dgm-conduit-wall {
   fill: none;
   stroke: var(--dgm-accent);
-  stroke-width: 2;
+  stroke-width: 1.25;
   stroke-linecap: round;
 }
 
 .dgm-conduit-flow {
   fill: none;
   stroke: var(--dgm-strong);
-  stroke-width: 4;
+  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: 12 26;
-  animation: dgm-flow 2.4s linear infinite;
+  stroke-dasharray: 7 15;
+  animation: dgm-flow 1.6s linear infinite;
 }
 
 /* The stroke rounds the triangle's corners, which is the same softening the
-   cards and the chips carry. */
+   cards carry. */
 .dgm-arrow {
   fill: var(--dgm-muted);
   stroke: var(--dgm-muted);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linejoin: round;
 }
 
@@ -340,7 +293,7 @@
 .dgm-ring {
   fill: var(--dgm-rest);
   stroke: var(--dgm-rest-line);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   --dgm-rest: var(--dgm-tone-soft);
   --dgm-live: var(--dgm-tone);
   --dgm-rest-line: var(--dgm-tone);
@@ -350,7 +303,7 @@
 .dgm-ring-title {
   fill: var(--dgm-tone-strong);
   font-family: var(--font-display, 'Quicksand', 'Arial Rounded MT Bold', ui-rounded, sans-serif);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -360,7 +313,7 @@
 .dgm-lifeline {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 4 6;
   stroke-linecap: round;
 }
@@ -368,7 +321,7 @@
 .dgm-leader {
   fill: none;
   stroke: var(--dgm-rule);
-  stroke-width: 1.5;
+  stroke-width: 1.25;
   stroke-dasharray: 1 4;
   stroke-linecap: round;
 }
@@ -379,7 +332,7 @@
 
 .dgm-packet-glow {
   fill: var(--dgm-accent);
-  opacity: 0.38;
+  opacity: 0.3;
 }
 
 @keyframes dgm-travel {
@@ -388,7 +341,7 @@
 }
 
 @keyframes dgm-flow {
-  to { stroke-dashoffset: -38; }
+  to { stroke-dashoffset: -22; }
 }
 
 /* The packets are hidden by the markup and revealed only where the property
@@ -474,64 +427,60 @@
 
   .dgm-conduit-flow,
   .dgm-ring,
-  .dgm-lift,
-  .dgm-chip,
-  .dgm-glyph,
-  .dgm-glyph-fill {
+  .dgm-card {
     animation: none;
   }
 }
 </style>
-<defs><filter id="dgm-record_layers-horizontal-lift" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5"/></filter></defs>
-<rect class="dgm-plate" fill="#fff9fd" stroke="#e3d2dd" stroke-width="1" x="0.5" y="0.5" width="608" height="381" rx="18"/>
+<rect class="dgm-plate" fill="#fff9fd" x="0" y="0" width="532" height="324" rx="16"/>
 <g class="dgm-layers">
 <g class="dgm-layer dgm-role-outside" data-node="tcp">
-<rect class="dgm-ring dgm-here-7" stroke-width="1.5" fill="#dbf4e8" stroke="#82c9aa" x="20" y="20" width="374" height="342" rx="36"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#25694f" x="34" y="40">TCP</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 36L422 36"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="40">to the server&#x27;s port</text>
+<rect class="dgm-ring dgm-here-7" stroke-width="1.25" fill="#dbf4e8" stroke="#82c9aa" x="16" y="16" width="318" height="292" rx="36"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#25694f" x="30" y="36">TCP</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 32L358 32"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="36">to the server&#x27;s port</text>
 </g>
 <g class="dgm-layer dgm-role-disguise" data-node="tls">
-<rect class="dgm-ring dgm-here-6" stroke-width="1.5" fill="#ffe8d2" stroke="#f1ad71" x="36" y="50" width="342" height="300" rx="36"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="50" y="70">TLS 1.3</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 66L422 66"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="70">Chrome ClientHello</text>
+<rect class="dgm-ring dgm-here-6" stroke-width="1.25" fill="#ffe8d2" stroke="#f1ad71" x="28" y="42" width="294" height="256" rx="36"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="42" y="62">TLS 1.3</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 58L358 58"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="62">Chrome ClientHello</text>
 </g>
 <g class="dgm-layer dgm-role-disguise" data-node="http2">
-<rect class="dgm-ring dgm-here-5" stroke-width="1.5" fill="#ffe8d2" stroke="#f1ad71" x="52" y="80" width="310" height="258" rx="32"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="66" y="100">HTTP/2</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 96L422 96"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="100">extended CONNECT stream</text>
+<rect class="dgm-ring dgm-here-5" stroke-width="1.25" fill="#ffe8d2" stroke="#f1ad71" x="40" y="68" width="270" height="220" rx="32"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="54" y="88">HTTP/2</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 84L358 84"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="88">extended CONNECT stream</text>
 </g>
 <g class="dgm-layer dgm-role-disguise" data-node="websocket">
-<rect class="dgm-ring dgm-here-4" stroke-width="1.5" fill="#ffe8d2" stroke="#f1ad71" x="68" y="110" width="278" height="216" rx="28"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="82" y="130">WebSocket</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 126L422 126"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="130">binary messages</text>
+<rect class="dgm-ring dgm-here-4" stroke-width="1.25" fill="#ffe8d2" stroke="#f1ad71" x="52" y="94" width="246" height="184" rx="28"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="66" y="114">WebSocket</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 110L358 110"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="114">binary messages</text>
 </g>
 <g class="dgm-layer dgm-role-neutral" data-node="envelope">
-<rect class="dgm-ring dgm-here-3" stroke-width="1.5" fill="#f4e7f0" stroke="#e3d2dd" x="84" y="140" width="246" height="174" rx="24"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="98" y="160">Carrier envelope</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 156L422 156"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="160">12-byte length header</text>
+<rect class="dgm-ring dgm-here-3" stroke-width="1.25" fill="#f4e7f0" stroke="#e3d2dd" x="64" y="120" width="222" height="148" rx="24"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="78" y="140">Carrier envelope</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 136L358 136"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="140">12-byte length header</text>
 </g>
 <g class="dgm-layer dgm-role-keys" data-node="sealed">
-<rect class="dgm-ring dgm-here-2" stroke-width="1.5" fill="#fcf2cd" stroke="#f0ce65" x="100" y="170" width="214" height="132" rx="20"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#7d5e07" x="114" y="190">Sealed record</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 186L422 186"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="190">AES-256-GCM, one-use key</text>
+<rect class="dgm-ring dgm-here-2" stroke-width="1.25" fill="#fcf2cd" stroke="#f0ce65" x="76" y="146" width="198" height="112" rx="20"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#7d5e07" x="90" y="166">Sealed record</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 162L358 162"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="166">AES-256-GCM, one-use key</text>
 </g>
 <g class="dgm-layer dgm-role-neutral" data-node="frame">
-<rect class="dgm-ring dgm-here-1" stroke-width="1.5" fill="#f4e7f0" stroke="#e3d2dd" x="116" y="200" width="182" height="90" rx="16"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="130" y="220">YTP/1 frame</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 216L422 216"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="220">type, stream, length</text>
+<rect class="dgm-ring dgm-here-1" stroke-width="1.25" fill="#f4e7f0" stroke="#e3d2dd" x="88" y="172" width="174" height="76" rx="16"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="102" y="192">YTP/1 frame</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 188L358 188"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="192">type, stream, length</text>
 </g>
 <g class="dgm-layer dgm-role-data" data-node="data">
-<rect class="dgm-ring dgm-here-0" stroke-width="1.5" fill="#dbeefe" stroke="#7cb8ea" x="132" y="230" width="150" height="48" rx="12"/>
-<text class="dgm-ring-title dgm-centred" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.02em" fill="#1b659a" text-anchor="middle" x="207" y="259">Your data</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.5" stroke-dasharray="1 4" stroke-linecap="round" d="M402 255L422 255"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;IBM Plex Mono&#x27;, ui-monospace, monospace" font-size="11px" x="430" y="259">stream bytes or a packet</text>
+<rect class="dgm-ring dgm-here-0" stroke-width="1.25" fill="#dbeefe" stroke="#7cb8ea" x="100" y="198" width="150" height="40" rx="12"/>
+<text class="dgm-ring-title dgm-centred" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#1b659a" text-anchor="middle" x="175" y="223">Your data</text>
+<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 219L358 219"/>
+<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="223">stream bytes or a packet</text>
 </g>
 </g>
 </svg>

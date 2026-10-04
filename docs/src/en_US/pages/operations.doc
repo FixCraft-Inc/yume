@@ -233,7 +233,9 @@ destination names that clients request through direct TCP/UDP adapters and
 SOCKS5. Both use the system resolver configuration, including `/etc/hosts` and
 NSS modules, in a separate helper process. It appears as a `yume-resolver`
 child after the first lookup. The helper holds no connections, keeps no
-capabilities, and runs each lookup on its own thread. Stopping `yume` or
+capabilities, and runs each lookup on its own thread, up to 64 at once. Later
+lookups wait for a free thread, up to 1024 of them, instead of failing their
+connections. Stopping `yume` or
 `yumed` kills it, so a stalled DNS server or NSS module never delays shutdown.
 A numeric host or `endpoint.connect_address` needs no lookup. A client with
 `endpoint.socks5_proxy` looks nothing up either: it connects to the proxy's

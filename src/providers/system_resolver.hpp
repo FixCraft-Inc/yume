@@ -33,6 +33,9 @@ struct SystemResolverOptions final {
     // Outstanding lookups, including cancelled ones the helper has not yet
     // answered. At most resolver_protocol::kMaxOutstanding.
     std::size_t max_outstanding{64U};
+    // Lookups that wait for an outstanding slot while live lookups fill every
+    // one, at most 65536. They start in order as earlier lookups answer.
+    std::size_t max_waiting{1024U};
 };
 
 // System name resolution in a separate, killable process. getaddrinfo and its
@@ -40,10 +43,12 @@ struct SystemResolverOptions final {
 // shutdown indefinitely. Here, cancellation settles at once and close() kills
 // and reaps the helper. The helper uses the unchanged system resolver
 // configuration and runs each lookup on its own thread, so one slow name
-// does not delay the others. A cancelled lookup keeps its helper slot until
-// answered. When every slot is taken and some are cancelled, the helper is
-// replaced and the live lookups fail. It starts on the first lookup and again
-// after it exits.
+// does not delay the others. When live lookups fill every slot, a new one
+// waits for a slot instead of failing, up to max_waiting. A cancelled lookup
+// keeps its helper slot until answered. When every slot is taken and some are
+// cancelled, the next lookup is refused, the helper is replaced, and its live
+// and waiting lookups fail. It starts on the first lookup and again after it
+// exits.
 //
 // resolve() and cancel() require the context. close() and destruction may
 // cross threads, and close is delivered through reserved control dispatch.

@@ -210,6 +210,10 @@ void test_options() {
     too_many.max_outstanding = protocol::kMaxOutstanding + 1U;
     CHECK(SystemResolver::create(context, too_many).status().code() ==
           StatusCode::InvalidArgument);
+    SystemResolverOptions too_many_waiting;
+    too_many_waiting.max_waiting = 65537U;
+    CHECK(SystemResolver::create(context, too_many_waiting).status().code() ==
+          StatusCode::InvalidArgument);
     CHECK(!SystemResolver::create(nullptr, {}).ok());
 
     // Without a helper, hostname lookup fails closed and invokes nothing.
@@ -338,6 +342,72 @@ void test_saturation_replacement() {
     CHECK(after && after->ok() && is_loopback(after->value()));
 }
 
+// Live lookups fill both slots, so later ones wait instead of failing, up to
+// max_waiting, and start as earlier ones answer. A cancelled waiting lookup
+// never completes, and no completion runs inside a caller's resolve().
+void test_waiting_lookups() {
+    const auto context = make_context();
+    SystemResolverOptions options;
+    options.program = YUME_TEST_STALL_RESOLVER_PROGRAM;
+    options.max_outstanding = 2U;
+    options.max_waiting = 2U;
+    auto created = SystemResolver::create(context, std::move(options));
+    CHECK(created.ok());
+    const auto resolver = std::move(created).take_value();
+    bool inside_resolve = false;
+    bool completed_inside = false;
+    std::optional<Result<Addresses>> stalled, second, waited, cancelled_result;
+    std::optional<StatusCode> overflow;
+    const auto drain = run_then_close(context, resolver, 300ms, [&] {
+        inside_resolve = true;
+        CHECK(resolver->resolve(kStallHost, 4U, [&](Result<Addresses> result) {
+            completed_inside = completed_inside || inside_resolve;
+            stalled = std::move(result);
+        }).ok());
+        CHECK(resolver->resolve("localhost", 4U, [&](Result<Addresses> result) {
+            completed_inside = completed_inside || inside_resolve;
+            second = std::move(result);
+        }).ok());
+        CHECK(resolver->resolve("localhost", 4U, [&](Result<Addresses> result) {
+            completed_inside = completed_inside || inside_resolve;
+            waited = std::move(result);
+        }).ok());
+        auto dropped = resolver->resolve("localhost", 4U, [&](Result<Addresses> result) {
+            cancelled_result = std::move(result);
+        });
+        CHECK(dropped.ok());
+        overflow = resolver->resolve("localhost", 4U, [](Result<Addresses>) {})
+                       .status().code();
+        if (dropped.ok()) resolver->cancel(dropped.value());
+        inside_resolve = false;
+    });
+    CHECK(!completed_inside);
+    CHECK(overflow == StatusCode::ResourceExhausted);
+    CHECK(second && second->ok() && is_loopback(second->value()));
+    CHECK(waited && waited->ok() && is_loopback(waited->value()));
+    CHECK(!cancelled_result);
+    // The stall was still live when the resolver closed.
+    CHECK(stalled && stalled->status().code() == StatusCode::Closed);
+    CHECK(drain < 2s);
+}
+
+// Closing fails a waiting lookup with the live one it waited behind.
+void test_close_fails_waiting_lookups() {
+    const auto context = make_context();
+    const auto resolver = make_resolver(context, YUME_TEST_STALL_RESOLVER_PROGRAM, 1U);
+    std::optional<Result<Addresses>> live, queued;
+    run_then_close(context, resolver, 50ms, [&] {
+        CHECK(resolver->resolve(kStallHost, 1U, [&](Result<Addresses> result) {
+            live = std::move(result);
+        }).ok());
+        CHECK(resolver->resolve("localhost", 1U, [&](Result<Addresses> result) {
+            queued = std::move(result);
+        }).ok());
+    });
+    CHECK(live && live->status().code() == StatusCode::Closed);
+    CHECK(queued && queued->status().code() == StatusCode::Closed);
+}
+
 // A program that is not a helper never says hello. Its exit fails the lookup
 // instead of leaving it pending.
 void test_non_helper_program() {
@@ -377,6 +447,8 @@ int main(int argc, char** argv) {
     test_lookup(YUME_TEST_STALL_RESOLVER_PROGRAM, true);
     test_stalled_lookup();
     test_saturation_replacement();
+    test_waiting_lookups();
+    test_close_fails_waiting_lookups();
     test_non_helper_program();
     if (failures != 0) {
         std::fprintf(stderr, "%d system resolver check(s) failed\n", failures);

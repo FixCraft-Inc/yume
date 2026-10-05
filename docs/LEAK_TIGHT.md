@@ -109,8 +109,24 @@ reconnects, so nothing leaves beside the tunnel during the gap.
 
 Device tests on a Pixel 9 Pro running Android 17, against a real `yumed`,
 covered connecting, stopping, reconnecting, a server that stops and returns,
-and Wi-Fi that drops and returns. They have not covered VPN revocation,
-process death, a reboot, carried IPv6 or a signed release build, so those
-remain open. Between a stop and the next start Android routes traffic
-directly. To keep traffic from leaving outside YUME, also turn on Android's
-Always-on VPN and Block connections without VPN for the client.
+VPN revocation, and Wi-Fi to mobile data and back. When an unmetered network
+returns, the client replaces the mobile session so the tunnel stops spending
+mobile data; open connections end when the session is replaced. Revocation
+returns the app to Idle, ready for another connection. IPv6 was blocked while
+the IPv4-only VPN was up. With Always-on VPN and Block connections without VPN
+enabled, the selected kit reconnected after a reboot and the phone's unlock,
+without opening the app.
+
+Killing the VPN process did not restart it automatically during a 90-second
+observation, even with Always-on VPN enabled. Opening the app alone left it
+Idle; connecting again restored the tunnel. Android's Block connections
+without VPN keeps traffic blocked while the VPN is absent. Without it,
+Android routes traffic directly between a stop or process death and the next
+start. Always-on VPN alone is not that blocking rule: enable both settings
+to keep traffic from leaving outside YUME.
+
+The Android builds cover arm64-v8a, armeabi-v7a, x86 and x86_64, with Google
+ML Kit translation excluded by default and a separately built opt-in. Only
+arm64-v8a has been exercised on this device. Carried IPv6, other devices and
+Android versions, and a signed release APK remain unqualified; an unsigned
+release build does not close the signed-release gate.

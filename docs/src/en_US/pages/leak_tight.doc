@@ -122,7 +122,9 @@ VPN revocation, and Wi-Fi to mobile data and back. When an unmetered network
 returns, the client replaces the mobile session so the tunnel stops spending
 mobile data; open connections end when the session is replaced. Revocation
 returns the app to Idle, ready for another connection. IPv6 was blocked while
-the IPv4-only VPN was up. With Always-on VPN and Block connections without VPN
+the IPv4-only VPN was up. With IPv6 carriage enabled and a server with IPv6
+egress, an HTTPS request and a UDP DNS query reached public IPv6 destinations
+through the tunnel. With Always-on VPN and Block connections without VPN
 enabled, the selected kit reconnected after a reboot and the phone's unlock,
 without opening the app.
 
@@ -136,6 +138,6 @@ to keep traffic from leaving outside YUME.
 
 The Android builds cover arm64-v8a, armeabi-v7a, x86 and x86_64, with Google
 ML Kit translation excluded by default and a separately built opt-in. Only
-arm64-v8a has been exercised on this device. Carried IPv6, other devices and
-Android versions, and a signed release APK remain unqualified; an unsigned
+arm64-v8a has been exercised on this device. Other devices and Android
+versions, and a signed release APK remain unqualified; an unsigned
 release build does not close the signed-release gate.

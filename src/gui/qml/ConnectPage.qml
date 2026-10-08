@@ -50,110 +50,120 @@ Flickable {
                     font.pixelSize: Theme.textLabel
                 }
 
-                Repeater {
-                    model: App.kits
-                    Rectangle {
-                        id: kitRow
-                        required property var modelData
-                        readonly property bool selected: modelData.name === App.kitName
-                        readonly property bool removing: page.pendingRemoval === modelData.name
-                        Layout.fillWidth: true
-                        implicitHeight: rowLayout.implicitHeight + 20
-                        radius: Theme.radiusSmall
-                        color: selected ? Theme.accentSoft : "transparent"
-                        border.color: selected ? Theme.accent : Theme.ruleSoft
-                        RowLayout {
-                            id: rowLayout
-                            anchors.fill: parent
-                            anchors.margins: 10
-                            spacing: 10
-                            Rectangle {
-                                implicitWidth: 10; implicitHeight: 10; radius: 5
-                                color: Theme.stateColor(App.stateKind(kitRow.modelData.phase, kitRow.modelData.state))
-                            }
-                            ColumnLayout {
-                                spacing: 0
-                                Layout.fillWidth: true
-                                Text {
-                                    textFormat: Text.PlainText
-                                    horizontalAlignment: Text.AlignLeft
-                                    text: kitRow.modelData.name
-                                    color: Theme.ink
-                                    font.pixelSize: Theme.textBody
-                                    font.weight: Font.DemiBold
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
+                // Rows a Repeater rebuilds sit in a plain Column, not the card's
+                // layout: Qt 6.4's layouts can keep a destroyed row while a page
+                // is hidden and crash when it is shown (QTBUG-111792).
+                Column {
+                    id: kitList
+                    Layout.fillWidth: true
+                    spacing: Theme.gapSmall
+                    visible: kitRows.count > 0
+                    Repeater {
+                        id: kitRows
+                        model: App.kits
+                        Rectangle {
+                            id: kitRow
+                            required property var modelData
+                            readonly property bool selected: modelData.name === App.kitName
+                            readonly property bool removing: page.pendingRemoval === modelData.name
+                            width: kitList.width
+                            implicitHeight: rowLayout.implicitHeight + 20
+                            radius: Theme.radiusSmall
+                            color: selected ? Theme.accentSoft : "transparent"
+                            border.color: selected ? Theme.accent : Theme.ruleSoft
+                            RowLayout {
+                                id: rowLayout
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                spacing: 10
+                                Rectangle {
+                                    implicitWidth: 10; implicitHeight: 10; radius: 5
+                                    color: Theme.stateColor(App.stateKind(kitRow.modelData.phase, kitRow.modelData.state))
                                 }
+                                ColumnLayout {
+                                    spacing: 0
+                                    Layout.fillWidth: true
+                                    Text {
+                                        textFormat: Text.PlainText
+                                        horizontalAlignment: Text.AlignLeft
+                                        text: kitRow.modelData.name
+                                        color: Theme.ink
+                                        font.pixelSize: Theme.textBody
+                                        font.weight: Font.DemiBold
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        textFormat: Text.PlainText
+                                        horizontalAlignment: Text.AlignLeft
+                                        text: (kitRow.modelData.server || qsTr("server not readable")) + "  ·  "
+                                              + App.stateLabel(kitRow.modelData.phase, kitRow.modelData.state)
+                                        color: Theme.muted
+                                        font.pixelSize: Theme.textSmall
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                AppButton {
+                                    visible: !kitRow.selected && !kitRow.removing
+                                    compact: true
+                                    text: qsTr("Show")
+                                    Accessible.name: qsTr("Show %1").arg(kitRow.modelData.name)
+                                    onClicked: App.kitName = kitRow.modelData.name
+                                }
+                                AppButton {
+                                    visible: !kitRow.removing
+                                    compact: true
+                                    kind: "quiet"
+                                    iconName: "folder"
+                                    text: qsTr("Folder")
+                                    Accessible.name: qsTr("Open the folder of %1").arg(kitRow.modelData.name)
+                                    onClicked: App.openKitFolder(kitRow.modelData.name)
+                                }
+                                AppButton {
+                                    visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
+                                    enabled: !App.renaming && !App.importing
+                                    compact: true
+                                    kind: "quiet"
+                                    text: qsTr("Rename")
+                                    Accessible.name: qsTr("Rename %1").arg(kitRow.modelData.name)
+                                    onClicked: renameDialog.openFor(kitRow.modelData.name)
+                                }
+                                AppButton {
+                                    visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
+                                    enabled: !App.renaming
+                                    compact: true
+                                    kind: "quiet"
+                                    iconName: "trash"
+                                    text: qsTr("Remove")
+                                    Accessible.name: qsTr("Remove %1").arg(kitRow.modelData.name)
+                                    onClicked: page.pendingRemoval = kitRow.modelData.name
+                                }
+                                // Removal deletes the kit's credentials, so it asks once more in place.
                                 Text {
                                     textFormat: Text.PlainText
-                                    horizontalAlignment: Text.AlignLeft
-                                    text: (kitRow.modelData.server || qsTr("server not readable")) + "  ·  "
-                                          + App.stateLabel(kitRow.modelData.phase, kitRow.modelData.state)
-                                    color: Theme.muted
+                                    visible: kitRow.removing
+                                    text: qsTr("Delete this kit and its keys?")
+                                    color: Theme.refusedStrong
                                     font.pixelSize: Theme.textSmall
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
                                 }
-                            }
-                            AppButton {
-                                visible: !kitRow.selected && !kitRow.removing
-                                compact: true
-                                text: qsTr("Show")
-                                Accessible.name: qsTr("Show %1").arg(kitRow.modelData.name)
-                                onClicked: App.kitName = kitRow.modelData.name
-                            }
-                            AppButton {
-                                visible: !kitRow.removing
-                                compact: true
-                                kind: "quiet"
-                                iconName: "folder"
-                                text: qsTr("Folder")
-                                Accessible.name: qsTr("Open the folder of %1").arg(kitRow.modelData.name)
-                                onClicked: App.openKitFolder(kitRow.modelData.name)
-                            }
-                            AppButton {
-                                visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
-                                enabled: !App.renaming && !App.importing
-                                compact: true
-                                kind: "quiet"
-                                text: qsTr("Rename")
-                                Accessible.name: qsTr("Rename %1").arg(kitRow.modelData.name)
-                                onClicked: renameDialog.openFor(kitRow.modelData.name)
-                            }
-                            AppButton {
-                                visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
-                                enabled: !App.renaming
-                                compact: true
-                                kind: "quiet"
-                                iconName: "trash"
-                                text: qsTr("Remove")
-                                Accessible.name: qsTr("Remove %1").arg(kitRow.modelData.name)
-                                onClicked: page.pendingRemoval = kitRow.modelData.name
-                            }
-                            // Removal deletes the kit's credentials, so it asks once more in place.
-                            Text {
-                                textFormat: Text.PlainText
-                                visible: kitRow.removing
-                                text: qsTr("Delete this kit and its keys?")
-                                color: Theme.refusedStrong
-                                font.pixelSize: Theme.textSmall
-                            }
-                            AppButton {
-                                visible: kitRow.removing
-                                compact: true
-                                kind: "danger"
-                                text: qsTr("Delete")
-                                enabled: !App.renaming
-                                onClicked: {
-                                    page.pendingRemoval = ""
-                                    App.removeKit(kitRow.modelData.name)
+                                AppButton {
+                                    visible: kitRow.removing
+                                    compact: true
+                                    kind: "danger"
+                                    text: qsTr("Delete")
+                                    enabled: !App.renaming
+                                    onClicked: {
+                                        page.pendingRemoval = ""
+                                        App.removeKit(kitRow.modelData.name)
+                                    }
                                 }
-                            }
-                            AppButton {
-                                visible: kitRow.removing
-                                compact: true
-                                text: qsTr("Keep")
-                                onClicked: page.pendingRemoval = ""
+                                AppButton {
+                                    visible: kitRow.removing
+                                    compact: true
+                                    text: qsTr("Keep")
+                                    onClicked: page.pendingRemoval = ""
+                                }
                             }
                         }
                     }

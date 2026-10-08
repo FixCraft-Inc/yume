@@ -72,4 +72,10 @@ void import_kit(QObject* context, const Places& places, const QString& file,
 // places.kits. The caller makes sure its client is not running.
 bool remove_kit(const Places& places, const QString& name, QString& error);
 
+// Renames a real kit directory without replacing any existing target. The
+// configuration and credentials are not rewritten. Absolute references into
+// the old directory are refused. The caller checks both clients are stopped.
+bool rename_kit(const Places& places, const QString& name,
+                const QString& new_name, QString& error);
+
 }  // namespace yume::gui

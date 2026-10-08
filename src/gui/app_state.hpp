@@ -58,6 +58,7 @@ class AppState final : public QObject {
                    themeChanged)
     Q_PROPERTY(bool dark READ dark NOTIFY themeChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importChanged)
+    Q_PROPERTY(bool renaming READ renaming NOTIFY renameChanged)
     Q_PROPERTY(QString importMessage READ import_message NOTIFY importChanged)
     Q_PROPERTY(bool importFailed READ import_failed NOTIFY importChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
@@ -112,6 +113,7 @@ public:
     void set_theme_mode(const QString& mode);
     bool dark() const;
     bool importing() const { return importing_; }
+    bool renaming() const { return renaming_; }
     QString import_message() const { return import_message_; }
     bool import_failed() const { return import_failed_; }
     QString notice() const { return notice_; }
@@ -138,6 +140,10 @@ public:
                                const QString& code);
     Q_INVOKABLE QString suggestKitName(const QUrl& file) const;
     Q_INVOKABLE void removeKit(const QString& name);
+    Q_INVOKABLE void renameKit(const QString& name, const QString& new_name);
+    Q_INVOKABLE bool validKitName(const QString& name) const {
+        return valid_kit_name(name);
+    }
     Q_INVOKABLE void refreshKits();
     Q_INVOKABLE void copyText(const QString& text);
     Q_INVOKABLE void openKitFolder(const QString& name);
@@ -163,6 +169,7 @@ signals:
     void pageChanged();
     void themeChanged();
     void importChanged();
+    void renameChanged();
     void noticeChanged();
     void trayChanged();
 
@@ -190,6 +197,7 @@ private:
     QTimer messages_timer_;
     bool messages_in_flight_{false};
     bool importing_{false};
+    bool renaming_{false};
     QString import_message_;
     bool import_failed_{false};
     QString notice_;

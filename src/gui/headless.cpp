@@ -24,7 +24,7 @@ namespace {
 
 using Phase = Tunnel::Phase;
 
-// A connect waits this long for "connected", a stop for the socket to go.
+// A connect waits this long for "connected", a stop for the process to end.
 constexpr int kLegLimitMs = 60'000;
 
 QString phase_text(Phase phase) {

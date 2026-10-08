@@ -126,6 +126,11 @@ void Tunnel::on_status(const ControlReply& reply) {
                 set_phase(Phase::Stopped);
                 return;
             case Phase::Running:
+                if (process_alive()) {
+                    status_ = {};
+                    set_error(tr("yume closed its control socket but has not ended"));
+                    return;
+                }
                 set_error(output_reason(tr("yume stopped")));
                 pid_ = 0;
                 set_phase(Phase::Stopped);
@@ -133,15 +138,14 @@ void Tunnel::on_status(const ControlReply& reply) {
             case Phase::Stopping:
                 // yume closes its socket first and then its sessions, so the
                 // tunnel is stopped once its process is gone.
-                if (process_alive() &&
-                    since_phase_.elapsed() <=
+                if (process_alive()) {
+                    if (since_phase_.elapsed() >
                         std::chrono::milliseconds(kStopLimit).count())
+                        set_error(tr(
+                            "yume closed its control socket but has not ended"));
                     return;
-                if (process_alive())
-                    set_error(
-                        tr("yume closed its control socket but has not ended"));
-                else
-                    set_error({});
+                }
+                set_error({});
                 pid_ = 0;
                 set_phase(Phase::Stopped);
                 return;

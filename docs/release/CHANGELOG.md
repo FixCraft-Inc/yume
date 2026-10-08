@@ -237,7 +237,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   kit's state and connects or disconnects it. A shorter route is accepted
   only from a review of that exact proposal. Headless actions, a page
   capture, keyboard and right-to-left tests and a live cycle against a real
-  daemon cover it ([desktop GUI](../GUI.md)). It is not packaged.
+  daemon cover it ([desktop GUI](../GUI.md)). Stopped kits can be renamed
+  without replacing an existing kit; the GUI checks both control sockets
+  before moving the directory and retains the selection. A client still
+  draining after its socket closes remains active even past the stop warning.
+  It is not packaged.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,

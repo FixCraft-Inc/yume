@@ -11,6 +11,8 @@
 // checks the mirrored layout instead.
 
 #include <signal.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -21,13 +23,17 @@
 #include <QProcess>
 #include <QApplication>
 #include <QFontDatabase>
+#include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QSet>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QQmlComponent>
 #include <QTcpServer>
@@ -95,6 +101,12 @@ private slots:
         qputenv("XDG_CONFIG_HOME", config.toUtf8());
         qputenv("XDG_RUNTIME_DIR", runtime.toUtf8());
         kit_ = config + QStringLiteral("/yume/kits/work");
+        QString directory_error;
+        QVERIFY2(ensure_private_directory(QFileInfo(kit_).dir().path(),
+                                          directory_error),
+                 qPrintable(directory_error));
+        QVERIFY2(ensure_private_directory(kit_, directory_error),
+                 qPrintable(directory_error));
         write_json(kit_ + QStringLiteral("/yume.json"),
                    {{QStringLiteral("endpoint"),
                      QJsonObject{{QStringLiteral("host"),
@@ -233,6 +245,341 @@ private slots:
                                   15000);
     }
 
+    void kit_directory_rename_preserves_files_and_rejects_unsafe_targets() {
+        if (g_rtl) QSKIP("the left-to-right run covers kit storage");
+        QTemporaryDir storage;
+        QVERIFY(storage.isValid());
+        Places places{storage.filePath(QStringLiteral("kits")), {}, {}};
+        const QString source = places.kits + QStringLiteral("/original");
+        QVERIFY(QDir().mkpath(source + QStringLiteral("/keys")));
+        QString directory_error;
+        QVERIFY2(ensure_private_directory(places.kits, directory_error),
+                 qPrintable(directory_error));
+        QVERIFY2(ensure_private_directory(source, directory_error),
+                 qPrintable(directory_error));
+        const QString credential =
+            source + QStringLiteral("/keys/identity.pem");
+        QFile key(credential);
+        QVERIFY(key.open(QIODevice::WriteOnly));
+        QCOMPARE(key.write("credential preservation fixture\n"), qint64(32));
+        key.close();
+        QVERIFY(key.setPermissions(QFileDevice::ReadOwner |
+                                   QFileDevice::WriteOwner));
+        const QJsonObject config{
+            {QStringLiteral("credentials"),
+             QJsonObject{{QStringLiteral("composite_key"),
+                          QJsonObject{{QStringLiteral("file"),
+                                       QStringLiteral("keys/identity.pem")}}}}},
+            // A label is not a file reference and must not block the move.
+            {QStringLiteral("label"), source}};
+        write_json(source + QStringLiteral("/yume.json"), config);
+        QFile document(source + QStringLiteral("/yume.json"));
+        QVERIFY(document.open(QIODevice::ReadOnly));
+        const QByteArray original = document.readAll();
+        document.close();
+        struct stat before{};
+        QVERIFY(::stat(QFile::encodeName(credential).constData(), &before) ==
+                0);
+        QString error;
+        for (const QString& invalid :
+             {QString(), QStringLiteral("../outside"),
+              QStringLiteral(".hidden"), QStringLiteral("-hidden"),
+              QStringLiteral("two/names"), QStringLiteral("<b>kit</b>"),
+              QString(49, u'a')}) {
+            QVERIFY(!rename_kit(places, QStringLiteral("original"), invalid,
+                                error));
+            QVERIFY(QFileInfo::exists(credential));
+        }
+        const QString duplicate = places.kits + QStringLiteral("/duplicate");
+        QVERIFY(QDir().mkpath(duplicate));
+        write_json(duplicate + QStringLiteral("/yume.json"),
+                   {{QStringLiteral("sentinel"), true}});
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("duplicate"), error));
+        QVERIFY(QFileInfo::exists(credential));
+        QFile existing(duplicate + QStringLiteral("/yume.json"));
+        QVERIFY(existing.open(QIODevice::ReadOnly));
+        QVERIFY(existing.readAll().contains("sentinel"));
+        const QString empty = places.kits + QStringLiteral("/empty");
+        QVERIFY(QDir().mkpath(empty));
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("empty"), error));
+        QVERIFY(QFileInfo::exists(credential));
+        QVERIFY(QFileInfo(empty).isDir());
+
+        const QByteArray link =
+            QFile::encodeName(places.kits + QStringLiteral("/linked"));
+        QVERIFY(::symlink("original", link.constData()) == 0);
+        QVERIFY(!rename_kit(places, QStringLiteral("linked"),
+                            QStringLiteral("other"), error));
+        const QByteArray dangling =
+            QFile::encodeName(places.kits + QStringLiteral("/dangling"));
+        QVERIFY(::symlink("missing", dangling.constData()) == 0);
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("dangling"), error));
+        QVERIFY(QFileInfo(QString::fromLocal8Bit(dangling)).isSymLink());
+
+        const QByteArray root_link =
+            QFile::encodeName(storage.filePath(QStringLiteral("root-link")));
+        QVERIFY(::symlink(QFile::encodeName(places.kits).constData(),
+                          root_link.constData()) == 0);
+        Places linked_places = places;
+        linked_places.kits = QString::fromLocal8Bit(root_link);
+        QVERIFY(!rename_kit(linked_places, QStringLiteral("original"),
+                            QStringLiteral("renamed"), error));
+        const QString config_path = source + QStringLiteral("/yume.json");
+        QVERIFY(QFile::remove(config_path));
+
+        QVERIFY(::mkfifo(QFile::encodeName(config_path).constData(), 0600) ==
+                0);
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("renamed"), error));
+        QVERIFY(QFileInfo::exists(credential));
+        QVERIFY(QFile::remove(config_path));
+        QFile oversized(config_path);
+        QVERIFY(oversized.open(QIODevice::WriteOnly));
+        const QByteArray too_large(1024 * 1024 + 1, ' ');
+        QCOMPARE(oversized.write(too_large), qint64(too_large.size()));
+        oversized.close();
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("renamed"), error));
+        QVERIFY(QFileInfo::exists(credential));
+        QVERIFY(QFile::remove(config_path));
+        QVERIFY(::symlink("keys/identity.pem",
+                          QFile::encodeName(config_path).constData()) == 0);
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("renamed"), error));
+        QVERIFY(QFileInfo::exists(credential));
+        QVERIFY(QFile::remove(config_path));
+
+        write_json(source + QStringLiteral("/yume.json"),
+                   {{QStringLiteral("credentials"),
+                     QJsonObject{{QStringLiteral("composite_key"),
+                                  QJsonObject{{QStringLiteral("file"),
+                                               credential}}}}}});
+        QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("renamed"), error));
+        QVERIFY2(error.contains(QStringLiteral("absolute path")),
+                 qPrintable(error));
+        QVERIFY(QFileInfo::exists(credential));
+        for (const QString& traversal :
+             {QStringLiteral("../original/key"),
+              QStringLiteral("../external/key"),
+              QStringLiteral("..\\original\\key"),
+              QStringLiteral("..\\external\\key")}) {
+            write_json(config_path,
+                       {{QStringLiteral("credentials"),
+                         QJsonObject{{QStringLiteral("composite_key"),
+                                      QJsonObject{{QStringLiteral("file"),
+                                                   traversal}}}}}});
+            QVERIFY(!rename_kit(places, QStringLiteral("original"),
+                                QStringLiteral("renamed"), error));
+            QVERIFY(error.contains(QStringLiteral("parent traversal")));
+            QVERIFY(QFileInfo::exists(credential));
+        }
+        write_json(source + QStringLiteral("/yume.json"), config);
+        QVERIFY2(rename_kit(places, QStringLiteral("original"),
+                            QStringLiteral("renamed"), error),
+                 qPrintable(error));
+        QVERIFY(!QFileInfo::exists(source));
+        const QString moved =
+            places.kits + QStringLiteral("/renamed/keys/identity.pem");
+        struct stat after{};
+        QVERIFY(::stat(QFile::encodeName(moved).constData(), &after) == 0);
+        QCOMPARE(after.st_ino, before.st_ino);
+        QCOMPARE(after.st_mode, before.st_mode);
+        QFile preserved(moved);
+        QVERIFY(preserved.open(QIODevice::ReadOnly));
+        QCOMPARE(preserved.readAll(),
+                 QByteArray("credential preservation fixture\n"));
+        QFile moved_config(places.kits + QStringLiteral("/renamed/yume.json"));
+        QVERIFY(moved_config.open(QIODevice::ReadOnly));
+        QCOMPARE(moved_config.readAll(), original);
+    }
+
+    void keyboard_kit_rename_cancels_and_keeps_selection() {
+        QCOMPARE(state_->phase(), QStringLiteral("stopped"));
+        state_->set_page(QStringLiteral("connect"));
+        QQuickItem* rename =
+            find_button(window_->contentItem(), QStringLiteral("Rename"));
+        QVERIFY(rename);
+        QCOMPARE(accessible_name(rename), QStringLiteral("Rename work"));
+        rename->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window_, Qt::Key_Return);
+        auto* dialog =
+            window_->findChild<QObject*>(QStringLiteral("renameKitDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QQuickItem* field = named(QStringLiteral("renameKitName"));
+        QVERIFY(field);
+        QTRY_COMPARE(window_->activeFocusItem(), field);
+        QCOMPARE(accessible_name(field), QStringLiteral("New kit name"));
+        const QString artifacts =
+            qEnvironmentVariable("YUME_GUI_TEST_ARTIFACTS");
+        if (!artifacts.isEmpty()) {
+            QTest::qWait(100);
+            const QString image = QDir(artifacts).filePath(
+                g_rtl ? QStringLiteral("rename-dialog-rtl.png")
+                      : QStringLiteral("rename-dialog-ltr.png"));
+            const QImage captured = window_->grabWindow();
+            QVERIFY(!captured.isNull());
+            QVERIFY2(captured.save(image), qPrintable(image));
+        }
+        QTest::keyClick(window_, 'x');
+        QCOMPARE(field->property("text").toString(), QStringLiteral("x"));
+        QTest::keyClick(window_, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QCOMPARE(state_->kit_name(), QStringLiteral("work"));
+        QVERIFY(QFileInfo::exists(kit_ + QStringLiteral("/yume.json")));
+
+        rename = find_button(window_->contentItem(), QStringLiteral("Rename"));
+        QVERIFY(rename);
+        rename->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window_, Qt::Key_Space);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QTRY_COMPARE(window_->activeFocusItem(), field);
+        for (const char ch : QByteArray("renamed"))
+            QTest::keyClick(window_, ch);
+        QCOMPARE(field->property("text").toString(), QStringLiteral("renamed"));
+        QTest::keyClick(window_, Qt::Key_Tab);
+        QCOMPARE(text_of(window_->activeFocusItem()), QStringLiteral("Cancel"));
+        QTest::keyClick(window_, Qt::Key_Tab);
+        QCOMPARE(text_of(window_->activeFocusItem()), QStringLiteral("Rename"));
+        QTest::keyClick(window_, Qt::Key_Return);
+        QTRY_COMPARE_WITH_TIMEOUT(state_->kit_name(), QStringLiteral("renamed"),
+                                  5000);
+        QVERIFY(!state_->renaming());
+        QVERIFY(!QFileInfo::exists(kit_));
+        QSettings saved(dir_.filePath(QStringLiteral("config/yume/gui.conf")),
+                        QSettings::IniFormat);
+        QCOMPARE(saved.value(QStringLiteral("kit")).toString(),
+                 QStringLiteral("renamed"));
+        // The renamed Tunnel uses the new path for a complete start and stop.
+        state_->connectKit();
+        QTRY_COMPARE_WITH_TIMEOUT(state_->phase(), QStringLiteral("running"),
+                                  15000);
+        state_->renameKit(QStringLiteral("renamed"),
+                          QStringLiteral("forbidden"));
+        QVERIFY(!state_->renaming());
+        QCOMPARE(state_->kit_name(), QStringLiteral("renamed"));
+        QVERIFY(state_->notice().contains(QStringLiteral("Stop renamed")));
+        state_->stopKit();
+        QTRY_COMPARE_WITH_TIMEOUT(state_->phase(), QStringLiteral("stopped"),
+                                  15000);
+        state_->renameKit(QStringLiteral("renamed"), QStringLiteral("work"));
+        QTRY_COMPARE_WITH_TIMEOUT(state_->kit_name(), QStringLiteral("work"),
+                                  5000);
+        QVERIFY(QFileInfo::exists(kit_ + QStringLiteral("/yume.json")));
+        saved.sync();
+        QCOMPARE(saved.value(QStringLiteral("kit")).toString(),
+                 QStringLiteral("work"));
+    }
+
+    void kit_rename_refuses_uncertain_control_reply() {
+        if (g_rtl) QSKIP("the left-to-right run covers control checks");
+        QString error;
+        const auto places =
+            find_places(QStringLiteral(YUME_GUI_FAKE_YUME), error);
+        QVERIFY2(places.has_value(), qPrintable(error));
+        QLocalServer uncertain;
+        QVERIFY(uncertain.listen(
+            QDir(places->runtime).filePath(QStringLiteral("uncertain.sock"))));
+        connect(&uncertain, &QLocalServer::newConnection, &uncertain, [&] {
+            while (auto* socket = uncertain.nextPendingConnection()) {
+                socket->write("not control protocol 1\n");
+                socket->disconnectFromServer();
+                connect(socket, &QLocalSocket::disconnected, socket,
+                        &QObject::deleteLater);
+            }
+        });
+        state_->renameKit(QStringLiteral("work"), QStringLiteral("uncertain"));
+        QTRY_VERIFY_WITH_TIMEOUT(!state_->renaming(), 5000);
+        QCOMPARE(state_->kit_name(), QStringLiteral("work"));
+        QVERIFY(QFileInfo::exists(kit_ + QStringLiteral("/yume.json")));
+        QVERIFY(state_->notice().contains(QStringLiteral("Cannot confirm")));
+    }
+
+    void control_resource_error_does_not_authorize_mutation() {
+        if (g_rtl)
+            QSKIP("the left-to-right run covers injected control errors");
+        QObject context;
+        bool completed = false;
+        ControlReply result;
+        control_exchange(&context, QStringLiteral("/unreached.sock"),
+                         status_request(), [&](const ControlReply& reply) {
+                             completed = true;
+                             result = reply;
+                         });
+        auto* socket = context.findChild<QLocalSocket*>();
+        QVERIFY(socket);
+        // Trigger Qt's actual error signal before the deferred connect runs;
+        // a local resource failure establishes no absence of a peer.
+        socket->errorOccurred(QLocalSocket::SocketResourceError);
+        QVERIFY(completed);
+        QCOMPARE(result.outcome, ControlReply::Outcome::Refused);
+        QCOMPARE(result.peer_pid, qint64(0));
+    }
+
+    void kit_rename_rechecks_a_client_started_elsewhere() {
+        if (g_rtl) QSKIP("the left-to-right run covers control checks");
+        QString error;
+        const auto places =
+            find_places(QStringLiteral(YUME_GUI_FAKE_YUME), error);
+        QVERIFY2(places.has_value(), qPrintable(error));
+        const QString name = QStringLiteral("late-client");
+        const QString directory = QDir(places->kits).filePath(name);
+        QVERIFY(QDir().mkpath(directory));
+        write_json(directory + QStringLiteral("/yume.json"),
+                   {{QStringLiteral("endpoint"),
+                     QJsonObject{{QStringLiteral("host"),
+                                  QStringLiteral("example.net")},
+                                 {QStringLiteral("port"), 443}}}});
+        AppState local(places, {}, QStringLiteral("light"));
+        local.set_kit_name(name);
+        QVERIFY(local.tunnel());
+        local.tunnel()->poll(60'000);
+        QTest::qWait(100);
+        QCOMPARE(local.phase(), QStringLiteral("stopped"));
+        QProcess client;
+        client.setProgram(QStringLiteral(YUME_GUI_FAKE_YUME));
+        client.setArguments({QStringLiteral("--config"),
+                             directory + QStringLiteral("/yume.json"),
+                             QStringLiteral("--control-socket"),
+                             local.tunnel()->socket_path()});
+        client.start();
+        QVERIFY(client.waitForStarted());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            QFileInfo::exists(local.tunnel()->socket_path()), 5000);
+        // The cached view remains stopped; only rename's fresh status request
+        // discovers the process that started after it was last polled.
+        QCOMPARE(local.phase(), QStringLiteral("stopped"));
+        local.renameKit(name, QStringLiteral("late-renamed"));
+        QTRY_VERIFY_WITH_TIMEOUT(!local.renaming(), 5000);
+        QCOMPARE(local.kit_name(), name);
+        QVERIFY(QFileInfo::exists(directory + QStringLiteral("/yume.json")));
+        QVERIFY(local.notice().contains(QStringLiteral("Stop late-client")));
+        client.terminate();
+        QVERIFY(client.waitForFinished(10000));
+        const QString target = QStringLiteral("late-destination");
+        const QString target_socket =
+            QDir(places->runtime).filePath(target + QStringLiteral(".sock"));
+        client.setArguments({QStringLiteral("--config"),
+                             directory + QStringLiteral("/yume.json"),
+                             QStringLiteral("--control-socket"),
+                             target_socket});
+        client.start();
+        QVERIFY(client.waitForStarted());
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(target_socket), 5000);
+        local.renameKit(name, target);
+        QTRY_VERIFY_WITH_TIMEOUT(!local.renaming(), 5000);
+        QCOMPARE(local.kit_name(), name);
+        QVERIFY(QFileInfo::exists(directory + QStringLiteral("/yume.json")));
+        QVERIFY(
+            local.notice().contains(QStringLiteral("Stop late-destination")));
+        client.terminate();
+        QVERIFY(client.waitForFinished(10000));
+    }
+
     // Rich text that names a remote image loads nothing through an offline
     // engine. An ordinary engine does fetch it, which shows the probe works.
     void offline_engine_fetches_nothing() {
@@ -281,7 +628,7 @@ private slots:
                      QJsonObject{{QStringLiteral("host"), QStringLiteral("h")},
                                  {QStringLiteral("port"), 1}}}});
         write_json(directory + QStringLiteral("/fake.json"),
-                   {{QStringLiteral("linger_ms"), 0}});
+                   {{QStringLiteral("linger_ms"), 1500}});
         Kit kit;
         for (auto& listed : list_kits(*places))
             if (listed.name == QStringLiteral("elsewhere")) kit = listed;
@@ -303,7 +650,10 @@ private slots:
         tunnel.poll(Tunnel::kFastPollMs);
         QTRY_COMPARE_WITH_TIMEOUT(tunnel.phase(), Tunnel::Phase::Running,
                                   10000);
-        ::kill(static_cast<pid_t>(pid), SIGKILL);
+        QVERIFY(::kill(static_cast<pid_t>(pid), SIGTERM) == 0);
+        QTRY_VERIFY_WITH_TIMEOUT(tunnel.status().isEmpty(), 1000);
+        QCOMPARE(tunnel.phase(), Tunnel::Phase::Running);
+        QVERIFY(tunnel.error().contains(QStringLiteral("has not ended")));
         QTRY_COMPARE_WITH_TIMEOUT(tunnel.phase(), Tunnel::Phase::Stopped,
                                   10000);
         QCOMPARE(tunnel.error(), QStringLiteral("yume stopped"));

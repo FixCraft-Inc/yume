@@ -127,8 +127,24 @@ implementation in `yume` opens, checks and writes the kit, and the window
 links no cryptography. The code never goes into a command line or a file.
 `yume-gui --import-kit FILE --name NAME` does the same without a window.
 
-A kit's name is 1 to 48 letters, digits, dots, dashes or underscores, and
-names its directory, socket and output file. Removing a kit deletes its
+A kit's name is 1 to 48 letters, digits, dots, dashes or underscores, starting
+with a letter, digit or underscore, and names its directory, socket and output
+file. Rename opens a name dialog for a stopped kit; Cancel or Escape leaves it
+unchanged. Before moving its directory, the window asks both names' control
+sockets again and refuses a running client or an uncertain reply. The move
+never replaces an existing target and keeps the kit's configuration and
+credentials unchanged. Relative credential paths follow the directory, as
+`yume` resolves them from `yume.json`'s parent. An absolute file, forward socket
+or program path inside the old directory is refused; use relative file
+references or move those other paths outside it first. The selected kit and
+saved selection follow its new name.
+File references with `..` components are also refused, as the native parser
+already requires.
+The checks do not reserve the name against an independent process starting a
+client immediately afterwards; stop clients using the kit before renaming it
+from another window or command line.
+
+Removing a kit deletes its
 directory, keys included, after a second confirmation, and only while it is
 stopped.
 
@@ -154,7 +170,7 @@ asks for a new review. Closing it, Escape and no answer accept nothing, and
 Keep waiting has the focus.
 
 **Connect** lists the kits with their state, the import form and each kit's
-folder.
+folder, rename action and removal confirmation.
 
 **Logs** shows the latest lines the running `yume` printed, from the control
 socket's `messages` request, with a filter, following and copying. `yume`
@@ -194,8 +210,8 @@ modules. It links no YUME library, so it also builds with
   speaks control protocol 1.
 - `yume_gui_ui_test` and `yume_gui_ui_rtl_test` drive the real pages with the
   keyboard: page shortcuts, a focus order where every control has a name,
-  connect and disconnect, and route consent. The second checks the mirrored
-  layout.
+  connect and disconnect, kit renaming and preservation, and route consent.
+  The second checks the mirrored layout and the rename dialog's keyboard flow.
 - `yume_gui_live_test` runs a real `yumed` and `yume`: a sealed kit imported
   through the GUI, connect, stop, reconnect and stop with each leg's report
   inspected and a payload fetched through the tunnel, and a killed window
@@ -206,13 +222,6 @@ proposal is shown, as images for visual review. It fails when a page raises a
 QML warning. `yume-gui --headless ACTION --kit NAME` runs the window's
 lifecycle without a display and prints one JSON report per step. It exits 2
 when nothing could be exercised, so an empty run never reads as a pass.
-
-Measured with the offscreen platform on the development laptop (Qt 6.8.2,
-Release build without link-time optimization): the first frame renders 0.12
-seconds after start, the process uses about 78 MiB of resident memory with a
-running kit, 32 MiB of it its own and the rest shared Qt libraries, and the
-stripped program is 464 KiB beside 34 MiB of system Qt libraries. A real
-display and GPU add their own start-up time.
 
 ## Limits
 

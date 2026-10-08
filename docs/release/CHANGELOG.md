@@ -560,6 +560,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `ubuntu-22.04`: it ships nothing, and that image's libtsan 11 reports a
   false double lock against mutexes in recycled heap storage.
 
+- **Fuzzing reaches what a client sends before it authenticates.**
+  `yume_fuzz_h2_admission` covers the admission path and the `:authority`
+  check, `yume_fuzz_cover_site` the cover site's answer to any method and
+  target, and `yume_fuzz_websocket` the WebSocket framing of an admitted
+  stream in either role, fed in pieces. Each checks a property beside
+  crashes: an accepted path builds back to the same text, only GET and HEAD
+  of the site's own files succeed, and the codec never hands back more bytes
+  than it was fed. CI's fuzz job runs all seven harnesses.
+
 ### Changed
 
 - **The cover tools' tests run on the pinned Node.** They model the Node 24.18

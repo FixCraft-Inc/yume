@@ -119,7 +119,8 @@ cmake -S . -B build-fuzz -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DYUME_BUILD_TESTING=ON -DYUME_BUILD_FUZZERS=ON
 cmake --build build-fuzz -j"$(nproc)" \
   --target yume_fuzz_ytp1_protocol yume_fuzz_ytp1_auth yume_fuzz_config_v1 \
-  yume_fuzz_circuit1
+  yume_fuzz_circuit1 yume_fuzz_h2_admission yume_fuzz_cover_site \
+  yume_fuzz_websocket
 bash tests/fuzz/run_fuzzers.sh build-fuzz/bin 600 fuzz-out
 ```
 
@@ -148,6 +149,9 @@ evidence.
 | `yume_fuzz_ytp1_auth` | AUTH TLV records in `ytp/security.*` | Unknown critical fields, duplicate IDs, reordered TLVs and wrong suite values are refused, and unknown noncritical fields survive |
 | `yume_fuzz_config_v1` | The schema-1 parser in `config/v1/` | Typed rejection is the expected failure, and any other exception is a finding. It opens no credential file |
 | `yume_fuzz_circuit1` | Circuit 1 cells, handshakes, CREATE bodies, relay messages and BEGIN destinations in `circuit/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
+| `yume_fuzz_h2_admission` | The admission path and the `:authority` check against the TLS server name in `admission/h2_admission.*` | An accepted path is canonical and builds back to the same text |
+| `yume_fuzz_cover_site` | The cover site's answer to a method and request target in `providers/cover_site.*` | Only GET and HEAD select a file, always one of the site's own. GET and HEAD of a target agree, and HEAD has no body |
+| `yume_fuzz_websocket` | WebSocket framing in either role in `stealth/websocket_codec.*`, fed in pieces | Payload handed back plus framing retired never exceeds the bytes fed |
 
 Corpora live outside the tree. A crashing input is evidence and does not
 belong in Git.

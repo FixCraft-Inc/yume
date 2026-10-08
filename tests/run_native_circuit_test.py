@@ -10,6 +10,7 @@ node-c and node-d are exits that may reach 127.0.0.1 only.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yume_native_session as session  # noqa: E402
 import run_native_cluster_test as cluster  # noqa: E402
+import run_native_stress_test as stress  # noqa: E402
 
+MIB = 1024 * 1024
 NAMES = ("node-a", "node-b", "node-c", "node-d")
 EXITS = ("node-c", "node-d")
 # Each node on its own /16 inside 127/8, so the routes view gives them
@@ -221,7 +224,163 @@ class Client:
         self.process = None
 
 
-def run(yumed: Path, program: Path, yume: Path, openssl: Path) -> None:
+def stream_pair(listener: socket.socket, client: Client,
+                held: list[socket.socket]) -> tuple[socket.socket, socket.socket]:
+    """A SOCKS5 stream through the client's circuit and the exit's connection to us."""
+    code, app = session.socks_connect(client.socks_port, "127.0.0.1",
+                                      listener.getsockname()[1])
+    held.append(app)
+    if code != 0:
+        raise session.SessionFailure(f"SOCKS5 CONNECT was refused with {code}")
+    try:
+        target, _ = listener.accept()
+    except TimeoutError as error:
+        raise session.SessionFailure("the exit never connected the stream") from error
+    held.append(target)
+    for connection in (app, target):
+        connection.settimeout(120)
+        connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)
+    return app, target
+
+
+def await_backpressure(sender: Future, progress: stress.Progress, what: str) -> int:
+    deadline = time.monotonic() + 30
+    while True:
+        if sender.done():
+            sender.result()
+            raise session.SessionFailure(f"{what} finished without a reader")
+        sent, changed = progress.snapshot()
+        if sent and time.monotonic() - changed >= 2:
+            return sent
+        if time.monotonic() >= deadline:
+            raise session.SessionFailure(f"{what} never reached a stable backpressure point")
+        time.sleep(0.1)
+
+
+def await_all(futures: list[Future], what: str, seconds: float = 120) -> None:
+    deadline = time.monotonic() + seconds
+    while not all(future.done() for future in futures):
+        for future in futures:
+            if future.done():
+                future.result()
+        if time.monotonic() >= deadline:
+            raise session.SessionFailure(f"{what} exceeded its deadline")
+        time.sleep(0.1)
+    for future in futures:
+        future.result()
+
+
+def stalled_streams(client: Client, nodes: dict[str, cluster.Node], probe: Probe,
+                    echo_target: str, hold: float) -> dict:
+    """A stream whose reader stops and one whose destination stops reading, beside healthy ones.
+
+    Each end keeps a stream's data within the window it granted and goes on
+    reading its circuit, so neither stall holds the circuit's other streams,
+    another client's circuit over the same nodes, or a cell long enough for
+    a node's stall timeout to end the circuit. Both stalled streams then
+    resume with their bytes, order and half-close intact.
+    """
+    held: list[socket.socket] = []
+    pool = ThreadPoolExecutor(max_workers=16)
+    size = 32 * MIB
+    try:
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(8)
+            listener.settimeout(30)
+            # The exit sends toward a client application that does not read.
+            reader_app, reader_target = stream_pair(listener, client, held)
+            download_progress = stress.Progress()
+            download = pool.submit(stress.transmit, reader_target, size, 3, download_progress)
+            download_held = await_backpressure(download, download_progress,
+                                               "a download to an unread application")
+            stalled_since = time.monotonic()
+            # The client sends toward a destination that does not read.
+            writer_app, writer_target = stream_pair(listener, client, held)
+            upload_progress = stress.Progress()
+            upload = pool.submit(stress.transmit, writer_app, size, 4, upload_progress)
+            upload_held = await_backpressure(upload, upload_progress,
+                                             "an upload to an unread destination")
+            entry = nodes["node-a"]
+
+            started = time.monotonic()
+            healthy: list[Future] = []
+            for index in range(2):
+                app, target = stream_pair(listener, client, held)
+                salt = 10 + index * 2
+                healthy += [pool.submit(stress.transmit, app, 2 * MIB, salt),
+                            pool.submit(stress.receive, target, 2 * MIB, salt),
+                            pool.submit(stress.transmit, target, 2 * MIB, salt + 1),
+                            pool.submit(stress.receive, app, 2 * MIB, salt + 1)]
+            bystander = pool.submit(probe.run, "bystander", "node-a,node-b,node-c",
+                                    echo_target, "--bytes", "900000")
+            await_all(healthy, "healthy streams beside the stalled ones")
+            report = bystander.result(timeout=120)
+            expect(first(report)["built"] and report.get("stream") == "ok" and
+                   report.get("echoed") == 900000,
+                   "another client's circuit did not carry its stream beside the stall", report)
+            healthy_seconds = time.monotonic() - started
+
+            # The bystander's circuit ends when its probe exits, and the
+            # entry may count that teardown as failed. Count from once the
+            # entry's counts have settled.
+            deadline = time.monotonic() + 30
+            counts, since = None, time.monotonic()
+            while time.monotonic() - since < 2:
+                state = circuits(entry)
+                if (state.get("open"), state.get("failed")) != counts:
+                    counts, since = (state.get("open"), state.get("failed")), time.monotonic()
+                if time.monotonic() >= deadline:
+                    raise session.SessionFailure(f"the entry's circuits never settled: {state}")
+                time.sleep(0.2)
+            failed = {name: circuits(node).get("failed", 0) for name, node in nodes.items()}
+            open_held = circuits(entry).get("open", 0)
+
+            # Hold the stall, then show it ended nothing.
+            time.sleep(max(0.0, hold - (time.monotonic() - stalled_since)))
+            expect(not download.done() and not upload.done(),
+                   "a stalled stream finished without its reader",
+                   (download_progress.snapshot(), upload_progress.snapshot()))
+            moved = (download_progress.snapshot()[0] - download_held,
+                     upload_progress.snapshot()[0] - upload_held)
+            after = {name: circuits(node).get("failed", 0) for name, node in nodes.items()}
+            open_after = circuits(entry).get("open", 0)
+            expect(after == failed and open_after >= open_held,
+                   "a node ended a circuit while one of its streams stalled",
+                   (failed, after, open_held, open_after))
+            app, target = stream_pair(listener, client, held)
+            await_all([pool.submit(stress.transmit, app, 65536, 20),
+                       pool.submit(stress.receive, target, 65536, 20)],
+                      "a new stream after the stall")
+
+            # Readers return: every byte arrives, in order and with the
+            # half-close, and each stream still carries the other way.
+            await_all([download, pool.submit(stress.receive, reader_app, size, 3),
+                       upload, pool.submit(stress.receive, writer_target, size, 4)],
+                      "the stalled streams after their readers returned")
+            await_all([pool.submit(stress.transmit, reader_app, MIB, 5),
+                       pool.submit(stress.receive, reader_target, MIB, 5),
+                       pool.submit(stress.transmit, writer_target, MIB, 6),
+                       pool.submit(stress.receive, writer_app, MIB, 6)],
+                      "the resumed streams in their other direction")
+            return {"download_bytes_at_stall": download_held,
+                    "upload_bytes_at_stall": upload_held,
+                    "bytes_moved_while_held": moved,
+                    "healthy_seconds": round(healthy_seconds, 2),
+                    "held_seconds": round(time.monotonic() - stalled_since, 2),
+                    "entry_open_circuits": open_held}
+    finally:
+        for connection in held:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+def run(yumed: Path, program: Path, yume: Path, openssl: Path, stall_seconds: float) -> None:
     environment = session.openssl_environment(openssl)
     with tempfile.TemporaryDirectory(prefix="yume-circuit-", dir="/tmp") as temporary:
         root = Path(temporary)
@@ -251,13 +410,14 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path) -> None:
         cluster.setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
         # Separate clients keep each phase within the entry's per-client
         # circuit rate, a burst of 4.
-        for client in ("walker", "crowd", "hauler", "rider", "drifter"):
+        for client in ("walker", "crowd", "hauler", "rider", "drifter", "lagger", "bystander"):
             cluster.setup(environment, "add-client", "--server", str(nodes["node-a"].server),
                           "--host", "127.0.0.1", "--output", str(root / client),
                           "--client-name", client, "--circuits")
         a, b = nodes["node-a"], nodes["node-b"]
         rider = Client(yume, root / "rider", environment, sockets)
         drifter = Client(yume, root / "drifter", environment, sockets, min_hops=1)
+        lagger = Client(yume, root / "lagger", environment, sockets)
         echo = EchoServer()
         target = f"127.0.0.1:{echo.port}"
         probe = Probe(program, environment, operator, root)
@@ -326,6 +486,14 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path) -> None:
                    "failure" not in report,
                    "a reload with unchanged inputs broke a loaded circuit", report)
             print("a reload kept a loaded circuit running")
+
+            lagger.start()
+            stall = stalled_streams(lagger, nodes, probe, target, stall_seconds)
+            expect(lagger.circuits().get("current_hops") == 3,
+                   "the stalled client left its three-hop route", lagger.circuits())
+            lagger.stop()
+            print("stalled streams held no other stream or circuit, then resumed intact: "
+                  + json.dumps(stall, sort_keys=True))
 
             # Stopping the middle under load ends the circuit, and the entry
             # says so without naming the hop that went away.
@@ -448,9 +616,10 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path) -> None:
         except session.SessionFailure:
             rider.kill()
             drifter.kill()
+            lagger.kill()
             for node in nodes.values():
                 node.kill()
-            for client in (rider, drifter):
+            for client in (rider, drifter, lagger):
                 if client.log.exists():
                     print(f"---- {client.kit.name} yume.log", file=sys.stderr)
                     print(client.log.read_text(encoding="utf-8", errors="replace")[-4000:],
@@ -463,6 +632,7 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path) -> None:
             echo.close()
             rider.kill()
             drifter.kill()
+            lagger.kill()
             for node in nodes.values():
                 node.kill()
         for log in sorted(root.glob("node-*.log")):
@@ -477,10 +647,15 @@ def main() -> int:
     parser.add_argument("--probe", required=True, type=Path)
     parser.add_argument("--yume", required=True, type=Path)
     parser.add_argument("--openssl", required=True, type=Path)
+    # Seconds a stalled stream stays held beside healthy ones. Past a node's
+    # 30-second stall timeout it also shows that only cells, not streams,
+    # count toward it.
+    parser.add_argument("--stall-seconds", type=float, default=3.0)
     arguments = parser.parse_args()
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     try:
-        run(arguments.yumed, arguments.probe, arguments.yume, arguments.openssl)
+        run(arguments.yumed, arguments.probe, arguments.yume, arguments.openssl,
+            arguments.stall_seconds)
     except session.SessionFailure as error:
         print(f"native circuit test: {error}", file=sys.stderr)
         return 1

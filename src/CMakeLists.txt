@@ -1950,8 +1950,9 @@ if(YUME_BUILD_TESTING)
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
             # Four clustered daemons carrying circuits for a test client that
             # fetches the routes view, builds two- and three-hop circuits and
-            # echoes through an exit, with refusals, a stopped middle and a
-            # reload. The probe is a test tool and is not installed.
+            # echoes through an exit, with refusals, stalled streams beside
+            # healthy ones, a stopped middle and a reload. The probe is a test
+            # tool and is not installed.
             add_executable(yume_circuit_probe runtime/circuit_probe.cpp)
             target_link_libraries(yume_circuit_probe PRIVATE
                 yume_native_endpoint yume_circuit_runtime yume_native_credentials

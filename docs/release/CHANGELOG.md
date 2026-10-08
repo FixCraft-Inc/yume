@@ -51,6 +51,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   reserves pending and active slots per authenticated identity across its
   sessions. Failed, canceled and closed opens release the reservation; a
   circuit exit accounts its authenticated previous hop, not the hidden client.
+- **Circuit streams share a slow path evenly.** When a circuit's link or the
+  client's session was the bottleneck, one stream could take every cell
+  slot: an exit's destination read that completes at once read again before
+  its sibling streams, and the client gave freed slots to its lowest stream.
+  Both now serve waiting streams in turn, so parallel downloads and uploads
+  through a circuit share its path evenly again.
 - **Android build of the library.** `tools/build_android_shared_abi.sh`
   builds `libyume.so` for the Android ABIs with the pinned NDK, the patched
   OpenSSL built static for each ABI and the vcpkg manifest's dependencies.

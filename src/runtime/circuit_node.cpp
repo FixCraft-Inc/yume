@@ -706,12 +706,19 @@ private:
     }
 
     // A read can complete inline and end its stream, so this walks a copy.
+    // The walk starts after the stream that last started a read: the queue
+    // frees one slot per write, and an inline read takes it at once, so a
+    // walk from the first stream would give that stream every slot.
     void resume_reads() noexcept {
         if (closed_ || streams_.empty()) return;
         std::vector<std::shared_ptr<ExitStream>> waiting;
         try {
             waiting.reserve(streams_.size());
-            for (const auto& [id, stream] : streams_) waiting.push_back(stream);
+            const auto next = streams_.upper_bound(read_cursor_);
+            for (auto it = next; it != streams_.end(); ++it)
+                waiting.push_back(it->second);
+            for (auto it = streams_.begin(); it != next; ++it)
+                waiting.push_back(it->second);
         } catch (...) {
             close(true);
             return;
@@ -902,6 +909,7 @@ private:
             return;
         }
         stream->reading = true;
+        read_cursor_ = stream->id;
         const auto most = std::min<std::uint64_t>(
             stream->send_window, c1::MaxDataPayload(c1::Direction::Backward));
         try {
@@ -941,7 +949,7 @@ private:
                         }
                         stream->send_window -= data.size();
                         self->send(c1::RelayType::Data, stream->id, data);
-                        self->pump_read(stream);
+                        self->pump_read_later(stream);
                     } catch (...) {
                         self->close(true);
                     }
@@ -950,6 +958,17 @@ private:
             stream->reading = false;
             close(true);
         }
+    }
+
+    // A destination read may complete before async_read returns, so a
+    // stream with data queued would read again at once and fill the queue
+    // alone. It reads again after the streams already waiting their turn.
+    void pump_read_later(const std::shared_ptr<ExitStream>& stream) {
+        boost::asio::post(node_->env.context->executor(),
+                          [self = shared_from_this(), stream] {
+                              if (self->find(stream->id) == stream)
+                                  self->pump_read(stream);
+                          });
     }
 
     // A stream both sides finished, with nothing left to write, is gone.
@@ -997,6 +1016,9 @@ private:
     std::optional<Clock::time_point> backward_since_;
     std::optional<Clock::time_point> extend_since_;
     bool reading_inbound_{false};
+    // The stream that last started a destination read, where resume_reads
+    // continues its round.
+    std::uint32_t read_cursor_{0U};
     bool reading_next_{false};
     bool backward_writing_{false};
     bool terminal_{false};

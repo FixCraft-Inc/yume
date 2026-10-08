@@ -247,7 +247,9 @@ add-client --circuits` writes. Circuit streams' receive windows are capped at
 an eighth of the session budget on `yume.circuit` and on links, and
 `yumed --status` counts circuits per link and refusals by bound. The
 in-memory `yume_circuit_runtime_test` covers the node service and the client
-builder, and `yume_native_circuit_test` runs four daemons with a test client:
+builder, including an even share for a circuit's downloads and uploads over
+a slow link,
+and `yume_native_circuit_test` runs four daemons with a test client:
 two- and three-hop circuits carrying a stream both ways, an exit policy and
 a non-exit refusing streams, a client without the grant, the per-client
 bound, a reload under load and a stopped middle.
@@ -269,7 +271,10 @@ node and circuits closing inside the pool's own loops.
 `yume_circuit_record_fit_test` checks that a full cell of either direction
 leaves as one 16384-byte TLS write. The four-daemon test runs the real `yume`
 through three hops, the plain HTTP refusal, a proposal accepted after the
-exits stopped and a pre-approved direct route. The C ABI refuses a
+exits stopped and a pre-approved direct route. It also stops one stream's
+reader and another's destination: healthy streams on the same circuit and
+another client's circuit keep moving, no node ends a circuit, and both
+stalled streams then deliver every byte. The C ABI refuses a
 `circuits` section.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then

@@ -8,6 +8,7 @@
 // exits, flow control and every refusal the node or client must make, on one
 // execution thread with no network.
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -65,12 +66,16 @@ int g_failures = 0;
     } while (false)
 
 // A destination that always has data and discards what it is sent. It
-// counts its closes in closed.
+// counts its closes in closed. With inline_reads a read completes before
+// async_read returns, as the TCP route provider's may when data is queued.
 class SourceChannel final : public engine::ByteChannel {
 public:
     SourceChannel(std::shared_ptr<providers::AsioExecutionContext> context,
-                  std::shared_ptr<std::atomic<int>> closed)
-        : context_(std::move(context)), closed_count_(std::move(closed)) {}
+                  std::shared_ptr<std::atomic<int>> closed,
+                  bool inline_reads = false)
+        : context_(std::move(context)),
+          closed_count_(std::move(closed)),
+          inline_reads_(inline_reads) {}
     engine::ExecutorAffinity executor_affinity() const noexcept override {
         return context_->affinity();
     }
@@ -87,6 +92,10 @@ public:
         }
         auto shared = std::make_shared<Buffer>(take(Buffer::allocate(
             std::min<std::size_t>(max_bytes, 65536U), 65536U)));
+        if (inline_reads_) {
+            completion(Result<Buffer>(std::move(*shared)));
+            return;
+        }
         boost::asio::post(context_->executor(),
                           [completion = std::move(completion), shared] {
                               completion(Result<Buffer>(std::move(*shared)));
@@ -109,6 +118,7 @@ public:
 private:
     std::shared_ptr<providers::AsioExecutionContext> context_;
     std::shared_ptr<std::atomic<int>> closed_count_;
+    bool inline_reads_{false};
     bool closed_{false};
 };
 
@@ -164,6 +174,7 @@ struct Cluster {
                 }
                 auto [mine, theirs] = PipeEnd::pair(runtime.context());
                 links.push_back(mine);
+                far_ends[self + ">" + target] = theirs;
                 // A node that takes the stream and never answers.
                 if (target == "silent") {
                     client_ends.push_back(theirs);
@@ -192,10 +203,11 @@ struct Cluster {
                                 Status(failure->second)));
                             return;
                         }
-                        if (to.port == 19) {
+                        if (to.port == 18 || to.port == 19) {
                             done(Result<std::unique_ptr<engine::ByteChannel>>(
                                 std::make_unique<SourceChannel>(
-                                    runtime.context(), sources_closed)));
+                                    runtime.context(), sources_closed,
+                                    to.port == 18)));
                             return;
                         }
                         // An echo that answers its connection late, so the
@@ -237,6 +249,7 @@ struct Cluster {
             // thread, so the keys and contexts go here too.
             services.clear();
             links.clear();
+            far_ends.clear();
             client_ends.clear();
             identities.clear();
             crypto.reset();
@@ -340,6 +353,8 @@ struct Cluster {
     std::map<std::string, std::shared_ptr<CircuitService>> services;
     std::map<std::string, std::string> redirects;
     std::vector<std::shared_ptr<PipeEnd>> links;
+    // The node end of each link, by "from>to", which the "to" node writes.
+    std::map<std::string, std::shared_ptr<PipeEnd>> far_ends;
     std::vector<std::shared_ptr<PipeEnd>> client_ends;
 };
 
@@ -687,6 +702,129 @@ void test_circuit_window_total(Cluster& cluster) {
     });
 }
 
+constexpr std::size_t kFairStreams = 4U;
+using Shares = std::array<std::size_t, kFairStreams>;
+
+// Jain's index of the streams' bytes: 1 when they share evenly, 1/4 when one
+// stream takes everything.
+void check_even(const char* what, const Shares& bytes) {
+    double sum = 0.0;
+    double squares = 0.0;
+    for (const auto value : bytes) {
+        sum += static_cast<double>(value);
+        squares += static_cast<double>(value) * static_cast<double>(value);
+    }
+    const double jain =
+        squares > 0.0 ? sum * sum / (kFairStreams * squares) : 0.0;
+    std::cout << what << " over a slow link:";
+    for (const auto value : bytes) std::cout << ' ' << value;
+    std::cout << " bytes, Jain index " << jain << '\n';
+    CHECK(jain >= 0.9);
+}
+
+std::vector<std::shared_ptr<StreamResponder>> open_streams(
+    Cluster& cluster, const std::shared_ptr<ClientCircuit>& circuit,
+    std::uint16_t port) {
+    std::vector<std::shared_ptr<StreamResponder>> streams;
+    for (std::size_t index = 0U; index < kFairStreams; ++index) {
+        auto stream = cluster.open(circuit, port);
+        CHECK(stream.ok());
+        if (!stream.ok()) return {};
+        streams.push_back(stream.value());
+    }
+    return streams;
+}
+
+// Four downloads share a slow link: sources that always have data, whose
+// reads complete inline as the TCP route provider's may, through an exit
+// whose link toward the client completes each write after a delay.
+void test_download_fairness(Cluster& cluster) {
+    auto circuit = cluster.circuit({"north", "east", "west"});
+    CHECK(cluster.build(circuit).ok());
+    const auto streams = open_streams(cluster, circuit, 18);
+    if (streams.empty()) return;
+    const auto link = cluster.far_ends.at("east>west");
+    struct Totals final {
+        Shares bytes{};
+        bool running{true};
+    };
+    auto totals = std::make_shared<Totals>();
+    cluster.runtime.sync([&] {
+        link->write_delay = 2ms;
+        for (std::size_t index = 0U; index < kFairStreams; ++index) {
+            auto reader = std::make_shared<std::function<void()>>();
+            *reader = [stream = streams[index], totals, index, reader] {
+                stream->async_read(
+                    {}, [totals, index, reader](Result<ReceivedRecord> result) {
+                        if (!result.ok() || !totals->running) {
+                            *reader = nullptr;
+                            return;
+                        }
+                        totals->bytes[index] += result.value().payload().size();
+                        (*reader)();
+                    });
+            };
+            (*reader)();
+        }
+    });
+    std::this_thread::sleep_for(2s);
+    check_even("downloads", cluster.runtime.sync([&] {
+        totals->running = false;
+        return totals->bytes;
+    }));
+    cluster.runtime.sync([&] {
+        link->write_delay = 0ms;
+        for (const auto& stream : streams)
+            stream->close(Status(StatusCode::Cancelled));
+        circuit->close();
+    });
+}
+
+// Four uploads share the client's slow session the same way: streams that
+// always have data to send, over a session whose writes complete late.
+void test_upload_fairness(Cluster& cluster) {
+    auto circuit = cluster.circuit({"north", "east", "west"});
+    const auto session = cluster.client_ends.back();
+    CHECK(cluster.build(circuit).ok());
+    const auto streams = open_streams(cluster, circuit, 19);
+    if (streams.empty()) return;
+    struct Totals final {
+        Shares bytes{};
+        bool running{true};
+    };
+    auto totals = std::make_shared<Totals>();
+    cluster.runtime.sync([&] {
+        session->write_delay = 2ms;
+        for (std::size_t index = 0U; index < kFairStreams; ++index) {
+            auto writer = std::make_shared<std::function<void()>>();
+            *writer = [stream = streams[index], totals, index, writer] {
+                stream->async_write(
+                    take(Buffer::allocate(16384U, 65536U)), {},
+                    [totals, index, writer](Status status, std::size_t size) {
+                        if (!status.ok() || !totals->running) {
+                            *writer = nullptr;
+                            return;
+                        }
+                        totals->bytes[index] += size;
+                        (*writer)();
+                    });
+            };
+            (*writer)();
+        }
+    });
+    std::this_thread::sleep_for(2s);
+    check_even("uploads", cluster.runtime.sync([&] {
+        totals->running = false;
+        return totals->bytes;
+    }));
+    cluster.runtime.sync([&] {
+        session->write_delay = 0ms;
+        for (const auto& stream : streams)
+            stream->close(Status(StatusCode::Cancelled));
+        circuit->close();
+    });
+}
+
 // A one-hop circuit adds no privacy, so even an exit refuses its stream.
 void test_one_hop_exit_refused(IoRuntime& io) {
     Cluster everywhere(io, true);
@@ -719,6 +857,8 @@ int main() {
             test_extend_failures(cluster);
             test_client_bounds(cluster);
             test_circuit_window_total(cluster);
+            test_download_fairness(cluster);
+            test_upload_fairness(cluster);
             test_middle_loss(cluster);
         }
         test_one_hop_exit_refused(io);

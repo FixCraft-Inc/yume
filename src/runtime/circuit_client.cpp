@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <deque>
+#include <limits>
 #include <map>
 #include <new>
 #include <utility>
@@ -134,6 +135,9 @@ struct ClientCircuit::State final : std::enable_shared_from_this<State> {
     std::deque<Buffer> forward_queue;
     bool writing{false};
     std::uint32_t next_stream{1U};
+    // The stream that last sent from resume_writers, where its next round
+    // starts.
+    std::uint32_t write_cursor{0U};
     std::map<std::uint32_t, std::shared_ptr<detail::ClientStream>> streams;
     std::function<void()> closed_observer;
 
@@ -332,13 +336,16 @@ public:
         forget();
     }
 
-    // Sends queued data while the exit's window and the circuit's queue
-    // allow, then END once a shut-down stream has drained.
-    void pump() noexcept {
+    // Sends queued data, at most cells of it, while the exit's window and
+    // the circuit's queue allow, then END once a shut-down stream has
+    // drained. Reports whether it sent data.
+    bool pump(
+        std::size_t cells = std::numeric_limits<std::size_t>::max()) noexcept {
         const auto state = circuit_.lock();
-        if (!state || terminated()) return;
+        if (!state || terminated()) return false;
+        std::size_t sent = 0U;
         try {
-            while (!writes_.empty() && send_window_ > 0U &&
+            while (sent < cells && !writes_.empty() && send_window_ > 0U &&
                    state->forward_room()) {
                 auto& write = writes_.front();
                 const auto chunk = std::min<std::size_t>(
@@ -349,6 +356,7 @@ public:
                     bytes_of(write.data).subspan(write.offset, chunk));
                 send_window_ -= chunk;
                 write.offset += chunk;
+                ++sent;
                 if (write.offset == write.data.size()) {
                     auto done = std::move(write.done);
                     const auto size = write.data.size();
@@ -363,9 +371,11 @@ public:
         } catch (...) {
             state->close(Status(StatusCode::Internal));
         }
+        return sent > 0U;
     }
 
     bool has_writes() const noexcept { return !writes_.empty(); }
+    std::uint32_t id() const noexcept { return id_; }
 
 private:
     struct PendingWrite final {
@@ -824,21 +834,34 @@ void ClientCircuit::State::write() noexcept {
     }
 }
 
-// A stream's pump can end its stream, so this walks a copy.
+// A stream's pump can end its stream, so this walks a copy. The queue frees
+// one slot per write, so each round gives every waiting stream one cell,
+// starting after the stream that sent last, and no stream's backlog takes
+// every slot.
 void ClientCircuit::State::resume_writers() noexcept {
     if (phase != Phase::Ready || streams.empty() || !forward_room()) return;
     std::vector<std::shared_ptr<detail::ClientStream>> waiting;
     try {
-        for (const auto& [id, stream] : streams) {
-            if (stream->has_writes()) waiting.push_back(stream);
+        const auto next = streams.upper_bound(write_cursor);
+        for (auto it = next; it != streams.end(); ++it) {
+            if (it->second->has_writes()) waiting.push_back(it->second);
+        }
+        for (auto it = streams.begin(); it != next; ++it) {
+            if (it->second->has_writes()) waiting.push_back(it->second);
         }
     } catch (...) {
         close(Status(StatusCode::ResourceExhausted));
         return;
     }
-    for (const auto& stream : waiting) {
-        if (phase != Phase::Ready) return;
-        stream->pump();
+    for (bool sent = true; sent;) {
+        sent = false;
+        for (const auto& stream : waiting) {
+            if (phase != Phase::Ready || !forward_room()) return;
+            if (stream->pump(1U)) {
+                write_cursor = stream->id();
+                sent = true;
+            }
+        }
     }
 }
 

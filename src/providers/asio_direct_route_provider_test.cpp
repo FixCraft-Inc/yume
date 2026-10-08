@@ -374,7 +374,8 @@ private:
 
 class TestSecurity final : public SessionSecurityProvider {
 public:
-    TestSecurity() : manifest_(capability_manifest()) {}
+    explicit TestSecurity(std::string identity)
+        : manifest_(capability_manifest()), identity_(std::move(identity)) {}
     std::string_view provider_id() const noexcept override {
         return "test.security";
     }
@@ -407,7 +408,7 @@ public:
             ytp1::AuthMessageType::Accepted, ytp1::EndpointRole::Server);
         output.established = true;
         output.authenticated_peer = require(PeerEvidence::create(
-            EndpointRole::Client, "device-1", "test-composite",
+            EndpointRole::Client, identity_, "test-composite",
             std::vector<std::byte>{std::byte{1}}));
         output.authenticated_peer_capability_manifest = manifest_;
         return Result<AuthenticationOutput>(std::move(output));
@@ -440,26 +441,29 @@ public:
     void cancel() noexcept override {}
 private:
     std::vector<std::byte> manifest_;
+    std::string identity_;
 };
 
 class TestSecurityFactory final : public SessionSecurityProviderFactory {
 public:
-    TestSecurityFactory()
+    explicit TestSecurityFactory(std::string identity)
         : descriptor_(make_descriptor(
               "test.security", ProviderKind::SessionSecurity,
-              mandatory_capabilities(ProviderKind::SessionSecurity))) {}
+              mandatory_capabilities(ProviderKind::SessionSecurity))),
+          identity_(std::move(identity)) {}
     const ProviderDescriptor& descriptor() const noexcept override {
         return descriptor_;
     }
     Result<std::unique_ptr<SessionSecurityProvider>> create(
         EndpointRole) override {
         std::unique_ptr<SessionSecurityProvider> provider =
-            std::make_unique<TestSecurity>();
+            std::make_unique<TestSecurity>(identity_);
         return Result<std::unique_ptr<SessionSecurityProvider>>(
             std::move(provider));
     }
 private:
     ProviderDescriptor descriptor_;
+    std::string identity_;
 };
 
 class TestSecureChannel final : public SecureChannel {
@@ -562,7 +566,8 @@ private:
 
 std::shared_ptr<const EngineGraph> request_graph(
     const std::shared_ptr<CaptureHandler>& stream_handler,
-    const std::shared_ptr<CaptureHandler>& packet_handler) {
+    const std::shared_ptr<CaptureHandler>& packet_handler,
+    std::string identity) {
     std::vector<ProviderRequirement> providers;
     providers.push_back(requirement(
         "test.bytes", ProviderKind::ByteChannel,
@@ -610,8 +615,10 @@ std::shared_ptr<const EngineGraph> request_graph(
               std::make_shared<NullFrontDoorProvider>()).ok());
     CHECK(builder.register_carrier_provider(
               std::make_shared<NullCarrierProvider>()).ok());
-    CHECK(builder.register_session_security_provider_factory(
-              std::make_shared<TestSecurityFactory>()).ok());
+    CHECK(builder
+              .register_session_security_provider_factory(
+                  std::make_shared<TestSecurityFactory>(std::move(identity)))
+              .ok());
     CHECK(builder.register_route_provider(
               std::make_shared<NullRouteProvider>()).ok());
     CHECK(builder.register_stream_handler("stream", stream_handler).ok());
@@ -621,7 +628,8 @@ std::shared_ptr<const EngineGraph> request_graph(
 
 class RequestFactory final {
 public:
-    AuthorizedRouteRequest make(ytp1::Destination destination) const {
+    AuthorizedRouteRequest make(ytp1::Destination destination,
+                                std::string identity = "device-1") const {
         // This fixture mints an authorized value, not a long-running peer.
         // Each request gets an authenticated session so unrelated socket/DNS
         // test delays cannot trigger a rekey the mock does not implement.
@@ -633,7 +641,7 @@ public:
             std::shared_ptr<SessionEngine> session;
             ~SessionOwner() noexcept { session->stop(); }
         } owner{require(SessionEngine::create(
-            request_graph(stream_handler, packet_handler),
+            request_graph(stream_handler, packet_handler, std::move(identity)),
             std::move(carrier_owner)))};
         int starts = 0;
         owner.session->async_start([&](Status status) {
@@ -1609,6 +1617,114 @@ void test_active_capacity_and_release(RequestFactory& requests) {
     second_server.wait();
 }
 
+void test_identity_capacity_across_sessions_and_protocols(
+    RequestFactory& requests) {
+    boost::asio::io_context peer_context;
+    Tcp::acceptor listener(peer_context,
+                           {boost::asio::ip::address_v4::loopback(), 0U});
+    Udp::socket peer(peer_context,
+                     {boost::asio::ip::address_v4::loopback(), 0U});
+    IoRuntime runtime;
+    AsioDirectRouteLimits limits;
+    limits.max_active_connections = 3U;
+    limits.max_pending_opens = 8U;
+    std::atomic<unsigned> sockets{0U};
+    auto provider = make_provider(runtime, limits, [&](NativeSocket) {
+        ++sockets;
+        return Status::success();
+    });
+    auto tcp = requests.make(ipv4_destination(
+        ytp1::TransportProtocol::Tcp, listener.local_endpoint().port()));
+    auto udp = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp,
+                                              peer.local_endpoint().port()));
+    auto other = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp,
+                                                peer.local_endpoint().port()),
+                               "device-2");
+    auto third = requests.make(ipv4_destination(ytp1::TransportProtocol::Udp,
+                                                peer.local_endpoint().port()),
+                               "device-3");
+    // The two authorized requests came from distinct sessions of one peer.
+    CHECK(tcp.peer_evidence().identity() == udp.peer_evidence().identity());
+    CHECK(tcp.peer_evidence().identity() != other.peer_evidence().identity());
+    auto first = require(open_route(runtime, provider, tcp));
+    auto second = require(open_route(runtime, provider, udp));
+    auto refused = open_route(runtime, provider, udp);
+    CHECK(!refused.ok() &&
+          refused.status().code() == StatusCode::ResourceExhausted);
+    CHECK(sockets == 2U);
+
+    auto healthy = require(open_route(runtime, provider, other));
+    refused = open_route(runtime, provider, third);
+    CHECK(!refused.ok() &&
+          refused.status().code() == StatusCode::ResourceExhausted);
+    CHECK(sockets == 3U);
+
+    // Closing returns the identity's slot even while its wrapper is retained.
+    second.packet_channel_if()->close();
+    run_barrier(runtime);
+    auto replacement = require(open_route(runtime, provider, udp));
+    second.take_packet_channel().reset();
+    run_barrier(runtime);
+    refused = open_route(runtime, provider, udp);
+    CHECK(!refused.ok() &&
+          refused.status().code() == StatusCode::ResourceExhausted);
+    CHECK(sockets == 4U);
+    first.byte_channel_if()->close();
+    replacement.packet_channel_if()->close();
+    healthy.packet_channel_if()->close();
+    run_barrier(runtime);
+    auto after_close = require(open_route(runtime, provider, tcp));
+    after_close.byte_channel_if()->close();
+
+    // A burst of pending connects has a separate cap. All starts happen in
+    // one context dispatch, before any TCP connect completion can promote.
+    limits.max_active_connections = 8U;
+    limits.max_pending_opens = 3U;
+    sockets = 0U;
+    auto pending_provider = make_provider(runtime, limits, [&](NativeSocket) {
+        ++sockets;
+        return Status::success();
+    });
+    auto other_tcp =
+        requests.make(ipv4_destination(ytp1::TransportProtocol::Tcp,
+                                       listener.local_endpoint().port()),
+                      "device-2");
+    auto third_tcp =
+        requests.make(ipv4_destination(ytp1::TransportProtocol::Tcp,
+                                       listener.local_endpoint().port()),
+                      "device-3");
+    std::array<AsyncTicket<Result<RouteConnection>>, 5U> tickets;
+    runtime.invoke([&]() {
+        const std::array<const AuthorizedRouteRequest*, 5U> burst{
+            &tcp, &tcp, &tcp, &other_tcp, &third_tcp};
+        for (std::size_t index = 0U; index < burst.size(); ++index) {
+            auto& ticket = tickets[index];
+            pending_provider->async_open(
+                *burst[index], {},
+                [promise = ticket.promise,
+                 calls = ticket.calls](Result<RouteConnection> result) {
+                    ++*calls;
+                    promise->set_value(std::move(result));
+                });
+        }
+    });
+    for (std::size_t index = 0U; index < tickets.size(); ++index) {
+        auto result = await(tickets[index]);
+        if (index == 2U || index == 4U) {
+            CHECK(!result.ok() &&
+                  result.status().code() == StatusCode::ResourceExhausted);
+        } else {
+            CHECK(result.ok());
+            auto connection = std::move(result).take_value();
+            connection.byte_channel_if()->close();
+        }
+    }
+    CHECK(sockets == 3U);
+    run_barrier(runtime);
+    auto pending_reused = require(open_route(runtime, pending_provider, tcp));
+    pending_reused.byte_channel_if()->close();
+}
+
 class BlockingProtector final {
 public:
     Status operator()(NativeSocket) {
@@ -2034,6 +2150,8 @@ int main() {
         yume::providers::test_udp_round_trip_and_truncation(requests);
         yume::providers::test_dns_and_connect_errors(requests);
         yume::providers::test_active_capacity_and_release(requests);
+        yume::providers::test_identity_capacity_across_sessions_and_protocols(
+            requests);
         yume::providers::test_pending_capacity(requests);
         yume::providers::test_open_and_channel_cancellation(requests);
         yume::providers::test_provider_cancel_pending_open(requests);

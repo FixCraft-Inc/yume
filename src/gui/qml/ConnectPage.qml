@@ -38,6 +38,7 @@ Flickable {
                     compact: true
                     kind: "quiet"
                     text: qsTr("Refresh")
+                    enabled: !App.renaming
                     onClicked: App.refreshKits()
                 }
 
@@ -112,6 +113,16 @@ Flickable {
                             }
                             AppButton {
                                 visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
+                                enabled: !App.renaming && !App.importing
+                                compact: true
+                                kind: "quiet"
+                                text: qsTr("Rename")
+                                Accessible.name: qsTr("Rename %1").arg(kitRow.modelData.name)
+                                onClicked: renameDialog.openFor(kitRow.modelData.name)
+                            }
+                            AppButton {
+                                visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
+                                enabled: !App.renaming
                                 compact: true
                                 kind: "quiet"
                                 iconName: "trash"
@@ -132,6 +143,7 @@ Flickable {
                                 compact: true
                                 kind: "danger"
                                 text: qsTr("Delete")
+                                enabled: !App.renaming
                                 onClicked: {
                                     page.pendingRemoval = ""
                                     App.removeKit(kitRow.modelData.name)
@@ -205,7 +217,7 @@ Flickable {
                         id: importButton
                         kind: "primary"
                         text: App.importing ? qsTr("Importing…") : qsTr("Import")
-                        enabled: !App.importing && importCard.file.toString().length > 0
+                        enabled: !App.importing && !App.renaming && importCard.file.toString().length > 0
                                  && nameField.text.length > 0 && codeField.text.length > 0
                         onClicked: {
                             App.importKit(importCard.file, nameField.text, codeField.text)
@@ -252,6 +264,87 @@ Flickable {
                 color: Theme.inkSoft
                 font.pixelSize: Theme.textSmall
                 wrapMode: Text.WordWrap
+            }
+        }
+    }
+
+    Dialog {
+        id: renameDialog
+        objectName: "renameKitDialog"
+        property string originalName
+        readonly property bool validName: App.validKitName(renameField.text)
+
+        function openFor(name) {
+            originalName = name
+            renameField.text = name
+            open()
+        }
+        function submit() {
+            if (!renameAccept.enabled) return
+            App.renameKit(originalName, renameField.text)
+            close()
+        }
+
+        modal: true
+        focus: true
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(460, (parent ? parent.width : 460) - 64)
+        padding: 24
+        closePolicy: Popup.CloseOnEscape
+        onOpened: {
+            renameField.forceActiveFocus(Qt.TabFocusReason)
+            renameField.selectAll()
+        }
+        background: Rectangle {
+            radius: Theme.radius
+            color: Theme.cloud
+            border.color: Theme.rule
+        }
+        Overlay.modal: Rectangle { color: Qt.rgba(0.1, 0.03, 0.08, 0.45) }
+        contentItem: ColumnLayout {
+            LayoutMirroring.enabled: App.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            spacing: 12
+            Text {
+                textFormat: Text.PlainText
+                text: qsTr("Rename %1").arg(renameDialog.originalName)
+                color: Theme.ink
+                font.family: Theme.displayFont
+                font.pixelSize: 24
+                Accessible.role: Accessible.Heading
+            }
+            AppTextField {
+                id: renameField
+                objectName: "renameKitName"
+                Layout.fillWidth: true
+                maximumLength: 48
+                Accessible.name: qsTr("New kit name")
+                onAccepted: renameDialog.submit()
+            }
+            Text {
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                text: qsTr("Use 1 to 48 letters, digits, dots, dashes or underscores. Start with a letter, digit or underscore.")
+                color: renameDialog.validName ? Theme.muted : Theme.refusedStrong
+                font.pixelSize: Theme.textSmall
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                AppButton {
+                    text: qsTr("Cancel")
+                    onClicked: renameDialog.close()
+                }
+                AppButton {
+                    id: renameAccept
+                    objectName: "renameKitAccept"
+                    kind: "primary"
+                    text: qsTr("Rename")
+                    enabled: renameDialog.validName && renameField.text !== renameDialog.originalName
+                             && !App.renaming && !App.importing
+                    onClicked: renameDialog.submit()
+                }
             }
         }
     }

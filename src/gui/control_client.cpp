@@ -116,7 +116,7 @@ private:
                      QStringLiteral("the control socket is not accessible")});
                 return;
             default:
-                finish({Outcome::NotRunning, {}, {}, socket_->errorString()});
+                finish({Outcome::Refused, {}, {}, socket_->errorString()});
                 return;
         }
     }
@@ -126,10 +126,10 @@ private:
         if (finished_) return;
         reply_ += socket_->readAll();
         if (reply_.isEmpty() && !connected_) {
-            finish({Outcome::NotRunning,
+            finish({Outcome::Refused,
                     {},
                     {},
-                    QStringLiteral("nothing listens on the control socket")});
+                    QStringLiteral("the control connection closed before peer verification")});
             return;
         }
         if (reply_.isEmpty() || !reply_.endsWith('\n') ||

@@ -408,7 +408,7 @@ Status load(Runner& runner, const std::shared_ptr<StreamResponder>& stream,
     for (std::size_t index = 0U; index < piece.size(); ++index)
         piece[index] = static_cast<std::byte>(index * 13U + 1U);
     while (Clock::now() < until) {
-        auto status = runner.wait<Status>([stream, &piece](auto promise) {
+        auto echo_piece = [stream, &piece](auto promise) {
             auto buffer = Buffer::copy_from(piece, piece.size());
             if (!buffer.ok()) return promise->set_value(buffer.status());
             stream->async_write(
@@ -436,7 +436,11 @@ Status load(Runner& runner, const std::shared_ptr<StreamResponder>& stream,
                     };
                     (*read)();
                 });
-        });
+        };
+        // A piece may wait longer than the nodes' 30-second stall and rekey
+        // bounds, so the hop that sees a break reports it before this gives
+        // up.
+        const auto status = runner.wait<Status>(echo_piece, 60s);
         if (!status.ok()) return status;
         *echoed += piece.size();
     }

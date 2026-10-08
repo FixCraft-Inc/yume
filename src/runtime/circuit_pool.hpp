@@ -64,6 +64,8 @@ struct CircuitPoolOptions final {
     // While a shorter route is in use, the configured length is tried again
     // this often.
     std::chrono::milliseconds recheck{std::chrono::minutes(5)};
+    // A node a failed build stopped at stays out of routes this long.
+    std::chrono::milliseconds exclusion{std::chrono::minutes(5)};
     // Routes of one length tried before a shorter one is considered.
     std::size_t attempts{3U};
     std::chrono::milliseconds tick{std::chrono::seconds(30)};
@@ -91,20 +93,24 @@ public:
     ~CircuitPool();
 
     // On the context: the client's current session, or null when it has
-    // none. A new session's view is fetched again and earlier circuits end.
+    // none. A new session's view is fetched again and earlier circuits end,
+    // including one being built.
     void set_session(std::shared_ptr<CircuitSession> session) noexcept;
     // On the context: opens a TCP stream to destination through a circuit,
     // or through direct_service on the session when the route in use is one
     // hop. PermissionDenied when the route needs the user's consent or the
     // stream is plain HTTP, FailedPrecondition without a session or a
-    // trusted view, and the exit's reason otherwise.
+    // trusted view, and the exit's reason otherwise. Cancellation settles
+    // the open with Cancelled at once, even while the circuit it waits for
+    // is still being built.
     void open(const engine::RouteDestination& destination,
               std::string direct_service,
               engine::CancellationToken cancellation, Opened done) noexcept;
     CircuitPoolStatus status() const;
     // Accepts the current proposal. NotFound when id is not its id.
     engine::Status accept(std::string_view id) noexcept;
-    // On the context. Ends every circuit and refuses later opens.
+    // On the context. Ends every circuit, including one being built, and
+    // refuses later opens.
     void close() noexcept;
 
     struct State;

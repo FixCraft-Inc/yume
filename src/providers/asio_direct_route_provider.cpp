@@ -209,10 +209,18 @@ enum class TargetKind : std::uint8_t {
     ActiveConnection,
 };
 
+struct IdentityUsage final {
+    std::size_t pending{0U};
+    std::size_t total{0U};
+};
+
+using IdentityUsages = std::map<std::string, IdentityUsage, std::less<>>;
+
 struct TargetEntry final {
     TargetKind kind{TargetKind::PendingOpen};
     std::weak_ptr<CancelTarget> target;
     std::uint64_t cancellation_epoch{0U};
+    IdentityUsages::iterator identity;
 };
 
 class ProviderState final : public std::enable_shared_from_this<ProviderState> {
@@ -230,7 +238,8 @@ public:
           resolver_(std::move(resolver)),
           descriptor_(std::move(descriptor)) {}
 
-    Result<std::pair<std::uint64_t, std::uint64_t>> reserve_open() {
+    Result<std::pair<std::uint64_t, std::uint64_t>> reserve_open(
+        std::string_view identity) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (pending_opens_ >= limits_.max_pending_opens ||
             active_connections_ + pending_opens_ >=
@@ -239,6 +248,17 @@ public:
                 Status::diagnostic(StatusCode::ResourceExhausted,
                                    "direct-route provider capacity exhausted"));
         }
+        // Sessions of one authenticated peer share these reservations. At a
+        // circuit exit that peer is the previous hop, never the hidden client.
+        auto usage = identities_.find(identity);
+        if (usage != identities_.end() &&
+            (usage->second.pending >= (limits_.max_pending_opens + 1U) / 2U ||
+             usage->second.total >=
+                 (limits_.max_active_connections + 1U) / 2U)) {
+            return Result<std::pair<std::uint64_t, std::uint64_t>>(
+                Status::diagnostic(StatusCode::ResourceExhausted,
+                                   "direct-route identity capacity exhausted"));
+        }
         if (next_target_id_ == std::numeric_limits<std::uint64_t>::max()) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
                 Status::diagnostic(
@@ -246,13 +266,24 @@ public:
                     "direct-route operation identifier exhausted"));
         }
         const std::uint64_t id = next_target_id_++;
+        bool added_identity = false;
         try {
-            targets_.emplace(id, TargetEntry{
-                TargetKind::PendingOpen, {}, cancellation_epoch_});
+            if (usage == identities_.end()) {
+                auto inserted = identities_.try_emplace(std::string(identity));
+                usage = inserted.first;
+                added_identity = inserted.second;
+            }
+            targets_.emplace(
+                id,
+                TargetEntry{
+                    TargetKind::PendingOpen, {}, cancellation_epoch_, usage});
         } catch (const std::bad_alloc&) {
+            if (added_identity) identities_.erase(usage);
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
                 allocation_status("direct-route reservation allocation failed"));
         }
+        ++usage->second.pending;
+        ++usage->second.total;
         ++pending_opens_;
         return Result<std::pair<std::uint64_t, std::uint64_t>>(
             std::make_pair(id, cancellation_epoch_));
@@ -285,6 +316,7 @@ public:
         }
         found->second.kind = TargetKind::ActiveConnection;
         found->second.target = target;
+        --found->second.identity->second.pending;
         --pending_opens_;
         ++active_connections_;
         return Status::success();
@@ -296,7 +328,9 @@ public:
         if (found == targets_.end()) {
             return;
         }
+        auto identity = found->second.identity;
         if (found->second.kind == TargetKind::PendingOpen) {
+            --identity->second.pending;
             if (pending_opens_ > 0U) {
                 --pending_opens_;
             }
@@ -304,6 +338,7 @@ public:
             --active_connections_;
         }
         targets_.erase(found);
+        if (--identity->second.total == 0U) identities_.erase(identity);
     }
 
     void cancel_all() noexcept {
@@ -351,6 +386,9 @@ private:
     ProviderDescriptor descriptor_;
 
     std::mutex mutex_;
+    // Map iterators stay valid until the last target releases that identity.
+    // Idle identities retain no state, and release never allocates.
+    IdentityUsages identities_;
     std::map<std::uint64_t, TargetEntry> targets_;
     std::uint64_t next_target_id_{1U};
     std::uint64_t cancellation_epoch_{0U};
@@ -2213,7 +2251,7 @@ void AsioDirectRouteProvider::async_open(
         return;
     }
 
-    auto reservation = state->reserve_open();
+    auto reservation = state->reserve_open(request.peer_evidence().identity());
     if (!reservation.ok()) {
         complete_open_failure(
             open_completion,

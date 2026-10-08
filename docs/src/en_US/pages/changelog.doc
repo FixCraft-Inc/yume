@@ -52,6 +52,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `yume --messages` shows. `yume_kit_open` opens a kit `yume --seal-kit`
   sealed, so an application imports one file and a code instead of copying
   keys. A stop now cancels a client start in progress on another thread.
+- **Identity route reservations.** Direct TCP and UDP route capacity now
+  reserves pending and active slots per authenticated identity across its
+  sessions. Failed, canceled and closed opens release the reservation; a
+  circuit exit accounts its authenticated previous hop, not the hidden client.
+- **Circuit streams share a slow path evenly.** When a circuit's link or the
+  client's session was the bottleneck, one stream could take every cell
+  slot: an exit's destination read that completes at once read again before
+  its sibling streams, and the client gave freed slots to its lowest stream.
+  Both now serve waiting streams in turn, so parallel downloads and uploads
+  through a circuit share its path evenly again.
 - **Android build of the library.** `tools/build_android_shared_abi.sh`
   builds `libyume.so` for the Android ABIs with the pinned NDK, the patched
   OpenSSL built static for each ABI and the vcpkg manifest's dependencies.
@@ -242,7 +252,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   kit's state and connects or disconnects it. A shorter route is accepted
   only from a review of that exact proposal. Headless actions, a page
   capture, keyboard and right-to-left tests and a live cycle against a real
-  daemon cover it ([desktop GUI](../GUI.md)). It is not packaged.
+  daemon cover it ([desktop GUI](../GUI.md)). Stopped kits can be renamed
+  without replacing an existing kit; the GUI checks both control sockets
+  before moving the directory and retains the selection. A client still
+  draining after its socket closes remains active even past the stop warning.
+  It is not packaged.
 - **Modules.** A server `module` adapter runs a program for one stream
   service. `yumed` gives it a listening UNIX socket as descriptor 3, sends each
   authorized stream as a connection that starts with the client's identity,
@@ -1099,6 +1113,19 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **A stale OpenSSL error ended a busy TLS session.** OpenSSL reports a TLS
+  call's outcome through the calling thread's error queue, and the TLS channel
+  did not empty that queue first. Any OpenSSL failure left on an I/O thread,
+  such as a reload refused for a bad list signature or a circuit handshake
+  with a malformed key, turned the next session's ordinary wait for data
+  into a fatal error, and a cluster link carrying circuits closed. The
+  channel now empties the queue before each TLS call.
+  `yume_tls13_secure_channel_test` leaves an error before every step, and
+  the four-daemon circuit test refuses a reload under load.
+- **A circuit build outlived its pool.** Closing the client's circuit pool or
+  giving it a new session left a circuit that was still being built running
+  until its 30-second build bound, and an open cancelled while it waited for
+  that build settled only when the build ended. Both now end at once.
 - **Callbacks that ran twice under libc++.** Several components moved a
   callback out of a member and later tested or settled that member again,
   relying on the moved-from `std::function` being empty. libstdc++ empties

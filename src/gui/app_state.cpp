@@ -155,9 +155,10 @@ bool AppState::action_stops() const {
 
 bool AppState::action_enabled() const {
     const QString now = phase();
-    return setup_error_.isEmpty() && (now == QStringLiteral("stopped") ||
-                                      now == QStringLiteral("running") ||
-                                      now == QStringLiteral("starting"));
+    return !renaming_ && setup_error_.isEmpty() &&
+           (now == QStringLiteral("stopped") ||
+            now == QStringLiteral("running") ||
+            now == QStringLiteral("starting"));
 }
 
 void AppState::runAction() {
@@ -214,7 +215,7 @@ Tunnel* AppState::tunnel() const {
 }
 
 void AppState::refreshKits() {
-    if (!places_) return;
+    if (!places_ || renaming_) return;
     std::map<QString, Tunnel*> next;
     for (auto& kit : list_kits(*places_)) {
         const auto found = tunnels_.find(kit.name);
@@ -396,6 +397,7 @@ bool AppState::dark() const {
 }
 
 void AppState::connectKit() {
+    if (renaming_) return;
     if (auto* current = tunnel()) current->start();
 }
 
@@ -425,7 +427,7 @@ QString AppState::suggestKitName(const QUrl& file) const {
 
 void AppState::importKit(const QUrl& file, const QString& name,
                          const QString& code) {
-    if (!places_ || importing_) return;
+    if (!places_ || importing_ || renaming_) return;
     importing_ = true;
     import_failed_ = false;
     import_message_ = tr("Opening the kit…");
@@ -447,6 +449,7 @@ void AppState::importKit(const QUrl& file, const QString& name,
 }
 
 void AppState::removeKit(const QString& name) {
+    if (renaming_) return;
     const auto found = tunnels_.find(name);
     if (!places_ || found == tunnels_.end()) return;
     if (found->second->phase() != Phase::Stopped) {
@@ -462,6 +465,91 @@ void AppState::removeKit(const QString& name) {
     refreshKits();
     if (kit_name_.isEmpty() && !tunnels_.empty())
         set_kit_name(tunnels_.begin()->first);
+}
+
+void AppState::renameKit(const QString& name, const QString& new_name) {
+    if (!places_ || renaming_ || importing_) return;
+    const auto found = tunnels_.find(name);
+    if (found == tunnels_.end()) return;
+    if (!valid_kit_name(new_name) || name == new_name) {
+        set_notice(
+            tr("Choose a different name of 1 to 48 letters, digits, dots, "
+               "dashes or underscores, starting with a letter, digit or "
+               "underscore"));
+        return;
+    }
+    if (found->second->phase() != Phase::Stopped) {
+        set_notice(tr("Stop %1 before renaming it").arg(name));
+        return;
+    }
+    renaming_ = true;
+    emit renameChanged();
+    emit tunnelChanged();
+    const auto finish = [this](const QString& message) {
+        renaming_ = false;
+        emit renameChanged();
+        emit tunnelChanged();
+        set_notice(message);
+    };
+    // Recheck a client another GUI started since the cached UI state. Only a
+    // definite absence authorizes a move: an unanswered, refused or malformed
+    // socket proves nothing.
+    const auto absent = [](const ControlReply& reply) {
+        return reply.outcome == ControlReply::Outcome::NotRunning &&
+               reply.peer_pid == 0;
+    };
+    const QString target_socket =
+        QDir(places_->runtime).filePath(new_name + QStringLiteral(".sock"));
+    control_exchange(
+        this, target_socket, status_request(),
+        [this, name, new_name, finish, absent](const ControlReply& target) {
+            if (!absent(target)) {
+                finish(target.ok()
+                           ? tr("Stop %1 before using its name").arg(new_name)
+                           : tr("Cannot confirm that %1 is stopped: %2")
+                                 .arg(new_name, target.text));
+                return;
+            }
+            const auto source = tunnels_.find(name);
+            if (source == tunnels_.end() ||
+                source->second->phase() != Phase::Stopped) {
+                finish(tr("Stop %1 before renaming it").arg(name));
+                return;
+            }
+            control_exchange(
+                this, source->second->socket_path(), status_request(),
+                [this, name, new_name, finish,
+                 absent](const ControlReply& reply) {
+                    const auto current = tunnels_.find(name);
+                    if (!absent(reply) || current == tunnels_.end() ||
+                        current->second->phase() != Phase::Stopped) {
+                        finish(reply.ok()
+                                   ? tr("Stop %1 before renaming it").arg(name)
+                                   : tr("Cannot confirm that %1 is stopped: %2")
+                                         .arg(name, reply.text));
+                        return;
+                    }
+                    QString error;
+                    if (!rename_kit(*places_, name, new_name, error)) {
+                        finish(error);
+                        return;
+                    }
+                    const bool selected = kit_name_ == name;
+                    renaming_ = false;
+                    refreshKits();
+                    if (selected)
+                        set_kit_name(new_name);
+                    else if (settings_.value(QStringLiteral("kit"))
+                                 .toString() == name)
+                        settings_.setValue(QStringLiteral("kit"), new_name);
+                    settings_.sync();
+                    finish(settings_.status() == QSettings::NoError
+                               ? tr("Renamed %1 to %2").arg(name, new_name)
+                               : tr("Renamed %1 to %2, but the selection could "
+                                    "not be saved")
+                                     .arg(name, new_name));
+                });
+        });
 }
 
 void AppState::copyText(const QString& text) {

@@ -18,6 +18,7 @@
 #include <boost/asio/post.hpp>
 
 #include "common/service_name.hpp"
+#include "engine/cancellation.hpp"
 #include "providers/circuit_crypto.hpp"
 #include "runtime/circuit_routes.hpp"
 #include "runtime/client_routes.hpp"
@@ -129,6 +130,9 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         std::string direct_service;
         CancellationToken cancellation;
         Opened done;
+        // Pumps the pool when the open is cancelled, so it settles then and
+        // not when the build it waits for ends.
+        engine::CancellationRegistration cancelled;
     };
 
     struct Entry final {
@@ -172,6 +176,8 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
     std::vector<Entry> entries;
     std::deque<Waiter> waiters;
     bool building{false};
+    // The circuit being built, which close() and a new session end.
+    std::shared_ptr<circuit::ClientCircuit> pending;
     std::size_t attempts{0U};
     std::size_t current_hops;
     std::size_t accepted_hops{0U};
@@ -203,6 +209,13 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         }
     }
 
+    // Ends the circuit being built. Its build completion then sees the new
+    // generation or the closed pool and changes nothing.
+    void end_pending() noexcept {
+        if (const auto building_now = std::exchange(pending, nullptr))
+            building_now->close();
+    }
+
     void fail_waiters(const Status& status) noexcept {
         auto failing = std::move(waiters);
         waiters.clear();
@@ -224,8 +237,9 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             failure ? circuit::stopped_at(route, failure->hop) : nullptr;
         if (!node) return;
         const auto& identity = node->identity.fingerprint;
-        excluded[identity] = Clock::now() + circuit::RouteChooser::kExclusion;
-        if (chooser) chooser->exclude(identity, Clock::now());
+        const auto until = Clock::now() + options.exclusion;
+        excluded[identity] = until;
+        if (chooser) chooser->exclude(identity, until);
     }
 
     std::mt19937_64 fresh_random() {
@@ -299,6 +313,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         session = std::move(next);
         for (auto& entry : entries) entry.circuit->close();
         entries.clear();
+        end_pending();
         building = false;
         attempts = 0U;
         view = View::Idle;
@@ -370,9 +385,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             chooser->record(identity, time);
         const auto now = Clock::now();
         for (const auto& [identity, until] : excluded) {
-            if (until > now)
-                chooser->exclude(identity,
-                                 until - circuit::RouteChooser::kExclusion);
+            if (until > now) chooser->exclude(identity, until);
         }
         view = View::Ready;
         stopped.clear();
@@ -413,6 +426,20 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         std::erase_if(entries, [](const Entry& entry) {
             return entry.circuit->closed();
         });
+        // A cancelled open settles now, wherever it waits in the queue. Each
+        // settles after the walk, since its completion may open again.
+        std::deque<Waiter> cancelled;
+        for (auto waiter = waiters.begin(); waiter != waiters.end();) {
+            if (!waiter->cancellation.is_cancelled()) {
+                ++waiter;
+                continue;
+            }
+            cancelled.push_back(std::move(*waiter));
+            waiter = waiters.erase(waiter);
+        }
+        for (auto& waiter : cancelled)
+            settle(waiter.done, Result<std::shared_ptr<StreamResponder>>(
+                                    Status(StatusCode::Cancelled)));
         // A new session fetches its view and builds a circuit before the
         // first stream asks for one. A view that failed its checks is asked
         // for again only when a stream waits.
@@ -563,9 +590,11 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
             return build_failed(route, std::nullopt, probe);
         }
         auto built = std::move(created).take_value();
+        pending = built;
         built->build([weak = weak_from_this(), built, route = std::move(route),
                       current, probe](Status status) mutable {
             const auto self = weak.lock();
+            if (self && self->pending == built) self->pending.reset();
             if (!self || self->generation != current || self->closed) {
                 built->close();
                 return;
@@ -781,9 +810,26 @@ void CircuitPool::open(const RouteDestination& destination,
                        std::string direct_service,
                        CancellationToken cancellation, Opened done) noexcept {
     try {
-        state_->waiters.push_back(
-            State::Waiter{destination, std::move(direct_service),
-                          std::move(cancellation), std::move(done)});
+        // Cancellation may come from any thread, so it posts the pump.
+        auto registered = cancellation.register_callback(
+            [weak = std::weak_ptr<State>(state_)] {
+                const auto self = weak.lock();
+                if (!self) return;
+                try {
+                    boost::asio::post(self->context->executor(), [weak] {
+                        if (const auto later = weak.lock()) later->pump();
+                    });
+                } catch (...) {
+                }
+            });
+        if (!registered.ok()) {
+            State::settle(done, Result<std::shared_ptr<StreamResponder>>(
+                                    registered.status()));
+            return;
+        }
+        state_->waiters.push_back(State::Waiter{
+            destination, std::move(direct_service), std::move(cancellation),
+            std::move(done), std::move(registered).take_value()});
     } catch (...) {
         State::settle(done, Result<std::shared_ptr<StreamResponder>>(
                                 Status(StatusCode::ResourceExhausted)));
@@ -839,6 +885,7 @@ void CircuitPool::close() noexcept {
     providers::cancel_timer(state.tick);
     for (auto& entry : state.entries) entry.circuit->close();
     state.entries.clear();
+    state.end_pending();
     state.fail_waiters(Status(StatusCode::Closed));
 }
 

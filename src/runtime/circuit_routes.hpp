@@ -31,9 +31,6 @@ class RouteChooser final {
 public:
     using Clock = std::chrono::steady_clock;
 
-    // A node a failed build stopped at stays out of routes this long.
-    static constexpr std::chrono::minutes kExclusion{5};
-
     // InvalidArgument unless the view names the entry.
     static engine::Result<RouteChooser> create(cluster::Routes view,
                                                std::string_view entry_identity);
@@ -41,8 +38,9 @@ public:
     // How long an EXTEND to this node took, from a build in this run. A
     // later measurement replaces an earlier one.
     void record(std::string_view identity, std::chrono::milliseconds time);
-    // Keeps the node out of routes until kExclusion after now.
-    void exclude(std::string_view identity, Clock::time_point now);
+    // Keeps the node out of routes until then, or until a later time an
+    // earlier call gave.
+    void exclude(std::string_view identity, Clock::time_point until);
 
     // A route of hops nodes, the entry first, or nothing when no route of
     // that length passes the rules. hops is 2 or 3.

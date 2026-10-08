@@ -26,6 +26,11 @@ inline constexpr std::uint32_t kAsioDirectRouteProviderApiVersion = 1U;
 // These are provider-local limits, independent of the session limits. They
 // keep a misconfigured or independently embedded provider bounded even when it
 // is used outside the included daemon graph.
+// One authenticated identity, across all sessions and TCP/UDP services, may
+// reserve at most half of each pending/connection limit, rounded up. A pending
+// open also reserves a connection slot. Refusal precedes DNS/socket work;
+// failure, cancellation and channel close return reservations. At a circuit
+// exit the identity belongs to the previous hop, whose circuits share the cap.
 struct AsioDirectRouteLimits final {
     std::size_t max_pending_opens{64U};
     std::size_t max_active_connections{1024U};

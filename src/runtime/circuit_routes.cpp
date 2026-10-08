@@ -39,8 +39,7 @@ void RouteChooser::record(std::string_view identity,
     }
 }
 
-void RouteChooser::exclude(std::string_view identity, Clock::time_point now) {
-    const auto until = now + kExclusion;
+void RouteChooser::exclude(std::string_view identity, Clock::time_point until) {
     const auto found = excluded_until_.find(identity);
     if (found != excluded_until_.end()) {
         found->second = std::max(found->second, until);

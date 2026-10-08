@@ -6,10 +6,14 @@
 
 #include "gui/kit_store.hpp"
 
+#include <fcntl.h>
+#include <linux/fs.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <utility>
 
 #include <QCoreApplication>
@@ -17,6 +21,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
@@ -27,6 +32,79 @@ namespace {
 
 // A kit's yume.json is at most this large, as schema 1 bounds a document.
 constexpr qint64 kMaxConfigBytes = 1024 * 1024;
+
+class FileDescriptor final {
+public:
+    explicit FileDescriptor(int fd = -1) noexcept : fd_(fd) {}
+    ~FileDescriptor() {
+        if (fd_ >= 0) ::close(fd_);
+    }
+    FileDescriptor(const FileDescriptor&) = delete;
+    FileDescriptor& operator=(const FileDescriptor&) = delete;
+    int get() const noexcept { return fd_; }
+    void reset(int fd) noexcept {
+        if (fd_ >= 0) ::close(fd_);
+        fd_ = fd;
+    }
+
+private:
+    int fd_;
+};
+
+// Hold every traversed directory rather than following an ancestor symlink.
+int open_kit_root(const QString& path) {
+    if (!QDir::isAbsolutePath(path)) return -1;
+    FileDescriptor current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (current.get() < 0) return -1;
+    for (const auto& part : path.split(u'/', Qt::SkipEmptyParts)) {
+        if (part == QStringLiteral(".") || part == QStringLiteral(".."))
+            return -1;
+        const QByteArray native = QFile::encodeName(part);
+        const int next =
+            ::openat(current.get(), native.constData(),
+                     O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0) return -1;
+        current.reset(next);
+    }
+    return ::fcntl(current.get(), F_DUPFD_CLOEXEC, 0);
+}
+
+bool unsafe_rename_paths(const QJsonValue& value, const QString& directory,
+                int depth = 0) {
+    // Refuse excessive nesting rather than letting a label operation recurse
+    // without a bound. The native parser remains the configuration authority.
+    if (depth > 128) return true;
+    if (value.isArray()) {
+        for (const auto& child : value.toArray())
+            if (unsafe_rename_paths(child, directory, depth + 1)) return true;
+    } else if (value.isObject()) {
+        const auto object = value.toObject();
+        for (auto it = object.begin(); it != object.end(); ++it) {
+            // Schema 1 uses file references (including policy list files),
+            // forward listen_path and module program as filesystem paths.
+            // Labels and host names are not paths. The control socket is
+            // overridden by Tunnel's explicit --control-socket argument.
+            if (it.key() == QStringLiteral("file") ||
+                it.key() == QStringLiteral("listen_path") ||
+                it.key() == QStringLiteral("program")) {
+                const QString text = it.value().toString();
+                // Native file references already forbid parent traversal.
+                // Do not relocate an invalid manually placed document.
+                QString components = text;
+                components.replace(u'\\', u'/');
+                if (components.split(u'/').contains(QStringLiteral("..")))
+                    return true;
+                const QString path = QDir::cleanPath(text);
+                if (QDir::isAbsolutePath(text) &&
+                    (path == directory || path.startsWith(directory + u'/')))
+                    return true;
+            }
+            if (unsafe_rename_paths(it.value(), directory, depth + 1))
+                return true;
+        }
+    }
+    return false;
+}
 
 // The last line yume printed, without its "yume: " prefix.
 QString last_line(const QByteArray& output) {
@@ -211,6 +289,86 @@ bool remove_kit(const Places& places, const QString& name, QString& error) {
     }
     if (!QDir(entry.filePath()).removeRecursively()) {
         error = QStringLiteral("cannot remove %1").arg(entry.filePath());
+        return false;
+    }
+    return true;
+}
+
+bool rename_kit(const Places& places, const QString& name,
+                const QString& new_name, QString& error) {
+    error.clear();
+    if (!valid_kit_name(name) || !valid_kit_name(new_name)) {
+        error = QStringLiteral(
+            "a kit name is 1 to 48 letters, digits, dots, "
+            "dashes or underscores, starting with a letter, digit or "
+            "underscore");
+        return false;
+    }
+    if (name == new_name) {
+        error = QStringLiteral("choose a different kit name");
+        return false;
+    }
+    const FileDescriptor root(open_kit_root(places.kits));
+    struct stat root_info{};
+    if (root.get() < 0 || ::fstat(root.get(), &root_info) != 0 ||
+        root_info.st_uid != ::geteuid() || (root_info.st_mode & 0022) != 0) {
+        error = QStringLiteral(
+            "the kits root is not a safe directory of this user");
+        return false;
+    }
+    const QByteArray source = QFile::encodeName(name);
+    const QByteArray target = QFile::encodeName(new_name);
+    const FileDescriptor kit(
+        ::openat(root.get(), source.constData(),
+                 O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    struct stat kit_info{};
+    if (kit.get() < 0 || ::fstat(kit.get(), &kit_info) != 0 ||
+        kit_info.st_uid != ::geteuid() || (kit_info.st_mode & 0022) != 0) {
+        error = QStringLiteral("%1 is not a safe kit directory").arg(name);
+        return false;
+    }
+    const FileDescriptor config(
+        ::openat(kit.get(), "yume.json",
+                 O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC));
+    struct stat config_info{};
+    if (config.get() < 0 || ::fstat(config.get(), &config_info) != 0 ||
+        !S_ISREG(config_info.st_mode) || config_info.st_uid != ::geteuid() ||
+        config_info.st_size < 0 || config_info.st_size > kMaxConfigBytes) {
+        error = QStringLiteral(
+            "the kit's configuration is not a bounded regular file of this "
+            "user");
+        return false;
+    }
+    QFile document;
+    if (!document.open(config.get(), QIODevice::ReadOnly,
+                       QFileDevice::DontCloseHandle)) {
+        error = QStringLiteral("cannot read the kit's configuration");
+        return false;
+    }
+    const QByteArray bytes = document.read(kMaxConfigBytes + 1);
+    const auto parsed = QJsonDocument::fromJson(bytes);
+    if (document.error() != QFileDevice::NoError ||
+        bytes.size() > kMaxConfigBytes || !parsed.isObject()) {
+        error = QStringLiteral(
+            "the kit's configuration cannot be checked before renaming");
+        return false;
+    }
+    const QString directory = QDir::cleanPath(QDir(places.kits).filePath(name));
+    if (unsafe_rename_paths(parsed.object(), directory)) {
+        error = QStringLiteral(
+            "the configuration uses parent traversal, excessive nesting, or "
+            "an absolute path inside this kit; use relative kit paths without parent "
+            "traversal before renaming");
+        return false;
+    }
+    // renameat2 is one atomic move, including the no-replacement decision.
+    // A missing kernel/filesystem capability fails without a racy fallback.
+    if (::syscall(SYS_renameat2, root.get(), source.constData(), root.get(),
+                  target.constData(), RENAME_NOREPLACE) != 0) {
+        error =
+            errno == EEXIST || errno == ENOTEMPTY
+                ? QStringLiteral("a kit named %1 already exists").arg(new_name)
+                : QStringLiteral("cannot rename %1 to %2").arg(name, new_name);
         return false;
     }
     return true;

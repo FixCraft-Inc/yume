@@ -48,6 +48,14 @@ A kit is a directory under *$XDG_CONFIG_HOME/yume/kits* that holds a
 privileges that this user process does not have, so run such a kit as a
 system service instead.
 
+The Connect page can rename a stopped kit, moving its directory without
+rewriting the configuration or credentials and retaining its selection.
+An existing name is never replaced. Both clients' control sockets are checked
+before the move; an unanswered or refused socket prevents it. A configuration
+with absolute references into the old kit directory must use relative kit
+paths without parent traversal before renaming. A known client whose socket
+has closed stays active until its process ends, including after the stop warning.
+
 The Posture page states the protection the running client reports: the YTP/1
 composition, the evidence profile its outer layers follow, its tuning limits
 and the preset they match. It offers no switch that weakens a tunnel. A

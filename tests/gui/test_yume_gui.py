@@ -141,6 +141,23 @@ class Gui(unittest.TestCase):
                          ("stop", True, "stopped", True))
         self.assertFalse(alive(pid), "stop reported before the process ended")
 
+    def test_stop_waits_for_a_process_draining_past_the_warning(self) -> None:
+        self.kit("draining", {"linger_ms": 25_000})
+        result = self.gui("--kit", "draining", "--headless", "connect")
+        self.assertEqual(result.returncode, PASSED, result.stdout + result.stderr)
+        pid = peer_pid(self.socket_of("draining"))
+        try:
+            result = self.gui("--kit", "draining", "--headless", "stop", timeout=45)
+            self.assertEqual(result.returncode, PASSED, result.stdout + result.stderr)
+            [leg] = self.legs(result)
+            self.assertEqual((leg["ok"], leg["phase"]), (True, "stopped"))
+            self.assertGreaterEqual(leg["elapsed_ms"], 25_000)
+            self.assertFalse(alive(pid), "stop reported while the client was still draining")
+        finally:
+            # Its socket is already gone, so tearDown cannot find a survivor.
+            if alive(pid):
+                os.kill(pid, signal.SIGKILL)
+
     def test_a_start_inside_execve_is_not_taken_for_an_end(self) -> None:
         # A wrapper that execs yume shows an empty command line for a moment,
         # which the fake stretches over several status polls.

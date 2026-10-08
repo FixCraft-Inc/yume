@@ -366,7 +366,11 @@ failure, and final closed-handle release schedules no new cleanup. Destination
 names use the shared `SystemResolver`. A canceled lookup returns the open's
 reservation at once, while its resolver slot stays taken until the helper
 answers or is replaced, so abandoned DNS work stays bounded. This
-build-tree-only provider can be explicitly composed into `NativeEndpoint`.
+provider also caps each authenticated route identity at half of its pending
+and active limits, rounded up, across all of that identity's sessions and
+TCP/UDP services. A circuit exit accounts the previous hop, not the hidden
+client. Failed, canceled and closed opens release both reservations.
+This build-tree-only provider can be explicitly composed into `NativeEndpoint`.
 The development `yumed` composes it with `NativeEgressPolicy`, and the
 schema-1 ABI backend composes no route provider.
 

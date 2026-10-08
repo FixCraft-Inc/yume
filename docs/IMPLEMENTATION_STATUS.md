@@ -181,6 +181,10 @@ execution context and reserved cancellation ownership. It requires explicit
 numeric-address authorization before opening any socket, including every
 selected DNS candidate and IPv4-mapped IPv6. Policy errors and reentrant
 cancellation settle the OPEN without connecting.
+The provider also caps each authenticated route identity at half of its
+pending and active limits, rounded up, across sessions and TCP/UDP services;
+failed, canceled and closed opens release those reservations. A circuit exit
+counts the authenticated previous hop, not the hidden client.
 
 Session teardown notifies the endpoint through reserved control dispatch.
 The endpoint frees the session slot before its optional `session_ended`
@@ -243,10 +247,15 @@ add-client --circuits` writes. Circuit streams' receive windows are capped at
 an eighth of the session budget on `yume.circuit` and on links, and
 `yumed --status` counts circuits per link and refusals by bound. The
 in-memory `yume_circuit_runtime_test` covers the node service and the client
-builder, and `yume_native_circuit_test` runs four daemons with a test client:
+builder, including an even share for a circuit's downloads and uploads over
+a slow link,
+and `yume_native_circuit_test` runs four daemons with a test client:
 two- and three-hop circuits carrying a stream both ways, an exit policy and
 a non-exit refusing streams, a client without the grant, the per-client
-bound, a reload under load and a stopped middle.
+bound, a reload under load, a stopped middle and its return, a client that
+leaves while its circuit waits at the entry, a link rekey that a frozen
+middle never acknowledges, a refused reload, a changed link PSK and a
+removed node, each beside a circuit that must keep running.
 
 A client with a `circuits` section sends every SOCKS5 CONNECT and every
 forward to a destination through circuits it builds itself: it verifies the
@@ -261,11 +270,16 @@ socket, unless `circuits.min_hops` approves it in advance, and `yume
 setup tests cover the parts. `yume_circuit_pool_test` runs the circuit pool
 over an in-memory session with real circuit nodes: the build at session
 start, rotation, idle closing, the spare-failure rule, exclusion of a failed
-node and circuits closing inside the pool's own loops.
+node and its use again once it returns, the configured length coming back
+after a proposal without an answer, cancellation, closing and a new session
+during a build, and circuits closing inside the pool's own loops.
 `yume_circuit_record_fit_test` checks that a full cell of either direction
 leaves as one 16384-byte TLS write. The four-daemon test runs the real `yume`
 through three hops, the plain HTTP refusal, a proposal accepted after the
-exits stopped and a pre-approved direct route. The C ABI refuses a
+exits stopped and a pre-approved direct route. It also stops one stream's
+reader and another's destination: healthy streams on the same circuit and
+another client's circuit keep moving, no node ends a circuit, and both
+stalled streams then deliver every byte. The C ABI refuses a
 `circuits` section.
 
 A server configuration may set `limits.max_egress_mbps`. The endpoint then

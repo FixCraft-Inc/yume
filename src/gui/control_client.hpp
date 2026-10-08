@@ -21,13 +21,13 @@ struct ControlReply final {
     enum class Outcome {
         Ok,          // value holds a protocol 1 reply without an error
         NotRunning,  // nothing listens on the socket
-        Refused,     // the socket is not this user's or not accessible
+        Refused,     // peer/access or connection failure; absence unproved
         TimedOut,    // no complete reply within the deadline
         Malformed,   // the reply is not one protocol 1 JSON line
         Error,       // the program answered with an error: code and text
     };
 
-    Outcome outcome{Outcome::NotRunning};
+    Outcome outcome{Outcome::Refused};
     QJsonObject value;
     // For Error, the reply's code, which a caller acts on. Otherwise empty.
     QString code;

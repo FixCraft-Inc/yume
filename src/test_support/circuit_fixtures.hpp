@@ -22,6 +22,7 @@
 #include <type_traits>
 #include <utility>
 
+#include <boost/asio/basic_waitable_timer.hpp>
 #include <boost/asio/post.hpp>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
@@ -129,12 +130,18 @@ public:
             peer->inbox_.push_back(std::move(payload));
             peer->deliver();
         }
-        boost::asio::post(
-            context_->executor(),
-            [completion = std::move(completion), ok, size] {
-                completion(ok ? Status::success() : Status(StatusCode::Closed),
-                           ok ? size : 0U);
-            });
+        auto complete = [completion = std::move(completion), ok, size] {
+            completion(ok ? Status::success() : Status(StatusCode::Closed),
+                       ok ? size : 0U);
+        };
+        if (write_delay.count() == 0 || !ok) {
+            boost::asio::post(context_->executor(), std::move(complete));
+            return;
+        }
+        auto timer = std::make_shared<Timer>(context_->executor(), write_delay);
+        timer->async_wait(
+            [timer, complete = std::move(complete)](
+                const boost::system::error_code&) mutable { complete(); });
     }
     // The peer reads what is queued, then EndOfStream.
     Status shutdown_write() noexcept override {
@@ -155,8 +162,16 @@ public:
     }
 
     std::size_t writes{0U};
+    // Each write completes this long after it was made, as over a slow
+    // link, so a writer that waits for its completion is paced by it.
+    std::chrono::microseconds write_delay{0};
 
 private:
+    using Timer = boost::asio::basic_waitable_timer<
+        std::chrono::steady_clock,
+        boost::asio::wait_traits<std::chrono::steady_clock>,
+        providers::AsioExecutionContext::Executor>;
+
     void deliver() {
         if (!pending_) return;
         auto completion = std::move(pending_);

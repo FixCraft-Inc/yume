@@ -811,6 +811,11 @@ struct RunSettings final {
 bool IsEndpointHost(std::string_view value);
 // An IPv4 or IPv6 literal, as endpoint.connect_address takes.
 bool IsIpAddressLiteral(std::string_view value);
+// One family's literal: a dotted quad without leading zeros, or IPv6 text in
+// either case with at most one "::" and an optional dotted IPv4 tail. The C
+// ABI checks a destination of a declared family by the same rule.
+bool IsIpv4Literal(std::string_view value) noexcept;
+bool IsIpv6Literal(std::string_view value) noexcept;
 
 // Bounds input and nesting, applies the run settings and delegates to Parse.
 // No path is opened and no credential material is read by either entry

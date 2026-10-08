@@ -175,7 +175,7 @@ bool IsSafeIdentifier(std::string_view value,
     });
 }
 
-bool IsIpv4(std::string_view value) {
+bool IsIpv4(std::string_view value) noexcept {
     std::size_t start = 0;
     unsigned parts = 0;
     while (start <= value.size()) {
@@ -183,10 +183,12 @@ bool IsIpv4(std::string_view value) {
         const std::string_view part = value.substr(
             start, end == std::string_view::npos ? value.size() - start
                                                  : end - start);
+        // A leading zero is refused: the system resolver reads 010 as octal
+        // 8, so the text would not name the address it appears to.
         if (part.empty() || part.size() > 3 ||
-            !std::all_of(part.begin(), part.end(), [](char ch) {
-                return ch >= '0' && ch <= '9';
-            })) {
+            (part.size() > 1 && part.front() == '0') ||
+            !std::all_of(part.begin(), part.end(),
+                         [](char ch) { return ch >= '0' && ch <= '9'; })) {
             return false;
         }
         unsigned number = 0;
@@ -203,9 +205,8 @@ bool IsIpv4(std::string_view value) {
     return parts == 4;
 }
 
-bool CountIpv6Units(std::string_view part,
-                    bool allow_embedded_ipv4,
-                    unsigned* units) {
+bool CountIpv6Units(std::string_view part, bool allow_embedded_ipv4,
+                    unsigned* units) noexcept {
     if (!units) return false;
     *units = 0;
     if (part.empty()) return true;
@@ -240,7 +241,7 @@ bool CountIpv6Units(std::string_view part,
     return true;
 }
 
-bool IsIpv6(std::string_view value) {
+bool IsIpv6(std::string_view value) noexcept {
     if (value.empty() || value.find(':') == std::string_view::npos) {
         return false;
     }
@@ -1400,6 +1401,12 @@ bool IsEndpointHost(std::string_view value) {
 }
 bool IsIpAddressLiteral(std::string_view value) {
     return IsIpLiteral(value);
+}
+bool IsIpv4Literal(std::string_view value) noexcept {
+    return IsIpv4(value);
+}
+bool IsIpv6Literal(std::string_view value) noexcept {
+    return IsIpv6(value);
 }
 
 ValidationError::ValidationError(std::string json_pointer, std::string detail)

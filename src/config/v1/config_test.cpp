@@ -416,6 +416,15 @@ void TestEndpointValidation() {
     ExpectError(document, "/endpoint/host");
     document["endpoint"]["host"] = "bad host";
     ExpectError(document, "/endpoint/host");
+    // The system resolver reads a leading zero as octal, so 010.0.0.1 would
+    // reach 8.0.0.1. Neither a host nor an embedded IPv4 tail may have one.
+    for (const char* host : {"010.0.0.1", "192.0.2.010", "::ffff:192.0.2.01"}) {
+        document["endpoint"]["host"] = host;
+        ExpectError(document, "/endpoint/host");
+    }
+    document["endpoint"]["host"] = "192.0.2.10";
+    Check(Parse(document).role() == Role::Client,
+          "valid client IPv4 host was rejected");
     document["endpoint"]["host"] = "2001:db8::1";
     Check(Parse(document).role() == Role::Client,
           "valid client IPv6 host was rejected");
@@ -462,6 +471,8 @@ void TestClientConnectAddress() {
               "connect_address was not retained");
     }
     document["endpoint"]["connect_address"] = "server.example.test";
+    ExpectError(document, "/endpoint/connect_address", "IP literal");
+    document["endpoint"]["connect_address"] = "10.077.77.1";
     ExpectError(document, "/endpoint/connect_address", "IP literal");
     document["endpoint"]["connect_address"] = 10;
     ExpectError(document, "/endpoint/connect_address", "string");

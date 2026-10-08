@@ -569,7 +569,7 @@ int import_kit(NativeCliRole role, const std::filesystem::path& file,
     const security::ScopedErase typed_guard(*typed);
     auto code = kit::normalize_code(*typed);
     if (!code) {
-        say(role, "the kit code is not 25 code characters");
+        say(role, kit::kBadCodeMessage);
         return kExitUsage;
     }
     const security::ScopedErase code_guard(*code);

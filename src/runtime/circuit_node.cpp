@@ -19,6 +19,7 @@
 #include <boost/asio/post.hpp>
 
 #include "circuit/protocol.hpp"
+#include "common/hex.hpp"
 
 namespace yume::runtime::circuit {
 namespace {
@@ -47,17 +48,6 @@ std::span<const std::uint8_t> bytes_of(const Buffer& buffer) noexcept {
 
 Result<Buffer> buffer_of(std::span<const std::uint8_t> bytes) {
     return Buffer::copy_from(std::as_bytes(bytes), c1::kMaxCellBytes);
-}
-
-std::string hex(std::span<const std::uint8_t> bytes) {
-    constexpr char kDigits[] = "0123456789abcdef";
-    std::string output;
-    output.reserve(bytes.size() * 2U);
-    for (const auto byte : bytes) {
-        output.push_back(kDigits[byte >> 4U]);
-        output.push_back(kDigits[byte & 15U]);
-    }
-    return output;
 }
 
 struct TokenBucket final {
@@ -451,7 +441,7 @@ private:
         }
         phase_ = Phase::Extending;
         extend_since_ = Clock::now();
-        next_peer_ = hex(next);
+        next_peer_ = encoding::hex_lower(next);
         create_body_.assign(payload.begin() + c1::kFingerprintBytes,
                             payload.end());
         node_->env.open_next(

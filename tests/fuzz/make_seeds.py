@@ -119,6 +119,81 @@ def write_config_v1_seeds(out: pathlib.Path) -> None:
         (out / name).write_bytes(value)
 
 
+def write_h2_admission_seeds(out: pathlib.Path) -> None:
+    """Paths, :authority and server names, then two bytes of listener port."""
+    out.mkdir(parents=True, exist_ok=True)
+    token = bytes(range(32)).hex()
+    nonce = bytes(range(32, 64)).hex()
+    port = (443).to_bytes(2, "big")
+    cases = {
+        "valid": f"/{token}/{nonce}\nexample.com\nexample.com",
+        "valid_port": f"/{token}/{nonce}\nexample.com:443\nexample.com",
+        "uppercase": f"/{token.upper()}/{nonce}\nexample.com\nexample.com",
+        "short": f"/{token}/\nexample.com\nexample.com",
+        "authority_mismatch": f"/{token}/{nonce}\nother.example\nexample.com",
+        "ipv6_authority": f"/{token}/{nonce}\n[2001:db8::1]:443\n2001:db8::1",
+    }
+    for name, text in cases.items():
+        (out / name).write_bytes(text.encode() + port)
+
+
+def write_cover_site_seeds(out: pathlib.Path) -> None:
+    """A method, a newline and a request target."""
+    out.mkdir(parents=True, exist_ok=True)
+    cases = {
+        "index": "GET\n/", "head": "HEAD\n/style.css", "nested": "GET\n/notes/",
+        "query": "GET\n/style.css?v=1", "encoded": "GET\n/st%79le.css",
+        "dot_segment": "GET\n/notes/../style.css", "encoded_slash": "GET\n/notes%2Findex.html",
+        "post": "POST\n/", "absolute": "GET\nhttp://example.com/",
+    }
+    for name, text in cases.items():
+        (out / name).write_bytes(text.encode())
+
+
+def websocket_frame(opcode: int, payload: bytes, final: bool = True, masked: bool = True) -> bytes:
+    """One RFC 6455 frame, masked with a fixed key as a client sends it."""
+    head = bytes([(0x80 if final else 0) | opcode])
+    size = len(payload)
+    mask_bit = 0x80 if masked else 0
+    if size < 126:
+        head += bytes([mask_bit | size])
+    elif size < 1 << 16:
+        head += bytes([mask_bit | 126]) + size.to_bytes(2, "big")
+    else:
+        head += bytes([mask_bit | 127]) + size.to_bytes(8, "big")
+    if not masked:
+        return head + payload
+    key = b"\x37\xfa\x21\x3d"
+    return head + key + bytes(byte ^ key[index % 4] for index, byte in enumerate(payload))
+
+
+def write_websocket_seeds(out: pathlib.Path) -> None:
+    """Role byte, limit byte, then chunks each behind one length byte."""
+    out.mkdir(parents=True, exist_ok=True)
+
+    def chunks(stream: bytes, size: int) -> bytes:
+        pieces = [stream[index:index + size] for index in range(0, len(stream), size)]
+        return b"".join(bytes([len(piece) - 1]) + piece for piece in pieces)
+
+    server = b"\x01\x10"
+    client = b"\x00\x10"
+    binary = websocket_frame(0x2, b"ytp record")
+    cases = {
+        "binary": server + chunks(binary, 200),
+        "binary_split": server + chunks(binary, 3),
+        "fragments": server + chunks(websocket_frame(0x2, b"first", final=False)
+                                     + websocket_frame(0x9, b"ping")
+                                     + websocket_frame(0x0, b"second"), 200),
+        "close": server + chunks(websocket_frame(0x8, b"\x03\xe8bye"), 200),
+        "unmasked_to_server": server + chunks(websocket_frame(0x2, b"x", masked=False), 200),
+        "to_client": client + chunks(websocket_frame(0x2, b"from server", masked=False), 200),
+        "long_length": server + chunks(websocket_frame(0x2, bytes(300)), 200),
+        "text": server + chunks(websocket_frame(0x1, b"text"), 200),
+    }
+    for name, value in cases.items():
+        (out / name).write_bytes(value)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("out_dir", type=pathlib.Path,
@@ -128,10 +203,14 @@ def main() -> int:
     write_ytp1_seeds(args.out_dir / "seeds_ytp1_protocol", args.out_dir / "seeds_ytp1_auth")
     write_config_v1_seeds(args.out_dir / "seeds_config_v1")
     write_circuit1_seeds(args.out_dir / "seeds_circuit1")
+    write_h2_admission_seeds(args.out_dir / "seeds_h2_admission")
+    write_cover_site_seeds(args.out_dir / "seeds_cover_site")
+    write_websocket_seeds(args.out_dir / "seeds_websocket")
 
     counts = {name: len(list((args.out_dir / name).iterdir())) for name in
               ("seeds_ytp1_protocol", "seeds_ytp1_auth", "seeds_config_v1",
-               "seeds_circuit1")}
+               "seeds_circuit1", "seeds_h2_admission", "seeds_cover_site",
+               "seeds_websocket")}
     for name, count in counts.items():
         print(f"{name}: {count} seeds")
     return 0

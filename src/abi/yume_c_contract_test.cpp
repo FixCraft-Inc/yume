@@ -715,6 +715,37 @@ int main(int argc, char** argv) {
                 stream == nullptr,
             "non-canonical uppercase DNS destination was accepted");
 
+    // Address destinations take the configuration's literal rules: a valid
+    // one reaches the endpoint's state check, an invalid one does not.
+    const auto open_to = [&](std::uint32_t kind, std::string_view host) {
+        open.destination.kind = kind;
+        open.destination.host = {host.data(), host.size()};
+        return yume_endpoint_open_stream(endpoint, &open, 0, &stream);
+    };
+    for (const std::string_view host :
+         {"2001:db8::1", "2001:DB8::1", "::1", "::ffff:192.0.2.1",
+          "1:2:3:4:5:6:7:8"}) {
+        require(
+            open_to(YUME_DESTINATION_IPV6, host) == YUME_STATUS_INVALID_STATE &&
+                stream == nullptr,
+            "a valid IPv6 destination was refused");
+    }
+    for (const std::string_view host :
+         {"2001:db8::1::2", "192.0.2.1", "fe80::1%eth0", "1:2:3:4:5:6:7:8:9",
+          "2001:db8::12345", "::192.0.2.1:1", "2001:db8:::1"}) {
+        require(open_to(YUME_DESTINATION_IPV6, host) ==
+                        YUME_STATUS_INVALID_ARGUMENT &&
+                    stream == nullptr,
+                "an invalid IPv6 destination was accepted");
+    }
+    for (const std::string_view host :
+         {"192.0.2.01", "192.0.2", "192.0.2.1.5", "::1"}) {
+        require(open_to(YUME_DESTINATION_IPV4, host) ==
+                        YUME_STATUS_INVALID_ARGUMENT &&
+                    stream == nullptr,
+                "an invalid IPv4 destination was accepted");
+    }
+
     yume_runtime_destroy(first);
     require(yume_endpoint_state(endpoint) == YUME_ENDPOINT_STOPPED &&
                 yume_endpoint_state(server_endpoint) == YUME_ENDPOINT_STOPPED,

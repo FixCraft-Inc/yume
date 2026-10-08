@@ -21,10 +21,10 @@
 
 #include <boost/asio/ip/address.hpp>
 
+#include "common/hex.hpp"
+
 namespace yume::admission {
 namespace {
-
-constexpr char kHexDigits[] = "0123456789abcdef";
 
 using LibContext = std::unique_ptr<OSSL_LIB_CTX, decltype(&OSSL_LIB_CTX_free)>;
 using Provider = std::unique_ptr<OSSL_PROVIDER, decltype(&OSSL_PROVIDER_unload)>;
@@ -67,41 +67,6 @@ private:
 const OpenSslState& openssl_state() noexcept {
     static const OpenSslState state;
     return state;
-}
-
-bool is_lower_hex(unsigned char ch) noexcept {
-    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-}
-
-std::byte decode_nibble(char ch) noexcept {
-    const auto value = ch <= '9' ? static_cast<unsigned int>(ch - '0')
-                                 : static_cast<unsigned int>(ch - 'a' + 10);
-    return static_cast<std::byte>(value);
-}
-
-template <std::size_t Size>
-bool decode_lower_hex(std::string_view input,
-                      std::array<std::byte, Size>* output) noexcept {
-    if (output == nullptr || input.size() != 2U * Size ||
-        !std::all_of(input.begin(), input.end(), is_lower_hex)) {
-        return false;
-    }
-    for (std::size_t i = 0; i < Size; ++i) {
-        const auto high = std::to_integer<unsigned int>(decode_nibble(input[2U * i]));
-        const auto low = std::to_integer<unsigned int>(decode_nibble(input[2U * i + 1U]));
-        (*output)[i] = static_cast<std::byte>((high << 4U) | low);
-    }
-    return true;
-}
-
-template <std::size_t Size>
-void append_lower_hex(std::string* output,
-                      const std::array<std::byte, Size>& input) {
-    for (const std::byte value : input) {
-        const auto byte = std::to_integer<unsigned int>(value);
-        output->push_back(kHexDigits[(byte >> 4U) & 0x0fU]);
-        output->push_back(kHexDigits[byte & 0x0fU]);
-    }
 }
 
 std::optional<std::uint16_t> parse_port(std::string_view text) noexcept {
@@ -212,8 +177,8 @@ std::optional<ParsedPath> parse_path(std::string_view path) noexcept {
     const auto token = path.substr(1U, kH2TokenHexLength);
     const auto nonce = path.substr(2U + kH2TokenHexLength,
                                    kH2NonceHexLength);
-    if (!decode_lower_hex(token, &parsed.token) ||
-        !decode_lower_hex(nonce, &parsed.nonce)) {
+    if (!encoding::decode_lower_hex(token, parsed.token) ||
+        !encoding::decode_lower_hex(nonce, parsed.nonce)) {
         return std::nullopt;
     }
     return parsed;
@@ -223,9 +188,9 @@ std::string build_path(const Token& token, const Nonce& nonce) {
     std::string path;
     path.reserve(kH2PathLength);
     path.push_back('/');
-    append_lower_hex(&path, token);
+    path += encoding::hex_lower(token);
     path.push_back('/');
-    append_lower_hex(&path, nonce);
+    path += encoding::hex_lower(nonce);
     return path;
 }
 

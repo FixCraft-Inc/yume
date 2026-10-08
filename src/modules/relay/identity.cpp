@@ -14,6 +14,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "common/hex.hpp"
 #include "common/secure_erase.hpp"
 
 namespace yume::relay::identity {
@@ -117,17 +118,6 @@ bool consume_pem_block(const Bytes& bundle, std::size_t& cursor, std::string_vie
     return cursor >= bundle.size() || is_pem_whitespace(bundle[cursor]);
 }
 
-std::string hex_lower(const Bytes& bytes) {
-    static constexpr char kDigits[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(bytes.size() * 2U);
-    for (const std::uint8_t byte : bytes) {
-        out.push_back(kDigits[byte >> 4U]);
-        out.push_back(kDigits[byte & 15U]);
-    }
-    return out;
-}
-
 bool has_exact_pem_sequence(const Bytes& bundle, std::string_view label, std::size_t count) {
     std::size_t cursor = 0;
     for (std::size_t i = 0; i < count; ++i) {
@@ -186,7 +176,7 @@ Bytes Sha256Stream::Finish() {
 
 std::string Sha256Stream::FinishHex() {
     Bytes digest = Finish();
-    std::string encoded = hex_lower(digest);
+    std::string encoded = encoding::hex_lower(digest);
     security::secure_erase(digest);
     return encoded;
 }
@@ -288,7 +278,7 @@ std::string composite_fingerprint(const CompositePublicKey& key) {
         digest.Update(prefix);
         digest.Update(std::span<const std::uint8_t>(der, static_cast<std::size_t>(length)));
     }
-    return hex_lower(digest.Finish());
+    return encoding::hex_lower(digest.Finish());
 }
 
 std::string sha256_hex(std::string_view input) {
@@ -299,7 +289,7 @@ std::string sha256_hex(std::string_view input) {
 std::string sha256_hex(std::span<const std::uint8_t> input) {
     Sha256Stream digest;
     digest.Update(input);
-    return hex_lower(digest.Finish());
+    return encoding::hex_lower(digest.Finish());
 }
 
 }  // namespace yume::relay::identity

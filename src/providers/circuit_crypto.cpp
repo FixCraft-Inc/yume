@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "common/hex.hpp"
+
 namespace yume::providers::circuit {
 namespace {
 
@@ -73,19 +75,8 @@ Status fixed(StatusCode code, const char* message) {
 }  // namespace
 
 std::optional<Fingerprint> fingerprint_bytes(std::string_view hex) noexcept {
-    if (hex.size() != 2U * circuit1::kFingerprintBytes) return std::nullopt;
-    const auto nibble = [](char value) -> int {
-        if (value >= '0' && value <= '9') return value - '0';
-        if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-        return -1;
-    };
     Fingerprint output{};
-    for (std::size_t index = 0U; index < output.size(); ++index) {
-        const int high = nibble(hex[2U * index]);
-        const int low = nibble(hex[2U * index + 1U]);
-        if (high < 0 || low < 0) return std::nullopt;
-        output[index] = static_cast<std::uint8_t>((high << 4) | low);
-    }
+    if (!encoding::decode_lower_hex(hex, output)) return std::nullopt;
     return output;
 }
 

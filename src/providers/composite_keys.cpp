@@ -17,14 +17,18 @@
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 
+#include "common/hex.hpp"
 #include "fs/secret_file.hpp"
+#include "providers/ytp1_crypto.hpp"
 #include "ytp/security.hpp"
 
 namespace yume::providers::keys {
 namespace {
 
 using engine::StatusCode;
-constexpr const char* kProperties = "provider=default";
+constexpr const char* kProperties = ytp1_crypto::kOpenSslPropertyQuery.data();
+constexpr const char* kEd25519 = ytp1_crypto::kEd25519Algorithm.data();
+constexpr const char* kMlDsa87 = ytp1_crypto::kMlDsa87Algorithm.data();
 
 using BioPtr = std::unique_ptr<BIO, decltype(&BIO_free)>;
 using MdCtxPtr = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
@@ -83,7 +87,10 @@ struct KeyContext::Impl final {
         context ? OSSL_PROVIDER_load(context.get(), "default") : nullptr,
         OSSL_PROVIDER_unload};
     std::unique_ptr<EVP_MD, decltype(&EVP_MD_free)> sha256{
-        context ? EVP_MD_fetch(context.get(), "SHA256", kProperties) : nullptr,
+        context
+            ? EVP_MD_fetch(context.get(), ytp1_crypto::kSha256Algorithm.data(),
+                           kProperties)
+            : nullptr,
         EVP_MD_free};
 };
 
@@ -129,13 +136,7 @@ std::string KeyContext::fingerprint(
     require(EVP_DigestFinal_ex(digest.get(), hash.data(), &size) == 1 &&
                 size == hash.size(),
             "composite fingerprint failed");
-    constexpr char kHex[] = "0123456789abcdef";
-    std::string output(64, '0');
-    for (std::size_t i = 0; i < hash.size(); ++i) {
-        output[i * 2] = kHex[hash[i] >> 4U];
-        output[i * 2 + 1] = kHex[hash[i] & 15U];
-    }
-    return output;
+    return encoding::hex_lower(hash);
 }
 
 std::array<std::byte, 32> KeyContext::digest(
@@ -249,8 +250,8 @@ std::vector<std::byte> public_der(EVP_PKEY* key) {
 CompositePublic composite_public_from_pem(const KeyContext& keys,
                                           std::string_view pem) {
     const auto blocks = pem_blocks(pem, false, 2);
-    auto classical = parse_key(keys, blocks[0], false, "ED25519");
-    auto post_quantum = parse_key(keys, blocks[1], false, "ML-DSA-87");
+    auto classical = parse_key(keys, blocks[0], false, kEd25519);
+    auto post_quantum = parse_key(keys, blocks[1], false, kMlDsa87);
     CompositePublic identity{
         public_der(classical.get()), public_der(post_quantum.get()), {}};
     identity.fingerprint =
@@ -263,9 +264,9 @@ bool verify_composite(const KeyContext& keys, const CompositePublic& identity,
                       std::span<const std::byte> signature) {
     if (signature.size() != ytp1::kCompositeSignatureSize) return false;
     const auto classical_key =
-        parse_public_der(keys, identity.classical, "ED25519");
+        parse_public_der(keys, identity.classical, kEd25519);
     const auto post_quantum_key =
-        parse_public_der(keys, identity.post_quantum, "ML-DSA-87");
+        parse_public_der(keys, identity.post_quantum, kMlDsa87);
     // Both halves are evaluated on every correctly sized input, and neither
     // stands in for the other.
     const bool classical_ok =
@@ -280,8 +281,8 @@ bool verify_composite(const KeyContext& keys, const CompositePublic& identity,
 CompositePrivate composite_private_from_pem(const KeyContext& keys,
                                             std::string_view pem) {
     const auto blocks = pem_blocks(pem, true, 2);
-    CompositePrivate identity{parse_key(keys, blocks[0], true, "ED25519"),
-                              parse_key(keys, blocks[1], true, "ML-DSA-87"),
+    CompositePrivate identity{parse_key(keys, blocks[0], true, kEd25519),
+                              parse_key(keys, blocks[1], true, kMlDsa87),
                               {}};
     identity.identity.classical = public_der(identity.classical.get());
     identity.identity.post_quantum = public_der(identity.post_quantum.get());

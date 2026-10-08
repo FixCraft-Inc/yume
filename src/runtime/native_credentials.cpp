@@ -21,6 +21,7 @@
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 
+#include "common/hex.hpp"
 #include "common/secure_erase.hpp"
 #include "common/service_name.hpp"
 #include "fs/secret_file.hpp"
@@ -29,6 +30,7 @@
 #include "runtime/cluster_list.hpp"
 #include "runtime/cluster_state.hpp"
 #include "providers/composite_keys.hpp"
+#include "providers/ytp1_crypto.hpp"
 #include "runtime/egress_limiter.hpp"
 #include "ytp/security.hpp"
 
@@ -51,6 +53,8 @@ using CompositePublic = keys::CompositePublic;
 using keys::parse_key;
 using keys::pem_blocks;
 using keys::public_der;
+constexpr const char* kMlKem1024 =
+    providers::ytp1_crypto::kMlKem1024Algorithm.data();
 
 class SecretBytes final {
 public:
@@ -224,13 +228,10 @@ struct CompositePrivate final {
 CompositePrivate read_private_identity(const CredentialCrypto& crypto,
                                        const std::filesystem::path& path) {
     auto pem = read_file(path, kMaxPemBytes);
-    auto blocks = pem_blocks(pem.text(), true, 2);
-    auto classical = parse_key(crypto, blocks[0], true, "ED25519");
-    auto pq = parse_key(crypto, blocks[1], true, "ML-DSA-87");
-    auto fingerprint =
-        crypto.fingerprint(public_der(classical.get()), public_der(pq.get()));
-    return {private_der(classical.get()), private_der(pq.get()),
-            std::move(fingerprint)};
+    auto identity = keys::composite_private_from_pem(crypto, pem.text());
+    return {private_der(identity.classical.get()),
+            private_der(identity.post_quantum.get()),
+            std::move(identity.identity.fingerprint)};
 }
 
 const Json& closed_object(const Json& value,
@@ -325,12 +326,7 @@ CompositePublic store_identity(const CredentialCrypto& crypto,
                                const std::filesystem::path& directory) {
     closed_object(value, {"file", "sha256"});
     const auto& expected = string_field(value.at("sha256"), 64);
-    require(expected.size() == 64 &&
-                std::all_of(expected.begin(), expected.end(),
-                            [](unsigned char byte) {
-                                return (byte >= '0' && byte <= '9') ||
-                                       (byte >= 'a' && byte <= 'f');
-                            }),
+    require(expected.size() == 64U && encoding::is_lower_hex(expected),
             "credential identity fingerprint must be lowercase SHA-256");
     auto identity = read_public_identity(
         crypto,
@@ -581,7 +577,7 @@ LoadedNativeCredentials load_server(const config::v1::Config& config,
         crypto, resolve_reference(base, refs.composite_key().path()));
     auto kem_pem = read_file(base, refs.mlkem_key());
     auto kem_blocks = pem_blocks(kem_pem.text(), true, 1);
-    auto kem_key = parse_key(crypto, kem_blocks[0], true, "ML-KEM-1024");
+    auto kem_key = parse_key(crypto, kem_blocks[0], true, kMlKem1024);
     auto kem = private_der(kem_key.get());
 
     const auto store_path =
@@ -777,7 +773,7 @@ LoadedNativeCredentials load_client(const config::v1::Config& config,
         crypto, resolve_reference(base, refs.server_identity().path()));
     auto kem_pem = read_file(base, refs.server_mlkem());
     auto kem_blocks = pem_blocks(kem_pem.text(), false, 1);
-    auto kem_key = parse_key(crypto, kem_blocks[0], false, "ML-KEM-1024");
+    auto kem_key = parse_key(crypto, kem_blocks[0], false, kMlKem1024);
     auto kem = public_der(kem_key.get());
     auto factory = providers::OpenSslSecurityProviderFactory::create_client(
         {local.view(), remote.view(), kem, psk.bytes(), remote.fingerprint});

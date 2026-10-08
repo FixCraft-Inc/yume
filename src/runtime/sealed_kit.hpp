@@ -57,6 +57,11 @@ inline constexpr std::size_t kMaxSealedBytes = kSaltBytes + kNonceBytes + 4U +
 // A code is 25 characters of Crockford base32, 125 random bits, written in
 // five groups of five.
 inline constexpr std::size_t kCodeCharacters = 25U;
+// What every reader of a typed code says when it does not normalize to a
+// code. The number in the text is kCodeCharacters.
+inline constexpr std::string_view kBadCodeMessage =
+    "the kit code is not 25 code characters";
+static_assert(kCodeCharacters == 25U, "kBadCodeMessage names the length");
 
 // Whether a file of this size can be a sealed kit: the salt, nonce and tag
 // around one to kMaxContentBytes of whole padding blocks.

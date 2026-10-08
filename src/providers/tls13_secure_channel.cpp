@@ -13,6 +13,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +24,8 @@
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+
+#include "common/hex.hpp"
 
 namespace yume::providers {
 namespace {
@@ -245,12 +248,7 @@ Result<SecureChannelPeerEvidence> certificate_evidence(
             return Result<SecureChannelPeerEvidence>(Status::diagnostic(
                 StatusCode::Internal, "TLS peer certificate digest failed"));
         }
-        static constexpr char kHex[] = "0123456789abcdef";
-        identity.reserve(digest_length * 2U);
-        for (unsigned int index = 0U; index < digest_length; ++index) {
-            identity.push_back(kHex[digest[index] >> 4U]);
-            identity.push_back(kHex[digest[index] & 0x0fU]);
-        }
+        identity = encoding::hex_lower(std::span(digest).first(digest_length));
         OPENSSL_cleanse(digest.data(), digest.size());
     }
     return SecureChannelPeerEvidence::authenticated(

@@ -251,7 +251,7 @@ the `outbound` link this server keeps (its `state`, `sessions`,
 `connected_ms` when there is one) and the `circuits` it carries `in` and
 `out`. `circuits` counts whether this server is an `exit`, circuits `open`,
 those it is the `entry` of, those it `relayed`, `exit_streams`, `failed`
-circuits and those `refused`, in total and by bound (`client_circuits`,
+circuits and those `refused`, as a `total` and by bound (`client_circuits`,
 `circuit_rate`, `handshakes`, `streams`). No count names both neighbours of a
 circuit.
 

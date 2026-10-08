@@ -19,7 +19,9 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "common/hex.hpp"
 #include "config/v1/config.hpp"
+#include "providers/ytp1_crypto.hpp"
 
 namespace yume::runtime::cluster {
 namespace {
@@ -30,6 +32,10 @@ using engine::Status;
 using engine::StatusCode;
 using Json = nlohmann::json;
 using keys::require;
+constexpr const char* kPropertyQuery =
+    providers::ytp1_crypto::kOpenSslPropertyQuery.data();
+constexpr const char* kMlKem1024 =
+    providers::ytp1_crypto::kMlKem1024Algorithm.data();
 
 void closed(const Json& value, std::initializer_list<std::string_view> fields) {
     require(value.is_object() && value.size() == fields.size(),
@@ -48,10 +54,7 @@ const std::string& text(const Json& value, std::size_t maximum) {
 }
 
 bool fingerprint_text(std::string_view value) noexcept {
-    return value.size() == 64U &&
-           std::all_of(value.begin(), value.end(), [](char ch) {
-               return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-           });
+    return value.size() == 64U && encoding::is_lower_hex(value);
 }
 
 bool label_text(std::string_view value) noexcept {
@@ -88,7 +91,7 @@ bool trust_text(const keys::KeyContext& keys, std::string_view value) {
         // decode frees it and clears the pointer, so ownership is taken from
         // the pointer as the call leaves it.
         X509* target =
-            input ? X509_new_ex(keys.context(), "provider=default") : nullptr;
+            input ? X509_new_ex(keys.context(), kPropertyQuery) : nullptr;
         X509* const read =
             target ? PEM_read_bio_X509(input.get(), &target, nullptr, nullptr)
                    : nullptr;
@@ -118,23 +121,6 @@ keys::CompositePublic verified_signer(const keys::KeyContext& keys,
     return operator_key;
 }
 
-bool network_text(std::string_view value,
-                  std::array<std::byte, kNetworkTagBytes>& tag) noexcept {
-    if (value.size() != 2U * kNetworkTagBytes) return false;
-    const auto nibble = [](char ch) -> int {
-        if (ch >= '0' && ch <= '9') return ch - '0';
-        if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-        return -1;
-    };
-    for (std::size_t i = 0U; i < kNetworkTagBytes; ++i) {
-        const int high = nibble(value[2U * i]);
-        const int low = nibble(value[2U * i + 1U]);
-        if (high < 0 || low < 0) return false;
-        tag[i] = static_cast<std::byte>((high << 4) | low);
-    }
-    return true;
-}
-
 RouteNode parse_route_node(const keys::KeyContext& keys, const Json& entry) {
     closed(entry, {"name", "identity", "identity_key", "exit", "network"});
     RouteNode node;
@@ -150,8 +136,8 @@ RouteNode parse_route_node(const keys::KeyContext& keys, const Json& entry) {
     require(entry.at("exit").is_boolean(),
             "routes view exit must be a boolean");
     node.exit = entry.at("exit").get<bool>();
-    require(network_text(text(entry.at("network"), 2U * kNetworkTagBytes),
-                         node.network),
+    require(encoding::decode_lower_hex(
+                text(entry.at("network"), 2U * kNetworkTagBytes), node.network),
             "routes view network must be 16 lowercase hex digits");
     return node;
 }
@@ -239,7 +225,7 @@ Node parse_node(const keys::KeyContext& keys, const Json& entry) {
             "cluster node identity does not match its key");
     const auto kem_blocks =
         keys::pem_blocks(text(entry.at("mlkem_key"), 8192U), false, 1U);
-    const auto kem = keys::parse_key(keys, kem_blocks[0], false, "ML-KEM-1024");
+    const auto kem = keys::parse_key(keys, kem_blocks[0], false, kMlKem1024);
     node.mlkem_key = keys::public_der(kem.get());
     node.tls_trust = text(entry.at("tls_trust"), kMaxTrustBytes);
     require(trust_text(keys, node.tls_trust),

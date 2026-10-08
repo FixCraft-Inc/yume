@@ -28,6 +28,8 @@ gates.
 
 ## Current 0.3 foundation
 
+### Foundation components
+
 Implemented and covered by focused tests:
 
 - a dependency-pure C++20 engine foundation with move-only bounded buffers,
@@ -124,6 +126,8 @@ Implemented and covered by focused tests:
   a source-dependency SPDX SBOM. This inventory is not proof of source
   ancestry.
 
+### Ingress front door
+
 The native `H2WebFrontDoor` now implements a TCP listener over the
 accepted-channel owner, ordinary TLS 1.2/1.3 and HTTP/1.1/H2 cover traffic,
 and strict TLS 1.3/H2 admission promotion. Its operator-supplied immutable
@@ -155,6 +159,8 @@ host privileges or resource limits. The cover-site,
 TLS and H2 tests cover their separate parsing and ownership boundaries. These
 focused checks do not establish AUTH, a complete YTP session or a YTP ABI path.
 
+### Automated evidence
+
 The lasting automated evidence includes warning-as-error builds, strict C and
 C++ ABI consumers, exact built/header/map/candidate-symbol agreement, schema
 examples and negative parser cases, real-key hybrid handshake/record/rekey
@@ -163,6 +169,8 @@ real loopback TCP and connected-UDP route tests, the H2 carrier regression,
 and the end-to-end ABI named-stream probe. Exact candidate run results belong
 to CI or private qualification artifacts rather than this current-behavior
 document. Passing focused tests does not qualify the replacement end to end.
+
+### Native endpoint
 
 `runtime::NativeEndpoint` loads protected schema-1 credentials, builds role-aware
 provider graphs, wraps application handlers with immutable per-identity service
@@ -208,6 +216,8 @@ An optional callback reports each state change on the runtime context.
 `SessionEngine::traffic()` supplies the per-session payload and record byte
 counts. The endpoint test checks both across a reconnect.
 
+### Control socket and reload
+
 With `control.socket` or `yume --control-socket`, both programs serve
 [control protocol 1](protocol/CONTROL_1.md) on an owner-only UNIX socket:
 this snapshot with the fixed posture and tuning limits, circuits and route
@@ -226,6 +236,8 @@ identities and those beyond a lowered `max_sessions`, and refuses a store that
 fails validation or a changed admission key. The endpoint test covers grant
 changes, refusal of a malformed store, revocation of a live session and a
 client added while an accept was armed.
+
+### Clusters and circuits
 
 Servers of one operator form a cluster ([cluster 1](protocol/CLUSTER_1.md)).
 A server with a `cluster` section verifies the operator's signed list and its
@@ -291,6 +303,8 @@ another client's circuit keep moving, no node ends a circuit, and both
 stalled streams then deliver every byte. The C ABI refuses a
 `circuits` section.
 
+### Egress and listeners
+
 A server configuration may set `limits.max_egress_mbps`. The endpoint then
 paces the payload of every stream it serves, in both directions and for every
 service, through one limiter that splits the rate between busy identities by
@@ -309,6 +323,8 @@ seams. Unknown socket failures remain generic I/O failures; an unexpected
 exception is not reported as memory exhaustion. The C ABI probe exercises a
 conflicting listener, failed-start state, retry after port release, and restart
 of the original endpoint before exchanging authenticated traffic.
+
+### Integration tests
 
 Native integration tests provision actual setup credentials and exercise
 loopback TLS/H2, composite AUTH, named bytes in both directions, simultaneous
@@ -383,6 +399,8 @@ ordered terminal acknowledgement; bootstrap allocation sweeps cover client and
 server startup and selected teardown paths. These checks are not comprehensive
 allocation-failure, application-adapter, sanitizer or security qualification.
 
+### Embedding ABI
+
 Enabling the shared ABI builds every native provider. Its experimental
 `yume_embed` backend runs `NativeEndpoint` on its own execution thread
 behind the blocking C ABI. Schema-1 clients open, and servers accept,
@@ -438,6 +456,8 @@ said, cancels a client start from another thread, and opens a
 of a real session and cancels a start against a server that never answers,
 and `yume_abi_kit_integration` opens a kit that the `yume` program sealed
 and checks what the library refuses instead.
+
+### Native programs
 
 The native executables `yumed` and `yume` run schema-1 configurations.
 `YUME_BUILD_NATIVE_APPLICATION=ON` builds the complete provider graph, as does

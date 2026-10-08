@@ -1113,6 +1113,11 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **IPv4 literals with leading zeros.** The configuration accepted
+  `010.0.0.1` as an IP literal. The TCP provider could not parse it as a
+  number and passed it to the system resolver, which reads `010` as octal,
+  so the client dialled 8.0.0.1. Configuration and cluster lists now refuse
+  a leading zero, as the C ABI already did, and both use one check.
 - **A stale OpenSSL error ended a busy TLS session.** OpenSSL reports a TLS
   call's outcome through the calling thread's error queue, and the TLS channel
   did not empty that queue first. Any OpenSSL failure left on an I/O thread,

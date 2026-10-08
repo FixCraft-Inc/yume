@@ -54,6 +54,11 @@ A client names its server:
 A server lists where it listens: `listen_addresses`, 1 to 16 distinct IP
 literals, and `port`.
 
+An IP literal is IPv4 as four decimal parts of 0 to 255 without leading
+zeros, or IPv6 text in either case with at most one `::` and an optional
+dotted IPv4 tail. A leading zero is refused because the system resolver
+reads `010` as octal 8, so `010.0.0.1` would reach 8.0.0.1.
+
 ## suite
 
 YTP/1 has one composition, so every value is fixed: `id` is

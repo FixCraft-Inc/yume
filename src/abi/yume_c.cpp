@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -517,85 +516,6 @@ bool valid_destination_kind(std::uint32_t kind) noexcept {
            kind == YUME_DESTINATION_IPV6;
 }
 
-bool valid_ipv4(std::string_view value) noexcept {
-    std::size_t start = 0;
-    unsigned parts = 0;
-    while (start <= value.size()) {
-        const std::size_t end = value.find('.', start);
-        const std::string_view part = value.substr(
-            start, end == std::string_view::npos ? value.size() - start
-                                                 : end - start);
-        if (part.empty() || part.size() > 3 ||
-            (part.size() > 1 && part.front() == '0')) {
-            return false;
-        }
-        unsigned parsed = 0;
-        const auto conversion =
-            std::from_chars(part.data(), part.data() + part.size(), parsed);
-        if (conversion.ec != std::errc{} ||
-            conversion.ptr != part.data() + part.size() || parsed > 255) {
-            return false;
-        }
-        ++parts;
-        if (end == std::string_view::npos) break;
-        start = end + 1U;
-    }
-    return parts == 4;
-}
-
-bool count_ipv6_units(std::string_view part,
-                      bool allow_embedded_ipv4,
-                      unsigned& units) noexcept {
-    units = 0;
-    if (part.empty()) return true;
-    std::size_t start = 0;
-    while (start <= part.size()) {
-        const std::size_t end = part.find(':', start);
-        const std::string_view group = part.substr(
-            start, end == std::string_view::npos ? part.size() - start
-                                                 : end - start);
-        if (group.empty()) return false;
-        if (group.find('.') != std::string_view::npos) {
-            if (!allow_embedded_ipv4 || end != std::string_view::npos ||
-                !valid_ipv4(group)) {
-                return false;
-            }
-            units += 2;
-        } else {
-            if (group.size() > 4 ||
-                !std::all_of(group.begin(), group.end(), [](char value) {
-                    return (value >= '0' && value <= '9') ||
-                           (value >= 'a' && value <= 'f') ||
-                           (value >= 'A' && value <= 'F');
-                })) {
-                return false;
-            }
-            ++units;
-        }
-        if (end == std::string_view::npos) break;
-        start = end + 1U;
-    }
-    return true;
-}
-
-bool valid_ipv6(std::string_view value) noexcept {
-    if (value.empty() || value.find(':') == std::string_view::npos) return false;
-    const std::size_t compression = value.find("::");
-    if (compression == std::string_view::npos) {
-        unsigned units = 0;
-        return count_ipv6_units(value, true, units) && units == 8;
-    }
-    if (value.find("::", compression + 2U) != std::string_view::npos) {
-        return false;
-    }
-    unsigned left_units = 0;
-    unsigned right_units = 0;
-    return count_ipv6_units(value.substr(0, compression), false, left_units) &&
-           count_ipv6_units(value.substr(compression + 2U), true,
-                            right_units) &&
-           left_units + right_units < 8;
-}
-
 bool valid_dns_name(std::string_view value) noexcept {
     if (value.empty() || value.size() > 253 || value.front() == '.' ||
         value.back() == '.') {
@@ -697,10 +617,14 @@ yume_status validate_destination(HandleHeader* diagnostic_owner,
                                     YUME_STATUS_INVALID_ARGUMENT,
                                     error.what());
     }
-    const bool host_valid =
-        destination.kind == YUME_DESTINATION_HOSTNAME ? valid_dns_name(host) :
-        destination.kind == YUME_DESTINATION_IPV4 ? valid_ipv4(host) :
-                                                    valid_ipv6(host);
+    bool host_valid = false;
+    if (destination.kind == YUME_DESTINATION_HOSTNAME) {
+        host_valid = valid_dns_name(host);
+    } else if (destination.kind == YUME_DESTINATION_IPV4) {
+        host_valid = yume::config::v1::IsIpv4Literal(host);
+    } else {
+        host_valid = yume::config::v1::IsIpv6Literal(host);
+    }
     if (!host_valid) {
         return fail_with_diagnostic(diagnostic_owner,
                                     YUME_STATUS_INVALID_ARGUMENT,

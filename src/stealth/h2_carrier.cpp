@@ -955,16 +955,15 @@ private:
                                std::size_t size) noexcept {
         if (!outer_trace_ || size == 0) return;
         try {
-            static constexpr std::string_view kClientPreface =
-                "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
             std::size_t offset = 0;
             // The previous frame may have left in an earlier write, as the
             // preface PING does.
             std::uint8_t& previous_type = last_outbound_frame_type_;
             std::uint8_t& previous_flags = last_outbound_frame_flags_;
-            if (size >= kClientPreface.size() &&
-                std::equal(kClientPreface.begin(), kClientPreface.end(), data)) {
-                offset = kClientPreface.size();
+            if (size >= detail::kH2ClientPreface.size() &&
+                std::equal(detail::kH2ClientPreface.begin(),
+                           detail::kH2ClientPreface.end(), data)) {
+                offset = detail::kH2ClientPreface.size();
             }
             while (offset < size) {
                 if (size - offset < 9) {
@@ -1136,18 +1135,18 @@ private:
         static constexpr std::uint32_t kMaxObservedFrameBytes =
             1024U * 1024U;
         static constexpr std::size_t kMaxObservedSettings = 64;
-        static constexpr std::string_view kClientPreface =
-            "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
         try {
             std::size_t offset = 0;
             while (inbound_preface_pending_ && offset < size) {
-                if (data[offset] != static_cast<std::uint8_t>(
-                        kClientPreface[inbound_preface_used_])) {
+                if (data[offset] !=
+                    static_cast<std::uint8_t>(
+                        detail::kH2ClientPreface[inbound_preface_used_])) {
                     outer_trace_->MarkTruncated();
                     return;
                 }
                 ++offset;
-                if (++inbound_preface_used_ == kClientPreface.size()) {
+                if (++inbound_preface_used_ ==
+                    detail::kH2ClientPreface.size()) {
                     inbound_preface_pending_ = false;
                 }
             }

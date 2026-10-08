@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/hex.hpp"
 #include "modules/relay/identity.hpp"
 
 #include <dirent.h>
@@ -528,11 +529,7 @@ bool IsPinRecordName(std::string_view name) {
         !name.ends_with(suffix)) {
         return false;
     }
-    const std::string_view digest = name.substr(0, kFingerprintHexBytes);
-    return std::all_of(digest.begin(), digest.end(), [](unsigned char value) {
-        return (value >= '0' && value <= '9') ||
-               (value >= 'a' && value <= 'f');
-    });
+    return encoding::is_lower_hex(name.substr(0, kFingerprintHexBytes));
 }
 
 // Names of every pin record in the trust directory. Enumeration is bounded:
@@ -719,12 +716,7 @@ bool IsValidPeerEndpointId(std::string_view endpoint_id) noexcept {
 bool IsCanonicalCompositeFingerprint(
         std::string_view fingerprint) noexcept {
     return fingerprint.size() == kFingerprintHexBytes &&
-           std::all_of(
-               fingerprint.begin(), fingerprint.end(),
-               [](unsigned char value) {
-                   return (value >= '0' && value <= '9') ||
-                          (value >= 'a' && value <= 'f');
-               });
+           encoding::is_lower_hex(fingerprint);
 }
 
 PeerTrustStore::PeerTrustStore(PeerTrustConfig config)

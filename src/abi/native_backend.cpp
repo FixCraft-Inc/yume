@@ -29,6 +29,7 @@
 
 #include <boost/asio/ip/address.hpp>
 
+#include "common/hex.hpp"
 #include "common/secure_erase.hpp"
 #include "config/v1/config.hpp"
 #include "engine/cancellation.hpp"
@@ -149,7 +150,6 @@ Status copy_status(const Status& status) noexcept {
 
 BackendPeerIdentity identity_from(const engine::PeerEvidence& evidence,
                                   std::string_view service) {
-    static constexpr char kHex[] = "0123456789abcdef";
     BackendPeerIdentity identity;
     identity.service.assign(service);
     identity.peer_label = evidence.identity();
@@ -157,14 +157,8 @@ BackendPeerIdentity identity_from(const engine::PeerEvidence& evidence,
     identity.peer_is_server =
         evidence.peer_role() == engine::EndpointRole::Server;
     const auto fingerprint = evidence.credential_evidence();
-    if (fingerprint.size() == 32U) {
-        identity.fingerprint_sha256.resize(fingerprint.size() * 2U);
-        for (std::size_t index = 0U; index < fingerprint.size(); ++index) {
-            const auto byte = std::to_integer<unsigned>(fingerprint[index]);
-            identity.fingerprint_sha256[index * 2U] = kHex[byte >> 4U];
-            identity.fingerprint_sha256[index * 2U + 1U] = kHex[byte & 0x0fU];
-        }
-    }
+    if (fingerprint.size() == 32U)
+        identity.fingerprint_sha256 = encoding::hex_lower(fingerprint);
     return identity;
 }
 
@@ -2795,7 +2789,7 @@ std::unique_ptr<BackendKit> open_sealed_kit(
         auto code = kit::normalize_code(typed_code);
         if (!code) {
             outcome = BackendKitOutcome::BadCode;
-            describe(error, "the kit code is not 25 code characters");
+            describe(error, kit::kBadCodeMessage);
             return nullptr;
         }
         const security::ScopedErase code_guard(*code);

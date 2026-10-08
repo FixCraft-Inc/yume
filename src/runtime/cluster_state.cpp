@@ -20,6 +20,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "common/hex.hpp"
 #include "fs/secret_file.hpp"
 
 namespace yume::runtime::cluster {
@@ -31,11 +32,7 @@ using engine::StatusCode;
 using Json = nlohmann::json;
 
 bool is_fingerprint(const std::string& value) noexcept {
-    return value.size() == 64U &&
-           std::all_of(value.begin(), value.end(), [](char character) {
-               return (character >= '0' && character <= '9') ||
-                      (character >= 'a' && character <= 'f');
-           });
+    return value.size() == 64U && encoding::is_lower_hex(value);
 }
 
 Result<std::optional<SavedState>> refused(const char* message) {

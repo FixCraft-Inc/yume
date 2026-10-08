@@ -5,6 +5,7 @@
  */
 
 #include "stealth/h2_carrier.hpp"
+#include "stealth/h2_wire_profile.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -21,8 +22,7 @@ namespace {
 using Bytes = yume::obfs::H2Bytes;
 using Json = nlohmann::json;
 
-constexpr std::string_view kClientPreface =
-    "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+using yume::obfs::detail::kH2ClientPreface;
 constexpr std::uint8_t kFrameHeaders = 0x01;
 constexpr std::uint8_t kFramePriority = 0x02;
 constexpr std::uint8_t kFrameSettings = 0x04;
@@ -60,8 +60,8 @@ Json DecodePriority(const std::uint8_t* payload,
 }
 
 Json InspectOpening(const Bytes& wire) {
-    if (wire.size() < kClientPreface.size() ||
-        !std::equal(kClientPreface.begin(), kClientPreface.end(),
+    if (wire.size() < kH2ClientPreface.size() ||
+        !std::equal(kH2ClientPreface.begin(), kH2ClientPreface.end(),
                     wire.begin())) {
         throw std::runtime_error(
             "production carrier did not emit the HTTP/2 client preface");
@@ -71,7 +71,7 @@ Json InspectOpening(const Bytes& wire) {
     Json window_updates = Json::array();
     Json priority_frames = Json::array();
     Json priming_priority;
-    std::size_t offset = kClientPreface.size();
+    std::size_t offset = kH2ClientPreface.size();
 
     while (offset < wire.size()) {
         if (wire.size() - offset < 9) {

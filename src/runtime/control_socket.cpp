@@ -26,6 +26,7 @@
 #include <boost/asio/basic_waitable_timer.hpp>
 #include <nlohmann/json.hpp>
 
+#include "common/hex.hpp"
 #include "common/version.hpp"
 #include "engine/buffer.hpp"
 #include "providers/asio_tcp_byte_channel_provider.hpp"
@@ -808,10 +809,7 @@ Result<std::string> query_control_status(const std::filesystem::path& path,
 Result<std::string> query_control_accept_route(
     const std::filesystem::path& path, std::string_view id,
     std::chrono::milliseconds timeout) {
-    if (id.empty() || id.size() > 64U ||
-        !std::all_of(id.begin(), id.end(), [](char ch) {
-            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-        })) {
+    if (id.empty() || id.size() > 64U || !encoding::is_lower_hex(id)) {
         return Result<std::string>(
             Status::diagnostic(StatusCode::InvalidArgument,
                                "a route id is lowercase hexadecimal"));

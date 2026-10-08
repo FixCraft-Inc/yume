@@ -20,8 +20,6 @@ constexpr std::size_t kPriorityFieldSize = 5;
 constexpr std::uint8_t kFrameHeaders = 0x01;
 constexpr std::uint8_t kFlagPadded = 0x08;
 constexpr std::uint8_t kFlagPriority = 0x20;
-constexpr std::string_view kClientPreface =
-    "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 bool Fail(std::string& error, std::string reason) {
     if (error.empty()) error = std::move(reason);
@@ -101,14 +99,13 @@ bool H2WireProfile::AppendSerializedBatch(
     transformed.reserve(
         batch.size() + pending_priorities_.size() * kPriorityFieldSize);
     std::size_t offset = 0;
-    if (batch.size() >= kClientPreface.size() &&
-        std::equal(kClientPreface.begin(), kClientPreface.end(),
+    if (batch.size() >= kH2ClientPreface.size() &&
+        std::equal(kH2ClientPreface.begin(), kH2ClientPreface.end(),
                    batch.begin())) {
-        transformed.insert(
-            transformed.end(), batch.begin(),
-            batch.begin() +
-                static_cast<std::ptrdiff_t>(kClientPreface.size()));
-        offset = kClientPreface.size();
+        transformed.insert(transformed.end(), batch.begin(),
+                           batch.begin() + static_cast<std::ptrdiff_t>(
+                                               kH2ClientPreface.size()));
+        offset = kH2ClientPreface.size();
     }
 
     while (offset < batch.size()) {

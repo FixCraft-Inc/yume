@@ -9,12 +9,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include "stealth/cover_profile.hpp"
 
 namespace yume::obfs::detail {
+
+// The connection preface an HTTP/2 client sends first (RFC 9113, 3.4).
+inline constexpr std::string_view kH2ClientPreface =
+    "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 // New nghttp2 releases ignore the deprecated RFC 7540 priority argument.
 // This adapter preserves the version-pinned captured request bytes while

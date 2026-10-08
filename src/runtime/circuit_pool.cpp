@@ -17,6 +17,7 @@
 #include <boost/asio/basic_waitable_timer.hpp>
 #include <boost/asio/post.hpp>
 
+#include "common/hex.hpp"
 #include "common/service_name.hpp"
 #include "engine/cancellation.hpp"
 #include "providers/circuit_crypto.hpp"
@@ -87,16 +88,6 @@ const char* reason_name(circuit1::CircuitReason reason) noexcept {
             return "closing";
     }
     return "unknown";
-}
-
-std::string hex(std::span<const std::byte> bytes) {
-    constexpr char kDigits[] = "0123456789abcdef";
-    std::string text;
-    for (const auto byte : bytes) {
-        text.push_back(kDigits[std::to_integer<unsigned>(byte) >> 4U]);
-        text.push_back(kDigits[std::to_integer<unsigned>(byte) & 15U]);
-    }
-    return text;
 }
 
 class EngineCircuitSession final : public CircuitSession {
@@ -746,7 +737,7 @@ struct CircuitPool::State final : std::enable_shared_from_this<State> {
         add(std::to_string(serial));
         if (complete && hops >= 2U) next.latency = total;
         const auto digest = crypto->key_context().digest({fields});
-        next.id = hex(std::span(digest).first(8));
+        next.id = encoding::hex_lower(std::span(digest).first(8));
         std::string nodes;
         for (const auto& name : next.nodes)
             nodes += (nodes.empty() ? "" : ", ") + name;

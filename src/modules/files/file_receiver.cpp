@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/hex.hpp"
 #include "modules/relay/base64.hpp"
 #include "modules/relay/identity.hpp"
 
@@ -521,11 +522,7 @@ bool RelayFileReceiver::IsSafeBasename(std::string_view name) noexcept {
 
 bool RelayFileReceiver::IsCanonicalSha256Digest(
         std::string_view digest) noexcept {
-    return digest.size() == 64U &&
-        std::all_of(digest.begin(), digest.end(), [](unsigned char ch) {
-            return (ch >= '0' && ch <= '9') ||
-                (ch >= 'a' && ch <= 'f');
-        });
+    return digest.size() == 64U && encoding::is_lower_hex(digest);
 }
 
 bool RelayFileReceiver::Begin(

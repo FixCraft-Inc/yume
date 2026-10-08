@@ -391,7 +391,7 @@ Status check_kit(const Kit& kit) {
 Result<std::vector<std::uint8_t>> seal(const Kit& kit, std::string_view code) {
     using Sealed = Result<std::vector<std::uint8_t>>;
     if (!is_code(code)) {
-        return Sealed(invalid("the kit code is not 25 code characters"));
+        return Sealed(invalid(kBadCodeMessage));
     }
     if (const auto checked = check_kit(kit); !checked.ok())
         return Sealed(checked);
@@ -471,7 +471,7 @@ Result<std::vector<std::uint8_t>> seal(const Kit& kit, std::string_view code) {
 Result<Kit> open(std::span<const std::uint8_t> sealed, std::string_view code) {
     const std::size_t overhead = kSaltBytes + kNonceBytes + kTagBytes;
     if (!is_code(code)) {
-        return Result<Kit>(invalid("the kit code is not 25 code characters"));
+        return Result<Kit>(invalid(kBadCodeMessage));
     }
     // The size is checked before the KDF runs, so an arbitrary file costs
     // nothing but its length check.

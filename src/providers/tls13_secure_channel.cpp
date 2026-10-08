@@ -862,6 +862,11 @@ private:
             return action;
         }
         if (phase_ == Phase::Handshake) {
+            // SSL_get_error reads this thread's OpenSSL error queue, so an
+            // error another operation left there would turn a want-read
+            // into a failure. Every TLS call below starts from an empty
+            // queue.
+            ERR_clear_error();
             const int result = SSL_do_handshake(ssl_.get());
             if (result == 1) {
                 tls_version_ = static_cast<std::uint16_t>(SSL_version(ssl_.get()));
@@ -936,6 +941,7 @@ private:
             }
             std::size_t consumed = 0U;
             const auto remaining = write_->buffer.bytes().subspan(write_->offset);
+            ERR_clear_error();
             const int result = SSL_write_ex(ssl_.get(), remaining.data(),
                                             remaining.size(), &consumed);
             if (result == 1 && consumed > 0U) {
@@ -945,6 +951,7 @@ private:
             return tls_want_action_locked(result, "TLS application write failed");
         }
         if (shutdown_requested_ && !shutdown_sent_) {
+            ERR_clear_error();
             const int result = SSL_shutdown(ssl_.get());
             if (result >= 0) {
                 shutdown_sent_ = true;
@@ -960,6 +967,7 @@ private:
             }
             Buffer buffer = std::move(allocated).take_value();
             std::size_t received = 0U;
+            ERR_clear_error();
             const int result = SSL_read_ex(ssl_.get(), buffer.mutable_bytes().data(),
                                            buffer.size(), &received);
             if (result == 1 && received > 0U && buffer.resize(received).ok()) {

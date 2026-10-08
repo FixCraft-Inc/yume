@@ -25,6 +25,8 @@
 #include <utility>
 #include <vector>
 
+#include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -1104,6 +1106,48 @@ void test_simultaneous_read_and_write() {
     assert(reads == 2U && writes == 2U);
 }
 
+// An error another OpenSSL call left on this thread's queue fails no TLS
+// call. SSL_get_error reads that queue, so a want-read would otherwise read
+// as a failure: a refused credential reload left one on a daemon's I/O
+// thread and ended the cluster link that was reading.
+void test_stale_thread_errors_fail_no_io() {
+    const PemIdentity identity = make_identity();
+    auto client_provider = take(Tls13SecureChannelProvider::create_client(
+        {"localhost", identity.certificate, {}, {}, {}}));
+    auto server_provider = take(Tls13SecureChannelProvider::create_server(
+        {identity.certificate, identity.key, {}, {}}));
+    const auto stale = [] { ERR_raise(ERR_LIB_EVP, EVP_R_BAD_DECRYPT); };
+    std::unique_ptr<SecureChannel> client;
+    std::unique_ptr<SecureChannel> server;
+    stale();
+    auto pair = establish(client_provider, server_provider, client, server);
+    std::optional<Result<Buffer>> received;
+    stale();
+    server->async_read(64U, {}, [&](Result<Buffer> result) {
+        received.emplace(std::move(result));
+    });
+    assert(!received);
+    stale();
+    bool wrote = false;
+    client->async_write(bytes("after a stale error"), {},
+                        [&](Status status, std::size_t count) {
+                            assert(status.ok() && count == 19U);
+                            wrote = true;
+                        });
+    assert(wrote && received && received->ok() &&
+           text(received->value()) == "after a stale error");
+    bool closed = false;
+    stale();
+    server->async_read(16U, {}, [&](Result<Buffer> result) {
+        assert(!result.ok() && result.status().code() == StatusCode::Closed);
+        closed = true;
+    });
+    stale();
+    assert(client->shutdown_write().ok());
+    assert(closed && pair);
+    ERR_clear_error();
+}
+
 void test_immediate_callback_releases_final_channel(bool write) {
     const PemIdentity identity = make_identity();
     auto client_provider = take(Tls13SecureChannelProvider::create_client(
@@ -1166,6 +1210,7 @@ int main() {
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_2_VERSION, "");
     yume::providers::test_server_cover_cancellation_and_teardown();
     yume::providers::test_simultaneous_read_and_write();
+    yume::providers::test_stale_thread_errors_fail_no_io();
     yume::providers::test_immediate_callback_releases_final_channel(false);
     yume::providers::test_immediate_callback_releases_final_channel(true);
     return 0;

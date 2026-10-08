@@ -1108,6 +1108,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **A stale OpenSSL error ended a busy TLS session.** OpenSSL reports a TLS
+  call's outcome through the calling thread's error queue, and the TLS channel
+  did not empty that queue first. Any OpenSSL failure left on an I/O thread,
+  such as a reload refused for a bad list signature or a circuit handshake
+  with a malformed key, turned the next session's ordinary wait for data
+  into a fatal error, and a cluster link carrying circuits closed. The
+  channel now empties the queue before each TLS call.
+  `yume_tls13_secure_channel_test` leaves an error before every step.
 - **Callbacks that ran twice under libc++.** Several components moved a
   callback out of a member and later tested or settled that member again,
   relying on the moved-from `std::function` being empty. libstdc++ empties

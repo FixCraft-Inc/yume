@@ -252,7 +252,10 @@ a slow link,
 and `yume_native_circuit_test` runs four daemons with a test client:
 two- and three-hop circuits carrying a stream both ways, an exit policy and
 a non-exit refusing streams, a client without the grant, the per-client
-bound, a reload under load and a stopped middle.
+bound, a reload under load, a stopped middle and its return, a client that
+leaves while its circuit waits at the entry, a link rekey that a frozen
+middle never acknowledges, a refused reload, a changed link PSK and a
+removed node, each beside a circuit that must keep running.
 
 A client with a `circuits` section sends every SOCKS5 CONNECT and every
 forward to a destination through circuits it builds itself: it verifies the

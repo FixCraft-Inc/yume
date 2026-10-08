@@ -1120,7 +1120,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   with a malformed key, turned the next session's ordinary wait for data
   into a fatal error, and a cluster link carrying circuits closed. The
   channel now empties the queue before each TLS call.
-  `yume_tls13_secure_channel_test` leaves an error before every step.
+  `yume_tls13_secure_channel_test` leaves an error before every step, and
+  the four-daemon circuit test refuses a reload under load.
 - **A circuit build outlived its pool.** Closing the client's circuit pool or
   giving it a new session left a circuit that was still being built running
   until its 30-second build bound, and an open cancelled while it waited for

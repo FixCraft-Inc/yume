@@ -1951,7 +1951,9 @@ if(YUME_BUILD_TESTING)
             # Four clustered daemons carrying circuits for a test client that
             # fetches the routes view, builds two- and three-hop circuits and
             # echoes through an exit, with refusals, stalled streams beside
-            # healthy ones, a stopped middle and a reload. The probe is a test
+            # healthy ones, a stopped middle and its return, a client leaving
+            # mid-build, a rekey a frozen middle never acknowledges and
+            # reloads that keep, change or remove links. The probe is a test
             # tool and is not installed.
             add_executable(yume_circuit_probe runtime/circuit_probe.cpp)
             target_link_libraries(yume_circuit_probe PRIVATE
@@ -1965,8 +1967,11 @@ if(YUME_BUILD_TESTING)
                     --probe "$<TARGET_FILE:yume_circuit_probe>"
                     --yume "$<TARGET_FILE:yume>"
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}")
+            # The rekey case alone waits 30 seconds for the acknowledgement
+            # deadline, and sanitizer builds run the rest several times
+            # slower.
             set_tests_properties(yume_native_circuit_test PROPERTIES
-                TIMEOUT 240 LABELS "foundation;0.3;native-runtime;integration;circuit")
+                TIMEOUT 480 LABELS "foundation;0.3;native-runtime;integration;circuit")
             if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                 add_executable(yume_native_runtime_dns_server_test
                     runtime/native_runtime_dns_server_test.cpp)

@@ -170,7 +170,11 @@ may be connecting at once. Each session and connection takes a descriptor, so
 the daemon raises its soft open-file limit to the hard one at start, keeps 512
 descriptors for itself, gives sessions at most half of the rest and the pool
 what remains. The packaged unit's `LimitNOFILE=65536` allows the full sizes,
-and a limit of 1024 leaves 256 sessions and 256 connections.
+and a limit of 1024 leaves 256 sessions and 256 connections. One authenticated
+identity may reserve at most half of the provider's pending and active route
+limits, rounded up, across its sessions and TCP/UDP services. The reservation
+is released when an open fails, is canceled or its channel closes. At a
+circuit exit the counted identity is the previous hop.
 
 All sessions run on the daemon's one event-loop thread, so the clients'
 traffic together moves at what one CPU core encrypts. An idle connection holds

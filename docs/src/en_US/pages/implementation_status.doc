@@ -190,6 +190,10 @@ execution context and reserved cancellation ownership. It requires explicit
 numeric-address authorization before opening any socket, including every
 selected DNS candidate and IPv4-mapped IPv6. Policy errors and reentrant
 cancellation settle the OPEN without connecting.
+The provider also caps each authenticated route identity at half of its
+pending and active limits, rounded up, across sessions and TCP/UDP services;
+failed, canceled and closed opens release those reservations. A circuit exit
+counts the authenticated previous hop, not the hidden client.
 
 Session teardown notifies the endpoint through reserved control dispatch.
 The endpoint frees the session slot before its optional `session_ended`

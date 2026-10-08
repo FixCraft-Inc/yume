@@ -47,6 +47,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   `yume --messages` shows. `yume_kit_open` opens a kit `yume --seal-kit`
   sealed, so an application imports one file and a code instead of copying
   keys. A stop now cancels a client start in progress on another thread.
+- **Identity route reservations.** Direct TCP and UDP route capacity now
+  reserves pending and active slots per authenticated identity across its
+  sessions. Failed, canceled and closed opens release the reservation; a
+  circuit exit accounts its authenticated previous hop, not the hidden client.
 - **Android build of the library.** `tools/build_android_shared_abi.sh`
   builds `libyume.so` for the Android ABIs with the pinned NDK, the patched
   OpenSSL built static for each ABI and the vcpkg manifest's dependencies.

@@ -1117,6 +1117,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **The GUI could crash when a page came back into view.** The kit list,
+  the local listeners and the circuit routes are Repeater rows, rebuilt
+  whenever their model changes, also while their page is hidden. Qt 6.4's
+  layouts can keep a destroyed row and dereference it when the page is
+  shown again (QTBUG-111792, fixed in Qt 6.6). The rows now sit in plain
+  Columns that the layouts see as one item. CI's GUI job crashed once, and
+  Qt 6.4.2 crashed in 1 of 43 runs, and at once under ASan.
 - **IPv4 literals with leading zeros.** The configuration accepted
   `010.0.0.1` as an IP literal. The TCP provider could not parse it as a
   number and passed it to the system resolver, which reads `010` as octal,

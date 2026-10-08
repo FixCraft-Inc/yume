@@ -1116,6 +1116,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   into a fatal error, and a cluster link carrying circuits closed. The
   channel now empties the queue before each TLS call.
   `yume_tls13_secure_channel_test` leaves an error before every step.
+- **A circuit build outlived its pool.** Closing the client's circuit pool or
+  giving it a new session left a circuit that was still being built running
+  until its 30-second build bound, and an open cancelled while it waited for
+  that build settled only when the build ended. Both now end at once.
 - **Callbacks that ran twice under libc++.** Several components moved a
   callback out of a member and later tested or settled that member again,
   relying on the moved-from `std::function` being empty. libstdc++ empties

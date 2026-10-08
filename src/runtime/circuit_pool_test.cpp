@@ -7,7 +7,8 @@
 // The client's circuit pool over an in-memory session: four real circuit
 // nodes, a routes view the operator signed and short pool timings, so the
 // tests reach rotation, idle closing, the spare-failure rule, exclusion of a
-// failed node and closing circuits from inside the pool's own loops.
+// failed node and its return, cancellation while a circuit is being built
+// and closing circuits from inside the pool's own loops.
 
 #include <algorithm>
 #include <chrono>
@@ -41,6 +42,7 @@ namespace {
 using namespace std::chrono_literals;
 using namespace yume;
 using engine::Buffer;
+using engine::CancellationSource;
 using engine::CancellationToken;
 using engine::ReceivedRecord;
 using engine::Result;
@@ -147,6 +149,7 @@ struct Harness {
         // OpenSSL frees a library context's per-thread state only on the
         // thread that frees the context, and the nodes signed on this one.
         runtime.sync([this] {
+            held.clear();
             if (pool) pool->close();
             pool.reset();
             session.reset();
@@ -245,6 +248,10 @@ struct Harness {
                 if (key->identity.fingerprint == peer) target = node;
             }
             ++extends[target];
+            if (hanging.contains(target)) {
+                held.push_back(std::move(done));
+                return;
+            }
             if (target.empty() || stopped.contains(target)) {
                 done(Result<std::shared_ptr<StreamResponder>>(
                     Status(StatusCode::NotFound)));
@@ -280,19 +287,36 @@ struct Harness {
         pool->set_session(session);
     }
 
-    OpenResult open(std::uint16_t port = 443U) {
+    std::future<OpenResult> open_async(CancellationToken cancellation = {},
+                                       std::uint16_t port = 443U) {
         auto promise = std::make_shared<std::promise<OpenResult>>();
         auto future = promise->get_future();
         runtime.sync([&] {
             pool->open(take(engine::RouteDestination::ipv4(
                            engine::NetworkProtocol::Tcp, {192, 0, 2, 9}, port)),
-                       "internet", {}, [promise](OpenResult opened) {
+                       "internet", std::move(cancellation),
+                       [promise](OpenResult opened) {
                            promise->set_value(std::move(opened));
                        });
         });
+        return future;
+    }
+
+    OpenResult open(std::uint16_t port = 443U) {
+        auto future = open_async({}, port);
         if (future.wait_for(20s) != std::future_status::ready)
             return OpenResult(Status(StatusCode::Cancelled));
         return future.get();
+    }
+
+    // The circuits north holds, built or being built.
+    std::size_t entry_circuits() {
+        return runtime.sync(
+            [&] { return services["north"]->status().circuits; });
+    }
+
+    std::size_t circuit_opens() {
+        return runtime.sync([&] { return session->circuit_opens; });
     }
 
     CircuitPoolStatus status() {
@@ -344,6 +368,10 @@ struct Harness {
     std::shared_ptr<TestSession> session;
     // Nodes whose previous hop cannot reach them.
     std::set<std::string> stopped;
+    // Nodes whose previous hop never gets an answer: the extension waits
+    // in held until the harness ends.
+    std::set<std::string> hanging;
+    std::vector<runtime::circuit::StreamOpened> held;
     // How often a node was asked to extend a circuit to each node.
     std::map<std::string, std::size_t> extends;
     std::vector<std::string> said;
@@ -499,6 +527,157 @@ void test_exclusion(IoRuntime& io) {
     CHECK(!tried.contains("west") || tried.at("west") <= 1U);
 }
 
+// Polls from the test thread until the check holds or the limit passes.
+bool eventually(const std::function<bool()>& check,
+                std::chrono::milliseconds limit = 5s) {
+    const auto deadline = Clock::now() + limit;
+    while (Clock::now() < deadline) {
+        if (check()) return true;
+        std::this_thread::sleep_for(20ms);
+    }
+    return check();
+}
+
+// Every route's second hop hangs, so every build waits at north for 30
+// seconds, the client's build timeout. A fresh session starts from that
+// state once the first one's spare is built, so no earlier build waits.
+void hang_every_build(Harness& harness) {
+    CHECK(harness.wait_until(
+        [](const auto& status) { return status.circuits.size() == 1U; }));
+    harness.runtime.sync([&] {
+        harness.hanging = {"east", "west", "south"};
+        harness.new_session();
+    });
+}
+
+// An open waiting for a circuit settles as soon as it is cancelled, from
+// another thread, and not when the build it waits for ends. Another open
+// behind it in the queue keeps waiting.
+void test_cancel_while_building(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    hang_every_build(harness);
+    CancellationSource first;
+    CancellationSource second;
+    auto waiting = harness.open_async(first.token());
+    auto behind = harness.open_async(second.token());
+    CHECK(eventually([&] { return harness.entry_circuits() == 1U; }));
+    CHECK(waiting.wait_for(300ms) == std::future_status::timeout);
+    second.cancel();
+    CHECK(behind.wait_for(2s) == std::future_status::ready &&
+          behind.get().status().code() == StatusCode::Cancelled);
+    CHECK(waiting.wait_for(0s) == std::future_status::timeout);
+    first.cancel();
+    CHECK(waiting.wait_for(2s) == std::future_status::ready &&
+          waiting.get().status().code() == StatusCode::Cancelled);
+    // An open whose token is cancelled already settles at once.
+    CancellationSource done;
+    done.cancel();
+    auto late = harness.open_async(done.token());
+    CHECK(late.wait_for(2s) == std::future_status::ready &&
+          late.get().status().code() == StatusCode::Cancelled);
+    // The build itself goes on for the next open.
+    CHECK(harness.entry_circuits() == 1U);
+}
+
+// Closing the pool ends a circuit still being built at once, so the entry
+// does not hold it until the build times out.
+void test_close_while_building(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    hang_every_build(harness);
+    CHECK(eventually([&] { return harness.entry_circuits() == 1U; }));
+    harness.runtime.sync([&] { harness.pool->close(); });
+    CHECK(eventually([&] { return harness.entry_circuits() == 0U; }, 2s));
+    CHECK(harness.open().status().code() == StatusCode::Closed);
+}
+
+// A new session ends the earlier session's build at once and builds again
+// on the new one.
+void test_new_session_while_building(IoRuntime& io) {
+    Harness harness(io, fast(1h, 1h, 1h));
+    hang_every_build(harness);
+    CHECK(eventually([&] { return harness.entry_circuits() == 1U; }));
+    harness.runtime.sync([&] { harness.new_session(); });
+    CHECK(eventually([&] { return harness.circuit_opens() == 1U; }));
+    // The old build has ended and only the new one waits at north.
+    CHECK(eventually([&] { return harness.entry_circuits() == 1U; }, 2s));
+    std::this_thread::sleep_for(300ms);
+    CHECK(harness.entry_circuits() == 1U);
+}
+
+bool through(const CircuitPoolStatus& status, std::string_view node) {
+    return std::any_of(
+        status.circuits.begin(), status.circuits.end(), [&](const auto& route) {
+            return std::find(route.nodes.begin(), route.nodes.end(), node) !=
+                   route.nodes.end();
+        });
+}
+
+// A node that stopped stays out of routes while it is excluded, and once it
+// is back and its exclusion has passed, circuits are built through it again.
+void test_node_return(IoRuntime& io) {
+    auto options = fast(100ms, 1h, 50ms);
+    options.exclusion = 500ms;
+    Harness harness(io, options);
+    harness.runtime.sync([&] {
+        harness.stopped.insert("west");
+        harness.new_session();
+    });
+    std::vector<std::shared_ptr<StreamResponder>> streams;
+    // Each stream rotates the circuit it took, so the pool keeps building.
+    for (int index = 0; index < 4; ++index) {
+        auto stream = harness.open();
+        CHECK(stream.ok());
+        if (!stream.ok()) return;
+        CHECK(harness.echoes(stream.value()));
+        streams.push_back(stream.value());
+        CHECK(!through(harness.status(), "west"));
+        std::this_thread::sleep_for(150ms);
+    }
+    harness.runtime.sync([&] { harness.stopped.clear(); });
+    const auto returned = Clock::now();
+    bool rebuilt = false;
+    while (!rebuilt && Clock::now() - returned < 10s) {
+        auto stream = harness.open();
+        CHECK(stream.ok());
+        if (!stream.ok()) break;
+        CHECK(harness.echoes(stream.value()));
+        streams.push_back(stream.value());
+        rebuilt = through(harness.status(), "west");
+        std::this_thread::sleep_for(150ms);
+    }
+    CHECK(rebuilt);
+    for (const auto& stream : streams) harness.close(stream);
+}
+
+// With both exits stopped no route of three or two hops exists, so the pool
+// proposes the direct session and refuses streams. Once the exits are back
+// it returns to three hops by itself: the proposal ends and streams flow
+// without any answer from the user.
+void test_route_returns_without_consent(IoRuntime& io) {
+    auto options = fast(1h, 1h, 50ms);
+    options.exclusion = 500ms;
+    options.recheck = 100ms;
+    Harness harness(io, options);
+    harness.runtime.sync([&] {
+        harness.stopped = {"west", "south"};
+        harness.new_session();
+    });
+    CHECK(eventually([&] { return harness.status().proposal.has_value(); }));
+    const auto proposed = harness.status();
+    CHECK(proposed.current_hops == 0U && proposed.proposal &&
+          proposed.proposal->hops == 1U);
+    CHECK(harness.open().status().code() == StatusCode::PermissionDenied);
+    harness.runtime.sync([&] { harness.stopped.clear(); });
+    CHECK(eventually([&] {
+        const auto status = harness.status();
+        return status.current_hops == 3U && !status.proposal &&
+               status.accepted_hops == 0U;
+    }));
+    auto stream = harness.open();
+    CHECK(stream.ok() && harness.echoes(stream.value()));
+    if (stream.ok()) harness.close(stream.value());
+}
+
 // Circuits close inside the pool's loops over them: rotation in its timer,
 // a new session and the pool's own close. Each closed circuit reports to the
 // pool from inside close(), which must not change the list being walked.
@@ -549,6 +728,11 @@ int main() {
         test_idle_close(io);
         test_spare_failure(io);
         test_exclusion(io);
+        test_cancel_while_building(io);
+        test_close_while_building(io);
+        test_new_session_while_building(io);
+        test_node_return(io);
+        test_route_returns_without_consent(io);
         test_close_inside_loops(io);
     } catch (const std::exception& error) {
         std::cerr << "circuit pool test aborted: " << error.what() << '\n';

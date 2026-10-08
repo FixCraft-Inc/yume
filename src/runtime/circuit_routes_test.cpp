@@ -93,15 +93,16 @@ void test_rules() {
 }
 
 void test_exclusion() {
+    constexpr auto kExclusion = std::chrono::minutes(5);
     auto chooser = RouteChooser::create(view(), id('a')).take_value();
     const auto now = RouteChooser::Clock::now();
-    chooser.exclude(id('d'), now);
+    chooser.exclude(id('d'), now + kExclusion);
     CHECK((drawn(chooser, 2U, now) == std::set<std::string>{"af"}));
-    CHECK((drawn(chooser, 2U, now + RouteChooser::kExclusion - 1s) ==
+    CHECK((drawn(chooser, 2U, now + kExclusion - 1s) ==
            std::set<std::string>{"af"}));
-    CHECK((drawn(chooser, 2U, now + RouteChooser::kExclusion) ==
+    CHECK((drawn(chooser, 2U, now + kExclusion) ==
            std::set<std::string>{"ad", "af"}));
-    chooser.exclude(id('f'), now);
+    chooser.exclude(id('f'), now + kExclusion);
     std::mt19937_64 random(3U);
     CHECK(!chooser.choose(2U, now, random) && chooser.count(2U, now) == 0U);
 }

@@ -276,7 +276,9 @@ socket, unless `circuits.min_hops` approves it in advance, and `yume
 setup tests cover the parts. `yume_circuit_pool_test` runs the circuit pool
 over an in-memory session with real circuit nodes: the build at session
 start, rotation, idle closing, the spare-failure rule, exclusion of a failed
-node and circuits closing inside the pool's own loops.
+node and its use again once it returns, the configured length coming back
+after a proposal without an answer, cancellation, closing and a new session
+during a build, and circuits closing inside the pool's own loops.
 `yume_circuit_record_fit_test` checks that a full cell of either direction
 leaves as one 16384-byte TLS write. The four-daemon test runs the real `yume`
 through three hops, the plain HTTP refusal, a proposal accepted after the

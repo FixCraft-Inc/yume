@@ -602,7 +602,7 @@ def changed_link(nodes: dict[str, cluster.Node], probe: Probe, root: Path,
 
 
 def removed_node(nodes: dict[str, cluster.Node], probe: Probe, root: Path, target: str,
-                 environment: dict[str, str], operator: Path) -> None:
+                 environment: dict[str, str], operator: Path, setup: Path) -> None:
     """Removing node-d ends the circuits through it and keeps the rest.
 
     The others reload a list without it: they end its sessions and links,
@@ -612,8 +612,9 @@ def removed_node(nodes: dict[str, cluster.Node], probe: Probe, root: Path, targe
     a, b, c = nodes["node-a"], nodes["node-b"], nodes["node-c"]
     through = loaded(probe, root, "sider", "node-a,node-d,node-c", target, 60000)
     beside = loaded(probe, root, "changer", "node-a,node-b,node-c", target, 6000)
-    cluster.setup(environment, "cluster-remove", "--cluster", str(operator), "--name", "node-d")
-    cluster.setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+    cluster.setup(setup, environment, "cluster-remove", "--cluster", str(operator), "--name",
+                  "node-d")
+    cluster.setup(setup, environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
     reloaded_at = cluster.reload([a, b, c])
     cluster.wait_until("node-a, node-b and node-c dropped node-d", lambda: all(
         (node.status() or {}).get("cluster", {}).get("serial") == 2 and
@@ -640,16 +641,17 @@ def removed_node(nodes: dict[str, cluster.Node], probe: Probe, root: Path, targe
 
 def run(yumed: Path, program: Path, yume: Path, openssl: Path, stall_seconds: float) -> None:
     environment = session.openssl_environment(openssl)
+    setup = session.setup_program(yume)
     with tempfile.TemporaryDirectory(prefix="yume-circuit-", dir="/tmp") as temporary:
         root = Path(temporary)
         sockets = root / "sockets"
         sockets.mkdir(mode=0o700)
         operator = root / "operator"
-        cluster.setup(environment, "cluster-init", "--output", str(operator))
+        cluster.setup(setup, environment, "cluster-init", "--output", str(operator))
         nodes: dict[str, cluster.Node] = {}
         for name in NAMES:
             kit = root / name
-            session.provision_kit(kit, "127.0.0.1", session.free_port(), environment)
+            session.provision_kit(kit, "127.0.0.1", session.free_port(), environment, setup)
             server = kit / "server"
             config = json.loads((server / "yumed.json").read_text(encoding="utf-8"))
             config["endpoint"]["listen_addresses"] = [ADDRESSES[name]]
@@ -660,17 +662,17 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path, stall_seconds: fl
                     if adapter["kind"] == "direct_tcp":
                         adapter["destinations"] = {"public": False, "networks": ["127.0.0.1/32"]}
             (server / "yumed.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
-            cluster.setup(environment, "cluster-add", "--cluster", str(operator), "--server",
+            cluster.setup(setup, environment, "cluster-add", "--cluster", str(operator), "--server",
                           str(server), "--name", name, "--host", "127.0.0.1", "--address",
                           ADDRESSES[name], *(["--exit"] if name in EXITS else []))
             nodes[name] = cluster.Node(name, server, sockets / f"{name}.sock", yumed,
                                        environment, root)
-        cluster.setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+        cluster.setup(setup, environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
         # Separate clients keep each phase within the entry's per-client
         # circuit rate, a burst of 4.
         for client in ("walker", "crowd", "hauler", "rider", "drifter", "lagger", "bystander",
                        "returner", "canceller", "freezer", "poker", "sider", "changer"):
-            cluster.setup(environment, "add-client", "--server", str(nodes["node-a"].server),
+            cluster.setup(setup, environment, "add-client", "--server", str(nodes["node-a"].server),
                           "--host", "127.0.0.1", "--output", str(root / client),
                           "--client-name", client, "--circuits")
         a, b = nodes["node-a"], nodes["node-b"]
@@ -774,7 +776,7 @@ def run(yumed: Path, program: Path, yume: Path, openssl: Path, stall_seconds: fl
             failed_rekey(nodes, probe, root, target)
             refused_reload(nodes, probe, root, target)
             changed_link(nodes, probe, root, target)
-            removed_node(nodes, probe, root, target, environment, operator)
+            removed_node(nodes, probe, root, target, environment, operator, setup)
 
             # The real client: SOCKS5 through three hops of its own choosing.
             rider.start()

@@ -567,8 +567,9 @@ unsupported reply without a UDP service, relay closure, and the 64-datagram
 budget while an OPEN is held. `yume_native_runtime_test` repeats the traffic,
 refusal and closure checks between the two processes, which start from the
 generated setup kit's services and adapters.
-CMake installs these development programs together with the schema-1
-`yume-setup` and `yume-doctor` tools. Installation does not qualify the application:
+CMake installs these development programs together with the native schema-1
+`yume-setup` and `yume-doctor` programs, which make and check kits with the
+same OpenSSL release and credential readers. Installation does not qualify the application:
 Debian/service definitions use schema 1, while installed-service and production
 qualification remain incomplete.
 
@@ -623,7 +624,9 @@ must not be advertised as working:
   security-review gates.
 
 Native CTest registration includes the schema-1 setup and doctor negative
-cases, project metadata and Linux release-archive checks.
+cases, a sweep of one allocation failure across key generation, `init`,
+secret copies and the doctor that checks every released buffer for an
+unwiped secret, project metadata and Linux release-archive checks.
 The Clang fuzz profile instruments the YTP frame/OPEN/capability codecs, AUTH
 TLVs and schema-1 parser, including their source libraries. Numeric overflow
 in JSON is a typed validation failure.
@@ -652,7 +655,7 @@ See [the desktop GUI](GUI.md). CodeQL
 analyzes the native programs, `libyume` and the module libraries. Debian definitions
 use the native config-only daemon, validate configuration before startup and
 leave the service disabled after installation. Native release archives carry
-setup/doctor and enforce native executable identities; packaging regression
+the native setup and doctor programs and enforce native executable identities; packaging regression
 checks do not qualify a distribution or an installed service.
 
 The C ABI attaches the native runtime through its one backend and accepts only

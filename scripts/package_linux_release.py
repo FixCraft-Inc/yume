@@ -145,9 +145,11 @@ def main() -> None:
             "Source commit must be an exact 40-hex Git object ID")
     require_glibc_dynamic(args.yume, "yume client")
     require_glibc_dynamic(args.yumed, "yumed server")
+    # Setup and doctor are native programs on the same embedded OpenSSL, so a
+    # release needs no Python or openssl command to make or check a kit.
+    require_glibc_dynamic(args.setup, "schema-1 setup program")
+    require_glibc_dynamic(args.doctor, "schema-1 doctor program")
     for path, description in (
-        (args.setup, "schema-1 setup tool"),
-        (args.doctor, "schema-1 doctor tool"),
         (args.license, "license"),
         (args.notices, "third-party notices"),
         (args.quick_start, "quick-start document"),

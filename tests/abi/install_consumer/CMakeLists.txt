@@ -73,7 +73,8 @@ endif()
 
 if(YUME_TEST_NATIVE_TRAFFIC)
     foreach(_required IN ITEMS YUME_SOURCE_DIR YUME_PYTHON_EXECUTABLE
-                               YUME_OPENSSL_EXECUTABLE YUME_INSTALLED_DAEMON)
+                               YUME_OPENSSL_EXECUTABLE YUME_INSTALLED_DAEMON
+                               YUME_INSTALLED_SETUP)
         if(NOT DEFINED ${_required} OR NOT EXISTS "${${_required}}")
             message(FATAL_ERROR "installed native traffic requires ${_required}")
         endif()
@@ -82,6 +83,7 @@ if(YUME_TEST_NATIVE_TRAFFIC)
         message(FATAL_ERROR "native installed traffic fixtures require UNIX")
     endif()
     yume_assert_staged_path("${YUME_INSTALLED_DAEMON}")
+    yume_assert_staged_path("${YUME_INSTALLED_SETUP}")
     find_package(Threads REQUIRED)
     # The existing probes include only yume/yume.h. Its include path and the
     # library come exclusively from the installed imported target.
@@ -134,6 +136,7 @@ if(BUILD_TESTING)
             COMMAND "${YUME_PYTHON_EXECUTABLE}"
                 "${YUME_SOURCE_DIR}/tests/test_yume_abi_stream.py"
                 --probe "$<TARGET_FILE:yume_installed_stream_probe>"
+                --setup "${YUME_INSTALLED_SETUP}"
                 --openssl "${YUME_OPENSSL_EXECUTABLE}"
                 --resolver "${yume_RESOLVER_PROGRAM}")
         add_test(NAME yume_installed_tcp_routes

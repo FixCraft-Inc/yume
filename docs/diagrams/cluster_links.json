@@ -14,7 +14,7 @@
       "sub": "offline key",
       "note": "Signs the cluster list and routes view. Its private key stays off the servers.",
       "source": [
-        "tools/yume_setup.py"
+        "src/setup/cluster.cpp"
       ]
     },
     {

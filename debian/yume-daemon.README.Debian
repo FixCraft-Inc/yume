@@ -6,7 +6,7 @@ configuration at /etc/yume/yumed.json, and a hardened yumed.service.
 The service is disabled and not started on package install. The bootstrap
 contains no credentials and cannot start a working endpoint.
 
-Install yume for the matching yume-setup and yume-doctor tools. Provision a
+Install yume for the matching yume-setup and yume-doctor programs. Provision a
 schema-1 kit using the matching QUICKSTART.md. Install only the kit's server/
 contents under /etc/yume, preserving its credentials/ and cover-site/ layout;
 keep the client kit on the client machine. The configuration references:

@@ -158,9 +158,8 @@ yumed --config /path/to/server.json --validate
 yumed --config /path/to/server.json
 @end
 
-The separately installed **yume-setup** and **yume-doctor** tools
-provision and inspect schema-1 kits. Their **--help** output describes their
-arguments.
+man:yume-setup(1) creates schema-1 kits and cluster lists, and
+man:yume-doctor(1) checks a configuration and its files.
 
 ## SEE ALSO
 

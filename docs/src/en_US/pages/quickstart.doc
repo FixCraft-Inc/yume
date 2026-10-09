@@ -22,7 +22,8 @@ cd yume
 ./ezbuild.sh --tests
 @end
 
-The normal build produces `build/bin/yume` and `build/bin/yumed`. It prepares
+The normal build produces `build/bin/yume`, `build/bin/yumed`,
+`build/bin/yume-setup` and `build/bin/yume-doctor`. It prepares
 the pinned, patched OpenSSL required by the native TLS profile and uses a
 bounded build job count. It does not prepare or change the separate BaseFWX
 checkout. Native Linux applications also need libsystemd development files;
@@ -32,17 +33,15 @@ Use an isolated build directory for a sanitizer or shared SDK build.
 
 ## Create a local kit
 
-The setup and doctor tools require Python 3 and OpenSSL 3.5 or newer with the
-required algorithms. To use the same OpenSSL installation as the build:
+`yume-setup` makes the kit and `yume-doctor` checks it. Both are built
+beside `yume` and make their keys with the same OpenSSL release:
 
 @code bash
-source scripts/ensure-openssl.sh
-yume_openssl_ensure
-python3 tools/yume_setup.py init \
+build/bin/yume-setup init \
   --host localhost --port 8443 \
   --output "$PWD/yume-kit" --client-name laptop
-python3 tools/yume_doctor.py --config yume-kit/server/yumed.json
-python3 tools/yume_doctor.py --config yume-kit/client/yume.json
+build/bin/yume-doctor --config yume-kit/server/yumed.json
+build/bin/yume-doctor --config yume-kit/client/yume.json
 @end
 
 The output directory must not exist. Setup atomically publishes owner-only

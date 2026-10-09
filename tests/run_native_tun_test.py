@@ -197,7 +197,7 @@ def isolated(yume: Path, yumed: Path, openssl: Path, resolved: Path | None) -> N
         kit = Path(temporary) / "kit"
         environment = session.openssl_environment(openssl)
         os.environ.update(environment)
-        session.provision_kit(kit, "localhost", 24443, environment)
+        session.provision_kit(kit, "localhost", 24443, environment, session.setup_program(yume))
         configure(kit, resolved is not None)
         processes: list[subprocess.Popen] = []
         echo_process = None

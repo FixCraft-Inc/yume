@@ -4,7 +4,7 @@
 
 # Stages the yume_cli install component and checks the installed native
 # layout: the programs, manuals and cover-profile data are present, the setup
-# tools start, source-only registries stay out of the examples, and the
+# programs start, source-only registries stay out of the examples, and the
 # Debian install lists assign every installed program and manual.
 
 cmake_minimum_required(VERSION 3.20)
@@ -12,7 +12,6 @@ cmake_minimum_required(VERSION 3.20)
 foreach(_required
         YUME_BUILD_DIR
         YUME_TEST_PREFIX
-        YUME_PYTHON
         YUME_INSTALL_BINDIR
         YUME_INSTALL_DATADIR
         YUME_INSTALL_MANDIR
@@ -59,6 +58,8 @@ set(_required_artifacts
     "${_bin}/yume-setup"
     "${_bin}/yume-doctor"
     "${_man}/man1/yume.1"
+    "${_man}/man1/yume-setup.1"
+    "${_man}/man1/yume-doctor.1"
     "${_man}/man8/yumed.8"
     "${_test_prefix}/${YUME_INSTALL_DATADIR}/yume/cover-profile/manifest.json")
 foreach(_artifact IN LISTS _required_artifacts)
@@ -67,9 +68,11 @@ foreach(_artifact IN LISTS _required_artifacts)
     endif()
 endforeach()
 
+# The installed programs run on their own: no interpreter or openssl command.
 foreach(_tool IN ITEMS yume-setup yume-doctor)
     execute_process(
-        COMMAND "${YUME_PYTHON}" "${_bin}/${_tool}" --help
+        COMMAND "${CMAKE_COMMAND}" -E env --unset=PYTHONPATH PATH=/nonexistent
+            "${_bin}/${_tool}" --help
         RESULT_VARIABLE _help_result
         OUTPUT_QUIET
         ERROR_VARIABLE _help_error
@@ -104,6 +107,8 @@ yume_require_debian_assignments(yume
     "usr/bin/yume-setup"
     "usr/bin/yume-doctor"
     "usr/share/man/man1/yume.1"
+    "usr/share/man/man1/yume-setup.1"
+    "usr/share/man/man1/yume-doctor.1"
     "usr/share/yume/cover-profile/*")
 yume_require_debian_assignments(yume-daemon
     "usr/bin/yumed"

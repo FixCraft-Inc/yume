@@ -166,7 +166,8 @@ def run(arguments: argparse.Namespace) -> None:
                     arguments.yumed.resolve(strict=True), arguments.openssl, root)
         kit = root / "kit"
         server_port, socks_port, target_port = (session.free_port() for _ in range(3))
-        session.provision_kit(kit, "localhost", server_port, live.environment)
+        session.provision_kit(kit, "localhost", server_port, live.environment,
+                              arguments.setup.resolve(strict=True))
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],
                               connect_address="127.0.0.1", socks_port=socks_port)
         target = session.serve_payload("127.0.0.1", target_port, PAYLOAD_BYTES)
@@ -220,6 +221,7 @@ def main() -> int:
     parser.add_argument("--gui", required=True, type=Path)
     parser.add_argument("--yume", required=True, type=Path)
     parser.add_argument("--yumed", required=True, type=Path)
+    parser.add_argument("--setup", required=True, type=Path)
     parser.add_argument("--openssl", required=True, type=Path)
     parser.add_argument("--capture", type=Path, help="save the pages against the live client here")
     arguments = parser.parse_args()

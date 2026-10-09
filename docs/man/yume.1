@@ -417,15 +417,10 @@ yume --config /path/to/client.json --validate
 yume --config /path/to/client.json
 .fi
 .PP
-The separately installed
-.B yume-setup
-and
-.B yume-doctor
-tools provision and inspect schema-1 kits.
-Their
-.B --help
-output describes their arguments.
-Setup and doctor are separate programs.
+.BR yume-setup (1)
+creates schema-1 kits and
+.BR yume-doctor (1)
+checks them.
 .SH RECORD PROTECTION
 Each direction rotates its root independently, beginning halfway to its
 byte, record or 500 ms lifetime limit.

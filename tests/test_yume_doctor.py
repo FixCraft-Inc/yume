@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2026 FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
+"""The yume-doctor specification, run against the native program.
+
+Run with --setup /path/to/yume-setup --doctor /path/to/yume-doctor.
+"""
 
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import os
 from pathlib import Path
 import re
 import shutil
-import runpy
 import subprocess
 import sys
 import tempfile
@@ -17,8 +24,23 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SETUP = ROOT / "tools" / "yume_setup.py"
-DOCTOR = ROOT / "tools" / "yume_doctor.py"
+PROGRAMS: dict[str, Path] = {}
+PRESETS = json.loads((ROOT / "config/tuning_presets.json").read_text(encoding="utf-8"))
+TUNING = {entry["id"]: entry["limits"] for entry in PRESETS["presets"]}
+
+
+def run_setup(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(PROGRAMS["setup"]), *arguments], cwd=ROOT, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+
+
+def run_doctor(config: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(PROGRAMS["doctor"]), "--config", str(config)], cwd=ROOT, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
 
 
 class YumeDoctorTests(unittest.TestCase):
@@ -27,24 +49,8 @@ class YumeDoctorTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temporary.name)
         cls.source_kit = cls.root / "source-kit"
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SETUP),
-                "init",
-                "--host",
-                "doctor.example.test",
-                "--output",
-                str(cls.source_kit),
-                "--client-name",
-                "phone",
-            ],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        result = run_setup("init", "--host", "doctor.example.test", "--output",
+                           str(cls.source_kit), "--client-name", "phone")
         if result.returncode != 0:
             raise RuntimeError(f"doctor fixture failed: {result.stderr}")
 
@@ -60,14 +66,7 @@ class YumeDoctorTests(unittest.TestCase):
         shutil.rmtree(self.case.parent)
 
     def run_doctor(self, config: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [sys.executable, str(DOCTOR), "--config", str(config)],
-            cwd=ROOT,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        return run_doctor(config)
 
     def test_generated_server_and_client_are_healthy(self) -> None:
         for config in (
@@ -85,6 +84,49 @@ class YumeDoctorTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(result.stderr, "")
+
+    def test_help_and_usage_errors_follow_the_manual(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import yume_cli  # noqa: PLC0415
+
+        layout = next(item for item in yume_cli.load_layouts() if item.binary == "yume-doctor")
+        ordered, _ = yume_cli.resolve(layout)
+        expected = "\n".join(yume_cli.render_help(layout, ordered)) + "\n"
+        doctor = str(PROGRAMS["doctor"])
+        for arguments in (["--help"], ["-h"], ["--config", "x.json", "--help"]):
+            result = subprocess.run([doctor, *arguments], text=True, capture_output=True,
+                                    check=False)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, expected, ""))
+        for arguments, diagnostic in (
+            ([], "--config is required"),
+            (["--config"], "--config needs a path"),
+            (["--config", "a.json", "--config", "b.json"], "--config is given more than once"),
+            (["--validate"], "unknown argument: --validate"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run([doctor, *arguments], text=True, capture_output=True,
+                                        check=False)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, f"yume-doctor: {diagnostic}\n" + expected)
+        # --config=PATH names the file as --config PATH does.
+        result = self.run_doctor(self.case / "client/yume.json")
+        joined = subprocess.run([doctor, f"--config={self.case / 'client/yume.json'}"],
+                                text=True, capture_output=True, check=False)
+        self.assertEqual((joined.returncode, joined.stdout), (0, result.stdout))
+
+    def test_debian_bootstrap_configuration_parses(self) -> None:
+        # The packaged /etc/yume/yumed.json names files an operator installs
+        # later. Copied alone, only those files may fail, never the document.
+        config = self.case.parent / "yumed.json"
+        shutil.copy(ROOT / "debian/yumed.json", config)
+        os.chmod(config, 0o600)
+        result = self.run_doctor(config)
+        self.assertEqual(result.returncode, 1)
+        pointers = re.findall(r"^yume-doctor: invalid (\S+): ", result.stderr, re.MULTILINE)
+        self.assertTrue(pointers, result.stderr)
+        for pointer in pointers:
+            self.assertRegex(pointer, r"^/(credentials/[a-z_]+|cover/root)$", result.stderr)
 
     def test_strict_schema_and_permissions_fail_with_pointer(self) -> None:
         config_path = self.case / "client/yume.json"
@@ -236,11 +278,11 @@ class YumeDoctorTests(unittest.TestCase):
         original = json.loads(client_path.read_text())
         self.assertEqual(original["adapters"][0]["udp_service"], "udp")
         for value, expected in (
-            ("tcp", "/adapters/0/udp_service: requires a packet service"),
-            ("missing", "/adapters/0/udp_service: requires a packet service"),
+            ("tcp", "/adapters/0/udp_service: adapter requires a packet service"),
+            ("missing", "/adapters/0/udp_service: adapter references an undeclared service"),
             (
                 "Udp",
-                "/adapters/0/udp_service: must use lowercase ASCII namespace segments",
+                "/adapters/0/udp_service: must use 1..128 bytes of lowercase ASCII namespace",
             ),
             (7, "/adapters/0/udp_service: must be a string"),
         ):
@@ -293,7 +335,7 @@ class YumeDoctorTests(unittest.TestCase):
         original = json.loads(config_path.read_text())
         self.assertEqual(original["adapters"][0]["kind"], "direct_tcp")
         cases = (
-            (lambda policy: policy.clear(), "/adapters/0/destinations/networks: required key is missing"),
+            (lambda policy: policy.clear(), "/adapters/0/destinations/public: required key is missing"),
             (lambda policy: policy.update(public="yes"), "/adapters/0/destinations/public: must be a boolean"),
             (lambda policy: policy.update(networks=["10.0.0.1/8"]), "/adapters/0/destinations/networks/0: must be a canonical"),
             (lambda policy: policy.update(networks=["224.0.0.0/4"]), "/adapters/0/destinations/networks/0: can never match"),
@@ -493,8 +535,10 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertIn(f"{file_pointer}: group/world permissions are forbidden", result.stderr)
 
     def test_destination_network_vectors_match_native_parser(self) -> None:
-        doctor = runpy.run_path(str(DOCTOR))
-        check, error_type = doctor["_destination_network"], doctor["DoctorError"]
+        # The doctor checks networks with the parser yume and yumed use, so
+        # every shared vector reaches it through a direct adapter.
+        config_path = self.case / "server/yumed.json"
+        original = json.loads(config_path.read_text())
         vectors = ROOT / "src/common/testdata/ip_network_vectors.txt"
         seen = set()
         for line in vectors.read_text().splitlines():
@@ -503,13 +547,16 @@ class YumeDoctorTests(unittest.TestCase):
             kind, text = line.split(" ", 1)
             seen.add(kind)
             with self.subTest(vector=line):
+                config = copy.deepcopy(original)
+                config["adapters"][0]["destinations"]["networks"] = [text]
+                config_path.write_text(json.dumps(config))
+                result = self.run_doctor(config_path)
                 if kind == "valid":
-                    check(text, "/network")
+                    self.assertEqual(result.returncode, 0, result.stderr)
                     continue
-                with self.assertRaises(error_type) as raised:
-                    check(text, "/network")
-                detail = " ".join(map(str, raised.exception.args))
-                self.assertIn("never" if kind == "never" else "canonical", detail)
+                self.assertEqual(result.returncode, 1, text)
+                self.assertIn("/adapters/0/destinations/networks/0:", result.stderr)
+                self.assertIn("never" if kind == "never" else "canonical", result.stderr)
         self.assertEqual(seen, {"valid", "never", "invalid"})
 
     def test_adapter_instance_collisions_are_rejected(self) -> None:
@@ -545,7 +592,7 @@ class YumeDoctorTests(unittest.TestCase):
         base = {"kind": "forward", "service": "tcp"}
         invalid = (
             ({}, "listen_address", "required key is missing"),
-            ({"listen_address": "0.0.0.0", "listen_port": 2222}, "listen_address", "loopback"),
+            ({"listen_address": "0.0.0.0", "listen_port": 2222}, "listen_address", "must be 127.0.0.1 or ::1"),
             ({"listen_address": socks["listen_address"], "listen_port": socks["listen_port"]},
              "listen_port", "duplicate local listen address and port"),
             ({"listen_path": "/run/a.sock", "listen_port": 22}, "listen_port",
@@ -786,7 +833,7 @@ class YumeDoctorTests(unittest.TestCase):
             ({"arguments": ["a\0b"]}, "arguments/0", "must not contain NUL"),
             ({"arguments": [1]}, "arguments/0", "must be a string"),
             ({"service": "tcp"}, "service", "stream service already has an adapter"),
-            ({"service": "udp"}, "service", "requires a stream service"),
+            ({"service": "udp"}, "service", "adapter requires a stream service"),
             ({"listen_path": "/run/a.sock"}, "listen_path", "unknown key"),
         )
         for extra, key, message in invalid:
@@ -850,7 +897,7 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertIn("TLS certificate and private key do not match", result.stderr)
 
     def test_tls_key_check_is_separate_from_composite_identity(self) -> None:
-        doctor = runpy.run_path(str(DOCTOR))
+        credentials = self.case / "server/credentials"
         cases = (
             (["EC", "-pkeyopt", "ec_paramgen_curve:prime256v1"], True),
             (["EC", "-pkeyopt", "ec_paramgen_curve:secp384r1"], True),
@@ -867,16 +914,25 @@ class YumeDoctorTests(unittest.TestCase):
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     check=True, timeout=10,
                 ).stdout
-                public = subprocess.run(
-                    ["openssl", "pkey", "-pubout", "-outform", "DER"],
-                    input=private, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    check=True, timeout=10,
+                key = credentials / "server-tls.key.pem"
+                key.unlink()
+                key.write_bytes(private)
+                os.chmod(key, 0o600)
+                certificate = subprocess.run(
+                    ["openssl", "req", "-x509", "-key", str(key), "-days", "30",
+                     "-subj", "/CN=doctor.example.test",
+                     "-addext", "subjectAltName=DNS:doctor.example.test"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=10,
                 ).stdout
+                for name in ("server-tls.pem", "server-trust.pem"):
+                    (credentials / name).write_bytes(certificate)
+                result = self.run_doctor(self.case / "server/yumed.json")
+                family = "TLS leaf key must use P-256, P-384, P-521 or RSA"
                 if supported:
-                    doctor["_check_tls_public_key"]("openssl", public, "/tls")
+                    self.assertNotIn(family, result.stderr)
                 else:
-                    with self.assertRaises(doctor["DoctorError"]):
-                        doctor["_check_tls_public_key"]("openssl", public, "/tls")
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn(f"/credentials/tls_certificate: {family}", result.stderr)
 
     def test_mlkem_public_private_mismatch_is_rejected(self) -> None:
         public_path = self.case / "server/credentials/server-mlkem.pub.pem"
@@ -952,28 +1008,33 @@ class YumeDoctorTests(unittest.TestCase):
         self.assertIn("/credentials/admin_keys/keys/0/capabilities", result.stderr)
 
     def test_duplicate_admin_identity_is_rejected_independently_of_names(self) -> None:
-        doctor = runpy.run_path(str(DOCTOR))
-        store_path = self.case / "server/credentials/authorized-keys.json"
-        traffic = json.loads(store_path.read_text())["keys"][0]
+        # An operator key is a composite identity that no traffic key shares.
+        operator = self.case.parent / "operator"
+        created = run_setup("cluster-init", "--output", str(operator))
+        self.assertEqual(created.returncode, 0, created.stderr)
+        credentials = self.case / "server/credentials"
+        shutil.copy(operator / "operator-composite.pub.pem", credentials / "admin.pub.pem")
+        os.chmod(credentials / "admin.pub.pem", 0o600)
+        fingerprint = json.loads((operator / "cluster.json").read_text())["cluster"]
+        identity = {"file": "admin.pub.pem", "sha256": fingerprint}
         document = {
             "schema": 1,
             "keys": [
-                {"name": name, "identity": copy.deepcopy(traffic["identity"])}
+                {"name": name, "identity": dict(identity)}
                 for name in ("first-admin", "second-admin")
             ],
         }
-        diagnostics = []
-        with self.assertRaises(doctor["DoctorError"]) as rejected:
-            doctor["_check_admin_keys"](
-                "openssl", bytearray(json.dumps(document).encode()),
-                store_path.parent / "admin-keys.json", set(), diagnostics,
-            )
-        self.assertEqual(diagnostics, [])
+        admin_path = credentials / "admin-keys.json"
+        admin_path.write_text(json.dumps({"schema": 1, "keys": document["keys"][:1]}))
+        self.assertEqual(self.run_doctor(self.case / "server/yumed.json").returncode, 0)
+        admin_path.write_text(json.dumps(document))
+        result = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(result.returncode, 1)
         self.assertEqual(
-            rejected.exception.pointer,
-            "/credentials/admin_keys/keys/1/identity/sha256",
+            result.stderr,
+            "yume-doctor: invalid /credentials/admin_keys/keys/1/identity/sha256: "
+            "identity is reused by another admin key\n",
         )
-        self.assertIn("identity is reused by another admin key", str(rejected.exception))
 
     def test_max_sessions_matches_the_native_bound(self) -> None:
         # The optional per-identity bound is accepted from 1 through the
@@ -981,8 +1042,6 @@ class YumeDoctorTests(unittest.TestCase):
         source = (ROOT / "src/runtime/native_credentials.hpp").read_text()
         match = re.search(r"kMaxSessionsPerIdentity\s*=\s*(\d+)U", source)
         self.assertIsNotNone(match)
-        doctor = runpy.run_path(str(DOCTOR))
-        self.assertEqual(doctor["MAX_SESSIONS_PER_IDENTITY"], int(match[1]))
         store_path = self.case / "server/credentials/authorized-keys.json"
         original = store_path.read_text()
         for value, accepted in ((1, True), (int(match[1]), True), (0, False),
@@ -1007,9 +1066,6 @@ class YumeDoctorTests(unittest.TestCase):
         maximum = re.search(r"kMaxWeight\s*=\s*([0-9.]+);", source)
         self.assertIsNotNone(minimum)
         self.assertIsNotNone(maximum)
-        doctor = runpy.run_path(str(DOCTOR))
-        self.assertEqual(doctor["MIN_WEIGHT"], float(minimum[1]))
-        self.assertEqual(doctor["MAX_WEIGHT"], float(maximum[1]))
         store_path = self.case / "server/credentials/authorized-keys.json"
         original = store_path.read_text()
         for value, accepted in ((float(minimum[1]), True), (1, True), (2.5, True),
@@ -1031,12 +1087,10 @@ class YumeDoctorTests(unittest.TestCase):
 
     def test_egress_rate_matches_the_native_bounds(self) -> None:
         # limits.max_egress_mbps is optional, bounded and server-only.
-        source = (ROOT / "src/config/v1/config.cpp").read_text()
-        match = re.search(r"kMaxEgressMbps\s*=\s*([0-9']+);", source)
+        source = (ROOT / "src/config/v1/config.hpp").read_text()
+        match = re.search(r"kMaxEgressMbps\s*=\s*([0-9']+)U;", source)
         self.assertIsNotNone(match)
         maximum = int(match[1].replace("'", ""))
-        doctor = runpy.run_path(str(DOCTOR))
-        self.assertEqual(doctor["MAX_EGRESS_MBPS"], maximum)
         server_path = self.case / "server/yumed.json"
         original = server_path.read_text()
         for value, accepted in ((1, True), (maximum, True), (0, False),
@@ -1106,10 +1160,9 @@ class YumeDoctorTests(unittest.TestCase):
         client_path.write_text(original)
 
     def test_names_the_tuning_preset_a_configuration_matches(self) -> None:
-        doctor = runpy.run_path(str(DOCTOR))
         client_path = self.case / "client/yume.json"
         original = client_path.read_text()
-        for tuning, expected in ((doctor["TUNING_PRESETS"]["fast"], "fast"),
+        for tuning, expected in ((TUNING["fast"], "fast"),
                                  ({"max_epoch_bytes": 2 * 1024 * 1024}, "custom")):
             config = json.loads(original)
             config["limits"].update(tuning)
@@ -1126,12 +1179,10 @@ class YumeDoctorTests(unittest.TestCase):
         table = json.loads((ROOT / "config/tuning_presets.json").read_text())
         self.assertEqual(table["schema"], 1)
         presets = {entry["id"]: entry for entry in table["presets"]}
-        doctor = runpy.run_path(str(DOCTOR))
-        setup = runpy.run_path(str(ROOT / "tools/yume_setup.py"))
-        expected = {name: entry["limits"] for name, entry in presets.items()}
-        self.assertEqual(doctor["TUNING_PRESETS"], expected)
-        self.assertEqual(setup["TUNING_PRESETS"], expected)
-        self.assertEqual(setup["DEFAULT_PRESET"], table["default"])
+        # setup and doctor embed this table unchanged, as the GUI does.
+        self.assertIn(table["default"], presets)
+        self.assertIn("config/tuning_presets.json",
+                      (ROOT / "src/CMakeLists.txt").read_text(encoding="utf-8"))
         source = (ROOT / "src/config/v1/config.hpp").read_text()
         maximum = 1
         for factor in re.search(r"kMaxQueuedBytes\s*=\s*([0-9U *]+);", source)[1] \
@@ -1159,9 +1210,7 @@ class YumeDoctorTests(unittest.TestCase):
             name: int(re.search(rf"{name}\s*=\s*(\d+)U;", source)[1])
             for name in ("kDefaultCreditReturns", "kMaxCreditReturns")
         }
-        doctor = runpy.run_path(str(DOCTOR))
-        self.assertEqual(doctor["CREDIT_RETURNS"][0], bounds["kDefaultCreditReturns"])
-        self.assertEqual(doctor["CREDIT_RETURNS"][-1], bounds["kMaxCreditReturns"])
+        self.assertEqual((bounds["kDefaultCreditReturns"], bounds["kMaxCreditReturns"]), (2, 8))
         client_path = self.case / "client/yume.json"
         original = client_path.read_text()
         for value, accepted in ((2, True), (4, True), (8, True), (1, False), (3, False),
@@ -1178,32 +1227,26 @@ class YumeDoctorTests(unittest.TestCase):
         client_path.write_text(original)
 
     def test_authorized_identity_limit_matches_native_factory(self) -> None:
-        doctor = runpy.run_path(str(DOCTOR))
         source = (ROOT / "src/providers/openssl_security_provider.hpp").read_text()
         match = re.search(r"kMaxAuthorizedIdentities\s*=\s*(\d+)U", source)
         self.assertIsNotNone(match)
         maximum = int(match[1])
-        self.assertEqual(doctor["MAX_AUTHORIZED_IDENTITIES"], maximum)
+        credentials = self.case / "server/credentials"
         store = {"schema": 1, "keys": [{}] * (maximum + 1)}
-        with self.assertRaises(doctor["DoctorError"]) as rejected:
-            doctor["_check_authorized_keys"](
-                "unused", bytearray(json.dumps(store).encode()),
-                self.case / "server/credentials/authorized-keys.json", {}, None, [],
-            )
-        self.assertEqual(rejected.exception.pointer, "/credentials/authorized_keys/keys")
-        self.assertIn(f"1..{maximum} authorized keys", str(rejected.exception))
+        (credentials / "authorized-keys.json").write_text(json.dumps(store))
+        result = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("yume-doctor: invalid /credentials/authorized_keys/keys: "
+                      f"must contain 1..{maximum} authorized keys", result.stderr)
 
         # The separate admin store keeps its own bound. Parsing a store above
         # the traffic limit must reach the first entry, before any key work.
-        self.assertGreater(doctor["MAX_ADMIN_IDENTITIES"], maximum)
-        with self.assertRaises(doctor["DoctorError"]) as admin_entry:
-            doctor["_check_admin_keys"](
-                "unused", bytearray(json.dumps(store).encode()),
-                self.case / "server/credentials/admin-keys.json", set(), [],
-            )
-        self.assertTrue(admin_entry.exception.pointer.startswith(
-            "/credentials/admin_keys/keys/0/"
-        ))
+        shutil.copy(self.source_kit / "server/credentials/authorized-keys.json",
+                    credentials / "authorized-keys.json")
+        (credentials / "admin-keys.json").write_text(json.dumps(store))
+        result = self.run_doctor(self.case / "server/yumed.json")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("yume-doctor: invalid /credentials/admin_keys/keys/0/", result.stderr)
 
     def test_duplicate_access_psk_is_rejected(self) -> None:
         store_path = self.case / "server/credentials/authorized-keys.json"
@@ -1262,18 +1305,18 @@ class YumeDoctorTests(unittest.TestCase):
         )
 
     def test_cover_assets_match_the_selected_profile_and_are_required(self) -> None:
-        doctor = runpy.run_path(str(DOCTOR))
         registry = json.loads((ROOT / "config/transport_profiles.json").read_text())
         selected = next(
             profile for profile in registry["profiles"]
             if profile["id"] == registry["active_profile"]
         )
-        self.assertEqual(doctor["PROFILE"], selected["id"])
+        config = json.loads((self.case / "server/yumed.json").read_text())
+        self.assertEqual(config["cover"]["profile"], selected["id"])
         profile = json.loads((
             ROOT / selected["fixture"] / selected["artifacts"]["http2_profile"]
         ).read_text())
         paths = tuple(asset["path"] for asset in profile["asset_sequence"])
-        self.assertEqual(doctor["PROFILE_ASSETS"], paths)
+        self.assertTrue(paths)
         cover_root = self.case / "server/cover-site"
         for path in paths:
             asset = cover_root / path.removeprefix("/")
@@ -1362,12 +1405,37 @@ class YumeDoctorTests(unittest.TestCase):
 
 
 class TunNetworkValidationTests(unittest.TestCase):
+    """A packet adapter's network, checked by the parser yume uses."""
+
     @classmethod
     def setUpClass(cls) -> None:
-        cls.module = runpy.run_path(str(DOCTOR))
+        cls.temporary = tempfile.TemporaryDirectory()
+        cls.kit = Path(cls.temporary.name) / "kit"
+        result = run_setup("init", "--host", "doctor.example.test", "--output", str(cls.kit))
+        if result.returncode != 0:
+            raise RuntimeError(f"doctor fixture failed: {result.stderr}")
+        cls.config_path = cls.kit / "client/yume.json"
+        cls.original = json.loads(cls.config_path.read_text())
 
-    def validate(self, network: dict, mtu: int = 1420) -> None:
-        self.module["_validate_tun_network"](network, "/network", mtu)
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.temporary.cleanup()
+
+    def validate(self, network: dict, mtu: int = 1420) -> subprocess.CompletedProcess[str]:
+        config = copy.deepcopy(self.original)
+        config["adapters"].append({"kind": "packet", "service": "udp",
+                                   "interface_name": "yume0", "mtu": mtu, "network": network})
+        self.config_path.write_text(json.dumps(config))
+        return run_doctor(self.config_path)
+
+    def accepted(self, network: dict, mtu: int = 1420) -> None:
+        result = self.validate(network, mtu)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def refused(self, network: dict, mtu: int = 1420) -> None:
+        result = self.validate(network, mtu)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("yume-doctor: invalid /adapters/1", result.stderr)
 
     def fixture(self) -> dict:
         return {"addresses": ["10.71.0.1/32"], "routes": ["10.71.0.2/32"],
@@ -1377,10 +1445,9 @@ class TunNetworkValidationTests(unittest.TestCase):
     def test_dns_requires_managed_path(self) -> None:
         network = self.fixture()
         network["dns"] = {"servers": ["10.71.0.2"], "domains": ["."]}
-        self.validate(network)
+        self.accepted(network)
         network["routes"] = []
-        with self.assertRaises(self.module["DoctorError"]):
-            self.validate(network)
+        self.refused(network)
 
     def test_address_policy_and_canonical_forms(self) -> None:
         for address in ("10.71.0.3/32", "127.0.0.1/32", "224.0.0.1/32", "0.0.0.0/32",
@@ -1388,32 +1455,42 @@ class TunNetworkValidationTests(unittest.TestCase):
             with self.subTest(address=address):
                 network = self.fixture()
                 network["addresses"] = [address]
-                with self.assertRaises(self.module["DoctorError"]):
-                    self.validate(network)
+                self.refused(network)
 
     def test_ipv6_mtu_and_disjoint_routes(self) -> None:
         network = self.fixture()
         network["addresses"] = ["fd71::1/64"]
         network["local_networks"] = ["fd71::/64"]
-        self.validate(network)
-        with self.assertRaises(self.module["DoctorError"]):
-            self.validate(network, 1200)
+        self.accepted(network)
+        self.refused(network, 1200)
         network = self.fixture()
         network["routes"] += ["10.71.0.0/24"]
-        with self.assertRaises(self.module["DoctorError"]):
-            self.validate(network)
+        self.refused(network)
 
     def test_required_fields_and_bounds(self) -> None:
         for field in self.fixture():
             network = self.fixture()
             del network[field]
-            with self.subTest(field=field), self.assertRaises(self.module["DoctorError"]):
-                self.validate(network)
+            with self.subTest(field=field):
+                self.refused(network)
         network = self.fixture()
         network["addresses"] *= 17
-        with self.assertRaises(self.module["DoctorError"]):
-            self.validate(network)
+        self.refused(network)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--setup", type=Path, required=True)
+    parser.add_argument("--doctor", type=Path, required=True)
+    arguments, rest = parser.parse_known_args()
+    for name in ("setup", "doctor"):
+        path = getattr(arguments, name).resolve(strict=True)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            parser.error(f"--{name} must name an executable file")
+        PROGRAMS[name] = path
+    program = unittest.main(argv=[sys.argv[0], *rest], exit=False)
+    return 0 if program.result.wasSuccessful() else 1
 
 
 if __name__ == "__main__":
-    unittest.main()
+    raise SystemExit(main())

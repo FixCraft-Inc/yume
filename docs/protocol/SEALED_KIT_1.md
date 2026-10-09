@@ -20,7 +20,7 @@ so the code travels by another channel than the file.
 <details>
 <summary>What each part does</summary>
 
-- **yume-setup**: Creates a distinct client identity and access PSK, plus the server's public material and admission key. ([`tools/yume_setup.py`](../../tools/yume_setup.py))
+- **yume-setup**: Creates a distinct client identity and access PSK, plus the server's public material and admission key. ([`src/setup/kit.cpp`](../../src/setup/kit.cpp))
 - **Client kit**: The client directory contains secrets. Sealing refuses a server configuration, links, special files or a deeper directory. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))
 - **Seal kit**: Generates a random code, salt and nonce, derives a key with fixed Argon2id costs and encrypts the bounded kit. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))
 - **Sealed file**: Only the salt, nonce, ciphertext and tag leave in the file. Its length still reveals the kit size within one KiB. ([`src/runtime/sealed_kit.cpp`](../../src/runtime/sealed_kit.cpp))

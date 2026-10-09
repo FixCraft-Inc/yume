@@ -14,7 +14,7 @@
       "sub": "init or add-client",
       "note": "Creates a distinct client identity and access PSK, plus the server's public material and admission key.",
       "source": [
-        "tools/yume_setup.py"
+        "src/setup/kit.cpp"
       ]
     },
     {

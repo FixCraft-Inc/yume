@@ -571,6 +571,19 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Native setup and doctor.** `yume-setup` and `yume-doctor` are C++
+  programs built beside `yume` and `yumed`, with the same actions, options,
+  outputs and file formats as the Python tools they replace. Keys,
+  certificates and signatures come from the pinned OpenSSL through the
+  readers `yume` and `yumed` use, and every key is read back by them before
+  it is written, so a kit is made and checked with no Python or `openssl`
+  command: stock Ubuntu 24.04's OpenSSL 3.0 cannot make ML-DSA keys.
+  `yume-doctor` parses with the configuration parser itself, so it reports
+  the parser's own wording, and the tuning presets come from
+  `config/tuning_presets.json` as the GUI's do. Both have manuals and help
+  generated from them, take `--option=value`, and print the help with a
+  usage error, which exits with 2. The release archive carries the
+  programs, and its quick start drops Python and the OpenSSL command.
 - **The cover tools' tests run on the pinned Node.** They model the Node 24.18
   cover server of the evidence profile, and ran on whatever Node was installed.
   `scripts/ensure-node.sh` downloads that release and checks its SHA-256, test
@@ -1071,6 +1084,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Removed
 
+- **`tools/yume_setup.py` and `tools/yume_doctor.py`.** The native programs
+  replace them, and the tests that specified them run against the programs.
 - **The transport-v2 benchmark sandbox.** `yume_bench_isolation.py`,
   `yume_bench_provenance.py` and `yume_bench_exec_guard.py` had no user after the
   v2 benchmark went. The capture scripts' tests remain.
@@ -1117,6 +1132,20 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Fixed
 
+- **`yume-doctor` refused a circuits client on a cluster member.** It checked
+  each capability against the configured services only, while `yumed` also
+  grants `yume.circuit` on a member of a cluster, so a server with a client
+  from `add-client --circuits` failed the doctor. It now follows the daemon's
+  rule and still refuses the grant on a server outside a cluster.
+- **The release workflow's tests did not link.** Built as `release.yml`
+  builds them, with LTO on Ubuntu 24.04's GCC 13, the TUN network test lost
+  its `sd_bus` stand-ins, which nothing in the test calls, before the
+  linker's `--wrap` pointed the library's calls at them. They are now kept
+  as used. CI's jobs build the test without LTO and never showed it.
+- **`cluster-sign` could publish a list the nodes refuse.** It now checks the
+  signed list and routes view with the nodes' own reader before replacing any
+  copy, so a record edited into a host or name the reader refuses leaves
+  every node and the serial unchanged.
 - **The GUI could crash when a page came back into view.** The kit list,
   the local listeners and the circuit routes are Repeater rows, rebuilt
   whenever their model changes, also while their page is hidden. Qt 6.4's

@@ -39,6 +39,9 @@ inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
 // engine refuses a larger budget at start, and the runtime checks at compile
 // time that this bound stays within the engine's.
 inline constexpr std::uint32_t kMaxQueuedBytes = 64U * 1024U * 1024U;
+// limits.max_egress_mbps: the largest server egress rate, in Mbit/s, that
+// clients share by weight. yume-setup's --max-egress-mbps takes the same bound.
+inline constexpr std::uint32_t kMaxEgressMbps = 1'000'000U;
 // limits.max_epoch_bytes, a power of two: the most traffic one key epoch
 // carries in one direction. A session uses the smaller of the two sides'
 // values. YTP/1 fixes the range, and the runtime checks at compile time that

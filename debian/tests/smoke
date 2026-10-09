@@ -11,9 +11,12 @@ yume-doctor --help >/dev/null
 
 man -w yume >/dev/null
 man -w yumed >/dev/null
+man -w yume-setup >/dev/null
+man -w yume-doctor >/dev/null
 
 test -r /etc/yume/yumed.json
-python3 -c 'import json; c = json.load(open("/etc/yume/yumed.json")); assert c["schema"] == 1 and c["role"] == "server"'
+grep -Eq '"schema": *1,' /etc/yume/yumed.json
+grep -Eq '"role": *"server"' /etc/yume/yumed.json
 # Bootstrap ships no credentials and must never authorize a listener.
 if yumed --config /etc/yume/yumed.json --validate; then
     echo "Unprovisioned daemon configuration unexpectedly passed validation" >&2

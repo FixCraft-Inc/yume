@@ -47,7 +47,6 @@ constexpr std::uint32_t kMaxPacketBytes = 65535;
 constexpr std::uint32_t kMinPacketBatch = 1;
 constexpr std::uint32_t kMaxPacketBatch = 256;
 constexpr std::uint32_t kMinEgressMbps = 1;
-constexpr std::uint32_t kMaxEgressMbps = 1'000'000;
 
 std::string FormatValidationMessage(std::string_view pointer,
                                     std::string_view detail) {

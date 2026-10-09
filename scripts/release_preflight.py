@@ -40,8 +40,8 @@ MAX_BUNDLE_FILE_BYTES = {
     "THIRD_PARTY_NOTICES.md": 1024 * 1024,
     "manifest.json": 1024 * 1024,
     "yume": 512 * 1024 * 1024,
-    "yume-setup": 1024 * 1024,
-    "yume-doctor": 1024 * 1024,
+    "yume-setup": 512 * 1024 * 1024,
+    "yume-doctor": 512 * 1024 * 1024,
 }
 MAX_SERVER_BYTES = 512 * 1024 * 1024
 
@@ -462,8 +462,9 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
             require(handle is not None, f"Cannot read bundle member: {name}")
             payloads[name] = handle.read()
 
-    require_glibc_amd64(payloads["yume"], "bundled yume")
-    require_no_runtime_search_path(payloads["yume"], "bundled yume")
+    for name in ("yume", "yume-setup", "yume-doctor"):
+        require_glibc_amd64(payloads[name], f"bundled {name}")
+        require_no_runtime_search_path(payloads[name], f"bundled {name}")
     manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
     require(isinstance(manifest, dict), "Bundle manifest must be an object")
     require(manifest.get("schema") == 1, "Bundle manifest schema mismatch")

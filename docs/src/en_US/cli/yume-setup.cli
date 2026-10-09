@@ -1,0 +1,46 @@
+#!yume-cli 1
+binary:    yume-setup
+manual:    yume_setup_1
+output:    src/setup/yume_setup_help_text.hpp
+namespace: yume::setup::setup_cli
+---
+@usage
+yume-setup init --host <host> --output <directory> [kit options]
+yume-setup add-client --server <directory> --host <host>
+           --output <directory> --client-name <name> [kit options]
+yume-setup remove-client --server <directory> --client-name <name>
+yume-setup cluster-init --output <directory>
+yume-setup cluster-add --cluster <directory> --server <directory>
+           --name <name> --host <host> [--address <address>] [--exit]
+yume-setup cluster-remove --cluster <directory> --name <name>
+yume-setup cluster-sign --cluster <directory> [--days <days>]
+yume-setup --help
+@end
+
+@section Kit options
+--host
+--output
+--server
+--client-name
+--port
+--max-sessions
+--weight
+--max-egress-mbps
+--preset
+--circuits
+
+@section Cluster options
+--cluster
+--name
+--address
+--exit
+--days
+
+@section Options
+-h
+
+@gap
+@note
+init and add-client write a new directory and never replace one.
+A running yumed applies a store or list change when it reloads.
+@end

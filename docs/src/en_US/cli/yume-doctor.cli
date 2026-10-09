@@ -1,0 +1,19 @@
+#!yume-cli 1
+binary:    yume-doctor
+manual:    yume_doctor_1
+output:    src/setup/yume_doctor_help_text.hpp
+namespace: yume::setup::doctor_cli
+---
+@usage
+yume-doctor --config <path>
+yume-doctor --help
+@end
+
+@section Options
+--config
+-h
+
+@gap
+@note
+The doctor reads files and starts no session.
+@end

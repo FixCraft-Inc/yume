@@ -23,13 +23,8 @@ import yume_native_session as session  # noqa: E402
 NAMES = ("node-a", "node-b", "node-c")
 
 
-def setup(environment: dict[str, str], *arguments: str) -> str:
-    result = subprocess.run([sys.executable, str(session.SETUP_TOOL), *arguments],
-                            env=environment, capture_output=True, text=True, timeout=120,
-                            check=False)
-    if result.returncode:
-        raise session.SessionFailure(f"yume-setup {arguments[0]} failed: {result.stderr.strip()}")
-    return result.stdout
+def setup(program: Path, environment: dict[str, str], *arguments: str) -> str:
+    return session.run_setup(program, arguments, environment)
 
 
 def query(path: Path) -> dict:
@@ -134,25 +129,27 @@ def reload(nodes: list[Node]) -> float:
 
 def run(yumed: Path, openssl: Path) -> None:
     environment = session.openssl_environment(openssl)
+    program = session.setup_program(yumed)
     with tempfile.TemporaryDirectory(prefix="yume-cluster-", dir="/tmp") as temporary:
         root = Path(temporary)
         sockets = root / "run"
         sockets.mkdir(mode=0o700)
         operator = root / "operator"
-        setup(environment, "cluster-init", "--output", str(operator))
+        setup(program, environment, "cluster-init", "--output", str(operator))
         nodes: list[Node] = []
         for name in NAMES:
             kit = root / name
-            session.provision_kit(kit, "127.0.0.1", session.free_port(), environment)
+            session.provision_kit(kit, "127.0.0.1", session.free_port(), environment, program)
             server = kit / "server"
             config = json.loads((server / "yumed.json").read_text(encoding="utf-8"))
             config["endpoint"]["listen_addresses"] = ["127.0.0.1"]
             config["control"] = {"socket": str(sockets / f"{name}.sock")}
             (server / "yumed.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
-            setup(environment, "cluster-add", "--cluster", str(operator), "--server", str(server),
-                  "--name", name, "--host", "127.0.0.1")
+            setup(program, environment, "cluster-add", "--cluster", str(operator),
+                  "--server", str(server), "--name", name, "--host", "127.0.0.1")
             nodes.append(Node(name, server, sockets / f"{name}.sock", yumed, environment, root))
-        signed = setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+        signed = setup(program, environment, "cluster-sign", "--cluster", str(operator),
+                       "--days", "2")
         if "serial 1" not in signed:
             raise session.SessionFailure(f"the first signed list is not serial 1: {signed}")
         a, b, c = nodes
@@ -223,7 +220,7 @@ def run(yumed: Path, openssl: Path) -> None:
                             "cluster-routes.json", "cluster-routes.sig")
             first_list = [(listed / name).read_bytes() for name in signed_files]
             time.sleep(1.0)
-            setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+            setup(program, environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
             reloaded_at = reload(nodes)
             wait_until("every node loaded serial 2", lambda: all(
                 (node.status() or {}).get("cluster", {}).get("serial") == 2 for node in nodes))
@@ -236,8 +233,9 @@ def run(yumed: Path, openssl: Path) -> None:
             print("a reload with a newer list kept every unchanged link")
 
             # Removing node-c closes only its links.
-            setup(environment, "cluster-remove", "--cluster", str(operator), "--name", "node-c")
-            setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+            setup(program, environment, "cluster-remove", "--cluster", str(operator),
+                  "--name", "node-c")
+            setup(program, environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
             reloaded_at = reload([a, b])
             wait_until("node-a and node-b dropped node-c", lambda: all(
                 set(node.links()) == {other} for node, other in ((a, "node-b"), (b, "node-a"))))

@@ -141,8 +141,8 @@ jobs:
           python3 scripts/package_linux_release.py \
             --yume build-release/bin/yume \
             --yumed build-release/bin/yumed \
-            --setup tools/yume_setup.py \
-            --doctor tools/yume_doctor.py \
+            --setup build-release/bin/yume-setup \
+            --doctor build-release/bin/yume-doctor \
             --license LICENSE \
             --notices docs/release/THIRD-PARTY-NOTICES.md \
             --quick-start docs/release/LINUX-QUICKSTART.md \

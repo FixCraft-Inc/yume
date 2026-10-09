@@ -404,7 +404,8 @@ def run(arguments: argparse.Namespace, report: dict[str, object]) -> None:
                        "baseline": arguments.baseline_port}
     with tempfile.TemporaryDirectory(prefix="yume-ethernet-") as temporary:
         kit = Path(temporary) / "kit"
-        session.provision_kit(kit, arguments.server_name, arguments.port, environment)
+        session.provision_kit(kit, arguments.server_name, arguments.port, environment,
+                              session.setup_program(arguments.yume))
         socks_port = session.free_port()
         session.configure_kit(kit, listen_address=remote, networks=[f"{remote}/32"],
                               connect_address=remote, socks_port=socks_port)

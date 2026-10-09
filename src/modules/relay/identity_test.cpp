@@ -64,7 +64,8 @@ void TestSha256Hex() {
 }
 
 // The fingerprint equals the YTP/1 identity fingerprint that yume-setup
-// computes. The expected value came from tools/yume_setup.py for this file.
+// computes. The expected value came from the Python tool that preceded it,
+// which hashed the same encoding.
 void TestFingerprintMatchesYumeSetup() {
     std::ifstream input(std::string(YUME_RELAY_TESTDATA) + "/composite_identity.pub",
                         std::ios::binary);

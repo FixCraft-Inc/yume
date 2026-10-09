@@ -669,19 +669,31 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         yume_circuit1 yume_composite_keys yume_openssl_security_provider
         OpenSSL::Crypto)
 
+    # The signed cluster list and routes view, as nodes read them. yume-setup
+    # checks what it signs with the same reader, without the TLS provider.
+    add_library(yume_cluster_list STATIC
+        runtime/cluster_list.cpp runtime/cluster_list.hpp)
+    target_include_directories(yume_cluster_list PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(yume_cluster_list
+        PUBLIC yume_engine yume_composite_keys
+        PRIVATE yume_config_v1 nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_cluster_list)
+    yume_assert_exact_link_dependencies(yume_cluster_list
+        yume_engine yume_composite_keys yume_config_v1 nlohmann_json::nlohmann_json
+        OpenSSL::Crypto)
+
     add_library(yume_native_credentials STATIC
         runtime/client_routes.cpp runtime/client_routes.hpp
-        runtime/cluster_list.cpp runtime/cluster_list.hpp
         runtime/cluster_state.cpp runtime/cluster_state.hpp
         runtime/native_credentials.cpp runtime/native_credentials.hpp)
     target_include_directories(yume_native_credentials PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(yume_native_credentials
-        PUBLIC yume_config_v1 yume_engine yume_composite_keys
+        PUBLIC yume_config_v1 yume_engine yume_composite_keys yume_cluster_list
         PRIVATE yume_private_files yume_openssl_security_provider
             yume_tls13_secure_channel OpenSSL::Crypto)
     yume_apply_perf_opts(yume_native_credentials)
     yume_assert_exact_link_dependencies(yume_native_credentials
-        yume_config_v1 yume_engine yume_composite_keys yume_private_files
+        yume_config_v1 yume_engine yume_composite_keys yume_cluster_list yume_private_files
         yume_openssl_security_provider yume_tls13_secure_channel OpenSSL::Crypto)
 
     # Operator egress lists: JSON lists, the VPN provider database and
@@ -927,6 +939,56 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         endif()
     endif()
 
+    # yume-setup and yume-doctor write and check kits with the readers
+    # and OpenSSL release above, so they need no runtime of their own.
+    # The tuning presets table is embedded unchanged, as the GUI
+    # embeds it.
+    set(_yume_presets "${PROJECT_SOURCE_DIR}/config/tuning_presets.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_yume_presets}")
+    file(READ "${_yume_presets}" YUME_TUNING_PRESETS_JSON)
+    if(YUME_TUNING_PRESETS_JSON MATCHES "\\)yume-presets\"")
+        message(FATAL_ERROR "config/tuning_presets.json ends the raw string it is embedded in")
+    endif()
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/setup/tuning_presets_json.hpp"
+        CONTENT "// Generated from config/tuning_presets.json. Do not edit.\n#pragma once\n\nnamespace yume::setup {\n\ninline constexpr char kTuningPresetsJson[] = R\"yume-presets(@YUME_TUNING_PRESETS_JSON@)yume-presets\";\n\n}  // namespace yume::setup\n"
+        @ONLY)
+    add_library(yume_setup STATIC
+        setup/actions.hpp setup/cluster.cpp setup/doctor.cpp setup/doctor.hpp
+        setup/files.cpp setup/files.hpp setup/kit.cpp setup/kit_layout.cpp
+        setup/kit_layout.hpp setup/material.cpp setup/material.hpp
+        setup/provision.cpp setup/provision.hpp)
+    target_include_directories(yume_setup PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+        PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_link_libraries(yume_setup
+        PUBLIC yume_composite_keys nlohmann_json::nlohmann_json
+        PRIVATE yume_config_v1 yume_cluster_list yume_cover_profile OpenSSL::Crypto)
+    yume_apply_perf_opts(yume_setup)
+    yume_assert_exact_link_dependencies(yume_setup
+        yume_composite_keys nlohmann_json::nlohmann_json yume_config_v1
+        yume_cluster_list yume_cover_profile OpenSSL::Crypto)
+    add_executable(yume-setup setup/setup_main.cpp setup/yume_setup_help_text.hpp)
+    add_executable(yume-doctor setup/doctor_main.cpp setup/yume_doctor_help_text.hpp)
+    foreach(_yume_setup_program IN ITEMS yume-setup yume-doctor)
+        target_link_libraries(${_yume_setup_program} PRIVATE yume_setup)
+        yume_apply_perf_opts(${_yume_setup_program})
+    endforeach()
+    # Every build with the providers has them, since kit fixtures of the
+    # ABI and endpoint tests run them. They install with the programs.
+    if(YUME_BUILD_NATIVE_APPLICATION)
+        install(TARGETS yume-setup yume-doctor
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT yume_cli)
+    endif()
+    if(YUME_BUILD_TESTING)
+        # Secret wiping under allocation failure. The programs'
+        # behavior is tests/test_yume_setup.py and test_yume_doctor.py.
+        add_executable(yume_setup_allocation_test setup/setup_test.cpp)
+        target_link_libraries(yume_setup_allocation_test PRIVATE yume_setup)
+        yume_apply_perf_opts(yume_setup_allocation_test)
+        add_test(NAME yume_setup_allocation_test COMMAND yume_setup_allocation_test)
+        set_tests_properties(yume_setup_allocation_test PROPERTIES
+            TIMEOUT 600 LABELS "native-runtime;provisioning")
+    endif()
+
     # The YTP/1 embedding backend adapts the native endpoint to the
     # blocking seam behind the C ABI. The exact list keeps BaseFWX and the
     # module libraries out of it.
@@ -1056,7 +1118,7 @@ if(YUME_BUILD_SHARED_ABI)
     # including the whole native chain behind the schema-1 backend.
     foreach(_yume_absorbed IN ITEMS
             yume_embed yume_native_endpoint yume_native_egress_policy yume_egress_lists
-            yume_native_credentials yume_composite_keys yume_socks5_upstream
+            yume_native_credentials yume_cluster_list yume_composite_keys yume_socks5_upstream
             yume_egress_pacing yume_session_bootstrap yume_session_engine yume_engine yume_ytp1
             yume_asio_execution_context yume_asio_tcp_byte_channel_provider yume_system_resolver
             yume_child_process
@@ -1170,17 +1232,19 @@ endif()
 yume_check_03_source_layering("${CMAKE_SOURCE_DIR}")
 
 if(YUME_BUILD_TESTING)
-    # Schema-1 provisioning is part of the native application contract, so
-    # these tests run in every testing build.
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    add_test(NAME yume_setup_test
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tests/test_yume_setup.py")
-    add_test(NAME yume_doctor_test
-        COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_SOURCE_DIR}/tests/test_yume_doctor.py")
-    set_tests_properties(yume_setup_test yume_doctor_test PROPERTIES
-        TIMEOUT 300 LABELS "native-runtime;provisioning")
+    # Schema-1 provisioning is part of the native application contract. The
+    # Python suites specify yume-setup and yume-doctor and run the programs.
+    if(TARGET yume-setup)
+        foreach(_yume_setup_suite IN ITEMS setup doctor)
+            add_test(NAME yume_${_yume_setup_suite}_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/test_yume_${_yume_setup_suite}.py"
+                    --setup "$<TARGET_FILE:yume-setup>" --doctor "$<TARGET_FILE:yume-doctor>")
+        endforeach()
+        set_tests_properties(yume_setup_test yume_doctor_test PROPERTIES
+            TIMEOUT 300 LABELS "native-runtime;provisioning")
+    endif()
 
     if(TARGET yume_module_relay)
         foreach(_yume_relay_test IN ITEMS ratchet rekey_record session_ratchet record handshake
@@ -1242,7 +1306,6 @@ if(YUME_BUILD_TESTING)
                 "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
                 "-DYUME_BUILD_CONFIG=$<CONFIG>"
                 "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/yume-cli-$<CONFIG>"
-                "-DYUME_PYTHON=${Python3_EXECUTABLE}"
                 "-DYUME_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
                 "-DYUME_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
                 "-DYUME_INSTALL_MANDIR=${CMAKE_INSTALL_MANDIR}"
@@ -1797,6 +1860,7 @@ if(YUME_BUILD_TESTING)
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/tests/run_native_endpoint_test.py"
                 --binary "$<TARGET_FILE:yume_native_endpoint_test>"
+                --setup "$<TARGET_FILE:yume-setup>"
                 --openssl "${YUME_NATIVE_TEST_OPENSSL}")
         set_tests_properties(yume_native_endpoint_test PROPERTIES
             TIMEOUT 120 LABELS "foundation;0.3;native-runtime")
@@ -2012,6 +2076,7 @@ if(YUME_BUILD_TESTING)
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_SOURCE_DIR}/tests/run_native_endpoint_test.py"
                 --binary "$<TARGET_FILE:yume_native_backend_test>"
+                --setup "$<TARGET_FILE:yume-setup>"
                 --openssl "${YUME_NATIVE_TEST_OPENSSL}")
         set_tests_properties(yume_native_backend_open_integration PROPERTIES
             TIMEOUT 180 LABELS "foundation;0.3;abi;integration")
@@ -2087,6 +2152,7 @@ if(YUME_BUILD_TESTING)
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_stream.py"
                     --probe "$<TARGET_FILE:yume_abi_stream_probe>"
+                    --setup "$<TARGET_FILE:yume-setup>"
                     --openssl "${YUME_NATIVE_TEST_OPENSSL}"
                     --resolver "$<TARGET_FILE:yume-resolver>")
             set_tests_properties(yume_abi_stream_integration PROPERTIES

@@ -497,7 +497,7 @@ main() {
     echo -e "${COLOR_GREEN}Runtime:${COLOR_RESET} YUME development product using native YTP/1 (schema 1)"
     echo -e "${COLOR_GREEN}Server:${COLOR_RESET} ./${build_dir}/bin/yumed"
     echo -e "${COLOR_GREEN}Client:${COLOR_RESET} ./${build_dir}/bin/yume"
-    echo -e "${COLOR_GREEN}Ready test kit:${COLOR_RESET} python3 tools/yume_setup.py init --output \"\$HOME/yume-test-kit\" --host SERVER_IP --client-name phone"
+    echo -e "${COLOR_GREEN}Ready test kit:${COLOR_RESET} ./${build_dir}/bin/yume-setup init --output \"\$HOME/yume-test-kit\" --host SERVER_IP --client-name phone"
     echo "Set YUMED_BIN and YUME_BIN to the absolute paths above when using the generated launchers."
     echo "Native application integration remains experimental; see docs/IMPLEMENTATION_STATUS.md for capability blockers."
 }

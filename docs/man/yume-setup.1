@@ -1,0 +1,363 @@
+.\" Generated from docs/src/en_US/man/yume_setup_1.doc by scripts/yume_docs.py. Edit that file, not this one.
+.TH YUME-SETUP 1 "2026-10-08" "YUME 0.3.0-dev1" "YUME Manual"
+.SH NAME
+yume-setup \- create YUME server kits, client bundles and cluster lists
+.SH SYNOPSIS
+.B yume-setup
+.B init
+.B --host
+.I host
+.B --output
+.I directory
+[
+.B --port
+.I port
+] [
+.B --client-name
+.I name
+] [
+.B --max-sessions
+.I count
+] [
+.B --weight
+.I weight
+] [
+.B --max-egress-mbps
+.I rate
+] [
+.B --preset
+.I preset
+]
+.PP
+.B yume-setup
+.B add-client
+.B --server
+.I directory
+.B --host
+.I host
+.B --output
+.I directory
+.B --client-name
+.I name
+[
+.B --max-sessions
+.I count
+] [
+.B --weight
+.I weight
+] [
+.B --circuits
+]
+.PP
+.B yume-setup
+.B remove-client
+.B --server
+.I directory
+.B --client-name
+.I name
+.PP
+.B yume-setup
+.B cluster-init
+.B --output
+.I directory
+.PP
+.B yume-setup
+.B cluster-add
+.B --cluster
+.I directory
+.B --server
+.I directory
+.B --name
+.I name
+.B --host
+.I host
+[
+.B --address
+.I address
+] [
+.B --exit
+]
+.PP
+.B yume-setup
+.B cluster-remove
+.B --cluster
+.I directory
+.B --name
+.I name
+.PP
+.B yume-setup
+.B cluster-sign
+.B --cluster
+.I directory
+[
+.B --days
+.I days
+]
+.PP
+.B yume-setup
+.B --help
+.SH DESCRIPTION
+.B yume-setup
+writes the files
+.BR yumed (8)
+and
+.BR yume (1)
+run from: a server directory with its configuration, credentials and
+cover site, client bundles for it, and an operator's signed cluster
+list.
+It starts neither program and opens no network connection, except that
+.B cluster-sign
+resolves a node's host when the node has no address.
+.PP
+Keys, certificates and signatures come from the OpenSSL release YUME is
+built with, through the same readers
+.B yume
+and
+.B yumed
+use, so setup needs no
+.B openssl
+command or other runtime.
+Every key is read back by those readers before setup writes it.
+.PP
+Secret files are created owner-only, exclusively and without following a
+symlink.
+A new kit, bundle or operator directory is written under a private
+staging name beside its target and renamed into place without replacing
+anything, so a failed command leaves no partial directory.
+Commands that change an existing server or cluster write each replaced
+file beside it and rename it over the old one.
+Each replacement is atomic, but a command that touches several files is
+not one filesystem transaction.
+.SH ACTIONS
+.TP
+.B init
+Create a new kit directory holding
+.B server/
+and a first client bundle in
+.BR client/ .
+The server gets a composite Ed25519 and ML-DSA-87 identity, an
+ML-KEM-1024 key, a P-256 TLS certificate from a one-off CA whose key is
+never written, the deployment's admission key, an authorized-keys store
+with the client, an empty admin-keys store and a static cover site.
+The client gets its own identity, its access PSK and the server's public
+material.
+.TP
+.B add-client
+Issue another client bundle for an existing server directory.
+The client is added to the server's authorized-keys store with the kit's
+.B tcp
+and
+.B udp
+services, and the store is replaced last.
+Nothing changes unless every step succeeds.
+Files added to the server tree keep the store's owner.
+A running daemon accepts the client once it reloads (SIGHUP).
+.TP
+.B remove-client
+Take a client out of a server's authorized-keys store, then delete its
+public key and access PSK.
+The last client cannot be removed, because the daemon requires one.
+A running daemon ends the client's sessions when it reloads.
+.TP
+.B cluster-init
+Create an operator directory with a new composite operator key, the key
+network tags are made under and an empty cluster record.
+Keep it off the servers.
+.TP
+.B cluster-add
+Enter a server directory into a cluster.
+The server's TLS certificate must name
+.BR --host .
+For every node already in the cluster, a fresh PSK for each direction
+goes into both nodes' peer stores with the other node's admission key,
+and the new server gets the operator's public key and a
+.B cluster
+section in its
+.BR yumed.json .
+.TP
+.B cluster-remove
+Take a node out of a cluster.
+Every other node forgets it, and the removed node loses its cluster
+section, its
+.B credentials/cluster
+directory and the serial it saved, so it runs alone after a restart.
+Sign a new list afterwards.
+.TP
+.B cluster-sign
+Sign the next cluster list and routes view and copy them to every node.
+The serial goes up by one, and both expire after
+.BR --days .
+The routes view names each node, its identity, its exit mark and its
+network tag, and no address.
+Both are checked with the readers the nodes use before anything is
+written.
+.SH OPTIONS
+.TP
+.BI "--host " host
+The DNS name or IP literal the server's TLS certificate names, which
+clients authenticate.
+Required by
+.BR init ,
+.B add-client
+and
+.BR cluster-add .
+.TP
+.BI "--output " directory
+The new directory
+.BR init ,
+.B add-client
+or
+.B cluster-init
+writes.
+Its parent must be an existing directory, and nothing may exist at the
+path.
+.TP
+.BI "--port " port
+The port
+.B init
+writes into both configurations, from 1 to 65535.
+.TP
+.BI "--client-name " name
+The client's name in the authorized-keys store: 1 to 63 letters, digits,
+.BR . ,
+.B _
+or
+.BR - ,
+beginning and ending with a letter or digit.
+.B init
+uses
+.B client1
+without it, and
+.B add-client
+and
+.B remove-client
+require it.
+.TP
+.BI "--max-sessions " count
+How many sessions the client may hold at once, from 1 to 1024.
+A newer session replaces the oldest.
+Without it the daemon sets no per-client bound.
+.TP
+.BI "--weight " weight
+The client's share of the server's egress rate against other busy
+clients, from 0.1 to 100.
+.TP
+.BI "--max-egress-mbps " rate
+For
+.BR init :
+the server's stream egress rate in Mbit/s, from 1 to 1000000, which
+clients share by weight.
+Unlimited when omitted.
+.TP
+.BI "--preset " preset
+For
+.BR init :
+the tuning preset both configurations take, which trades far-path speed
+against how much data one key protects and how close the carrier stays
+to browser traffic.
+.B stealth
+is the default.
+A client from
+.B add-client
+takes its server's tuning.
+.TP
+.BI "--server " directory
+A server directory in the layout
+.B init
+writes, holding
+.B yumed.json
+and its credentials.
+.TP
+.B --circuits
+For
+.BR add-client :
+grant the client
+.B yume.circuit
+and give its bundle a
+.B circuits
+section of three hops, with this server as the entry, and the kit's
+copies of the operator key and routes view.
+The server must belong to a signed cluster.
+Circuits carry TCP only, so the bundle's SOCKS5 adapter refuses UDP.
+.TP
+.BI "--cluster " directory
+The operator directory
+.B cluster-init
+created, which holds the operator key and the cluster record.
+Required by every cluster action.
+.TP
+.BI "--name " name
+The node's name in the cluster list, by the same rule as a client name.
+.TP
+.BI "--address " address
+For
+.BR cluster-add :
+an IP literal other nodes dial instead of resolving
+.BR --host .
+TLS still authenticates the host.
+It also gives the node's network tag; without it
+.B cluster-sign
+resolves the host.
+.TP
+.B --exit
+For
+.BR cluster-add :
+the node carries circuits' streams to destinations through its one
+.B direct_tcp
+adapter and that adapter's destination policy.
+.TP
+.BI "--days " days
+For
+.BR cluster-sign :
+how long the list and routes view stay valid, from 1 to 366 days.
+A node whose list has expired closes its links.
+.TP
+.B -h, --help
+Print the actions and options and exit.
+.PP
+An option may also be written as
+.BR --option=value .
+.SH EXIT STATUS
+.B 0
+on success,
+.B 1
+when the action fails, and
+.B 2
+for a usage error.
+A failure prints one line beginning
+.B yume-setup:
+and names no secret.
+.SH FILES
+A kit from
+.B init
+holds
+.BR manifest.json ,
+.B server/yumed.json
+with
+.BR server/credentials/ ,
+.BR server/cover-site/ ,
+.B server/services/
+and
+.BR server/start-server ,
+and
+.B client/yume.json
+with
+.BR client/credentials/ ,
+.B client/adapters/
+and
+.BR client/start-client .
+.B docs/OPERATIONS.md
+describes deploying them and
+.B docs/protocol/CLUSTER_1.md
+the cluster files.
+.SH EXAMPLES
+.nf
+yume-setup init --host vpn.example.net --output "$PWD/yume-kit"
+yume-setup add-client --server yume-kit/server --host vpn.example.net \e
+  --output "$PWD/tablet" --client-name tablet --max-sessions 2
+yume-setup remove-client --server yume-kit/server --client-name tablet
+.fi
+.SH SEE ALSO
+.BR yume-doctor (1),
+.BR yume (1),
+.BR yumed (8)

@@ -18,10 +18,9 @@ The default CMake graph builds and installs the native application candidate:
 - the schema-1 `yume-setup` provisioner and `yume-doctor` validator;
 - native executable manuals, configuration examples and documentation.
 
-These programs compose YTP/1 directly. The native application and schema-1
-tools remain experimental. Setup and doctor require Python 3 and an OpenSSL
-3.5 or newer command-line executable, including when the native binaries
-embed their own patched OpenSSL.
+These programs compose YTP/1 directly and remain experimental. Setup and
+doctor are native programs on the same OpenSSL release as `yume` and `yumed`,
+so a kit is made and checked with no interpreter or `openssl` command.
 
 The optional Linux desktop GUI exists and builds with `YUME_BUILD_GUI=ON`.
 It is not included in the release archive or Debian packages.
@@ -83,10 +82,11 @@ documentation.
 
 ## Linux release archive
 
-The Linux archive contains the native client, schema-1 setup and doctor,
-licensing documents, quick start and manifest. The native daemon is a
-separate artifact. The package writer and validator require YTP/1/schema-1
-identity, check ELF/linkage and file hashes, and reject unexpected or
+The Linux archive contains the native client, the native schema-1 setup and
+doctor programs, licensing documents, quick start and manifest. The native
+daemon is a separate artifact. The package writer and validator require
+YTP/1/schema-1 identity, check the ELF linkage of every program and file
+hashes, and reject unexpected or
 duplicate archive entries.
 See the [Linux quick start](release/LINUX-QUICKSTART.md).
 

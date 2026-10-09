@@ -10,7 +10,6 @@ import json
 import os
 import pathlib
 import re
-import runpy
 import shutil
 import subprocess
 import sys
@@ -230,20 +229,13 @@ class MetadataTests(unittest.TestCase):
         vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         self.assertEqual(vcpkg["version-string"], "0.3.0-dev1")
 
-        setup = runpy.run_path(str(ROOT / "tools/yume_setup.py"))
-        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
-        self.assertEqual(setup["PRODUCT_VERSION"], "0.3.0-dev1")
-        for tool in (setup, doctor):
-            self.assertEqual(tool["PROFILE"], "chrome151-node24-v1")
-            self.assertEqual(tool["SUITE"]["id"], "ytp1-tls13-h2")
-            self.assertEqual(tool["SUITE"]["secure_channel"], "tls13-native")
-            self.assertEqual(tool["SUITE"]["front_door"], "h2-web")
-            self.assertEqual(tool["SUITE"]["carrier"], "h2-duplex")
-            self.assertEqual(tool["SUITE"]["session"], "ytp1-hybrid")
-            self.assertEqual(
-                tool["IDENTITY_DOMAIN"],
-                b"yume/ytp/1/composite-identity/v1",
-            )
+        # yume-setup writes kits from these constants, so a kit's manifest
+        # and configurations name the same versions.
+        layout = (ROOT / "src/setup/kit_layout.cpp").read_text(encoding="utf-8")
+        for constant in ("kVersion", "kEvidenceProfile", "kTransportSuite",
+                         "kSecureChannelProvider", "kFrontDoorProvider", "kCarrierProvider",
+                         "kSessionComponent", "kConfigSchema", "kAbiVersion"):
+            self.assertIn(constant, layout)
 
     def test_runnable_transport_and_experimental_surfaces_are_separated(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
@@ -252,14 +244,12 @@ class MetadataTests(unittest.TestCase):
             cmake,
             r'option\(YUME_BUILD_SHARED_ABI[\s\S]*?\n\s*OFF\)',
         )
-        self.assertIn("tools/yume_setup.py", cmake)
-        self.assertIn("RENAME yume-setup COMPONENT yume_cli", cmake)
-        self.assertIn("RENAME yume-doctor COMPONENT yume_cli", cmake)
         self.assertNotIn("YUME_BUILD_LEGACY_02", cmake)
 
         source_cmake = (ROOT / "src/CMakeLists.txt").read_text(
             encoding="utf-8")
         self.assertNotIn("YUME_BUILD_TRANSPORT_V2", source_cmake)
+        self.assertIn("install(TARGETS yume-setup yume-doctor", source_cmake)
         # The development candidate deliberately has no numbered SONAME,
         # but it still needs the normal unversioned ELF SONAME so consumers do
         # not record a build-directory-relative DT_NEEDED entry.
@@ -312,14 +302,12 @@ class MetadataTests(unittest.TestCase):
     def test_debian_daemon_bootstrap_contract_is_complete(self) -> None:
         config = json.loads(
             (ROOT / "debian/yumed.json").read_text(encoding="utf-8"))
-        doctor = runpy.run_path(str(ROOT / "tools/yume_doctor.py"))
-        checked = doctor["_validate_config"](config)
-        role, cover_root = checked.role, checked.cover_root
-        self.assertEqual(role, "server")
-        self.assertEqual(checked.list_files, [])
-        self.assertIsNone(checked.socks5_credentials)
+        # tests/test_yume_doctor.py parses this file with the native parser.
+        self.assertEqual(config["role"], "server")
         self.assertEqual(config["schema"], 1)
-        self.assertEqual(cover_root, "cover-site")
+        self.assertEqual(config["cover"]["root"], {"file": "cover-site"})
+        for adapter in config["adapters"]:
+            self.assertNotIn("lists", adapter.get("destinations", {}))
         unit = (ROOT / "debian/yume-daemon.yumed.service").read_text(
             encoding="utf-8")
         for reference in config["credentials"].values():

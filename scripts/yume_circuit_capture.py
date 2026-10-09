@@ -350,7 +350,8 @@ def run_inside(arguments: argparse.Namespace) -> int:
                 "-w", str(arguments.output / f"{side}.pcap")]), stdout=subprocess.DEVNULL, stderr=handle), errors))
         time.sleep(1.0)
         with tempfile.TemporaryDirectory(prefix="yume-circuit-capture-", dir="/tmp") as temporary:
-            cluster = circuit_wan.Cluster(Path(temporary), environment, session.free_port(), {})
+            cluster = circuit_wan.Cluster(Path(temporary), environment, session.free_port(), {},
+                                          session.setup_program(arguments.yume))
             for name in circuit_wan.NODES:
                 logs.append((arguments.output / f"{name}.log").open("wb"))
                 processes[name] = subprocess.Popen(

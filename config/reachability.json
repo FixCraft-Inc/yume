@@ -3,6 +3,8 @@
   "production": [
     "yume",
     "yumed",
+    "yume-setup",
+    "yume-doctor",
     "yume-resolver",
     "yume-echo-module",
     "yume-gui",

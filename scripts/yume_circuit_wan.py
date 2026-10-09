@@ -434,13 +434,6 @@ def query(control: Path, request: str = "status") -> dict:
     return json.loads(reply)
 
 
-def setup(environment: dict[str, str], *arguments: str) -> None:
-    result = subprocess.run([sys.executable, str(session.SETUP_TOOL), *arguments], env=environment,
-                            capture_output=True, text=True, timeout=120, check=False)
-    if result.returncode:
-        raise session.SessionFailure(f"yume-setup {arguments[0]} failed: {result.stderr.strip()}")
-
-
 def edit(path: Path, change) -> None:
     document = json.loads(path.read_text(encoding="utf-8"))
     change(document)
@@ -451,17 +444,22 @@ class Cluster:
     """The nodes' kits, the operator's signed list and the clients' kits."""
 
     def __init__(self, root: Path, environment: dict[str, str], target_port: int,
-                 limits: dict[str, object], node_port: int = NODE_PORT) -> None:
+                 limits: dict[str, object], program: Path, node_port: int = NODE_PORT) -> None:
+        """program is the yume-setup that writes the kits."""
+
+        def setup(*arguments: str) -> None:
+            session.run_setup(program, arguments, environment)
+
         self.root = root
         self.node_port = node_port
         self.sockets = root / "sockets"
         self.sockets.mkdir(mode=0o700)
         operator = root / "operator"
-        setup(environment, "cluster-init", "--output", str(operator))
+        setup("cluster-init", "--output", str(operator))
         destination = f"{address('destination')}/32"
         for name in NODES:
             kit = root / name
-            session.provision_kit(kit, address(name), node_port, environment)
+            session.provision_kit(kit, address(name), node_port, environment, program)
 
             def serve(config: dict, name: str = name) -> None:
                 config["limits"].update(limits)
@@ -472,10 +470,10 @@ class Cluster:
                         adapter["destinations"] = {"public": False, "networks": [destination]}
 
             edit(kit / "server/yumed.json", serve)
-            setup(environment, "cluster-add", "--cluster", str(operator), "--server", str(kit / "server"),
+            setup("cluster-add", "--cluster", str(operator), "--server", str(kit / "server"),
                   "--name", name, "--host", address(name), "--address", address(name),
                   *(["--exit"] if name in EXITS else []))
-        setup(environment, "cluster-sign", "--cluster", str(operator), "--days", "2")
+        setup("cluster-sign", "--cluster", str(operator), "--days", "2")
         self.socks = {path: session.free_port() for path in ("direct", *CIRCUIT_HOPS)}
         self.clients = {"direct": root / ENTRY / "client/yume.json"}
 
@@ -489,7 +487,7 @@ class Cluster:
         edit(self.clients["direct"], direct)
         for path, hops in CIRCUIT_HOPS.items():
             kit = root / path
-            setup(environment, "add-client", "--server", str(root / ENTRY / "server"), "--host",
+            setup("add-client", "--server", str(root / ENTRY / "server"), "--host",
                   address(ENTRY), "--output", str(kit), "--client-name", path, "--circuits")
 
             def circuits(config: dict, path: str = path, hops: int = hops) -> None:
@@ -759,7 +757,8 @@ def run_inside(arguments: argparse.Namespace) -> int:
             # A client's authority must name its node's listening port, so a
             # served cluster's nodes listen on the relay's entry port.
             node_port = json.loads(os.environ[SERVE_PORTS])["entry"] if arguments.serve_at else NODE_PORT
-            cluster = Cluster(Path(temporary), environment, session.free_port(), limits, node_port)
+            cluster = Cluster(Path(temporary), environment, session.free_port(), limits,
+                              session.setup_program(arguments.yume), node_port)
             payload_log = arguments.output / "payload.log"
             logs.append(payload_log.open("wb"))
             processes["payload"] = subprocess.Popen(

@@ -26,12 +26,12 @@ Verify the published checksum and detached signature before installation.
 Keep both downloaded artifacts from the same release.
 
 The executables also use systemd, zlib, Brotli, Zstandard and the C++ runtime
-as shared libraries. On a minimal Debian 13 system, install these along with
-Python, the OpenSSL command-line tool and xz for unpacking:
+as shared libraries. On a minimal Debian 13 or Ubuntu 24.04 system, install
+these along with xz for unpacking:
 
 @code sh
 sudo apt-get install --no-install-recommends \
-  python3 openssl xz-utils libsystemd0 libbrotli1 zlib1g libzstd1 libstdc++6
+  xz-utils libsystemd0 libbrotli1 zlib1g libzstd1 libstdc++6
 @end
 
 Then unpack the client:
@@ -42,12 +42,11 @@ cd yume-amd64-linux
 ./yume --version
 @end
 
-The native release binaries embed the pinned patched OpenSSL needed by their
-transport. Packaging checks reject runtime OpenSSL/liboqs dependencies and
-embedded build-directory search paths. Setup and doctor are Python tools;
-they separately require Python 3 and an OpenSSL 3.5 or newer command-line
-executable on `PATH`. Compare unpacked files with `manifest.json` before
-running them.
+All four programs embed the pinned patched OpenSSL that makes their keys and
+carries their transport, so neither Python nor an `openssl` command is needed.
+Packaging checks reject runtime OpenSSL/liboqs dependencies and embedded
+build-directory search paths. Compare unpacked files with `manifest.json`
+before running them.
 
 ## Provision and connect
 

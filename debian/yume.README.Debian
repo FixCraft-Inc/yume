@@ -1,11 +1,11 @@
 YUME for Debian
 ===============
 
-The yume package installs the native YTP/1 client, schema-1 yume-setup and
-yume-doctor tools, documentation and examples. The server daemon, /etc/yume,
+The yume package installs the native YTP/1 client, the schema-1 yume-setup
+and yume-doctor programs, documentation and examples. The server daemon, /etc/yume,
 and disabled systemd unit are in yume-daemon. No service starts on install.
 
-Read /usr/share/doc/yume/QUICKSTART.md and the installed yume/yumed manuals.
+Read /usr/share/doc/yume/QUICKSTART.md and the installed manuals.
 Configuration examples are in /usr/share/doc/yume/examples/. Provision a
 matching schema-1 kit, validate it and use the config-only native interface:
 

@@ -324,7 +324,7 @@ class Tracked(unittest.TestCase):
 
     def test_each_native_binary_has_one_layout(self) -> None:
         self.assertEqual(sorted(item.binary for item in self.layouts),
-                         ["yume", "yume-gui", "yumed"])
+                         ["yume", "yume-doctor", "yume-gui", "yume-setup", "yumed"])
 
     def test_native_help_has_exactly_the_parser_options(self) -> None:
         # native_cli.cpp's parser, kRunFlags and the evidence and kit
@@ -340,7 +340,12 @@ class Tracked(unittest.TestCase):
                     "yume-gui": {"--kit", "--page", "--theme", "--layout-direction", "--size",
                                  "--no-tray", "--yume", "--capture", "--headless",
                                  "--import-kit", "--name", "--version", "--completion",
-                                 "--help", "-h"}}
+                                 "--help", "-h"},
+                    "yume-setup": {"--host", "--output", "--port", "--client-name",
+                                   "--max-sessions", "--weight", "--max-egress-mbps", "--preset",
+                                   "--server", "--circuits", "--cluster", "--name", "--address",
+                                   "--exit", "--days", "--help", "-h"},
+                    "yume-doctor": {"--config", "--help", "-h"}}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):
                 ordered, _ = yume_cli.resolve(layout)
@@ -351,13 +356,16 @@ class Tracked(unittest.TestCase):
         # yume and yumed share native_cli.cpp's parser, so its option
         # literals are the union of both layouts. A new option in a parser
         # fails here until its help and manual state it.
-        documented = {binary: set() for binary in ("yume", "yumed", "yume-gui")}
+        documented = {binary: set() for binary in
+                      ("yume", "yumed", "yume-gui", "yume-setup", "yume-doctor")}
         for layout in self.layouts:
             ordered, _ = yume_cli.resolve(layout)
             documented[layout.binary] = {flag for entry in ordered for flag in entry.flags}
         literal = re.compile(r'"(--?[a-z][a-z-]*)"')
         parsers = {"src/runtime/native_cli.cpp": documented["yume"] | documented["yumed"],
-                   "src/gui/main.cpp": documented["yume-gui"]}
+                   "src/gui/main.cpp": documented["yume-gui"],
+                   "src/setup/setup_main.cpp": documented["yume-setup"],
+                   "src/setup/doctor_main.cpp": documented["yume-doctor"]}
         for parser, expected in parsers.items():
             with self.subTest(parser=parser):
                 source = (yume_cli.REPO_ROOT / parser).read_text(encoding="utf-8")

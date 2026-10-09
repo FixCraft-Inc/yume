@@ -216,9 +216,7 @@ yume --config /path/to/client.json --validate
 yume --config /path/to/client.json
 @end
 
-The separately installed **yume-setup** and **yume-doctor** tools
-provision and inspect schema-1 kits. Their **--help** output describes their
-arguments. Setup and doctor are separate programs.
+man:yume-setup(1) creates schema-1 kits and man:yume-doctor(1) checks them.
 
 ## RECORD PROTECTION
 

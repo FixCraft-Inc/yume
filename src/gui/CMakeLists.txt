@@ -116,12 +116,13 @@ if(YUME_BUILD_TESTING)
     # The same lifecycle against a real yumed and yume: connect, stop,
     # reconnect and stop with each leg's report inspected, the tunnel
     # outliving a killed GUI, and a kit imported through the GUI.
-    if(TARGET yume AND TARGET yumed)
+    if(TARGET yume AND TARGET yumed AND TARGET yume-setup)
         add_test(NAME yume_gui_live_test
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/gui/run_gui_live_test.py"
                 --gui "$<TARGET_FILE:yume-gui>"
                 --yume "$<TARGET_FILE:yume>"
                 --yumed "$<TARGET_FILE:yumed>"
+                --setup "$<TARGET_FILE:yume-setup>"
                 --openssl "${YUME_NATIVE_TEST_OPENSSL}")
         set_tests_properties(yume_gui_live_test PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"

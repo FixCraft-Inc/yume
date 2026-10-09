@@ -277,7 +277,8 @@ def isolated(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix="yume-stress-") as temporary, ExitStack() as stack:
         root = Path(temporary)
         kit = root / "kit"
-        session.provision_kit(kit, "localhost", TRANSPORT_PORT, environment)
+        session.provision_kit(kit, "localhost", TRANSPORT_PORT, environment,
+                              session.setup_program(args.yume))
         session.configure_kit(kit, listen_address="127.0.0.2", networks=["127.0.0.1/32"],
                               connect_address="127.0.0.2", socks_port=SOCKS_PORT)
         logs = {name: stack.enter_context((root / f"{name}.log").open("w+"))

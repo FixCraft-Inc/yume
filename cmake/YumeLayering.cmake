@@ -115,7 +115,7 @@ function(yume_check_03_source_layering source_dir)
     # separate BaseFWX checkout and `yume` for the public header directory.
     set(_layers
         common ytp circuit engine config fs stealth admission providers
-        runtime abi modules gui test_support)
+        runtime setup abi modules gui test_support)
     set(_include_targets ${_layers} basefwx yume)
     # common/ holds std-only helpers every layer may use.
     set(_common_may_include "")
@@ -135,6 +135,11 @@ function(yume_check_03_source_layering source_dir)
     # BaseFWX.
     set(_runtime_may_include
         common ytp circuit engine config fs stealth providers)
+    # yume-setup and yume-doctor write and check what the runtime reads, with
+    # its own parser, key readers, cluster list reader and cover profiles.
+    # Nothing includes them.
+    set(_setup_may_include
+        common ytp config fs stealth providers runtime)
     # The C ABI validates schema-1 documents and reaches the runtime only
     # through the embedding seam, whose one implementation is yume_embed.
     set(_abi_may_include common config yume)

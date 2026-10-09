@@ -37,7 +37,7 @@ class NativeReleasePackageTests(unittest.TestCase):
             '  puts(PROGRAM " 0.3.0-dev1");\n'
             '  puts("transport YTP/1, config schema 1, suite ytp1-tls13-h2");\n'
             '  return 0;\n}\n', encoding="utf-8")
-        for name in ("yume", "yumed"):
+        for name in ("yume", "yumed", "yume-setup", "yume-doctor"):
             subprocess.run(
                 ["cc", str(source), f'-DPROGRAM="{name}"', "-o", str(cls.root / name)],
                 check=True, capture_output=True, text=True, timeout=30)
@@ -50,8 +50,7 @@ class NativeReleasePackageTests(unittest.TestCase):
         self.output_dir = Path(self.output.name)
         self.args = argparse.Namespace(
             yume=self.root / "yume", yumed=self.root / "yumed",
-            setup=preflight.ROOT / "tools/yume_setup.py",
-            doctor=preflight.ROOT / "tools/yume_doctor.py",
+            setup=self.root / "yume-setup", doctor=self.root / "yume-doctor",
             license=self.root / "LICENSE", notices=self.root / "NOTICES",
             quick_start=self.root / "QUICKSTART", output_dir=self.output_dir,
             version=self.version, source_commit=self.commit)
@@ -119,6 +118,17 @@ class NativeReleasePackageTests(unittest.TestCase):
         self.args.setup = self.root / "absent-tool"
         with self.assertRaisesRegex(SystemExit, "Missing regular schema-1 setup"):
             self.package()
+
+    def test_script_provisioner_is_rejected(self) -> None:
+        # A release ships native setup and doctor programs, never a script
+        # that needs an interpreter and an openssl command at run time.
+        script = self.root / "yume-doctor.py"
+        script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+        script.chmod(0o755)
+        self.args.doctor = script
+        with self.assertRaisesRegex(SystemExit, "schema-1 doctor program is not ELF"):
+            self.package()
+        self.assertEqual(list(self.output_dir.iterdir()), [])
 
     def test_duplicate_archive_member_is_rejected(self) -> None:
         self.package()

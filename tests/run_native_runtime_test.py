@@ -713,7 +713,8 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
         root = Path(temporary)
         kit = root / "kit"
         server_port, socks_port, target_port, closed_port = (session.free_port() for _ in range(4))
-        session.provision_kit(kit, "localhost", server_port, environment)
+        session.provision_kit(kit, "localhost", server_port, environment,
+                              session.setup_program(yume))
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],
                               connect_address="127.0.0.1", socks_port=socks_port)
         add_egress_lists(kit)

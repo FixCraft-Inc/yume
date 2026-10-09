@@ -415,7 +415,8 @@ if(YUME_TEST_NATIVE_TRAFFIC)
         "-DYUME_SOURCE_DIR=${YUME_SOURCE_DIR}"
         "-DYUME_PYTHON_EXECUTABLE=${YUME_PYTHON_EXECUTABLE}"
         "-DYUME_OPENSSL_EXECUTABLE=${YUME_OPENSSL_PROGRAM}"
-        "-DYUME_INSTALLED_DAEMON=${_test_prefix}/bin/yumed")
+        "-DYUME_INSTALLED_DAEMON=${_test_prefix}/bin/yumed"
+        "-DYUME_INSTALLED_SETUP=${_test_prefix}/bin/yume-setup")
 endif()
 yume_execute("installed find_package consumer configure"
     ${_configure_command})

@@ -1,0 +1,233 @@
+#!yume-doc 1
+name:        yume_setup_1
+kind:        man
+title:       yume-setup
+summary:     create YUME server kits, client bundles and cluster lists
+man:         docs/man/yume-setup.1
+man-section: 1
+man-date:    2026-10-08
+man-source:  YUME 0.3.0-dev1
+man-manual:  YUME Manual
+---
+@synopsis
+**yume-setup** **init** **--host** *host* **--output** *directory* [ **--port** *port* ] [ **--client-name** *name* ] [ **--max-sessions** *count* ] [ **--weight** *weight* ] [ **--max-egress-mbps** *rate* ] [ **--preset** *preset* ]
+**yume-setup** **add-client** **--server** *directory* **--host** *host* **--output** *directory* **--client-name** *name* [ **--max-sessions** *count* ] [ **--weight** *weight* ] [ **--circuits** ]
+**yume-setup** **remove-client** **--server** *directory* **--client-name** *name*
+**yume-setup** **cluster-init** **--output** *directory*
+**yume-setup** **cluster-add** **--cluster** *directory* **--server** *directory* **--name** *name* **--host** *host* [ **--address** *address* ] [ **--exit** ]
+**yume-setup** **cluster-remove** **--cluster** *directory* **--name** *name*
+**yume-setup** **cluster-sign** **--cluster** *directory* [ **--days** *days* ]
+**yume-setup** **--help**
+@end
+
+## DESCRIPTION
+
+**yume-setup** writes the files man:yumed(8) and man:yume(1) run from: a
+server directory with its configuration, credentials and cover site, client
+bundles for it, and an operator's signed cluster list. It starts neither
+program and opens no network connection, except that **cluster-sign**
+resolves a node's host when the node has no address.
+
+Keys, certificates and signatures come from the OpenSSL release YUME is
+built with, through the same readers **yume** and **yumed** use, so setup
+needs no **openssl** command or other runtime. Every key is read back by
+those readers before setup writes it.
+
+Secret files are created owner-only, exclusively and without following a
+symlink. A new kit, bundle or operator directory is written under a private
+staging name beside its target and renamed into place without replacing
+anything, so a failed command leaves no partial directory. Commands that
+change an existing server or cluster write each replaced file beside it and
+rename it over the old one. Each replacement is atomic, but a command that
+touches several files is not one filesystem transaction.
+
+## ACTIONS
+
+@options
+@opt **init**
+
+Create a new kit directory holding **server/** and a first client bundle in
+**client/**. The server gets a composite Ed25519 and ML-DSA-87 identity, an
+ML-KEM-1024 key, a P-256 TLS certificate from a one-off CA whose key is never
+written, the deployment's admission key, an authorized-keys store with the
+client, an empty admin-keys store and a static cover site. The client gets
+its own identity, its access PSK and the server's public material.
+@opt **add-client**
+
+Issue another client bundle for an existing server directory. The client is
+added to the server's authorized-keys store with the kit's **tcp** and
+**udp** services, and the store is replaced last. Nothing changes unless
+every step succeeds. Files added to the server tree keep the store's owner.
+A running daemon accepts the client once it reloads (SIGHUP).
+@opt **remove-client**
+
+Take a client out of a server's authorized-keys store, then delete its
+public key and access PSK. The last client cannot be removed, because the
+daemon requires one. A running daemon ends the client's sessions when it
+reloads.
+@opt **cluster-init**
+
+Create an operator directory with a new composite operator key, the key
+network tags are made under and an empty cluster record. Keep it off the
+servers.
+@opt **cluster-add**
+
+Enter a server directory into a cluster. The server's TLS certificate must
+name **--host**. For every node already in the cluster, a fresh PSK for each
+direction goes into both nodes' peer stores with the other node's admission
+key, and the new server gets the operator's public key and a **cluster**
+section in its **yumed.json**.
+@opt **cluster-remove**
+
+Take a node out of a cluster. Every other node forgets it, and the removed
+node loses its cluster section, its **credentials/cluster** directory and the
+serial it saved, so it runs alone after a restart. Sign a new list
+afterwards.
+@opt **cluster-sign**
+
+Sign the next cluster list and routes view and copy them to every node. The
+serial goes up by one, and both expire after **--days**. The routes view
+names each node, its identity, its exit mark and its network tag, and no
+address. Both are checked with the readers the nodes use before anything is
+written.
+@end
+
+## OPTIONS
+
+@options
+@opt **--host** *host*
+@cli spell: --host <host>
+@cli help: The server's public DNS name or IP address
+
+The DNS name or IP literal the server's TLS certificate names, which clients
+authenticate. Required by **init**, **add-client** and **cluster-add**.
+@opt **--output** *directory*
+@cli file: yes
+@cli spell: --output <directory>
+@cli help: New directory to create; its parent must exist
+
+The new directory **init**, **add-client** or **cluster-init** writes. Its
+parent must be an existing directory, and nothing may exist at the path.
+@opt **--port** *port*
+@cli spell: --port <port>
+@cli help: The server's port, 443 by default
+
+The port **init** writes into both configurations, from 1 to 65535.
+@opt **--client-name** *name*
+@cli spell: --client-name <name>
+@cli help: The client's name in the store, client1 by default
+
+The client's name in the authorized-keys store: 1 to 63 letters, digits,
+**.**, **_** or **-**, beginning and ending with a letter or digit.
+**init** uses **client1** without it, and **add-client** and
+**remove-client** require it.
+@opt **--max-sessions** *count*
+@cli spell: --max-sessions <count>
+@cli help: Sessions the client may hold at once, 1 to 1024
+
+How many sessions the client may hold at once, from 1 to 1024. A newer
+session replaces the oldest. Without it the daemon sets no per-client bound.
+@opt **--weight** *weight*
+@cli spell: --weight <weight>
+@cli help: The client's share of the egress rate, 0.1 to 100
+
+The client's share of the server's egress rate against other busy clients,
+from 0.1 to 100.
+@opt **--max-egress-mbps** *rate*
+@cli spell: --max-egress-mbps <rate>
+@cli help: The rate clients share by weight, in Mbit/s
+
+For **init**: the server's stream egress rate in Mbit/s, from 1 to
+1000000, which clients share by weight. Unlimited when omitted.
+@opt **--preset** *preset*
+@cli values: stealth balanced fast max
+@cli spell: --preset <preset>
+@cli help: Tuning for both sides: stealth (default), balanced,
+@cli help: fast or max
+
+For **init**: the tuning preset both configurations take, which trades
+far-path speed against how much data one key protects and how close the
+carrier stays to browser traffic. **stealth** is the default. A client from
+**add-client** takes its server's tuning.
+@opt **--server** *directory*
+@cli file: yes
+@cli spell: --server <directory>
+@cli help: A server directory holding yumed.json
+
+A server directory in the layout **init** writes, holding **yumed.json** and
+its credentials.
+@opt **--circuits**
+@cli spell: --circuits
+@cli help: Send the client's connections through circuits
+
+For **add-client**: grant the client **yume.circuit** and give its bundle a
+**circuits** section of three hops, with this server as the entry, and the
+kit's copies of the operator key and routes view. The server must belong to
+a signed cluster. Circuits carry TCP only, so the bundle's SOCKS5 adapter
+refuses UDP.
+@opt **--cluster** *directory*
+@cli file: yes
+@cli spell: --cluster <directory>
+@cli help: The operator directory from cluster-init
+
+The operator directory **cluster-init** created, which holds the operator
+key and the cluster record. Required by every cluster action.
+@opt **--name** *name*
+@cli spell: --name <name>
+@cli help: The node's name in the cluster list
+
+The node's name in the cluster list, by the same rule as a client name.
+@opt **--address** *address*
+@cli spell: --address <address>
+@cli help: An IP address other nodes dial instead of the host
+
+For **cluster-add**: an IP literal other nodes dial instead of resolving
+**--host**. TLS still authenticates the host. It also gives the node's
+network tag; without it **cluster-sign** resolves the host.
+@opt **--exit**
+@cli spell: --exit
+@cli help: Carry circuits' streams through the node's direct_tcp
+
+For **cluster-add**: the node carries circuits' streams to destinations
+through its one **direct_tcp** adapter and that adapter's destination policy.
+@opt **--days** *days*
+@cli spell: --days <days>
+@cli help: Days the list stays valid, 1 to 366 (default 30)
+
+For **cluster-sign**: how long the list and routes view stay valid, from 1 to
+366 days. A node whose list has expired closes its links.
+@opt **-h, --help**
+@cli spell: -h, --help
+@cli help: Print this help and exit
+
+Print the actions and options and exit.
+@end
+
+An option may also be written as **--option=value**.
+
+## EXIT STATUS
+
+**0** on success, **1** when the action fails, and **2** for a usage error.
+A failure prints one line beginning **yume-setup:** and names no secret.
+
+## FILES
+
+A kit from **init** holds **manifest.json**, **server/yumed.json** with
+**server/credentials/**, **server/cover-site/**, **server/services/** and
+**server/start-server**, and **client/yume.json** with
+**client/credentials/**, **client/adapters/** and **client/start-client**.
+**docs/OPERATIONS.md** describes deploying them and
+**docs/protocol/CLUSTER_1.md** the cluster files.
+
+## EXAMPLES
+
+@code bash
+yume-setup init --host vpn.example.net --output "$PWD/yume-kit"
+yume-setup add-client --server yume-kit/server --host vpn.example.net \
+  --output "$PWD/tablet" --client-name tablet --max-sessions 2
+yume-setup remove-client --server yume-kit/server --client-name tablet
+@end
+
+## SEE ALSO
+
+man:yume-doctor(1), man:yume(1), man:yumed(8)

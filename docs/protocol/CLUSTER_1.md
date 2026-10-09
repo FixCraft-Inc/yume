@@ -197,7 +197,7 @@ this server's link to it, counted apart. yumed(8) gives the fields.
 <details>
 <summary>What each part does</summary>
 
-- **Operator**: Signs the cluster list and routes view. Its private key stays off the servers. ([`tools/yume_setup.py`](../../tools/yume_setup.py))
+- **Operator**: Signs the cluster list and routes view. Its private key stays off the servers. ([`src/setup/cluster.cpp`](../../src/setup/cluster.cpp))
 - **Node A**: Checks both signatures, expiry and serial. Its outbound session uses B's TLS trust, admission key and the A-to-B PSK. ([`src/runtime/cluster_list.cpp`](../../src/runtime/cluster_list.cpp), [`src/runtime/native_server_runtime.cpp`](../../src/runtime/native_server_runtime.cpp))
 - **Node B**: Authenticates A as a peer with its inbound PSK and grants only yume.circuit. Its own outbound session to A is separate. ([`src/runtime/native_credentials.cpp`](../../src/runtime/native_credentials.cpp), [`src/runtime/native_server_runtime.cpp`](../../src/runtime/native_server_runtime.cpp))
 

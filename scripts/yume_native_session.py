@@ -20,13 +20,11 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
-import sys
 import threading
 import time
 from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
-SETUP_TOOL = ROOT / "tools" / "yume_setup.py"
 PATTERN = bytes(range(256))
 REPLY_SUCCEEDED = 0x00
 REPLY_NOT_ALLOWED = 0x02
@@ -180,13 +178,30 @@ def serve_payload(host: str, port: int, size: int) -> http.server.ThreadingHTTPS
     return server
 
 
-def provision_kit(kit: Path, server_name: str, port: int, environment: dict[str, str]) -> None:
-    result = subprocess.run(
-        [sys.executable, str(SETUP_TOOL), "init", "--host", server_name,
-         "--port", str(port), "--output", str(kit)],
-        env=environment, capture_output=True, text=True, timeout=120, check=False)
+def setup_program(beside: Path) -> Path:
+    """The yume-setup built or installed in the same directory as a yume,
+    yumed or other program of that build. Every build puts its programs in
+    one directory, and an install puts them in one bin directory."""
+    program = beside.resolve(strict=True).parent / "yume-setup"
+    if not program.is_file() or not os.access(program, os.X_OK):
+        raise SessionFailure(f"no yume-setup beside {beside}; build the yume-setup target")
+    return program
+
+
+def run_setup(setup: Path, arguments: Iterable[str], environment: dict[str, str]) -> str:
+    """Runs one yume-setup action and returns what it printed."""
+    arguments = list(arguments)
+    result = subprocess.run([str(setup), *arguments], env=environment, capture_output=True,
+                            text=True, timeout=120, check=False)
     if result.returncode:
-        raise SessionFailure("setup failed: " + result.stderr.strip())
+        raise SessionFailure(f"yume-setup {arguments[0]} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def provision_kit(kit: Path, server_name: str, port: int, environment: dict[str, str],
+                  setup: Path) -> None:
+    run_setup(setup, ["init", "--host", server_name, "--port", str(port), "--output", str(kit)],
+              environment)
 
 
 def configure_kit(kit: Path, *, listen_address: str, networks: Iterable[str],

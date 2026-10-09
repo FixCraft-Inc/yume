@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2026 FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
+"""The yume-setup specification, run against the native program.
+
+Run with --setup /path/to/yume-setup --doctor /path/to/yume-doctor.
+"""
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
 import re
+import resource
+import signal
 import stat
 import subprocess
 import sys
@@ -14,16 +24,30 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TOOL = ROOT / "tools" / "yume_setup.py"
+PROGRAMS: dict[str, Path] = {}
 PEM_BLOCK = re.compile(
     rb"-----BEGIN ([A-Z0-9][A-Z0-9 ]*)-----\s+.*?-----END \1-----",
     re.DOTALL,
 )
+PRESETS = json.loads((ROOT / "config/tuning_presets.json").read_text(encoding="utf-8"))
+TUNING = {entry["id"]: entry["limits"] for entry in PRESETS["presets"]}
+# A written file larger than this fails with EFBIG once the limit applies.
+# Every private key a kit holds is larger, so a run under it fails while it
+# writes its first key, after its staging directory exists.
+SMALL_FILE_LIMIT = 4096
 
 
-def runpy_tool() -> dict:
-    import runpy
-    return runpy.run_path(str(TOOL))
+def limit_file_size() -> None:
+    """Make writes beyond SMALL_FILE_LIMIT fail instead of raising SIGXFSZ."""
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (SMALL_FILE_LIMIT, SMALL_FILE_LIMIT))
+
+
+def run_doctor(config: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(PROGRAMS["doctor"]), "--config", str(config)],
+        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
 
 
 class YumeSetupTests(unittest.TestCase):
@@ -50,17 +74,15 @@ class YumeSetupTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     @staticmethod
-    def run_tool(
-        *arguments: str, environment: dict[str, str] | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    def run_tool(*arguments: str, small_files: bool = False) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, str(TOOL), *arguments],
+            [str(PROGRAMS["setup"]), *arguments],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
-            env=environment,
+            preexec_fn=limit_file_size if small_files else None,
         )
 
     def public_algorithms(self, path: Path, private: bool) -> list[str]:
@@ -457,16 +479,8 @@ class YumeSetupTests(unittest.TestCase):
             self.assertEqual(psk, (bundle / "credentials/client-access.psk").read_bytes())
             self.assertNotEqual(psk, (authorized / "admission.key").read_bytes())
             self.assertEqual(list(base.glob(".yume-setup-staging-*")), [])
-            doctor = ROOT / "tools" / "yume_doctor.py"
             for config in (server / "yumed.json", bundle / "yume.json"):
-                checked = subprocess.run(
-                    [sys.executable, str(doctor), "--config", str(config)],
-                    cwd=ROOT,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                )
+                checked = run_doctor(config)
                 self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
 
     def test_weight_and_egress_rate_reach_the_server(self) -> None:
@@ -491,11 +505,7 @@ class YumeSetupTests(unittest.TestCase):
             )
             self.assertEqual(added.returncode, 0, added.stderr)
             self.assertEqual(json.loads(store_path.read_text())["keys"][1]["weight"], 0.5)
-            doctor = ROOT / "tools" / "yume_doctor.py"
-            checked = subprocess.run(
-                [sys.executable, str(doctor), "--config", str(server / "yumed.json")],
-                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
+            checked = run_doctor(server / "yumed.json")
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
             for extra, message in ((["--weight", "0"], "weight"),
                                    (["--weight", "nan"], "weight"),
@@ -509,8 +519,7 @@ class YumeSetupTests(unittest.TestCase):
                 self.assertFalse((base / "refused").exists())
 
     def test_tuning_presets_reach_both_sides_and_new_clients(self) -> None:
-        tool = runpy_tool()
-        default = tool["TUNING_PRESETS"][tool["DEFAULT_PRESET"]]
+        default = TUNING[PRESETS["default"]]
         for relative in ("server/yumed.json", "client/yume.json"):
             limits = json.loads((self.kit / relative).read_text())["limits"]
             self.assertEqual({key: limits[key] for key in default}, default)
@@ -523,7 +532,7 @@ class YumeSetupTests(unittest.TestCase):
                 "--client-name", "phone", "--preset", "fast",
             )
             self.assertEqual(created.returncode, 0, created.stderr)
-            fast = tool["TUNING_PRESETS"]["fast"]
+            fast = TUNING["fast"]
             for relative in ("server/yumed.json", "client/yume.json"):
                 limits = json.loads((kit / relative).read_text())["limits"]
                 self.assertEqual({key: limits[key] for key in fast}, fast)
@@ -573,17 +582,13 @@ class YumeSetupTests(unittest.TestCase):
             server = self.copy_server(base)
             before = self.tree_snapshot(server)
             attempts = (
-                (["--client-name", "phone"], None, "already authorized"),
-                (["--client-name", "tablet", "--max-sessions", "0"], None, "max sessions"),
-                (["--client-name", "tablet", "--weight", "101"], None, "weight"),
-                (["--client-name=-bad"], None, "client name"),
-                (["--client-name", "tablet"], "/directory-that-does-not-exist", "openssl"),
+                (["--client-name", "phone"], False, "already authorized"),
+                (["--client-name", "tablet", "--max-sessions", "0"], False, "max sessions"),
+                (["--client-name", "tablet", "--weight", "101"], False, "weight"),
+                (["--client-name=-bad"], False, "client name"),
+                (["--client-name", "tablet"], True, "file too large"),
             )
-            for extra, path, message in attempts:
-                environment = None
-                if path is not None:
-                    environment = os.environ.copy()
-                    environment["PATH"] = path
+            for extra, small_files, message in attempts:
                 result = self.run_tool(
                     "add-client",
                     "--server",
@@ -593,7 +598,7 @@ class YumeSetupTests(unittest.TestCase):
                     "--output",
                     str(base / "bundle"),
                     *extra,
-                    environment=environment,
+                    small_files=bool(small_files),
                 )
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn(message, result.stderr.lower())
@@ -616,18 +621,16 @@ class YumeSetupTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
-            environment = os.environ.copy()
-            environment["PATH"] = "/directory-that-does-not-exist"
             failed = self.run_tool(
                 "init",
                 "--host",
                 "setup.example.test",
                 "--output",
                 str(parent / "kit"),
-                environment=environment,
+                small_files=True,
             )
             self.assertEqual(failed.returncode, 1)
-            self.assertIn("openssl", failed.stderr.lower())
+            self.assertIn("file too large", failed.stderr.lower())
             self.assertFalse((parent / "kit").exists())
             self.assertEqual(
                 list(parent.glob(".yume-setup-staging-*")),
@@ -666,6 +669,79 @@ class YumeSetupTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
             self.assertFalse(any(parent.iterdir()))
 
+
+    def test_help_and_usage_errors_follow_the_manual(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import yume_cli  # noqa: PLC0415
+
+        layout = next(item for item in yume_cli.load_layouts() if item.binary == "yume-setup")
+        ordered, _ = yume_cli.resolve(layout)
+        expected = "\n".join(yume_cli.render_help(layout, ordered)) + "\n"
+        for arguments in (["--help"], ["-h"], ["init", "--help"]):
+            result = self.run_tool(*arguments)
+            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, expected, ""))
+        for arguments, diagnostic in (
+            ([], "an action is required"),
+            (["issue-key"], "unknown action: issue-key"),
+            (["init", "--output", "x"], "--host is required for init"),
+            (["init", "--host"], "--host needs a value"),
+            (["init", "--host", "a", "--host", "b", "--output", "x"],
+             "--host is given more than once"),
+            (["init", "--host", "a", "--output", "x", "--port", "443x"], "--port needs an integer"),
+            (["init", "--host", "a", "--output", "x", "--weight", "heavy"],
+             "--weight needs a number"),
+            (["remove-client", "--server", "s", "--client-name", "c", "--circuits"],
+             "remove-client does not take --circuits"),
+            (["add-client", "--circuits=yes"], "--circuits takes no value"),
+            (["init", "--bogus"], "unknown argument: --bogus"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.run_tool(*arguments)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, f"yume-setup: {diagnostic}\n" + expected)
+
+    def test_setup_and_doctor_need_no_other_program(self) -> None:
+        # Keys and certificates come from the OpenSSL release the programs
+        # are built with, so neither looks for an openssl command or Python.
+        with tempfile.TemporaryDirectory() as temporary:
+            kit = Path(temporary) / "kit"
+            environment = {"PATH": "/directory-that-does-not-exist"}
+            created = subprocess.run(
+                [str(PROGRAMS["setup"]), "init", "--host", "setup.example.test", "--output",
+                 str(kit)], text=True, capture_output=True, env=environment, check=False)
+            self.assertEqual(created.returncode, 0, created.stderr)
+            for config in ("server/yumed.json", "client/yume.json"):
+                checked = subprocess.run(
+                    [str(PROGRAMS["doctor"]), "--config", str(kit / config)], text=True,
+                    capture_output=True, env=environment, check=False)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_add_client_removes_server_files_when_the_store_cannot_change(self) -> None:
+        # The new key and PSK reach the server's authorized directory before
+        # the store's replacement is written beside it. A store directory the
+        # replacement cannot be written to must leave the server as it was.
+        if os.geteuid() == 0:
+            self.skipTest("root writes to read-only directories")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            server = self.copy_server(base)
+            credentials = server / "credentials"
+            before = self.tree_snapshot(server)
+            os.chmod(credentials, 0o500)
+            try:
+                result = self.run_tool(
+                    "add-client", "--server", str(server), "--host", "setup.example.test",
+                    "--output", str(base / "tablet"), "--client-name", "tablet")
+            finally:
+                os.chmod(credentials, 0o700)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("authorized-keys.json", result.stderr)
+            self.assertEqual(self.tree_snapshot(server), before)
+            self.assertEqual(sorted(path.name for path in (credentials / "authorized").iterdir()),
+                             ["phone-access.psk", "phone-composite.pub.pem"])
+            self.assertFalse((base / "tablet").exists())
+            self.assertEqual(list(base.glob(".yume-setup-staging-*")), [])
 
 
 class ClusterSetupTests(unittest.TestCase):
@@ -888,6 +964,46 @@ class ClusterSetupTests(unittest.TestCase):
             self.assertEqual(copied.read_bytes(), (node / source).read_bytes())
             self.assertEqual(stat.S_IMODE(copied.stat().st_mode) & 0o077, 0)
 
+    def test_doctor_accepts_a_circuits_grant_only_on_a_cluster_member(self) -> None:
+        # yumed's loader grants yume.circuit on a cluster member and refuses it
+        # elsewhere. The doctor checks the store by the same rule.
+        self.add("north")
+        self.tool("cluster-sign", "--cluster", str(self.operator))
+        output = self.base / "walker"
+        self.tool("add-client", "--server", str(self.servers["north"]), "--host",
+                  self.HOSTS["north"], "--output", str(output), "--client-name", "walker",
+                  "--circuits")
+        config = self.servers["north"] / "yumed.json"
+        checked = run_doctor(config)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        document = json.loads(config.read_text(encoding="utf-8"))
+        del document["cluster"]
+        config.write_text(json.dumps(document), encoding="utf-8")
+        refused = run_doctor(config)
+        self.assertEqual(refused.returncode, 1)
+        self.assertRegex(refused.stderr, r"/credentials/authorized_keys/keys/1/capabilities/2: "
+                                         r"capability does not match a configured service")
+
+    def test_sign_publishes_nothing_a_node_would_refuse(self) -> None:
+        # The list is checked with the nodes' own reader before any copy is
+        # replaced. A record edited by hand into a host the reader refuses
+        # leaves every node's files and the serial as they were.
+        self.add("north")
+        self.tool("cluster-sign", "--cluster", str(self.operator))
+        record_path = self.operator / "cluster.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        before = {name: (server / "credentials/cluster/cluster-list.json").read_bytes()
+                  for name, server in self.servers.items() if name == "north"}
+        record["nodes"][0]["host"] = "-bad-.example.test"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        refused = self.tool("cluster-sign", "--cluster", str(self.operator), code=1)
+        self.assertIn("does not verify", refused.stderr)
+        after = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(after["serial"], 1)
+        self.assertEqual((self.servers["north"] / "credentials/cluster/cluster-list.json")
+                         .read_bytes(), before["north"])
+        self.assertEqual(list(self.operator.glob(".*.new")), [])
+
     def test_remove_detaches_the_node_from_the_others(self) -> None:
         for name in self.HOSTS:
             self.add(name)
@@ -909,5 +1025,19 @@ class ClusterSetupTests(unittest.TestCase):
         self.add("south")
 
 
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--setup", type=Path, required=True)
+    parser.add_argument("--doctor", type=Path, required=True)
+    arguments, rest = parser.parse_known_args()
+    for name in ("setup", "doctor"):
+        path = getattr(arguments, name).resolve(strict=True)
+        if not path.is_file() or not os.access(path, os.X_OK):
+            parser.error(f"--{name} must name an executable file")
+        PROGRAMS[name] = path
+    program = unittest.main(argv=[sys.argv[0], *rest], exit=False)
+    return 0 if program.result.wasSuccessful() else 1
+
+
 if __name__ == "__main__":
-    unittest.main()
+    raise SystemExit(main())

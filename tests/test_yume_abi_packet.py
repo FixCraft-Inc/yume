@@ -94,7 +94,8 @@ def port_held(port: int) -> bool:
     return False
 
 
-def named(probe: Path, openssl: Path, root: Path, environment: dict[str, str]) -> None:
+def named(probe: Path, openssl: Path, root: Path, environment: dict[str, str],
+          setup: Path) -> None:
     """Runs the named probe on a new kit, again on a new port if its was taken.
 
     The kit's port is free when chosen, but provisioning takes seconds, and a
@@ -103,7 +104,7 @@ def named(probe: Path, openssl: Path, root: Path, environment: dict[str, str]) -
     for attempt in range(PORT_ATTEMPTS):
         port = session.free_port()
         code, errors = named_once(probe, openssl, root / f"named-kit-{attempt}", port,
-                                  environment)
+                                  environment, setup)
         sys.stderr.write(errors)
         if code == 0:
             return
@@ -113,8 +114,8 @@ def named(probe: Path, openssl: Path, root: Path, environment: dict[str, str]) -
 
 
 def named_once(probe: Path, openssl: Path, kit: Path, port: int,
-               environment: dict[str, str]) -> tuple[int, str]:
-    session.provision_kit(kit, "localhost", port, environment)
+               environment: dict[str, str], setup: Path) -> tuple[int, str]:
+    session.provision_kit(kit, "localhost", port, environment, setup)
     for relative in ("server/yumed.json", "client/yume.json"):
         path = kit / relative
         config = json.loads(path.read_text(encoding="utf-8"))
@@ -171,7 +172,8 @@ def routed(probe: Path, daemon: Path, root: Path, environment: dict[str, str]) -
             for attempt in range(PORT_ATTEMPTS):
                 kit = root / f"route-kit-{attempt}"
                 server_port = session.free_port()
-                session.provision_kit(kit, "localhost", server_port, environment)
+                session.provision_kit(kit, "localhost", server_port, environment,
+                                      session.setup_program(daemon))
                 session.configure_kit(kit, listen_address="127.0.0.1",
                                       networks=("127.0.0.1/32", "::1/128"),
                                       connect_address="127.0.0.1", socks_port=session.free_port())
@@ -228,7 +230,7 @@ def run(probe: Path, daemon: Path, openssl: Path) -> None:
         environment["ASAN_OPTIONS"] = child_options
     with tempfile.TemporaryDirectory(prefix="yume-abi-packet-") as temporary:
         root = Path(temporary)
-        named(probe, openssl, root, environment)
+        named(probe, openssl, root, environment, session.setup_program(daemon))
         routed(probe, daemon, root, environment)
 
 

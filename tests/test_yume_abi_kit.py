@@ -28,7 +28,7 @@ def run(probe: Path, yume: Path, openssl: Path) -> None:
         environment["ASAN_OPTIONS"] = child_asan_options
     with tempfile.TemporaryDirectory(prefix="yume-abi-kit-") as temporary:
         kit = Path(temporary) / "kit"
-        session.provision_kit(kit, "localhost", 443, environment)
+        session.provision_kit(kit, "localhost", 443, environment, session.setup_program(yume))
         client = kit / "client"
         sealed = Path(temporary) / "client.kit"
         sealing = subprocess.run(

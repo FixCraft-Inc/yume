@@ -99,7 +99,7 @@ std::vector<unsigned char> public_der(EVP_PKEY* key) {
     return result;
 }
 
-// Independent fixture writer uses the same byte grammar as yume_setup.py.
+// Independent fixture writer uses the same byte grammar as yume-setup.
 std::string fingerprint(EVP_PKEY* classical, EVP_PKEY* pq) {
     std::vector<unsigned char> bytes;
     constexpr std::string_view kDomain = "yume/ytp/1/composite-identity/v1";

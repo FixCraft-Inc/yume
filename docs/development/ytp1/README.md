@@ -115,11 +115,13 @@ admission still authenticate `endpoint.host`. Setup can encode an IP as `host`,
 but the native TLS/H2 client requires a DNS server name, so such a kit cannot
 start a native session.
 
-Run doctor as the identity that will run YUME. It rejects unknown schema
-keys, provider or profile mismatch, unsafe limits, missing cover content,
-unsupported or mismatched key algorithms, symlink and file-race conditions,
-and permissive secret modes, and it reports the first failing RFC 6901 JSON
-pointer or credential path. It rechecks file identity, size, timestamps,
+Run doctor as the identity that will run YUME. It parses the configuration
+with the parser `yume` and `yumed` use and reports its first error at an
+RFC 6901 JSON pointer, then checks each file the configuration names and
+reports every one that fails. It rejects unknown schema keys, provider or
+profile mismatch, unsafe limits, missing cover content, unsupported or
+mismatched key algorithms, symlink and file-race conditions, and permissive
+secret modes. It rechecks file identity, size, timestamps,
 permissions, and bounds around reads so a replaced secret fails closed. It
 does not inspect file ownership, consume a separate compatibility manifest,
 or print private material. Fix the reported location; there is no CLI
@@ -515,7 +517,6 @@ cmake -S . -B build-test -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DYUME_WARNINGS_AS_ERRORS=ON
 cmake --build build-test -j"$(nproc)"
 ctest --test-dir build-test --output-on-failure
-python3 -m unittest tests.test_yume_setup tests.test_yume_doctor
 python3 tests/test_project_metadata.py
 python3 scripts/generate_transport_profiles.py --check
 python3 scripts/check_website_catalog.py

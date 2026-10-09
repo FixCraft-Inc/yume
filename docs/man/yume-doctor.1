@@ -1,0 +1,81 @@
+.\" Generated from docs/src/en_US/man/yume_doctor_1.doc by scripts/yume_docs.py. Edit that file, not this one.
+.TH YUME-DOCTOR 1 "2026-10-08" "YUME 0.3.0-dev1" "YUME Manual"
+.SH NAME
+yume-doctor \- check a YUME configuration and the files it names
+.SH SYNOPSIS
+.B yume-doctor
+.B --config
+.I path
+.PP
+.B yume-doctor
+.B --help
+.SH DESCRIPTION
+.B yume-doctor
+checks a schema-1 configuration of
+.BR yume (1)
+or
+.BR yumed (8)
+and the credential, cover, egress list, cluster and circuits files it
+names, without starting a session or opening a network connection.
+It parses the configuration with the parser
+.B yume
+and
+.B yumed
+use and reads keys with their readers and the OpenSSL release they are
+built with, so it needs no
+.B openssl
+command.
+.PP
+The configuration and every private file must be regular files, not
+symlinks, closed to group and others and within their size bounds.
+Each file is read through the handle whose identity, size and timestamps
+were checked, before and after the read, so a file replaced meanwhile
+fails.
+The doctor checks that composite identities hold Ed25519 followed by
+ML-DSA-87 and match their public halves, that the ML-KEM key matches its
+public key, that the TLS certificate is current, matches its P-256,
+P-384, P-521 or RSA key and chains to
+.B server-trust.pem
+as a server certificate, that every PSK holds 32 bytes, is not all zero
+and is used once, that the authorized-keys and admin-keys stores are
+well formed with matching fingerprints and no identity in both, and that
+a server's cover site holds complete pages and the assets its browser
+profile loads.
+.PP
+It does not inspect file ownership, verify a cluster list's signature or
+parse egress lists, which
+.B yumed
+.B --validate
+does, and it prints no private material.
+Run it as the account that will run YUME.
+.SH OPTIONS
+.TP
+.BI "--config " path
+The configuration to check.
+Relative file references resolve against its directory.
+.TP
+.B -h, --help
+Print the options and exit.
+.SH OUTPUT
+A valid configuration prints two lines: that configuration and
+credentials are valid with no session started, and the tuning preset its
+limits hold, or
+.BR custom .
+Each finding prints one line on standard error, beginning
+.B yume-doctor:
+.B invalid
+and followed by the RFC 6901 JSON pointer of the failing location and
+what is wrong there.
+A configuration error stops at its first finding.
+The files it names are checked one by one, so several can fail at once.
+.SH EXIT STATUS
+.B 0
+when the configuration and its files are valid,
+.B 1
+when a check fails, and
+.B 2
+for a usage error.
+.SH SEE ALSO
+.BR yume-setup (1),
+.BR yume (1),
+.BR yumed (8)

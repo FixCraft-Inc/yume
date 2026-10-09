@@ -562,22 +562,24 @@ extern "C" ssize_t __wrap_recvmsg(int fd, msghdr* message, int flags) {
     return static_cast<ssize_t>(length);
 }
 
-extern "C" int __wrap_sd_bus_open_system(sd_bus** result) { CHECK(control); control->bus.active = true; *result = &control->bus; return 0; }
-extern "C" sd_bus* __wrap_sd_bus_unref(sd_bus* bus) { if (bus) bus->active = false; return nullptr; }
-extern "C" int __wrap_sd_bus_set_method_call_timeout(sd_bus*, uint64_t timeout) { CHECK(timeout == 3'000'000U); return 0; }
-extern "C" int __wrap_sd_bus_get_name_creds(sd_bus*, const char* name, uint64_t mask, sd_bus_creds** result) {
+// Nothing in this file calls these, and GCC 13's LTO drops an unreferenced
+// definition before the linker's --wrap renames the library's calls to it.
+extern "C" __attribute__((used)) int __wrap_sd_bus_open_system(sd_bus** result) { CHECK(control); control->bus.active = true; *result = &control->bus; return 0; }
+extern "C" __attribute__((used)) sd_bus* __wrap_sd_bus_unref(sd_bus* bus) { if (bus) bus->active = false; return nullptr; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_set_method_call_timeout(sd_bus*, uint64_t timeout) { CHECK(timeout == 3'000'000U); return 0; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_get_name_creds(sd_bus*, const char* name, uint64_t mask, sd_bus_creds** result) {
     CHECK(std::strcmp(name, "org.freedesktop.resolve1") == 0);
     CHECK(mask == (SD_BUS_CREDS_PID | SD_BUS_CREDS_UNIQUE_NAME)); control->creds.active = true; *result = &control->creds; return 0;
 }
-extern "C" int __wrap_sd_bus_get_owner_creds(sd_bus*, uint64_t mask, sd_bus_creds** result) {
+extern "C" __attribute__((used)) int __wrap_sd_bus_get_owner_creds(sd_bus*, uint64_t mask, sd_bus_creds** result) {
     CHECK(mask == SD_BUS_CREDS_PID); control->daemon_creds.active = true; *result = &control->daemon_creds; return 0;
 }
-extern "C" sd_bus_creds* __wrap_sd_bus_creds_unref(sd_bus_creds* creds) { if (creds) creds->active = false; return nullptr; }
-extern "C" int __wrap_sd_bus_creds_get_pid(sd_bus_creds* creds, pid_t* pid) {
+extern "C" __attribute__((used)) sd_bus_creds* __wrap_sd_bus_creds_unref(sd_bus_creds* creds) { if (creds) creds->active = false; return nullptr; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_creds_get_pid(sd_bus_creds* creds, pid_t* pid) {
     *pid = creds == &control->daemon_creds ? 3434 : 4242; return 0;
 }
-extern "C" int __wrap_sd_bus_creds_get_unique_name(sd_bus_creds*, const char** name) { *name = ":1.42"; return 0; }
-extern "C" int __wrap_sd_bus_message_new_method_call(sd_bus*, sd_bus_message** result, const char* destination,
+extern "C" __attribute__((used)) int __wrap_sd_bus_creds_get_unique_name(sd_bus_creds*, const char** name) { *name = ":1.42"; return 0; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_message_new_method_call(sd_bus*, sd_bus_message** result, const char* destination,
     const char* path, const char* interface, const char* method) {
     CHECK(std::strcmp(destination, ":1.42") == 0); // Never a replaceable service name.
     CHECK(std::strcmp(path, "/org/freedesktop/resolve1") == 0 && std::strcmp(interface, "org.freedesktop.resolve1.Manager") == 0);
@@ -590,9 +592,9 @@ extern "C" int __wrap_sd_bus_message_new_method_call(sd_bus*, sd_bus_message** r
     }
     return -ENOMEM;
 }
-extern "C" sd_bus_message* __wrap_sd_bus_message_unref(sd_bus_message* message) { if (message) message->active = false; return nullptr; }
-extern "C" int __wrap_sd_bus_message_set_allow_interactive_authorization(sd_bus_message*, int value) { CHECK(value == 0); return 0; }
-extern "C" int __wrap_sd_bus_message_append(sd_bus_message* message, const char* types, ...) {
+extern "C" __attribute__((used)) sd_bus_message* __wrap_sd_bus_message_unref(sd_bus_message* message) { if (message) message->active = false; return nullptr; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_message_set_allow_interactive_authorization(sd_bus_message*, int value) { CHECK(value == 0); return 0; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_message_append(sd_bus_message* message, const char* types, ...) {
     if (message->first_argument) {
         CHECK(std::strcmp(types, "i") == 0);
         va_list args; va_start(args, types); const auto index = va_arg(args, int); va_end(args);
@@ -600,10 +602,10 @@ extern "C" int __wrap_sd_bus_message_append(sd_bus_message* message, const char*
     }
     return 0;
 }
-extern "C" int __wrap_sd_bus_message_open_container(sd_bus_message*, char, const char*) { return 0; }
-extern "C" int __wrap_sd_bus_message_close_container(sd_bus_message*) { return 0; }
-extern "C" int __wrap_sd_bus_message_append_array(sd_bus_message*, char, const void*, std::size_t) { return 0; }
-extern "C" int __wrap_sd_bus_call(sd_bus*, sd_bus_message* message, uint64_t timeout, sd_bus_error*, sd_bus_message**) {
+extern "C" __attribute__((used)) int __wrap_sd_bus_message_open_container(sd_bus_message*, char, const char*) { return 0; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_message_close_container(sd_bus_message*) { return 0; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_message_append_array(sd_bus_message*, char, const void*, std::size_t) { return 0; }
+extern "C" __attribute__((used)) int __wrap_sd_bus_call(sd_bus*, sd_bus_message* message, uint64_t timeout, sd_bus_error*, sd_bus_message**) {
     CHECK(timeout == 3'000'000U && control->link);
     if (std::strcmp(message->method.data(), "RevertLink") == 0) {
         ++control->reverts;

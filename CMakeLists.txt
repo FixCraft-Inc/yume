@@ -626,11 +626,6 @@ add_subdirectory(src)
 # The installed tools and examples use the same schema as the application.
 if(YUME_BUILD_NATIVE_APPLICATION)
     set(YUME_DOC_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/doc/yume")
-    install(PROGRAMS tools/yume_setup.py
-        DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME yume-setup COMPONENT yume_cli)
-    install(PROGRAMS tools/yume_doctor.py
-        DESTINATION "${CMAKE_INSTALL_BINDIR}" RENAME yume-doctor COMPONENT yume_cli)
-
     install(FILES
         README.md
         CONTRIBUTING.md
@@ -688,7 +683,7 @@ if(YUME_BUILD_NATIVE_APPLICATION)
         )
     endif()
 
-    install(FILES docs/man/yume.1
+    install(FILES docs/man/yume.1 docs/man/yume-setup.1 docs/man/yume-doctor.1
         DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
         COMPONENT yume_cli
     )

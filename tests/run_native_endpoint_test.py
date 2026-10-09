@@ -26,15 +26,13 @@ def max_queued_bytes(root: Path) -> int:
     return maximum
 
 
-def run(binary: Path, openssl: Path) -> None:
+def run(binary: Path, setup_program: Path, openssl: Path) -> None:
     binary = binary.resolve(strict=True)
     openssl = openssl.resolve(strict=True)
     if not binary.is_file() or not openssl.is_file():
         raise ValueError("test binary and OpenSSL must be regular files")
+    setup_program = setup_program.resolve(strict=True)
     environment = os.environ.copy()
-    environment["PATH"] = str(openssl.parent) + os.pathsep + environment.get("PATH", "")
-    # Setup selects openssl by PATH. Keep generation on the selected library's
-    # installation; unsupported PQ algorithms must fail, never skip this gate.
     root = Path(__file__).resolve().parents[1]
     # Route fixtures reach one loopback destination only.
     loopback = {"public": False, "networks": ["127.0.0.1/32"]}
@@ -46,7 +44,7 @@ def run(binary: Path, openssl: Path) -> None:
         # Closing the reservation is unavoidable before the native listener
         # binds; a competing bind fails this test instead of selecting a peer.
         setup = subprocess.run(
-            [sys.executable, str(root / "tools/yume_setup.py"), "init",
+            [str(setup_program), "init",
              "--host", "localhost", "--port", str(port), "--output", str(kit)],
             env=environment, capture_output=True, text=True, timeout=75, check=False,
         )
@@ -55,7 +53,7 @@ def run(binary: Path, openssl: Path) -> None:
         # A second identity lets the reload test remove the first one, since the
         # traffic store may not become empty.
         second = subprocess.run(
-            [sys.executable, str(root / "tools/yume_setup.py"), "add-client",
+            [str(setup_program), "add-client",
              "--server", str(kit / "server"), "--host", "localhost",
              "--output", str(kit / "second-client"), "--client-name", "second"],
             env=environment, capture_output=True, text=True, timeout=75, check=False,
@@ -159,10 +157,11 @@ def main() -> int:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--setup", type=Path, required=True)
     parser.add_argument("--openssl", type=Path, required=True)
     args = parser.parse_args()
     try:
-        run(args.binary, args.openssl)
+        run(args.binary, args.setup, args.openssl)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"native endpoint gate: {error}", file=sys.stderr)
         return 1

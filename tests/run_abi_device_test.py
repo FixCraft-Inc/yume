@@ -438,7 +438,8 @@ def isolated(probe: Path, yumed: Path, openssl: Path) -> None:
         kit = Path(temporary) / "kit"
         environment = session.openssl_environment(openssl)
         os.environ.update(environment)
-        session.provision_kit(kit, "localhost", SERVER_PORT, environment)
+        session.provision_kit(kit, "localhost", SERVER_PORT, environment,
+                              session.setup_program(yumed))
         networks = [f"{TARGET4}/32"] + ([f"{TARGET6}/128"] if ipv6 else [])
         session.configure_kit(kit, listen_address=SERVER_WIRE, networks=networks,
                               connect_address=SERVER_WIRE, socks_port=1080)

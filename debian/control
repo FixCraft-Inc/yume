@@ -29,9 +29,7 @@ Architecture: any
 Depends:
  libssl3t64 (>= 3.5.0),
  ${shlibs:Depends},
- ${misc:Depends},
- python3,
- openssl (>= 3.5.0)
+ ${misc:Depends}
 Recommends:
  yume-daemon (= ${binary:Version})
 Description: native YTP/1 stealth transport command-line client
@@ -39,7 +37,8 @@ Description: native YTP/1 stealth transport command-line client
  Ed25519 and ML-DSA-87 identities, hybrid session establishment and
  directional key epochs. The native client supports SOCKS5 TCP and UDP.
  .
- This experimental package includes schema-1 setup and validation tools.
+ This experimental package includes the native schema-1 setup and doctor
+ programs, which need no interpreter or openssl command.
  It does not provide a desktop application or a frozen C ABI.
 
 Package: yume-daemon

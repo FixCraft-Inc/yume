@@ -6,6 +6,9 @@
 
 #include "providers/system_resolver.hpp"
 
+#define YUME_TEST_ALIGNED_ALLOCATIONS
+#include "test_support/allocation_failure.hpp"
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -69,10 +72,11 @@ std::shared_ptr<AsioExecutionContext> make_context() {
 
 std::shared_ptr<SystemResolver> make_resolver(
     const std::shared_ptr<AsioExecutionContext>& context, std::string program,
-    std::size_t max_outstanding = 64U) {
+    std::size_t max_outstanding = 64U, std::size_t max_waiting = 1024U) {
     SystemResolverOptions options;
     options.program = std::move(program);
     options.max_outstanding = max_outstanding;
+    options.max_waiting = max_waiting;
     auto created = SystemResolver::create(context, std::move(options));
     if (!created.ok()) std::abort();
     return std::move(created).take_value();
@@ -434,6 +438,238 @@ void test_non_helper_program() {
     CHECK(result && !result->ok());
 }
 
+// These fixtures drive the two actual contexts separately, so injection is
+// armed only during the selected owner or caller turn. No helper response or
+// test-thread allocation shares the injected turn for a stalled lookup.
+std::shared_ptr<SystemResolver> make_remote(
+    const std::shared_ptr<AsioExecutionContext>& context,
+    const std::shared_ptr<SystemResolver>& owner) {
+    auto made = SystemResolver::create_remote(context, owner);
+    if (!made.ok()) std::abort();
+    return std::move(made).take_value();
+}
+
+template <typename Predicate>
+bool poll_until(const std::shared_ptr<AsioExecutionContext>& context,
+                Predicate predicate) {
+    const auto deadline = Clock::now() + 2s;
+    do {
+        context->poll();
+        if (predicate()) return true;
+        std::this_thread::sleep_for(1ms);
+    } while (Clock::now() < deadline);
+    return predicate();
+}
+
+void close_remote_fixture(
+    const std::shared_ptr<AsioExecutionContext>& context,
+    const std::shared_ptr<SystemResolver>& remote,
+    const std::shared_ptr<AsioExecutionContext>& owner_context,
+    const std::shared_ptr<SystemResolver>& owner) {
+    remote->close();
+    context->poll();
+    owner->close();
+    owner_context->poll();
+    context->poll();
+    context->finish();
+    owner_context->finish();
+    context->poll();
+    owner_context->poll();
+}
+
+// Warm the helper and its receive operation before an allocation sweep, so
+// each failed allocation concerns the accepted remote lookup, not startup.
+void warm_owner(const std::shared_ptr<AsioExecutionContext>& context,
+                const std::shared_ptr<SystemResolver>& owner) {
+    bool answered = false;
+    boost::asio::post(context->executor(), [&] {
+        CHECK(owner
+                  ->resolve("localhost", 1U,
+                            [&](Result<Addresses> result) {
+                                CHECK(result.ok() &&
+                                      is_loopback(result.value()));
+                                answered = true;
+                            })
+                  .ok());
+    });
+    CHECK(poll_until(context, [&] { return answered; }));
+}
+
+// With one outstanding slot and no waiting slots, a cancelled stall refuses
+// once and requests replacement. A live registration whose cancellation ID
+// was lost refuses both attempts and cannot make this healthy lookup succeed.
+void check_owner_slot_reusable(
+    const std::shared_ptr<AsioExecutionContext>& context,
+    const std::shared_ptr<SystemResolver>& owner) {
+    bool accepted = false;
+    bool answered = false;
+    for (unsigned attempt = 0; attempt < 2U && !accepted; ++attempt) {
+        boost::asio::post(context->executor(), [&] {
+            auto lookup =
+                owner->resolve("localhost", 1U, [&](Result<Addresses> result) {
+                    CHECK(result.ok() && is_loopback(result.value()));
+                    answered = true;
+                });
+            accepted = lookup.ok();
+            CHECK(accepted ||
+                  lookup.status().code() == StatusCode::ResourceExhausted);
+        });
+        context->poll();
+    }
+    CHECK(accepted);
+    if (accepted) CHECK(poll_until(context, [&] { return answered; }));
+}
+
+thread_local unsigned denied_allocations = 0;
+
+void deny_allocation(std::size_t) {
+    ++denied_allocations;
+    throw std::bad_alloc();
+}
+
+struct AllocationDenial final {
+    AllocationDenial() {
+        denied_allocations = 0;
+        yume::test::before_allocate = deny_allocation;
+        // Prove denial is armed and the hook fires, even when the corrected
+        // terminal path deliberately performs no allocations.
+        bool fired = false;
+        try {
+            void* storage = ::operator new(1U);
+            ::operator delete(storage);
+        } catch (const std::bad_alloc&) {
+            fired = true;
+        }
+        CHECK(fired && denied_allocations == 1U);
+    }
+    ~AllocationDenial() { yume::test::before_allocate = nullptr; }
+};
+
+// The owner's synchronous refusal must reach the caller once despite
+// sustained allocation failure. Its diagnostic attempts an allocation, so
+// the premise checks both a denied probe and an actual resolver allocation.
+void test_remote_refusal_during_allocation_denial() {
+    const auto owner_context = make_context();
+    const auto context = make_context();
+    const auto owner =
+        make_resolver(owner_context, YUME_TEST_STALL_RESOLVER_PROGRAM);
+    const auto remote = make_remote(context, owner);
+    owner->close();
+    owner_context->poll();
+    unsigned completions = 0;
+    boost::asio::post(context->executor(), [&] {
+        CHECK(remote
+                  ->resolve("localhost", 1U,
+                            [&](Result<Addresses> result) {
+                                CHECK(context->running_in_this_thread());
+                                CHECK(!owner_context->running_in_this_thread());
+                                CHECK(!result.ok());
+                                ++completions;
+                            })
+                  .ok());
+    });
+    context->poll();
+    {
+        AllocationDenial denial;
+        owner_context->poll();
+        CHECK(denied_allocations > 1U);
+        context->poll();
+    }
+    CHECK(completions == 1U);
+    close_remote_fixture(context, remote, owner_context, owner);
+    CHECK(completions == 1U);
+}
+
+// Sweep every owner-side allocation after remote acceptance. A failed
+// forward must answer ResourceExhausted and leave no live owner registration;
+// an accepted stall must remain cancellable without allocating another node.
+void test_remote_forward_allocation_rollback() {
+    bool reached_end = false;
+    unsigned injected = 0;
+    for (std::size_t nth = 1U; nth <= 16U && !reached_end; ++nth) {
+        const auto owner_context = make_context();
+        const auto context = make_context();
+        const auto owner = make_resolver(
+            owner_context, YUME_TEST_STALL_RESOLVER_PROGRAM, 1U, 0U);
+        warm_owner(owner_context, owner);
+        const auto remote = make_remote(context, owner);
+        std::uint64_t id = 0U;
+        unsigned completions = 0;
+        boost::asio::post(context->executor(), [&] {
+            auto lookup =
+                remote->resolve(kStallHost, 1U, [&](Result<Addresses> result) {
+                    CHECK(context->running_in_this_thread());
+                    CHECK(result.status().code() ==
+                          StatusCode::ResourceExhausted);
+                    ++completions;
+                });
+            CHECK(lookup.ok());
+            if (lookup.ok()) id = lookup.value();
+        });
+        context->poll();
+        CHECK(id != 0U);
+        yume::test::arm_allocation_failure(nth);
+        owner_context->poll();
+        const bool fired = yume::test::disarm_allocation_failure();
+        injected += fired ? 1U : 0U;
+        reached_end = !fired;
+        context->poll();
+        CHECK(completions == (fired ? 1U : 0U));
+        boost::asio::post(context->executor(), [&] { remote->cancel(id); });
+        context->poll();
+        owner_context->poll();
+        check_owner_slot_reusable(owner_context, owner);
+        close_remote_fixture(context, remote, owner_context, owner);
+        CHECK(completions == (fired ? 1U : 0U));
+    }
+    CHECK(reached_end && injected != 0U);
+}
+
+// Cancel and close use lookup-owned controls even when ordinary posts cannot
+// allocate. Reclaiming the one owner slot distinguishes a delivered cancel
+// from merely dropping the caller's callback.
+void test_remote_cancel_and_close_during_allocation_denial() {
+    for (const bool close : {false, true}) {
+        const auto owner_context = make_context();
+        const auto context = make_context();
+        const auto owner = make_resolver(
+            owner_context, YUME_TEST_STALL_RESOLVER_PROGRAM, 1U, 0U);
+        warm_owner(owner_context, owner);
+        const auto remote = make_remote(context, owner);
+        std::uint64_t id = 0U;
+        unsigned completions = 0;
+        boost::asio::post(context->executor(), [&] {
+            auto lookup =
+                remote->resolve(kStallHost, 1U, [&](Result<Addresses> result) {
+                    CHECK(context->running_in_this_thread());
+                    CHECK(close &&
+                          result.status().code() == StatusCode::Closed);
+                    ++completions;
+                });
+            CHECK(lookup.ok());
+            if (lookup.ok()) id = lookup.value();
+        });
+        context->poll();
+        owner_context->poll();
+        CHECK(id != 0U && completions == 0U);
+        boost::asio::post(context->executor(), [&] {
+            if (close)
+                remote->close();
+            else
+                remote->cancel(id);
+        });
+        {
+            AllocationDenial denial;
+            context->poll();
+            owner_context->poll();
+        }
+        CHECK(completions == (close ? 1U : 0U));
+        check_owner_slot_reusable(owner_context, owner);
+        close_remote_fixture(context, remote, owner_context, owner);
+        CHECK(completions == (close ? 1U : 0U));
+    }
+}
+
 }  // namespace
 
 // A remote resolver on one context sends its lookups to an owner's helper on
@@ -526,6 +762,9 @@ int main(int argc, char** argv) {
     test_close_fails_waiting_lookups();
     test_non_helper_program();
     test_remote_lookups();
+    test_remote_refusal_during_allocation_denial();
+    test_remote_forward_allocation_rollback();
+    test_remote_cancel_and_close_during_allocation_denial();
     if (failures != 0) {
         std::fprintf(stderr, "%d system resolver check(s) failed\n", failures);
         return 1;

@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <condition_variable>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -579,6 +580,92 @@ public:
     std::atomic<int> target{0};
     std::atomic<std::size_t> fail_in_serve{0U};
     std::atomic<bool> serve_failed{false};
+};
+
+// After the encoded proof input, verification uses only OpenSSL's C
+// allocations. The next C++ allocation is the promotion reservation, before
+// its constructor takes a slot. Gate that existing allocation seam rather
+// than adding a test hook to the front door. Its one-shared_ptr layout gives
+// make_shared the same allocation size on each supported standard library.
+class PromotionAllocationGate final {
+public:
+    explicit PromotionAllocationGate(ServedFixture& fixture,
+                                     bool fail_first_allocation)
+        : fixture_(fixture) {
+        yume::test::before_allocate = [](std::size_t size) {
+            captured_allocation_bytes_ = size;
+        };
+        auto layout = std::make_shared<std::shared_ptr<void>>();
+        yume::test::before_allocate = nullptr;
+        yume::test::keep_contents(layout.get());
+        reservation_bytes_ = captured_allocation_bytes_;
+        CHECK(reservation_bytes_ != 0U);
+        for (std::size_t index = 0U; index < 2U; ++index) {
+            fixture_.runtime(index).sync([this, index, fail_first_allocation] {
+                active_gate_ = this;
+                saw_input_ = false;
+                fail_reservation_ = fail_first_allocation && index == 0U;
+                yume::test::before_allocate = observe;
+            });
+        }
+    }
+    ~PromotionAllocationGate() noexcept {
+        release();
+        for (std::size_t index = 0U; index < 2U; ++index) {
+            try {
+                fixture_.runtime(index).sync([] {
+                    yume::test::before_allocate = nullptr;
+                    active_gate_ = nullptr;
+                });
+            } catch (...) {
+            }
+        }
+    }
+    bool await_arrivals(std::size_t count) {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, 5s, [&] { return arrivals_ >= count; });
+    }
+    bool observed_reservations() {
+        std::lock_guard lock(mutex_);
+        return matching_allocations_ == arrivals_;
+    }
+    void release() noexcept {
+        std::lock_guard lock(mutex_);
+        released_ = true;
+        changed_.notify_all();
+    }
+
+private:
+    static void observe(std::size_t size) {
+        constexpr std::size_t kInputBytes =
+            2U + kYtp1H2AdmissionDomain.size() + 2U +
+            std::string_view("localhost").size() + 2U +
+            kYtp1H2AdmissionExporterBytes + admission::Nonce{}.size();
+        if (!saw_input_) {
+            saw_input_ = size == kInputBytes;
+            return;
+        }
+        yume::test::before_allocate = nullptr;
+        auto& gate = *active_gate_;
+        std::unique_lock lock(gate.mutex_);
+        ++gate.arrivals_;
+        if (size == gate.reservation_bytes_) ++gate.matching_allocations_;
+        gate.changed_.notify_all();
+        gate.changed_.wait(lock, [&] { return gate.released_; });
+        if (fail_reservation_) throw std::bad_alloc();
+    }
+
+    ServedFixture& fixture_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::size_t arrivals_{0U};
+    std::size_t matching_allocations_{0U};
+    std::size_t reservation_bytes_{0U};
+    bool released_{false};
+    static inline thread_local std::size_t captured_allocation_bytes_{0U};
+    static inline thread_local PromotionAllocationGate* active_gate_{nullptr};
+    static inline thread_local bool saw_input_{false};
+    static inline thread_local bool fail_reservation_{false};
 };
 
 void check_cover(const HttpResponse& response) {
@@ -1274,6 +1361,106 @@ void test_served_doors_share_the_promotion_budget() {
     take(await(pending)).take_carrier()->close();
 }
 
+// Both serving loops reach allocation after the old load-only cap check,
+// before either reservation constructor runs. With one shared slot, exactly
+// one peer may receive 200; the other must see the ordinary cover response.
+void concurrent_served_promotions(bool fail_first_allocation) {
+    H2WebFrontDoorLimits limits;
+    limits.max_promoted_carriers = 1U;
+    ServedFixture fixture(limits);
+    auto first_accepted = fixture.accept(0U);
+    auto second_accepted = fixture.accept(1U);
+    fixture.target = 0;
+    TlsPeer first_tls(fixture.port(), fixture.identity.certificate);
+    H2Peer first_h2(first_tls, fixture.port());
+    fixture.target = 1;
+    TlsPeer second_tls(fixture.port(), fixture.identity.certificate);
+    H2Peer second_h2(second_tls, fixture.port());
+    admission::Nonce first_nonce{};
+    first_nonce[0] = std::byte{84U};
+    admission::Nonce second_nonce{};
+    second_nonce[0] = std::byte{85U};
+    const auto first_path = first_tls.admission_path(first_nonce);
+    const auto second_path = second_tls.admission_path(second_nonce);
+    PromotionAllocationGate gate(fixture, fail_first_allocation);
+    const auto first_stream = first_h2.submit("CONNECT", first_path, true);
+    CHECK(gate.await_arrivals(1U));
+    const auto second_stream = second_h2.submit("CONNECT", second_path, true);
+    CHECK(gate.await_arrivals(2U));
+    CHECK(gate.observed_reservations());
+    gate.release();
+    const auto first_response = first_h2.response_headers(first_stream);
+    const auto second_response = second_h2.response_headers(second_stream);
+    const bool first_won = first_response.headers.at(":status") == "200";
+    const bool second_won = second_response.headers.at(":status") == "200";
+    CHECK(first_won != second_won);
+    if (fail_first_allocation) CHECK(!first_won);
+    auto& winner = first_won ? first_accepted : second_accepted;
+    auto& pending = first_won ? second_accepted : first_accepted;
+    auto& refused_h2 = first_won ? second_h2 : first_h2;
+    auto& refused_tls = first_won ? second_tls : first_tls;
+    const auto refused_stream = first_won ? second_stream : first_stream;
+    const std::size_t winner_index = first_won ? 0U : 1U;
+    const std::size_t refused_index = first_won ? 1U : 0U;
+    check_cover(refused_h2.response(refused_stream));
+    CHECK(pending.wait_for(0ms) == std::future_status::timeout);
+    auto carrier = std::move(take(await(winner))).take_carrier();
+    CHECK(carrier->executor_affinity() ==
+          fixture.runtime(winner_index).context()->affinity());
+    CHECK(carrier->secure_channel().executor_affinity() ==
+          carrier->executor_affinity());
+    carrier.reset();
+    fixture.runtime(winner_index).sync([] {});
+    admission::Nonce retry_nonce{};
+    retry_nonce[0] = std::byte{86U};
+    CHECK(refused_h2
+              .response_headers(refused_h2.submit(
+                  "CONNECT", refused_tls.admission_path(retry_nonce), true))
+              .headers.at(":status") == "200");
+    auto replacement = std::move(take(await(pending))).take_carrier();
+    CHECK(replacement->executor_affinity() ==
+          fixture.runtime(refused_index).context()->affinity());
+    replacement->close();
+}
+
+void test_concurrent_served_promotions_respect_the_shared_bound() {
+    concurrent_served_promotions(false);
+    concurrent_served_promotions(true);
+}
+
+void test_served_replay_refusal_returns_the_promotion_slot() {
+    H2WebFrontDoorLimits limits;
+    limits.max_promoted_carriers = 1U;
+    ServedFixture fixture(limits);
+    admission::Nonce nonce{};
+    nonce[0] = std::byte{87U};
+    const auto ticks = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+    CHECK(ticks >= 0);
+    CHECK(fixture.replay->reserve(nonce, static_cast<std::uint64_t>(ticks)) ==
+          admission::ReplayDecision::Accepted);
+    auto refused_accept = fixture.accept(0U);
+    fixture.target = 0;
+    TlsPeer refused_tls(fixture.port(), fixture.identity.certificate);
+    H2Peer refused_h2(refused_tls, fixture.port());
+    check_cover(refused_h2.response(
+        refused_h2.submit("CONNECT", refused_tls.admission_path(nonce), true)));
+    CHECK(refused_accept.wait_for(0ms) == std::future_status::timeout);
+
+    auto accepted = fixture.accept(1U);
+    fixture.target = 1;
+    TlsPeer tls(fixture.port(), fixture.identity.certificate);
+    H2Peer h2(tls, fixture.port());
+    nonce[0] = std::byte{88U};
+    CHECK(h2.response_headers(
+                h2.submit("CONNECT", tls.admission_path(nonce), true))
+              .headers.at(":status") == "200");
+    auto carrier = std::move(take(await(accepted))).take_carrier();
+    CHECK(carrier->executor_affinity() == fixture.second.context()->affinity());
+    carrier->close();
+}
+
 // One allocation failure in the hand-off, swept from its first allocation
 // on, never keeps the connection's place: with room for one waiting
 // connection, a full request still succeeds afterwards. On the listener's
@@ -1368,6 +1555,10 @@ int main() {
             test_served_doors_share_replay_and_keep_their_context();
         yume::providers::test_served_doors_share_the_connection_bound();
         yume::providers::test_served_doors_share_the_promotion_budget();
+        yume::providers::
+            test_concurrent_served_promotions_respect_the_shared_bound();
+        yume::providers::
+            test_served_replay_refusal_returns_the_promotion_slot();
         yume::providers::test_refused_dispatch_closes_the_connection();
         yume::providers::test_handoff_allocation_failure_returns_the_place();
         return 0;

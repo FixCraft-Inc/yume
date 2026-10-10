@@ -347,8 +347,10 @@ public:
     // Server, on the context: the verified identity of each active session
     // and when it was admitted.
     std::vector<NativePeerSession> authenticated_sessions() const;
-    // Server, on the context: ends sessions whose identity the current policy
-    // no longer recognizes, such as cluster peers after the list expired.
+    // Server, any thread: ends sessions whose identity the current policy no
+    // longer recognizes, such as cluster peers after the list expired, and
+    // applies lowered per-identity session bounds. Runs inline on this
+    // endpoint's context, otherwise through its reserved control task.
     void end_unrecognized_sessions() noexcept;
     void close() noexcept;
 

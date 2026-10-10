@@ -202,6 +202,24 @@ Keep `MemoryMax` above expected session, socket, TLS and library memory.
 Too tight a ceiling lets the kernel terminate the daemon instead of the daemon
 refusing work.
 
+## TCP autotuning on long paths
+
+Native YUME leaves remote TCP socket buffers to the kernel's autotuning.
+On Linux, a low receive or send ceiling can constrain `fast` and `max` on
+long paths. Compare checked transfers with `ss -tinm` at both endpoints:
+`snd_wnd` shows the peer's advertised receive window. If it stops growing
+at the current ceiling, raise the third value of `net.ipv4.tcp_rmem` and
+`net.ipv4.tcp_wmem`, preserving their minimum and initial values, and measure
+again. Choose ceilings within the host's memory budget and expected concurrent
+connections; larger allowed buffers can consume more memory under load.
+
+Keep TCP autotuning enabled. Do not force fixed `SO_RCVBUF` or `SO_SNDBUF`
+values: those requests disable the corresponding autotuning. The
+`net.core.rmem_max` and `net.core.wmem_max` ceilings govern explicit socket
+buffer requests; changing those alone does not raise TCP's autotuning maxima.
+A loss-free emulated path can establish a ceiling effect, but a production
+setting needs measurements on that host and path.
+
 ## Forward a local port
 
 A client `forward` adapter gives a program without SOCKS5 support one fixed

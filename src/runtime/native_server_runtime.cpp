@@ -276,6 +276,9 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
         route_limits.max_pending_opens = sizing.max_pending_route_opens;
         const auto budget = providers::make_direct_route_budget(route_limits);
 
+        // No vector allocation may follow a worker's successful launch: an
+        // unrecorded joinable thread would terminate during exception unwind.
+        loops.reserve(count);
         loops.push_back(Loop{context, {}, {}});
         for (std::size_t index = 1U; index < count; ++index) add_worker(index);
         // Sessions split evenly, so the loops together hold the server's
@@ -887,14 +890,7 @@ engine::Status NativeServerRuntime::reload() {
         // share. Each other loop ends its own revoked sessions.
         for (const auto& loop : state->loops) {
             if (loop.context == state->context) continue;
-            try {
-                boost::asio::post(loop.context->executor(),
-                                  [endpoint = loop.endpoint]() noexcept {
-                                      endpoint->end_unrecognized_sessions();
-                                  });
-            } catch (...) {
-                return Status(StatusCode::ResourceExhausted);
-            }
+            loop.endpoint->end_unrecognized_sessions();
         }
     }
     const auto* cluster = state->endpoint->cluster();

@@ -69,6 +69,43 @@ void fail_runtime_allocation(std::size_t) {
 }
 #endif
 
+#if defined(YUME_TEST_WRAP_THREADS) && defined(YUME_NATIVE_TEST_ROUTES)
+#include <pthread.h>
+#include <dlfcn.h>
+namespace {
+thread_local bool fail_after_worker_start = false;
+thread_local bool worker_started = false;
+thread_local bool worker_joined = false;
+thread_local pthread_t fault_worker{};
+}  // namespace
+extern "C" int pthread_create(pthread_t* thread,
+                              const pthread_attr_t* attributes,
+                              void* (*entry)(void*), void* argument) {
+    using Create =
+        int (*)(pthread_t*, const pthread_attr_t*, void* (*)(void*), void*);
+    static const auto create =
+        reinterpret_cast<Create>(::dlsym(RTLD_NEXT, "pthread_create"));
+    if (!create) std::abort();
+    const int result = create(thread, attributes, entry, argument);
+    if (result == 0 && std::exchange(fail_after_worker_start, false)) {
+        fault_worker = *thread;
+        worker_started = true;
+        yume::test::arm_allocation_failure(1U);
+    }
+    return result;
+}
+extern "C" int pthread_join(pthread_t thread, void** value) {
+    using Join = int (*)(pthread_t, void**);
+    static const auto join =
+        reinterpret_cast<Join>(::dlsym(RTLD_NEXT, "pthread_join"));
+    if (!join) std::abort();
+    const int result = join(thread, value);
+    if (result == 0 && worker_started && pthread_equal(thread, fault_worker))
+        worker_joined = true;
+    return result;
+}
+#endif
+
 #if defined(YUME_TEST_WRAP_POSIX_MEMALIGN) && defined(YUME_NATIVE_TEST_ROUTES)
 extern "C" int __real_posix_memalign(void**, std::size_t, std::size_t);
 extern "C" int __wrap_posix_memalign(void** storage, std::size_t alignment,
@@ -2421,6 +2458,232 @@ void test_forward_adapter(const std::filesystem::path& kit) {
     CHECK(runner.exceptions.load() == 0U);
 }
 
+#ifdef YUME_TEST_WRAP_THREADS
+// Fail the creator's first allocation after a real worker launch. Creation
+// must return a typed refusal and join that worker instead of terminating.
+void test_server_worker_creation_rollback(const std::filesystem::path& kit) {
+    std::string text;
+    CHECK(read_text_file_bounded(kit / "server/direct-udp.json",
+                                 yume::config::v1::kMaxDocumentBytes, &text));
+    auto document = nlohmann::json::parse(text);
+    document["endpoint"]["event_loops"] = 2U;
+    const auto config = yume::config::v1::Parse(document);
+    Runner runner;
+    runner.sync([&] {
+        NativeServerRuntime::Stopped stopped = [](Status) {};
+        fail_after_worker_start = true;
+        worker_started = worker_joined = false;
+        const auto directory = kit / "server";
+        auto created = NativeServerRuntime::create(
+            runner.context, config, directory, std::move(stopped));
+        const bool fired = yume::test::disarm_allocation_failure();
+        fail_after_worker_start = false;
+        CHECK(worker_started && worker_joined && fired);
+        CHECK(!created.ok() &&
+              created.status().code() == StatusCode::ResourceExhausted);
+    });
+    runner.finish_and_join();
+    CHECK(runner.exceptions.load() == 0U);
+}
+#endif
+
+void test_shared_credential_sweeps(const std::filesystem::path& kit) {
+    using yume::providers::H2WebFrontDoorLimits;
+    using yume::providers::H2WebListener;
+    const auto store_path = kit / "server/credentials/authorized-keys.json";
+    std::string original;
+    CHECK(read_text_file_bounded(
+        store_path, yume::config::v1::kMaxDocumentBytes, &original));
+    const auto write_store = [&](const std::string& text) {
+        std::ofstream output(store_path, std::ios::binary | std::ios::trunc);
+        output << text;
+        CHECK(static_cast<bool>(output));
+    };
+    struct Restore final {
+        std::function<void()> restore;
+        ~Restore() { restore(); }
+    } restore{[&] { write_store(original); }};
+    auto store = nlohmann::json::parse(original);
+    CHECK(store["keys"].size() >= 2U && store["keys"][0]["name"] == "client1");
+    store["keys"][0].erase("max_sessions");
+    write_store(store.dump());
+
+    Runner publisher;
+    Runner owner;
+    struct DispatchState final {
+        std::shared_ptr<NativeEndpoint> endpoint;
+    };
+    const auto dispatch = std::make_shared<DispatchState>();
+    const auto server_config = load(kit / "server/yumed.json");
+    const auto& server_address =
+        std::get<yume::config::v1::ServerEndpoint>(server_config.endpoint());
+    auto listener = publisher.sync([&] {
+        return take(H2WebListener::create(
+            publisher.context,
+            {boost::asio::ip::make_address("127.0.0.1"), server_address.port()},
+            H2WebFrontDoorLimits{},
+            [dispatch](int descriptor) {
+                return dispatch->endpoint &&
+                       dispatch->endpoint->serve(0U, descriptor);
+            },
+            [] {}));
+    });
+    auto share = take(NativeServerShare::create({listener->share()}));
+    NativeEndpointOptions options;
+    options.max_sessions = 4U;
+    options.max_pending_starts = 1U;
+    options.served = share;
+    auto publishing_endpoint = publisher.sync([&] {
+        return take(NativeEndpoint::create(
+            publisher.context, server_config, kit / "server",
+            bindings(std::make_shared<Handler>()), options));
+    });
+    struct EndNotes final {
+        unsigned replaced{0U};
+        unsigned revoked{0U};
+        bool on_context{true};
+    };
+    const auto ends = std::make_shared<EndNotes>();
+    options.session_ended = [ends, context = owner.context](
+                                std::shared_ptr<SessionEngine>,
+                                Status reason) noexcept {
+        ends->on_context =
+            ends->on_context && context->running_in_this_thread();
+        if (reason.code() == StatusCode::ResourceExhausted) ++ends->replaced;
+        if (reason.code() == StatusCode::PermissionDenied) ++ends->revoked;
+    };
+    auto serving_endpoint = owner.sync([&] {
+        return take(NativeEndpoint::create(
+            owner.context, server_config, kit / "server",
+            bindings(std::make_shared<Handler>()), options));
+    });
+    publisher.sync([&] { dispatch->endpoint = serving_endpoint; });
+    std::vector<std::shared_ptr<NativeEndpoint>> clients;
+    std::vector<std::shared_ptr<SessionEngine>> client_sessions;
+    std::vector<std::shared_ptr<SessionEngine>> server_sessions;
+    for (unsigned index = 0U; index < 3U; ++index) {
+        NativeEndpointOptions client_options;
+        client_options.max_sessions = client_options.max_pending_starts = 1U;
+        client_options.connection_address = "127.0.0.1";
+        clients.push_back(publisher.sync([&] {
+            return take(NativeEndpoint::create(
+                publisher.context, load(kit / "client/yume.json"),
+                kit / "client", bindings(std::make_shared<Handler>()),
+                client_options));
+        }));
+        auto accepting = start(owner, serving_endpoint);
+        auto connecting = start(publisher, clients.back());
+        server_sessions.push_back(take(await(accepting)));
+        client_sessions.push_back(take(await(connecting)));
+    }
+    CHECK(publishing_endpoint->session_count() == 0U);
+    CHECK(serving_endpoint->session_count() == 3U);
+
+    // Lower the bound with no sessions on the publishing endpoint. The
+    // sibling's explicit sweep is the first chance to trim this identity.
+    store["keys"][0]["max_sessions"] = 1U;
+    write_store(store.dump());
+    CHECK(publisher
+              .sync([&] { return publishing_endpoint->reload_credentials(); })
+              .ok());
+    for (const auto& session : server_sessions)
+        CHECK(session->state() == SessionState::Active);
+    unsigned trim_faults = 0U;
+    bool trim_hook_fired = false;
+    owner.sync([&] {
+        allocation_failure_sustained = true;
+        injected_allocation_failures = 0U;
+        intercept_posix_allocation = true;
+        yume::test::before_allocate = fail_runtime_allocation;
+        void* (*volatile allocate)(std::size_t) = ::operator new;
+        try {
+            ::operator delete(allocate(1U));
+        } catch (const std::bad_alloc&) {
+            trim_hook_fired = true;
+        }
+        injected_allocation_failures = 0U;
+        serving_endpoint->end_unrecognized_sessions();
+        yume::test::before_allocate = nullptr;
+        intercept_posix_allocation = false;
+        allocation_failure_sustained = false;
+        trim_faults = injected_allocation_failures;
+    });
+    owner.sync([] {});  // Deliver both reserved replacement and end notices.
+    owner.sync([] {});
+    CHECK(trim_hook_fired && trim_faults == 0U);
+    CHECK(server_sessions[0]->state() != SessionState::Active);
+    CHECK(server_sessions[1]->state() != SessionState::Active);
+    CHECK(server_sessions[2]->state() == SessionState::Active);
+    CHECK(serving_endpoint->session_count() == 1U);
+    CHECK(ends->on_context && ends->replaced == 2U && ends->revoked == 0U);
+
+    // Revoke the last session, then block its context before requesting the
+    // sweep from the publisher. Teardown must await its owner's release.
+    store["keys"].erase(0U);
+    write_store(store.dump());
+    CHECK(publisher
+              .sync([&] { return publishing_endpoint->reload_credentials(); })
+              .ok());
+    CHECK(server_sessions[2]->state() == SessionState::Active);
+    struct Gate final {
+        std::promise<void> entered;
+        std::binary_semaphore release{0};
+    };
+    const auto gate = std::make_shared<Gate>();
+    auto entered = gate->entered.get_future();
+    boost::asio::post(owner.context->executor(), [gate]() noexcept {
+        gate->entered.set_value();
+        gate->release.acquire();
+    });
+    struct Release final {
+        std::shared_ptr<Gate> gate;
+        ~Release() {
+            if (gate) gate->release.release();
+        }
+    } release{gate};
+    await(entered);
+    unsigned request_faults = 0U;
+    bool request_hook_fired = false;
+    publisher.sync([&] {
+        allocation_failure_sustained = true;
+        injected_allocation_failures = 0U;
+        intercept_posix_allocation = true;
+        yume::test::before_allocate = fail_runtime_allocation;
+        void* (*volatile allocate)(std::size_t) = ::operator new;
+        try {
+            ::operator delete(allocate(1U));
+        } catch (const std::bad_alloc&) {
+            request_hook_fired = true;
+        }
+        injected_allocation_failures = 0U;
+        serving_endpoint->end_unrecognized_sessions();
+        yume::test::before_allocate = nullptr;
+        intercept_posix_allocation = false;
+        allocation_failure_sustained = false;
+        request_faults = injected_allocation_failures;
+    });
+    CHECK(request_hook_fired && request_faults == 0U);
+    CHECK(server_sessions[2]->state() == SessionState::Active);
+    release.gate.reset();
+    gate->release.release();
+    owner.sync([] {});
+    owner.sync([] {});
+    CHECK(server_sessions[2]->state() != SessionState::Active);
+    CHECK(serving_endpoint->session_count() == 0U);
+    CHECK(ends->on_context && ends->replaced == 2U && ends->revoked == 1U);
+
+    publisher.sync([&] {
+        listener->close();
+        dispatch->endpoint.reset();
+        for (const auto& client : clients) client->close();
+        publishing_endpoint->close();
+    });
+    serving_endpoint->close();
+    owner.finish_and_join();
+    publisher.finish_and_join();
+    CHECK(owner.exceptions.load() == 0U && publisher.exceptions.load() == 0U);
+}
+
 #if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
 // The daemon composition runs a module for a service, and a client forward
 // without a destination reaches it. The module learns the client's identity
@@ -3058,6 +3321,10 @@ int main(int argc, char** argv) {
         run(argv[1]);
         test_session_ended_notifications(argv[1]);
 #ifdef YUME_NATIVE_TEST_ROUTES
+#ifdef YUME_TEST_WRAP_THREADS
+        test_server_worker_creation_rollback(argv[1]);
+#endif
+        test_shared_credential_sweeps(argv[1]);
         test_client_short_session_backoff(argv[1]);
         test_client_reconnect(argv[1]);
         test_client_start_exception(argv[1]);

@@ -11,6 +11,7 @@
 #include <new>
 #include <string>
 #include <thread>
+#include <span>
 #include <vector>
 
 #include <nghttp2/nghttp2.h>
@@ -1092,6 +1093,55 @@ void ServerCreditCanRetireAfterStreamClose() {
 
 }  // namespace
 
+bool CollectWrite(void* context, std::span<const std::uint8_t> write) noexcept {
+    try {
+        static_cast<std::vector<H2Bytes>*>(context)->emplace_back(write.begin(),
+                                                                  write.end());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool RefuseWrite(void* context, std::span<const std::uint8_t>) noexcept {
+    ++*static_cast<int*>(context);
+    return false;
+}
+
+// Draining hands over the writes TakeOutboundWrites would return, cut at the
+// same boundaries, exactly the bytes PendingOutboundBytes counted, and leaves
+// the output empty, also when the sink refuses a write.
+void DrainCutsWritesAsTakeDoes() {
+    manual_now = std::chrono::steady_clock::time_point{};
+    H2Carrier client(H2CarrierRole::Client, {}, &ManualClock);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+    Pump(client, server);
+    Pump(server, client);
+    assert(client.PendingOutboundBytes() == 0U);
+    manual_now += std::chrono::seconds(11);
+    const H2Bytes record(512, 0x5a);
+    assert(client.SendBinary(record));
+    const std::size_t pending = client.PendingOutboundBytes();
+    std::vector<H2Bytes> writes;
+    assert(client.DrainOutboundWrites(&CollectWrite, &writes));
+    assert(writes.size() == 2);
+    assert(writes[0].size() + writes[1].size() == pending);
+    const auto alone = WireFrames(writes[0]);
+    assert(alone.size() == 1 && alone.front().type == 0x06);
+    assert(CountFrames(WireFrames(writes[1]), 0x00) >= 1);
+    assert(client.PendingOutboundBytes() == 0U);
+    for (const auto& write : writes) server.Feed(write);
+    assert(!server.failed() && server.TakeTunnelBytes() == record);
+
+    assert(client.SendBinary(record));
+    assert(client.PendingOutboundBytes() > 0U);
+    int refused = 0;
+    assert(!client.DrainOutboundWrites(&RefuseWrite, &refused));
+    assert(refused == 1);
+    assert(client.PendingOutboundBytes() == 0U);
+}
+
 int main() {
     yume::test::before_allocate_on_any_thread.store(check_test_allocation);
 
@@ -1099,6 +1149,7 @@ int main() {
     FullSessionRoundTrip();
     PrefacePingFollowsReadIdleness();
     PrefacePingCanLeaveAlone();
+    DrainCutsWritesAsTakeDoes();
     InboundContinuationIsObservedWithoutPayloadRetention();
     ObserverDoesNotChangeOpeningWire();
     ObserverCapIsFailOpenAndBounded();

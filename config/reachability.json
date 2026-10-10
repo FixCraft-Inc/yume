@@ -78,9 +78,10 @@
       "path": "src/stealth/h2_carrier.cpp",
       "functions": [
         "yume::obfs::H2Carrier::*unconsumed_tunnel_bytes() const",
-        "yume::obfs::H2Carrier::*carrier_stream_id() const"
+        "yume::obfs::H2Carrier::*carrier_stream_id() const",
+        "yume::obfs::H2Carrier::*TakeOutboundWrites()"
       ],
-      "reason": "Test observers of the carrier's receive-credit ledger and stream."
+      "reason": "Test observers of the carrier's receive-credit ledger, its stream and each socket write as a vector of its own, which the wire characterization test records."
     },
     {
       "path": "src/engine/buffer.cpp",

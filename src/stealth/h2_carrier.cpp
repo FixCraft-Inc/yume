@@ -34,6 +34,9 @@ constexpr std::size_t kMaxRequestHeaders = 32U * 1024U;
 constexpr std::size_t kMaxResponseHeaders = 64U * 1024U;
 constexpr std::size_t kMaxResponseBody = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxQueuedOutput = 32U * 1024U * 1024U;
+// Serialized output capacity a carrier keeps once it is drained. A larger
+// burst grows the buffer, and the next drain gives the rest back.
+constexpr std::size_t kRetainedOutputBytes = 256U * 1024U;
 constexpr std::size_t kMaxPendingServerRequests = 64U;
 constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
 // Receive window advertised once the caller has admitted the carrier.
@@ -470,6 +473,33 @@ public:
         serialized_output_.clear();
         write_boundaries_.clear();
         return writes;
+    }
+
+    std::size_t PendingOutboundBytes() {
+        Flush();
+        return serialized_output_.size();
+    }
+
+    bool DrainOutboundWrites(H2Carrier::OutboundWriteSink sink, void* context) {
+        const std::span<const std::uint8_t> output(serialized_output_);
+        bool accepted = true;
+        std::size_t start = 0;
+        const auto emit = [&](std::size_t end) noexcept {
+            if (accepted && end > start) {
+                accepted = sink(context, output.subspan(start, end - start));
+            }
+            start = end;
+        };
+        for (const std::size_t boundary : write_boundaries_) {
+            if (boundary > start && boundary <= output.size()) emit(boundary);
+        }
+        emit(output.size());
+        serialized_output_.clear();
+        write_boundaries_.clear();
+        if (serialized_output_.capacity() > kRetainedOutputBytes) {
+            H2Bytes().swap(serialized_output_);
+        }
+        return accepted;
     }
 
     bool SendBinary(WebSocketPayload data) {
@@ -2353,6 +2383,12 @@ void H2Carrier::Feed(const std::uint8_t* data, std::size_t size) {
     impl_->Feed(data, size);
 }
 H2Bytes H2Carrier::TakeOutbound() { return impl_->TakeOutbound(); }
+std::size_t H2Carrier::PendingOutboundBytes() {
+    return impl_->PendingOutboundBytes();
+}
+bool H2Carrier::DrainOutboundWrites(OutboundWriteSink sink, void* context) {
+    return impl_->DrainOutboundWrites(sink, context);
+}
 std::vector<H2Bytes> H2Carrier::TakeOutboundWrites() {
     return impl_->TakeOutboundWrites();
 }

@@ -8,6 +8,7 @@
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/err.h>
 #include <openssl/provider.h>
 #include <openssl/x509.h>
 
@@ -15,21 +16,25 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
 #include "providers/ytp1_crypto.hpp"
+#include "test_support/allocation_failure.hpp"
 
 namespace {
 
@@ -1119,8 +1124,10 @@ void test_cryptographic_known_answers() {
                             std::span<const std::uint8_t> plaintext) {
         const auto aad = crypto::record_aad(direction, token);
         vectors.matches(name + "_aad", aad);
+        crypto::RecordEpochRoot epoch_root(
+            context, crypto::SecretBytes::copy_from(root), transcript);
         auto material = crypto::derive_record_material(
-            context, root, direction, token, transcript);
+            context, epoch_root, direction, token, transcript);
         vectors.matches(name + "_material", material.span());
         const auto key = material.span().first(crypto::kAes256KeyBytes);
         const auto nonce = material.span().subspan(crypto::kAes256KeyBytes);
@@ -1181,13 +1188,545 @@ void test_cryptographic_known_answers() {
     }
 }
 
+// The probe reads only live 32-byte allocations or storage just before
+// delete. Matching HMAC(binding, root) to another allocation identifies the
+// provider's root/extract pairs without exposing production secret handles.
+class EpochStorageProbe final {
+public:
+    EpochStorageProbe() {
+        check(active_ == nullptr, "nested epoch storage probe");
+        active_ = this;
+        yume::test::after_allocate = &allocated;
+        yume::test::before_deallocate = &released;
+    }
+    ~EpochStorageProbe() {
+        yume::test::after_allocate = nullptr;
+        yume::test::before_deallocate = nullptr;
+        active_ = nullptr;
+    }
+    EpochStorageProbe(const EpochStorageProbe&) = delete;
+    EpochStorageProbe& operator=(const EpochStorageProbe&) = delete;
+
+    void watch(std::span<const std::uint8_t> bytes) {
+        check(bytes.size() == 32U, "epoch probe size differs");
+        for (auto& entry : entries_) {
+            if (entry.storage == bytes.data()) {
+                select(entry);
+                return;
+            }
+        }
+        check(false, "epoch storage was not observed at allocation");
+    }
+
+    void watch_roots(const yume::providers::ytp1_crypto::CryptoContext& crypto,
+                     std::span<const std::uint8_t> binding) {
+        for (auto& root : entries_) {
+            if (root.storage == nullptr || zero(root.storage)) continue;
+            auto extract = yume::providers::ytp1_crypto::hmac_sha256(
+                crypto, binding, {root.storage, 32U});
+            for (auto& candidate : entries_) {
+                if (candidate.storage != nullptr &&
+                    candidate.storage != root.storage &&
+                    std::equal(extract.begin(), extract.end(),
+                               candidate.storage)) {
+                    select(root);
+                    select(candidate);
+                }
+            }
+            OPENSSL_cleanse(extract.data(), extract.size());
+        }
+        check(!overflow_, "epoch allocation probe overflowed");
+    }
+
+    void watch_new_secrets(bool watch) noexcept { watch_new_ = watch; }
+
+    std::size_t selected() const noexcept { return selected_; }
+    std::size_t cleared() const {
+        check(!overflow_ && !dirty_release_,
+              "epoch secret released without wiping");
+        std::size_t count = released_;
+        for (const auto& entry : entries_) {
+            if (entry.storage != nullptr && entry.watched &&
+                zero(entry.storage))
+                ++count;
+        }
+        return count;
+    }
+
+private:
+    struct Entry final {
+        std::uint8_t* storage{nullptr};
+        bool watched{false};
+    };
+    static bool zero(const std::uint8_t* storage) noexcept {
+        for (std::size_t index = 0U; index < 32U; ++index) {
+            if (storage[index] != 0U) return false;
+        }
+        return true;
+    }
+    void select(Entry& entry) noexcept {
+        if (!entry.watched) {
+            entry.watched = true;
+            ++selected_;
+        }
+    }
+    static void allocated(void* storage, std::size_t size) {
+        if (size != 32U) return;
+        for (auto& entry : active_->entries_) {
+            if (entry.storage == nullptr) {
+                entry = {static_cast<std::uint8_t*>(storage), false};
+                if (active_->watch_new_) active_->select(entry);
+                return;
+            }
+        }
+        active_->overflow_ = true;
+    }
+    static void released(void* storage) noexcept {
+        for (auto& entry : active_->entries_) {
+            if (entry.storage == storage) {
+                if (entry.watched) {
+                    ++active_->released_;
+                    active_->dirty_release_ |= !zero(entry.storage);
+                }
+                entry = {};
+                return;
+            }
+        }
+    }
+    inline static thread_local EpochStorageProbe* active_{nullptr};
+    std::array<Entry, 256U> entries_{};
+    std::size_t selected_{0U};
+    std::size_t released_{0U};
+    bool dirty_release_{false};
+    bool overflow_{false};
+    bool watch_new_{false};
+};
+
+std::array<std::uint8_t, 32U> handshake_binding(const HandshakeFlight& flight) {
+    auto decoded = yume::ytp1::DecodeAuthRecord(as_u8(flight.response));
+    check(decoded.ok(), "cache fixture AUTH response did not decode");
+    for (const auto& field : decoded.value->fields) {
+        if (field.id == static_cast<std::uint16_t>(
+                            yume::ytp1::AuthFieldId::TranscriptHash)) {
+            check(field.value.size() == 32U,
+                  "cache fixture binding size differs");
+            std::array<std::uint8_t, 32U> binding{};
+            std::copy(field.value.begin(), field.value.end(), binding.begin());
+            return binding;
+        }
+    }
+    throw std::runtime_error("cache fixture has no session binding");
+}
+
+void test_epoch_cache_lifetime() {
+    namespace crypto = yume::providers::ytp1_crypto;
+    static_assert(!std::is_copy_constructible_v<crypto::RecordEpochRoot>);
+    static_assert(!std::is_copy_assignable_v<crypto::RecordEpochRoot>);
+    static_assert(
+        std::is_nothrow_move_constructible_v<crypto::RecordEpochRoot>);
+    static_assert(std::is_nothrow_move_assignable_v<crypto::RecordEpochRoot>);
+    const crypto::CryptoContext context;
+    std::array<std::uint8_t, 32U> binding{}, a{}, b{};
+    binding.fill(0x12U);
+    a.fill(0x34U);
+    b.fill(0x56U);
+    EpochStorageProbe probe;
+    {
+        crypto::RecordEpochRoot first(
+            context, crypto::SecretBytes::copy_from(a), binding);
+        crypto::RecordEpochRoot second(
+            context, crypto::SecretBytes::copy_from(b), binding);
+        probe.watch_roots(context, binding);
+        check(probe.selected() == 4U && probe.cleared() == 0U,
+              "epoch cache pair was not observed");
+        const auto first_storage = first.span().data();
+        crypto::RecordEpochRoot moved(std::move(first));
+        check(first.span().empty() && moved.span().data() == first_storage,
+              "epoch cache move did not transfer ownership");
+        const auto expected = crypto::derive_record_material(
+            context, second, EndpointRole::Client, {7U, 11U}, binding);
+        moved = std::move(second);
+        check(second.span().empty() && probe.cleared() == 2U,
+              "epoch cache replacement did not wipe the old pair");
+        auto* alias = &moved;
+        moved = std::move(*alias);
+        const auto material = crypto::derive_record_material(
+            context, moved, EndpointRole::Client, {7U, 11U}, binding);
+        check(std::equal(material.span().begin(), material.span().end(),
+                         expected.span().begin()),
+              "epoch cache move changed record material");
+        moved.wipe();
+        check(moved.span().empty() && probe.cleared() == 4U,
+              "epoch cache retirement did not wipe both secrets");
+        bool refused = false;
+        try {
+            (void)crypto::derive_record_material(
+                context, moved, EndpointRole::Client, {}, binding);
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        check(refused, "retired epoch cache still derived a record key");
+    }
+    check(probe.cleared() == 4U, "epoch cache destruction missed a secret");
+}
+
+void test_epoch_cache_constructor_failure() {
+    namespace crypto = yume::providers::ytp1_crypto;
+    const crypto::CryptoContext context;
+    std::array<std::uint8_t, 32U> binding{}, bytes{};
+    binding.fill(0x67U);
+    bytes.fill(0x89U);
+    for (const bool allocation_failure : {false, true}) {
+        EpochStorageProbe probe;
+        auto root = crypto::SecretBytes::copy_from(bytes);
+        probe.watch(root.span());
+        bool refused = false;
+        if (allocation_failure) yume::test::arm_allocation_failure(1U);
+        try {
+            crypto::RecordEpochRoot candidate(
+                context, std::move(root),
+                allocation_failure
+                    ? std::span<const std::uint8_t>(binding)
+                    : std::span<const std::uint8_t>(binding).first(31U));
+        } catch (const std::bad_alloc&) {
+            refused = allocation_failure;
+        } catch (const std::invalid_argument&) {
+            refused = !allocation_failure;
+        }
+        const bool fired =
+            allocation_failure && yume::test::disarm_allocation_failure();
+        check(refused && (!allocation_failure || fired),
+              "epoch cache constructor fault was not reached");
+        check(root.span().empty() && probe.cleared() == 1U,
+              "epoch cache constructor failure retained its root");
+    }
+}
+
+void test_epoch_cache_provider_retirement(const Fixture& fixture) {
+    namespace crypto = yume::providers::ytp1_crypto;
+    const crypto::CryptoContext context;
+    auto pair = make_pair(fixture, default_options(fixture));
+    EpochStorageProbe probe;
+    const auto binding = handshake_binding(complete_handshake(pair));
+    probe.watch_roots(context, binding);
+    check(probe.selected() == 8U && probe.cleared() == 0U,
+          "established provider did not retain four root/extract pairs");
+    auto init =
+        require(pair.client->begin_outbound_rekey(1U), "cache retirement INIT");
+    auto wire = require(pair.client->seal_record({0U, 0U}, init.bytes(), 0U),
+                        "cache retirement INIT seal");
+    auto opened = require(pair.server->open_record({0U, 0U}, wire.bytes()),
+                          "cache retirement INIT open");
+    auto ack = require(pair.server->accept_inbound_rekey(1U, opened.bytes()),
+                       "cache retirement ACK");
+    probe.watch_roots(context, binding);
+    check(probe.selected() == 10U && probe.cleared() == 0U,
+          "inbound rekey retired an old pair before the new epoch");
+    check_record_round_trip(*pair.client, *pair.server, {0U, 1U},
+                            "old cache retained");
+    check(probe.cleared() == 0U,
+          "old-epoch DATA prematurely retired its cache");
+    check(pair.client->finish_outbound_rekey(1U, ack.bytes()).ok(),
+          "cache retirement finish failed");
+    probe.watch_roots(context, binding);
+    check(probe.selected() == 12U && probe.cleared() == 2U,
+          "outbound rekey did not retire exactly its old pair");
+    check_record_round_trip(*pair.client, *pair.server, {1U, 2U},
+                            "new cache authenticated");
+    check(
+        probe.cleared() == 4U,
+        "first authenticated new-epoch record did not wipe the previous cache");
+    pair.client->cancel();
+    pair.server->cancel();
+    check(probe.cleared() == 12U,
+          "provider cancellation retained an epoch secret");
+    pair.client.reset();
+    pair.server.reset();
+    check(probe.cleared() == 12U,
+          "provider destruction released an unwiped epoch secret");
+
+    auto failed = make_pair(fixture, default_options(fixture));
+    const auto failed_binding = handshake_binding(complete_handshake(failed));
+    probe.watch_roots(context, failed_binding);
+    check(probe.selected() == 20U,
+          "failed-record fixture has no cached epochs");
+    const std::array<std::byte, 1U> plaintext{std::byte{0x5a}};
+    auto damaged = require(failed.client->seal_record({}, plaintext, 0U),
+                           "cache tag failure seal");
+    damaged.mutable_bytes().back() ^= std::byte{1};
+    check(!failed.server->open_record({}, damaged.bytes()).ok(),
+          "cache tag failure was accepted");
+    check(probe.cleared() == 16U,
+          "failed authentication retained inbound or outbound cache");
+    failed.client->cancel();
+    failed.server->cancel();
+    failed.client.reset();
+    failed.server.reset();
+    check(probe.cleared() == 20U,
+          "failed provider teardown missed an epoch secret");
+}
+
+// A fresh fixture for each position sweeps every ordinary C++ allocation
+// in both AUTH commits, record expansion and both rekey commits. Arguments
+// exist before arming. OpenSSL's own malloc family is outside these hooks.
+void test_epoch_cache_allocation_failures(const Fixture& fixture) {
+    namespace crypto = yume::providers::ytp1_crypto;
+    const crypto::CryptoContext context;
+    enum class Operation { ServerAuth, ClientAuth, Seal, Open, Accept, Finish };
+    const std::array operations{Operation::ServerAuth, Operation::ClientAuth,
+                                Operation::Seal,       Operation::Open,
+                                Operation::Accept,     Operation::Finish};
+    const std::array<std::byte, 3U> plaintext{std::byte{1}, std::byte{2},
+                                              std::byte{3}};
+    for (const auto operation : operations) {
+        bool completed_sweep = false;
+        std::size_t failures = 0U;
+        for (std::size_t position = 1U; position <= 1024U; ++position) {
+            auto pair = make_pair(fixture, default_options(fixture));
+            EpochStorageProbe probe;
+            HandshakeFlight flight;
+            if (operation == Operation::ServerAuth ||
+                operation == Operation::ClientAuth) {
+                flight.challenge = begin_handshake(pair);
+                auto response = require(
+                    pair.client->process_authentication(
+                        AuthenticationMessageKind::Challenge, flight.challenge),
+                    "fault fixture response");
+                flight.response =
+                    outgoing(response, AuthenticationMessageKind::Response);
+                if (operation == Operation::ClientAuth) {
+                    flight.server_output =
+                        require(pair.server->process_authentication(
+                                    AuthenticationMessageKind::Response,
+                                    flight.response),
+                                "fault fixture acceptance");
+                    flight.accepted =
+                        outgoing(flight.server_output,
+                                 AuthenticationMessageKind::Accepted);
+                }
+            } else {
+                flight = complete_handshake(pair);
+            }
+            const auto binding = handshake_binding(flight);
+            probe.watch_roots(context, binding);
+            const std::size_t expected = operation == Operation::ServerAuth ? 0U
+                                         : operation == Operation::ClientAuth
+                                             ? 6U
+                                             : 8U;
+            check(probe.selected() == expected,
+                  "allocation fixture cache premises differ");
+
+            auto argument = require(yume::engine::Buffer::allocate(0U, 4096U),
+                                    "empty fault argument");
+            if (operation == Operation::Open) {
+                argument = require(pair.client->seal_record({}, plaintext, 0U),
+                                   "fault fixture ciphertext");
+            } else if (operation == Operation::Accept ||
+                       operation == Operation::Finish) {
+                auto init = require(pair.client->begin_outbound_rekey(1U),
+                                    "fault fixture INIT");
+                auto wire =
+                    require(pair.client->seal_record({}, init.bytes(), 0U),
+                            "fault fixture INIT seal");
+                argument = require(pair.server->open_record({}, wire.bytes()),
+                                   "fault fixture INIT open");
+                if (operation == Operation::Finish) {
+                    argument = require(
+                        pair.server->accept_inbound_rekey(1U, argument.bytes()),
+                        "fault fixture ACK");
+                    probe.watch_roots(context, binding);
+                    check(probe.selected() == 10U && probe.cleared() == 0U,
+                          "finish fault fixture did not retain the old inbound "
+                          "epoch");
+                }
+            }
+            // Form spans and select the operation before fault injection.
+            const auto bytes = argument.bytes();
+            yume::test::arm_allocation_failure(position);
+            bool ok = false;
+            switch (operation) {
+                case Operation::ServerAuth:
+                    ok = pair.server
+                             ->process_authentication(
+                                 AuthenticationMessageKind::Response,
+                                 flight.response)
+                             .ok();
+                    break;
+                case Operation::ClientAuth:
+                    ok = pair.client
+                             ->process_authentication(
+                                 AuthenticationMessageKind::Accepted,
+                                 flight.accepted)
+                             .ok();
+                    break;
+                case Operation::Seal:
+                    ok = pair.client->seal_record({}, plaintext, 0U).ok();
+                    break;
+                case Operation::Open:
+                    ok = pair.server->open_record({}, bytes).ok();
+                    break;
+                case Operation::Accept:
+                    ok = pair.server->accept_inbound_rekey(1U, bytes).ok();
+                    break;
+                case Operation::Finish:
+                    ok = pair.client->finish_outbound_rekey(1U, bytes).ok();
+                    break;
+            }
+            const bool fired = yume::test::disarm_allocation_failure();
+            check(ok != fired,
+                  "allocation fault was swallowed or fault-free operation "
+                  "failed");
+            probe.watch_roots(context, binding);
+            if (fired && operation != Operation::ServerAuth) {
+                // Only the peer's live roots may remain after a refusal.
+                // Client AUTH leaves four server secrets. Finishing an
+                // outbound rekey leaves six at the server until new DATA.
+                const std::size_t peer_secrets =
+                    operation == Operation::Finish ? 6U : 4U;
+                check(probe.cleared() + peer_secrets == probe.selected(),
+                      "allocation refusal retained the failed provider's "
+                      "epoch cache");
+            }
+            pair.client->cancel();
+            pair.server->cancel();
+            check(probe.cleared() == probe.selected(),
+                  "allocation failure or teardown retained an epoch cache");
+            pair.client.reset();
+            pair.server.reset();
+            check(probe.cleared() == probe.selected(),
+                  "allocation failure released an unwiped epoch cache");
+            if (!fired) {
+                completed_sweep = true;
+                break;
+            }
+            ++failures;
+        }
+        check(completed_sweep && failures > 0U,
+              "allocation sweep did not reach every position");
+        std::cout << "Epoch cache allocation sweep "
+                  << static_cast<int>(operation) << ": " << failures
+                  << " faults checked\n";
+    }
+}
+
+thread_local std::size_t openssl_allocation_countdown = 0U;
+thread_local bool openssl_allocation_fired = false;
+
+bool fail_openssl_allocation() noexcept {
+    if (openssl_allocation_countdown == 0U) return false;
+    if (--openssl_allocation_countdown != 0U) return false;
+    openssl_allocation_fired = true;
+    return true;
+}
+
+void* test_openssl_malloc(std::size_t size, const char*, int) {
+    return fail_openssl_allocation() ? nullptr : std::malloc(size);
+}
+
+void* test_openssl_realloc(void* storage, std::size_t size, const char*, int) {
+    return fail_openssl_allocation() ? nullptr : std::realloc(storage, size);
+}
+
+void test_openssl_free(void* storage, const char*, int) {
+    std::free(storage);
+}
+
+void test_epoch_cache_openssl_allocation_failures() {
+    namespace crypto = yume::providers::ytp1_crypto;
+    const crypto::CryptoContext context;
+    std::array<std::uint8_t, 32U> binding{}, bytes{};
+    binding.fill(0x9aU);
+    bytes.fill(0xbcU);
+    crypto::RecordEpochRoot reference(
+        context, crypto::SecretBytes::copy_from(bytes), binding);
+    const auto expected = crypto::derive_record_material(
+        context, reference, EndpointRole::Server, {3U, 19U}, binding);
+    bool complete = false;
+    std::size_t refusals = 0U;
+    std::size_t faults = 0U;
+    for (std::size_t position = 1U; position <= 1024U; ++position) {
+        EpochStorageProbe probe;
+        auto root = crypto::SecretBytes::copy_from(bytes);
+        probe.watch(root.span());
+        // Only the constructor runs while all new 32-byte C++ allocations
+        // are watched: its one extract output, including a partial output
+        // from a failing EVP_KDF_derive, must be wiped before release.
+        probe.watch_new_secrets(true);
+        ERR_clear_error();
+        openssl_allocation_countdown = position;
+        openssl_allocation_fired = false;
+        std::optional<crypto::RecordEpochRoot> candidate;
+        bool refused = false;
+        try {
+            candidate.emplace(context, std::move(root), binding);
+        } catch (const std::exception&) {
+            refused = true;
+        }
+        const bool fired = openssl_allocation_fired;
+        openssl_allocation_countdown = 0U;
+        probe.watch_new_secrets(false);
+        ERR_clear_error();
+        check(!refused || fired,
+              "fault-free OpenSSL cache construction failed");
+        if (candidate) {
+            const auto material = crypto::derive_record_material(
+                context, *candidate, EndpointRole::Server, {3U, 19U}, binding);
+            check(std::equal(material.span().begin(), material.span().end(),
+                             expected.span().begin()),
+                  "OpenSSL allocation fault changed cached record material");
+        }
+        candidate.reset();
+        check(root.span().empty() && probe.cleared() == probe.selected(),
+              "OpenSSL allocation failure retained root or partial extract");
+        if (!fired) {
+            complete = true;
+            break;
+        }
+        ++faults;
+        if (refused) ++refusals;
+    }
+    check(complete && refusals > 0U,
+          "OpenSSL constructor allocation sweep was incomplete");
+    std::cout << "Epoch cache OpenSSL allocation sweep: " << faults
+              << " faults checked, " << refusals << " refusals\n";
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        check(
+            CRYPTO_set_mem_functions(test_openssl_malloc, test_openssl_realloc,
+                                     test_openssl_free) == 1,
+            "OpenSSL allocation hooks were installed too late");
         ProviderPtr provider(OSSL_PROVIDER_load(nullptr, "default"));
         check(provider != nullptr, "OpenSSL default provider is unavailable");
         const Fixture fixture;
+        const std::string_view selection = argc == 2 ? argv[1] : "";
+        check(argc <= 2, "too many test arguments");
+        if (!selection.empty()) {
+            if (selection == "--epoch-cache-lifetime")
+                test_epoch_cache_lifetime();
+            else if (selection == "--epoch-cache-constructor")
+                test_epoch_cache_constructor_failure();
+            else if (selection == "--epoch-cache-retirement")
+                test_epoch_cache_provider_retirement(fixture);
+            else if (selection == "--epoch-cache-allocation")
+                test_epoch_cache_allocation_failures(fixture);
+            else if (selection == "--epoch-cache-openssl-allocation")
+                test_epoch_cache_openssl_allocation_failures();
+            else if (selection == "--epoch-cache-vectors")
+                test_cryptographic_known_answers();
+            else
+                throw std::runtime_error("unknown test selection");
+            std::cout << "Selected epoch cache test passed\n";
+            return 0;
+        }
+        test_epoch_cache_lifetime();
+        test_epoch_cache_constructor_failure();
+        test_epoch_cache_provider_retirement(fixture);
+        test_epoch_cache_allocation_failures(fixture);
+        test_epoch_cache_openssl_allocation_failures();
         test_full_handshake_and_records(fixture);
         test_record_fail_closed(fixture);
         test_bidirectional_rekey(fixture);

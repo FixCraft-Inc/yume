@@ -712,9 +712,9 @@ public:
             return fail_record("outbound record key token is not exact");
         }
         try {
-            SecretBytes material = derive_record_material(
-                *credentials_->crypto, outbound_root_.span(), role_, token,
-                session_binding_);
+            SecretBytes material =
+                derive_record_material(*credentials_->crypto, outbound_root_,
+                                       role_, token, session_binding_);
             const auto aad = record_aad(role_, token);
             // The ciphertext goes straight behind the caller's headroom, so
             // no intermediate copy of it exists.
@@ -769,7 +769,7 @@ public:
         try {
             SecretBytes material = derive_record_material(
                 *credentials_->crypto,
-                previous ? previous_inbound_root_.span() : inbound_root_.span(),
+                previous ? previous_inbound_root_ : inbound_root_,
                 peer_role(role_), token, session_binding_);
             const auto aad = record_aad(peer_role(role_), token);
             std::vector<std::uint8_t> plaintext = open_aes_gcm(
@@ -976,11 +976,14 @@ public:
             auto buffer = Buffer::copy_from(
                 as_bytes(acknowledgement), kRekeyAckBytes);
             if (!buffer.ok()) {
+                mark_failed();
                 return buffer;
             }
+            RecordEpochRoot candidate(*credentials_->crypto,
+                                      std::move(new_root), session_binding_);
             previous_inbound_root_ = std::move(inbound_root_);
             previous_inbound_open_ = true;
-            inbound_root_ = std::move(new_root);
+            inbound_root_ = std::move(candidate);
             inbound_epoch_ = next_epoch;
             return buffer;
         } catch (const std::bad_alloc&) {
@@ -1048,7 +1051,9 @@ public:
                 throw std::invalid_argument(
                     "rekey acknowledgement authentication failed");
             }
-            outbound_root_ = std::move(new_root);
+            RecordEpochRoot candidate(*credentials_->crypto,
+                                      std::move(new_root), session_binding_);
+            outbound_root_ = std::move(candidate);
             outbound_epoch_ = next_epoch;
             outbound_rekey_.reset();
             return Status::success();
@@ -1169,12 +1174,18 @@ private:
     }
 
     void commit_roots(HandshakeRoots roots) {
+        RecordEpochRoot c2s(*credentials_->crypto,
+                            std::move(roots.client_to_server),
+                            session_binding_);
+        RecordEpochRoot s2c(*credentials_->crypto,
+                            std::move(roots.server_to_client),
+                            session_binding_);
         if (role_ == EndpointRole::Client) {
-            outbound_root_ = std::move(roots.client_to_server);
-            inbound_root_ = std::move(roots.server_to_client);
+            outbound_root_ = std::move(c2s);
+            inbound_root_ = std::move(s2c);
         } else {
-            outbound_root_ = std::move(roots.server_to_client);
-            inbound_root_ = std::move(roots.client_to_server);
+            outbound_root_ = std::move(s2c);
+            inbound_root_ = std::move(c2s);
         }
     }
 
@@ -1190,11 +1201,11 @@ private:
     const AuthorizedIdentity* selected_identity_{nullptr};
     std::array<std::uint8_t, ytp1::kTranscriptHashSize>
         session_binding_{};
-    SecretBytes outbound_root_;
-    SecretBytes inbound_root_;
+    RecordEpochRoot outbound_root_;
+    RecordEpochRoot inbound_root_;
     // The peer may keep sending in the epoch its REKEY_INIT replaces until
     // its first record of the new epoch. That root stays here until then.
-    SecretBytes previous_inbound_root_;
+    RecordEpochRoot previous_inbound_root_;
     bool previous_inbound_open_{false};
     std::uint32_t outbound_epoch_{0U};
     std::uint32_t inbound_epoch_{0U};

@@ -294,11 +294,13 @@ std::array<std::uint8_t, kSha256Bytes> hmac_sha256(
     return output;
 }
 
-SecretBytes hkdf_sha256(const CryptoContext& crypto,
-                        std::span<const std::uint8_t> key,
-                        std::span<const std::uint8_t> salt,
-                        std::span<const std::uint8_t> info,
-                        std::size_t output_size) {
+namespace {
+
+SecretBytes hkdf_sha256_mode(const CryptoContext& crypto,
+                             std::span<const std::uint8_t> key,
+                             std::span<const std::uint8_t> salt,
+                             std::span<const std::uint8_t> info,
+                             std::size_t output_size, int mode) {
     if (key.empty() || output_size == 0U ||
         output_size > 255U * kSha256Bytes ||
         info.size() > kMaxTranscriptInputBytes ||
@@ -310,26 +312,41 @@ SecretBytes hkdf_sha256(const CryptoContext& crypto,
         throw std::runtime_error("HKDF context allocation failed");
     }
     char digest_name[] = "SHA256";
-    OSSL_PARAM parameters[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
-                                         digest_name, 0U),
-        OSSL_PARAM_construct_octet_string(
-            OSSL_KDF_PARAM_KEY, const_cast<std::uint8_t*>(key.data()),
-            key.size()),
-        OSSL_PARAM_construct_octet_string(
+    std::array<OSSL_PARAM, 6U> parameters{};
+    std::size_t count = 0U;
+    parameters[count++] = OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode);
+    parameters[count++] = OSSL_PARAM_construct_utf8_string(
+        OSSL_KDF_PARAM_DIGEST, digest_name, 0U);
+    parameters[count++] = OSSL_PARAM_construct_octet_string(
+        OSSL_KDF_PARAM_KEY, const_cast<std::uint8_t*>(key.data()), key.size());
+    if (mode != EVP_KDF_HKDF_MODE_EXPAND_ONLY) {
+        parameters[count++] = OSSL_PARAM_construct_octet_string(
             OSSL_KDF_PARAM_SALT, const_cast<std::uint8_t*>(salt.data()),
-            salt.size()),
-        OSSL_PARAM_construct_octet_string(
+            salt.size());
+    }
+    if (mode != EVP_KDF_HKDF_MODE_EXTRACT_ONLY) {
+        parameters[count++] = OSSL_PARAM_construct_octet_string(
             OSSL_KDF_PARAM_INFO, const_cast<std::uint8_t*>(info.data()),
-            info.size()),
-        OSSL_PARAM_construct_end(),
-    };
+            info.size());
+    }
+    parameters[count] = OSSL_PARAM_construct_end();
     SecretBytes output(output_size);
     if (EVP_KDF_derive(context.get(), output.data(), output.size(),
-                       parameters) != 1) {
+                       parameters.data()) != 1) {
         throw std::runtime_error("HKDF derivation failed");
     }
     return output;
+}
+
+}  // namespace
+
+SecretBytes hkdf_sha256(const CryptoContext& crypto,
+                        std::span<const std::uint8_t> key,
+                        std::span<const std::uint8_t> salt,
+                        std::span<const std::uint8_t> info,
+                        std::size_t output_size) {
+    return hkdf_sha256_mode(crypto, key, salt, info, output_size,
+                            EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND);
 }
 
 std::vector<std::uint8_t> canonical_tagged_input(
@@ -480,19 +497,30 @@ std::vector<std::uint8_t> record_aad(EndpointRole sender,
     return canonical_tagged_input(ytp1::kAadDomain, fields);
 }
 
+RecordEpochRoot::RecordEpochRoot(const CryptoContext& crypto, SecretBytes root,
+                                 std::span<const std::uint8_t> session_binding)
+    : root_(std::move(root)) {
+    if (root_.size() != kSha256Bytes ||
+        session_binding.size() != ytp1::kTranscriptHashSize) {
+        throw std::invalid_argument("record epoch inputs are invalid");
+    }
+    // Self-wiping members own the root before any allocation can fail.
+    extract_ = hkdf_sha256_mode(crypto, root_.span(), session_binding, {},
+                                kSha256Bytes, EVP_KDF_HKDF_MODE_EXTRACT_ONLY);
+}
+
 SecretBytes derive_record_material(
-    const CryptoContext& crypto,
-    std::span<const std::uint8_t> directional_root,
-    EndpointRole sender,
-    RecordKeyToken token,
+    const CryptoContext& crypto, const RecordEpochRoot& directional_root,
+    EndpointRole sender, RecordKeyToken token,
     std::span<const std::uint8_t> session_binding) {
     const std::vector<std::uint8_t> aad = record_aad(sender, token);
     const std::array<std::span<const std::uint8_t>, 3> fields{
         text_u8(ytp1::kMessageDomain), session_binding, aad};
     const std::vector<std::uint8_t> info = canonical_tagged_input(
         ytp1::kMessageDomain, fields);
-    return hkdf_sha256(crypto, directional_root, session_binding, info,
-                       kRecordKeyMaterialBytes);
+    return hkdf_sha256_mode(crypto, directional_root.extract_.span(), {}, info,
+                            kRecordKeyMaterialBytes,
+                            EVP_KDF_HKDF_MODE_EXPAND_ONLY);
 }
 
 void seal_aes_gcm(const CryptoContext& crypto,

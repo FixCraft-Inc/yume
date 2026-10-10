@@ -260,11 +260,45 @@ HandshakeRoots derive_initial_roots(
 std::vector<std::uint8_t> record_aad(EndpointRole sender,
                                      RecordKeyToken token);
 
+// A directional epoch root and its HKDF extract have one lifetime. The
+// extract uses the immutable session binding as salt. Record expansion
+// still binds the direction, epoch and global sequence independently.
+class RecordEpochRoot final {
+public:
+    RecordEpochRoot() = default;
+    RecordEpochRoot(const CryptoContext& crypto, SecretBytes root,
+                    std::span<const std::uint8_t> session_binding);
+    RecordEpochRoot(const RecordEpochRoot&) = delete;
+    RecordEpochRoot& operator=(const RecordEpochRoot&) = delete;
+    RecordEpochRoot(RecordEpochRoot&&) noexcept = default;
+    RecordEpochRoot& operator=(RecordEpochRoot&& other) noexcept {
+        if (this != &other) {
+            wipe();
+            root_ = std::move(other.root_);
+            extract_ = std::move(other.extract_);
+        }
+        return *this;
+    }
+
+    std::span<const std::uint8_t> span() const noexcept { return root_.span(); }
+    void wipe() noexcept {
+        extract_.wipe();
+        root_.wipe();
+    }
+
+private:
+    friend SecretBytes derive_record_material(const CryptoContext&,
+                                              const RecordEpochRoot&,
+                                              EndpointRole, RecordKeyToken,
+                                              std::span<const std::uint8_t>);
+
+    SecretBytes root_;
+    SecretBytes extract_;
+};
+
 SecretBytes derive_record_material(
-    const CryptoContext& crypto,
-    std::span<const std::uint8_t> directional_root,
-    EndpointRole sender,
-    RecordKeyToken token,
+    const CryptoContext& crypto, const RecordEpochRoot& directional_root,
+    EndpointRole sender, RecordKeyToken token,
     std::span<const std::uint8_t> session_binding);
 
 // Writes the ciphertext and then the tag to `output`, which must hold

@@ -202,11 +202,6 @@ function(yume_apply_perf_opts target)
     endif()
 endfunction()
 
-function(yume_apply_dev_diagnostics target visibility)
-    target_compile_definitions(${target} ${visibility}
-        YUME_ENABLE_DEV_DIAGNOSTICS=${YUME_DEV_DIAGNOSTICS_EXPRESSION})
-endfunction()
-
 # Optional developer-only precompiled header. Measured on this tree with GCC:
 # <boost/asio.hpp> costs about 1.8 s and <nlohmann/json.hpp> about 1.0 s of
 # front-end time *per translation unit*, and roughly 90 TUs pull one or both.
@@ -512,9 +507,6 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
     target_link_libraries(yume_h2_carrier
         PUBLIC yume_cover_profile
         PRIVATE ${YUME_NGHTTP2_TARGET} OpenSSL::Crypto Threads::Threads)
-    # H2Carrier and timing.hpp expose conditional declarations. Every caller
-    # must see the same configuration; Release/MinSizeRel keep diagnostics off.
-    yume_apply_dev_diagnostics(yume_h2_carrier PUBLIC)
     yume_prepare_static_for_shared_abi(yume_h2_carrier)
     yume_apply_perf_opts(yume_h2_carrier)
     yume_assert_exact_link_dependencies(yume_h2_carrier
@@ -1450,12 +1442,27 @@ if(YUME_BUILD_TESTING)
 
     add_executable(yume_timing_test common/timing_test.cpp)
     target_include_directories(yume_timing_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    yume_apply_dev_diagnostics(yume_timing_test PRIVATE)
     yume_apply_perf_opts(yume_timing_test)
     add_test(NAME yume_timing_test COMMAND yume_timing_test)
+    add_executable(yume_bench_probe_test common/bench_probe_test.cpp)
+    target_include_directories(yume_bench_probe_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    yume_apply_perf_opts(yume_bench_probe_test)
+    add_test(NAME yume_bench_probe_test COMMAND yume_bench_probe_test)
+    # The tests assert at compile time that the headers saw the option, so a
+    # build whose macro and option disagree fails to compile.
+    target_compile_definitions(yume_timing_test PRIVATE
+        YUME_TEST_EXPECT_DEV_DIAGNOSTICS=$<BOOL:${YUME_DEV_DIAGNOSTICS}>)
+    target_compile_definitions(yume_bench_probe_test PRIVATE
+        YUME_TEST_EXPECT_DEV_DIAGNOSTICS=$<BOOL:${YUME_DEV_DIAGNOSTICS}>)
+    if(YUME_DEV_DIAGNOSTICS)
+        target_link_libraries(yume_bench_probe_test PRIVATE Threads::Threads)
+        add_test(NAME yume_bench_probe_record_test COMMAND yume_bench_probe_test)
+        set_tests_properties(yume_bench_probe_record_test PROPERTIES ENVIRONMENT
+            "YUME_BENCH_PROBE_FILE=${CMAKE_CURRENT_BINARY_DIR}/bench_probe_record_test")
+    endif()
     foreach(_shared_test IN ITEMS yume_websocket_codec_test yume_bounded_file_test
             yume_cover_profile_test yume_tls_fingerprint_test yume_secret_file_test
-            yume_hex_test yume_timing_test)
+            yume_hex_test yume_timing_test yume_bench_probe_test)
         if(TARGET ${_shared_test})
             if(MSVC)
                 target_compile_options(${_shared_test} PRIVATE /UNDEBUG)
@@ -1638,7 +1645,7 @@ if(YUME_BUILD_TESTING)
         target_link_libraries(yume_h2_carrier_test
             PRIVATE yume_h2_carrier ${YUME_NGHTTP2_TARGET})
         target_compile_definitions(yume_h2_carrier_test PRIVATE
-            YUME_TEST_EXPECT_DEV_DIAGNOSTICS=${YUME_DEV_DIAGNOSTICS_EXPRESSION})
+            YUME_TEST_EXPECT_DEV_DIAGNOSTICS=$<BOOL:${YUME_DEV_DIAGNOSTICS}>)
         if(MSVC)
             target_compile_options(yume_h2_carrier_test
                 PRIVATE /UNDEBUG)
@@ -1653,6 +1660,19 @@ if(YUME_BUILD_TESTING)
             COMMAND yume_h2_carrier_test)
         set_tests_properties(yume_h2_carrier_test PROPERTIES
             LABELS "foundation;0.3;carrier-provider")
+        # Pins what the carrier writes once the WebSocket is open, byte for
+        # byte and write for write, against a recorded trace.
+        add_executable(yume_h2_carrier_wire_test
+            stealth/h2_carrier_wire_test.cpp)
+        target_link_libraries(yume_h2_carrier_wire_test PRIVATE yume_h2_carrier)
+        yume_apply_perf_opts(yume_h2_carrier_wire_test)
+        yume_assert_exact_link_dependencies(
+            yume_h2_carrier_wire_test yume_h2_carrier)
+        add_test(NAME yume_h2_carrier_wire_test
+            COMMAND yume_h2_carrier_wire_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/stealth/testdata/h2_carrier_wire_trace.txt")
+        set_tests_properties(yume_h2_carrier_wire_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;carrier-provider")
     endif()
 
     if(YUME_BUILD_NATIVE_PROVIDERS)

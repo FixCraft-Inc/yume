@@ -51,12 +51,26 @@ Result<Buffer> Buffer::allocate(std::size_t size, std::size_t max_size) {
 
 Result<Buffer> Buffer::copy_from(std::span<const std::byte> bytes,
                                  std::size_t max_size) {
-    auto result = allocate(bytes.size(), max_size);
-    if (!result.ok()) {
-        return result;
+    Status limit_status = validate_limit(max_size);
+    if (!limit_status.ok()) {
+        return Result<Buffer>(std::move(limit_status));
     }
-    Buffer buffer = std::move(result).take_value();
-    std::copy(bytes.begin(), bytes.end(), buffer.storage_.begin());
+    if (bytes.size() > max_size) {
+        return Result<Buffer>(Status::diagnostic(
+            StatusCode::ResourceExhausted,
+            "requested buffer size exceeds its declared bound"));
+    }
+    // One exact allocation written once by the copy, with no zero-fill first.
+    Buffer buffer(max_size);
+    try {
+        buffer.storage_.assign(bytes.begin(), bytes.end());
+    } catch (const std::bad_alloc&) {
+        return Result<Buffer>(Status::diagnostic(StatusCode::ResourceExhausted,
+                                                 "buffer allocation failed"));
+    } catch (const std::length_error&) {
+        return Result<Buffer>(Status::diagnostic(
+            StatusCode::ResourceExhausted, "buffer allocation is too large"));
+    }
     return Result<Buffer>(std::move(buffer));
 }
 

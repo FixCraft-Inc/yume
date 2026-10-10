@@ -267,12 +267,15 @@ SecretBytes derive_record_material(
     RecordKeyToken token,
     std::span<const std::uint8_t> session_binding);
 
-std::vector<std::uint8_t> seal_aes_gcm(
-    const CryptoContext& crypto,
-    std::span<const std::uint8_t> key,
-    std::span<const std::uint8_t> nonce,
-    std::span<const std::uint8_t> aad,
-    std::span<const std::uint8_t> plaintext);
+// Writes the ciphertext and then the tag to `output`, which must hold
+// exactly plaintext.size() + kAesGcmTagBytes bytes. On failure `output` may
+// hold part of the ciphertext, never plaintext.
+void seal_aes_gcm(const CryptoContext& crypto,
+                  std::span<const std::uint8_t> key,
+                  std::span<const std::uint8_t> nonce,
+                  std::span<const std::uint8_t> aad,
+                  std::span<const std::uint8_t> plaintext,
+                  std::span<std::uint8_t> output);
 
 std::vector<std::uint8_t> open_aes_gcm(
     const CryptoContext& crypto,

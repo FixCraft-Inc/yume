@@ -2,7 +2,7 @@
 name:     diagnostics
 kind:     page
 title:    Developer diagnostics
-summary:  Timing helpers, compiler warnings, sanitizers and fuzzing for native builds, and what each result can show.
+summary:  Timing helpers, benchmark probes, compiler warnings, sanitizers and fuzzing for native builds, and what each result can show.
 markdown: docs/DIAGNOSTICS.md
 web:      yes
 catalog-title: Diagnostics
@@ -14,7 +14,7 @@ Operators check a configuration with `--validate` and `yume-doctor`, which
 [operations](OPERATIONS.md#troubleshooting) describes, and the
 [native guide](development/ytp1/README.md#diagnostics-and-evidence) covers
 typed runtime diagnostics and evidence. This page is for developers: the
-timing helpers, the warning set, sanitizers and fuzzing.
+timing helpers, the benchmark probes, the warning set, sanitizers and fuzzing.
 
 ## Timing helpers
 
@@ -24,32 +24,69 @@ synchronous operation, `SampleAccumulator` batches counts and nanoseconds, and
 to a sink, and in builds without diagnostics it removes the event together
 with the expression that builds its details.
 
-The build configuration, not a runtime flag, decides whether any of this
-exists:
+One CMake option, `YUME_DEV_DIAGNOSTICS`, decides whether the timing
+helpers and the [benchmark probes](#benchmark-probes) exist, whatever the
+build type:
 
 @table
-| CMake configuration | Timing code |
+| `YUME_DEV_DIAGNOSTICS` | Timing helpers and probes |
 |---|---|
-| `Release`, `MinSizeRel` | compiled out, no clock reads |
-| `RelWithDebInfo`, `Debug` | compiled in, off until a caller turns it on |
+| `OFF` (the default) | compiled out, no clock reads |
+| `ON` | compiled in, off until a caller or `YUME_BENCH_PROBE_FILE` turns them on |
 @end
+
+The option defines `YUME_ENABLE_DEV_DIAGNOSTICS` for the whole build, never
+for one target. Both headers declare inline functions and types whose shape
+depends on it, so two parts of one program built with different values
+would disagree about those definitions. CI's sanitizer jobs and the
+developer lanes build with it on, its Release jobs, fuzzing and the
+reachability check with it off, so both states compile.
 
 Today only the HTTP/2 carrier uses the helpers. With `set_timing_enabled(true)`
 it records feed, flush, WebSocket encode and decode time next to its credit and
 window counters, and only its tests turn that on. `yume` and `yumed` have no
 timing switch.
 
-`./ezbuild.sh` builds `Release`. `./ezbuild.sh --dev` builds an optimized
-`RelWithDebInfo` with the helpers compiled in. `./ezbuild.sh --native` tunes
+`./ezbuild.sh` builds `Release` without diagnostics. `./ezbuild.sh --dev`
+builds an optimized `RelWithDebInfo` with `YUME_DEV_DIAGNOSTICS=ON`. `./ezbuild.sh --native` tunes
 for the current CPU, so that binary must not be copied to an older or
 different CPU. Fast-math stays off in every mode.
 
 New timing work should use these types instead of pairs of
 `steady_clock::now()` calls or per-file switches. Keep detail strings inside
 `YUME_TIMING_SINK`. Guard a diagnostic timer that an asynchronous callback
-captures with `#if YUME_ENABLE_DEV_DIAGNOSTICS`, so a Release closure carries
-no diagnostic member. Never log keys, nonces, plaintext, authentication
+captures with `#if YUME_ENABLE_DEV_DIAGNOSTICS`, so an ordinary build's
+closure carries no diagnostic member. Never log keys, nonces, plaintext, authentication
 material, secret paths or full peer-controlled payloads.
+
+## Benchmark probes
+
+`src/common/bench_probe.hpp` counts and times key rotations for performance
+work: why each rotation started (its epoch's bytes, records or age, or the
+endpoint's timer or a peer's REKEY_INIT), the security provider's INIT,
+acceptance and ACK steps, the time from INIT to the verified ACK, the
+records that waited for a new epoch and for how long, and the epoch's bytes
+when a rotation started and when the sender switched.
+
+The probes share the timing helpers' switch. Only
+`-DYUME_DEV_DIAGNOSTICS=ON` compiles them. In every other build each probe
+is an empty type or call, and `yume_bench_probe_test` checks that at
+compile time. A probe build records only when
+`YUME_BENCH_PROBE_FILE` names a file prefix at start. It then appends one
+JSON line of totals each second, and a last one at exit, to `PREFIX.PID`:
+counts, sums, maxima and power-of-two histograms of nanoseconds or bytes,
+never keys, payload or addresses.
+
+@code bash
+cmake -S . -B build-probe -DCMAKE_BUILD_TYPE=Release -DYUME_DEV_DIAGNOSTICS=ON \
+  -DYUME_BUILD_TESTING=ON
+cmake --build build-probe -j"$(nproc)" --target yume yumed
+YUME_BENCH_PROBE_FILE=/tmp/rotations build-probe/bin/yumed --config yumed.json
+@end
+
+A diagnostics build is a benchmark subject of its own. Code layout alone
+moved a Release build's single-session rate by about 5 % against the same
+source with probes, so compare diagnostics builds with diagnostics builds.
 
 ## Compiler warnings
 
@@ -182,16 +219,17 @@ cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-release -j"$(nproc)"
 ctest --test-dir build-release --output-on-failure
 
-# Developer: the same tests with the timing helpers compiled in.
+# Developer: the same tests with the diagnostics compiled in.
 cmake -S . -B build-dev -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DYUME_BUILD_TESTING=ON
+  -DYUME_BUILD_TESTING=ON -DYUME_DEV_DIAGNOSTICS=ON
 cmake --build build-dev -j"$(nproc)"
 ctest --test-dir build-dev --output-on-failure
 @end
 
-`yume_h2_carrier_test` asserts at compile time that the timing helpers exist
-exactly when the configuration says they do, so either run above fails if the
-switch and the build disagree.
+`yume_timing_test`, `yume_bench_probe_test` and `yume_h2_carrier_test`
+assert at compile time that the diagnostics exist exactly when the option
+says they do, so either run above fails if the switch and the build
+disagree.
 
 Native test executables keep their checks in optimized builds. Most define
 their own `CHECK` macro, which `NDEBUG` does not remove, and a test that calls
@@ -199,6 +237,7 @@ their own `CHECK` macro, which `NDEBUG` does not remove, and a test that calls
 RelWithDebInfo test run must not pass because CMake defined `NDEBUG` and
 compiled the checks away.
 
-Benchmark comparisons must state whether timing was enabled. Do not compare an
-instrumented run with an uninstrumented one as if they were identical builds.
+Benchmark comparisons must state whether `YUME_DEV_DIAGNOSTICS` was on. Do
+not compare an instrumented run with an uninstrumented one as if they were
+identical builds.
 Sanitized builds are never valid benchmark subjects.

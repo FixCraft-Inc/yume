@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "common/bench_probe.hpp"
 #include "engine/secure_erase.hpp"
 #include "ytp/protocol.hpp"
 #include "ytp/security.hpp"
@@ -796,6 +797,12 @@ private:
     std::chrono::steady_clock::time_point outbound_epoch_first_send_{};
     std::uint32_t outbound_rekey_epoch_{0U};
     std::uint32_t rekey_work_{0U};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    // Benchmark probes only (common/bench_probe.hpp), guarded by mutex_.
+    bench_probe::Count probe_rotation_reason_{bench_probe::Count::RotationAged};
+    bench_probe::Stamp probe_rotation_started_;
+    bench_probe::Stamp probe_deferred_since_;
+#endif
 
     std::deque<OutboundItem> outbound_queue_;
     std::deque<DeferredRecord> deferred_records_;
@@ -1590,7 +1597,8 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     Result<Buffer> sealed(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
-        sealed = security_->seal_record(token, plaintext.bytes());
+        sealed = security_->seal_record(token, plaintext.bytes(),
+                                        kProtectedEnvelopeBytes);
     } catch (const std::bad_alloc&) {
         return Result<Buffer>(Status(
             StatusCode::ResourceExhausted,
@@ -1603,24 +1611,17 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     if (!sealed.ok()) {
         return Result<Buffer>(sealed.status());
     }
-    Buffer ciphertext = std::move(sealed).take_value();
-    if (ciphertext.empty() ||
-        ciphertext.size() < plaintext.size() ||
-        ciphertext.size() - plaintext.size() >
-            security_->max_sealed_overhead() ||
-        ciphertext.size() >
-            kAbsoluteMaxBufferBytes - kProtectedEnvelopeBytes) {
+    // The provider sealed behind kProtectedEnvelopeBytes of headroom, which
+    // the envelope now fills in place.
+    Buffer output = std::move(sealed).take_value();
+    if (output.size() <= kProtectedEnvelopeBytes ||
+        output.size() - kProtectedEnvelopeBytes < plaintext.size() ||
+        output.size() - kProtectedEnvelopeBytes - plaintext.size() >
+            security_->max_sealed_overhead()) {
         return Result<Buffer>(Status(
             StatusCode::ProviderMismatch,
             "security provider returned an invalid sealed-record size"));
     }
-
-    const std::size_t total = kProtectedEnvelopeBytes + ciphertext.size();
-    auto result = Buffer::allocate(total, total);
-    if (!result.ok()) {
-        return result;
-    }
-    Buffer output = std::move(result).take_value();
     auto bytes = output.mutable_bytes();
     bytes[0] = static_cast<std::byte>(kProtectedEnvelopeVersion);
     bytes[1] = std::byte{0};
@@ -1628,8 +1629,6 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     bytes[3] = std::byte{0};
     write_u32(bytes, 4U, token.epoch);
     write_u64(bytes, 8U, token.sequence);
-    std::memcpy(bytes.data() + kProtectedEnvelopeBytes,
-                ciphertext.bytes().data(), ciphertext.size());
     return Result<Buffer>(std::move(output));
 }
 
@@ -1698,6 +1697,11 @@ Status SessionEngine::Impl::defer_record(
         deferred_records_.emplace_back(
             type, stream_id, std::move(copy).take_value(), is_control,
             completion_bytes, std::move(completion));
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        bench_probe::count(bench_probe::Count::DeferredRecords);
+        bench_probe::count(bench_probe::Count::DeferredBytes, payload.size());
+        probe_deferred_since_.set_if_unset();
+#endif
         return Status::success();
     } catch (const std::bad_alloc&) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1748,6 +1752,17 @@ Status SessionEngine::Impl::enqueue_record(
                       std::chrono::steady_clock::now() -
                               outbound_epoch_first_send_ >=
                           kRotationStartAge);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            if (rotate) {
+                probe_rotation_reason_ =
+                    payload.size() + outbound_epoch_bytes_ >
+                            epoch_payload_bytes_ / 2U
+                        ? bench_probe::Count::RotationBytes
+                    : outbound_epoch_records_ >= epoch_record_limit_ / 2U
+                        ? bench_probe::Count::RotationRecords
+                        : bench_probe::Count::RotationAge;
+            }
+#endif
         }
         if (!rotate) break;
         ordering_lock.unlock();
@@ -2026,6 +2041,9 @@ Status SessionEngine::Impl::flush_deferred_records() {
                           "outbound rekey barrier is still active");
         }
         deferred.swap(deferred_records_);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        probe_deferred_since_.finish(bench_probe::Duration::DeferredStall);
+#endif
         for (const DeferredRecord& record : deferred) {
             deferred_bytes += overhead + record.payload.size();
             if (record.is_control) {
@@ -4057,11 +4075,20 @@ Status SessionEngine::Impl::initiate_rekey() {
             outbound_rekey_started_ + limits_.rekey_ack_timeout;
         outbound_rekey_epoch_ = next_epoch;
         ++rekey_work_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        bench_probe::count(probe_rotation_reason_);
+        probe_rotation_reason_ = bench_probe::Count::RotationAged;
+        bench_probe::amount(bench_probe::Amount::EpochBytesAtStart,
+                            outbound_epoch_bytes_);
+        probe_rotation_started_.set();
+#endif
     }
 
     Result<Buffer> initiation(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
+        [[maybe_unused]] const bench_probe::ScopedDuration probe(
+            bench_probe::Duration::ProviderBeginRekey);
         initiation = security_->begin_outbound_rekey(next_epoch);
     } catch (const std::bad_alloc&) {
         initiation = Result<Buffer>(Status(
@@ -4212,6 +4239,8 @@ Status SessionEngine::Impl::process_rekey_init(
     Result<Buffer> acknowledgement(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
+        [[maybe_unused]] const bench_probe::ScopedDuration probe(
+            bench_probe::Duration::ProviderAcceptRekey);
         acknowledgement = security_->accept_inbound_rekey(
             next_epoch, payload.subspan(kRekeyEpochBytes));
     } catch (const std::bad_alloc&) {
@@ -4304,6 +4333,8 @@ Status SessionEngine::Impl::process_rekey_ack(
                     "security provider did not finish rekey");
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
+        [[maybe_unused]] const bench_probe::ScopedDuration probe(
+            bench_probe::Duration::ProviderFinishRekey);
         finished = security_->finish_outbound_rekey(
             next_epoch, payload.subspan(kRekeyEpochBytes));
     } catch (const std::bad_alloc&) {
@@ -4322,6 +4353,12 @@ Status SessionEngine::Impl::process_rekey_ack(
             std::chrono::steady_clock::now() >= outbound_rekey_deadline_) {
             return protocol_failure("rekey acknowledgement deadline expired");
         }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        bench_probe::amount(bench_probe::Amount::EpochBytesAtSwitch,
+                            outbound_epoch_bytes_);
+        probe_rotation_started_.finish(
+            bench_probe::Duration::RotationRoundTrip);
+#endif
         outbound_epoch_ = next_epoch;
         outbound_epoch_bytes_ = 0U;
         outbound_epoch_records_ = 0U;

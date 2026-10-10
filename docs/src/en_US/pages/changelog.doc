@@ -576,6 +576,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **One switch for developer diagnostics.** `-DYUME_DEV_DIAGNOSTICS=ON`
+  compiles the timing helpers and the new key-rotation benchmark probes for
+  the whole build, and nothing else does: the timing helpers no longer
+  follow the `Debug` and `RelWithDebInfo` build types. With the probes, a
+  build records why each rotation started, the provider's rekey steps and
+  the records that waited, when `YUME_BENCH_PROBE_FILE` names a file.
+  `./ezbuild.sh --dev` and CI's sanitizer jobs turn the option on.
 - **Native setup and doctor.** `yume-setup` and `yume-doctor` are C++
   programs built beside `yume` and `yumed`, with the same actions, options,
   outputs and file formats as the Python tools they replace. Keys,

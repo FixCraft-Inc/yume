@@ -34,6 +34,9 @@ constexpr std::size_t kMaxRequestHeaders = 32U * 1024U;
 constexpr std::size_t kMaxResponseHeaders = 64U * 1024U;
 constexpr std::size_t kMaxResponseBody = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxQueuedOutput = 32U * 1024U * 1024U;
+// Serialized output capacity a carrier keeps once it is drained. A larger
+// burst grows the buffer, and the next drain gives the rest back.
+constexpr std::size_t kRetainedOutputBytes = 256U * 1024U;
 constexpr std::size_t kMaxPendingServerRequests = 64U;
 constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
 // Receive window advertised once the caller has admitted the carrier.
@@ -472,7 +475,35 @@ public:
         return writes;
     }
 
-    bool SendBinary(const std::uint8_t* data, std::size_t size) {
+    std::size_t PendingOutboundBytes() {
+        Flush();
+        return serialized_output_.size();
+    }
+
+    bool DrainOutboundWrites(H2Carrier::OutboundWriteSink sink, void* context) {
+        const std::span<const std::uint8_t> output(serialized_output_);
+        bool accepted = true;
+        std::size_t start = 0;
+        const auto emit = [&](std::size_t end) noexcept {
+            if (accepted && end > start) {
+                accepted = sink(context, output.subspan(start, end - start));
+            }
+            start = end;
+        };
+        for (const std::size_t boundary : write_boundaries_) {
+            if (boundary > start && boundary <= output.size()) emit(boundary);
+        }
+        emit(output.size());
+        serialized_output_.clear();
+        write_boundaries_.clear();
+        if (serialized_output_.capacity() > kRetainedOutputBytes) {
+            H2Bytes().swap(serialized_output_);
+        }
+        return accepted;
+    }
+
+    bool SendBinary(WebSocketPayload data) {
+        const std::size_t size = data.size();
         if (!carrier_active_ || carrier_closed_ || failed()) {
             return Fail("carrier is not active");
         }
@@ -480,36 +511,53 @@ public:
 #if YUME_ENABLE_DEV_DIAGNOSTICS
             diagnostics::Stopwatch encode_timer(collect_timing_);
 #endif
+            if (size > kMaxQueuedOutput) {
+                return Fail("encoded WebSocket output exceeded 32 MiB");
+            }
+            const std::size_t message_bytes =
+                cover_profile::active().websocket_message_bytes;
+            // One allocation of exactly the encoded size: the messages, plus
+            // one more header for the fixture's split below.
+            const std::size_t messages =
+                size == 0 ? 1U : (size + message_bytes - 1U) / message_bytes;
+            const std::size_t last_bytes =
+                size - (messages - 1U) * message_bytes;
+            std::size_t wire_bytes =
+                (messages - 1U) * websocket_.FrameBytes(message_bytes) +
+                websocket_.FrameBytes(last_bytes);
+            const bool fragment_fixture = role_ == H2CarrierRole::Server &&
+                                          !server_fragment_fixture_sent_ &&
+                                          size >= message_bytes;
+            if (fragment_fixture) {
+                wire_bytes +=
+                    websocket_.FrameBytes(message_bytes / 2U) +
+                    websocket_.FrameBytes(message_bytes - message_bytes / 2U) -
+                    websocket_.FrameBytes(message_bytes);
+            }
+            if (wire_bytes > kMaxQueuedOutput) {
+                return Fail("encoded WebSocket output exceeded 32 MiB");
+            }
             H2Bytes wire;
+            wire.reserve(wire_bytes);
             std::size_t offset = 0;
             while (offset < size) {
-                const std::size_t chunk = std::min(
-                    cover_profile::active()
-                        .websocket_message_bytes,
-                        size - offset);
-                H2Bytes frame;
+                const std::size_t chunk =
+                    std::min(message_bytes, size - offset);
                 // The captured Node fixture fragments its first complete
                 // 16-KiB server binary message into 8-KiB binary/continuation
                 // frames. Smaller authentication/control messages are left
                 // intact and do not consume this one-time profile behavior.
                 if (role_ == H2CarrierRole::Server &&
-                    !server_fragment_fixture_sent_ &&
-                    chunk == cover_profile::active()
-                                 .websocket_message_bytes) {
-                    frame = websocket_.EncodeBinaryFragmented(
-                        data + offset, chunk, chunk / 2);
+                    !server_fragment_fixture_sent_ && chunk == message_bytes) {
+                    websocket_.EncodeBinaryFragmented(
+                        wire, data.part(offset, chunk), chunk / 2);
                     server_fragment_fixture_sent_ = true;
                 } else {
-                    frame = websocket_.EncodeBinary(data + offset, chunk);
+                    websocket_.EncodeBinary(wire, data.part(offset, chunk));
                 }
-                if (frame.size() > kMaxQueuedOutput -
-                        std::min(kMaxQueuedOutput, wire.size())) {
-                    return Fail("encoded WebSocket output exceeded 32 MiB");
-                }
-                wire.insert(wire.end(), frame.begin(), frame.end());
                 offset += chunk;
             }
-            if (size == 0) wire = websocket_.EncodeBinary(data, 0);
+            if (size == 0) websocket_.EncodeBinary(wire, data);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
             stats_.websocket_encode_bytes += size;
             if (collect_timing_) {
@@ -579,7 +627,8 @@ public:
                     0, std::min(kCloseReason.size(),
                                 reason_bytes - reason.size())));
             }
-            auto close = websocket_.EncodeClose(websocket_code, reason);
+            H2Bytes close;
+            websocket_.EncodeClose(close, websocket_code, reason);
             RecordIdleBeforeClose();
             if (!MaybeSendPrefacePing()) return false;
             return QueueStreamBytes(carrier_stream_id_, std::move(close));
@@ -1902,9 +1951,9 @@ private:
             had_decoded_tunnel_bytes) {
             static constexpr std::uint8_t kFixturePing[] = {
                 'f', 'i', 'x', 't', 'u', 'r', 'e', '-', 'p', 'i', 'n', 'g'};
-            QueueStreamBytes(
-                stream_id,
-                websocket_.EncodePing(kFixturePing, std::size(kFixturePing)));
+            H2Bytes ping;
+            websocket_.EncodePing(ping, kFixturePing, std::size(kFixturePing));
+            QueueStreamBytes(stream_id, std::move(ping));
             server_active_ping_sent_ = true;
         }
         if (websocket_.closed()) carrier_closed_ = true;
@@ -2059,7 +2108,13 @@ private:
         diagnostics::Stopwatch flush_timer(collect_timing_);
         const std::size_t output_before = serialized_output_.size();
 #endif
+        // Once no captured priority is pending the wire profile rewrites
+        // nothing, so the frames go straight to the output and are only
+        // checked. Before that they gather in a batch the profile rewrites.
+        const bool rewriting = wire_profile_.rewriting();
         H2Bytes batch;
+        H2Bytes& sink = rewriting ? batch : serialized_output_;
+        const std::size_t sink_start = sink.size();
         while (true) {
             const std::uint8_t* data = nullptr;
             const auto length = nghttp2_session_mem_send2(session_.get(), &data);
@@ -2070,19 +2125,24 @@ private:
             }
             if (length == 0) break;
             const auto count = static_cast<std::size_t>(length);
+            const std::size_t pending = rewriting ? batch.size() : 0U;
             if (count >
-                kMaxQueuedOutput -
-                    std::min(kMaxQueuedOutput, batch.size()) ||
+                    kMaxQueuedOutput - std::min(kMaxQueuedOutput, pending) ||
                 serialized_output_.size() >
-                    kMaxQueuedOutput - batch.size() - count) {
+                    kMaxQueuedOutput - pending - count) {
                 Fail("serialized HTTP/2 output exceeded 32 MiB");
                 break;
             }
-            batch.insert(batch.end(), data, data + count);
+            sink.insert(sink.end(), data, data + count);
         }
-        if (!failed() && !batch.empty()) {
+        if (!failed() && rewriting && !batch.empty()) {
             wire_profile_.AppendSerializedBatch(
                 batch, kMaxQueuedOutput, serialized_output_, error_);
+        } else if (!failed() && !rewriting) {
+            detail::H2WireProfile::CheckFrames(
+                std::span<const std::uint8_t>(serialized_output_)
+                    .subspan(sink_start),
+                error_);
         }
         if (!failed() && serialized_output_.size() > trace_output_before) {
             last_wire_activity_at_ = clock_();
@@ -2323,11 +2383,18 @@ void H2Carrier::Feed(const std::uint8_t* data, std::size_t size) {
     impl_->Feed(data, size);
 }
 H2Bytes H2Carrier::TakeOutbound() { return impl_->TakeOutbound(); }
+std::size_t H2Carrier::PendingOutboundBytes() {
+    return impl_->PendingOutboundBytes();
+}
+bool H2Carrier::DrainOutboundWrites(OutboundWriteSink sink, void* context) {
+    return impl_->DrainOutboundWrites(sink, context);
+}
 std::vector<H2Bytes> H2Carrier::TakeOutboundWrites() {
     return impl_->TakeOutboundWrites();
 }
-bool H2Carrier::SendBinary(const std::uint8_t* data, std::size_t size) {
-    return impl_->SendBinary(data, size);
+bool H2Carrier::SendBinary(std::span<const std::uint8_t> head,
+                           std::span<const std::uint8_t> body) {
+    return impl_->SendBinary(WebSocketPayload{head, body});
 }
 H2Bytes H2Carrier::TakeTunnelBytes() { return impl_->TakeTunnelBytes(); }
 bool H2Carrier::ConsumeTunnelBytes(std::size_t size) {

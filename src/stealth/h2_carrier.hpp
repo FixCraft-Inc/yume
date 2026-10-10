@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -163,9 +164,26 @@ public:
     // a new socket write. Chrome writes its preface PING alone, so a caller
     // that sends each part as its own write gives it a TLS record of its own.
     std::vector<H2Bytes> TakeOutboundWrites();
+    // The same writes without handing over the buffer that holds them.
+    // PendingOutboundBytes() serializes what is queued and returns its size.
+    // DrainOutboundWrites() then passes exactly those bytes to `sink`, one
+    // call per write in order, empties the output and keeps its capacity up
+    // to a bound, so a busy carrier does not allocate it again for every
+    // burst. It stops at the first write `sink` refuses and returns false,
+    // with the output emptied all the same.
+    using OutboundWriteSink =
+        bool (*)(void* context, std::span<const std::uint8_t> write) noexcept;
+    std::size_t PendingOutboundBytes();
+    bool DrainOutboundWrites(OutboundWriteSink sink, void* context);
 
-    bool SendBinary(const std::uint8_t* data, std::size_t size);
+    bool SendBinary(const std::uint8_t* data, std::size_t size) {
+        return SendBinary(std::span<const std::uint8_t>(data, size), {});
+    }
     bool SendBinary(const H2Bytes& data) { return SendBinary(data.data(), data.size()); }
+    // Sends `head` followed by `body` as one byte stream, such as an envelope
+    // header and its record, without joining them first.
+    bool SendBinary(std::span<const std::uint8_t> head,
+                    std::span<const std::uint8_t> body);
     // Both roles. TakeTunnelBytes() transfers ownership of the matching H2
     // receive credit to the caller. Return that credit after the bytes have
     // drained into the downstream sink. Over-consumption fails closed; credit

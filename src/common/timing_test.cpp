@@ -9,6 +9,9 @@
 #include <cassert>
 #include <chrono>
 
+static_assert(yume::diagnostics::kTimingCompiledIn ==
+              static_cast<bool>(YUME_TEST_EXPECT_DEV_DIAGNOSTICS));
+
 int main() {
     using namespace std::chrono_literals;
     using yume::diagnostics::IntervalTimer;

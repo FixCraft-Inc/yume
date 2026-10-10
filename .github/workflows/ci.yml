@@ -412,6 +412,7 @@ jobs:
             -DYUME_STATIC_OPENSSL=ON \
             -DYUME_WARNINGS_AS_ERRORS=ON \
             -DYUME_SANITIZE=address+undefined \
+            -DYUME_DEV_DIAGNOSTICS=ON \
             -DYUME_BUILD_BASEFWX_MODULES=ON \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
@@ -503,6 +504,7 @@ jobs:
             -DYUME_STATIC_OPENSSL=ON \
             -DYUME_WARNINGS_AS_ERRORS=ON \
             -DYUME_SANITIZE=thread \
+            -DYUME_DEV_DIAGNOSTICS=ON \
             -DYUME_BUILD_BASEFWX_MODULES=ON \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \

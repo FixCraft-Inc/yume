@@ -66,7 +66,7 @@ Options:
   --clean                 Remove the build directory and exit
   --tests                 Build the test executables
   --dev                   Optimized developer build (RelWithDebInfo) with
-                          the low-level timing helpers compiled in
+                          the timing helpers and benchmark probes compiled in
   --native                Tune for this host CPU (-march/-mtune=native),
                           fastest locally but not portable to older CPUs
   --deb, --package-deb    Build a Debian package with CPack
@@ -417,14 +417,15 @@ main() {
         CMAKE_ARGS+=( -DYUME_BUILD_TESTING=ON )
     fi
 
-    # Keep the normal path unambiguously production-grade. Debug timing code is
-    # selected by configuration and therefore cannot leak into Release.
+    # Keep the normal path unambiguously production-grade. Developer
+    # diagnostics exist only when YUME_DEV_DIAGNOSTICS selects them, so they
+    # cannot leak into a Release build.
     if [[ $DEV_BUILD -eq 1 ]]; then
-        info "Build mode: RelWithDebInfo (timing helpers compiled in, no runtime switch)."
-        CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=RelWithDebInfo )
+        info "Build mode: RelWithDebInfo with developer diagnostics (YUME_DEV_DIAGNOSTICS=ON)."
+        CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=RelWithDebInfo -DYUME_DEV_DIAGNOSTICS=ON )
     else
         info "Build mode: Release (developer diagnostics compiled out)."
-        CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=Release )
+        CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=Release -DYUME_DEV_DIAGNOSTICS=OFF )
     fi
     CMAKE_ARGS+=( -DYUME_LTO=ON -DYUME_FAST_MATH=OFF )
 

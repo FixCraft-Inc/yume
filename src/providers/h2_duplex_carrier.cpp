@@ -628,19 +628,18 @@ private:
                     std::move(registration).take_value();
             }
 
-            std::vector<std::uint8_t> framed(
-                kH2DuplexEnvelopeBytes + record_bytes);
+            // The envelope and the record go to the carrier as two parts,
+            // which it frames without joining them first.
+            std::array<std::uint8_t, kH2DuplexEnvelopeBytes> envelope{};
             std::copy(kCarrierMagic.begin(), kCarrierMagic.end(),
-                      framed.begin());
-            framed[4] = kCarrierEnvelopeVersion;
-            framed[5] = 0U;
-            framed[6] = 0U;
-            framed[7] = 0U;
-            write_be32(framed.data() + 8,
+                      envelope.begin());
+            envelope[4] = kCarrierEnvelopeVersion;
+            write_be32(envelope.data() + 8,
                        static_cast<std::uint32_t>(record_bytes));
-            std::memcpy(framed.data() + kH2DuplexEnvelopeBytes,
-                        record.bytes().data(), record_bytes);
-            if (!h2_->SendBinary(framed)) {
+            if (!h2_->SendBinary(envelope,
+                                 {reinterpret_cast<const std::uint8_t*>(
+                                      record.bytes().data()),
+                                  record_bytes})) {
                 fail(h2_failure("queue H2 carrier record"));
                 return;
             }
@@ -980,13 +979,11 @@ private:
         }
         // Each part the H2 carrier hands over stays a write of its own, so
         // the TLS records follow the profiled browser's write boundaries.
-        std::vector<obfs::H2Bytes> writes = h2_->TakeOutboundWrites();
+        const std::size_t total = h2_->PendingOutboundBytes();
         if (h2_->failed()) {
             fail(h2_failure("serialize HTTP/2 output"));
             return;
         }
-        std::size_t total = 0U;
-        for (const auto& write : writes) total += write.size();
         if (total == 0U) {
             return;
         }
@@ -1006,24 +1003,44 @@ private:
                 "secure channel declares a zero write bound"));
             return;
         }
-        std::deque<Buffer> admitted;
-        for (const auto& wire : writes) {
-            std::size_t offset = 0U;
-            while (offset < wire.size()) {
-                const std::size_t count =
-                    std::min(channel_limit, wire.size() - offset);
-                auto copy = Buffer::copy_from(
-                    std::as_bytes(std::span<const std::uint8_t>(
-                        wire.data() + offset, count)),
-                    channel_limit);
-                if (!copy.ok()) {
-                    fail(copy.status());
-                    return;
+        // The carrier keeps its serialized output buffer, and each write is
+        // copied once, straight into the buffers the channel writes.
+        struct Admission final {
+            std::size_t channel_limit;
+            std::deque<Buffer> admitted;
+            Status failure;
+        } admission{channel_limit,
+                    {},
+                    Status::diagnostic(StatusCode::ResourceExhausted)};
+        const bool drained = h2_->DrainOutboundWrites(
+            [](void* context, std::span<const std::uint8_t> wire) noexcept {
+                auto& target = *static_cast<Admission*>(context);
+                try {
+                    std::size_t offset = 0U;
+                    while (offset < wire.size()) {
+                        const std::size_t count = std::min(
+                            target.channel_limit, wire.size() - offset);
+                        auto copy = Buffer::copy_from(
+                            std::as_bytes(wire.subspan(offset, count)),
+                            target.channel_limit);
+                        if (!copy.ok()) {
+                            target.failure = copy.status();
+                            return false;
+                        }
+                        target.admitted.push_back(std::move(copy).take_value());
+                        offset += count;
+                    }
+                    return true;
+                } catch (...) {
+                    return false;
                 }
-                admitted.push_back(std::move(copy).take_value());
-                offset += count;
-            }
+            },
+            &admission);
+        if (!drained) {
+            fail(std::move(admission.failure));
+            return;
         }
+        auto& admitted = admission.admitted;
         while (!admitted.empty()) {
             secure_writes_.push_back(std::move(admitted.front()));
             admitted.pop_front();

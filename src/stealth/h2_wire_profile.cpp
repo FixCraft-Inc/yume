@@ -90,6 +90,28 @@ bool H2WireProfile::QueuePriority(
         : Fail(error, "duplicate captured HTTP/2 priority");
 }
 
+bool H2WireProfile::CheckFrames(std::span<const std::uint8_t> serialized,
+                                std::string& error) {
+    std::size_t offset = 0;
+    if (serialized.size() >= kH2ClientPreface.size() &&
+        std::equal(kH2ClientPreface.begin(), kH2ClientPreface.end(),
+                   serialized.begin())) {
+        offset = kH2ClientPreface.size();
+    }
+    while (offset < serialized.size()) {
+        if (serialized.size() - offset < kFrameHeaderSize) {
+            return Fail(error, "libnghttp2 emitted a truncated frame header");
+        }
+        const std::size_t frame_size =
+            kFrameHeaderSize + ReadBe24(serialized.data() + offset);
+        if (frame_size > serialized.size() - offset) {
+            return Fail(error, "libnghttp2 emitted a truncated frame");
+        }
+        offset += frame_size;
+    }
+    return true;
+}
+
 bool H2WireProfile::AppendSerializedBatch(
     const Bytes& batch,
     std::size_t max_output_bytes,

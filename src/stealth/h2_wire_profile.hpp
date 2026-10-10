@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -38,6 +39,16 @@ public:
         std::size_t max_output_bytes,
         Bytes& output,
         std::string& error);
+
+    // True while some HEADERS frame still needs its captured priority. Until
+    // then output passes through AppendSerializedBatch. Afterwards nothing is
+    // rewritten, so a caller may append libnghttp2's output directly and
+    // check it with CheckFrames.
+    bool rewriting() const noexcept { return !pending_priorities_.empty(); }
+    // Checks that `serialized` holds whole frames, after an optional client
+    // preface, as AppendSerializedBatch does.
+    static bool CheckFrames(std::span<const std::uint8_t> serialized,
+                            std::string& error);
 
 private:
     std::unordered_map<std::int32_t, cover_profile::H2Priority>

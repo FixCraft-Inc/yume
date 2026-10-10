@@ -2078,7 +2078,13 @@ private:
         diagnostics::Stopwatch flush_timer(collect_timing_);
         const std::size_t output_before = serialized_output_.size();
 #endif
+        // Once no captured priority is pending the wire profile rewrites
+        // nothing, so the frames go straight to the output and are only
+        // checked. Before that they gather in a batch the profile rewrites.
+        const bool rewriting = wire_profile_.rewriting();
         H2Bytes batch;
+        H2Bytes& sink = rewriting ? batch : serialized_output_;
+        const std::size_t sink_start = sink.size();
         while (true) {
             const std::uint8_t* data = nullptr;
             const auto length = nghttp2_session_mem_send2(session_.get(), &data);
@@ -2089,19 +2095,24 @@ private:
             }
             if (length == 0) break;
             const auto count = static_cast<std::size_t>(length);
+            const std::size_t pending = rewriting ? batch.size() : 0U;
             if (count >
-                kMaxQueuedOutput -
-                    std::min(kMaxQueuedOutput, batch.size()) ||
+                    kMaxQueuedOutput - std::min(kMaxQueuedOutput, pending) ||
                 serialized_output_.size() >
-                    kMaxQueuedOutput - batch.size() - count) {
+                    kMaxQueuedOutput - pending - count) {
                 Fail("serialized HTTP/2 output exceeded 32 MiB");
                 break;
             }
-            batch.insert(batch.end(), data, data + count);
+            sink.insert(sink.end(), data, data + count);
         }
-        if (!failed() && !batch.empty()) {
+        if (!failed() && rewriting && !batch.empty()) {
             wire_profile_.AppendSerializedBatch(
                 batch, kMaxQueuedOutput, serialized_output_, error_);
+        } else if (!failed() && !rewriting) {
+            detail::H2WireProfile::CheckFrames(
+                std::span<const std::uint8_t>(serialized_output_)
+                    .subspan(sink_start),
+                error_);
         }
         if (!failed() && serialized_output_.size() > trace_output_before) {
             last_wire_activity_at_ = clock_();

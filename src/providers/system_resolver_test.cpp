@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -435,6 +436,80 @@ void test_non_helper_program() {
 
 }  // namespace
 
+// A remote resolver on one context sends its lookups to an owner's helper on
+// another and answers on its own. Cancel keeps a completion from running,
+// close fails what is outstanding, and the owner's refusal arrives through
+// the completion.
+void test_remote_lookups() {
+    const auto owner_context = make_context();
+    auto created = AsioExecutionContext::create(
+        yume::engine::ExecutorAffinity(0x52534c57U));
+    CHECK(created.ok());
+    const auto context = std::move(created).take_value();
+    const auto owner =
+        make_resolver(owner_context, YUME_TEST_STALL_RESOLVER_PROGRAM);
+    std::thread owner_thread([&] { owner_context->run(); });
+    auto made = SystemResolver::create_remote(context, owner);
+    CHECK(made.ok());
+    const auto remote = std::move(made).take_value();
+    auto second = SystemResolver::create_remote(context, owner);
+    CHECK(second.ok());
+    const auto refused_remote = std::move(second).take_value();
+    CHECK(remote->executor_affinity() == context->affinity());
+    std::optional<Result<Addresses>> localhost;
+    bool answered_here = false;
+    bool cancelled_invoked = false;
+    std::optional<Result<Addresses>> closed_live;
+    std::optional<Result<Addresses>> refused;
+    boost::asio::post(context->executor(), [&] {
+        CHECK(
+            remote
+                ->resolve(
+                    "localhost", 4U,
+                    [&](Result<Addresses> result) {
+                        localhost = std::move(result);
+                        answered_here = context->running_in_this_thread();
+                        auto cancelled = remote->resolve(
+                            kStallHost, 4U, [&](Result<Addresses>) {
+                                cancelled_invoked = true;
+                            });
+                        CHECK(cancelled.ok());
+                        remote->cancel(cancelled.value());
+                        CHECK(
+                            remote
+                                ->resolve(
+                                    kStallHost, 4U,
+                                    [&](Result<Addresses> late) {
+                                        closed_live = std::move(late);
+                                        owner->close();
+                                        CHECK(
+                                            refused_remote
+                                                ->resolve(
+                                                    "localhost", 4U,
+                                                    [&](Result<Addresses>
+                                                            answer) {
+                                                        refused =
+                                                            std::move(answer);
+                                                        refused_remote->close();
+                                                        context->finish();
+                                                        owner_context->finish();
+                                                    })
+                                                .ok());
+                                    })
+                                .ok());
+                        remote->close();
+                    })
+                .ok());
+    });
+    context->run();
+    owner_thread.join();
+    CHECK(localhost && localhost->ok() && is_loopback(localhost->value()));
+    CHECK(answered_here);
+    CHECK(!cancelled_invoked);
+    CHECK(closed_live && closed_live->status().code() == StatusCode::Closed);
+    CHECK(refused && refused->status().code() == StatusCode::Closed);
+}
+
 int main(int argc, char** argv) {
     // This test binary also serves as the /proc/self/exe helper.
     if (yume::providers::is_system_resolver_helper(argc, argv)) {
@@ -450,6 +525,7 @@ int main(int argc, char** argv) {
     test_waiting_lookups();
     test_close_fails_waiting_lookups();
     test_non_helper_program();
+    test_remote_lookups();
     if (failures != 0) {
         std::fprintf(stderr, "%d system resolver check(s) failed\n", failures);
         return 1;

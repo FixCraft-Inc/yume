@@ -2022,6 +2022,17 @@ if(YUME_BUILD_TESTING)
                     --module "$<TARGET_FILE:yume-echo-module>")
             set_tests_properties(yume_native_runtime_test PROPERTIES
                 TIMEOUT 180 LABELS "foundation;0.3;native-runtime;integration")
+            # One yumed on four event loops with six clients, an echo module
+            # every client reaches, max_sessions across loops and a reload.
+            add_test(NAME yume_native_loops_test
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/run_native_loops_test.py"
+                    --yumed "$<TARGET_FILE:yumed>"
+                    --yume "$<TARGET_FILE:yume>"
+                    --openssl "${YUME_NATIVE_TEST_OPENSSL}"
+                    --module "$<TARGET_FILE:yume-echo-module>")
+            set_tests_properties(yume_native_loops_test PROPERTIES
+                TIMEOUT 240 LABELS "foundation;0.3;native-runtime;integration")
             # Three clustered daemons from yume-setup's cluster commands: links
             # in both directions, recovery after a stop, a refused wrong PSK
             # and a reload, observed through each node's control socket.

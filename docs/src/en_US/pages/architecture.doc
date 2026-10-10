@@ -285,6 +285,29 @@ and drains. An explicit dial address can differ from the authenticated DNS
 name. A dial name uses the endpoint's `SystemResolver`, which endpoint close
 also closes.
 
+`yumed` runs `endpoint.event_loops` execution contexts, each on its own
+thread, and one `NativeEndpoint` on each. The first context owns the
+listening sockets, signals, the control socket, module supervisors and the
+resolver helper. It accepts each TCP connection before TLS and hands its
+descriptor to the context serving the fewest sessions, whose front door
+then runs TLS, cover, admission and the session for the connection's whole
+life, so no TLS or session state moves between threads. The listener's
+bounds hold across contexts: one count of connections waiting for
+promotion pauses accepting, and one promotion budget admits carriers.
+Services every context reaches have one owner each and never run a
+callback under their lock: the admission replay cache, the credential
+policy and security factory that a reload loads once and publishes, the
+per-identity session registry that `max_sessions` evicts through from any
+context, the direct-route connection budgets, the egress limiter and the
+resolver helper, which takes requests posted from other contexts and posts
+each answer back. A module stream connects to its module's socket and runs
+its bridge on the session's context, while the supervisor keeps the
+process on the first. Each context publishes its status, and the control
+socket reports their sum. A configuration with a cluster or a packet
+adapter runs one context, since circuits relay cells between sessions and
+a packet adapter serves one device to one session. `yume` and the C ABI
+run one context.
+
 ### SessionEngine and StreamDispatcher
 
 `SessionEngine` owns YTP/1 authentication, the key schedule, directional

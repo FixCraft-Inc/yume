@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -54,6 +55,22 @@ using namespace ytp1_crypto;
 
 constexpr std::string_view kAuthenticationScheme =
     "YTP/1-Ed25519+ML-DSA-87";
+
+// Factories alive at the same time share one private library context.
+// OpenSSL frees a thread's random state for a context when that thread
+// exits, but only while the context exists. A context freed from one thread
+// leaks the state of every other thread that drew from it and still runs, as
+// a credential reload's new factory would leave behind on a server's other
+// event loops. Sharing keeps the context until the last factory is gone.
+std::shared_ptr<CryptoContext> shared_crypto_context() {
+    static std::mutex mutex;
+    static std::weak_ptr<CryptoContext> current;
+    const std::lock_guard lock(mutex);
+    if (auto existing = current.lock()) return existing;
+    auto created = std::make_shared<CryptoContext>();
+    current = created;
+    return created;
+}
 
 constexpr std::size_t kMaxDerKeyBytes = 64U * 1024U;
 constexpr std::size_t kMaxPeerLabelBytes = 512U;
@@ -1607,7 +1624,7 @@ OpenSslSecurityProviderFactory::create_client(
                    "client PSK or server peer label is invalid"));
     }
     try {
-        auto crypto = std::make_shared<CryptoContext>();
+        auto crypto = shared_crypto_context();
         auto credentials = std::make_shared<CredentialStore>();
         credentials->crypto = std::move(crypto);
         credentials->role = EndpointRole::Client;
@@ -1672,7 +1689,7 @@ OpenSslSecurityProviderFactory::create_server(
                    "server authorized-identity count is outside its bound"));
     }
     try {
-        auto crypto = std::make_shared<CryptoContext>();
+        auto crypto = shared_crypto_context();
         auto credentials = std::make_shared<CredentialStore>();
         credentials->crypto = std::move(crypto);
         credentials->role = EndpointRole::Server;

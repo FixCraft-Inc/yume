@@ -333,18 +333,21 @@ void test_server_status() {
     status.listeners.emplace_back(boost::asio::ip::make_address("2001:db8::1"),
                                   443U);
     status.client_sessions = 5U;
+    status.loop_sessions = {3U, 2U};
     const Json plain =
         Json::parse(yume::runtime::server_status_reply(status, now));
     check(plain.at("program") == "yumed" && plain.at("client_sessions") == 5 &&
               plain.at("listeners") ==
                   Json::array({"192.0.2.1:443", "[2001:db8::1]:443"}) &&
+              plain.at("loops") == Json::array({3, 2}) &&
               plain.at("cluster").is_null(),
           "the server reply without a cluster is wrong");
     const std::string expected_plain = std::string("yumed ") + yume::kVersion +
                                        "\n"
                                        "listening: 192.0.2.1:443\n"
                                        "listening: [2001:db8::1]:443\n"
-                                       "client sessions: 5\n";
+                                       "client sessions: 5\n"
+                                       "event loops: 2, sessions 3, 2\n";
     check(
         require(yume::runtime::status_reply_text(
             yume::runtime::server_status_reply(status, now))) == expected_plain,

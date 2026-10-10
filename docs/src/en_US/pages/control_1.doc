@@ -190,6 +190,7 @@ words, and `latency_ms` when every hop has been measured.
 | `program`, `version` | `"yumed"`, and the product version |
 | `listeners` | The listening endpoints, as `address:port` |
 | `client_sessions` | Client sessions open now |
+| `loops` | The sessions open on each event loop, the first loop, which also accepts every connection, first |
 | `cluster` | `null`, or the cluster below when the configuration names one |
 @end
 

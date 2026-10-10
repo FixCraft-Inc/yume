@@ -7,6 +7,7 @@
 #include "providers/h2_web_front_door.hpp"
 #include "providers/ytp1_h2_admission.hpp"
 #include "stealth/cover_profile.hpp"
+#include "test_support/allocation_failure.hpp"
 
 #include <algorithm>
 #include <array>
@@ -104,8 +105,9 @@ constexpr std::string_view kNotFound = "<!doctype html><title>Not found</title><
 
 class IoRuntime final {
 public:
-    IoRuntime()
-        : context_(take(AsioExecutionContext::create(ExecutorAffinity(191U)))),
+    explicit IoRuntime(std::uint64_t affinity = 191U)
+        : context_(
+              take(AsioExecutionContext::create(ExecutorAffinity(affinity)))),
           worker_([this] {
               for (;;) {
                   try {
@@ -486,6 +488,97 @@ public:
     std::shared_ptr<admission::ReplayCache> replay;
     std::shared_ptr<Tls13SecureChannelProvider> tls;
     std::shared_ptr<H2WebFrontDoor> door;
+};
+
+// One listener on its own context hands each connection to the served front
+// door the test names, on one of two other contexts. Both serve from one
+// replay cache and the listener's share.
+class ServedFixture final {
+public:
+    explicit ServedFixture(H2WebFrontDoorLimits limits = {})
+        : identity(make_identity()),
+          cover(files.load()),
+          replay(std::make_shared<admission::ReplayCache>(64U, 3600U)),
+          tls(take(Tls13SecureChannelProvider::create_server(
+              {identity.certificate, identity.key, {}, {}}))) {
+        listener = listening.sync([&] {
+            return take(H2WebListener::create(
+                listening.context(),
+                {boost::asio::ip::address_v4::loopback(), 0U}, limits,
+                [this](int descriptor) {
+                    std::lock_guard lock(mutex);
+                    const int index = target.load();
+                    if (index < 0 ||
+                        static_cast<std::size_t>(index) >= doors.size())
+                        return false;
+                    ++handed[static_cast<std::size_t>(index)];
+                    // A test may fail one allocation of the hand-off itself.
+                    const std::size_t nth = fail_in_serve.exchange(0U);
+                    if (nth != 0U) yume::test::arm_allocation_failure(nth);
+                    doors[static_cast<std::size_t>(index)]->serve(descriptor);
+                    if (nth != 0U)
+                        serve_failed = yume::test::disarm_allocation_failure();
+                    return true;
+                },
+                [] {}));
+        });
+        H2WebFrontDoorConfig config;
+        const auto share = listener->share();
+        for (IoRuntime* runtime : {&first, &second}) {
+            auto door = runtime->sync([&] {
+                return take(H2WebFrontDoor::create_served(
+                    runtime->context(), config, tls, cover, replay,
+                    kAdmissionKey, share));
+            });
+            CHECK(door->local_endpoint() == listener->local_endpoint());
+            std::lock_guard lock(mutex);
+            doors.push_back(std::move(door));
+        }
+    }
+    ~ServedFixture() noexcept {
+        listener->close();
+        for (const auto& door : doors) door->close();
+    }
+    std::uint16_t port() const { return listener->local_endpoint().port(); }
+    IoRuntime& runtime(std::size_t index) {
+        return index == 0U ? first : second;
+    }
+    std::future<Result<AcceptedCarrier>> accept(std::size_t index) {
+        auto promise =
+            std::make_shared<std::promise<Result<AcceptedCarrier>>>();
+        auto result = promise->get_future();
+        auto& serving = runtime(index);
+        serving.sync([&] {
+            doors[index]->async_accept(
+                {}, [promise, context = serving.context()](
+                        Result<AcceptedCarrier> accepted) {
+                    if (!context->running_in_this_thread()) {
+                        promise->set_exception(
+                            std::make_exception_ptr(std::runtime_error(
+                                "accept completion escaped its context")));
+                        return;
+                    }
+                    promise->set_value(std::move(accepted));
+                });
+        });
+        return result;
+    }
+
+    IoRuntime listening{301U};
+    IoRuntime first{302U};
+    IoRuntime second{303U};
+    CoverFiles files;
+    PemIdentity identity;
+    std::shared_ptr<const CoverSite> cover;
+    std::shared_ptr<admission::ReplayCache> replay;
+    std::shared_ptr<Tls13SecureChannelProvider> tls;
+    std::shared_ptr<H2WebListener> listener;
+    std::mutex mutex;
+    std::vector<std::shared_ptr<H2WebFrontDoor>> doors;
+    std::array<std::size_t, 2U> handed{};
+    std::atomic<int> target{0};
+    std::atomic<std::size_t> fail_in_serve{0U};
+    std::atomic<bool> serve_failed{false};
 };
 
 void check_cover(const HttpResponse& response) {
@@ -1083,6 +1176,173 @@ void test_ipv4_ipv6_wildcard_pair_shares_port() {
 }  // namespace
 }  // namespace yume::providers
 
+namespace yume::providers {
+namespace {
+
+// A carrier promoted on a served front door belongs to that door's context,
+// and a proof's nonce used there cannot admit again on the other context.
+void test_served_doors_share_replay_and_keep_their_context() {
+    ServedFixture fixture;
+    fixture.target = 1;
+    auto accepted = fixture.accept(1U);
+    TlsPeer tls(fixture.port(), fixture.identity.certificate);
+    H2Peer h2(tls, fixture.port());
+    CHECK(h2.response(h2.submit("GET", "/")).body == kIndex);
+    admission::Nonce nonce{};
+    nonce[0] = std::byte{71U};
+    CHECK(h2.response_headers(
+                h2.submit("CONNECT", tls.admission_path(nonce), true))
+              .headers.at(":status") == "200");
+    auto carrier = std::move(take(await(accepted))).take_carrier();
+    CHECK(carrier->executor_affinity() == fixture.second.context()->affinity());
+
+    fixture.target = 0;
+    auto pending = fixture.accept(0U);
+    TlsPeer replay_tls(fixture.port(), fixture.identity.certificate);
+    H2Peer replay_h2(replay_tls, fixture.port());
+    check_cover(replay_h2.response(
+        replay_h2.submit("CONNECT", replay_tls.admission_path(nonce), true)));
+    CHECK(pending.wait_for(0ms) == std::future_status::timeout);
+    nonce[0] = std::byte{72U};
+    CHECK(replay_h2
+              .response_headers(replay_h2.submit(
+                  "CONNECT", replay_tls.admission_path(nonce), true))
+              .headers.at(":status") == "200");
+    auto second = std::move(take(await(pending))).take_carrier();
+    CHECK(second->executor_affinity() == fixture.first.context()->affinity());
+    CHECK(fixture.handed[0] == 1U && fixture.handed[1] == 1U);
+    CHECK(fixture.replay->size() == 2U);
+    carrier->close();
+    second->close();
+}
+
+// The listener stops accepting while max_connections connections wait for
+// promotion on any served door, and resumes when one ends there.
+void test_served_doors_share_the_connection_bound() {
+    H2WebFrontDoorLimits limits;
+    limits.max_connections = 1U;
+    ServedFixture fixture(limits);
+    fixture.target = 1;
+    boost::asio::io_context io;
+    Tcp::socket waiting(io);
+    waiting.connect({boost::asio::ip::address_v4::loopback(), fixture.port()});
+    auto blocked = std::async(std::launch::async, [&] {
+        TlsPeer tls(fixture.port(), fixture.identity.certificate);
+        H2Peer h2(tls, fixture.port());
+        return h2.response(h2.submit("GET", "/")).body;
+    });
+    CHECK(blocked.wait_for(500ms) == std::future_status::timeout);
+    waiting.close();
+    CHECK(blocked.get() == kIndex);
+    CHECK(fixture.handed[1] == 2U);
+}
+
+// One promotion budget spans the served doors: with room for one carrier, a
+// valid admission on the other door gets cover until the first one ends.
+void test_served_doors_share_the_promotion_budget() {
+    H2WebFrontDoorLimits limits;
+    limits.max_promoted_carriers = 1U;
+    ServedFixture fixture(limits);
+    fixture.target = 0;
+    auto accepted = fixture.accept(0U);
+    TlsPeer first_tls(fixture.port(), fixture.identity.certificate);
+    H2Peer first_h2(first_tls, fixture.port());
+    admission::Nonce nonce{};
+    nonce[0] = std::byte{81U};
+    CHECK(first_h2
+              .response_headers(first_h2.submit(
+                  "CONNECT", first_tls.admission_path(nonce), true))
+              .headers.at(":status") == "200");
+    auto carrier = std::move(take(await(accepted))).take_carrier();
+
+    fixture.target = 1;
+    auto pending = fixture.accept(1U);
+    TlsPeer second_tls(fixture.port(), fixture.identity.certificate);
+    H2Peer second_h2(second_tls, fixture.port());
+    nonce[0] = std::byte{82U};
+    check_cover(second_h2.response(
+        second_h2.submit("CONNECT", second_tls.admission_path(nonce), true)));
+    CHECK(pending.wait_for(0ms) == std::future_status::timeout);
+    // The carrier's reservation goes with the carrier.
+    carrier.reset();
+    fixture.first.sync([] {});
+    nonce[0] = std::byte{83U};
+    CHECK(second_h2
+              .response_headers(second_h2.submit(
+                  "CONNECT", second_tls.admission_path(nonce), true))
+              .headers.at(":status") == "200");
+    take(await(pending)).take_carrier()->close();
+}
+
+// One allocation failure in the hand-off, swept from its first allocation
+// on, never keeps the connection's place: with room for one waiting
+// connection, a full request still succeeds afterwards. On the listener's
+// thread the failure is armed around serve(), on the serving thread from
+// the adoption on, and each sweep ends where the hand-off no longer reaches
+// the armed allocation. Asio's own completion of a pending accept is left
+// out: a failure there loses the operation inside the library.
+void test_handoff_allocation_failure_returns_the_place() {
+    H2WebFrontDoorLimits limits;
+    limits.max_connections = 1U;
+    for (const bool on_listener : {true, false}) {
+        std::size_t failures = 0U;
+        bool completed = false;
+        for (std::size_t nth = 1U; nth <= 64U && !completed; ++nth) {
+            ServedFixture fixture(limits);
+            fixture.target = 0;
+            if (on_listener)
+                fixture.fail_in_serve = nth;
+            else
+                fixture.first.sync(
+                    [nth] { yume::test::arm_allocation_failure(nth); });
+            boost::asio::io_context io;
+            Tcp::socket waiting(io);
+            waiting.connect(
+                {boost::asio::ip::address_v4::loopback(), fixture.port()});
+            std::this_thread::sleep_for(200ms);
+            const bool fired =
+                on_listener
+                    ? fixture.serve_failed.load()
+                    : fixture.first.sync([] {
+                          return yume::test::disarm_allocation_failure();
+                      });
+            waiting.close();
+            TlsPeer tls(fixture.port(), fixture.identity.certificate);
+            H2Peer h2(tls, fixture.port());
+            CHECK(h2.response(h2.submit("GET", "/")).body == kIndex);
+            if (fired) {
+                ++failures;
+            } else {
+                completed = true;
+            }
+        }
+        CHECK(completed && failures > 0U);
+    }
+}
+
+// A descriptor no served door takes is closed at once.
+void test_refused_dispatch_closes_the_connection() {
+    ServedFixture fixture;
+    fixture.target = -1;
+    boost::asio::io_context io;
+    Tcp::socket refused(io);
+    refused.connect({boost::asio::ip::address_v4::loopback(), fixture.port()});
+    const timeval timeout{3, 0};
+    CHECK(::setsockopt(refused.native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                       &timeout, sizeof(timeout)) == 0);
+    std::array<char, 16U> byte{};
+    boost::system::error_code error;
+    const auto count = refused.read_some(boost::asio::buffer(byte), error);
+    CHECK(count == 0U && error == boost::asio::error::eof);
+    fixture.target = 0;
+    TlsPeer tls(fixture.port(), fixture.identity.certificate);
+    H2Peer h2(tls, fixture.port());
+    CHECK(h2.response(h2.submit("GET", "/")).body == kIndex);
+}
+
+}  // namespace
+}  // namespace yume::providers
+
 int main() {
     std::signal(SIGPIPE, SIG_IGN);
     try {
@@ -1104,6 +1364,12 @@ int main() {
         yume::providers::test_closed_listener_destruction_after_final_drain();
         yume::providers::test_closed_native_carriers_destruction_after_final_drain();
         yume::providers::test_ipv4_ipv6_wildcard_pair_shares_port();
+        yume::providers::
+            test_served_doors_share_replay_and_keep_their_context();
+        yume::providers::test_served_doors_share_the_connection_bound();
+        yume::providers::test_served_doors_share_the_promotion_budget();
+        yume::providers::test_refused_dispatch_closes_the_connection();
+        yume::providers::test_handoff_allocation_failure_returns_the_place();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -71,8 +71,21 @@ struct NativeServerStatus final {
     std::vector<boost::asio::ip::tcp::endpoint> listeners;
     // Authenticated sessions other than cluster peers'.
     std::size_t client_sessions{0U};
+    // Sessions open on each event loop, the first loop first. Its sum also
+    // counts cluster peers' sessions.
+    std::vector<std::size_t> loop_sessions;
     std::optional<NativeClusterStatus> cluster;
 };
+
+// endpoint.event_loops when absent: the CPUs this process may run on, at
+// most this many.
+inline constexpr std::size_t kNativeDefaultMaxEventLoops = 16U;
+
+// The contexts a server configuration serves sessions on: its
+// endpoint.event_loops, or when absent the CPUs in this process's affinity
+// mask, at most kNativeDefaultMaxEventLoops, and one with a cluster or a
+// packet adapter. One for a client.
+std::size_t native_event_loops(const config::v1::Config& config) noexcept;
 
 struct NativeServerRuntimeOptions final {
     // The SystemResolver helper for destination names of direct adapters.

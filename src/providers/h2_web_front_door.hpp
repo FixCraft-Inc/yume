@@ -7,6 +7,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <span>
 
@@ -60,6 +61,12 @@ struct H2WebFrontDoorConfig final {
 // reserved control delivery and a cancellable timer for graceful close.
 H2Dispatch make_asio_h2_dispatch(std::shared_ptr<AsioExecutionContext> context);
 
+// One listening address's bounds, shared by the front doors that serve its
+// connections on other contexts: the count of connections not yet promoted,
+// which the listener keeps below max_connections, and the promotion budget.
+// H2WebListener makes it, and H2WebFrontDoor::create_served takes it.
+struct H2WebListenerShare;
+
 class H2WebFrontDoor final : public engine::FrontDoor {
 public:
     // Socket setup preserves permission, address conflict, invalid-address and
@@ -72,6 +79,22 @@ public:
         std::shared_ptr<const CoverSite> cover,
         std::shared_ptr<admission::ReplayCache> replay,
         std::span<const std::byte> admission_key);
+
+    // A front door without a listener of its own, for a server that
+    // accepts on one context and serves on several. It takes the
+    // connections serve() hands it, keeps them within the share's
+    // promotion budget and returns each one's place in the share's
+    // connection count when it is promoted or ends. config.listen_endpoint
+    // and config.limits are ignored: admission uses the share's listening
+    // endpoint, and the listener's limits hold for all its front doors.
+    static engine::Result<std::shared_ptr<H2WebFrontDoor>> create_served(
+        std::shared_ptr<AsioExecutionContext> context,
+        H2WebFrontDoorConfig config,
+        std::shared_ptr<Tls13SecureChannelProvider> tls,
+        std::shared_ptr<const CoverSite> cover,
+        std::shared_ptr<admission::ReplayCache> replay,
+        std::span<const std::byte> admission_key,
+        std::shared_ptr<H2WebListenerShare> share);
 
     ~H2WebFrontDoor() noexcept override;
     engine::ExecutorAffinity executor_affinity() const noexcept override;
@@ -88,10 +111,61 @@ public:
     // retain their TCP owner and remain independent of FrontDoor destruction.
     void cancel() noexcept override;
     void close() noexcept override;
+    // A served front door's next connection, an accepted TCP descriptor that
+    // already holds a place in its share's connection count. Callable from
+    // any thread. The front door owns the descriptor from here on and closes
+    // it, returning its place, when it cannot serve it.
+    void serve(int descriptor) noexcept;
+    // A served front door's connections that wait for promotion. Callable
+    // from any thread, for a dispatcher choosing the least busy door.
+    std::size_t waiting_connections() const noexcept;
 
 private:
     class State;
     explicit H2WebFrontDoor(std::shared_ptr<State> state) noexcept;
+    static engine::Result<std::shared_ptr<H2WebFrontDoor>> build(
+        std::shared_ptr<AsioExecutionContext> context,
+        H2WebFrontDoorConfig config,
+        std::shared_ptr<Tls13SecureChannelProvider> tls,
+        std::shared_ptr<const CoverSite> cover,
+        std::shared_ptr<admission::ReplayCache> replay,
+        std::span<const std::byte> admission_key,
+        std::shared_ptr<H2WebListenerShare> share);
+    std::shared_ptr<State> state_;
+};
+
+// The listening half of a server that serves on several contexts. On its
+// own context it accepts TCP connections while fewer than max_connections
+// of them wait for promotion anywhere, and hands each one's descriptor to
+// `dispatch`, which passes it to a served front door's serve() or returns
+// false, and the listener then closes it. Descriptor or memory exhaustion
+// pauses accepting for a second. Any other accept failure closes the
+// listener and calls `stopped` once on its context. A served front door
+// that releases a place in a full count resumes accepting. Creation and
+// dispatch run on the context, close() and destruction on any thread.
+class H2WebListener final {
+public:
+    using Dispatch = std::function<bool(int descriptor)>;
+    using Stopped = std::function<void()>;
+
+    // Socket setup reports permission, address conflict, invalid address
+    // and resource exhaustion as H2WebFrontDoor::create does.
+    static engine::Result<std::shared_ptr<H2WebListener>> create(
+        std::shared_ptr<AsioExecutionContext> context,
+        boost::asio::ip::tcp::endpoint listen_endpoint,
+        H2WebFrontDoorLimits limits, Dispatch dispatch, Stopped stopped);
+
+    H2WebListener(const H2WebListener&) = delete;
+    H2WebListener& operator=(const H2WebListener&) = delete;
+    ~H2WebListener() noexcept;
+
+    boost::asio::ip::tcp::endpoint local_endpoint() const noexcept;
+    std::shared_ptr<H2WebListenerShare> share() const noexcept;
+    void close() noexcept;
+
+private:
+    class State;
+    explicit H2WebListener(std::shared_ptr<State> state) noexcept;
     std::shared_ptr<State> state_;
 };
 

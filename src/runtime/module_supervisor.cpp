@@ -7,6 +7,8 @@
 #include "runtime/module_supervisor.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <optional>
 #include <cerrno>
 #include <csignal>
 #include <cstdint>
@@ -105,6 +107,11 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
     ~State() { finish_close(); }
 
     bool running() const noexcept { return child.running() && !closing; }
+    // What handlers on other contexts read: running() as of the latest
+    // start, exit or close, published on the context.
+    void publish_running() noexcept {
+        live.store(running(), std::memory_order_release);
+    }
 
     void say(std::string_view text) noexcept {
         if (!report) return;
@@ -182,6 +189,7 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
         }
         started_at = Clock::now();
         watch(++generation);
+        publish_running();
         try {
             say("started as process " + std::to_string(child.pid()));
         } catch (...) {
@@ -215,6 +223,7 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
         }
         Error ignored;
         exit_watch.close(ignored);
+        publish_running();
         if (closing) {
             finish_close();
             return;
@@ -252,6 +261,7 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
     void close() noexcept {
         if (closing) return;
         closing = true;
+        publish_running();
         providers::cancel_timer(restart_timer);
         if (!child.running()) {
             finish_close();
@@ -294,6 +304,7 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
     ModuleReport report;
     const std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
     std::shared_ptr<engine::StreamHandler> handler;
+    std::optional<engine::ProviderDescriptor> descriptor;
     std::filesystem::path directory;
     std::filesystem::path socket_path;
     providers::Descriptor listener;
@@ -307,22 +318,32 @@ struct ModuleSupervisor::State final : std::enable_shared_from_this<State> {
     bool started{false};
     bool closing{false};
     bool finished{false};
+    std::atomic<bool> live{false};
 };
 
 namespace {
+
+// Where a handler connects its streams: the context its sessions run on and
+// the channel owner there. The supervisor's own context has one, and so has
+// every other context a server serves sessions on.
+struct ModuleRoute final {
+    std::shared_ptr<providers::AsioExecutionContext> context;
+    std::shared_ptr<providers::AsioTcpAcceptedChannelOwner> channels;
+};
 
 // One OPEN from the connection attempt until the stream is bridged or refused.
 class ModuleOpen final : public std::enable_shared_from_this<ModuleOpen> {
 public:
     ModuleOpen(std::shared_ptr<ModuleSupervisor::State> state,
-               std::shared_ptr<StreamResponder> stream,
+               ModuleRoute route, std::shared_ptr<StreamResponder> stream,
                engine::StreamHandler::AcceptanceCompletion&& completion,
                std::string header)
         : state_(std::move(state)),
+          route_(std::move(route)),
           stream_(std::move(stream)),
           header_(std::move(header)),
-          socket_(state_->context->executor()),
-          timer_(state_->context->executor()),
+          socket_(route_.context->executor()),
+          timer_(route_.context->executor()),
           completion_(std::move(completion)) {}
 
     void start() noexcept {
@@ -350,7 +371,7 @@ private:
         }
         // Reporting a failure copies its status, which can itself fail.
         try {
-            auto channel = state_->channels->adopt(std::move(socket_));
+            auto channel = route_.channels->adopt(std::move(socket_));
             if (!channel.ok()) {
                 fail(channel.status());
                 return;
@@ -409,6 +430,7 @@ private:
     }
 
     std::shared_ptr<ModuleSupervisor::State> state_;
+    ModuleRoute route_;
     std::shared_ptr<StreamResponder> stream_;
     std::string header_;
     providers::AsioUnixSocket socket_;
@@ -423,8 +445,11 @@ private:
 
 class ModuleHandler final : public engine::StreamHandler {
 public:
-    ModuleHandler(std::weak_ptr<ModuleSupervisor::State> state, engine::ProviderDescriptor descriptor)
-        : state_(std::move(state)), descriptor_(std::move(descriptor)) {}
+    ModuleHandler(std::weak_ptr<ModuleSupervisor::State> state,
+                  ModuleRoute route, engine::ProviderDescriptor descriptor)
+        : state_(std::move(state)),
+          route_(std::move(route)),
+          descriptor_(std::move(descriptor)) {}
 
     const engine::ProviderDescriptor& descriptor() const noexcept override { return descriptor_; }
     engine::ServiceKind service_kind() const noexcept override { return engine::ServiceKind::ByteStream; }
@@ -433,7 +458,7 @@ public:
         if (context.destination_if())
             return diagnostic(StatusCode::InvalidArgument, "a module stream names no destination");
         const auto state = state_.lock();
-        if (!state || !state->running())
+        if (!state || !state->live.load(std::memory_order_acquire))
             return diagnostic(StatusCode::FailedPrecondition, "the module is not running");
         return Status::success();
     }
@@ -443,9 +468,10 @@ public:
         if (!stream) return;
         const auto state = state_.lock();
         const auto& identity = context.peer_evidence().identity();
-        if (!state || !state->running() || !header_safe(identity)) {
-            const auto code = !state || !state->running() ? StatusCode::FailedPrecondition
-                                                          : StatusCode::PermissionDenied;
+        const bool live = state && state->live.load(std::memory_order_acquire);
+        if (!live || !header_safe(identity)) {
+            const auto code = !live ? StatusCode::FailedPrecondition
+                                    : StatusCode::PermissionDenied;
             complete(completion, Status(code));
             stream->close(Status(code));
             return;
@@ -456,8 +482,9 @@ public:
             header += ' ';
             header += context.service_name();
             header += '\n';
-            std::make_shared<ModuleOpen>(state, stream, std::move(completion),
-                                         std::move(header))->start();
+            std::make_shared<ModuleOpen>(
+                state, route_, stream, std::move(completion), std::move(header))
+                ->start();
         } catch (const std::bad_alloc&) {
             complete(completion, Status(StatusCode::ResourceExhausted));
             stream->close(Status(StatusCode::ResourceExhausted));
@@ -470,6 +497,7 @@ public:
 
 private:
     std::weak_ptr<ModuleSupervisor::State> state_;
+    const ModuleRoute route_;
     engine::ProviderDescriptor descriptor_;
 };
 
@@ -497,7 +525,10 @@ engine::Result<std::shared_ptr<ModuleSupervisor>> ModuleSupervisor::create(
         if (!descriptor.ok()) return Created(descriptor.status());
         auto state = std::make_shared<State>(std::move(context), adapter, std::move(options),
                                              std::move(report), std::move(channels).take_value());
-        state->handler = std::make_shared<ModuleHandler>(state, std::move(descriptor).take_value());
+        state->descriptor.emplace(descriptor.value());
+        state->handler = std::make_shared<ModuleHandler>(
+            state, ModuleRoute{state->context, state->channels},
+            std::move(descriptor).take_value());
         return Created(std::shared_ptr<ModuleSupervisor>(new ModuleSupervisor(std::move(state))));
     } catch (const std::bad_alloc&) {
         return Created(Status(StatusCode::ResourceExhausted));
@@ -509,6 +540,32 @@ ModuleSupervisor::~ModuleSupervisor() noexcept { close(); }
 engine::Status ModuleSupervisor::start() { return state_->start(); }
 std::shared_ptr<engine::StreamHandler> ModuleSupervisor::handler() const noexcept {
     return state_->handler;
+}
+engine::Result<std::shared_ptr<engine::StreamHandler>>
+ModuleSupervisor::handler_for(
+    std::shared_ptr<providers::AsioExecutionContext> context,
+    std::size_t contexts) const {
+    using Made = engine::Result<std::shared_ptr<engine::StreamHandler>>;
+    if (!context || contexts == 0U)
+        return Made(Status(StatusCode::InvalidArgument));
+    context->require_context();
+    try {
+        // Each context's owner holds its share of the module's streams.
+        providers::AsioTcpChannelLimits limits;
+        limits.max_active_channels =
+            std::max<std::size_t>(1U, state_->options.max_streams / contexts);
+        auto channels =
+            providers::AsioTcpAcceptedChannelOwner::create(context, limits);
+        if (!channels.ok()) return Made(channels.status());
+        return Made(std::shared_ptr<engine::StreamHandler>(
+            std::make_shared<ModuleHandler>(
+                state_,
+                ModuleRoute{std::move(context),
+                            std::move(channels).take_value()},
+                *state_->descriptor)));
+    } catch (const std::bad_alloc&) {
+        return Made(Status(StatusCode::ResourceExhausted));
+    }
 }
 pid_t ModuleSupervisor::pid() const noexcept {
     return state_->running() ? state_->child.pid() : -1;

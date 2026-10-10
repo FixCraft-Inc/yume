@@ -20,6 +20,15 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **yumed serves on several event loops.** `endpoint.event_loops` sets how
+  many threads serve sessions, by default the CPUs the daemon may run on, at
+  most 16. One loop accepts each connection and hands it, before TLS, to the
+  loop serving the fewest sessions, where it stays for its whole life. The
+  admission replay cache, the credentials a reload publishes, each
+  identity's `max_sessions`, the direct-route budgets, the egress rate and
+  the resolver helper hold across loops, a module's streams run on their
+  session's loop, and `--status` shows the sessions on each loop. A cluster
+  member or a server with a packet adapter keeps one loop.
 - **Explanatory diagrams.** Device bridge, circuits, cluster links, directional
   key rotation, GUI lifecycle, module streams, relay library, sealed kits and
   trust boundaries share one JSON source across web, Markdown and manuals.

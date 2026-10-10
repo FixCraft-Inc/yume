@@ -6,7 +6,8 @@
       "0.0.0.0",
       "::"
     ],
-    "port": 443
+    "port": 443,
+    "event_loops": 1
   },
   "suite": {
     "id": "ytp1-tls13-h2",

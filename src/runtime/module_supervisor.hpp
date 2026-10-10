@@ -83,6 +83,15 @@ public:
     engine::Status start();
     // The stream handler to bind to the module's service.
     std::shared_ptr<engine::StreamHandler> handler() const noexcept;
+    // The handler for sessions on `context`, one of `contexts` a server
+    // serves on. It connects each stream to the module's socket and bridges
+    // it on `context`, with that context's share of max_streams, while this
+    // supervisor keeps the process on its own context. A server that serves
+    // on several contexts binds one per context, the supervisor's included,
+    // so the shares add up to max_streams. Call on `context`.
+    engine::Result<std::shared_ptr<engine::StreamHandler>> handler_for(
+        std::shared_ptr<providers::AsioExecutionContext> context,
+        std::size_t contexts) const;
     // The running module's process ID, or -1 while it is down.
     pid_t pid() const noexcept;
     // The private directory holding the module's socket. Empty before start().

@@ -176,8 +176,12 @@ limits, rounded up, across its sessions and TCP/UDP services. The reservation
 is released when an open fails, is canceled or its channel closes. At a
 circuit exit the counted identity is the previous hop.
 
-All sessions run on the daemon's one event-loop thread, so the clients'
-traffic together moves at what one CPU core encrypts. An idle connection holds
+Sessions spread over `endpoint.event_loops` threads, by default one for each
+CPU the daemon may run on, up to 16, and each session stays on one of them,
+so one session moves at what one core encrypts and several share the cores.
+A unit that pins the daemon with `CPUAffinity=` also sets how many loops it
+runs by default. A cluster member or a server with a packet adapter runs one
+loop. `yumed --status` shows the sessions on each loop. An idle connection holds
 no read buffer. A session streaming to a slower client can hold its
 `limits.max_queued_bytes` of outbound data, and up to twice that, at least
 8 MiB, of records it received, so plan memory for the sessions that stream at

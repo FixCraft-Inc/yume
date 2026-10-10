@@ -52,7 +52,15 @@ A client names its server:
 | `socks5_proxy` | no | A SOCKS5 proxy to reach the server through: `address` (an IP literal), `port`, and optional `credentials`, a protected file of a username line and a password line of 1 to 255 bytes each. The proxy resolves `host` unless `connect_address` is set |
 
 A server lists where it listens: `listen_addresses`, 1 to 16 distinct IP
-literals, and `port`.
+literals, and `port`. Its optional `event_loops`, 1 to 64, is how many
+threads serve sessions. Absent, it is the number of CPUs the process may
+run on, at most 16. One loop accepts every connection and hands each to
+the loop serving the fewest sessions, where its TLS, cover, admission,
+authentication and session stay for their whole life, so one session uses
+at most one core and several sessions share the cores. A configuration
+with a `cluster` section or a packet adapter refuses a value above 1 and
+runs one loop when the key is absent: a circuit relays cells between
+sessions, and a packet adapter serves one device to one session.
 
 An IP literal is IPv4 as four decimal parts of 0 to 255 without leading
 zeros, or IPv6 text in either case with at most one `::` and an optional

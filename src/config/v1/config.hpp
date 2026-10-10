@@ -29,6 +29,8 @@ inline constexpr std::size_t kMaxFileReferenceBytes = 4096;
 inline constexpr std::size_t kMaxServices = 64;
 inline constexpr std::size_t kMaxAdapters = 16;
 inline constexpr std::size_t kMaxListenAddresses = 16;
+// Threads a server may serve sessions on (endpoint.event_loops).
+inline constexpr std::uint32_t kMaxEventLoops = 64U;
 inline constexpr std::size_t kMaxDestinationNetworks = 64;
 inline constexpr std::size_t kMaxDestinationLists = 16;
 // A UNIX socket path must fit sockaddr_un with its terminator.
@@ -173,17 +175,26 @@ private:
 class ServerEndpoint final {
 public:
     ServerEndpoint(std::vector<std::string> listen_addresses,
-                   std::uint16_t port)
-        : listen_addresses_(std::move(listen_addresses)), port_(port) {}
+                   std::uint16_t port,
+                   std::optional<std::uint32_t> event_loops = std::nullopt)
+        : listen_addresses_(std::move(listen_addresses)),
+          port_(port),
+          event_loops_(event_loops) {}
 
     const std::vector<std::string>& listen_addresses() const noexcept {
         return listen_addresses_;
     }
     std::uint16_t port() const noexcept { return port_; }
+    // Threads that serve sessions, 1 to kMaxEventLoops, or empty for the
+    // runtime's default. Above 1 only without a cluster or packet adapter.
+    const std::optional<std::uint32_t>& event_loops() const noexcept {
+        return event_loops_;
+    }
 
 private:
     std::vector<std::string> listen_addresses_;
     std::uint16_t port_;
+    std::optional<std::uint32_t> event_loops_;
 };
 
 using Endpoint = std::variant<ClientEndpoint, ServerEndpoint>;

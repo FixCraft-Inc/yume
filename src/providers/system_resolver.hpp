@@ -65,6 +65,16 @@ public:
 
     static engine::Result<std::shared_ptr<SystemResolver>> create(
         std::shared_ptr<AsioExecutionContext> context, SystemResolverOptions options);
+    // A resolver for `context` that has no helper of its own: each lookup is
+    // posted to `owner` on the owner's context and its answer posted back,
+    // so the contexts of one server share one helper and its bounds. The
+    // owner's synchronous refusals arrive through the completion here.
+    // Closing this resolver fails its own outstanding lookups and leaves the
+    // owner open. Keep the owner's context running while this one has
+    // lookups outstanding.
+    static engine::Result<std::shared_ptr<SystemResolver>> create_remote(
+        std::shared_ptr<AsioExecutionContext> context,
+        std::shared_ptr<SystemResolver> owner);
 
     SystemResolver(const SystemResolver&) = delete;
     SystemResolver& operator=(const SystemResolver&) = delete;
@@ -88,8 +98,11 @@ public:
 
 private:
     struct State;
+    struct Remote;
     explicit SystemResolver(std::shared_ptr<State> state) noexcept;
+    explicit SystemResolver(std::shared_ptr<Remote> remote) noexcept;
     std::shared_ptr<State> state_;
+    std::shared_ptr<Remote> remote_;
 };
 
 }  // namespace yume::providers

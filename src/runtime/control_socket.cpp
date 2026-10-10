@@ -625,6 +625,7 @@ std::string server_status_reply(const NativeServerStatus& status,
                {"version", kVersion},
                {"listeners", std::move(listeners)},
                {"client_sessions", status.client_sessions},
+               {"loops", status.loop_sessions},
                {"cluster", nullptr}};
     if (!status.cluster) return dump(reply);
     const auto& cluster = *status.cluster;

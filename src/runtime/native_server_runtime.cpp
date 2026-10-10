@@ -7,17 +7,27 @@
 #include "runtime/native_server_runtime.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <future>
+#include <limits>
 #include <new>
+#include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 
+#include <sched.h>
+
 #include <boost/asio/basic_waitable_timer.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/post.hpp>
 
 #include "common/service_name.hpp"
 #include "engine/route_provider.hpp"
 #include "providers/asio_direct_route_provider.hpp"
 #include "providers/circuit_crypto.hpp"
+#include "providers/h2_web_front_door.hpp"
 #include "runtime/circuit_host.hpp"
 #include "runtime/circuit_node.hpp"
 #include "runtime/native_egress_policy.hpp"
@@ -95,7 +105,57 @@ Status validate_packet_routes(const config::v1::PacketAdapter& adapter,
 }
 #endif
 
+// Runs `work` on `context` and waits for it, from another context's thread.
+// The work's exceptions reach the caller.
+template <typename Work>
+auto run_on(const std::shared_ptr<providers::AsioExecutionContext>& context,
+            Work work) -> std::invoke_result_t<Work> {
+    using Value = std::invoke_result_t<Work>;
+    auto task = std::make_shared<std::packaged_task<Value()>>(std::move(work));
+    auto result = task->get_future();
+    boost::asio::post(context->executor(), [task] { (*task)(); });
+    return result.get();
+}
+
+// Keeps the first context running until every other one has drained, since
+// their teardown may still post to it, as a remote resolver's
+// cancellations do.
+struct WorkerExits final {
+    using Guard = boost::asio::executor_work_guard<
+        providers::AsioExecutionContext::Executor>;
+    explicit WorkerExits(
+        const std::shared_ptr<providers::AsioExecutionContext>& main)
+        : hold(boost::asio::make_work_guard(main->executor())) {}
+    // From a worker's thread once its context has drained.
+    void finished() noexcept {
+        if (remaining.fetch_sub(1U) == 1U) hold.reset();
+    }
+    Guard hold;
+    std::atomic<std::size_t> remaining{0U};
+};
+
 }  // namespace
+
+std::size_t native_event_loops(const config::v1::Config& config) noexcept {
+    const auto* server =
+        std::get_if<config::v1::ServerEndpoint>(&config.endpoint());
+    if (!server) return 1U;
+    if (server->event_loops()) return *server->event_loops();
+    const bool single =
+        config.cluster() ||
+        std::any_of(
+            config.adapters().begin(), config.adapters().end(),
+            [](const auto& adapter) {
+                return std::holds_alternative<config::v1::PacketAdapter>(
+                    adapter);
+            });
+    if (single) return 1U;
+    cpu_set_t cpus;
+    CPU_ZERO(&cpus);
+    if (::sched_getaffinity(0, sizeof(cpus), &cpus) != 0) return 1U;
+    const auto count = static_cast<std::size_t>(CPU_COUNT(&cpus));
+    return std::clamp<std::size_t>(count, 1U, kNativeDefaultMaxEventLoops);
+}
 
 struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     // One outbound cluster link and the keeper that holds its session up.
@@ -107,17 +167,214 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
         std::shared_ptr<SessionKeeper> keeper;
     };
 
+    // One context of a server that serves on several, and its endpoint.
+    // Every context but the first runs on its own thread.
+    struct Loop final {
+        std::shared_ptr<providers::AsioExecutionContext> context;
+        std::shared_ptr<NativeEndpoint> endpoint;
+        std::thread thread;
+    };
+
     State(std::shared_ptr<providers::AsioExecutionContext> runner,
           const config::v1::Config& node)
         : context(std::move(runner)),
           config(node),
           expiry(context->executor()) {}
 
+    ~State() noexcept {
+        close();
+        // Normally the threads have finished by now: the first context ran
+        // until they drained. After a failed creation they drain here.
+        for (auto& loop : loops) {
+            if (!loop.thread.joinable()) continue;
+            loop.context->finish();
+            loop.thread.join();
+        }
+    }
+
+    // Starts a context for loop `index` on its own thread.
+    void add_worker(std::size_t index) {
+        auto created = providers::AsioExecutionContext::create(
+            engine::ExecutorAffinity(context->affinity().value() + index));
+        if (!created.ok()) throw created.status();
+        Loop loop;
+        loop.context = std::move(created).take_value();
+        if (!exits) exits = std::make_shared<WorkerExits>(context);
+        exits->remaining.fetch_add(1U);
+        try {
+            loop.thread =
+                std::thread([worker = loop.context, done = exits]() noexcept {
+                    for (;;) {
+                        try {
+                            worker->run();
+                            break;
+                        } catch (...) {
+                            // A delivery failure does not cancel its operation.
+                            // Resume so the reserved failure tasks drain.
+                        }
+                    }
+                    done->finished();
+                });
+        } catch (...) {
+            exits->finished();
+            throw;
+        }
+        loops.push_back(std::move(loop));
+    }
+
+    // Builds what a server without a cluster serves through: one listener
+    // per listen address on this context, and one endpoint per loop with its
+    // own route provider, all sharing one NativeServerShare, one route budget
+    // and one resolver helper. Throws Status.
+    void serve_on_loops(const config::v1::Config& node,
+                        const std::filesystem::path& base_directory,
+                        const NativeServerRuntimeOptions& runtime_options,
+                        const NativeEndpointOptions& common,
+                        const NativeServerSizing& sizing, bool has_direct,
+                        std::size_t count) {
+        const auto& server =
+            std::get<config::v1::ServerEndpoint>(node.endpoint());
+        providers::H2WebFrontDoorLimits limits;
+        limits.max_promoted_carriers = sizing.max_sessions;
+        std::vector<std::shared_ptr<providers::H2WebListenerShare>> shares;
+        for (std::size_t index = 0U; index < server.listen_addresses().size();
+             ++index) {
+            boost::system::error_code error;
+            const auto address = boost::asio::ip::make_address(
+                server.listen_addresses()[index], error);
+            if (error) throw Status(StatusCode::InvalidArgument);
+            const std::weak_ptr<State> weak = weak_from_this();
+            auto listener = providers::H2WebListener::create(
+                context, {address, server.port()}, limits,
+                [weak, index](int descriptor) {
+                    const auto self = weak.lock();
+                    return self && self->dispatch(index, descriptor);
+                },
+                [weak] {
+                    if (const auto self = weak.lock())
+                        self->stop(Status::diagnostic(
+                            StatusCode::Closed,
+                            "native listener stopped accepting"));
+                });
+            if (!listener.ok()) throw listener.status();
+            shares.push_back(listener.value()->share());
+            listeners.push_back(std::move(listener).take_value());
+        }
+        auto share = NativeServerShare::create(std::move(shares));
+        if (!share.ok()) throw share.status();
+        std::shared_ptr<providers::SystemResolver> resolver;
+        if (has_direct && !runtime_options.resolver_program.empty()) {
+            providers::SystemResolverOptions resolver_options;
+            resolver_options.program = runtime_options.resolver_program;
+            auto created = providers::SystemResolver::create(
+                context, std::move(resolver_options));
+            if (!created.ok()) throw created.status();
+            resolver = std::move(created).take_value();
+        }
+        providers::AsioDirectRouteLimits route_limits;
+        route_limits.max_active_connections = sizing.max_route_connections;
+        route_limits.max_pending_opens = sizing.max_pending_route_opens;
+        const auto budget = providers::make_direct_route_budget(route_limits);
+
+        loops.push_back(Loop{context, {}, {}});
+        for (std::size_t index = 1U; index < count; ++index) add_worker(index);
+        // Sessions split evenly, so the loops together hold the server's
+        // bound, give or take one each.
+        const std::size_t per_loop =
+            std::max(sizing.max_pending_starts,
+                     (sizing.max_sessions + count - 1U) / count);
+        const auto make = [&](std::size_t index) {
+            const auto& here = loops[index].context;
+            NativeEndpointOptions options;
+            options.max_sessions = per_loop;
+            options.max_pending_starts = sizing.max_pending_starts;
+            options.caller_runs_packet_adapters =
+                common.caller_runs_packet_adapters;
+            options.caller_runs_module_adapters =
+                common.caller_runs_module_adapters;
+            options.egress_policy = common.egress_policy;
+            options.served = share.value();
+            std::vector<NativeServiceBinding> bindings;
+            for (const auto& [adapter, handler] : packets)
+                bindings.push_back({adapter.service(), handler});
+            for (std::size_t module = 0U; module < modules.size(); ++module) {
+                auto handler =
+                    count == 1U ? engine::Result<
+                                      std::shared_ptr<engine::StreamHandler>>(
+                                      modules[module]->handler())
+                                : modules[module]->handler_for(here, count);
+                if (!handler.ok()) throw handler.status();
+                bindings.push_back(
+                    {module_services[module], std::move(handler).take_value()});
+            }
+            if (has_direct) {
+                if (resolver) {
+                    auto local =
+                        index == 0U
+                            ? engine::Result<
+                                  std::shared_ptr<providers::SystemResolver>>(
+                                  resolver)
+                            : providers::SystemResolver::create_remote(
+                                  here, resolver);
+                    if (!local.ok()) throw local.status();
+                    options.resolver = std::move(local).take_value();
+                }
+                auto provider = providers::AsioDirectRouteProvider::create(
+                    here,
+                    [policy = options.egress_policy](
+                        const engine::AuthorizedRouteRequest& request,
+                        const engine::RouteDestination& resolved) {
+                        return policy->authorize_resolved(request, resolved);
+                    },
+                    route_limits, {}, options.resolver, budget);
+                if (!provider.ok()) throw provider.status();
+                options.route_provider = std::move(provider).take_value();
+            }
+            auto created =
+                NativeEndpoint::create(here, node, base_directory,
+                                       std::move(bindings), std::move(options));
+            if (!created.ok()) throw created.status();
+            return std::move(created).take_value();
+        };
+        for (std::size_t index = 0U; index < loops.size(); ++index) {
+            loops[index].endpoint =
+                index == 0U ? make(index)
+                            : run_on(loops[index].context,
+                                     [&make, index] { return make(index); });
+        }
+        endpoint = loops.front().endpoint;
+        // Listener completions run on this context, which is still inside
+        // creation, so no connection arrives before the endpoints exist. A
+        // served front door answers with cover until its loop accepts, as a
+        // listening one does.
+        dispatching = true;
+    }
+
+    // On the first context: the least busy loop takes the connection, with
+    // ties going round the loops.
+    bool dispatch(std::size_t listener, int descriptor) noexcept {
+        if (!dispatching || closing || loops.empty()) return false;
+        std::size_t chosen = 0U;
+        std::size_t lowest = std::numeric_limits<std::size_t>::max();
+        for (std::size_t step = 0U; step < loops.size(); ++step) {
+            const std::size_t index = (next_loop + step) % loops.size();
+            const std::size_t load = loops[index].endpoint->load();
+            if (load < lowest) {
+                lowest = load;
+                chosen = index;
+            }
+        }
+        next_loop = chosen + 1U;
+        return loops[chosen].endpoint->serve(listener, descriptor);
+    }
+
     std::shared_ptr<providers::AsioExecutionContext> context;
     config::v1::Config config;
     std::shared_ptr<NativeEndpoint> endpoint;
     std::vector<std::pair<config::v1::PacketAdapter, std::shared_ptr<NativePacketAdapter>>> packets;
     std::vector<std::shared_ptr<ModuleSupervisor>> modules;
+    // Each module's service, in the order of modules.
+    std::vector<std::string> module_services;
     // Shared through managed-network drain, without retaining this runtime.
     std::shared_ptr<Stopped> on_stopped;
     std::function<void(std::string_view)> report;
@@ -132,6 +389,14 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     bool cluster_expired{false};
     bool started{false};
     bool closing{false};
+    // A server without a cluster accepts on this context through these
+    // listeners and serves through one endpoint per loop. loops[0] is this
+    // context and its endpoint is `endpoint`.
+    std::vector<std::shared_ptr<providers::H2WebListener>> listeners;
+    std::vector<Loop> loops;
+    std::shared_ptr<WorkerExits> exits;
+    std::size_t next_loop{0U};
+    bool dispatching{false};
 
     void say(std::string_view text) noexcept {
         if (!report) return;
@@ -291,9 +556,18 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
         if (circuits) circuits->close();
         close_links(links);
         if (link_resolver) link_resolver->close();
+        for (const auto& listener : listeners) listener->close();
         if (endpoint) endpoint->close();
+        for (const auto& loop : loops) {
+            if (loop.endpoint) loop.endpoint->close();
+        }
         for (const auto& packet : packets) packet.second->close();
         for (const auto& module : modules) module->close();
+        // Each other context drains its endpoint's close and ends its thread,
+        // while the first keeps running until they have (WorkerExits).
+        for (const auto& loop : loops) {
+            if (loop.thread.joinable()) loop.context->finish();
+        }
     }
 };
 
@@ -346,6 +620,7 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                 if (!created.ok()) return Created(created.status());
                 auto supervisor = std::move(created).take_value();
                 bindings.push_back({module->service(), supervisor->handler()});
+                state->module_services.push_back(module->service());
                 state->modules.push_back(std::move(supervisor));
             } else if (std::holds_alternative<config::v1::DirectTcpAdapter>(adapter) ||
                        std::holds_alternative<config::v1::DirectUdpAdapter>(adapter)) {
@@ -365,6 +640,15 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
             auto egress = NativeEgressPolicy::create(config.adapters(), config_base_directory);
             if (!egress.ok()) return Created(egress.status());
             options.egress_policy = std::move(egress).take_value();
+        }
+        if (!config.cluster()) {
+            state->serve_on_loops(config, config_base_directory,
+                                  runtime_options, options, sizing, has_direct,
+                                  native_event_loops(config));
+            return Created(std::shared_ptr<NativeServerRuntime>(
+                new NativeServerRuntime(std::move(state))));
+        }
+        if (has_direct) {
             if (!runtime_options.resolver_program.empty()) {
                 providers::SystemResolverOptions resolver_options;
                 resolver_options.program = runtime_options.resolver_program;
@@ -534,6 +818,36 @@ engine::Status NativeServerRuntime::start() {
         state->close();
         return Status(StatusCode::Internal);
     }
+    if (!state->loops.empty()) {
+        // Every loop accepts from its served front doors. A loop whose
+        // accepting fails stops the server on the first context.
+        for (const auto& loop : state->loops) {
+            const auto stopped = [weak = std::weak_ptr<State>(state),
+                                  main = state->context](Status status) {
+                boost::asio::post(main->executor(),
+                                  [weak, status = std::move(status)]() mutable {
+                                      if (const auto self = weak.lock())
+                                          self->stop(std::move(status));
+                                  });
+            };
+            const auto begin = [&] {
+                return loop.endpoint->start_accepting(state->accept, stopped);
+            };
+            Status status;
+            try {
+                status = loop.context == state->context
+                             ? begin()
+                             : run_on(loop.context, begin);
+            } catch (...) {
+                status = Status(StatusCode::Internal);
+            }
+            if (!status.ok()) {
+                state->close();
+                return status;
+            }
+        }
+        return Status::success();
+    }
     auto status = state->endpoint->start_accepting(
         state->accept, [weak = std::weak_ptr<State>(state)](Status status) {
             if (const auto self = weak.lock()) {
@@ -552,6 +866,11 @@ engine::Status NativeServerRuntime::start() {
 
 std::vector<boost::asio::ip::tcp::endpoint> NativeServerRuntime::listener_endpoints() const {
     std::vector<boost::asio::ip::tcp::endpoint> endpoints;
+    if (!state_->listeners.empty()) {
+        for (const auto& listener : state_->listeners)
+            endpoints.push_back(listener->local_endpoint());
+        return endpoints;
+    }
     for (std::size_t index = 0U; index < state_->endpoint->listener_count(); ++index) {
         endpoints.push_back(state_->endpoint->listener_endpoint(index));
     }
@@ -563,6 +882,21 @@ engine::Status NativeServerRuntime::reload() {
     state->context->require_context();
     if (state->closing || !state->endpoint) return Status(StatusCode::Closed);
     auto status = state->endpoint->reload_credentials();
+    if (status.ok()) {
+        // The first endpoint published the new credentials through the
+        // share. Each other loop ends its own revoked sessions.
+        for (const auto& loop : state->loops) {
+            if (loop.context == state->context) continue;
+            try {
+                boost::asio::post(loop.context->executor(),
+                                  [endpoint = loop.endpoint]() noexcept {
+                                      endpoint->end_unrecognized_sessions();
+                                  });
+            } catch (...) {
+                return Status(StatusCode::ResourceExhausted);
+            }
+        }
+    }
     const auto* cluster = state->endpoint->cluster();
     if (!status.ok() || !cluster) return status;
     try {
@@ -636,6 +970,14 @@ NativeServerStatus NativeServerRuntime::status() const {
     NativeServerStatus result;
     if (!state.endpoint) return result;
     result.listeners = listener_endpoints();
+    if (!state.loops.empty()) {
+        // No cluster runs here, so every session is a client's.
+        for (const auto& loop : state.loops) {
+            result.loop_sessions.push_back(loop.endpoint->session_count());
+            result.client_sessions += result.loop_sessions.back();
+        }
+        return result;
+    }
     const auto sessions = state.endpoint->authenticated_sessions();
     const auto* cluster = state.endpoint->cluster();
     const auto is_peer = [&](const std::string& identity) {
@@ -647,6 +989,7 @@ NativeServerStatus NativeServerRuntime::status() const {
     result.client_sessions = static_cast<std::size_t>(std::count_if(
         sessions.begin(), sessions.end(),
         [&](const auto& session) { return !is_peer(session.identity); }));
+    result.loop_sessions.push_back(sessions.size());
     if (!cluster) return result;
     auto& view = result.cluster.emplace();
     view.cluster = cluster->cluster;

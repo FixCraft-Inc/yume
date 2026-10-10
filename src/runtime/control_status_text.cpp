@@ -223,6 +223,13 @@ std::string server_text(const Json& status) {
     text += "client sessions: " +
             std::to_string(status.at("client_sessions").get<std::uint64_t>()) +
             "\n";
+    const auto& loops = status.at("loops");
+    text += "event loops: " + std::to_string(loops.size()) + ", sessions";
+    for (std::size_t index = 0U; index < loops.size(); ++index) {
+        text += (index == 0U ? " " : ", ") +
+                std::to_string(loops.at(index).get<std::uint64_t>());
+    }
+    text += "\n";
     const auto& cluster = status.at("cluster");
     if (cluster.is_null()) return text;
     text += "cluster: " + cluster.at("id").get<std::string>() + " serial " +

@@ -428,7 +428,8 @@ Endpoint ParseEndpoint(const Json& endpoint, Role role) {
                               std::move(socks5_proxy));
     }
 
-    CheckClosedObject(endpoint, "/endpoint", {"listen_addresses", "port"},
+    CheckClosedObject(endpoint, "/endpoint",
+                      {"listen_addresses", "port", "event_loops"},
                       {"listen_addresses", "port"});
     const auto& addresses = endpoint.at("listen_addresses");
     if (!addresses.is_array()) {
@@ -454,9 +455,15 @@ Endpoint ParseEndpoint(const Json& endpoint, Role role) {
         }
         parsed.push_back(address);
     }
-    return ServerEndpoint(
-        std::move(parsed),
-        ParsePort(endpoint.at("port"), "/endpoint/port"));
+    std::optional<std::uint32_t> event_loops;
+    if (endpoint.contains("event_loops")) {
+        event_loops =
+            ReadBoundedUnsigned(endpoint.at("event_loops"),
+                                "/endpoint/event_loops", 1U, kMaxEventLoops);
+    }
+    return ServerEndpoint(std::move(parsed),
+                          ParsePort(endpoint.at("port"), "/endpoint/port"),
+                          event_loops);
 }
 
 Suite ParseSuite(const Json& suite) {
@@ -1457,6 +1464,20 @@ Config Parse(const nlohmann::json& document) {
 
     std::optional<CircuitSettings> circuits =
         ParseCircuits(document, role, adapters);
+    // A circuit relays cells between sessions and a packet adapter serves
+    // one device to one session, so neither spreads over several loops.
+    if (const auto* server = std::get_if<ServerEndpoint>(&endpoint);
+        server && server->event_loops() && *server->event_loops() > 1U) {
+        if (cluster) {
+            Fail("/endpoint/event_loops", "must be 1 with a cluster section");
+        }
+        if (std::any_of(
+                adapters.begin(), adapters.end(), [](const Adapter& adapter) {
+                    return std::holds_alternative<PacketAdapter>(adapter);
+                })) {
+            Fail("/endpoint/event_loops", "must be 1 with a packet adapter");
+        }
+    }
 
     return Config(role, std::move(endpoint), std::move(suite),
                   std::move(credentials), std::move(cover), std::move(services),

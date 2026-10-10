@@ -453,6 +453,40 @@ void TestEndpointValidation() {
     Check(Parse(document).role() == Role::Server,
           "valid server IP literals were rejected");
 
+    // event_loops: a server's own choice, 1 to 64, absent by default.
+    document = ServerDocument();
+    Check(!std::get<ServerEndpoint>(Parse(document).endpoint()).event_loops(),
+          "event_loops appeared unasked");
+    for (const std::uint32_t loops : {1U, 4U, kMaxEventLoops}) {
+        document["endpoint"]["event_loops"] = loops;
+        const auto parsed = Parse(document);
+        Check(
+            std::get<ServerEndpoint>(parsed.endpoint()).event_loops() == loops,
+            "a valid event_loops was not kept");
+    }
+    document["endpoint"]["event_loops"] = 0;
+    ExpectError(document, "/endpoint/event_loops");
+    document["endpoint"]["event_loops"] = kMaxEventLoops + 1U;
+    ExpectError(document, "/endpoint/event_loops");
+    document["endpoint"]["event_loops"] = "4";
+    ExpectError(document, "/endpoint/event_loops", "integer");
+    // A circuit relays cells between sessions and a packet adapter serves
+    // one device to one session, so both stay on one loop.
+    document = ServerDocument();
+    document["endpoint"]["event_loops"] = 2;
+    document["adapters"].push_back({{"kind", "packet"},
+                                    {"service", "packet"},
+                                    {"interface_name", "yume0"},
+                                    {"mtu", 1420},
+                                    {"network", TunNetworkDocument()}});
+    ExpectError(document, "/endpoint/event_loops", "packet adapter");
+    document["endpoint"]["event_loops"] = 1;
+    Check(Parse(document).role() == Role::Server,
+          "one loop was refused with a packet adapter");
+    document = ClientDocument();
+    document["endpoint"]["event_loops"] = 2;
+    ExpectError(document, "/endpoint/event_loops", "unknown key");
+
     document = ClientDocument();
     document["endpoint"] = 1;
     ExpectError(document, "/endpoint", "object");
@@ -1243,6 +1277,12 @@ void TestClusterSection() {
         {"routes_signature", {{"file", "cluster/cluster-routes.sig"}}}};
     Json document = ServerDocument();
     document["cluster"] = cluster;
+    document["endpoint"]["event_loops"] = 2;
+    ExpectError(document, "/endpoint/event_loops", "cluster");
+    document["endpoint"]["event_loops"] = 1;
+    Check(Parse(document).cluster().has_value(),
+          "one loop was refused with a cluster");
+    document["endpoint"].erase("event_loops");
     const auto parsed = Parse(document).cluster();
     Check(parsed && parsed->operator_key.path() == "cluster/operator.pub.pem" &&
               parsed->list.path() == "cluster/cluster-list.json" &&

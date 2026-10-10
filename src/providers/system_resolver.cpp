@@ -28,7 +28,6 @@
 #include <unistd.h>
 
 #include <boost/asio/buffer.hpp>
-#include <boost/asio/post.hpp>
 #include <boost/asio/local/seq_packet_protocol.hpp>
 #include <boost/asio/basic_seq_packet_socket.hpp>
 #include <boost/system/error_code.hpp>
@@ -455,9 +454,88 @@ struct SystemResolver::State final : std::enable_shared_from_this<State> {
     std::uint32_t generation{0U};
 };
 
-// Forwards lookups to an owner on another context. Caller-side members
-// change only on `context`, `forwarded` only on the owner's context.
+// Forwards lookups to an owner on another context. A lookup reserves its
+// owner-control and caller-answer tasks before acceptance. Owner registration
+// then needs no extra map allocation, and terminal delivery cannot be lost
+// to an allocating post.
 struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
+    struct Lookup final : std::enable_shared_from_this<Lookup> {
+        Lookup(std::shared_ptr<Remote> resolver, std::uint64_t lookup_id,
+               std::string_view name, std::size_t address_limit,
+               Completion callback)
+            : remote_(std::move(resolver)),
+              id_(lookup_id),
+              host_(name),
+              max_addresses_(address_limit),
+              completion_(std::move(callback)),
+              owner_task_([](void* value) noexcept {
+                  static_cast<Lookup*>(value)->forward_or_cancel();
+              }),
+              answer_task_([](void* value) noexcept {
+                  auto& lookup = *static_cast<Lookup*>(value);
+                  lookup.remote_->deliver(lookup.id_,
+                                          std::move(lookup.result_));
+              }) {}
+
+        // Runs only on the owner. A caller cancellation may requeue this
+        // task while resolve runs, but the accepted ID is stored before that
+        // queued cancellation can execute on the same owner context.
+        void forward_or_cancel() noexcept {
+            if (cancel_requested_.load(std::memory_order_acquire)) {
+                if (owner_id_ != 0U)
+                    remote_->owner->cancel(std::exchange(owner_id_, 0U));
+                return;
+            }
+            if (forwarded_) return;
+            forwarded_ = true;
+            try {
+                auto started = remote_->owner->resolve(
+                    host_, max_addresses_,
+                    [self = shared_from_this()](
+                        Result<Addresses> answer) noexcept {
+                        self->owner_id_ = 0U;
+                        self->answer(std::move(answer));
+                    });
+                if (started.ok()) {
+                    owner_id_ = started.value();
+                } else {
+                    answer(Result<Addresses>(Status::diagnostic(
+                        started.status().code(), started.status().message())));
+                }
+            } catch (...) {
+                answer(
+                    Result<Addresses>(Status(StatusCode::ResourceExhausted)));
+            }
+        }
+
+        // The owner writes result_ once, then the mailbox publishes it to the
+        // caller. Cancel/close touch only the caller completion_, never
+        // result_.
+        void answer(Result<Addresses> value) noexcept {
+            result_ = std::move(value);
+            remote_->context->submit(answer_task_, shared_from_this());
+        }
+
+        // Called on the caller context; owner_id_ stays owner-confined.
+        void request_cancel() noexcept {
+            cancel_requested_.store(true, std::memory_order_release);
+            remote_->owner->state_->context->submit(owner_task_,
+                                                    shared_from_this());
+        }
+
+        const std::shared_ptr<Remote> remote_;
+        const std::uint64_t id_;
+        const std::string host_;
+        const std::size_t max_addresses_;
+        Completion completion_;  // Caller context only.
+        AsioExecutionContext::ControlTask owner_task_;
+        AsioExecutionContext::ControlTask answer_task_;
+        std::atomic<bool> cancel_requested_{false};
+        bool forwarded_{false};       // Owner context only.
+        std::uint64_t owner_id_{0U};  // Owner context only.
+        Result<Addresses> result_{Status(StatusCode::ResourceExhausted)};
+    };
+
     Remote(std::shared_ptr<AsioExecutionContext> execution,
            std::shared_ptr<SystemResolver> resolver)
         : context(std::move(execution)),
@@ -477,74 +555,33 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
             return Result<std::uint64_t>(Status::diagnostic(
                 StatusCode::InvalidArgument, "invalid system lookup"));
         const std::uint64_t id = ++last_id;
-        pending.emplace(id, std::move(completion));
         try {
-            boost::asio::post(
-                owner->state_->context->executor(),
-                [self = shared_from_this(), id, name = std::string(host),
-                 max_addresses]() noexcept {
-                    self->forward(id, name, max_addresses);
-                });
+            auto lookup =
+                std::make_shared<Lookup>(shared_from_this(), id, host,
+                                         max_addresses, std::move(completion));
+            pending.emplace(id, lookup);
+            owner->state_->context->submit(lookup->owner_task_, lookup);
         } catch (...) {
-            pending.erase(id);
             return Result<std::uint64_t>(Status(StatusCode::ResourceExhausted));
         }
         return Result<std::uint64_t>(id);
     }
 
-    // On the owner's context.
-    void forward(std::uint64_t id, const std::string& host,
-                 std::size_t max_addresses) noexcept {
-        try {
-            auto started = owner->resolve(
-                host, max_addresses,
-                [weak = weak_from_this(),
-                 id](Result<std::vector<boost::asio::ip::address>> answer) {
-                    if (const auto self = weak.lock()) {
-                        self->forwarded.erase(id);
-                        self->answer(id, std::move(answer));
-                    }
-                });
-            if (started.ok())
-                forwarded.emplace(id, started.value());
-            else
-                answer(id, Result<std::vector<boost::asio::ip::address>>(
-                               started.status()));
-        } catch (...) {
-            answer(id, Result<std::vector<boost::asio::ip::address>>(
-                           Status(StatusCode::ResourceExhausted)));
-        }
-    }
-
-    // From the owner's context: delivers on this one.
-    void answer(std::uint64_t id,
-                Result<std::vector<boost::asio::ip::address>> result) noexcept {
-        try {
-            boost::asio::post(context->executor(),
-                              [self = shared_from_this(), id,
-                               result = std::move(result)]() mutable noexcept {
-                                  self->deliver(id, std::move(result));
-                              });
-        } catch (...) {
-            // The lookup stays pending until close or cancel releases it.
-        }
-    }
-
-    void deliver(
-        std::uint64_t id,
-        Result<std::vector<boost::asio::ip::address>> result) noexcept {
+    void deliver(std::uint64_t id, Result<Addresses> result) noexcept {
         const auto found = pending.find(id);
         if (found == pending.end()) return;
-        auto completion = std::move(found->second);
+        auto completion = std::move(found->second->completion_);
         pending.erase(found);
-        try {
-            completion(std::move(result));
-        } catch (...) {
-        }
+        invoke_contained(completion, std::move(result));
     }
 
     void cancel(std::uint64_t id) noexcept {
-        if (pending.erase(id) != 0U) cancel_forwarded(id);
+        const auto found = pending.find(id);
+        if (found == pending.end()) return;
+        auto lookup = std::move(found->second);
+        auto completion = std::move(lookup->completion_);
+        pending.erase(found);
+        lookup->request_cancel();
     }
 
     void request_close() noexcept {
@@ -555,31 +592,14 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
     void close_on_context() noexcept {
         if (closed) return;
         closed = true;
-        auto outstanding = std::move(pending);
-        pending.clear();
-        for (auto& [id, completion] : outstanding) {
-            cancel_forwarded(id);
-            try {
-                completion(Result<std::vector<boost::asio::ip::address>>(
-                    Status::diagnostic(StatusCode::Closed,
-                                       "system resolver is closed")));
-            } catch (...) {
-            }
-        }
-    }
-
-    // Drops the owner's lookup on its context. If that cannot be posted, the
-    // owner answers later and finds nothing pending here.
-    void cancel_forwarded(std::uint64_t id) noexcept {
-        try {
-            boost::asio::post(owner->state_->context->executor(),
-                              [self = shared_from_this(), id]() noexcept {
-                                  const auto found = self->forwarded.find(id);
-                                  if (found == self->forwarded.end()) return;
-                                  self->owner->cancel(found->second);
-                                  self->forwarded.erase(found);
-                              });
-        } catch (...) {
+        std::map<std::uint64_t, std::shared_ptr<Lookup>> outstanding;
+        outstanding.swap(pending);
+        for (auto& [id, lookup] : outstanding) {
+            lookup->request_cancel();
+            auto completion = std::move(lookup->completion_);
+            invoke_contained(completion, Result<Addresses>(Status::diagnostic(
+                                             StatusCode::Closed,
+                                             "system resolver is closed")));
         }
     }
 
@@ -589,8 +609,7 @@ struct SystemResolver::Remote final : std::enable_shared_from_this<Remote> {
     std::atomic<bool> close_requested{false};
     bool closed{false};
     std::uint64_t last_id{0U};
-    std::map<std::uint64_t, Completion> pending;
-    std::map<std::uint64_t, std::uint64_t> forwarded;
+    std::map<std::uint64_t, std::shared_ptr<Lookup>> pending;
 };
 
 Result<std::shared_ptr<SystemResolver>> SystemResolver::create_remote(

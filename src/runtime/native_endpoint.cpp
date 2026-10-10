@@ -348,15 +348,35 @@ public:
         return owners;
     }
 
-    // Marks the oldest sessions beyond a lowered limit, as above.
-    Owners trim(const std::string& identity, std::size_t limit) {
-        std::lock_guard lock(mutex_);
-        const auto found = by_identity_.find(identity);
-        if (found == by_identity_.end()) return {};
-        Owners owners;
-        owners.reserve(found->second.size());
-        mark_beyond_locked(found->second, limit, owners);
-        return owners;
+    // Marks one oldest excess session at a time, then notifies its owner
+    // outside the lock. A lowered bound must hold even when allocating an
+    // owner-return vector would fail. No entry reference crosses the unlock.
+    void trim(const std::string& identity, std::size_t limit) noexcept {
+        if (limit == 0U) return;
+        for (;;) {
+            std::shared_ptr<ReplacementOwner> owner;
+            {
+                std::lock_guard lock(mutex_);
+                const auto found = by_identity_.find(identity);
+                if (found == by_identity_.end()) return;
+                auto& entries = found->second;
+                const auto counts = [](const Entry& entry) {
+                    return !entry.replaced && !entry.session.expired();
+                };
+                std::size_t live = 0U;
+                for (const auto& entry : entries)
+                    live += counts(entry) ? 1U : 0U;
+                for (auto& entry : entries) {
+                    if (live <= limit) return;
+                    if (!counts(entry)) continue;
+                    entry.replaced = true;
+                    --live;
+                    owner = entry.owner.lock();
+                    if (owner) break;
+                }
+            }
+            if (owner) owner->replacements_marked();
+        }
     }
 
     // Whether a newer session of the identity replaced `session`.
@@ -546,6 +566,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
           }),
           replace_task([](void* value) noexcept {
               static_cast<State*>(value)->replace_on_context();
+          }),
+          sweep_task([](void* value) noexcept {
+              static_cast<State*>(value)->end_unrecognized();
           }) {
         slots.reserve(options.max_sessions);
         for (std::size_t index = 0U; index < options.max_sessions; ++index)
@@ -565,6 +588,18 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
     void request_close() noexcept {
         if (closing.exchange(true, std::memory_order_acq_rel)) return;
         context->submit(close_task, shared_from_this());
+    }
+
+    // The publishing context must reach every endpoint after switching the
+    // credential holders without allocating another Asio handler. The
+    // reserved mailbox task coalesces requests and reads the latest policy.
+    void request_sweep() noexcept {
+        if (closing.load(std::memory_order_acquire)) return;
+        if (context->running_in_this_thread()) {
+            end_unrecognized();
+        } else {
+            context->submit(sweep_task, shared_from_this());
+        }
     }
 
     // Served endpoints: the registry marked sessions of this endpoint
@@ -806,7 +841,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
     // Ends sessions whose identity the current policy no longer recognizes,
     // then the oldest beyond each identity's limit.
     void end_unrecognized() noexcept {
-        if (role != EndpointRole::Server || !policy) return;
+        if (closing.load(std::memory_order_acquire) ||
+            role != EndpointRole::Server || !policy)
+            return;
         const auto current = policy->get();
         for (const auto& slot : slots) {
             if (!slot->session || slot->evicted ||
@@ -820,12 +857,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
             if (!slot->session || slot->evicted) continue;
             const auto limit = current->max_sessions(slot->peer_identity);
             if (auto* served = share()) {
-                try {
-                    tell_owners(
-                        served->sessions.trim(slot->peer_identity, limit));
-                } catch (...) {
-                    // A later admission of the identity trims again.
-                }
+                served->sessions.trim(slot->peer_identity, limit);
             } else {
                 evict_beyond_limit(slot->peer_identity, limit);
             }
@@ -1131,6 +1163,7 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
     std::optional<NativeCircuitCredentials> circuits;
     ControlTask close_task;
     ControlTask replace_task;
+    ControlTask sweep_task;
     std::atomic<bool> replace_queued{false};
 };
 
@@ -1573,8 +1606,7 @@ std::vector<NativePeerSession> NativeEndpoint::authenticated_sessions() const {
     return sessions;
 }
 void NativeEndpoint::end_unrecognized_sessions() noexcept {
-    if (state_->closing.load(std::memory_order_acquire)) return;
-    state_->end_unrecognized();
+    state_->request_sweep();
 }
 
 namespace {

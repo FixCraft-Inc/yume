@@ -323,10 +323,12 @@ session ends. Failed attempts, and sessions shorter than the longest backoff,
 wait for exponential backoff.
 
 A server `NativeEndpoint` can reload its credentials on its context. The
-engine graph is immutable, so reload builds a new one with the new session
-security factory and the same handlers and route provider, and later sessions
-use it. Service wrappers read the authorization policy through a shared holder
-instead of capturing it, which lets established sessions see new grants. A
+engine graph stays immutable. Reload publishes the new session security
+factory and authorization policy through shared holders; later sessions use
+the new factory and established sessions check the current policy for each
+OPEN. Reserved control tasks reach every serving context to end revoked
+sessions and apply lowered identity session bounds without allocating after
+publication. A
 session that finishes AUTH against the previous graph after its identity was
 removed is refused at admission.
 

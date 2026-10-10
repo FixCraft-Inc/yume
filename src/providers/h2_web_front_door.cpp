@@ -141,11 +141,30 @@ struct ExporterWiper final {
     }
 };
 
-struct PromotionReservation final {
-    explicit PromotionReservation(std::shared_ptr<PromotionBudget> value) noexcept
-        : budget(std::move(value)) { ++budget->active; }
-    ~PromotionReservation() noexcept { --budget->active; }
-    std::shared_ptr<PromotionBudget> budget;
+class PromotionReservation final {
+public:
+    PromotionReservation(std::shared_ptr<PromotionBudget> value,
+                         std::size_t limit) noexcept
+        : budget_(std::move(value)) {
+        // Serving contexts contend for this count. The count publishes no
+        // other state, so acquisition and release need only atomicity.
+        auto active = budget_->active.load(std::memory_order_relaxed);
+        while (active < limit) {
+            if (budget_->active.compare_exchange_weak(
+                    active, active + 1U, std::memory_order_relaxed))
+                return;
+        }
+        budget_.reset();
+    }
+    ~PromotionReservation() noexcept {
+        if (budget_) budget_->active.fetch_sub(1U, std::memory_order_relaxed);
+    }
+    PromotionReservation(const PromotionReservation&) = delete;
+    PromotionReservation& operator=(const PromotionReservation&) = delete;
+    bool has_slot() const noexcept { return static_cast<bool>(budget_); }
+
+private:
+    std::shared_ptr<PromotionBudget> budget_;
 };
 
 // The accepted-channel registry must outlive published carriers. Otherwise
@@ -469,13 +488,17 @@ private:
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             // ReplayCache owns atomic duplicate-check/reservation. Failure never
             // evicts live entries. Its ticks and configured TTL are seconds.
-            if (waiter && parsed && ticks >= 0 &&
-                owner->budget->active.load() < owner->config.limits.max_promoted_carriers) {
-                try { reservation_ = std::make_shared<PromotionReservation>(owner->budget); }
-                catch (...) {} // Failed capacity allocation follows ordinary cover.
+            if (waiter && parsed && ticks >= 0) {
+                try {
+                    reservation_ = std::make_shared<PromotionReservation>(
+                        owner->budget,
+                        owner->config.limits.max_promoted_carriers);
+                } catch (...) {
+                }  // Failed capacity allocation follows ordinary cover.
             }
-            if (!reservation_ ||
-                owner->replay->reserve(parsed->nonce, static_cast<std::uint64_t>(ticks)) !=
+            if (!reservation_ || !reservation_->has_slot() ||
+                owner->replay->reserve(parsed->nonce,
+                                       static_cast<std::uint64_t>(ticks)) !=
                     admission::ReplayDecision::Accepted) {
                 reservation_.reset();
                 if (!cover_->respond(*h2_, *candidate_)) { stop(); return; }

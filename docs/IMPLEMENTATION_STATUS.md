@@ -709,10 +709,12 @@ insufficient.
 
 ## Performance boundary
 
-No 0.3 performance claim exists. A matched pre-reset performance baseline has
-not yet been captured; the signed pre-reset commit remains identifiable in Git
-history for that isolated comparison. A claim such as “faster” requires at
-least five matched
+No 0.3 performance claim exists. Throughput tuning has matched measurements
+of carrier buffering and event-loop scaling on loopback and emulated paths.
+Those measurements do not establish real-path speed, latency, or fairness.
+A comparison must report its connection geometry: YUME multiplexes streams
+inside one session, while an unmultiplexed reference uses a connection per
+stream. A claim such as “faster” requires at least five matched
 runs with throughput, p50/p99 latency, CPU/byte, allocations, peak memory, and
 1/32/256-stream fairness plus reported uncertainty.
 

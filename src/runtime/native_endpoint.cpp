@@ -310,7 +310,163 @@ SessionLimits session_limits(const config::v1::ResourceLimits& config) {
 }
 }  // namespace
 
-struct NativeEndpoint::State final : std::enable_shared_from_this<State>, AcceptScheduler::Driver {
+namespace {
+
+// The sessions of each authenticated identity across a server's contexts,
+// in admission order, for max_sessions. Victims are chosen under the lock
+// and stopped by the caller after it, since stop runs teardown callbacks.
+// An endpoint whose sessions the registry may mark replaced. It stops them
+// on its own context, since a session's teardown runs its completions on
+// the calling thread.
+class ReplacementOwner {
+public:
+    // Any thread, without allocating.
+    virtual void replacements_marked() noexcept = 0;
+
+protected:
+    ~ReplacementOwner() = default;
+};
+
+class SessionRegistry final {
+public:
+    using Owners = std::vector<std::shared_ptr<ReplacementOwner>>;
+
+    // Records an admitted session of `owner`, then marks the identity's
+    // oldest sessions beyond `limit` (zero: none) replaced and returns their
+    // owners, to be told after the call. Throws std::bad_alloc, recording
+    // nothing.
+    Owners admit(const std::string& identity, std::size_t limit,
+                 const std::shared_ptr<SessionEngine>& session,
+                 std::weak_ptr<ReplacementOwner> owner) {
+        std::lock_guard lock(mutex_);
+        auto& entries = by_identity_[identity];
+        Owners owners;
+        owners.reserve(entries.size() + 1U);
+        entries.push_back(
+            {++admissions_, session, session.get(), std::move(owner), false});
+        mark_beyond_locked(entries, limit, owners);
+        return owners;
+    }
+
+    // Marks the oldest sessions beyond a lowered limit, as above.
+    Owners trim(const std::string& identity, std::size_t limit) {
+        std::lock_guard lock(mutex_);
+        const auto found = by_identity_.find(identity);
+        if (found == by_identity_.end()) return {};
+        Owners owners;
+        owners.reserve(found->second.size());
+        mark_beyond_locked(found->second, limit, owners);
+        return owners;
+    }
+
+    // Whether a newer session of the identity replaced `session`.
+    bool replaced(const std::string& identity,
+                  const SessionEngine* session) noexcept {
+        std::lock_guard lock(mutex_);
+        const auto found = by_identity_.find(identity);
+        if (found == by_identity_.end()) return false;
+        for (const auto& entry : found->second) {
+            if (entry.address == session && !entry.session.expired())
+                return entry.replaced;
+        }
+        return false;
+    }
+
+    void forget(const std::string& identity,
+                const SessionEngine* session) noexcept {
+        std::lock_guard lock(mutex_);
+        const auto found = by_identity_.find(identity);
+        if (found == by_identity_.end()) return;
+        auto& entries = found->second;
+        std::erase_if(entries, [session](const Entry& entry) {
+            return entry.address == session || entry.session.expired();
+        });
+        if (entries.empty()) by_identity_.erase(found);
+    }
+
+private:
+    struct Entry final {
+        std::uint64_t admitted;
+        // An expired entry no longer counts, so a later session at the same
+        // address never matches it.
+        std::weak_ptr<SessionEngine> session;
+        const SessionEngine* address;
+        std::weak_ptr<ReplacementOwner> owner;
+        bool replaced;
+    };
+
+    // Owners has room for every entry, so this does not allocate.
+    static void mark_beyond_locked(std::vector<Entry>& entries,
+                                   std::size_t limit, Owners& owners) noexcept {
+        if (limit == 0U) return;
+        std::size_t live = 0U;
+        const auto counts = [](const Entry& entry) {
+            return !entry.replaced && !entry.session.expired();
+        };
+        for (const auto& entry : entries) live += counts(entry) ? 1U : 0U;
+        // Entries stay in admission order, so the oldest come first.
+        for (auto& entry : entries) {
+            if (live <= limit) break;
+            if (!counts(entry)) continue;
+            entry.replaced = true;
+            --live;
+            if (auto owner = entry.owner.lock())
+                owners.push_back(std::move(owner));
+        }
+    }
+
+    std::mutex mutex_;
+    std::uint64_t admissions_{0U};
+    std::unordered_map<std::string, std::vector<Entry>> by_identity_;
+};
+
+void tell_owners(const SessionRegistry::Owners& owners) noexcept {
+    for (const auto& owner : owners) owner->replacements_marked();
+}
+
+}  // namespace
+
+struct NativeServerShare::Impl final {
+    std::vector<std::shared_ptr<H2WebListenerShare>> listeners;
+    std::shared_ptr<admission::ReplayCache> replay;
+    SessionRegistry sessions;
+    // Filled by the first endpoint created with the share, then only read.
+    std::mutex mutex;
+    std::shared_ptr<PolicyHolder> policy;
+    std::shared_ptr<CurrentSecurityFactory> security;
+    std::shared_ptr<EgressLimiter> limiter;
+};
+
+Result<std::shared_ptr<NativeServerShare>> NativeServerShare::create(
+    std::vector<std::shared_ptr<H2WebListenerShare>> listeners) {
+    if (listeners.empty() ||
+        std::any_of(listeners.begin(), listeners.end(),
+                    [](const auto& listener) { return !listener; }))
+        return Result<std::shared_ptr<NativeServerShare>>(
+            Status(StatusCode::InvalidArgument));
+    try {
+        auto impl = std::make_unique<Impl>();
+        impl->listeners = std::move(listeners);
+        const auto sizing = native_admission_replay_sizing(
+            H2WebFrontDoorLimits{}.connection_timeout);
+        impl->replay = std::make_shared<admission::ReplayCache>(
+            sizing.max_entries, sizing.ttl_seconds);
+        return Result<std::shared_ptr<NativeServerShare>>(
+            std::shared_ptr<NativeServerShare>(
+                new NativeServerShare(std::move(impl))));
+    } catch (const std::bad_alloc&) {
+        return Result<std::shared_ptr<NativeServerShare>>(
+            Status(StatusCode::ResourceExhausted));
+    }
+}
+
+NativeServerShare::NativeServerShare(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+NativeServerShare::~NativeServerShare() noexcept = default;
+
+struct NativeEndpoint::State final : std::enable_shared_from_this<State>,
+                                     AcceptScheduler::Driver,
+                                     ReplacementOwner {
     // The engine can stop on another thread. Reserve its delivery task before
     // publishing the session, so shutdown does not allocate an Asio handler.
     struct SessionEnd final {
@@ -379,10 +535,17 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     };
 
     State(std::shared_ptr<AsioExecutionContext> execution,
-          EndpointRole endpoint_role, NativeEndpointOptions bounds, SessionLimits limits)
-        : context(std::move(execution)), role(endpoint_role), options(std::move(bounds)),
-          session_bounds(limits), close_task([](void* value) noexcept {
+          EndpointRole endpoint_role, NativeEndpointOptions bounds,
+          SessionLimits limits)
+        : context(std::move(execution)),
+          role(endpoint_role),
+          options(std::move(bounds)),
+          session_bounds(limits),
+          close_task([](void* value) noexcept {
               static_cast<State*>(value)->close_on_context();
+          }),
+          replace_task([](void* value) noexcept {
+              static_cast<State*>(value)->replace_on_context();
           }) {
         slots.reserve(options.max_sessions);
         for (std::size_t index = 0U; index < options.max_sessions; ++index)
@@ -395,9 +558,37 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         if (tcp) tcp->cancel();
     }
 
+    NativeServerShare::Impl* share() const noexcept {
+        return options.served ? &options.served->impl() : nullptr;
+    }
+
     void request_close() noexcept {
         if (closing.exchange(true, std::memory_order_acq_rel)) return;
         context->submit(close_task, shared_from_this());
+    }
+
+    // Served endpoints: the registry marked sessions of this endpoint
+    // replaced, possibly from another context's thread.
+    void replacements_marked() noexcept override {
+        if (replace_queued.exchange(true, std::memory_order_acq_rel)) return;
+        context->submit(replace_task, shared_from_this());
+    }
+
+    // On the context: stops each session the registry marked replaced.
+    void replace_on_context() noexcept {
+        replace_queued.store(false, std::memory_order_release);
+        auto* served = share();
+        if (!served) return;
+        for (const auto& slot : slots) {
+            if (!slot->session || slot->evicted ||
+                !served->sessions.replaced(slot->peer_identity,
+                                           slot->session.get()))
+                continue;
+            slot->evicted = true;
+            slot->session->stop(Status::diagnostic(
+                StatusCode::ResourceExhausted,
+                "a newer session for this identity replaced it"));
+        }
     }
 
     // Registers a client endpoint's byte channel, secure channel and carrier.
@@ -483,6 +674,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                 slot.session.reset();
                 result.value()->stop(copy_status(status));
                 result = Result<std::shared_ptr<SessionEngine>>(std::move(status));
+            } else {
+                live_sessions.fetch_add(1U);
             }
         }
         if (slot.automatic) {
@@ -518,7 +711,21 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         if (!current->recognizes(slot.peer_identity))
             return Status::diagnostic(StatusCode::PermissionDenied,
                                       "credential was revoked");
-        evict_beyond_limit(slot.peer_identity, current->max_sessions(slot.peer_identity));
+        const auto limit = current->max_sessions(slot.peer_identity);
+        if (auto* served = share()) {
+            // The identity's sessions may live on other contexts, and the
+            // registry chooses among all of them.
+            SessionRegistry::Owners owners;
+            try {
+                owners = served->sessions.admit(slot.peer_identity, limit,
+                                                slot.session, weak_from_this());
+            } catch (...) {
+                return Status(StatusCode::ResourceExhausted);
+            }
+            tell_owners(owners);
+            return Status::success();
+        }
+        evict_beyond_limit(slot.peer_identity, limit);
         return Status::success();
     }
 
@@ -610,9 +817,18 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
                                                    "credential was revoked"));
         }
         for (const auto& slot : slots) {
-            if (slot->session && !slot->evicted)
-                evict_beyond_limit(slot->peer_identity,
-                                   current->max_sessions(slot->peer_identity));
+            if (!slot->session || slot->evicted) continue;
+            const auto limit = current->max_sessions(slot->peer_identity);
+            if (auto* served = share()) {
+                try {
+                    tell_owners(
+                        served->sessions.trim(slot->peer_identity, limit));
+                } catch (...) {
+                    // A later admission of the identity trims again.
+                }
+            } else {
+                evict_beyond_limit(slot->peer_identity, limit);
+            }
         }
     }
 
@@ -660,6 +876,9 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
         if (slot.generation != generation || !slot.session) return;
         providers::cancel_timer(slot.rekey_timer);
         auto session = std::move(slot.session);
+        live_sessions.fetch_sub(1U);
+        if (auto* served = share())
+            served->sessions.forget(slot.peer_identity, session.get());
         if (options.session_ended) {
             try { options.session_ended(std::move(session), std::move(reason)); } catch (...) {}
         }
@@ -888,6 +1107,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     std::optional<AcceptScheduler> accepts; // Servers with listeners only.
     NativeEndpoint::AcceptFailure accept_failure;
     std::size_t pending_starts{0U};
+    // Delivered sessions not yet ended, for load() from any thread.
+    std::atomic<std::size_t> live_sessions{0U};
     std::atomic<bool> closing{false};
     bool owns_route_provider{false}; // Acquired only after endpoint publication can succeed.
     bool owns_resolver{false}; // Likewise.
@@ -909,6 +1130,8 @@ struct NativeEndpoint::State final : std::enable_shared_from_this<State>, Accept
     // A client's circuits credentials.
     std::optional<NativeCircuitCredentials> circuits;
     ControlTask close_task;
+    ControlTask replace_task;
+    std::atomic<bool> replace_queued{false};
 };
 
 Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
@@ -1023,6 +1246,14 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
         const std::string_view server_name = role == EndpointRole::Client
             ? std::get<config::v1::ClientEndpoint>(config.endpoint()).host() : std::string_view{};
         auto credentials = require(load_native_credentials(config, base_directory, server_name));
+        if (options.served) {
+            if (role != EndpointRole::Server)
+                throw Status(StatusCode::InvalidArgument,
+                             "only a server endpoint is served");
+            if (credentials.cluster)
+                throw Status(StatusCode::InvalidArgument,
+                             "a cluster member serves on one context");
+        }
         auto limits = session_limits(config.limits());
         limits.rekey_ack_timeout = options.rekey_ack_timeout;
         require(validate_session_limits(limits));
@@ -1031,12 +1262,28 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 "native session frame limit must fit the complete YTP/1 AUTH envelope");
         state = std::make_shared<State>(context, role, std::move(options), limits);
         state->rotate_idle_epochs = config.limits().idle_epoch_rotation();
-        state->policy = std::make_shared<PolicyHolder>(credentials.authorization);
+        // The first endpoint created with a share fills it. The others take
+        // its credential holders and limiter, so a reload of the first
+        // reaches every session and one egress rate holds for all of them.
+        auto* const served = state->share();
+        std::unique_lock<std::mutex> share_lock;
+        if (served) share_lock = std::unique_lock<std::mutex>(served->mutex);
+        const bool loads_share = !served || !served->policy;
+        state->policy =
+            loads_share
+                ? std::make_shared<PolicyHolder>(credentials.authorization)
+                : served->policy;
         std::optional<EgressPacing> pacing;
         if (const auto& mbps = config.limits().max_egress_mbps();
-            mbps && role == EndpointRole::Server)
-            pacing.emplace(EgressPacing{context, std::make_shared<EgressLimiter>(
-                static_cast<std::uint64_t>(*mbps) * 125'000U)});
+            mbps && role == EndpointRole::Server) {
+            auto limiter =
+                served && served->limiter
+                    ? served->limiter
+                    : std::make_shared<EgressLimiter>(
+                          static_cast<std::uint64_t>(*mbps) * 125'000U);
+            if (served) served->limiter = limiter;
+            pacing.emplace(EgressPacing{context, std::move(limiter)});
+        }
         auto requirements = composition_requirements();
         std::vector<ServiceRequirement> service_requirements;
         std::vector<NativeServiceBinding> handlers;
@@ -1077,10 +1324,16 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
             "YTP/1", std::move(requirements), std::move(service_requirements)));
         std::shared_ptr<SessionSecurityProviderFactory> security =
             credentials.security_factory;
-        if (role == EndpointRole::Server) {
+        if (role == EndpointRole::Server && !loads_share) {
+            security = served->security;
+        } else if (role == EndpointRole::Server) {
             auto current = std::make_shared<CurrentSecurityFactory>(
                 credentials.security_factory);
             security = current;
+            if (served) {
+                served->policy = state->policy;
+                served->security = current;
+            }
             state->reload_inputs.emplace(State::ReloadInputs{
                 config, base_directory, std::move(current),
                 NativeAdmissionKey(credentials.admission_key.bytes())});
@@ -1093,6 +1346,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                 state->cluster->saved_serial = state->cluster->serial;
             }
         }
+        if (share_lock.owns_lock()) share_lock.unlock();
         EngineBuilder builder(role, std::move(suite));
         require(builder.register_session_security_provider_factory(
             std::move(security)));
@@ -1136,23 +1390,43 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create(
                     throw Status(StatusCode::InvalidArgument,
                         "cover site is missing a required browser profile asset");
             }
-            const auto replay_sizing = native_admission_replay_sizing(
-                H2WebFrontDoorLimits{}.connection_timeout);
-            auto replay = std::make_shared<admission::ReplayCache>(
-                replay_sizing.max_entries, replay_sizing.ttl_seconds);
             const auto& endpoint = std::get<config::v1::ServerEndpoint>(config.endpoint());
+            std::shared_ptr<admission::ReplayCache> replay;
+            if (served) {
+                if (served->listeners.size() !=
+                    endpoint.listen_addresses().size())
+                    throw Status(
+                        StatusCode::InvalidArgument,
+                        "the share has a listener for each listen address");
+                replay = served->replay;
+            } else {
+                const auto replay_sizing = native_admission_replay_sizing(
+                    H2WebFrontDoorLimits{}.connection_timeout);
+                replay = std::make_shared<admission::ReplayCache>(
+                    replay_sizing.max_entries, replay_sizing.ttl_seconds);
+            }
             state->listeners.reserve(endpoint.listen_addresses().size());
-            for (const auto& address : endpoint.listen_addresses()) {
+            for (std::size_t index = 0U;
+                 index < endpoint.listen_addresses().size(); ++index) {
                 boost::system::error_code error;
-                auto numeric = boost::asio::ip::make_address(address, error);
+                auto numeric = boost::asio::ip::make_address(
+                    endpoint.listen_addresses()[index], error);
                 if (error) throw Status(StatusCode::InvalidArgument);
                 H2WebFrontDoorConfig ingress;
                 ingress.listen_endpoint = {numeric, endpoint.port()};
                 ingress.limits.max_promoted_carriers = state->options.max_sessions;
                 ingress.carrier_limits = h2_duplex_limits_for_budget(
                     config.limits().max_queued_bytes());
-                state->listeners.push_back(require(H2WebFrontDoor::create(context, std::move(ingress),
-                    credentials.tls_provider, cover, replay, credentials.admission_key.bytes())));
+                state->listeners.push_back(require(
+                    served ? H2WebFrontDoor::create_served(
+                                 context, std::move(ingress),
+                                 credentials.tls_provider, cover, replay,
+                                 credentials.admission_key.bytes(),
+                                 served->listeners[index])
+                           : H2WebFrontDoor::create(
+                                 context, std::move(ingress),
+                                 credentials.tls_provider, cover, replay,
+                                 credentials.admission_key.bytes())));
             }
             // Automatic accept state is allocated with the listeners, before
             // the endpoint is published.
@@ -1192,7 +1466,7 @@ Result<std::shared_ptr<NativeEndpoint>> NativeEndpoint::create_link(
         options.caller_runs_forward_adapters ||
         options.caller_runs_module_adapters ||
         options.caller_runs_packet_adapters ||
-        !options.builtin_services.empty())
+        !options.builtin_services.empty() || options.served)
         return Result<std::shared_ptr<NativeEndpoint>>(
             Status(StatusCode::InvalidArgument));
     context->require_context();
@@ -1252,6 +1526,26 @@ Status NativeEndpoint::start_accepting(NativeAcceptOptions accept, AcceptFailure
     return state_->start_accepting(accept, std::move(on_failure));
 }
 std::size_t NativeEndpoint::listener_count() const noexcept { return state_->listeners.size(); }
+bool NativeEndpoint::serve(std::size_t listener_index,
+                           int descriptor) noexcept {
+    const auto& state = *state_;
+    if (!state.options.served ||
+        state.closing.load(std::memory_order_acquire) ||
+        listener_index >= state.listeners.size())
+        return false;
+    state.listeners[listener_index]->serve(descriptor);
+    return true;
+}
+std::size_t NativeEndpoint::session_count() const noexcept {
+    return state_->live_sessions.load();
+}
+std::size_t NativeEndpoint::load() const noexcept {
+    std::size_t load = state_->live_sessions.load();
+    if (state_->options.served)
+        for (const auto& listener : state_->listeners)
+            load += listener->waiting_connections();
+    return load;
+}
 boost::asio::ip::tcp::endpoint NativeEndpoint::listener_endpoint(std::size_t index) const {
     state_->context->require_context();
     if (index >= state_->listeners.size()) throw std::out_of_range("native listener index");

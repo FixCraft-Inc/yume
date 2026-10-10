@@ -25,9 +25,41 @@
 #include "runtime/native_credentials.hpp"
 #include "stealth/outer_carrier_observer.hpp"
 
+namespace yume::providers {
+struct H2WebListenerShare;
+}
+
 namespace yume::runtime {
 
 class NativeEgressPolicy;
+
+// What the endpoints of one server share when it accepts on one context and
+// serves on several (endpoint.event_loops): its listeners' bounds, the
+// admission replay cache, the credential policy and security factory a
+// reload publishes, the egress limiter, and the per-identity session
+// registry through which max_sessions ends an identity's oldest session on
+// whichever context serves it. Pass one share to each of those endpoints in
+// NativeEndpointOptions::served. The first endpoint created with it loads
+// the credentials into it and is the one that reloads them. Every member is
+// safe to reach from any of the contexts, and none runs a callback under its
+// lock.
+class NativeServerShare final {
+public:
+    // One listener share per configured listen address, in order.
+    static engine::Result<std::shared_ptr<NativeServerShare>> create(
+        std::vector<std::shared_ptr<providers::H2WebListenerShare>> listeners);
+
+    NativeServerShare(const NativeServerShare&) = delete;
+    NativeServerShare& operator=(const NativeServerShare&) = delete;
+    ~NativeServerShare() noexcept;
+
+    struct Impl;
+    Impl& impl() noexcept { return *impl_; }
+
+private:
+    explicit NativeServerShare(std::unique_ptr<Impl> impl) noexcept;
+    std::unique_ptr<Impl> impl_;
+};
 
 struct NativeServiceBinding final {
     std::string name;
@@ -114,6 +146,11 @@ struct NativeEndpointOptions final {
     // Client only. Payload-free observation of the first carrier this
     // endpoint opens, for outer-carrier evidence. A server refuses it.
     std::shared_ptr<obfs::OuterCarrierTrace> outer_carrier_trace;
+    // Server only. Listen nowhere and serve the connections serve() hands
+    // over, through one front door per configured listener whose bounds the
+    // share's listeners keep, sharing the rest of the share with the other
+    // endpoints of the server. A cluster is refused.
+    std::shared_ptr<NativeServerShare> served;
 };
 
 // Automatic server accepts. The total pending across listeners must fit
@@ -281,6 +318,17 @@ public:
     // this returns. Ordinary close reports nothing.
     engine::Status start_accepting(NativeAcceptOptions accept, AcceptFailure on_failure);
     std::size_t listener_count() const noexcept;
+    // A served endpoint's next connection from its listener_index-th
+    // listener, an accepted TCP descriptor holding a place in that
+    // listener's count. Callable from any thread. The endpoint owns the
+    // descriptor from here on. False, with nothing taken, when the endpoint
+    // is not served or closing or the index is out of range.
+    bool serve(std::size_t listener_index, int descriptor) noexcept;
+    // Sessions and connections waiting for promotion, for a dispatcher that
+    // hands the next connection to the least busy endpoint. Any thread.
+    std::size_t load() const noexcept;
+    // Delivered sessions that have not ended. Any thread.
+    std::size_t session_count() const noexcept;
     boost::asio::ip::tcp::endpoint listener_endpoint(std::size_t index) const;
     // Server, on the context: read the authorized and admin stores and the
     // server's composite and ML-KEM keys again. Later sessions authenticate

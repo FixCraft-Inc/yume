@@ -1597,7 +1597,8 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     Result<Buffer> sealed(Status::diagnostic(StatusCode::Internal));
     try {
         std::lock_guard<std::mutex> security_lock(security_mutex_);
-        sealed = security_->seal_record(token, plaintext.bytes());
+        sealed = security_->seal_record(token, plaintext.bytes(),
+                                        kProtectedEnvelopeBytes);
     } catch (const std::bad_alloc&) {
         return Result<Buffer>(Status(
             StatusCode::ResourceExhausted,
@@ -1610,24 +1611,17 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     if (!sealed.ok()) {
         return Result<Buffer>(sealed.status());
     }
-    Buffer ciphertext = std::move(sealed).take_value();
-    if (ciphertext.empty() ||
-        ciphertext.size() < plaintext.size() ||
-        ciphertext.size() - plaintext.size() >
-            security_->max_sealed_overhead() ||
-        ciphertext.size() >
-            kAbsoluteMaxBufferBytes - kProtectedEnvelopeBytes) {
+    // The provider sealed behind kProtectedEnvelopeBytes of headroom, which
+    // the envelope now fills in place.
+    Buffer output = std::move(sealed).take_value();
+    if (output.size() <= kProtectedEnvelopeBytes ||
+        output.size() - kProtectedEnvelopeBytes < plaintext.size() ||
+        output.size() - kProtectedEnvelopeBytes - plaintext.size() >
+            security_->max_sealed_overhead()) {
         return Result<Buffer>(Status(
             StatusCode::ProviderMismatch,
             "security provider returned an invalid sealed-record size"));
     }
-
-    const std::size_t total = kProtectedEnvelopeBytes + ciphertext.size();
-    auto result = Buffer::allocate(total, total);
-    if (!result.ok()) {
-        return result;
-    }
-    Buffer output = std::move(result).take_value();
     auto bytes = output.mutable_bytes();
     bytes[0] = static_cast<std::byte>(kProtectedEnvelopeVersion);
     bytes[1] = std::byte{0};
@@ -1635,8 +1629,6 @@ Result<Buffer> SessionEngine::Impl::protect_frame(
     bytes[3] = std::byte{0};
     write_u32(bytes, 4U, token.epoch);
     write_u64(bytes, 8U, token.sequence);
-    std::memcpy(bytes.data() + kProtectedEnvelopeBytes,
-                ciphertext.bytes().data(), ciphertext.size());
     return Result<Buffer>(std::move(output));
 }
 

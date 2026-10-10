@@ -495,16 +495,17 @@ SecretBytes derive_record_material(
                        kRecordKeyMaterialBytes);
 }
 
-std::vector<std::uint8_t> seal_aes_gcm(
-    const CryptoContext& crypto,
-    std::span<const std::uint8_t> key,
-    std::span<const std::uint8_t> nonce,
-    std::span<const std::uint8_t> aad,
-    std::span<const std::uint8_t> plaintext) {
+void seal_aes_gcm(const CryptoContext& crypto,
+                  std::span<const std::uint8_t> key,
+                  std::span<const std::uint8_t> nonce,
+                  std::span<const std::uint8_t> aad,
+                  std::span<const std::uint8_t> plaintext,
+                  std::span<std::uint8_t> output) {
     if (key.size() != kAes256KeyBytes || nonce.size() != kAesGcmNonceBytes ||
         plaintext.size() > static_cast<std::size_t>(INT_MAX) ||
         aad.size() > static_cast<std::size_t>(INT_MAX) ||
-        plaintext.size() > engine::kAbsoluteMaxBufferBytes - kAesGcmTagBytes) {
+        plaintext.size() > engine::kAbsoluteMaxBufferBytes - kAesGcmTagBytes ||
+        output.size() != plaintext.size() + kAesGcmTagBytes) {
         throw std::invalid_argument("AES-GCM seal input is invalid");
     }
     CipherCtxPtr context(EVP_CIPHER_CTX_new());
@@ -519,7 +520,6 @@ std::vector<std::uint8_t> seal_aes_gcm(
                            static_cast<int>(aad.size())) != 1)) {
         throw std::runtime_error("AES-GCM AAD processing failed");
     }
-    std::vector<std::uint8_t> output(plaintext.size() + kAesGcmTagBytes);
     int written = 0;
     if ((!plaintext.empty() &&
          EVP_EncryptUpdate(context.get(), output.data(), &written,
@@ -537,7 +537,6 @@ std::vector<std::uint8_t> seal_aes_gcm(
                             output.data() + plaintext.size()) != 1) {
         throw std::runtime_error("AES-GCM finalization failed");
     }
-    return output;
 }
 
 std::vector<std::uint8_t> open_aes_gcm(

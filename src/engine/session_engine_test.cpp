@@ -156,6 +156,15 @@ Buffer copy_bytes(std::span<const std::uint8_t> bytes,
         limit));
 }
 
+// A fake seal is the identity behind the requested zero headroom.
+Buffer with_headroom(std::size_t headroom, std::span<const std::byte> bytes) {
+    Buffer buffer =
+        require(Buffer::allocate(headroom, headroom + bytes.size() + 1U));
+    if (!buffer.append(bytes).ok())
+        throw std::runtime_error("fake seal append failed");
+    return buffer;
+}
+
 Buffer copy_bytes(std::span<const std::byte> bytes,
                   std::size_t limit = 128U * 1024U) {
     return require(Buffer::copy_from(bytes, limit));
@@ -431,9 +440,10 @@ public:
         return Result<AuthenticationOutput>(std::move(output));
     }
     Result<Buffer> seal_record(RecordKeyToken token,
-                               std::span<const std::byte> plaintext) override {
+                               std::span<const std::byte> plaintext,
+                               std::size_t headroom) override {
         trace_->sealed.push_back(token);
-        return Result<Buffer>(copy_bytes(plaintext));
+        return Result<Buffer>(with_headroom(headroom, plaintext));
     }
     Result<Buffer> open_record(RecordKeyToken token,
                                std::span<const std::byte> ciphertext) override {

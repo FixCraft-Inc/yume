@@ -680,9 +680,9 @@ public:
         }
     }
 
-    Result<Buffer> seal_record(
-        RecordKeyToken token,
-        std::span<const std::byte> plaintext) override {
+    Result<Buffer> seal_record(RecordKeyToken token,
+                               std::span<const std::byte> plaintext,
+                               std::size_t headroom) override {
         if (state_ == ProviderState::Cancelled) {
             return Result<Buffer>(cancelled_status());
         }
@@ -699,18 +699,27 @@ public:
                 *credentials_->crypto, outbound_root_.span(), role_, token,
                 session_binding_);
             const auto aad = record_aad(role_, token);
-            std::vector<std::uint8_t> sealed = seal_aes_gcm(
-                *credentials_->crypto,
-                material.span().first(kAes256KeyBytes),
-                material.span().subspan(kAes256KeyBytes), aad,
-                as_u8(plaintext));
-            auto buffer = Buffer::copy_from(
-                as_bytes(sealed), engine::kAbsoluteMaxBufferBytes);
-            OPENSSL_cleanse(sealed.data(), sealed.size());
+            // The ciphertext goes straight behind the caller's headroom, so
+            // no intermediate copy of it exists.
+            if (plaintext.size() >
+                    engine::kAbsoluteMaxBufferBytes - kAesGcmTagBytes ||
+                headroom > engine::kAbsoluteMaxBufferBytes - kAesGcmTagBytes -
+                               plaintext.size()) {
+                return fail_record("sealed record exceeds the buffer bound");
+            }
+            const std::size_t total =
+                headroom + plaintext.size() + kAesGcmTagBytes;
+            auto buffer = Buffer::allocate(total, total);
             if (!buffer.ok()) {
                 mark_failed();
                 return buffer;
             }
+            auto output = buffer.value().mutable_bytes().subspan(headroom);
+            seal_aes_gcm(
+                *credentials_->crypto, material.span().first(kAes256KeyBytes),
+                material.span().subspan(kAes256KeyBytes), aad, as_u8(plaintext),
+                {reinterpret_cast<std::uint8_t*>(output.data()),
+                 output.size()});
             consume_outbound_sequence();
             return buffer;
         } catch (const std::bad_alloc&) {

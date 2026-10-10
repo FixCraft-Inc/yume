@@ -456,8 +456,20 @@ void check_record_round_trip(SessionSecurityProvider& sender,
                              std::string_view text) {
     const auto plaintext = as_bytes(std::span<const std::uint8_t>(
         reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
-    auto sealed = require(sender.seal_record(token, plaintext),
-                          "record seal");
+    // The record follows the requested headroom, which stays zero.
+    constexpr std::size_t kHeadroom = 16U;
+    auto sealed_with_headroom =
+        require(sender.seal_record(token, plaintext, kHeadroom), "record seal");
+    check(
+        sealed_with_headroom.size() > kHeadroom &&
+            std::all_of(sealed_with_headroom.bytes().begin(),
+                        sealed_with_headroom.bytes().begin() + kHeadroom,
+                        [](std::byte value) { return value == std::byte{0}; }),
+        "sealed record headroom is not zero");
+    auto sealed = require(yume::engine::Buffer::copy_from(
+                              sealed_with_headroom.bytes().subspan(kHeadroom),
+                              yume::engine::kAbsoluteMaxBufferBytes),
+                          "sealed record copy");
     auto opened = require(receiver.open_record(token, sealed.bytes()),
                           "record open");
     check(opened.size() == text.size() &&
@@ -494,11 +506,11 @@ void test_record_fail_closed(const Fixture& fixture) {
         auto pair = make_pair(fixture, default_options(fixture));
         (void)complete_handshake(pair);
         const std::array<std::byte, 1> payload{std::byte{0x41}};
-        auto sealed = require(pair.client->seal_record({0U, 0U}, payload),
+        auto sealed = require(pair.client->seal_record({0U, 0U}, payload, 0U),
                               "negative record seal");
-        check(!pair.client->seal_record({0U, 0U}, payload).ok(),
+        check(!pair.client->seal_record({0U, 0U}, payload, 0U).ok(),
               "one-use outbound token was reusable");
-        check(!pair.client->seal_record({0U, 1U}, payload).ok(),
+        check(!pair.client->seal_record({0U, 1U}, payload, 0U).ok(),
               "failed provider retained secret record state");
         (void)sealed;
     }
@@ -506,7 +518,7 @@ void test_record_fail_closed(const Fixture& fixture) {
         auto pair = make_pair(fixture, default_options(fixture));
         (void)complete_handshake(pair);
         const std::array<std::byte, 1> payload{std::byte{0x42}};
-        auto sealed = require(pair.client->seal_record({0U, 0U}, payload),
+        auto sealed = require(pair.client->seal_record({0U, 0U}, payload, 0U),
                               "wrong-epoch seal");
         check(!pair.server->open_record({1U, 0U}, sealed.bytes()).ok(),
               "wrong inbound epoch was accepted");
@@ -517,7 +529,7 @@ void test_record_fail_closed(const Fixture& fixture) {
         auto pair = make_pair(fixture, default_options(fixture));
         (void)complete_handshake(pair);
         const std::array<std::byte, 1> payload{std::byte{0x43}};
-        auto sealed = require(pair.client->seal_record({0U, 0U}, payload),
+        auto sealed = require(pair.client->seal_record({0U, 0U}, payload, 0U),
                               "mutation seal");
         sealed.mutable_bytes()[0] ^= std::byte{0x01};
         check(!pair.server->open_record({0U, 0U}, sealed.bytes()).ok(),
@@ -527,7 +539,7 @@ void test_record_fail_closed(const Fixture& fixture) {
         auto pair = make_pair(fixture, default_options(fixture));
         (void)complete_handshake(pair);
         const std::array<std::byte, 1> payload{std::byte{0x44}};
-        check(!pair.client->seal_record({0U, 1U}, payload).ok(),
+        check(!pair.client->seal_record({0U, 1U}, payload, 0U).ok(),
               "out-of-order global sequence was accepted");
     }
 }
@@ -545,10 +557,12 @@ void test_bidirectional_rekey(const Fixture& fixture) {
     // are intentionally passed directly: the engine carries only ACK outside
     // the record AEAD so crossed directional rekeys cannot strand an ACK
     // behind a root the receiver has already retired.
-    auto sealed_client_init = require(pair.client->seal_record(
-        {0U, 0U}, client_init.bytes()), "client rekey INIT seal");
-    auto sealed_server_init = require(pair.server->seal_record(
-        {0U, 0U}, server_init.bytes()), "server rekey INIT seal");
+    auto sealed_client_init =
+        require(pair.client->seal_record({0U, 0U}, client_init.bytes(), 0U),
+                "client rekey INIT seal");
+    auto sealed_server_init =
+        require(pair.server->seal_record({0U, 0U}, server_init.bytes(), 0U),
+                "server rekey INIT seal");
     auto opened_client_init = require(pair.server->open_record(
         {0U, 0U}, sealed_client_init.bytes()), "client rekey INIT open");
     auto opened_server_init = require(pair.client->open_record(
@@ -577,9 +591,10 @@ void test_bidirectional_rekey(const Fixture& fixture) {
     auto sequential_client_init = require(
         sequential.client->begin_outbound_rekey(1U),
         "sequential client rekey begin");
-    auto sequential_client_wire = require(sequential.client->seal_record(
-        {0U, 0U}, sequential_client_init.bytes()),
-        "sequential client rekey INIT seal");
+    auto sequential_client_wire =
+        require(sequential.client->seal_record(
+                    {0U, 0U}, sequential_client_init.bytes(), 0U),
+                "sequential client rekey INIT seal");
     auto sequential_client_plaintext = require(
         sequential.server->open_record(
             {0U, 0U}, sequential_client_wire.bytes()),
@@ -597,9 +612,10 @@ void test_bidirectional_rekey(const Fixture& fixture) {
     auto sequential_server_init = require(
         sequential.server->begin_outbound_rekey(1U),
         "sequential server rekey begin");
-    auto sequential_server_wire = require(sequential.server->seal_record(
-        {0U, 0U}, sequential_server_init.bytes()),
-        "sequential server rekey INIT seal");
+    auto sequential_server_wire =
+        require(sequential.server->seal_record(
+                    {0U, 0U}, sequential_server_init.bytes(), 0U),
+                "sequential server rekey INIT seal");
     auto sequential_server_plaintext = require(
         sequential.client->open_record(
             {0U, 0U}, sequential_server_wire.bytes()),
@@ -648,8 +664,9 @@ void test_old_epoch_open_until_the_first_new_record(const Fixture& fixture) {
     (void)complete_handshake(pair);
     auto init = require(pair.client->begin_outbound_rekey(1U),
                         "make-before-break rekey begin");
-    auto init_wire = require(pair.client->seal_record({0U, 0U}, init.bytes()),
-                             "make-before-break INIT seal");
+    auto init_wire =
+        require(pair.client->seal_record({0U, 0U}, init.bytes(), 0U),
+                "make-before-break INIT seal");
     auto opened_init =
         require(pair.server->open_record({0U, 0U}, init_wire.bytes()),
                 "make-before-break INIT open");
@@ -665,7 +682,7 @@ void test_old_epoch_open_until_the_first_new_record(const Fixture& fixture) {
     const std::string_view text = "first-new-epoch";
     const auto plaintext = as_bytes(std::span<const std::uint8_t>(
         reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
-    auto first_new = require(pair.client->seal_record({1U, 2U}, plaintext),
+    auto first_new = require(pair.client->seal_record({1U, 2U}, plaintext, 0U),
                              "new-epoch seal");
     (void)require(pair.server->open_record({1U, 2U}, first_new.bytes()),
                   "new-epoch open");
@@ -910,7 +927,7 @@ void test_factory_bounds_and_cancellation(const Fixture& fixture) {
               StatusCode::Cancelled,
           "cancelled provider accepted AUTH start");
     const std::array<std::byte, 1> byte{std::byte{0x01}};
-    check(pair.client->seal_record({0U, 0U}, byte).status().code() ==
+    check(pair.client->seal_record({0U, 0U}, byte, 0U).status().code() ==
               StatusCode::Cancelled,
           "cancelled provider retained record state");
 
@@ -1107,7 +1124,9 @@ void test_cryptographic_known_answers() {
         vectors.matches(name + "_material", material.span());
         const auto key = material.span().first(crypto::kAes256KeyBytes);
         const auto nonce = material.span().subspan(crypto::kAes256KeyBytes);
-        const auto sealed = crypto::seal_aes_gcm(context, key, nonce, aad, plaintext);
+        std::vector<std::uint8_t> sealed(plaintext.size() +
+                                         crypto::kAesGcmTagBytes);
+        crypto::seal_aes_gcm(context, key, nonce, aad, plaintext, sealed);
         vectors.matches(name + "_ciphertext", sealed);
         const auto opened = crypto::open_aes_gcm(
             context, key, nonce, aad, value(name + "_ciphertext"));

@@ -143,9 +143,11 @@ public:
         AuthenticationMessageKind kind,
         std::span<const std::byte> canonical_message) = 0;
 
-    virtual Result<Buffer> seal_record(
-        RecordKeyToken token,
-        std::span<const std::byte> plaintext) = 0;
+    // Returns `headroom` zero bytes followed by the sealed record, so the
+    // caller can write its envelope in front without another copy.
+    virtual Result<Buffer> seal_record(RecordKeyToken token,
+                                       std::span<const std::byte> plaintext,
+                                       std::size_t headroom) = 0;
     virtual Result<Buffer> open_record(
         RecordKeyToken token,
         std::span<const std::byte> ciphertext) = 0;

@@ -1660,6 +1660,19 @@ if(YUME_BUILD_TESTING)
             COMMAND yume_h2_carrier_test)
         set_tests_properties(yume_h2_carrier_test PROPERTIES
             LABELS "foundation;0.3;carrier-provider")
+        # Pins what the carrier writes once the WebSocket is open, byte for
+        # byte and write for write, against a recorded trace.
+        add_executable(yume_h2_carrier_wire_test
+            stealth/h2_carrier_wire_test.cpp)
+        target_link_libraries(yume_h2_carrier_wire_test PRIVATE yume_h2_carrier)
+        yume_apply_perf_opts(yume_h2_carrier_wire_test)
+        yume_assert_exact_link_dependencies(
+            yume_h2_carrier_wire_test yume_h2_carrier)
+        add_test(NAME yume_h2_carrier_wire_test
+            COMMAND yume_h2_carrier_wire_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/stealth/testdata/h2_carrier_wire_trace.txt")
+        set_tests_properties(yume_h2_carrier_wire_test PROPERTIES
+            TIMEOUT 60 LABELS "foundation;0.3;carrier-provider")
     endif()
 
     if(YUME_BUILD_NATIVE_PROVIDERS)

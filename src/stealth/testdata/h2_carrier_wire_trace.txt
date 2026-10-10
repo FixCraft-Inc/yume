@@ -1,0 +1,114 @@
+admitted windows
+up write 13
+  WINDOW_UPDATE flags=00 stream=7 length=4 body=00200000
+down write 26
+  WINDOW_UPDATE flags=00 stream=0 length=4 body=007f0001
+  WINDOW_UPDATE flags=00 stream=7 length=4 body=007f0001
+up record 0
+up write 15
+  DATA flags=00 stream=7 length=6
+  websocket header=8280+mask length=0
+up record 1
+up write 16
+  DATA flags=00 stream=7 length=7
+  websocket header=8281+mask length=1 payload=af63ba4c8601b2c6
+down write 23
+  DATA flags=00 stream=7 length=14
+  websocket header=890c length=12 payload=89a46d11a13f7f51
+up write 27
+  DATA flags=00 stream=7 length=18
+  websocket header=8a8c+mask length=12 payload=89a46d11a13f7f51
+up record 125
+up write 140
+  DATA flags=00 stream=7 length=131
+  websocket header=82fd+mask length=125 payload=dbc5824b0bde2ec9
+up record 126
+up write 143
+  DATA flags=00 stream=7 length=134
+  websocket header=82fe007e+mask length=126 payload=068b79d4e3f5695c
+up record 16384
+up write 16410
+  DATA flags=00 stream=7 length=16384
+  DATA flags=00 stream=7 length=8
+  websocket header=82fe4000+mask length=16384 payload=b9e236811db7aa20
+up record 65535
+up write 65612
+  DATA flags=00 stream=7 length=16384 x4
+  DATA flags=00 stream=7 length=31
+  websocket header=82fe4000+mask length=16384 x3 payload=8a2538649c2356a9
+  websocket header=82fe3fff+mask length=16383 payload=bec75f6b64b90dff
+up record 65536
+up write 65613
+  DATA flags=00 stream=7 length=16384 x4
+  DATA flags=00 stream=7 length=32
+  websocket header=82fe4000+mask length=16384 x4 payload=2574a0f51601a0dc
+up record 200000
+up write 200221
+  DATA flags=00 stream=7 length=16384 x12
+  DATA flags=00 stream=7 length=3496
+  websocket header=82fe4000+mask length=16384 x12 payload=7a117806b1af30c5
+  websocket header=82fe0d40+mask length=3392 payload=b3467631f5532cdd
+up record 5242880
+up write 5248329
+  DATA flags=00 stream=7 length=16384 x320
+  DATA flags=00 stream=7 length=2560
+  websocket header=82fe4000+mask length=16384 x320 payload=b5926a6975ef12c5
+down write 26
+  WINDOW_UPDATE flags=00 stream=0 length=4 body=00555917
+  WINDOW_UPDATE flags=00 stream=7 length=4 body=00555917
+down record 16384
+down write 16410
+  DATA flags=00 stream=7 length=16384
+  DATA flags=00 stream=7 length=8
+  websocket header=027e2000 length=8192 payload=5c9bd1ddce416ca5
+  websocket header=807e2000 length=8192 payload=d248cecea175982a
+down record 16384
+down write 16406
+  DATA flags=00 stream=7 length=16384
+  DATA flags=00 stream=7 length=4
+  websocket header=827e4000 length=16384 payload=2dfaaf7164fee804
+down record 1
+down write 12
+  DATA flags=00 stream=7 length=3
+  websocket header=8201 length=1 payload=af64004c860229b8
+down record 70000
+down write 70065
+  DATA flags=00 stream=7 length=16384 x4
+  DATA flags=00 stream=7 length=4484
+  websocket header=827e4000 length=16384 x4 payload=f464024740363b54
+  websocket header=827e1170 length=4464 payload=75f45f1ea6c8c9ed
+down record 5242880
+down write 5247049
+  DATA flags=00 stream=7 length=16384 x320
+  DATA flags=00 stream=7 length=1280
+  websocket header=827e4000 length=16384 x320 payload=f694da94e744568d
+up write 13
+  WINDOW_UPDATE flags=00 stream=7 length=4 body=005196a1
+both directions queued
+up write 40051
+  DATA flags=00 stream=7 length=16384 x2
+  DATA flags=00 stream=7 length=7256
+  websocket header=82fe4000+mask length=16384 x2 payload=697ce9023763b974
+  websocket header=82fe1c40+mask length=7232 payload=4dd17648e459c148
+down write 41714
+  DATA flags=00 stream=7 length=16384 x2
+  DATA flags=00 stream=7 length=7244
+  DATA flags=00 stream=7 length=1666
+  websocket header=827e4000 length=16384 x2 payload=e8c17eae236f4182
+  websocket header=827e1c40 length=7232 payload=c5f5742cb34de85e
+  websocket header=827e067e length=1662 payload=298a31519e03dad5
+up record 300 after idle
+up write 17
+  PING flags=00 stream=0 length=8 body=0000000000000001
+up write 317
+  DATA flags=00 stream=7 length=308
+  websocket header=82fe012c+mask length=300 payload=7d7a0dd0812ce2de
+down write 17
+  PING flags=01 stream=0 length=8 body=0000000000000001
+graceful close
+up write 33
+  DATA flags=00 stream=7 length=24
+  websocket header=8892+mask length=18 payload=7ec93b7a0328432a
+down write 29
+  DATA flags=01 stream=7 length=20
+  websocket header=8812 length=18 payload=7ec93b7a0328432a

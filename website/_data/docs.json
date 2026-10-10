@@ -108,7 +108,7 @@
   },
   {
     "title": "Diagnostics",
-    "summary": "Timing helpers, compiler warnings, sanitizers and fuzzing for native builds, and what each result can show.",
+    "summary": "Timing helpers, benchmark probes, compiler warnings, sanitizers and fuzzing for native builds, and what each result can show.",
     "url": "/docs/DIAGNOSTICS/",
     "source": "docs/DIAGNOSTICS.md",
     "landing_group": "Operating",

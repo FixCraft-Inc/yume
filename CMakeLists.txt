@@ -217,12 +217,19 @@ set(YUME_SANITIZE "none" CACHE STRING
 set_property(CACHE YUME_SANITIZE PROPERTY STRINGS
     none address undefined address+undefined thread)
 
-# Fine-grained timing diagnostics are compiled only for explicit developer
-# configurations. Release and MinSizeRel binaries contain no diagnostic
-# counters or clock reads. The H2 carrier's timing is also off until a caller
-# asks it to collect, so an instrumented build costs nothing by default.
-set(YUME_DEV_DIAGNOSTICS_EXPRESSION
-    "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>,1,0>")
+# Developer diagnostics: the timing helpers (src/common/timing.hpp) and the
+# benchmark probes (src/common/bench_probe.hpp). Off by default, so no build
+# carries a diagnostic counter or clock read unless it selects this option,
+# whatever its build type. Both headers declare inline functions and types
+# whose shape depends on the macro, so it is defined once for the whole build:
+# two targets of one program compiled with different values would break the
+# one-definition rule. Each diagnostic also stays off at run time until a
+# caller or YUME_BENCH_PROBE_FILE asks for it.
+option(YUME_DEV_DIAGNOSTICS
+    "Compile developer timing helpers and benchmark probes" OFF)
+if(YUME_DEV_DIAGNOSTICS)
+    add_compile_definitions(YUME_ENABLE_DEV_DIAGNOSTICS=1)
+endif()
 
 set(BUILD_TESTING ${YUME_BUILD_TESTING} CACHE BOOL "Build YUME unit tests" FORCE)
 include(CTest)

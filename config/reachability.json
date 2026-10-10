@@ -77,15 +77,6 @@
     {
       "path": "src/stealth/h2_carrier.cpp",
       "functions": [
-        "yume::obfs::H2Carrier::*set_timing_enabled(bool)",
-        "yume::obfs::H2Carrier::*stats() const",
-        "yume::obfs::FormatH2CarrierStats*"
-      ],
-      "reason": "Development diagnostics, compiled out of Release, that the carrier tests read to check window accounting."
-    },
-    {
-      "path": "src/stealth/h2_carrier.cpp",
-      "functions": [
         "yume::obfs::H2Carrier::*unconsumed_tunnel_bytes() const",
         "yume::obfs::H2Carrier::*carrier_stream_id() const"
       ],

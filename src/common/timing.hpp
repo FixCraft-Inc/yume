@@ -17,8 +17,9 @@
 
 namespace yume::diagnostics {
 
-// Hot-path timing that exists only in Debug and RelWithDebInfo builds. In
-// Release every helper here is empty and reads no clock.
+// Hot-path timing that exists only in a build configured with
+// -DYUME_DEV_DIAGNOSTICS=ON. In every other build each helper here is empty
+// and reads no clock.
 inline constexpr bool kTimingCompiledIn =
     YUME_ENABLE_DEV_DIAGNOSTICS != 0;
 

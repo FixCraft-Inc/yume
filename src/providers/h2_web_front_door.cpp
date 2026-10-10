@@ -18,6 +18,8 @@
 #include <string_view>
 #include <utility>
 
+#include <unistd.h>
+
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/ip/v6_only.hpp>
 #include <boost/system/system_error.hpp>
@@ -80,6 +82,44 @@ Status listener_error(const Error& error) noexcept {
     }
     try { return Status(code, message); }
     catch (...) { return Status(code); }
+}
+
+using Acceptor =
+    boost::asio::basic_socket_acceptor<Tcp, AsioExecutionContext::Executor>;
+
+// Opens, configures, binds and listens, reporting the first error.
+void open_listening_socket(Acceptor& acceptor, const Tcp::endpoint& endpoint,
+                           Error& error) {
+    acceptor.open(endpoint.protocol(), error);
+    if (!error && endpoint.address().is_v6())
+        acceptor.set_option(boost::asio::ip::v6_only(true), error);
+#if !defined(_WIN32)
+    // A restarted endpoint must rebind while its earlier connections sit in
+    // TIME_WAIT. Linux address reuse allows that but not a second active
+    // listener. Windows SO_REUSEADDR can take over a bound port, so it is
+    // left unset there.
+    if (!error)
+        acceptor.set_option(boost::asio::socket_base::reuse_address(true),
+                            error);
+#endif
+    if (!error) acceptor.bind(endpoint, error);
+    if (!error)
+        acceptor.listen(boost::asio::socket_base::max_listen_connections,
+                        error);
+}
+
+bool valid_limits(const H2WebFrontDoorLimits& limits) noexcept {
+    return limits.max_connections && limits.max_connections <= 4096U &&
+           limits.max_promoted_carriers &&
+           limits.max_promoted_carriers <= 4096U &&
+           limits.max_pending_accepts && limits.max_pending_accepts <= 1024U &&
+           limits.max_cover_streams && limits.max_cover_streams <= 64U &&
+           limits.max_requests_per_connection &&
+           limits.max_requests_per_connection <= 65536U &&
+           limits.max_output_bytes &&
+           limits.max_output_bytes <= 32U * 1024U * 1024U &&
+           limits.connection_timeout > std::chrono::milliseconds::zero() &&
+           limits.connection_timeout <= std::chrono::minutes(10);
 }
 
 template<class Callback, class... Args>
@@ -172,6 +212,35 @@ struct CoverSession final : H2CoverHandler {
 };
 }
 
+struct H2WebListenerShare final {
+    H2WebListenerShare(Tcp::endpoint listening, H2WebFrontDoorLimits bounds)
+        : endpoint(listening),
+          limits(bounds),
+          promotions(std::make_shared<PromotionBudget>()) {}
+
+    // Takes a place for a connection that waits for promotion, while fewer
+    // than max_connections do.
+    bool reserve() noexcept {
+        std::size_t current = waiting.load();
+        while (current < limits.max_connections) {
+            if (waiting.compare_exchange_weak(current, current + 1U))
+                return true;
+        }
+        return false;
+    }
+    // Returns a place, and wakes the listener when the count was full.
+    void release() noexcept {
+        if (waiting.fetch_sub(1U) == limits.max_connections) deliver(resume);
+    }
+
+    const Tcp::endpoint endpoint;
+    const H2WebFrontDoorLimits limits;
+    const std::shared_ptr<PromotionBudget> promotions;
+    std::atomic<std::size_t> waiting{0U};
+    // Set by the listener before its first dispatch and never again.
+    std::function<void()> resume;
+};
+
 class H2WebFrontDoor::State final : public std::enable_shared_from_this<State> {
 public:
     struct Waiter final {
@@ -189,7 +258,8 @@ public:
           std::shared_ptr<const CoverSite> site,
           std::shared_ptr<admission::ReplayCache> replay_cache,
           std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp_owner,
-          H2Dispatch dispatch)
+          H2Dispatch dispatch,
+          std::shared_ptr<H2WebListenerShare> listener_share = {})
         : context(std::move(execution)),
           config(std::move(options)),
           tls(std::move(tls_provider)),
@@ -199,8 +269,12 @@ public:
           post(std::move(dispatch)),
           acceptor(context->executor()),
           retry(context->executor()),
-          budget(std::make_shared<PromotionBudget>()),
-          control(&State::on_control) {}
+          share(std::move(listener_share)),
+          budget(share ? share->promotions
+                       : std::make_shared<PromotionBudget>()),
+          control(&State::on_control) {
+        if (share) endpoint = share->endpoint;
+    }
 
     ~State() noexcept { OPENSSL_cleanse(key.data(), key.size()); }
 
@@ -230,6 +304,8 @@ public:
     void settle_control() noexcept;
     void start_accept() noexcept;
     void retry_accept() noexcept;
+    void serve(int descriptor) noexcept;
+    void adopt(int descriptor) noexcept;
     void remove(Connection* connection) noexcept;
     void add_waiter(CancellationToken token, AcceptCompletion completion);
 
@@ -257,9 +333,13 @@ public:
     std::shared_ptr<admission::ReplayCache> replay;
     std::shared_ptr<AsioTcpAcceptedChannelOwner> tcp;
     H2Dispatch post;
-    boost::asio::basic_socket_acceptor<Tcp, AsioExecutionContext::Executor> acceptor;
+    Acceptor acceptor;
     boost::asio::steady_timer retry;
     Tcp::endpoint endpoint;
+    // Set for a served front door, which has no listener of its own.
+    std::shared_ptr<H2WebListenerShare> share;
+    // A served front door's connections not yet promoted, for any thread.
+    std::atomic<std::size_t> waiting{0U};
     std::shared_ptr<PromotionBudget> budget;
     std::array<std::byte, kYtp1H2AdmissionKeyBytes> key{};
     std::list<std::shared_ptr<Connection>> connections;
@@ -559,7 +639,7 @@ private:
 // memory exhaustion, including a failed allocation here, pauses accepting. Any
 // other accept failure closes the listener.
 void H2WebFrontDoor::State::start_accept() noexcept {
-    if (closing.load() || accepting || retry_pending ||
+    if (share || closing.load() || accepting || retry_pending ||
         connections.size() >= config.limits.max_connections)
         return;
     try {
@@ -615,8 +695,86 @@ void H2WebFrontDoor::State::retry_accept() noexcept {
 }
 
 void H2WebFrontDoor::State::remove(Connection* connection) noexcept {
-    connections.remove_if([connection](const auto& value) { return value.get() == connection; });
-    start_accept();
+    const auto removed = connections.remove_if(
+        [connection](const auto& value) { return value.get() == connection; });
+    if (!share) {
+        start_accept();
+    } else if (removed != 0U) {
+        // Promoted or ended, the connection no longer waits.
+        waiting.fetch_sub(1U);
+        share->release();
+    }
+}
+
+namespace {
+
+// A handed descriptor and its place in the share's count until a
+// connection takes both. Released on every path that does not.
+struct HandedConnection final {
+    HandedConnection(int value,
+                     std::shared_ptr<H2WebListenerShare> owner) noexcept
+        : descriptor(value), share(std::move(owner)) {}
+    HandedConnection(const HandedConnection&) = delete;
+    HandedConnection& operator=(const HandedConnection&) = delete;
+    ~HandedConnection() noexcept {
+        if (descriptor < 0) return;
+        static_cast<void>(::close(descriptor));
+        if (share) share->release();
+    }
+    int descriptor;
+    std::shared_ptr<H2WebListenerShare> share;
+};
+
+}  // namespace
+
+void H2WebFrontDoor::State::serve(int descriptor) noexcept {
+    std::shared_ptr<HandedConnection> handed;
+    try {
+        handed = std::make_shared<HandedConnection>(descriptor, share);
+    } catch (...) {
+        // The descriptor is closed and its place returned as a handed one
+        // would be.
+        HandedConnection unowned(descriptor, share);
+        return;
+    }
+    if (!share || closing.load()) return;
+    try {
+        boost::asio::post(
+            context->executor(), [weak = weak_from_this(), handed]() noexcept {
+                const auto self = weak.lock();
+                if (!self || self->closing.load()) return;
+                self->adopt(std::exchange(handed->descriptor, -1));
+            });
+    } catch (...) {
+    }
+}
+
+// On the context: the connection now holds the descriptor and the place.
+// Registering the descriptor with the reactor can fail to allocate like
+// anything after it, and every failure closes it and returns the place.
+void H2WebFrontDoor::State::adopt(int descriptor) noexcept {
+    std::optional<AsioTcpSocket> socket;
+    try {
+        socket.emplace(context->executor());
+        Error error;
+        socket->assign(endpoint.protocol(), descriptor, error);
+    } catch (...) {
+    }
+    if (!socket || !socket->is_open()) {
+        static_cast<void>(::close(descriptor));
+        share->release();
+        return;
+    }
+    try {
+        auto connection = std::make_shared<Connection>(shared_from_this());
+        connections.push_back(connection);
+        waiting.fetch_add(1U);
+        connection->start(std::move(*socket));
+    } catch (...) {
+        // Not in the list, so nothing else returns its place. The socket
+        // closes the descriptor.
+        share->release();
+    }
 }
 
 void H2WebFrontDoor::State::settle_control() noexcept {
@@ -706,19 +864,40 @@ Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create(
     std::shared_ptr<const CoverSite> cover,
     std::shared_ptr<admission::ReplayCache> replay,
     std::span<const std::byte> admission_key) {
+    return build(std::move(context), std::move(config), std::move(tls),
+                 std::move(cover), std::move(replay), admission_key, {});
+}
+
+Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create_served(
+    std::shared_ptr<AsioExecutionContext> context, H2WebFrontDoorConfig config,
+    std::shared_ptr<Tls13SecureChannelProvider> tls,
+    std::shared_ptr<const CoverSite> cover,
+    std::shared_ptr<admission::ReplayCache> replay,
+    std::span<const std::byte> admission_key,
+    std::shared_ptr<H2WebListenerShare> share) {
+    if (!share)
+        return Result<std::shared_ptr<H2WebFrontDoor>>(
+            Status(StatusCode::InvalidArgument));
+    // The listener's bounds hold for every front door it hands connections to.
+    config.limits = share->limits;
+    return build(std::move(context), std::move(config), std::move(tls),
+                 std::move(cover), std::move(replay), admission_key,
+                 std::move(share));
+}
+
+Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::build(
+    std::shared_ptr<AsioExecutionContext> context, H2WebFrontDoorConfig config,
+    std::shared_ptr<Tls13SecureChannelProvider> tls,
+    std::shared_ptr<const CoverSite> cover,
+    std::shared_ptr<admission::ReplayCache> replay,
+    std::span<const std::byte> admission_key,
+    std::shared_ptr<H2WebListenerShare> share) {
     if (!context || !tls || tls->local_role() != EndpointRole::Server ||
         !cover || !replay || admission_key.size() != kYtp1H2AdmissionKeyBytes)
         return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::InvalidArgument));
     context->require_context();
     const auto& limits = config.limits;
-    if (!limits.max_connections || limits.max_connections > 4096U ||
-        !limits.max_promoted_carriers || limits.max_promoted_carriers > 4096U ||
-        !limits.max_pending_accepts || limits.max_pending_accepts > 1024U ||
-        !limits.max_cover_streams || limits.max_cover_streams > 64U ||
-        !limits.max_requests_per_connection || limits.max_requests_per_connection > 65536U ||
-        !limits.max_output_bytes || limits.max_output_bytes > 32U * 1024U * 1024U ||
-        limits.connection_timeout <= std::chrono::milliseconds::zero() ||
-        limits.connection_timeout > std::chrono::minutes(10))
+    if (!valid_limits(limits))
         return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::InvalidArgument));
     // A proof binds the exporter of its TLS connection, so it cannot pass on
     // another one, and a connection promotes once. Its nonce must stay
@@ -739,23 +918,18 @@ Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::create(
         auto tcp = AsioTcpAcceptedChannelOwner::create(context, tcp_limits);
         if (!tcp.ok()) return Result<std::shared_ptr<H2WebFrontDoor>>(tcp.status());
         H2Dispatch post = make_asio_h2_dispatch(context);
-        auto state = std::make_shared<State>(context, std::move(config), std::move(tls),
-            std::move(cover), std::move(replay), std::move(tcp).take_value(), std::move(post));
+        const bool served = static_cast<bool>(share);
+        auto state = std::make_shared<State>(
+            context, std::move(config), std::move(tls), std::move(cover),
+            std::move(replay), std::move(tcp).take_value(), std::move(post),
+            std::move(share));
         std::copy(admission_key.begin(), admission_key.end(), state->key.begin());
+        if (served)
+            return Result<std::shared_ptr<H2WebFrontDoor>>(
+                std::shared_ptr<H2WebFrontDoor>(new H2WebFrontDoor(state)));
         Error error;
-        state->acceptor.open(state->config.listen_endpoint.protocol(), error);
-        if (!error && state->config.listen_endpoint.address().is_v6())
-            state->acceptor.set_option(boost::asio::ip::v6_only(true), error);
-#if !defined(_WIN32)
-        // A restarted endpoint must rebind while its earlier connections sit in
-        // TIME_WAIT. Linux address reuse allows that but not a second active
-        // listener. Windows SO_REUSEADDR can take over a bound port, so it is
-        // left unset there.
-        if (!error)
-            state->acceptor.set_option(boost::asio::socket_base::reuse_address(true), error);
-#endif
-        if (!error) state->acceptor.bind(state->config.listen_endpoint, error);
-        if (!error) state->acceptor.listen(boost::asio::socket_base::max_listen_connections, error);
+        open_listening_socket(state->acceptor, state->config.listen_endpoint,
+                              error);
         if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error));
         state->endpoint = state->acceptor.local_endpoint(error);
         if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error));
@@ -783,5 +957,192 @@ void H2WebFrontDoor::async_accept(CancellationToken token, AcceptCompletion comp
 }
 void H2WebFrontDoor::cancel() noexcept { state_->request_cancel(); }
 void H2WebFrontDoor::close() noexcept { state_->request_close(); }
+void H2WebFrontDoor::serve(int descriptor) noexcept {
+    state_->serve(descriptor);
+}
+std::size_t H2WebFrontDoor::waiting_connections() const noexcept {
+    return state_->waiting.load();
+}
+
+class H2WebListener::State final : public std::enable_shared_from_this<State> {
+public:
+    State(std::shared_ptr<AsioExecutionContext> execution, Dispatch dispatch_to,
+          Stopped on_stopped)
+        : context(std::move(execution)),
+          acceptor(context->executor()),
+          retry(context->executor()),
+          dispatch(std::move(dispatch_to)),
+          stopped(std::move(on_stopped)),
+          resume_task(&State::on_resume),
+          close_task(&State::on_close) {}
+
+    ~State() noexcept {
+        Error ignored;
+        acceptor.close(ignored);
+    }
+
+    void request_close() noexcept {
+        std::lock_guard lock(control_mutex);
+        if (closing.exchange(true)) return;
+        context->submit(close_task, shared_from_this());
+    }
+    // From a served front door's thread, when a place in a full count frees.
+    void request_resume() noexcept {
+        std::lock_guard lock(control_mutex);
+        if (!closing.load()) context->submit(resume_task, shared_from_this());
+    }
+    static void on_resume(void* pointer) noexcept {
+        static_cast<State*>(pointer)->start_accept();
+    }
+    static void on_close(void* pointer) noexcept {
+        auto& self = *static_cast<State*>(pointer);
+        Error ignored;
+        self.acceptor.close(ignored);
+        cancel_timer(self.retry);
+    }
+
+    // Accepts while the share has a place. A full count waits for a served
+    // front door to return one, which resumes accepting.
+    void start_accept() noexcept {
+        if (closing.load() || accepting || retry_pending) return;
+        if (!share->reserve()) return;
+        accepting = true;
+        try {
+            acceptor.async_accept(
+                context->executor(),
+                [self = shared_from_this()](Error error,
+                                            AsioTcpSocket socket) noexcept {
+                    self->accepted(error, std::move(socket));
+                });
+        } catch (...) {
+            accepting = false;
+            share->release();
+            retry_accept();
+        }
+    }
+
+    void accepted(const Error& error, AsioTcpSocket socket) noexcept {
+        accepting = false;
+        if (closing.load()) {
+            share->release();
+            return;
+        }
+        if (error) {
+            share->release();
+            if (resources_exhausted(error))
+                retry_accept();
+            else
+                stop_listening();
+            return;
+        }
+        Error released;
+        const int descriptor = socket.release(released);
+        bool taken = false;
+        if (!released) {
+            try {
+                taken = dispatch(descriptor);
+            } catch (...) {
+            }
+            if (!taken) static_cast<void>(::close(descriptor));
+        }
+        // A taken descriptor holds its place until its front door returns it.
+        if (!taken) share->release();
+        start_accept();
+    }
+
+    void retry_accept() noexcept {
+        if (closing.load() || retry_pending) return;
+        try {
+            retry.expires_after(kAcceptRetryDelay);
+            retry.async_wait([self = shared_from_this()](Error error) noexcept {
+                self->retry_pending = false;
+                if (self->closing.load()) return;
+                if (error)
+                    self->stop_listening();
+                else
+                    self->start_accept();
+            });
+            retry_pending = true;
+        } catch (...) {
+            // Nothing would ever accept again, so stop visibly instead.
+            stop_listening();
+        }
+    }
+
+    void stop_listening() noexcept {
+        request_close();
+        auto callback = std::exchange(stopped, {});
+        deliver(callback);
+    }
+
+    std::shared_ptr<AsioExecutionContext> context;
+    Acceptor acceptor;
+    boost::asio::steady_timer retry;
+    Tcp::endpoint endpoint;
+    std::shared_ptr<H2WebListenerShare> share;
+    Dispatch dispatch;
+    Stopped stopped;
+    AsioExecutionContext::ControlTask resume_task;
+    AsioExecutionContext::ControlTask close_task;
+    std::mutex control_mutex;
+    std::atomic<bool> closing{false};
+    bool accepting{false};
+    bool retry_pending{false};
+};
+
+Result<std::shared_ptr<H2WebListener>> H2WebListener::create(
+    std::shared_ptr<AsioExecutionContext> context,
+    Tcp::endpoint listen_endpoint, H2WebFrontDoorLimits limits,
+    Dispatch dispatch, Stopped stopped) {
+    if (!context || !dispatch || !valid_limits(limits))
+        return Result<std::shared_ptr<H2WebListener>>(
+            Status(StatusCode::InvalidArgument));
+    context->require_context();
+    try {
+        auto state = std::make_shared<State>(context, std::move(dispatch),
+                                             std::move(stopped));
+        Error error;
+        open_listening_socket(state->acceptor, listen_endpoint, error);
+        if (!error) state->endpoint = state->acceptor.local_endpoint(error);
+        if (error)
+            return Result<std::shared_ptr<H2WebListener>>(
+                listener_error(error));
+        state->share =
+            std::make_shared<H2WebListenerShare>(state->endpoint, limits);
+        state->share->resume = [weak = std::weak_ptr<State>(state)] {
+            if (const auto self = weak.lock()) self->request_resume();
+        };
+        auto result = std::shared_ptr<H2WebListener>(new H2WebListener(state));
+        state->start_accept();
+        if (state->closing.load())
+            return Result<std::shared_ptr<H2WebListener>>(
+                Status(StatusCode::Internal));
+        return Result<std::shared_ptr<H2WebListener>>(std::move(result));
+    } catch (const boost::system::system_error& error) {
+        return Result<std::shared_ptr<H2WebListener>>(
+            listener_error(error.code()));
+    } catch (const std::bad_alloc&) {
+        return Result<std::shared_ptr<H2WebListener>>(
+            Status(StatusCode::ResourceExhausted));
+    } catch (...) {
+        return Result<std::shared_ptr<H2WebListener>>(
+            Status(StatusCode::Internal));
+    }
+}
+
+H2WebListener::H2WebListener(std::shared_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+H2WebListener::~H2WebListener() noexcept {
+    close();
+}
+Tcp::endpoint H2WebListener::local_endpoint() const noexcept {
+    return state_->endpoint;
+}
+std::shared_ptr<H2WebListenerShare> H2WebListener::share() const noexcept {
+    return state_->share;
+}
+void H2WebListener::close() noexcept {
+    state_->request_close();
+}
 
 }  // namespace yume::providers

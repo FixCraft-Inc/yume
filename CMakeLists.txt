@@ -724,9 +724,12 @@ if(YUME_BUILD_NATIVE_APPLICATION)
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "FixCraft")
         # Generic EVP provider lookups do not carry a 3.5 symbol version, so
         # dpkg-shlibdeps cannot infer the ML-DSA runtime floor by itself.
-        set(CPACK_DEBIAN_PACKAGE_DEPENDS "python3, openssl (>= 3.5.0)")
+        # The installed native programs need neither Python nor the openssl
+        # command; Debian's source build dependencies remain in debian/control.
         if(NOT YUME_STATIC_OPENSSL)
-            string(APPEND CPACK_DEBIAN_PACKAGE_DEPENDS ", libssl3t64 (>= 3.5.0)")
+            set(CPACK_DEBIAN_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
+        else()
+            set(CPACK_DEBIAN_PACKAGE_DEPENDS "")
         endif()
         set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ${YUME_DEB_SHLIBDEPS})
         set(CPACK_DEBIAN_PACKAGE_DESCRIPTION

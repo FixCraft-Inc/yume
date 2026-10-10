@@ -721,10 +721,10 @@ test checks:
 - TCP/DNS OPEN
   `01010103000a000e6469726563742e74637001bb0b6578616d706c652e636f6d`;
 - capability manifest
-  `0100000201000004000000086563686f0200000300000004756470`;
+  `020000020010000001000004000000086563686f0200000300000004756470`;
 - the mandatory-only accepted AUTH encoding recorded in the vector file; and
-- a 3657-octet synthetic key-schedule input whose FNV-1a-64 encoding checksum
-  is `6ab12ea0049e3c94`.
+- a 3665-octet synthetic key-schedule input whose FNV-1a-64 encoding checksum
+  is `e5f96821b0256972`.
 
 FNV-1a is used only as an encoding-regression checksum and makes no
 cryptographic claim.

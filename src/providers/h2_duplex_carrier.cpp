@@ -628,19 +628,18 @@ private:
                     std::move(registration).take_value();
             }
 
-            std::vector<std::uint8_t> framed(
-                kH2DuplexEnvelopeBytes + record_bytes);
+            // The envelope and the record go to the carrier as two parts,
+            // which it frames without joining them first.
+            std::array<std::uint8_t, kH2DuplexEnvelopeBytes> envelope{};
             std::copy(kCarrierMagic.begin(), kCarrierMagic.end(),
-                      framed.begin());
-            framed[4] = kCarrierEnvelopeVersion;
-            framed[5] = 0U;
-            framed[6] = 0U;
-            framed[7] = 0U;
-            write_be32(framed.data() + 8,
+                      envelope.begin());
+            envelope[4] = kCarrierEnvelopeVersion;
+            write_be32(envelope.data() + 8,
                        static_cast<std::uint32_t>(record_bytes));
-            std::memcpy(framed.data() + kH2DuplexEnvelopeBytes,
-                        record.bytes().data(), record_bytes);
-            if (!h2_->SendBinary(framed)) {
+            if (!h2_->SendBinary(envelope,
+                                 {reinterpret_cast<const std::uint8_t*>(
+                                      record.bytes().data()),
+                                  record_bytes})) {
                 fail(h2_failure("queue H2 carrier record"));
                 return;
             }

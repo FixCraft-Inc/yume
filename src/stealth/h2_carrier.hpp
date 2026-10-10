@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -164,8 +165,14 @@ public:
     // that sends each part as its own write gives it a TLS record of its own.
     std::vector<H2Bytes> TakeOutboundWrites();
 
-    bool SendBinary(const std::uint8_t* data, std::size_t size);
+    bool SendBinary(const std::uint8_t* data, std::size_t size) {
+        return SendBinary(std::span<const std::uint8_t>(data, size), {});
+    }
     bool SendBinary(const H2Bytes& data) { return SendBinary(data.data(), data.size()); }
+    // Sends `head` followed by `body` as one byte stream, such as an envelope
+    // header and its record, without joining them first.
+    bool SendBinary(std::span<const std::uint8_t> head,
+                    std::span<const std::uint8_t> body);
     // Both roles. TakeTunnelBytes() transfers ownership of the matching H2
     // receive credit to the caller. Return that credit after the bytes have
     // drained into the downstream sink. Over-consumption fails closed; credit

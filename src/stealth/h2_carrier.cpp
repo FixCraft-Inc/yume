@@ -2345,8 +2345,9 @@ H2Bytes H2Carrier::TakeOutbound() { return impl_->TakeOutbound(); }
 std::vector<H2Bytes> H2Carrier::TakeOutboundWrites() {
     return impl_->TakeOutboundWrites();
 }
-bool H2Carrier::SendBinary(const std::uint8_t* data, std::size_t size) {
-    return impl_->SendBinary(WebSocketPayload{{data, size}, {}});
+bool H2Carrier::SendBinary(std::span<const std::uint8_t> head,
+                           std::span<const std::uint8_t> body) {
+    return impl_->SendBinary(WebSocketPayload{head, body});
 }
 H2Bytes H2Carrier::TakeTunnelBytes() { return impl_->TakeTunnelBytes(); }
 bool H2Carrier::ConsumeTunnelBytes(std::size_t size) {

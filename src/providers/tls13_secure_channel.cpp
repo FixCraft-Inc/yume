@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <optional>
@@ -61,6 +62,20 @@ using X509InfoStackPtr =
 constexpr std::size_t kMaxServerNameBytes = 253U;
 constexpr std::size_t kAbsoluteMaxCredentialPemBytes = 1024U * 1024U;
 constexpr std::size_t kMaxHandshakeCiphertextBytes = 4U * 1024U * 1024U;
+// One TLS record's largest plaintext. SSL_read_ex returns at most this much
+// per call, so a read into this many bytes loses nothing.
+constexpr std::size_t kReadScratchBytes = 16U * 1024U;
+
+// TLS application data is read into this thread's scratch buffer and copied
+// out at its received size, so an attempt that finds nothing allocates and
+// clears nothing, and no channel keeps a read buffer while idle. The buffer
+// is zeroed when made and afterwards holds earlier plaintext, which it never
+// hands out. Null when it cannot be allocated.
+std::byte* read_scratch() noexcept {
+    thread_local std::unique_ptr<std::byte[]> scratch(
+        new (std::nothrow) std::byte[kReadScratchBytes]());
+    return scratch.get();
+}
 constexpr std::array<unsigned char, 3> kH2Alpn{2U, 'h', '2'};
 constexpr std::array<unsigned char, 12> kCoverAlpn{
     2U, 'h', '2', 8U, 'h', 't', 't', 'p', '/', '1', '.', '1'};
@@ -958,20 +973,29 @@ private:
             return tls_want_action_locked(result, "TLS close-notify failed");
         }
         if (read_) {
-            auto allocated = Buffer::allocate(read_->maximum, read_->maximum);
-            if (!allocated.ok()) {
-                read_->terminal = copy_status(allocated.status());
+            std::byte* const scratch = read_scratch();
+            if (scratch == nullptr) {
+                read_->terminal =
+                    Status::diagnostic(StatusCode::ResourceExhausted,
+                                       "TLS read buffer allocation failed");
                 return next_action_locked();
             }
-            Buffer buffer = std::move(allocated).take_value();
             std::size_t received = 0U;
             ERR_clear_error();
-            const int result = SSL_read_ex(ssl_.get(), buffer.mutable_bytes().data(),
-                                           buffer.size(), &received);
-            if (result == 1 && received > 0U && buffer.resize(received).ok()) {
+            const int result = SSL_read_ex(
+                ssl_.get(), scratch,
+                std::min(read_->maximum, kReadScratchBytes), &received);
+            if (result == 1 && received > 0U) {
+                auto copied = Buffer::copy_from(
+                    std::span<const std::byte>(scratch, received),
+                    read_->maximum);
+                if (!copied.ok()) {
+                    read_->terminal = copy_status(copied.status());
+                    return next_action_locked();
+                }
                 action.kind = ActionKind::ReadSuccess;
                 action.read = std::move(read_->completion);
-                action.buffer.emplace(std::move(buffer));
+                action.buffer.emplace(std::move(copied).take_value());
                 read_.reset();
                 return action;
             }

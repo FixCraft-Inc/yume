@@ -43,6 +43,14 @@ struct AsioDirectRouteLimits final {
     std::chrono::milliseconds connect_timeout{10'000};
 };
 
+// The connection counts of AsioDirectRouteLimits, max_pending_opens and
+// max_active_connections with each identity's half of both, in one place
+// that the route providers of a server's several contexts all count
+// against. Throws std::bad_alloc.
+struct AsioDirectRouteBudget;
+std::shared_ptr<AsioDirectRouteBudget> make_direct_route_budget(
+    const AsioDirectRouteLimits& limits);
+
 struct NativeSocket final {
     engine::NetworkProtocol protocol{engine::NetworkProtocol::Tcp};
     std::uintptr_t handle{0U};
@@ -78,10 +86,11 @@ class AsioDirectRouteProvider final : public engine::RouteProvider {
 public:
     static engine::Result<std::shared_ptr<AsioDirectRouteProvider>> create(
         std::shared_ptr<AsioExecutionContext> context,
-        ResolvedRoutePolicy resolved_policy,
-        AsioDirectRouteLimits limits = {},
+        ResolvedRoutePolicy resolved_policy, AsioDirectRouteLimits limits = {},
         SocketProtector socket_protector = {},
-        std::shared_ptr<SystemResolver> resolver = {});
+        std::shared_ptr<SystemResolver> resolver = {},
+        // Shared counts, whose bounds replace those two of `limits`.
+        std::shared_ptr<AsioDirectRouteBudget> budget = {});
 
     AsioDirectRouteProvider(const AsioDirectRouteProvider&) = delete;
     AsioDirectRouteProvider& operator=(const AsioDirectRouteProvider&) = delete;

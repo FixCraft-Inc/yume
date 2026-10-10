@@ -216,6 +216,29 @@ struct IdentityUsage final {
 
 using IdentityUsages = std::map<std::string, IdentityUsage, std::less<>>;
 
+}  // namespace
+
+struct AsioDirectRouteBudget final {
+    AsioDirectRouteBudget(std::size_t pending, std::size_t active) noexcept
+        : max_pending_opens(pending), max_active_connections(active) {}
+    const std::size_t max_pending_opens;
+    const std::size_t max_active_connections;
+    // Map iterators stay valid until the last target releases that identity.
+    // Idle identities retain no state, and release never allocates.
+    std::mutex mutex;
+    IdentityUsages identities;
+    std::size_t pending_opens{0U};
+    std::size_t active_connections{0U};
+};
+
+std::shared_ptr<AsioDirectRouteBudget> make_direct_route_budget(
+    const AsioDirectRouteLimits& limits) {
+    return std::make_shared<AsioDirectRouteBudget>(
+        limits.max_pending_opens, limits.max_active_connections);
+}
+
+namespace {
+
 struct TargetEntry final {
     TargetKind kind{TargetKind::PendingOpen};
     std::weak_ptr<CancelTarget> target;
@@ -227,22 +250,23 @@ class ProviderState final : public std::enable_shared_from_this<ProviderState> {
 public:
     ProviderState(std::shared_ptr<AsioExecutionContext> context,
                   ResolvedRoutePolicy resolved_policy,
-                  AsioDirectRouteLimits limits,
-                  SocketProtector protector,
+                  AsioDirectRouteLimits limits, SocketProtector protector,
                   std::shared_ptr<SystemResolver> resolver,
-                  ProviderDescriptor descriptor) noexcept
+                  ProviderDescriptor descriptor,
+                  std::shared_ptr<AsioDirectRouteBudget> budget) noexcept
         : context_(std::move(context)),
           resolved_policy_(std::move(resolved_policy)),
           limits_(limits),
           protector_(std::move(protector)),
           resolver_(std::move(resolver)),
-          descriptor_(std::move(descriptor)) {}
+          descriptor_(std::move(descriptor)),
+          budget_(std::move(budget)) {}
 
     Result<std::pair<std::uint64_t, std::uint64_t>> reserve_open(
         std::string_view identity) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (pending_opens_ >= limits_.max_pending_opens ||
-            active_connections_ + pending_opens_ >=
+        std::lock_guard<std::mutex> lock(budget_->mutex);
+        if (budget_->pending_opens >= limits_.max_pending_opens ||
+            budget_->active_connections + budget_->pending_opens >=
                 limits_.max_active_connections) {
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
                 Status::diagnostic(StatusCode::ResourceExhausted,
@@ -250,8 +274,8 @@ public:
         }
         // Sessions of one authenticated peer share these reservations. At a
         // circuit exit that peer is the previous hop, never the hidden client.
-        auto usage = identities_.find(identity);
-        if (usage != identities_.end() &&
+        auto usage = budget_->identities.find(identity);
+        if (usage != budget_->identities.end() &&
             (usage->second.pending >= (limits_.max_pending_opens + 1U) / 2U ||
              usage->second.total >=
                  (limits_.max_active_connections + 1U) / 2U)) {
@@ -268,8 +292,9 @@ public:
         const std::uint64_t id = next_target_id_++;
         bool added_identity = false;
         try {
-            if (usage == identities_.end()) {
-                auto inserted = identities_.try_emplace(std::string(identity));
+            if (usage == budget_->identities.end()) {
+                auto inserted =
+                    budget_->identities.try_emplace(std::string(identity));
                 usage = inserted.first;
                 added_identity = inserted.second;
             }
@@ -278,13 +303,13 @@ public:
                 TargetEntry{
                     TargetKind::PendingOpen, {}, cancellation_epoch_, usage});
         } catch (const std::bad_alloc&) {
-            if (added_identity) identities_.erase(usage);
+            if (added_identity) budget_->identities.erase(usage);
             return Result<std::pair<std::uint64_t, std::uint64_t>>(
                 allocation_status("direct-route reservation allocation failed"));
         }
         ++usage->second.pending;
         ++usage->second.total;
-        ++pending_opens_;
+        ++budget_->pending_opens;
         return Result<std::pair<std::uint64_t, std::uint64_t>>(
             std::make_pair(id, cancellation_epoch_));
     }
@@ -292,7 +317,7 @@ public:
     bool bind_target(std::uint64_t id,
                      std::uint64_t reserved_epoch,
                      const std::shared_ptr<CancelTarget>& target) noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(budget_->mutex);
         const auto found = targets_.find(id);
         if (found == targets_.end()) {
             return true;
@@ -303,13 +328,13 @@ public:
 
     Status promote(std::uint64_t id, std::uint64_t reserved_epoch,
                  const std::shared_ptr<CancelTarget>& target) noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(budget_->mutex);
         const auto found = targets_.find(id);
         if (reserved_epoch != cancellation_epoch_) return cancelled_status();
         if (found == targets_.end() ||
             found->second.kind != TargetKind::PendingOpen ||
-            pending_opens_ == 0U ||
-            active_connections_ >= limits_.max_active_connections) {
+            budget_->pending_opens == 0U ||
+            budget_->active_connections >= limits_.max_active_connections) {
             return Status::diagnostic(
                 StatusCode::ResourceExhausted,
                 "direct-route active-connection capacity exhausted");
@@ -317,13 +342,13 @@ public:
         found->second.kind = TargetKind::ActiveConnection;
         found->second.target = target;
         --found->second.identity->second.pending;
-        --pending_opens_;
-        ++active_connections_;
+        --budget_->pending_opens;
+        ++budget_->active_connections;
         return Status::success();
     }
 
     void release(std::uint64_t id) noexcept {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(budget_->mutex);
         const auto found = targets_.find(id);
         if (found == targets_.end()) {
             return;
@@ -331,21 +356,21 @@ public:
         auto identity = found->second.identity;
         if (found->second.kind == TargetKind::PendingOpen) {
             --identity->second.pending;
-            if (pending_opens_ > 0U) {
-                --pending_opens_;
+            if (budget_->pending_opens > 0U) {
+                --budget_->pending_opens;
             }
-        } else if (active_connections_ > 0U) {
-            --active_connections_;
+        } else if (budget_->active_connections > 0U) {
+            --budget_->active_connections;
         }
         targets_.erase(found);
-        if (--identity->second.total == 0U) identities_.erase(identity);
+        if (--identity->second.total == 0U) budget_->identities.erase(identity);
     }
 
     void cancel_all() noexcept {
         std::uint64_t last_id = 0U;
         std::uint64_t final_id;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<std::mutex> lock(budget_->mutex);
             ++cancellation_epoch_;
             final_id = next_target_id_ - 1U;
         }
@@ -354,7 +379,7 @@ public:
         for (;;) {
             std::shared_ptr<CancelTarget> target;
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<std::mutex> lock(budget_->mutex);
                 const auto next = targets_.upper_bound(last_id);
                 if (next == targets_.end() || next->first > final_id) return;
                 last_id = next->first;
@@ -385,15 +410,12 @@ private:
     std::shared_ptr<SystemResolver> resolver_;
     ProviderDescriptor descriptor_;
 
-    std::mutex mutex_;
-    // Map iterators stay valid until the last target releases that identity.
-    // Idle identities retain no state, and release never allocates.
-    IdentityUsages identities_;
+    // Counts this provider shares with the other providers of one server.
+    // Its mutex also guards targets_, whose identity iterators point into it.
+    std::shared_ptr<AsioDirectRouteBudget> budget_;
     std::map<std::uint64_t, TargetEntry> targets_;
     std::uint64_t next_target_id_{1U};
     std::uint64_t cancellation_epoch_{0U};
-    std::size_t pending_opens_{0U};
-    std::size_t active_connections_{0U};
 };
 
 Status socket_operation_status(const boost::system::error_code& error,
@@ -2162,12 +2184,17 @@ AsioDirectRouteProvider::~AsioDirectRouteProvider() noexcept {
 }
 
 Result<std::shared_ptr<AsioDirectRouteProvider>>
-AsioDirectRouteProvider::create(
-    std::shared_ptr<AsioExecutionContext> context,
-    ResolvedRoutePolicy resolved_policy,
-    AsioDirectRouteLimits limits,
-    SocketProtector socket_protector,
-    std::shared_ptr<SystemResolver> resolver) {
+AsioDirectRouteProvider::create(std::shared_ptr<AsioExecutionContext> context,
+                                ResolvedRoutePolicy resolved_policy,
+                                AsioDirectRouteLimits limits,
+                                SocketProtector socket_protector,
+                                std::shared_ptr<SystemResolver> resolver,
+                                std::shared_ptr<AsioDirectRouteBudget> budget) {
+    if (budget) {
+        // The shared counts decide, so this provider checks against them.
+        limits.max_pending_opens = budget->max_pending_opens;
+        limits.max_active_connections = budget->max_active_connections;
+    }
     if (!context || !resolved_policy || !valid_limits(limits) ||
         (resolver && resolver->executor_affinity() != context->affinity())) {
         return Result<std::shared_ptr<AsioDirectRouteProvider>>(Status(
@@ -2190,10 +2217,11 @@ AsioDirectRouteProvider::create(
             return Result<std::shared_ptr<AsioDirectRouteProvider>>(
                 descriptor.status());
         }
+        if (!budget) budget = make_direct_route_budget(limits);
         auto state = std::make_shared<ProviderState>(
             std::move(context), std::move(resolved_policy), limits,
             std::move(socket_protector), std::move(resolver),
-            std::move(descriptor).take_value());
+            std::move(descriptor).take_value(), std::move(budget));
         auto impl = std::make_shared<Impl>(std::move(state));
         auto provider = std::shared_ptr<AsioDirectRouteProvider>(
             new AsioDirectRouteProvider(std::move(impl)));

@@ -740,14 +740,19 @@ std::shared_ptr<SystemResolver> make_resolver(
 
 class IoRuntime final {
 public:
-    IoRuntime() : context_(require(AsioExecutionContext::create(ExecutorAffinity(91U)))),
-        resolver_(make_resolver(context_)),
-        thread_([this]() {
-            for (;;) {
-                try { context_->run(); break; }
-                catch (...) { runner_failed_.store(true, std::memory_order_release); }
-            }
-        }) {}
+    explicit IoRuntime(std::uint64_t affinity = 91U)
+        : context_(require(
+              AsioExecutionContext::create(ExecutorAffinity(affinity)))),
+          resolver_(make_resolver(context_)),
+          thread_([this]() {
+              for (;;) {
+                  try { context_->run();
+                      break;
+                  } catch (...) {
+                      runner_failed_.store(true, std::memory_order_release);
+                  }
+              }
+          }) {}
     IoRuntime(const IoRuntime&) = delete;
     IoRuntime& operator=(const IoRuntime&) = delete;
     ~IoRuntime() noexcept {
@@ -1626,6 +1631,54 @@ void test_active_capacity_and_release(RequestFactory& requests) {
     second_server.wait();
 }
 
+// Providers on two contexts that share one budget count every connection
+// once: the second context is refused while the first holds the only slot.
+void test_shared_budget_across_contexts(RequestFactory& requests) {
+    auto drain = [](Tcp::socket& socket) {
+        std::array<char, 32> bytes{};
+        boost::system::error_code error;
+        while (socket.read_some(boost::asio::buffer(bytes), error) > 0U) {
+        }
+    };
+    TcpServer first_server(drain);
+    IoRuntime first_runtime;
+    IoRuntime second_runtime(92U);
+    AsioDirectRouteLimits limits;
+    limits.max_active_connections = 1U;
+    limits.max_pending_opens = 1U;
+    const auto budget = make_direct_route_budget(limits);
+    auto first = require(AsioDirectRouteProvider::create(
+        first_runtime.context(), loopback_policy, {}, {},
+        first_runtime.resolver(), budget));
+    auto second = require(AsioDirectRouteProvider::create(
+        second_runtime.context(), loopback_policy, {}, {},
+        second_runtime.resolver(), budget));
+    CHECK(second->limits().max_active_connections == 1U);
+    auto first_open =
+        open_route(first_runtime, first,
+                   requests.make(ipv4_destination(ytp1::TransportProtocol::Tcp,
+                                                  first_server.port())));
+    CHECK(first_open.ok());
+    auto first_channel = std::move(first_open).take_value().take_byte_channel();
+    auto refused =
+        open_route(second_runtime, second,
+                   requests.make(ipv4_destination(ytp1::TransportProtocol::Tcp,
+                                                  first_server.port())));
+    CHECK(!refused.ok() &&
+          refused.status().code() == StatusCode::ResourceExhausted);
+    first_channel->close();
+    first_server.wait();
+    run_barrier(first_runtime);
+    TcpServer second_server(drain);
+    auto accepted =
+        open_route(second_runtime, second,
+                   requests.make(ipv4_destination(ytp1::TransportProtocol::Tcp,
+                                                  second_server.port())));
+    CHECK(accepted.ok());
+    std::move(accepted).take_value().take_byte_channel()->close();
+    second_server.wait();
+}
+
 void test_identity_capacity_across_sessions_and_protocols(
     RequestFactory& requests) {
     boost::asio::io_context peer_context;
@@ -2159,6 +2212,7 @@ int main() {
         yume::providers::test_udp_round_trip_and_truncation(requests);
         yume::providers::test_dns_and_connect_errors(requests);
         yume::providers::test_active_capacity_and_release(requests);
+        yume::providers::test_shared_budget_across_contexts(requests);
         yume::providers::test_identity_capacity_across_sessions_and_protocols(
             requests);
         yume::providers::test_pending_capacity(requests);

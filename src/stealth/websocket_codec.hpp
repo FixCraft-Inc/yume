@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +42,25 @@ struct WebSocketDrain {
 using WebSocketFrameObserver = void (*)(
     void* context, const WebSocketFrameMetadata& frame) noexcept;
 
+// One message payload held in two parts, such as an envelope header and the
+// record behind it, so a sender need not join them before framing.
+struct WebSocketPayload {
+    std::span<const std::uint8_t> first;
+    std::span<const std::uint8_t> second;
+
+    std::size_t size() const noexcept { return first.size() + second.size(); }
+    // The bytes [offset, offset + length) of first followed by second.
+    WebSocketPayload part(std::size_t offset,
+                          std::size_t length) const noexcept;
+};
+
+// XORs `size` bytes with the RFC 6455 masking key, starting at key byte
+// `phase % 4`. Eight bytes at a time, so the result equals the per-byte
+// definition for any alignment of `data`.
+void ApplyWebSocketMask(std::uint8_t* data, std::size_t size,
+                        const std::array<std::uint8_t, 4>& key,
+                        std::size_t phase = 0) noexcept;
+
 // RFC 6455 framing used inside RFC 8441 DATA.  The codec deliberately exposes
 // decoded binary payload as a byte stream because YUME's own frame parser sits
 // above it.  It accepts fragmented binary messages and interleaved controls,
@@ -63,25 +84,30 @@ public:
         inbound_frame_observer_context_ = context;
     }
 
-    WebSocketBytes EncodeBinary(const std::uint8_t* data, std::size_t size);
-    WebSocketBytes EncodeBinary(const WebSocketBytes& data) {
-        return EncodeBinary(data.data(), data.size());
+    // Each encoder appends complete frames to `out`. A client masks every
+    // frame with a fresh key from RAND_bytes. On an exception `out` keeps
+    // exactly the bytes it held before the call.
+    void EncodeBinary(WebSocketBytes& out, WebSocketPayload payload);
+    void EncodeBinary(WebSocketBytes& out, const std::uint8_t* data,
+                      std::size_t size) {
+        EncodeBinary(out, WebSocketPayload{{data, size}, {}});
     }
-    WebSocketBytes EncodeBinaryFragmented(const std::uint8_t* data,
-                                          std::size_t size,
-                                          std::size_t first_fragment_bytes);
-    WebSocketBytes EncodeBinaryFragmented(const WebSocketBytes& data,
-                                          std::size_t first_fragment_bytes) {
-        return EncodeBinaryFragmented(data.data(), data.size(),
-                                      first_fragment_bytes);
+    void EncodeBinaryFragmented(WebSocketBytes& out, WebSocketPayload payload,
+                                std::size_t first_fragment_bytes);
+    void EncodeBinaryFragmented(WebSocketBytes& out, const std::uint8_t* data,
+                                std::size_t size,
+                                std::size_t first_fragment_bytes) {
+        EncodeBinaryFragmented(out, WebSocketPayload{{data, size}, {}},
+                               first_fragment_bytes);
     }
-    WebSocketBytes EncodePing(const std::uint8_t* data, std::size_t size);
-    WebSocketBytes EncodePing(const WebSocketBytes& data) {
-        return EncodePing(data.data(), data.size());
-    }
+    void EncodePing(WebSocketBytes& out, const std::uint8_t* data,
+                    std::size_t size);
     // RFC 6455 allows at most 123 bytes of UTF-8 reason after the code.
-    WebSocketBytes EncodeClose(std::uint16_t code = 1000,
-                               std::string_view reason = {});
+    void EncodeClose(WebSocketBytes& out, std::uint16_t code = 1000,
+                     std::string_view reason = {});
+
+    // The bytes one frame of `payload_bytes` takes on the wire in this role.
+    std::size_t FrameBytes(std::size_t payload_bytes) const noexcept;
 
     void Feed(const std::uint8_t* data, std::size_t size);
     void Feed(const WebSocketBytes& data) { Feed(data.data(), data.size()); }
@@ -94,15 +120,16 @@ public:
     const std::string& error() const noexcept { return error_; }
 
 private:
-    WebSocketBytes EncodeFrame(std::uint8_t opcode,
-                               const std::uint8_t* data,
-                               std::size_t size,
-                               bool final = true);
+    void EncodeFrame(WebSocketBytes& out, std::uint8_t opcode,
+                     WebSocketPayload payload, bool final = true);
     void Process();
     void Fail(std::string reason);
 
     WebSocketRole role_;
+    // Received bytes not yet parsed start at inbound_offset_. Parsing moves
+    // the offset, and Feed drops the parsed prefix once before it appends.
     WebSocketBytes inbound_;
+    std::size_t inbound_offset_{0};
     WebSocketBytes decoded_;
     WebSocketBytes fragmented_;
     WebSocketBytes wire_replies_;

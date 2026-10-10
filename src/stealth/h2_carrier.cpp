@@ -472,7 +472,8 @@ public:
         return writes;
     }
 
-    bool SendBinary(const std::uint8_t* data, std::size_t size) {
+    bool SendBinary(WebSocketPayload data) {
+        const std::size_t size = data.size();
         if (!carrier_active_ || carrier_closed_ || failed()) {
             return Fail("carrier is not active");
         }
@@ -480,36 +481,53 @@ public:
 #if YUME_ENABLE_DEV_DIAGNOSTICS
             diagnostics::Stopwatch encode_timer(collect_timing_);
 #endif
+            if (size > kMaxQueuedOutput) {
+                return Fail("encoded WebSocket output exceeded 32 MiB");
+            }
+            const std::size_t message_bytes =
+                cover_profile::active().websocket_message_bytes;
+            // One allocation of exactly the encoded size: the messages, plus
+            // one more header for the fixture's split below.
+            const std::size_t messages =
+                size == 0 ? 1U : (size + message_bytes - 1U) / message_bytes;
+            const std::size_t last_bytes =
+                size - (messages - 1U) * message_bytes;
+            std::size_t wire_bytes =
+                (messages - 1U) * websocket_.FrameBytes(message_bytes) +
+                websocket_.FrameBytes(last_bytes);
+            const bool fragment_fixture = role_ == H2CarrierRole::Server &&
+                                          !server_fragment_fixture_sent_ &&
+                                          size >= message_bytes;
+            if (fragment_fixture) {
+                wire_bytes +=
+                    websocket_.FrameBytes(message_bytes / 2U) +
+                    websocket_.FrameBytes(message_bytes - message_bytes / 2U) -
+                    websocket_.FrameBytes(message_bytes);
+            }
+            if (wire_bytes > kMaxQueuedOutput) {
+                return Fail("encoded WebSocket output exceeded 32 MiB");
+            }
             H2Bytes wire;
+            wire.reserve(wire_bytes);
             std::size_t offset = 0;
             while (offset < size) {
-                const std::size_t chunk = std::min(
-                    cover_profile::active()
-                        .websocket_message_bytes,
-                        size - offset);
-                H2Bytes frame;
+                const std::size_t chunk =
+                    std::min(message_bytes, size - offset);
                 // The captured Node fixture fragments its first complete
                 // 16-KiB server binary message into 8-KiB binary/continuation
                 // frames. Smaller authentication/control messages are left
                 // intact and do not consume this one-time profile behavior.
                 if (role_ == H2CarrierRole::Server &&
-                    !server_fragment_fixture_sent_ &&
-                    chunk == cover_profile::active()
-                                 .websocket_message_bytes) {
-                    frame = websocket_.EncodeBinaryFragmented(
-                        data + offset, chunk, chunk / 2);
+                    !server_fragment_fixture_sent_ && chunk == message_bytes) {
+                    websocket_.EncodeBinaryFragmented(
+                        wire, data.part(offset, chunk), chunk / 2);
                     server_fragment_fixture_sent_ = true;
                 } else {
-                    frame = websocket_.EncodeBinary(data + offset, chunk);
+                    websocket_.EncodeBinary(wire, data.part(offset, chunk));
                 }
-                if (frame.size() > kMaxQueuedOutput -
-                        std::min(kMaxQueuedOutput, wire.size())) {
-                    return Fail("encoded WebSocket output exceeded 32 MiB");
-                }
-                wire.insert(wire.end(), frame.begin(), frame.end());
                 offset += chunk;
             }
-            if (size == 0) wire = websocket_.EncodeBinary(data, 0);
+            if (size == 0) websocket_.EncodeBinary(wire, data);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
             stats_.websocket_encode_bytes += size;
             if (collect_timing_) {
@@ -579,7 +597,8 @@ public:
                     0, std::min(kCloseReason.size(),
                                 reason_bytes - reason.size())));
             }
-            auto close = websocket_.EncodeClose(websocket_code, reason);
+            H2Bytes close;
+            websocket_.EncodeClose(close, websocket_code, reason);
             RecordIdleBeforeClose();
             if (!MaybeSendPrefacePing()) return false;
             return QueueStreamBytes(carrier_stream_id_, std::move(close));
@@ -1902,9 +1921,9 @@ private:
             had_decoded_tunnel_bytes) {
             static constexpr std::uint8_t kFixturePing[] = {
                 'f', 'i', 'x', 't', 'u', 'r', 'e', '-', 'p', 'i', 'n', 'g'};
-            QueueStreamBytes(
-                stream_id,
-                websocket_.EncodePing(kFixturePing, std::size(kFixturePing)));
+            H2Bytes ping;
+            websocket_.EncodePing(ping, kFixturePing, std::size(kFixturePing));
+            QueueStreamBytes(stream_id, std::move(ping));
             server_active_ping_sent_ = true;
         }
         if (websocket_.closed()) carrier_closed_ = true;
@@ -2327,7 +2346,7 @@ std::vector<H2Bytes> H2Carrier::TakeOutboundWrites() {
     return impl_->TakeOutboundWrites();
 }
 bool H2Carrier::SendBinary(const std::uint8_t* data, std::size_t size) {
-    return impl_->SendBinary(data, size);
+    return impl_->SendBinary(WebSocketPayload{{data, size}, {}});
 }
 H2Bytes H2Carrier::TakeTunnelBytes() { return impl_->TakeTunnelBytes(); }
 bool H2Carrier::ConsumeTunnelBytes(std::size_t size) {

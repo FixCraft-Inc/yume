@@ -206,7 +206,7 @@ allowed. `yume-setup add-client --circuits` writes this section.
 
 ## Tuning presets
 
-`yume-setup init --preset NAME` writes one of four settings for
+`yume-setup init --preset NAME` writes one of five combinations for
 `max_queued_bytes`, `max_epoch_bytes`, `credit_returns_per_window` and
 `idle_epoch_rotation` into both configurations, and `add-client` gives a new
 client the server's settings. `yume-doctor` names the preset a configuration
@@ -216,21 +216,51 @@ table for other tools.
 | Preset | Budget | Epoch | Credit returns | Idle rotation | Speed | Security | Stealth |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `stealth`, the default | 4 MiB | 1 MiB | 2 | off | 1 | 4 | 4 |
-| `balanced` | 16 MiB | 4 MiB | 2 | off | 2 | 3 | 3 |
-| `fast` | 32 MiB | 16 MiB | 4 | on | 3 | 2 | 2 |
-| `max` | 64 MiB | 64 MiB | 8 | on | 4 | 1 | 1 |
+| `stealth-16` | 4 MiB | 16 MiB | 2 | off | 2 | 2 | 4 |
+| `balanced` | 16 MiB | 4 MiB | 2 | off | 3 | 3 | 3 |
+| `fast` | 32 MiB | 16 MiB | 4 | on | 4 | 2 | 2 |
+| `max` | 64 MiB | 64 MiB | 8 | on | 5 | 1 | 1 |
 
-Each level, 1 to 4, stands for a measured or stated effect. Speed ranks
-far-path throughput in emulator runs. Security follows how much data one key
+Speed has five positions; security and stealth have four. Each stands for
+a measured or stated effect. Speed orders the measured combinations, with
+fast and max ahead only on hosts with raised TCP ceilings. It is not a
+universal throughput score. Security follows how much data one key
 epoch protects: 1, 4, 16 or 64 MiB, and never more than 500 ms of sending.
 Stealth is 4 for the settings the browser captures describe. Lower levels use
 a larger HTTP/2 receive window or send more small credit records upstream,
 changes that have no capture or classifier evidence yet. `fast` and `max`
 also rotate idle keys, whose rekey exchange after each burst the captures
 show a browser session does not send. Without it a request after more than
-half a second of quiet waits one round trip for the new key. Moving along the
-table trades one against the others, so a later interface can offer three
-coupled sliders over these four points.
+half a second of quiet waits one round trip for the new key. The stealth level describes only windows, credit records and idle rotation;
+changing the epoch also changes rekey frequency. It proves no classifier result.
+
+The table owns `coupling.rule` (`nearest-levels-v1`): when a slider moves,
+keep its requested level and choose the combination minimizing the sum of
+absolute differences on the other two axes from the current combination.
+Break ties by higher stealth, then higher security, then lower speed, then
+table order. This operates on combinations, never interpolated limit values.
+Custom limits stay custom until the user explicitly chooses a combination.
+The table's `fields` describe labels, units and divisors for the plain-terms
+panel; each combination's `measurement` refers to a conditions record in
+`measurements`. Consumers embed this table unchanged.
+
+A separate comparison at default 6 MiB host TCP ceilings measured stealth
+at 41.4, 41.8 and 41.9 percent of the direct path at 40, 100 and 200 ms RTT.
+`stealth-16` reached 62.4, 59.2 and 58.6 percent; balanced reached 99.1,
+97.0 and 95.6 percent. These are tail-rate medians of six 12-second
+single-download samples per condition on one host's loss-free emulated
+paths, with both peers configured alike. A 64 MiB epoch with stealth's
+other limits added no throughput, so it is not another preset. These
+measurements are not real-path speed or stealth claims.
+
+To change an existing client, use `yume-setup tune --config FILE --preset
+stealth-16`, or set one expert value with `--set max_epoch_bytes=2097152`.
+The latter accepts any schema-valid value of the four tuning keys. Both
+validate the entire original and resulting configuration, then atomically
+replace the file while preserving other members. Restart the client to apply
+it. The command neither changes the server nor promises the selected epoch:
+compare it with the connected session's `posture.limits` to see the negotiated
+cap. See `yume-setup(1)` for file handling and failure behavior.
 
 One emulator run on one host measured these rates for a single download, in
 Mbit/s at 40, 100 and 200 ms round trips without loss, each preset with its

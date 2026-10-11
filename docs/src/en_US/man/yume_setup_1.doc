@@ -2,14 +2,16 @@
 name:        yume_setup_1
 kind:        man
 title:       yume-setup
-summary:     create YUME server kits, client bundles and cluster lists
+summary:     create YUME kits and cluster lists, and tune clients
 man:         docs/man/yume-setup.1
 man-section: 1
-man-date:    2026-10-08
+man-date:    2026-10-11
 man-source:  YUME 0.3.0-dev1
 man-manual:  YUME Manual
 ---
 @synopsis
+**yume-setup** **tune** **--config** *file* **--preset** *preset*
+**yume-setup** **tune** **--config** *file* **--set** *key=JSON*
 **yume-setup** **init** **--host** *host* **--output** *directory* [ **--port** *port* ] [ **--client-name** *name* ] [ **--max-sessions** *count* ] [ **--weight** *weight* ] [ **--max-egress-mbps** *rate* ] [ **--preset** *preset* ]
 **yume-setup** **add-client** **--server** *directory* **--host** *host* **--output** *directory* **--client-name** *name* [ **--max-sessions** *count* ] [ **--weight** *weight* ] [ **--circuits** ]
 **yume-setup** **remove-client** **--server** *directory* **--client-name** *name*
@@ -44,6 +46,19 @@ touches several files is not one filesystem transaction.
 ## ACTIONS
 
 @options
+@opt **tune**
+
+Apply one preset or one expert tuning limit to an existing client configuration.
+Exactly one of **--preset** and **--set** is required. The complete original
+and resulting documents must pass the schema-1 parser. Server documents,
+symlinks, special files, duplicate keys and invalid values are refused before
+writing. Other configuration members are preserved. The result replaces the
+file atomically with mode 0600 and retains its owner when run by root.
+A failed write leaves the original intact and removes staging files. A
+failure flushing the parent directory after replacement reports an error,
+but the new configuration is already visible. Serialize edits to this file.
+No credentials are opened and no session is restarted. Restart the client
+separately to use the change; the server may cap the chosen epoch.
 @opt **init**
 
 Create a new kit directory holding **server/** and a first client bundle in
@@ -140,15 +155,30 @@ from 0.1 to 100.
 For **init**: the server's stream egress rate in Mbit/s, from 1 to
 1000000, which clients share by weight. Unlimited when omitted.
 @opt **--preset** *preset*
-@cli values: stealth balanced fast max
+@cli values: stealth stealth-16 balanced fast max
 @cli spell: --preset <preset>
-@cli help: Tuning for both sides: stealth (default), balanced,
-@cli help: fast or max
+@cli help: Tuning: stealth, stealth-16, balanced, fast or max
 
-For **init**: the tuning preset both configurations take, which trades
+For **init**: the tuning preset both configurations take. For **tune**:
+the preset applied to the client. Each trades
 far-path speed against how much data one key protects and how close the
 carrier stays to browser traffic. **stealth** is the default. A client from
 **add-client** takes its server's tuning.
+@opt **--config** *file*
+@cli file: yes
+@cli spell: --config <file>
+@cli help: Client configuration to tune
+
+For **tune**: an existing schema-1 client configuration, at most 1 MiB.
+@opt **--set** *key=JSON*
+@cli spell: --set <key=JSON>
+@cli help: Set one expert tuning limit, validated by schema 1
+
+For **tune**: one of **max_queued_bytes**, **max_epoch_bytes**,
+**credit_returns_per_window** or **idle_epoch_rotation**, followed by **=**
+and a JSON number or boolean. Use bytes for budgets and epochs, and **true**
+or **false** for idle rotation. The configuration reference owns the bounds.
+This writes the file; it is not a per-run security override.
 @opt **--server** *directory*
 @cli file: yes
 @cli spell: --server <directory>
@@ -226,6 +256,8 @@ yume-setup init --host vpn.example.net --output "$PWD/yume-kit"
 yume-setup add-client --server yume-kit/server --host vpn.example.net \
   --output "$PWD/tablet" --client-name tablet --max-sessions 2
 yume-setup remove-client --server yume-kit/server --client-name tablet
+yume-setup tune --config yume-kit/client/yume.json --preset stealth-16
+yume-setup tune --config yume-kit/client/yume.json --set max_epoch_bytes=2097152
 @end
 
 ## SEE ALSO

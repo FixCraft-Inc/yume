@@ -417,7 +417,12 @@ same kind of namespaces.
 ## Configuration authority
 
 The [configuration reference](../../CONFIGURATION.md) lists every schema-1
-key, its role, bounds and meaning, and the tuning presets.
+key, its role, bounds and meaning, and the tuning presets. The shared table
+includes `stealth-16`, which keeps stealth's window settings with a 16 MiB
+key epoch. `yume-setup tune --config client/yume.json --preset stealth-16`
+applies it to an existing client; `--set max_epoch_bytes=2097152` instead
+sets one expert value through the same parser. Restart after saving. A
+server with a smaller epoch still caps the session.
 
 Schema 1 rejects inline secrets, aliases, unknown keys, unsupported providers,
 and unsafe combinations. The CLIs accept config selection, validation, the

@@ -5,16 +5,17 @@
 import QtQuick
 import QtQuick.Layouts
 
-// A preset's level, 1 to 4, as four segments. It shows a level and takes no
+// A preset's level as segments. It shows a level and takes no
 // input: presets change in the kit's configuration.
 RowLayout {
     id: meter
     property string label
     property int level: 0
+    property int maximum: 4
     property color tint: Theme.accentStrong
     spacing: 10
     Accessible.role: Accessible.Indicator
-    Accessible.name: qsTr("%1 level %2 of 4").arg(label).arg(level)
+    Accessible.name: qsTr("%1 level %2 of %3").arg(label).arg(level).arg(maximum)
 
     Text {
         textFormat: Text.PlainText
@@ -26,16 +27,17 @@ RowLayout {
     Row {
         spacing: 4
         Repeater {
-            model: 4
+            model: meter.maximum
             Rectangle {
-                width: 30; height: 8; radius: 4
+                width: (136 - (meter.maximum - 1) * 4) / meter.maximum
+                height: 8; radius: 4
                 color: index < meter.level ? meter.tint : Theme.ruleSoft
             }
         }
     }
     Text {
         textFormat: Text.PlainText
-        text: qsTr("%1/4").arg(meter.level)
+        text: qsTr("%1/%2").arg(meter.level).arg(meter.maximum)
         color: Theme.muted
         font.pixelSize: Theme.textSmall
     }

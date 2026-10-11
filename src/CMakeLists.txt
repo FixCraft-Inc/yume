@@ -948,7 +948,7 @@ if(YUME_BUILD_NATIVE_PROVIDERS)
         setup/actions.hpp setup/cluster.cpp setup/doctor.cpp setup/doctor.hpp
         setup/files.cpp setup/files.hpp setup/kit.cpp setup/kit_layout.cpp
         setup/kit_layout.hpp setup/material.cpp setup/material.hpp
-        setup/provision.cpp setup/provision.hpp)
+        setup/provision.cpp setup/provision.hpp setup/settings.cpp)
     target_include_directories(yume_setup PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
         PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(yume_setup

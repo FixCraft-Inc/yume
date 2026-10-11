@@ -1,8 +1,22 @@
 .\" Generated from docs/src/en_US/man/yume_setup_1.doc by scripts/yume_docs.py. Edit that file, not this one.
-.TH YUME-SETUP 1 "2026-10-08" "YUME 0.3.0-dev1" "YUME Manual"
+.TH YUME-SETUP 1 "2026-10-11" "YUME 0.3.0-dev1" "YUME Manual"
 .SH NAME
-yume-setup \- create YUME server kits, client bundles and cluster lists
+yume-setup \- create YUME kits and cluster lists, and tune clients
 .SH SYNOPSIS
+.B yume-setup
+.B tune
+.B --config
+.I file
+.B --preset
+.I preset
+.PP
+.B yume-setup
+.B tune
+.B --config
+.I file
+.B --set
+.I key=JSON
+.PP
 .B yume-setup
 .B init
 .B --host
@@ -130,6 +144,29 @@ Each replacement is atomic, but a command that touches several files is
 not one filesystem transaction.
 .SH ACTIONS
 .TP
+.B tune
+Apply one preset or one expert tuning limit to an existing client
+configuration.
+Exactly one of
+.B --preset
+and
+.B --set
+is required.
+The complete original and resulting documents must pass the schema-1
+parser.
+Server documents, symlinks, special files, duplicate keys and invalid
+values are refused before writing.
+Other configuration members are preserved.
+The result replaces the file atomically with mode 0600 and retains its
+owner when run by root.
+A failed write leaves the original intact and removes staging files.
+A failure flushing the parent directory after replacement reports an
+error, but the new configuration is already visible.
+Serialize edits to this file.
+No credentials are opened and no session is restarted.
+Restart the client separately to use the change; the server may cap the
+chosen epoch.
+.TP
 .B init
 Create a new kit directory holding
 .B server/
@@ -252,14 +289,42 @@ Unlimited when omitted.
 .BI "--preset " preset
 For
 .BR init :
-the tuning preset both configurations take, which trades far-path speed
-against how much data one key protects and how close the carrier stays
-to browser traffic.
+the tuning preset both configurations take.
+For
+.BR tune :
+the preset applied to the client.
+Each trades far-path speed against how much data one key protects and
+how close the carrier stays to browser traffic.
 .B stealth
 is the default.
 A client from
 .B add-client
 takes its server's tuning.
+.TP
+.BI "--config " file
+For
+.BR tune :
+an existing schema-1 client configuration, at most 1 MiB.
+.TP
+.BI "--set " key=JSON
+For
+.BR tune :
+one of
+.BR max_queued_bytes ,
+.BR max_epoch_bytes ,
+.B credit_returns_per_window
+or
+.BR idle_epoch_rotation ,
+followed by
+.B =
+and a JSON number or boolean.
+Use bytes for budgets and epochs, and
+.B true
+or
+.B false
+for idle rotation.
+The configuration reference owns the bounds.
+This writes the file; it is not a per-run security override.
 .TP
 .BI "--server " directory
 A server directory in the layout
@@ -356,6 +421,8 @@ yume-setup init --host vpn.example.net --output "$PWD/yume-kit"
 yume-setup add-client --server yume-kit/server --host vpn.example.net \e
   --output "$PWD/tablet" --client-name tablet --max-sessions 2
 yume-setup remove-client --server yume-kit/server --client-name tablet
+yume-setup tune --config yume-kit/client/yume.json --preset stealth-16
+yume-setup tune --config yume-kit/client/yume.json --set max_epoch_bytes=2097152
 .fi
 .SH SEE ALSO
 .BR yume-doctor (1),

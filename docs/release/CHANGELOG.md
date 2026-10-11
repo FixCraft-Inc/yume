@@ -15,6 +15,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Existing client tuning.** `yume-setup tune --config FILE` applies a
+  `--preset` or one expert `--set KEY=JSON` after schema validation, with
+  atomic replacement. Restart the client to apply it. The shared preset
+  table adds `stealth-16`, measurement conditions, display fields and a
+  deterministic slider coupling rule. Stealth remains the default.
+
 - **yumed serves on several event loops.** `endpoint.event_loops` sets how
   many threads serve sessions, by default the CPUs the daemon may run on, at
   most 16. One loop accepts each connection and hands it, before TLS, to the

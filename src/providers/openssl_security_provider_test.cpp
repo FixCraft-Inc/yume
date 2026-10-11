@@ -402,36 +402,97 @@ void write_u32(std::span<std::uint8_t> output,
     output[offset + 3U] = static_cast<std::uint8_t>(value);
 }
 
-std::vector<std::byte> strip_ed25519_signature(
-    std::span<const std::byte> message) {
-    std::vector<std::uint8_t> encoded(
-        as_u8(message).begin(), as_u8(message).end());
+// The raw AUTH record is schema, type, u16 field count and u32 body length,
+// then fields of u16 id, u16 flags, u32 length and the value. These helpers
+// edit that encoding directly and keep every count and length consistent, so
+// the decoder sees a well-formed record that lacks what was removed.
+struct RawAuthField final {
+    std::uint16_t id{0};
+    std::size_t offset{0};
+    std::size_t length{0};
+};
+
+std::vector<RawAuthField> raw_auth_fields(
+    std::span<const std::uint8_t> encoded) {
+    std::vector<RawAuthField> fields;
     const std::size_t field_count = read_u16(encoded, 2U);
     std::size_t offset = 8U;
     for (std::size_t index = 0; index < field_count; ++index) {
-        const std::uint16_t id = read_u16(encoded, offset);
         const std::size_t length = read_u32(encoded, offset + 4U);
-        if (id == static_cast<std::uint16_t>(
-                      yume::ytp1::AuthFieldId::CompositeSignature)) {
-            check(length == yume::ytp1::kCompositeSignatureSize,
-                  "signature strip input has wrong size");
-            const std::size_t value = offset + 8U;
-            encoded.erase(
-                encoded.begin() + static_cast<std::ptrdiff_t>(value),
-                encoded.begin() + static_cast<std::ptrdiff_t>(
-                    value + yume::ytp1::kEd25519SignatureSize));
-            write_u32(encoded, offset + 4U,
-                      static_cast<std::uint32_t>(
-                          length - yume::ytp1::kEd25519SignatureSize));
-            write_u32(encoded, 4U,
-                      read_u32(encoded, 4U) -
-                          static_cast<std::uint32_t>(
-                              yume::ytp1::kEd25519SignatureSize));
-            return byte_copy(encoded);
-        }
+        fields.push_back({read_u16(encoded, offset), offset, length});
         offset += 8U + length;
     }
-    throw std::runtime_error("signature field not found");
+    return fields;
+}
+
+RawAuthField find_raw_auth_field(std::span<const std::uint8_t> encoded,
+                                 std::uint16_t id) {
+    for (const auto& field : raw_auth_fields(encoded)) {
+        if (field.id == id) {
+            return field;
+        }
+    }
+    throw std::runtime_error("raw AUTH field not found");
+}
+
+// Erases count value bytes starting at value_offset within one field.
+std::vector<std::byte> erase_raw_auth_bytes(
+    std::span<const std::byte> message,
+    std::uint16_t id,
+    std::size_t value_offset,
+    std::size_t count) {
+    std::vector<std::uint8_t> encoded(
+        as_u8(message).begin(), as_u8(message).end());
+    const RawAuthField field = find_raw_auth_field(encoded, id);
+    check(value_offset + count <= field.length,
+          "raw AUTH erase is out of range");
+    const std::size_t value = field.offset + 8U + value_offset;
+    encoded.erase(encoded.begin() + static_cast<std::ptrdiff_t>(value),
+                  encoded.begin() + static_cast<std::ptrdiff_t>(value + count));
+    write_u32(encoded, field.offset + 4U,
+              static_cast<std::uint32_t>(field.length - count));
+    write_u32(encoded, 4U,
+              read_u32(encoded, 4U) - static_cast<std::uint32_t>(count));
+    return byte_copy(encoded);
+}
+
+std::vector<std::byte> remove_raw_auth_field(
+    std::span<const std::byte> message, std::uint16_t id) {
+    std::vector<std::uint8_t> encoded(
+        as_u8(message).begin(), as_u8(message).end());
+    const RawAuthField field = find_raw_auth_field(encoded, id);
+    const std::size_t removed = 8U + field.length;
+    const auto field_count =
+        static_cast<std::uint16_t>(read_u16(encoded, 2U) - 1U);
+    encoded.erase(
+        encoded.begin() + static_cast<std::ptrdiff_t>(field.offset),
+        encoded.begin() + static_cast<std::ptrdiff_t>(field.offset + removed));
+    encoded[2] = static_cast<std::uint8_t>(field_count >> 8U);
+    encoded[3] = static_cast<std::uint8_t>(field_count);
+    write_u32(encoded, 4U,
+              read_u32(encoded, 4U) - static_cast<std::uint32_t>(removed));
+    return byte_copy(encoded);
+}
+
+std::vector<std::byte> strip_signature_component(
+    std::span<const std::byte> message, bool ed25519) {
+    const auto id = static_cast<std::uint16_t>(
+        yume::ytp1::AuthFieldId::CompositeSignature);
+    check(find_raw_auth_field(as_u8(message), id).length ==
+              yume::ytp1::kCompositeSignatureSize,
+          "signature strip input has wrong size");
+    return ed25519
+               ? erase_raw_auth_bytes(message, id, 0U,
+                                      yume::ytp1::kEd25519SignatureSize)
+               : erase_raw_auth_bytes(
+                     message, id, yume::ytp1::kEd25519SignatureSize,
+                     yume::ytp1::kCompositeSignatureSize -
+                         yume::ytp1::kEd25519SignatureSize);
+}
+
+std::vector<std::byte> strip_ed25519_signature(
+    std::span<const std::byte> message) {
+    return strip_signature_component(message, true);
 }
 
 std::vector<std::byte> raw_mutate_auth_field(
@@ -836,6 +897,155 @@ void test_component_mutation_and_stripping(const Fixture& fixture) {
     }
 }
 
+enum class Flight : std::uint8_t { Challenge, Response, Accepted };
+
+// Runs a fresh paired handshake up to flight, hands its receiver the edited
+// flight instead of the genuine one and reports whether it was accepted.
+template <typename Edit>
+bool receiver_accepts(const Fixture& fixture, Flight flight, Edit edit) {
+    auto pair = make_pair(fixture, default_options(fixture));
+    const auto challenge = begin_handshake(pair);
+    if (flight == Flight::Challenge) {
+        return pair.client->process_authentication(
+            AuthenticationMessageKind::Challenge, edit(challenge)).ok();
+    }
+    auto response = require(pair.client->process_authentication(
+                                AuthenticationMessageKind::Challenge,
+                                challenge),
+                            "edited-flight client response");
+    const auto encoded_response =
+        outgoing(response, AuthenticationMessageKind::Response);
+    if (flight == Flight::Response) {
+        return pair.server->process_authentication(
+            AuthenticationMessageKind::Response, edit(encoded_response)).ok();
+    }
+    auto accepted = require(pair.server->process_authentication(
+                                AuthenticationMessageKind::Response,
+                                encoded_response),
+                            "edited-flight server accepted");
+    const auto encoded_accepted =
+        outgoing(accepted, AuthenticationMessageKind::Accepted);
+    return pair.client->process_authentication(
+        AuthenticationMessageKind::Accepted, edit(encoded_accepted)).ok();
+}
+
+std::vector<std::byte> genuine_flight(const Fixture& fixture, Flight flight) {
+    std::vector<std::byte> captured;
+    check(receiver_accepts(fixture, flight,
+                           [&captured](std::span<const std::byte> message) {
+                               captured = byte_copy(message);
+                               return captured;
+                           }),
+          "unedited AUTH flight was refused");
+    return captured;
+}
+
+// Removes each field of each AUTH flight, shortens each by one octet and
+// strips each composite-signature component. The decoder or the provider
+// must refuse every case.
+void test_component_removal_matrix(const Fixture& fixture) {
+    const auto signature = static_cast<std::uint16_t>(
+        yume::ytp1::AuthFieldId::CompositeSignature);
+    for (const Flight flight :
+         {Flight::Challenge, Flight::Response, Flight::Accepted}) {
+        const auto genuine = genuine_flight(fixture, flight);
+        const auto fields = raw_auth_fields(as_u8(genuine));
+        check(fields.size() >= 4U, "AUTH flight has too few fields");
+        bool signed_flight = false;
+        for (const auto& field : fields) {
+            check(!receiver_accepts(
+                      fixture, flight,
+                      [id = field.id](std::span<const std::byte> message) {
+                          return remove_raw_auth_field(message, id);
+                      }),
+                  "AUTH flight without field " + std::to_string(field.id) +
+                      " was accepted");
+            if (field.length != 0U) {
+                check(!receiver_accepts(
+                          fixture, flight,
+                          [id = field.id](std::span<const std::byte> message) {
+                              const auto length =
+                                  find_raw_auth_field(as_u8(message), id).length;
+                              return erase_raw_auth_bytes(message, id,
+                                                          length - 1U, 1U);
+                          }),
+                      "AUTH flight with shortened field " +
+                          std::to_string(field.id) + " was accepted");
+            }
+            signed_flight = signed_flight || field.id == signature;
+        }
+        if (!signed_flight) {
+            continue;
+        }
+        for (const bool ed25519 : {true, false}) {
+            check(!receiver_accepts(
+                      fixture, flight,
+                      [ed25519](std::span<const std::byte> message) {
+                          return strip_signature_component(message, ed25519);
+                      }),
+                  ed25519 ? "AUTH flight without its Ed25519 signature was accepted"
+                          : "AUTH flight without its ML-DSA signature was accepted");
+        }
+    }
+}
+
+// Replays every flight of one completed handshake into a fresh session. A
+// fresh client has contributed nothing before the challenge, so the TLS
+// exporter is what binds a challenge to its connection, and each connection
+// has its own. The response and the accepted flight are also bound to the
+// fresh peer's own ephemeral contributions, so they are refused even when
+// the exporter repeats.
+void test_fresh_session_replay(const Fixture& fixture) {
+    struct OldFlights final {
+        std::vector<std::byte> challenge;
+        std::vector<std::byte> response;
+        std::vector<std::byte> accepted;
+    } old_flight;
+    {
+        auto pair = make_pair(fixture, default_options(fixture));
+        const HandshakeFlight flight = complete_handshake(pair);
+        old_flight = {flight.challenge, flight.response, flight.accepted};
+        check(!pair.server->process_authentication(
+                   AuthenticationMessageKind::Response, flight.response).ok(),
+              "established server accepted its response again");
+        check(!pair.client->process_authentication(
+                   AuthenticationMessageKind::Accepted, flight.accepted).ok(),
+              "established client accepted its accepted flight again");
+    }
+    PairOptions other_connection = default_options(fixture);
+    other_connection.client_exporter[0] ^= 0x55U;
+    other_connection.server_exporter = other_connection.client_exporter;
+    {
+        auto pair = make_pair(fixture, other_connection);
+        (void)begin_handshake(pair);
+        check(!pair.client->process_authentication(
+                   AuthenticationMessageKind::Challenge, old_flight.challenge).ok(),
+              "challenge from another connection was accepted");
+    }
+    for (const PairOptions& options :
+         {other_connection, default_options(fixture)}) {
+        {
+            auto pair = make_pair(fixture, options);
+            (void)begin_handshake(pair);
+            check(!pair.server->process_authentication(
+                       AuthenticationMessageKind::Response,
+                       old_flight.response).ok(),
+                  "response from an earlier session was accepted");
+        }
+        {
+            auto pair = make_pair(fixture, options);
+            const auto challenge = begin_handshake(pair);
+            (void)require(pair.client->process_authentication(
+                              AuthenticationMessageKind::Challenge, challenge),
+                          "replay-target client response");
+            check(!pair.client->process_authentication(
+                       AuthenticationMessageKind::Accepted,
+                       old_flight.accepted).ok(),
+                  "accepted flight from an earlier session was accepted");
+        }
+    }
+}
+
 void test_factory_bounds_and_cancellation(const Fixture& fixture) {
     auto options = default_options(fixture);
     ClientCredentialsView client_credentials{
@@ -958,6 +1168,27 @@ void test_crypto_backend_identity() {
     check(reported.data() ==
               yume::providers::openssl_crypto_backend().data(),
           "crypto backend identity is not one stable value");
+}
+
+// The private context requires every YTP/1 algorithm from OpenSSL's default
+// provider. The built-in null and base providers supply none of them, and an
+// unknown name loads nothing, so each must refuse to construct.
+void test_missing_algorithm_refusal() {
+    namespace crypto = yume::providers::ytp1_crypto;
+    for (const std::string_view provider : {"null", "base", "yume-absent"}) {
+        bool refused = false;
+        try {
+            const crypto::CryptoContext context(provider);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        check(refused, "crypto context without its algorithms was built over " +
+                           std::string(provider));
+    }
+    const crypto::CryptoContext context("default");
+    check(context.sha256() != nullptr && context.aes_256_gcm() != nullptr &&
+              context.hmac() != nullptr && context.hkdf() != nullptr,
+          "default provider context lacks a required algorithm");
 }
 
 class CryptoVectors final {
@@ -1717,9 +1948,15 @@ int main(int argc, char** argv) {
                 test_epoch_cache_openssl_allocation_failures();
             else if (selection == "--epoch-cache-vectors")
                 test_cryptographic_known_answers();
+            else if (selection == "--auth-removal")
+                test_component_removal_matrix(fixture);
+            else if (selection == "--auth-replay")
+                test_fresh_session_replay(fixture);
+            else if (selection == "--missing-algorithms")
+                test_missing_algorithm_refusal();
             else
                 throw std::runtime_error("unknown test selection");
-            std::cout << "Selected epoch cache test passed\n";
+            std::cout << "Selected security-provider test passed\n";
             return 0;
         }
         test_epoch_cache_lifetime();
@@ -1733,8 +1970,11 @@ int main(int argc, char** argv) {
         test_old_epoch_open_until_the_first_new_record(fixture);
         test_authentication_failures(fixture);
         test_component_mutation_and_stripping(fixture);
+        test_component_removal_matrix(fixture);
+        test_fresh_session_replay(fixture);
         test_factory_bounds_and_cancellation(fixture);
         test_crypto_backend_identity();
+        test_missing_algorithm_refusal();
         test_cryptographic_known_answers();
         std::cout << "YTP/1 OpenSSL security-provider tests passed\n";
         return 0;

@@ -112,6 +112,11 @@ private:
 class CryptoContext final {
 public:
     CryptoContext();
+    // Loads the named built-in provider in place of "default". Every fetch
+    // still requires kOpenSslPropertyQuery, so any other provider leaves the
+    // required algorithms unavailable and construction refuses. Tests use it
+    // to show that refusal.
+    explicit CryptoContext(std::string_view provider_name);
     ~CryptoContext();
     CryptoContext(const CryptoContext&) = delete;
     CryptoContext& operator=(const CryptoContext&) = delete;

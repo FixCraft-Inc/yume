@@ -37,6 +37,7 @@ GUI_READERS = ("app_state.cpp", "capture.cpp", "control_client.cpp", "headless.c
 QML_MEMBER = re.compile(
     r"\b(?:status|circuits|proposal|posture|limits|traffic|server|failure|route|link|reply)"
     r"\??\.([a-z][a-z0-9_]*)\b(?!\s*\()")
+QML_STRING = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 
 
 def spans(page: str) -> set[str]:
@@ -86,7 +87,11 @@ def members_read() -> dict[str, set[str]]:
         for listed in re.findall(r"for \(const char\* key :\s*\{([^}]*)\}", source):
             add(name, re.findall(r'"([a-z][a-z0-9_]*)"', listed))
     for qml in sorted((GUI / "qml").glob("*.qml")):
-        add(qml.name, QML_MEMBER.findall(qml.read_text(encoding="utf-8")))
+        # Translation IDs contain dots (for example, ``desktop.server.can``)
+        # but are not reply-member reads. Remove quoted QML strings before
+        # applying the member-access heuristic.
+        source = QML_STRING.sub("", qml.read_text(encoding="utf-8"))
+        add(qml.name, QML_MEMBER.findall(source))
     return found
 
 

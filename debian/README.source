@@ -11,9 +11,10 @@ ordering and is omitted from source filenames and YUME's reported version.
 The Debian build selects the native YTP/1 application, leaves out the BaseFWX
 modules, the GUI and the experimental SDK, and uses system JSON, nghttp2,
 libsystemd and dynamically linked OpenSSL. It emits yume and yume-daemon.
-The schema-1 setup/doctor scripts are installed with the client. The daemon
-ships an unprovisioned schema-1 bootstrap and a disabled service. No private
-keys or usable authorization records are shipped or generated on install.
+The native yume-setup and yume-doctor programs are installed with the
+client. The daemon ships an unprovisioned schema-1 bootstrap and a disabled
+service. No private keys or usable authorization records are shipped or
+generated on install.
 
 The package is UNRELEASED and deliberately fails against stock Debian
 libssl-dev: native TLS requires the reviewed ClientHello API in

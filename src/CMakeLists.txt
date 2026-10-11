@@ -2463,10 +2463,11 @@ if(YUME_BUILD_FUZZERS)
     yume_add_fuzzer(yume_fuzz_circuit1 fuzz_circuit1.cpp yume_circuit1)
     if(YUME_BUILD_NATIVE_PROVIDERS)
         # What a TLS client reaches before YTP/1 authenticates it: the
-        # admission path and authority, the cover site's answer to a request
-        # without a token, and the WebSocket framing of an admitted stream.
+        # admission path, authority, proof and replay cache, the cover site's
+        # answer to a request without a token, and the WebSocket framing of
+        # an admitted stream.
         yume_add_fuzzer(yume_fuzz_h2_admission fuzz_h2_admission.cpp
-            yume_h2_admission)
+            yume_h2_admission yume_ytp1_h2_admission)
         yume_add_fuzzer(yume_fuzz_cover_site fuzz_cover_site.cpp yume_cover_site)
         yume_add_fuzzer(yume_fuzz_websocket fuzz_websocket.cpp yume_h2_carrier)
     endif()

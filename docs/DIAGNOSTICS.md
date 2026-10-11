@@ -167,8 +167,9 @@ writes any artifact. CI runs the same script with a short budget as a
 regression gate. A longer campaign is the same invocation with a larger budget
 and a corpus carried over from the previous run. `tests/fuzz/make_seeds.py`
 generates the seeds as code rather than checking in opaque binaries, and
-derives the configuration seeds from the schema-1 examples in `config/` and
-the circuit seeds from the circuit 1 vectors.
+derives the configuration seeds from the schema-1 examples in `config/`, with
+one valid variant per schema section, and the circuit seeds from the circuit 1
+vectors.
 
 `YUME_BUILD_FUZZERS` builds libFuzzer harnesses for the parsers that consume
 input from outside a trust boundary, and requires Clang. It selects
@@ -183,10 +184,10 @@ evidence.
 | Harness | Parser | Checks |
 | --- | --- | --- |
 | `yume_fuzz_ytp1_protocol` | YTP/1 frame, OPEN, destination and capability codecs in `ytp/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
-| `yume_fuzz_ytp1_auth` | AUTH TLV records in `ytp/security.*` | Unknown critical fields, duplicate IDs, reordered TLVs and wrong suite values are refused, and unknown noncritical fields survive |
+| `yume_fuzz_ytp1_auth` | AUTH TLV records and the key-schedule encoding in `ytp/security.*` | Unknown critical fields, duplicate IDs, reordered TLVs and wrong suite values are refused, and unknown noncritical fields survive. Every record the encoder accepts decodes back to itself. Key-schedule validation, size and encoding agree, and a buffer one octet short is refused |
 | `yume_fuzz_config_v1` | The schema-1 parser in `config/v1/` | Typed rejection is the expected failure, and any other exception is a finding. It opens no credential file |
 | `yume_fuzz_circuit1` | Circuit 1 cells, handshakes, CREATE bodies, relay messages and BEGIN destinations in `circuit/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
-| `yume_fuzz_h2_admission` | The admission path and the `:authority` check against the TLS server name in `admission/h2_admission.*` | An accepted path is canonical and builds back to the same text |
+| `yume_fuzz_h2_admission` | The admission path, the `:authority` check against the TLS server name and the replay cache in `admission/h2_admission.*`, and the proof in `providers/ytp1_h2_admission.*` | An accepted path is canonical and builds back to the same text. A built proof verifies, and fails with another exporter or any one character changed. The replay cache decides as a model of its contract does |
 | `yume_fuzz_cover_site` | The cover site's answer to a method and request target in `providers/cover_site.*` | Only GET and HEAD select a file, always one of the site's own. GET and HEAD of a target agree, and HEAD has no body |
 | `yume_fuzz_websocket` | WebSocket framing in either role in `stealth/websocket_codec.*`, fed in pieces | Payload handed back plus framing retired never exceeds the bytes fed |
 

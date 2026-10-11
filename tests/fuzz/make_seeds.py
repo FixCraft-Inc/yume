@@ -85,6 +85,61 @@ def write_circuit1_seeds(out: pathlib.Path) -> None:
         (out / f"{name}_trailing").write_bytes(encoded + b"\0")
 
 
+def config_v1_variants(role: str, document: dict) -> dict[str, dict]:
+    """Reach each schema section from one valid document of that role."""
+    def variant(**changes: object) -> dict:
+        result = copy.deepcopy(document)
+        result.update(copy.deepcopy(changes))
+        return result
+
+    def ref(path: str) -> dict:
+        return {"file": path}
+
+    tuned_limits = dict(document["limits"], max_epoch_bytes=16 << 20,
+                        credit_returns_per_window=4, idle_epoch_rotation=True)
+    control = {"socket": "/run/user/1000/yume/control.sock"}
+    if role == "client":
+        forwards = document["adapters"] + [
+            {"kind": "forward", "service": "tcp", "listen_address": "127.0.0.1",
+             "listen_port": 8022, "destination": {"host": "example.com", "port": 22}},
+            {"kind": "forward", "service": "tcp", "listen_path": "/run/user/1000/yume/web.sock"},
+        ]
+        circuits = {"hops": 3, "min_hops": 2, "plain_http": "allow",
+                    "operator_key": ref("operator.pub"), "routes": ref("routes.json"),
+                    "routes_signature": ref("routes.sig"), "state": ref("circuits.state")}
+        return {
+            "forward": variant(adapters=forwards),
+            "control": variant(control=control),
+            "tuned": variant(limits=tuned_limits),
+            # Circuits refuse UDP ASSOCIATE, so the SOCKS5 adapter has no
+            # udp_service.
+            "circuits": variant(circuits=circuits, adapters=[
+                {k: v for k, v in document["adapters"][0].items() if k != "udp_service"}]),
+        }
+    services = document["services"] + [
+        {"name": "files.share", "kind": "stream", "max_concurrent_streams": 4}]
+    module = {"kind": "module", "service": "files.share",
+              "program": "/usr/lib/yume/modules/files", "arguments": ["--serve"]}
+    narrowed = copy.deepcopy(document["adapters"])
+    narrowed[0]["destinations"] = {
+        "public": False, "networks": ["10.0.0.0/8", "2001:db8::/32"],
+        "lists": [{"action": "deny", "format": "json", "file": "deny.json"},
+                  {"action": "allow", "format": "vpdb", "file": "providers.vpdb"}],
+        "country_database": ref("countries.mmdb"),
+    }
+    cluster = {"operator_key": ref("operator.pub"), "list": ref("cluster.json"),
+               "signature": ref("cluster.sig"), "routes": ref("routes.json"),
+               "routes_signature": ref("routes.sig"), "peers": ref("peers.json"),
+               "state": ref("cluster.state"), "exit": {"service": "tcp"}}
+    return {
+        "module": variant(services=services, adapters=document["adapters"] + [module]),
+        "narrowed": variant(adapters=narrowed),
+        "cluster": variant(cluster=cluster),
+        "control": variant(control=control),
+        "tuned": variant(limits=dict(tuned_limits, max_egress_mbps=500)),
+    }
+
+
 def write_config_v1_seeds(out: pathlib.Path) -> None:
     """Use shipped schema-1 documents without opening their file references."""
     out.mkdir(parents=True, exist_ok=True)
@@ -107,6 +162,8 @@ def write_config_v1_seeds(out: pathlib.Path) -> None:
         if role == "client":
             packet["endpoint"]["connect_address"] = "192.0.2.10"
         (out / f"{role}_packet").write_text(json.dumps(packet))
+        for name, variant in config_v1_variants(role, document).items():
+            (out / f"{role}_{name}").write_text(json.dumps(variant))
     malformed = {
         "empty": b"", "object": b"{}", "array": b"[]", "null": b"null",
         "duplicate": b'{"schema":1,"schema":1}',

@@ -125,7 +125,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build python3 fonts-dejavu-core \
             libgl1-mesa-dri libglx-mesa0 libegl-mesa0 \
-            qt6-base-dev qt6-declarative-dev qt6-qpa-plugins \
+            qt6-base-dev qt6-declarative-dev qt6-l10n-tools qt6-qpa-plugins \
             qml6-module-qtqml-workerscript qml6-module-qtquick qml6-module-qtquick-controls \
             qml6-module-qtquick-dialogs qml6-module-qtquick-layouts \
             qml6-module-qtquick-shapes qml6-module-qtquick-templates qml6-module-qtquick-window

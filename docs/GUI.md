@@ -185,7 +185,8 @@ HTTP/2 after the captured evidence profile), the session's key epoch, and the
 tuning preset its limits match, with that preset's speed, security and
 stealth levels from `config/tuning_presets.json`. The page offers no switch
 that changes security. Presets are set when a kit is made, with `yume-setup
-init --preset`. The theme, light by default, dark or the system's, is the
+init --preset`, or apply `yume-setup tune --config FILE --preset NAME`
+and restart the client. The theme, light by default, dark or the system's, is the
 only setting.
 
 ## Keyboard and languages

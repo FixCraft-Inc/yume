@@ -51,6 +51,13 @@ std::filesystem::path add_client(const AddClientOptions& options);
 std::filesystem::path remove_client(const std::filesystem::path& server,
                                     const std::string& client_name);
 
+// Atomically replace a valid client's configuration after applying exactly
+// one preset or KEY=JSON tuning value. The schema parser checks both the
+// input and result. Other members survive, and no running process is changed.
+void tune_client(const std::filesystem::path& config,
+                 const std::optional<std::string>& preset,
+                 const std::optional<std::string>& setting);
+
 // A new operator directory with a composite operator key, the routes tag
 // key and an empty cluster record. Returns the directory and the cluster ID.
 std::pair<std::filesystem::path, std::string> cluster_init(

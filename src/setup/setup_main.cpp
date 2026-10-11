@@ -44,7 +44,8 @@ struct Action final {
     std::vector<std::string_view> required;
 };
 
-const std::array<Action, 7> kActions{{
+const std::array<Action, 8> kActions{{
+    {"tune", {"--config", "--preset", "--set"}, {}, {"--config"}},
     {"init",
      {"--host", "--output", "--port", "--client-name", "--max-sessions",
       "--weight", "--max-egress-mbps", "--preset"},
@@ -220,7 +221,16 @@ std::string preset_choice(const Arguments& arguments) {
 
 int run(const Arguments& arguments) {
     const auto action = arguments.action->name;
-    if (action == "init") {
+    if (action == "tune") {
+        const auto preset = text(arguments, "--preset");
+        const auto setting = text(arguments, "--set");
+        if (preset.has_value() == setting.has_value())
+            throw UsageError{"tune needs exactly one of --preset and --set"};
+        if (preset) static_cast<void>(preset_choice(arguments));
+        tune_client(*text(arguments, "--config"), preset, setting);
+        std::puts("Client tuning saved. Restart the client to apply it.");
+        std::puts("The server may enforce a smaller key epoch.");
+    } else if (action == "init") {
         InitOptions options;
         options.host = *text(arguments, "--host");
         options.output = *text(arguments, "--output");

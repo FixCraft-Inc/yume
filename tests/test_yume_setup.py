@@ -83,6 +83,7 @@ class YumeSetupTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=False,
             preexec_fn=limit_file_size if small_files else None,
+            timeout=30,
         )
 
     def public_algorithms(self, path: Path, private: bool) -> list[str]:
@@ -549,6 +550,104 @@ class YumeSetupTests(unittest.TestCase):
             )
             self.assertEqual(refused.returncode, 2, refused.stdout)
             self.assertFalse((base / "refused").exists())
+
+    def test_tune_presets_preserve_other_settings(self) -> None:
+        original = json.loads((self.kit / "client/yume.json").read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "yume.json"
+            for name, limits in TUNING.items():
+                with self.subTest(preset=name):
+                    path.write_text(json.dumps(original))
+                    inode = path.stat().st_ino
+                    result = self.run_tool("tune", "--config", str(path), "--preset", name)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = json.loads(json.dumps(original))
+                    expected["limits"].update(limits)
+                    self.assertEqual(json.loads(path.read_text()), expected)
+                    self.assertNotEqual(path.stat().st_ino, inode)
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                    self.assertIn("Restart", result.stdout)
+                    self.assertEqual(list(Path(temporary).iterdir()), [path])
+
+    def test_tune_expert_values_use_schema_validation(self) -> None:
+        original = json.loads((self.kit / "client/yume.json").read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "yume.json"
+            for key, value in (("max_epoch_bytes", 2097152),
+                               ("max_queued_bytes", 8388608),
+                               ("credit_returns_per_window", 8),
+                               ("idle_epoch_rotation", True)):
+                with self.subTest(key=key):
+                    path.write_text(json.dumps(original))
+                    result = self.run_tool("tune", "--config", str(path),
+                                           "--set", f"{key}={json.dumps(value)}")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = json.loads(json.dumps(original))
+                    expected["limits"][key] = value
+                    self.assertEqual(json.loads(path.read_text()), expected)
+            for setting in ("max_epoch_bytes=0", "max_epoch_bytes=3145728",
+                            "max_epoch_bytes=134217728", "max_epoch_bytes=true",
+                            "max_queued_bytes=1", "max_queued_bytes=65536",
+                            "credit_returns_per_window=3", "idle_epoch_rotation=1",
+                            "max_epoch_bytes=1e100", "max_epoch_bytes=null",
+                            "max_streams=1", "max_epoch_bytes=[]",
+                            "max_epoch_bytes=" + "[" * 1000,
+                            "max_epoch_bytes=", "max_epoch_bytes"):
+                with self.subTest(setting=setting[:80]):
+                    path.write_text(json.dumps(original))
+                    before = path.read_bytes()
+                    result = self.run_tool("tune", "--config", str(path), "--set", setting)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertEqual(list(Path(temporary).iterdir()), [path])
+
+    def test_tune_refuses_invalid_inputs_without_rewriting(self) -> None:
+        client = (self.kit / "client/yume.json").read_text()
+        server = (self.kit / "server/yumed.json").read_text()
+        invalid = json.loads(client)
+        invalid["limits"]["max_epoch_bytes"] = 0
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "yume.json"
+            for content in (server, json.dumps(invalid), client.replace('"schema": 1',
+                            '"schema": 1, "schema": 1'), "[" * 100,
+                            " " * (1024 * 1024 + 1), '{"secret":"DO_NOT_ECHO",'):
+                path.write_text(content)
+                result = self.run_tool("tune", "--config", str(path), "--preset", "stealth")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(path.read_text(), content)
+                self.assertNotIn("DO_NOT_ECHO", result.stderr)
+            path.write_text(client)
+            for extra in ([], ["--preset", "stealth", "--set", "max_epoch_bytes=1048576"],
+                          ["--preset", "unknown"]):
+                result = self.run_tool("tune", "--config", str(path), *extra)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertEqual(path.read_text(), client)
+            link = Path(temporary) / "link"
+            link.symlink_to(path)
+            fifo = Path(temporary) / "fifo"
+            os.mkfifo(fifo)
+            for target in (link, fifo, Path(temporary), Path(temporary) / "absent"):
+                result = self.run_tool("tune", "--config", str(target), "--preset", "fast")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(path.read_text(), client)
+
+    def test_tune_failed_write_keeps_original_and_removes_staging(self) -> None:
+        original = json.loads((self.kit / "client/yume.json").read_text())
+        # Schema-valid long references make the replacement exceed RLIMIT_FSIZE.
+        # Tuning validates references without opening credential material.
+        for value in original["credentials"].values():
+            if isinstance(value, dict) and "file" in value:
+                value["file"] = "a" * 2000
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "yume.json"
+            path.write_text(json.dumps(original))
+            before = path.read_bytes()
+            result = self.run_tool("tune", "--config", str(path), "--preset", "fast",
+                                   small_files=True)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn("cannot write", result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(list(Path(temporary).iterdir()), [path])
 
     def test_remove_client_reverses_add_client(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

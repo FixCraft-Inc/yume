@@ -156,6 +156,9 @@ Flickable {
                     Layout.fillWidth: true
                     label: qsTr("Speed")
                     level: page.hasPreset ? page.preset.levels.speed : 0
+                    maximum: App.presets.reduce(function(maximum, preset) {
+                        return Math.max(maximum, preset.levels.speed)
+                    }, 1)
                     tint: Theme.dataStrong
                 }
                 LevelMeter {

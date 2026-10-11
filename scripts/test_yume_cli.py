@@ -344,7 +344,7 @@ class Tracked(unittest.TestCase):
                     "yume-setup": {"--host", "--output", "--port", "--client-name",
                                    "--max-sessions", "--weight", "--max-egress-mbps", "--preset",
                                    "--server", "--circuits", "--cluster", "--name", "--address",
-                                   "--exit", "--days", "--help", "-h"},
+                                   "--exit", "--days", "--config", "--set", "--help", "-h"},
                     "yume-doctor": {"--config", "--help", "-h"}}
         for layout in self.layouts:
             with self.subTest(binary=layout.binary):

@@ -5,6 +5,8 @@ output:    src/setup/yume_setup_help_text.hpp
 namespace: yume::setup::setup_cli
 ---
 @usage
+yume-setup tune --config <file> --preset <preset>
+yume-setup tune --config <file> --set <key=JSON>
 yume-setup init --host <host> --output <directory> [kit options]
 yume-setup add-client --server <directory> --host <host>
            --output <directory> --client-name <name> [kit options]
@@ -35,6 +37,10 @@ yume-setup --help
 --address
 --exit
 --days
+
+@section Tuning options
+--config
+--set
 
 @section Options
 -h

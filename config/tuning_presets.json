@@ -2,9 +2,9 @@
   "schema": 1,
   "default": "stealth",
   "levels": {
-    "speed": "far-path throughput rank, from measured emulator runs",
-    "security": "data one key protects: 4 for a 1 MiB epoch, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB",
-    "stealth": "distance from the kit defaults that the browser captures describe: 4 is the defaults, lower levels add a larger H2 window or more upstream credit records, which have no classifier evidence, and fast and max add a rekey exchange after every burst of traffic, which the captures show a browser does not send"
+    "speed": "Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score.",
+    "security": "Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change.",
+    "stealth": "Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency."
   },
   "presets": [
     {
@@ -15,7 +15,41 @@
         "credit_returns_per_window": 2,
         "idle_epoch_rotation": false
       },
-      "levels": {"speed": 1, "security": 4, "stealth": 4}
+      "levels": {
+        "speed": 1,
+        "security": 4,
+        "stealth": 4
+      },
+      "measurement": {
+        "reference": "epoch-comparison",
+        "values": [
+          41.4,
+          41.8,
+          41.9
+        ]
+      }
+    },
+    {
+      "id": "stealth-16",
+      "limits": {
+        "max_queued_bytes": 4194304,
+        "max_epoch_bytes": 16777216,
+        "credit_returns_per_window": 2,
+        "idle_epoch_rotation": false
+      },
+      "levels": {
+        "speed": 2,
+        "security": 2,
+        "stealth": 4
+      },
+      "measurement": {
+        "reference": "epoch-comparison",
+        "values": [
+          62.4,
+          59.2,
+          58.6
+        ]
+      }
     },
     {
       "id": "balanced",
@@ -25,7 +59,19 @@
         "credit_returns_per_window": 2,
         "idle_epoch_rotation": false
       },
-      "levels": {"speed": 2, "security": 3, "stealth": 3}
+      "levels": {
+        "speed": 3,
+        "security": 3,
+        "stealth": 3
+      },
+      "measurement": {
+        "reference": "epoch-comparison",
+        "values": [
+          99.1,
+          97.0,
+          95.6
+        ]
+      }
     },
     {
       "id": "fast",
@@ -35,7 +81,19 @@
         "credit_returns_per_window": 4,
         "idle_epoch_rotation": true
       },
-      "levels": {"speed": 3, "security": 2, "stealth": 2}
+      "levels": {
+        "speed": 4,
+        "security": 2,
+        "stealth": 2
+      },
+      "measurement": {
+        "reference": "window-comparison",
+        "values": [
+          2384,
+          1095,
+          579
+        ]
+      }
     },
     {
       "id": "max",
@@ -45,7 +103,81 @@
         "credit_returns_per_window": 8,
         "idle_epoch_rotation": true
       },
-      "levels": {"speed": 4, "security": 1, "stealth": 1}
+      "levels": {
+        "speed": 5,
+        "security": 1,
+        "stealth": 1
+      },
+      "measurement": {
+        "reference": "window-comparison",
+        "values": [
+          3038,
+          2499,
+          1333
+        ]
+      }
     }
-  ]
+  ],
+  "coupling": {
+    "rule": "nearest-levels-v1",
+    "distance": "sum of absolute differences on the two untouched axes",
+    "constraint": "keep the moved axis at the requested level",
+    "tie_break": [
+      "higher stealth",
+      "higher security",
+      "lower speed",
+      "table order"
+    ],
+    "custom_start": "Keep custom limits until explicit selection of a combination. Start sliders at that selected combination."
+  },
+  "fields": [
+    {
+      "key": "max_epoch_bytes",
+      "label": "Data per key epoch",
+      "unit": "MiB",
+      "divisor": 1048576
+    },
+    {
+      "key": "max_queued_bytes",
+      "label": "Flow budget",
+      "unit": "MiB",
+      "divisor": 1048576
+    },
+    {
+      "key": "credit_returns_per_window",
+      "label": "Credit returns per window",
+      "unit": "count",
+      "divisor": 1
+    },
+    {
+      "key": "idle_epoch_rotation",
+      "label": "Rotate keys while idle",
+      "unit": "boolean",
+      "divisor": 1
+    }
+  ],
+  "measurements": {
+    "epoch-comparison": {
+      "conditions": "One host, one session, one download, loss-free emulated RTTs of 40, 100 and 200 ms, 6 MiB host TCP ceilings. Six 12-second samples per condition, tail-rate medians. Both peers use the selected limits.",
+      "rtt_ms": [
+        40,
+        100,
+        200
+      ],
+      "metric": "tunnel / direct throughput",
+      "unit": "percent",
+      "limitation": "Emulated paths only. Not a real-path speed or stealth claim."
+    },
+    "window-comparison": {
+      "conditions": "One host, one session, one download, loss-free emulated RTTs of 40, 100 and 200 ms, host TCP ceilings raised to 64 MiB. Both peers use the selected limits.",
+      "rtt_ms": [
+        40,
+        100,
+        200
+      ],
+      "metric": "tunnel throughput",
+      "unit": "Mbit/s",
+      "limitation": "A separate run from epoch-comparison. Host ceilings and the software emulator limit results. Not a real-path speed or stealth claim."
+    }
+  }
 }

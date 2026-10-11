@@ -1162,8 +1162,8 @@ class YumeDoctorTests(unittest.TestCase):
     def test_names_the_tuning_preset_a_configuration_matches(self) -> None:
         client_path = self.case / "client/yume.json"
         original = client_path.read_text()
-        for tuning, expected in ((TUNING["fast"], "fast"),
-                                 ({"max_epoch_bytes": 2 * 1024 * 1024}, "custom")):
+        for tuning, expected in [*((limits, name) for name, limits in TUNING.items()),
+                                 ({"max_epoch_bytes": 2 * 1024 * 1024}, "custom")]:
             config = json.loads(original)
             config["limits"].update(tuning)
             client_path.write_text(json.dumps(config))
@@ -1174,8 +1174,7 @@ class YumeDoctorTests(unittest.TestCase):
 
     def test_tuning_presets_agree_and_fit_the_parser(self) -> None:
         # One table for setup, doctor and the future GUI's sliders. Every
-        # preset must be a configuration the parser accepts, and moving along
-        # the table trades speed against security and stealth in step.
+        # preset must fit the parser. The epoch and window axes are independent.
         table = json.loads((ROOT / "config/tuning_presets.json").read_text())
         self.assertEqual(table["schema"], 1)
         presets = {entry["id"]: entry for entry in table["presets"]}
@@ -1199,9 +1198,17 @@ class YumeDoctorTests(unittest.TestCase):
             self.assertEqual(epoch & (epoch - 1), 0, name)
             self.assertIn(limits["credit_returns_per_window"], (2, 4, returns), name)
         ordered = sorted(presets.values(), key=lambda entry: entry["levels"]["speed"])
-        self.assertEqual([entry["levels"]["speed"] for entry in ordered], [1, 2, 3, 4])
-        for axis in ("security", "stealth"):
-            self.assertEqual([entry["levels"][axis] for entry in ordered], [4, 3, 2, 1])
+        self.assertEqual([entry["levels"]["speed"] for entry in ordered], list(range(1, len(ordered) + 1)))
+        self.assertEqual([entry["levels"]["security"] for entry in ordered], [4, 2, 3, 2, 1])
+        self.assertEqual([entry["levels"]["stealth"] for entry in ordered], [4, 4, 3, 2, 1])
+        for entry in ordered:
+            fields = {field["key"] for field in table["fields"]}
+            self.assertEqual(fields, set(entry["limits"]))
+            measurement = table["measurements"][entry["measurement"]["reference"]]
+            self.assertEqual(len(entry["measurement"]["values"]), len(measurement["rtt_ms"]))
+            self.assertTrue(measurement["conditions"])
+            self.assertTrue(measurement["limitation"])
+        self.assertEqual(table["coupling"]["rule"], "nearest-levels-v1")
         self.assertEqual(presets[table["default"]]["levels"]["stealth"], 4)
 
     def test_credit_returns_match_the_parser(self) -> None:

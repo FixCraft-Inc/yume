@@ -205,7 +205,7 @@ evidence.
 | `yume_fuzz_circuit1` | Circuit 1 cells, handshakes, CREATE bodies, relay messages and BEGIN destinations in `circuit/protocol.*` | Every accepted encoding is canonical and re-encodes to the same bytes |
 | `yume_fuzz_h2_admission` | The admission path, the `:authority` check against the TLS server name and the replay cache in `admission/h2_admission.*`, and the proof in `providers/ytp1_h2_admission.*` | An accepted path is canonical and builds back to the same text. A built proof verifies, and fails with another exporter or any one character changed. The replay cache decides as a model of its contract does |
 | `yume_fuzz_cover_site` | The cover site's answer to a method and request target in `providers/cover_site.*` | Only GET and HEAD select a file, always one of the site's own. GET and HEAD of a target agree, and HEAD has no body |
-| `yume_fuzz_websocket` | WebSocket framing in either role in `stealth/websocket_codec.*`, fed in pieces | Payload handed back plus framing retired never exceeds the bytes fed |
+| `yume_fuzz_websocket` | WebSocket framing in either role in `stealth/websocket_codec.*`, fed in pieces | Payload handed back plus framing retired never exceeds the bytes fed. What one role encodes, as one frame, fragments or messages around a ping and a close, the other decodes to the same bytes |
 @end
 
 Corpora live outside the tree. A crashing input is evidence and does not

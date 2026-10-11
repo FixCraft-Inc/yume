@@ -176,6 +176,22 @@ void print_version() {
                 QT_VERSION_STR);
 }
 
+bool install_translators(QCoreApplication& application,
+                         QTranslator& english_translator,
+                         QTranslator& locale_translator) {
+    // ID-based lookups need an English catalog for their default text. A
+    // maintained locale is installed afterwards so it overrides that base.
+    if (!english_translator.load(QStringLiteral(":/i18n/yume_en.qm")))
+        return false;
+    application.installTranslator(&english_translator);
+    const QString locale = QLocale::system().name().section(u'_', 0, 0).toLower();
+    if (one_of(locale, {"ru", "ja", "uk"}) &&
+        locale_translator.load(QStringLiteral(":/i18n/yume_") + locale +
+                               QStringLiteral(".qm")))
+        application.installTranslator(&locale_translator);
+    return true;
+}
+
 // QML warnings fail a capture, since a broken binding shows a wrong page.
 std::atomic<int> g_qml_warnings{0};
 QtMessageHandler g_previous_handler = nullptr;
@@ -223,20 +239,12 @@ int run_window(int argc, char** argv) {
         QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
     QGuiApplication::setWindowIcon(mark_icon());
 
-    // ID-based lookups need an English catalog for their default text. A
-    // maintained locale is installed afterwards so it overrides that base.
     QTranslator english_translator;
-    if (!english_translator.load(QStringLiteral(":/i18n/yume_en.qm"))) {
+    QTranslator locale_translator;
+    if (!install_translators(application, english_translator, locale_translator)) {
         std::fprintf(stderr, "yume-gui: the English translation catalog did not load\n");
         return 1;
     }
-    application.installTranslator(&english_translator);
-    QTranslator locale_translator;
-    const QString locale = QLocale::system().name().section(u'_', 0, 0).toLower();
-    if (one_of(locale, {"ru", "ja", "uk"}) &&
-        locale_translator.load(QStringLiteral(":/i18n/yume_") + locale +
-                               QStringLiteral(".qm")))
-        application.installTranslator(&locale_translator);
 
     QString setup_error;
     auto places = find_places(arguments->yume, setup_error);
@@ -300,6 +308,12 @@ int run_console(int argc, char** argv) {
     if (!arguments->completion.isEmpty()) {
         std::fputs(yume::gui::help::kBashCompletion, stdout);
         return 0;
+    }
+    QTranslator english_translator;
+    QTranslator locale_translator;
+    if (!install_translators(application, english_translator, locale_translator)) {
+        std::fprintf(stderr, "yume-gui: the English translation catalog did not load\n");
+        return 1;
     }
     const auto places = find_places(arguments->yume, error);
     if (!places) {

@@ -92,13 +92,15 @@ void Tunnel::request_status() {
 }
 
 void Tunnel::on_status(const ControlReply& reply) {
+    state_confirmed_ = reply.ok() || (reply.outcome == Outcome::NotRunning &&
+                                      reply.peer_pid == 0 && !process_alive());
     if (reply.ok()) {
         status_ = reply.value;
         if (reply.peer_pid > 0) pid_ = reply.peer_pid;
         if (phase_ == Phase::Stopping &&
             since_phase_.elapsed() >
                 std::chrono::milliseconds(kStopLimit).count()) {
-            set_error(tr("yume did not stop within %1 seconds")
+            set_error(qtTrId("desktop.yume.did.not.stop.within.seconds")
                           .arg(kStopLimit.count()));
             set_phase(Phase::Running);
         } else if (phase_ != Phase::Stopping && phase_ != Phase::Validating) {
@@ -115,23 +117,22 @@ void Tunnel::on_status(const ControlReply& reply) {
                 if (process_alive()) {
                     if (since_phase_.elapsed() >
                         std::chrono::milliseconds(kStartLimit).count())
-                        set_error(tr(
-                            "yume runs but has not opened its control socket"));
+                        set_error(qtTrId("desktop.yume.runs.but.has.not.opened.its.control.socket"));
                     return;
                 }
                 // The reason comes from this start's output while pid_
                 // still names the process that wrote it.
-                set_error(output_reason(tr("yume stopped while starting")));
+                set_error(output_reason(qtTrId("desktop.yume.stopped.while.starting")));
                 pid_ = 0;
                 set_phase(Phase::Stopped);
                 return;
             case Phase::Running:
                 if (process_alive()) {
                     status_ = {};
-                    set_error(tr("yume closed its control socket but has not ended"));
+                    set_error(qtTrId("desktop.yume.closed.its.control.socket.but.has.not.ended"));
                     return;
                 }
-                set_error(output_reason(tr("yume stopped")));
+                set_error(output_reason(qtTrId("desktop.yume.stopped")));
                 pid_ = 0;
                 set_phase(Phase::Stopped);
                 return;
@@ -141,8 +142,7 @@ void Tunnel::on_status(const ControlReply& reply) {
                 if (process_alive()) {
                     if (since_phase_.elapsed() >
                         std::chrono::milliseconds(kStopLimit).count())
-                        set_error(tr(
-                            "yume closed its control socket but has not ended"));
+                        set_error(qtTrId("desktop.yume.closed.its.control.socket.but.has.not.ended"));
                     return;
                 }
                 set_error({});
@@ -157,7 +157,7 @@ void Tunnel::on_status(const ControlReply& reply) {
     // Refused, timed out, malformed or refused by the program: the socket
     // says nothing trustworthy, so the phase stays and the reason shows.
     set_error(reply.outcome == Outcome::Error
-                  ? tr("status refused: %1").arg(reply.text)
+                  ? qtTrId("desktop.status.refused").arg(reply.text)
                   : reply.text,
               true);
 }
@@ -191,7 +191,7 @@ void Tunnel::start() {
                 validation_ = nullptr;
                 if (status != QProcess::NormalExit || code != 0) {
                     const auto lines = output.split(u'\n', Qt::SkipEmptyParts);
-                    set_error(lines.isEmpty() ? tr("yume refused the kit")
+                    set_error(lines.isEmpty() ? qtTrId("desktop.yume.refused.the.kit")
                                               : strip_program(lines.last()));
                     set_phase(Phase::Stopped);
                     return;
@@ -203,7 +203,7 @@ void Tunnel::start() {
                 if (kind != QProcess::FailedToStart) return;
                 process->deleteLater();
                 validation_ = nullptr;
-                set_error(tr("cannot run %1").arg(places_.yume));
+                set_error(qtTrId("desktop.cannot.run").arg(places_.yume));
                 set_phase(Phase::Stopped);
             });
     limit->start(kValidationMs);
@@ -218,7 +218,7 @@ void Tunnel::spawn() {
     if (!output.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
         !output.setPermissions(QFileDevice::ReadOwner |
                                QFileDevice::WriteOwner)) {
-        set_error(tr("cannot write %1").arg(output_path()));
+        set_error(qtTrId("desktop.cannot.write").arg(output_path()));
         set_phase(Phase::Stopped);
         return;
     }
@@ -235,7 +235,7 @@ void Tunnel::spawn() {
     // GUI, and a signal to the GUI's process group does not reach it.
     qint64 pid = 0;
     if (!process.startDetached(&pid)) {
-        set_error(tr("cannot start %1").arg(places_.yume));
+        set_error(qtTrId("desktop.cannot.start").arg(places_.yume));
         set_phase(Phase::Stopped);
         return;
     }
@@ -298,7 +298,7 @@ void Tunnel::stop() {
     }
     if (phase_ != Phase::Running) return;
     if (!requests().contains(QStringLiteral("stop"))) {
-        set_error(tr("this yume does not take stop requests"));
+        set_error(qtTrId("desktop.this.yume.does.not.take.stop.requests"));
         return;
     }
     set_error({});
@@ -311,10 +311,13 @@ void Tunnel::stop() {
                 return;
             }
             if (reply.outcome == Outcome::NotRunning) {
-                set_phase(Phase::Stopped);
+                // The socket may close before the process has drained. A
+                // settings restart must not start a second client meanwhile.
+                set_phase(Phase::Stopping);
+                poll(interval_ms_);
                 return;
             }
-            set_error(reply.text.isEmpty() ? tr("the stop request failed")
+            set_error(reply.text.isEmpty() ? qtTrId("desktop.the.stop.request.failed")
                                            : reply.text);
         });
 }

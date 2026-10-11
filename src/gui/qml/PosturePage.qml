@@ -8,8 +8,7 @@ import QtQuick.Layouts
 import YumeBackend 1.0
 
 // What protects the tunnel, as the running yume reports it. Security is
-// fixed by the protocol and the kit, so this page states it and offers no
-// switch. Only the GUI's own appearance can be changed here.
+// fixed by the protocol. Tuning edits are a separate draft applied by the core.
 Flickable {
     id: page
     contentHeight: column.implicitHeight + 48
@@ -32,11 +31,13 @@ Flickable {
         width: page.width - 64
         spacing: Theme.gap
 
+        TuningPanel { Layout.fillWidth: true }
+
         Card {
             visible: page.posture === null
             Layout.fillWidth: true
-            title: qsTr("Connect to see the posture")
-            subtitle: qsTr("This page shows what the running yume reports about its protection, never what a file says it might use.")
+            title: qsTrId("desktop.connect.to.see.the.posture")
+            subtitle: qsTrId("desktop.this.page.shows.what.the.running.yume.reports.about.its")
         }
 
         RowLayout {
@@ -48,16 +49,16 @@ Flickable {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredWidth: 3
-                title: qsTr("Protection")
+                title: qsTrId("protection")
                 subtitle: page.known
-                          ? qsTr("Fixed by YTP/1. Every YUME session uses all of it, and none of it can be switched off.")
-                          : qsTr("This GUI does not describe transport %1. It lists what the program reports.")
+                          ? qsTrId("desktop.fixed.by.ytp.1.every.yume.session.uses.all.of.it.and.no")
+                          : qsTrId("desktop.this.gui.does.not.describe.transport.it.lists.what.the")
                                 .arg(page.posture ? page.posture.transport : "")
 
                 FactRow {
                     Layout.fillWidth: true
                     iconName: "posture"
-                    label: qsTr("Transport")
+                    label: qsTrId("desktop.transport")
                     value: page.posture ? page.posture.transport + "  ·  " + page.posture.suite : ""
                 }
                 FactRow {
@@ -65,146 +66,66 @@ Flickable {
                     Layout.fillWidth: true
                     iconName: "key"
                     tint: Theme.keysStrong
-                    label: qsTr("Key exchange")
-                    value: qsTr("X25519 and ML-KEM-1024 together")
-                    note: qsTr("A hybrid of a classical and a post-quantum method: the session key stays secret while either one holds.")
+                    label: qsTrId("desktop.key.exchange")
+                    value: qsTrId("desktop.x25519.and.ml.kem.1024.together")
+                    note: qsTrId("desktop.a.hybrid.of.a.classical.and.a.post.quantum.method.the.s")
                 }
                 FactRow {
                     visible: page.known
                     Layout.fillWidth: true
                     iconName: "server"
                     tint: Theme.serverStrong
-                    label: qsTr("Server identity")
-                    value: qsTr("Ed25519 and ML-DSA-87 signatures")
-                    note: qsTr("Both signatures must verify against the identity your kit trusts.")
+                    label: qsTrId("desktop.server.identity")
+                    value: qsTrId("desktop.ed25519.and.ml.dsa.87.signatures")
+                    note: qsTrId("desktop.both.signatures.must.verify.against.the.identity.your.k")
                 }
                 FactRow {
                     visible: page.known
                     Layout.fillWidth: true
                     iconName: "check"
                     tint: Theme.dataStrong
-                    label: qsTr("Records")
-                    value: qsTr("AES-256-GCM with one-use message keys")
+                    label: qsTrId("desktop.records")
+                    value: qsTrId("desktop.aes.256.gcm.with.one.use.message.keys")
                 }
                 FactRow {
                     Layout.fillWidth: true
                     iconName: "route"
                     tint: Theme.disguiseStrong
-                    label: qsTr("Outer layer")
+                    label: qsTrId("desktop.outer.layer")
                     value: page.known
-                           ? qsTr("TLS 1.3 and HTTP/2, shaped after %1").arg(page.posture.evidence_profile)
+                           ? qsTrId("desktop.tls.1.3.and.http.2.shaped.after").arg(page.posture.evidence_profile)
                            : (page.posture ? page.posture.evidence_profile : "")
-                    note: qsTr("It follows a captured browser session. That is not proof the traffic cannot be told apart.")
+                    note: qsTrId("desktop.it.follows.a.captured.browser.session.that.is.not.proof")
                 }
                 FactRow {
                     Layout.fillWidth: true
                     iconName: "key"
                     tint: Theme.keysStrong
-                    label: qsTr("Key rotation")
+                    label: qsTrId("desktop.key.rotation")
                     value: page.posture && page.posture.epoch_bytes
-                           ? qsTr("At most %1 per key in each direction").arg(App.formatBytes(page.posture.epoch_bytes))
-                           : page.limits ? qsTr("At most %1 per key, less if the server sets less").arg(App.formatBytes(page.limits.max_epoch_bytes)) : ""
+                           ? qsTrId("desktop.at.most.per.key.in.each.direction").arg(App.formatBytes(page.posture.epoch_bytes))
+                           : page.limits ? qsTrId("desktop.at.most.per.key.less.if.the.server.sets.less").arg(App.formatBytes(page.limits.max_epoch_bytes)) : ""
                     note: page.limits
                           ? (page.limits.idle_epoch_rotation
-                             ? qsTr("Also after a pause in traffic. That saves a round trip later, but a browser sends no such exchange.")
-                             : qsTr("Not after a pause in traffic, which a browser would not do either."))
+                             ? qsTrId("desktop.also.after.a.pause.in.traffic.that.saves.a.round.trip.l")
+                             : qsTrId("desktop.not.after.a.pause.in.traffic.which.a.browser.would.not"))
                           : ""
+                }
+                FactRow {
+                    Layout.fillWidth: true
+                    iconName: "posture"
+                    label: qsTrId("desktop.live.client.settings")
+                    value: page.hasPreset ? page.preset.id : qsTrId("desktop.custom")
+                    note: page.limits ? qsTrId("desktop.flow.budget.credit.returns.per.window")
+                          .arg(App.formatBytes(page.limits.max_queued_bytes))
+                          .arg(page.limits.credit_returns_per_window) : ""
                 }
                 FactRow {
                     Layout.fillWidth: true
                     iconName: "check"
                     tint: Theme.inkSoft
-                    label: qsTr("Cryptography")
+                    label: qsTrId("cryptography")
                     value: page.posture ? page.posture.security + "  ·  " + page.posture.crypto_backend : ""
-                }
-            }
-
-            Card {
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignTop
-                Layout.preferredWidth: 2
-                title: qsTr("Tuning preset")
-                subtitle: qsTr("Set when a kit is made, with yume-setup init --preset. It shows here and changes nothing.")
-
-                Rectangle {
-                    implicitWidth: presetName.implicitWidth + 28
-                    implicitHeight: 34
-                    radius: 17
-                    color: page.hasPreset ? Theme.accentSoft : Theme.ruleSoft
-                    Text {
-                        textFormat: Text.PlainText
-                        id: presetName
-                        anchors.centerIn: parent
-                        text: page.hasPreset ? page.preset.id : qsTr("custom")
-                        color: page.hasPreset ? Theme.accentStrong : Theme.inkSoft
-                        font.family: Theme.displayFont
-                        font.pixelSize: 18
-                    }
-                }
-                Text {
-                    textFormat: Text.PlainText
-                    horizontalAlignment: Text.AlignLeft
-                    visible: !page.hasPreset
-                    text: qsTr("These limits match no preset. They were set by hand.")
-                    color: Theme.muted
-                    font.pixelSize: Theme.textSmall
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                }
-                LevelMeter {
-                    visible: page.hasPreset
-                    Layout.fillWidth: true
-                    label: qsTr("Speed")
-                    level: page.hasPreset ? page.preset.levels.speed : 0
-                    maximum: App.presets.reduce(function(maximum, preset) {
-                        return Math.max(maximum, preset.levels.speed)
-                    }, 1)
-                    tint: Theme.dataStrong
-                }
-                LevelMeter {
-                    visible: page.hasPreset
-                    Layout.fillWidth: true
-                    label: qsTr("Security")
-                    level: page.hasPreset ? page.preset.levels.security : 0
-                    tint: Theme.keysStrong
-                }
-                LevelMeter {
-                    visible: page.hasPreset
-                    Layout.fillWidth: true
-                    label: qsTr("Stealth")
-                    level: page.hasPreset ? page.preset.levels.stealth : 0
-                    tint: Theme.accentStrong
-                }
-                GridLayout {
-                    Layout.fillWidth: true
-                    Layout.topMargin: 8
-                    columns: 2
-                    columnSpacing: 16
-                    rowSpacing: 4
-                    Text { textFormat: Text.PlainText; text: qsTr("Queue and window"); color: Theme.muted; font.pixelSize: Theme.textLabel }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: page.limits ? App.formatBytes(page.limits.max_queued_bytes) : ""
-                        color: Theme.ink; font.pixelSize: Theme.textLabel; font.family: Theme.monoFont
-                    }
-                    Text { textFormat: Text.PlainText; text: qsTr("Data per key, at most"); color: Theme.muted; font.pixelSize: Theme.textLabel }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: page.limits ? App.formatBytes(page.limits.max_epoch_bytes) : ""
-                        color: Theme.ink; font.pixelSize: Theme.textLabel; font.family: Theme.monoFont
-                    }
-                    Text { textFormat: Text.PlainText; text: qsTr("Credit returns per window"); color: Theme.muted; font.pixelSize: Theme.textLabel }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: page.limits ? String(page.limits.credit_returns_per_window) : ""
-                        color: Theme.ink; font.pixelSize: Theme.textLabel; font.family: Theme.monoFont
-                    }
-                    Text { textFormat: Text.PlainText; text: qsTr("Rotation after a pause"); color: Theme.muted; font.pixelSize: Theme.textLabel }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: page.limits ? (page.limits.idle_epoch_rotation ? qsTr("on") : qsTr("off")) : ""
-                        color: Theme.ink; font.pixelSize: Theme.textLabel; font.family: Theme.monoFont
-                    }
                 }
             }
         }
@@ -216,59 +137,20 @@ Flickable {
             Card {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
-                Layout.preferredWidth: 3
-                title: qsTr("Presets")
-                subtitle: qsTr("Levels run from 1 to 4. Higher speed costs data per key or closeness to the captured browser.")
-                Repeater {
-                    model: App.presets
-                    RowLayout {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        spacing: 12
-                        Text {
-                            textFormat: Text.PlainText
-                            text: modelData.id
-                            color: page.hasPreset && page.preset.id === modelData.id ? Theme.accentStrong : Theme.ink
-                            font.pixelSize: Theme.textLabel
-                            font.weight: Font.DemiBold
-                            Layout.preferredWidth: 80
-                        }
-                        Text {
-                            textFormat: Text.PlainText
-                            horizontalAlignment: Text.AlignLeft
-                            text: qsTr("speed %1 · security %2 · stealth %3")
-                                  .arg(modelData.levels.speed).arg(modelData.levels.security).arg(modelData.levels.stealth)
-                            color: Theme.inkSoft
-                            font.pixelSize: Theme.textLabel
-                            Layout.fillWidth: true
-                        }
-                        Text {
-                            textFormat: Text.PlainText
-                            text: qsTr("%1 per key").arg(App.formatBytes(modelData.limits.max_epoch_bytes))
-                            color: Theme.muted
-                            font.pixelSize: Theme.textSmall
-                        }
-                    }
-                }
-            }
-
-            Card {
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignTop
                 Layout.preferredWidth: 2
-                title: qsTr("Appearance")
+                title: qsTrId("desktop.appearance")
                 RowLayout {
                     spacing: 6
                     Repeater {
-                        model: [{ id: "light", label: qsTr("Light") },
-                                { id: "dark", label: qsTr("Dark") },
-                                { id: "system", label: qsTr("System") }]
+                        model: [{ id: "light", label: qsTrId("desktop.light") },
+                                { id: "dark", label: qsTrId("desktop.dark") },
+                                { id: "system", label: qsTrId("system") }]
                         AppButton {
                             required property var modelData
                             compact: true
                             kind: App.themeMode === modelData.id ? "primary" : "secondary"
                             text: modelData.label
-                            Accessible.name: qsTr("%1 theme").arg(modelData.label)
+                            Accessible.name: qsTrId("desktop.theme").arg(modelData.label)
                             Accessible.checked: App.themeMode === modelData.id
                             onClicked: App.themeMode = modelData.id
                         }
@@ -277,8 +159,8 @@ Flickable {
                 Text {
                     textFormat: Text.PlainText
                     horizontalAlignment: Text.AlignLeft
-                    text: qsTr("yume-gui %1  ·  yume %2  ·  control protocol 1")
-                          .arg(App.version).arg(App.status.version || qsTr("not running"))
+                    text: qsTrId("desktop.yume.gui.yume.control.protocol.1")
+                          .arg(App.version).arg(App.status.version || qsTrId("desktop.not.running.2"))
                     color: Theme.muted
                     font.pixelSize: Theme.textSmall
                     Layout.topMargin: 10
@@ -288,7 +170,7 @@ Flickable {
                 Text {
                     textFormat: Text.PlainText
                     horizontalAlignment: Text.AlignLeft
-                    text: qsTr("Free software under the GNU AGPL 3.0 or later. Jost font under the SIL Open Font License 1.1.")
+                    text: qsTrId("desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font")
                     color: Theme.muted
                     font.pixelSize: Theme.textSmall
                     Layout.fillWidth: true

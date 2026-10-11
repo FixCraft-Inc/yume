@@ -20,7 +20,7 @@ Canvas {
         function onDarkChanged() { spark.requestPaint() }
     }
     Accessible.role: Accessible.Graphic
-    Accessible.name: qsTr("Recent throughput")
+    Accessible.name: qsTrId("desktop.recent.throughput")
 
     onPaint: {
         const ctx = getContext("2d")

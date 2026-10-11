@@ -21,7 +21,7 @@ The window is an ordinary user process with no privilege. It never holds a
 session, a key or the tunnel itself. It reaches a running `yume` only
 through that client's owner-only control socket, as
 [control protocol 1](protocol/CONTROL_1.md) defines, and it runs the `yume`
-program to validate, start and import kits.
+program to validate, start and import kits, and `yume-setup` to apply tuning.
 
 - **Start.** Connect runs `yume --config KIT/yume.json --control-socket
   $XDG_RUNTIME_DIR/yume/KIT.sock --validate`, then starts the same command
@@ -127,12 +127,45 @@ its latest start instead.
 `posture`: YTP/1 and its fixed composition (X25519 with ML-KEM-1024, Ed25519
 with ML-DSA-87 identities, AES-256-GCM with one-use message keys, TLS 1.3 and
 HTTP/2 after the captured evidence profile), the session's key epoch, and the
-tuning preset its limits match, with that preset's speed, security and
-stealth levels from `config/tuning_presets.json`. The page offers no switch
-that changes security. Presets are set when a kit is made, with `yume-setup
-init --preset`, or apply `yume-setup tune --config FILE --preset NAME`
-and restart the client. The theme, light by default, dark or the system's, is the
-only setting.
+configured limits. Connection settings above the live posture are an editable
+configuration draft, not a report of what the session currently uses.
+
+Three colored, keyboard-operable sliders select stealth, speed and security
+levels from the unchanged embedded `config/tuning_presets.json`. Moving one
+keeps its requested level and chooses the nearest combination on the other
+two axes, breaking ties by higher stealth, higher security, lower speed and
+then table order. Custom limits remain custom until a combination is chosen
+explicitly. Reload discards the draft and reads the selected kit again.
+The panel shows data per key and flow budget in MiB, credit returns, idle
+rotation, and the selected combination's measured speed and conditions.
+Speed has five positions; stealth and security have four. These levels do
+not certify stealth or security, and speed comparisons depend on host TCP
+ceilings. The mandatory cryptographic composition and rotation remain fixed.
+
+The live `posture.limits` are the client's configured limits. While connected,
+`posture.epoch_bytes` is the negotiated epoch. A smaller negotiated value
+establishes a server cap for that session; an equal value does not reveal the
+server's higher allowance. A draft is never presented as an effective limit.
+
+Expert settings require an explicit **I know what I'm doing** confirmation
+after the costs of each field are explained. They accept one exact byte,
+count or boolean value per save. The core schema parser validates it; the GUI
+does not implement another schema. The confirmation lasts until kit selection
+changes or the window ends. Escape and Cancel unlock nothing.
+
+Saving runs `yume-setup tune --config KIT/yume.json --preset NAME` or one
+`--set KEY=JSON`, using `yume-setup` beside the selected `yume` program. The
+core validates the full client configuration and replaces it atomically,
+preserving unrelated members. A refused write leaves the client running.
+While connected, **Apply and restart** saves first, requests stop, waits for
+the process to end, then validates and starts the client. Open streams close.
+A stopped client stays stopped after saving. Kit selection, import, rename,
+removal and the main connection action are held during the operation. Other
+windows and same-user command-line writers are not locked out; avoid concurrent
+edits. An interrupted save or failed restart reports its uncertainty and does
+not claim a connection; saved settings remain available for a later start.
+
+Appearance selects the light (default), dark or system theme.
 
 ## Keyboard and languages
 
@@ -140,7 +173,17 @@ Ctrl+1 to Ctrl+4 open the pages. Tab moves through every control, each with
 a name a screen reader can say. Space, Return and Enter activate the focused
 button, and Escape closes a dialog. `--layout-direction rtl` mirrors the
 whole window for right-to-left scripts, and text in any script is shaped.
-The interface itself is only in English so far.
+The interface ships with maintained Russian, Japanese and Ukrainian
+translations. It follows the desktop locale (`ru`, `ja` or `uk`) when one is
+available and uses English otherwise. The Android app uses the same message
+IDs and maintained-language entries, while its language picker also supports
+on-device machine translation for other languages.
+
+UI messages live in the shared `translations/catalog.json`. Add or edit one
+message there, keep its stable ID, context, owner and translator note, then
+run `python3 scripts/yume_translations.py validate` and `generate` (with
+`--android-root` for an Android checkout). The generated Qt and Kotlin files
+are review artifacts and must not be edited by hand.
 
 ## Building and testing
 

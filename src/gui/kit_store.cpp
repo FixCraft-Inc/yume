@@ -138,6 +138,37 @@ bool valid_kit_name(const QString& name) {
     return pattern.match(name).hasMatch();
 }
 
+std::optional<QJsonObject> read_kit_limits(const Kit& kit, QString& error) {
+    const FileDescriptor directory(open_kit_root(kit.directory));
+    const FileDescriptor descriptor(
+        ::openat(directory.get(), "yume.json",
+                 O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC));
+    struct stat info{};
+    if (descriptor.get() < 0 || ::fstat(descriptor.get(), &info) != 0 ||
+        !S_ISREG(info.st_mode) || info.st_uid != ::geteuid() ||
+        info.st_size < 0 || info.st_size > kMaxConfigBytes) {
+        error = QStringLiteral("Cannot read this kit's settings safely");
+        return std::nullopt;
+    }
+    QFile file;
+    if (!file.open(descriptor.get(), QIODevice::ReadOnly,
+                   QFileDevice::DontCloseHandle)) {
+        error = QStringLiteral("Cannot read this kit's settings");
+        return std::nullopt;
+    }
+    const auto bytes = file.read(kMaxConfigBytes + 1);
+    const auto document = QJsonDocument::fromJson(bytes);
+    if (file.error() != QFileDevice::NoError ||
+        bytes.size() > kMaxConfigBytes || !document.isObject() ||
+        (document.object().contains("limits") &&
+         !document.object().value("limits").isObject())) {
+        error = QStringLiteral(
+            "Cannot display this kit's settings; check its configuration");
+        return std::nullopt;
+    }
+    return document.object().value("limits").toObject();
+}
+
 QString suggested_kit_name(const QString& file) {
     QString base = QFileInfo(file).completeBaseName();
     QString name;

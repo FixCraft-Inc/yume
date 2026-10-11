@@ -38,6 +38,7 @@
 #include <QQmlComponent>
 #include <QTcpServer>
 #include <QTest>
+#include <QTranslator>
 #include <QtQml>
 
 #include "gui/app_state.hpp"
@@ -85,6 +86,13 @@ QQuickItem* find_button(QQuickItem* root, const QString& text) {
     return nullptr;
 }
 
+QQuickItem* find_item(QQuickItem* root, const QString& name) {
+    if (root->objectName() == name) return root;
+    for (auto* child : root->childItems())
+        if (auto* found = find_item(child, name)) return found;
+    return nullptr;
+}
+
 class UiTest final : public QObject {
     Q_OBJECT
 
@@ -117,7 +125,15 @@ private slots:
                     {QStringLiteral("connect_after_ms"), 200}});
 
         QString error;
-        auto places = find_places(QStringLiteral(YUME_GUI_FAKE_YUME), error);
+        const QString programs = dir_.filePath(QStringLiteral("bin"));
+        QVERIFY(QDir().mkpath(programs));
+        QVERIFY(QFile::link(QStringLiteral(YUME_GUI_FAKE_YUME),
+                            programs + "/yume"));
+        QVERIFY(QFile::link(QFileInfo(QStringLiteral(YUME_GUI_FAKE_YUME))
+                                .dir()
+                                .filePath("fake_setup.py"),
+                            programs + "/yume-setup"));
+        auto places = find_places(programs + "/yume", error);
         QVERIFY2(places.has_value(), qPrintable(error));
         if (g_rtl) QGuiApplication::setLayoutDirection(Qt::RightToLeft);
         state_ = new AppState(places, {}, QStringLiteral("light"), this);
@@ -181,6 +197,205 @@ private slots:
             // The four page tabs and the primary action at least.
             QVERIFY2(seen.size() >= 5, qPrintable(page));
         }
+    }
+
+    void tuning_table_and_custom_limits() {
+        Presets presets;
+        QCOMPARE(presets.move("stealth", "speed", 2).value("id").toString(),
+                 QString("stealth-16"));
+        QCOMPARE(
+            presets.move("stealth-16", "security", 3).value("id").toString(),
+            QString("balanced"));
+        QCOMPARE(presets.move("balanced", "stealth", 4).value("id").toString(),
+                 QString("stealth-16"));
+        QCOMPARE(presets.move("max", "security", 2).value("id").toString(),
+                 QString("fast"));
+        QVERIFY(presets.move("custom", "speed", 2).isEmpty());
+        QVERIFY(presets.move("stealth", "speed", 6).isEmpty());
+        for (const auto& entry : presets.list()) {
+            const auto start = entry.toMap();
+            for (const QString& axis :
+                 {QString("stealth"), QString("speed"), QString("security")}) {
+                const int maximum = axis == "speed" ? 5 : 4;
+                for (int level = 1; level <= maximum; ++level) {
+                    const auto chosen =
+                        presets.move(start.value("id").toString(), axis, level);
+                    QCOMPARE(chosen.value("levels").toMap().value(axis).toInt(),
+                             level);
+                }
+            }
+        }
+        auto* tuning = qobject_cast<Tuning*>(state_->tuning());
+        QVERIFY(tuning);
+        QFile config(kit_ + "/yume.json");
+        QVERIFY(config.open(QIODevice::ReadOnly));
+        const auto original = config.readAll();
+        config.close();
+        auto custom = QJsonDocument::fromJson(original).object();
+        custom.insert("limits", QJsonObject{{"max_epoch_bytes", 2097152}});
+        write_json(config.fileName(), custom);
+        tuning->reload();
+        QVERIFY(tuning->selection().isEmpty());
+        tuning->move_slider("speed", 4);
+        QCOMPARE(tuning->limits().value("max_epoch_bytes").toInt(), 2097152);
+        QVERIFY(tuning->selection().isEmpty());
+        tuning->choose("stealth-16");
+        QCOMPARE(tuning->selection().value("id").toString(),
+                 QString("stealth-16"));
+        QVERIFY(config.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(config.write(original), original.size());
+        config.close();
+        tuning->reload();
+    }
+
+    void tuning_read_refuses_special_files() {
+        QTemporaryDir storage;
+        QVERIFY(storage.isValid());
+        Kit kit{"read", storage.path(), storage.filePath("yume.json"), {}};
+        QString error;
+        QVERIFY(::mkfifo(QFile::encodeName(kit.config).constData(), 0600) == 0);
+        QVERIFY(!read_kit_limits(kit, error));
+        QVERIFY(QFile::remove(kit.config));
+        write_json(storage.filePath("real.json"), QJsonObject{});
+        QVERIFY(QFile::link(storage.filePath("real.json"), kit.config));
+        QVERIFY(!read_kit_limits(kit, error));
+        QVERIFY(QFile::remove(kit.config));
+        write_json(kit.config,
+                   {{"limits", QJsonObject{{"max_epoch_bytes", 2097152}}}});
+        QVERIFY(read_kit_limits(kit, error).has_value());
+        const auto alias = storage.filePath("alias");
+        QVERIFY(QFile::link(storage.path(), alias));
+        kit.directory = alias;
+        QVERIFY(!read_kit_limits(kit, error));
+    }
+
+    void tuning_refuses_uncertain_state() {
+        auto* tuning = qobject_cast<Tuning*>(state_->tuning());
+        QVERIFY(tuning);
+        QCOMPARE(state_->phase(), QString("stopped"));
+        tuning->choose("max");
+        QLocalServer uncertain;
+        QString error;
+        QVERIFY(ensure_private_directory(
+            QFileInfo(state_->tunnel()->socket_path()).dir().path(), error));
+        QVERIFY(uncertain.listen(state_->tunnel()->socket_path()));
+        connect(&uncertain, &QLocalServer::newConnection, &uncertain, [&] {
+            while (auto* socket = uncertain.nextPendingConnection()) {
+                socket->write("not a status reply\n");
+                socket->disconnectFromServer();
+                connect(socket, &QLocalSocket::disconnected, socket,
+                        &QObject::deleteLater);
+            }
+        });
+        QFile file(kit_ + "/yume.json");
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto before = file.readAll();
+        file.close();
+        tuning->apply_preset();
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 5000);
+        QVERIFY2(tuning->message().contains("Cannot confirm"),
+                 qPrintable(tuning->message()));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), before);
+        uncertain.close();
+        state_->tunnel()->poll();
+        QTRY_VERIFY_WITH_TIMEOUT(state_->tunnel()->state_confirmed(), 5000);
+        tuning->reload();
+    }
+
+    void tuning_keyboard_warning_and_restart() {
+        state_->set_page("posture");
+        QTest::qWait(200);
+        auto* tuning = qobject_cast<Tuning*>(state_->tuning());
+        QVERIFY(tuning && tuning->ready());
+        tuning->choose("stealth");
+        auto* slider = named("speedSlider");
+        QVERIFY(slider);
+        slider->forceActiveFocus();
+        QTest::keyClick(window_, g_rtl ? Qt::Key_Left : Qt::Key_Right);
+        QTRY_COMPARE(tuning->selection().value("id").toString(),
+                     QString("stealth-16"));
+        QCOMPARE(named("securitySlider")->property("value").toInt(), 2);
+        QCOMPARE(named("stealthSlider")->property("value").toInt(), 4);
+        tuning->apply_expert("max_epoch_bytes", "2097152");
+        QVERIFY(!tuning->busy());
+        auto* expert = named("openExpert");
+        QVERIFY(expert);
+        expert->forceActiveFocus();
+        QTest::keyClick(window_, Qt::Key_Space);
+        QTRY_VERIFY(window_->findChild<QObject*>("expertWarning")
+                        ->property("visible")
+                        .toBool());
+        const QString warning_capture =
+            qEnvironmentVariable("YUME_GUI_TUNING_SHOTS");
+        if (!warning_capture.isEmpty()) {
+            QVERIFY(QDir().mkpath(warning_capture));
+            QTest::qWait(200);
+            QVERIFY(window_->grabWindow().save(
+                warning_capture +
+                (g_rtl ? "/warning-rtl.png" : "/warning.png")));
+        }
+        QTest::keyClick(window_, Qt::Key_Escape);
+        QVERIFY(!tuning->expert_unlocked());
+        expert->forceActiveFocus();
+        QTest::keyClick(window_, Qt::Key_Space);
+        QTRY_VERIFY(named("confirmExpert")->isVisible());
+        named("confirmExpert")->forceActiveFocus();
+        QTest::keyClick(window_, Qt::Key_Space);
+        QTRY_VERIFY(tuning->expert_unlocked());
+        tuning->apply_expert("max_epoch_bytes", "0");
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 5000);
+        QVERIFY2(tuning->message().contains("refused"),
+                 qPrintable(tuning->message()));
+        state_->connectKit();
+        QTRY_COMPARE_WITH_TIMEOUT(state_->phase(), QString("running"), 10000);
+        tuning->choose("stealth-16");
+        tuning->apply_preset();
+        QVERIFY(tuning->busy());
+        QVERIFY(!state_->action_enabled());
+        state_->set_kit_name({});
+        QCOMPARE(state_->kit_name(), QString("work"));
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 15000);
+        QVERIFY2(tuning->message().contains("restarted"),
+                 qPrintable(tuning->message()));
+        QTRY_COMPARE(state_->status()
+                         .value("posture")
+                         .toMap()
+                         .value("limits")
+                         .toMap()
+                         .value("max_epoch_bytes")
+                         .toInt(),
+                     16777216);
+        QTRY_VERIFY(named("serverEpoch")
+                        ->property("text")
+                        .toString()
+                        .contains("Server cap"));
+        // The persisted configuration retains the unrelated endpoint.
+        QFile config(kit_ + "/yume.json");
+        QVERIFY(config.open(QIODevice::ReadOnly));
+        const auto saved = QJsonDocument::fromJson(config.readAll()).object();
+        QCOMPARE(saved.value("endpoint").toObject().value("host").toString(),
+                 QString("origin.example.net"));
+        config.close();
+        const QString capture = qEnvironmentVariable("YUME_GUI_TUNING_SHOTS");
+        if (!capture.isEmpty()) {
+            QVERIFY(QDir().mkpath(capture));
+            QVERIFY(window_->grabWindow().save(
+                capture + (g_rtl ? "/tuning-rtl.png" : "/tuning-light.png")));
+            state_->set_theme_mode("dark");
+            QTest::qWait(200);
+            QVERIFY(window_->grabWindow().save(
+                capture +
+                (g_rtl ? "/tuning-dark-rtl.png" : "/tuning-dark.png")));
+            state_->set_theme_mode("light");
+        }
+        state_->stopKit();
+        QTRY_COMPARE_WITH_TIMEOUT(state_->phase(), QString("stopped"), 10000);
+        tuning->choose("stealth");
+        tuning->apply_preset();
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 5000);
+        QCOMPARE(state_->phase(), QString("stopped"));
+        QCOMPARE(tuning->limits().value("max_epoch_bytes").toInt(), 1048576);
     }
 
     // Connect from the keyboard, review the proposal, refuse it with Escape,
@@ -659,6 +874,36 @@ private slots:
         QCOMPARE(tunnel.error(), QStringLiteral("yume stopped"));
     }
 
+    void stop_after_socket_close_waits_for_process() {
+        QString error;
+        auto places = find_places(QStringLiteral(YUME_GUI_FAKE_YUME), error);
+        QVERIFY(places.has_value());
+        const QString directory = QFileInfo(kit_).dir().filePath("stop-race");
+        QVERIFY(QDir().mkpath(directory));
+        write_json(directory + "/yume.json", QJsonObject{});
+        write_json(directory + "/fake.json", {{"linger_ms", 1500}});
+        Kit kit{"stop-race", directory, directory + "/yume.json", {}};
+        Tunnel tunnel(*places, kit);
+        QProcess client;
+        client.setProgram(QStringLiteral(YUME_GUI_FAKE_YUME));
+        client.setArguments(
+            {"--config", kit.config, "--control-socket", tunnel.socket_path()});
+        client.start();
+        QVERIFY(client.waitForStarted());
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(tunnel.socket_path()), 5000);
+        tunnel.poll(60000);
+        QTRY_COMPARE_WITH_TIMEOUT(tunnel.phase(), Tunnel::Phase::Running, 5000);
+        client.terminate();
+        QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(tunnel.socket_path()),
+                                 1000);
+        tunnel.stop();
+        QTest::qWait(200);
+        QVERIFY(client.state() != QProcess::NotRunning);
+        QCOMPARE(tunnel.phase(), Tunnel::Phase::Stopping);
+        QTRY_COMPARE_WITH_TIMEOUT(tunnel.phase(), Tunnel::Phase::Stopped, 5000);
+        QTRY_COMPARE(client.state(), QProcess::NotRunning);
+    }
+
     // Layouts size a child by its implicit size, so an Icon's size must set
     // it. Qt 6.4 gave icons in layouts their default 20 pixels otherwise.
     void layout_children_keep_their_size() {
@@ -751,7 +996,8 @@ private:
     QQuickItem* named(const QString& name) const {
         // QML objects are QObject children of the object that declares them,
         // and Main.qml's root is the window itself.
-        return window_->findChild<QQuickItem*>(name);
+        if (auto* item = window_->findChild<QQuickItem*>(name)) return item;
+        return find_item(window_->contentItem(), name);
     }
 
     QTemporaryDir dir_;
@@ -759,6 +1005,74 @@ private:
     AppState* state_{nullptr};
     QQmlApplicationEngine engine_;
     QQuickWindow* window_{nullptr};
+};
+
+// Invoked only by run_gui_live_test.py with its temporary imported kit and
+// real native programs. This is test instrumentation, not a GUI CLI surface.
+class LiveTuningTest final : public QObject {
+    Q_OBJECT
+private slots:
+    void save_validate_restart_and_server_cap() {
+        QString error;
+        const auto places =
+            find_places(qEnvironmentVariable("YUME_GUI_LIVE_YUME"), error);
+        QVERIFY2(places.has_value(), qPrintable(error));
+        AppState state(places, {}, "light");
+        state.set_kit_name("live");
+        auto* tuning = qobject_cast<Tuning*>(state.tuning());
+        QVERIFY(tuning && tuning->ready());
+        QTRY_COMPARE_WITH_TIMEOUT(state.phase(), QString("running"), 15000);
+        QTRY_COMPARE_WITH_TIMEOUT(state.status().value("state").toString(),
+                                  QString("connected"), 15000);
+        QFile file(state.tunnel()->kit().config);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto original = QJsonDocument::fromJson(file.readAll()).object();
+        file.close();
+        tuning->choose("stealth-16");
+        tuning->apply_preset();
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 25000);
+        QVERIFY2(tuning->message().contains("restarted"),
+                 qPrintable(tuning->message()));
+        QTRY_COMPARE_WITH_TIMEOUT(state.status().value("state").toString(),
+                                  QString("connected"), 15000);
+        const auto posture = state.status().value("posture").toMap();
+        QCOMPARE(
+            posture.value("limits").toMap().value("max_epoch_bytes").toInt(),
+            16777216);
+        QCOMPARE(posture.value("epoch_bytes").toInt(), 1048576);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto before_refusal = file.readAll();
+        auto saved = QJsonDocument::fromJson(before_refusal).object();
+        file.close();
+        auto expected = original;
+        saved.remove("limits");
+        expected.remove("limits");
+        QCOMPARE(saved, expected);
+        tuning->unlock_expert();
+        tuning->apply_expert("max_epoch_bytes", "0");
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 10000);
+        QVERIFY2(tuning->message().contains("refused"),
+                 qPrintable(tuning->message()));
+        QCOMPARE(state.phase(), QString("running"));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), before_refusal);
+        file.close();
+        tuning->apply_expert("max_epoch_bytes", "2097152");
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 25000);
+        QVERIFY2(tuning->message().contains("restarted"),
+                 qPrintable(tuning->message()));
+        QCOMPARE(tuning->limits().value("max_epoch_bytes").toInt(), 2097152);
+        QVERIFY(tuning->selection().isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(state.status().value("state").toString(),
+                                  QString("connected"), 15000);
+        tuning->choose("stealth");
+        tuning->apply_preset();
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 25000);
+        QVERIFY2(tuning->message().contains("restarted"),
+                 qPrintable(tuning->message()));
+        QTRY_COMPARE_WITH_TIMEOUT(state.status().value("state").toString(),
+                                  QString("connected"), 15000);
+    }
 };
 
 }  // namespace
@@ -775,9 +1089,17 @@ int main(int argc, char** argv) {
     }
     argc = kept;
     QApplication application(argc, argv);
+    QTranslator english_translator;
+    if (!english_translator.load(QStringLiteral(":/i18n/yume_en.qm")))
+        return 1;
+    application.installTranslator(&english_translator);
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QFontDatabase::addApplicationFont(
         QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
+    if (!qEnvironmentVariableIsEmpty("YUME_GUI_LIVE_YUME")) {
+        LiveTuningTest test;
+        return QTest::qExec(&test, argc, argv);
+    }
     UiTest test;
     return QTest::qExec(&test, argc, argv);
 }

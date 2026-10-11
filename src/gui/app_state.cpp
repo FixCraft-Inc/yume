@@ -11,6 +11,7 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QLocale>
@@ -101,6 +102,12 @@ AppState::AppState(std::optional<Places> places, QString setup_error,
 #endif
     }
     refreshKits();
+    connect(&tuning_, &Tuning::changed, this, &AppState::tunnelChanged);
+    const auto block_tuning = [this] {
+        tuning_.set_blocked(importing_ || renaming_);
+    };
+    connect(this, &AppState::importChanged, this, block_tuning);
+    connect(this, &AppState::renameChanged, this, block_tuning);
     const QString saved = settings_.value(QStringLiteral("kit")).toString();
     set_kit_name(tunnels_.count(saved) ? saved
                  : tunnels_.empty()    ? QString()
@@ -124,26 +131,26 @@ QString AppState::state_kind(const QString& phase, const QString& state) {
 }
 
 QString AppState::state_label(const QString& phase, const QString& state) {
-    if (phase == QStringLiteral("none")) return tr("No kit");
-    if (phase == QStringLiteral("stopped")) return tr("Not running");
-    if (phase == QStringLiteral("validating")) return tr("Checking the kit");
-    if (phase == QStringLiteral("starting")) return tr("Starting");
-    if (phase == QStringLiteral("stopping")) return tr("Stopping");
-    if (state == QStringLiteral("connected")) return tr("Connected");
-    if (state == QStringLiteral("connecting")) return tr("Connecting");
-    if (state == QStringLiteral("waiting")) return tr("Waiting to retry");
-    if (state == QStringLiteral("idle")) return tr("Idle");
-    if (state == QStringLiteral("closed")) return tr("Closed");
-    return tr("Running");
+    if (phase == QStringLiteral("none")) return qtTrId("desktop.no.kit");
+    if (phase == QStringLiteral("stopped")) return qtTrId("desktop.not.running");
+    if (phase == QStringLiteral("validating")) return qtTrId("desktop.checking.the.kit");
+    if (phase == QStringLiteral("starting")) return qtTrId("desktop.starting");
+    if (phase == QStringLiteral("stopping")) return qtTrId("desktop.stopping");
+    if (state == QStringLiteral("connected")) return qtTrId("desktop.connected");
+    if (state == QStringLiteral("connecting")) return qtTrId("connecting");
+    if (state == QStringLiteral("waiting")) return qtTrId("desktop.waiting.to.retry");
+    if (state == QStringLiteral("idle")) return qtTrId("desktop.idle");
+    if (state == QStringLiteral("closed")) return qtTrId("desktop.closed");
+    return qtTrId("desktop.running");
 }
 
 QString AppState::action_text() const {
     const QString now = phase();
-    if (now == QStringLiteral("running")) return tr("Disconnect");
-    if (now == QStringLiteral("starting")) return tr("Cancel");
-    if (now == QStringLiteral("validating")) return tr("Checking…");
-    if (now == QStringLiteral("stopping")) return tr("Stopping…");
-    return tr("Connect");
+    if (now == QStringLiteral("running")) return qtTrId("disconnect");
+    if (now == QStringLiteral("starting")) return qtTrId("cancel");
+    if (now == QStringLiteral("validating")) return qtTrId("desktop.checking");
+    if (now == QStringLiteral("stopping")) return qtTrId("desktop.stopping.2");
+    return qtTrId("connect");
 }
 
 bool AppState::action_stops() const {
@@ -155,7 +162,7 @@ bool AppState::action_stops() const {
 
 bool AppState::action_enabled() const {
     const QString now = phase();
-    return !renaming_ && setup_error_.isEmpty() &&
+    return !renaming_ && !tuning_.busy() && setup_error_.isEmpty() &&
            (now == QStringLiteral("stopped") ||
             now == QStringLiteral("running") ||
             now == QStringLiteral("starting"));
@@ -215,7 +222,7 @@ Tunnel* AppState::tunnel() const {
 }
 
 void AppState::refreshKits() {
-    if (!places_ || renaming_) return;
+    if (!places_ || renaming_ || tuning_.busy()) return;
     std::map<QString, Tunnel*> next;
     for (auto& kit : list_kits(*places_)) {
         const auto found = tunnels_.find(kit.name);
@@ -253,6 +260,7 @@ void AppState::refreshKits() {
 }
 
 void AppState::set_kit_name(const QString& name) {
+    if (tuning_.busy()) return;
     if (name == kit_name_ && (name.isEmpty() || tunnels_.count(name))) return;
     if (auto* previous = tunnel()) previous->poll(kOtherKitPollMs);
     kit_name_ = tunnels_.count(name) ? name : QString();
@@ -267,6 +275,11 @@ void AppState::set_kit_name(const QString& name) {
     }
     emit kitChanged();
     emit tunnelChanged();
+    tuning_.set_kit(tunnel(), places_
+                                  ? QFileInfo(places_->yume)
+                                        .dir()
+                                        .filePath(QStringLiteral("yume-setup"))
+                                  : QString());
 }
 
 void AppState::reset_readings() {
@@ -397,11 +410,12 @@ bool AppState::dark() const {
 }
 
 void AppState::connectKit() {
-    if (renaming_) return;
+    if (renaming_ || tuning_.busy()) return;
     if (auto* current = tunnel()) current->start();
 }
 
 void AppState::stopKit() {
+    if (tuning_.busy()) return;
     if (auto* current = tunnel()) current->stop();
 }
 
@@ -410,13 +424,12 @@ void AppState::acceptRoute(const QString& id) {
     if (!current) return;
     current->accept_route(id, [this](const ControlReply& reply) {
         if (reply.ok()) {
-            set_notice(tr("Shorter route accepted"));
+            set_notice(qtTrId("desktop.shorter.route.accepted"));
         } else if (reply.code == QStringLiteral("not_found")) {
             set_notice(
-                tr("The proposal changed before it was accepted. Review the "
-                   "new one."));
+                qtTrId("desktop.the.proposal.changed.before.it.was.accepted.review.the.new.one"));
         } else {
-            set_notice(tr("The route was not accepted: %1").arg(reply.text));
+            set_notice(qtTrId("desktop.the.route.was.not.accepted").arg(reply.text));
         }
     });
 }
@@ -427,10 +440,10 @@ QString AppState::suggestKitName(const QUrl& file) const {
 
 void AppState::importKit(const QUrl& file, const QString& name,
                          const QString& code) {
-    if (!places_ || importing_ || renaming_) return;
+    if (!places_ || importing_ || renaming_ || tuning_.busy()) return;
     importing_ = true;
     import_failed_ = false;
-    import_message_ = tr("Opening the kit…");
+    import_message_ = qtTrId("desktop.opening.the.kit");
     emit importChanged();
     QByteArray bytes = code.toUtf8();
     import_kit(this, *places_, file.toLocalFile(), name, bytes,
@@ -438,7 +451,7 @@ void AppState::importKit(const QUrl& file, const QString& name,
                    importing_ = false;
                    import_failed_ = !error.isEmpty();
                    import_message_ =
-                       error.isEmpty() ? tr("Imported %1").arg(name) : error;
+                       error.isEmpty() ? qtTrId("desktop.imported").arg(name) : error;
                    emit importChanged();
                    if (error.isEmpty()) {
                        refreshKits();
@@ -449,11 +462,11 @@ void AppState::importKit(const QUrl& file, const QString& name,
 }
 
 void AppState::removeKit(const QString& name) {
-    if (renaming_) return;
+    if (renaming_ || tuning_.busy()) return;
     const auto found = tunnels_.find(name);
     if (!places_ || found == tunnels_.end()) return;
     if (found->second->phase() != Phase::Stopped) {
-        set_notice(tr("Stop %1 before removing it").arg(name));
+        set_notice(qtTrId("desktop.stop.before.removing.it").arg(name));
         return;
     }
     QString error;
@@ -461,25 +474,23 @@ void AppState::removeKit(const QString& name) {
         set_notice(error);
         return;
     }
-    set_notice(tr("Removed %1").arg(name));
+    set_notice(qtTrId("desktop.removed").arg(name));
     refreshKits();
     if (kit_name_.isEmpty() && !tunnels_.empty())
         set_kit_name(tunnels_.begin()->first);
 }
 
 void AppState::renameKit(const QString& name, const QString& new_name) {
-    if (!places_ || renaming_ || importing_) return;
+    if (!places_ || renaming_ || importing_ || tuning_.busy()) return;
     const auto found = tunnels_.find(name);
     if (found == tunnels_.end()) return;
     if (!valid_kit_name(new_name) || name == new_name) {
         set_notice(
-            tr("Choose a different name of 1 to 48 letters, digits, dots, "
-               "dashes or underscores, starting with a letter, digit or "
-               "underscore"));
+            qtTrId("desktop.choose.a.different.name.of.1.to.48.letters.digits.dots.dashes.or.undersc"));
         return;
     }
     if (found->second->phase() != Phase::Stopped) {
-        set_notice(tr("Stop %1 before renaming it").arg(name));
+        set_notice(qtTrId("desktop.stop.before.renaming.it").arg(name));
         return;
     }
     renaming_ = true;
@@ -505,15 +516,15 @@ void AppState::renameKit(const QString& name, const QString& new_name) {
         [this, name, new_name, finish, absent](const ControlReply& target) {
             if (!absent(target)) {
                 finish(target.ok()
-                           ? tr("Stop %1 before using its name").arg(new_name)
-                           : tr("Cannot confirm that %1 is stopped: %2")
+                           ? qtTrId("desktop.stop.before.using.its.name").arg(new_name)
+                           : qtTrId("desktop.cannot.confirm.that.is.stopped")
                                  .arg(new_name, target.text));
                 return;
             }
             const auto source = tunnels_.find(name);
             if (source == tunnels_.end() ||
                 source->second->phase() != Phase::Stopped) {
-                finish(tr("Stop %1 before renaming it").arg(name));
+                finish(qtTrId("desktop.stop.before.renaming.it").arg(name));
                 return;
             }
             control_exchange(
@@ -524,8 +535,8 @@ void AppState::renameKit(const QString& name, const QString& new_name) {
                     if (!absent(reply) || current == tunnels_.end() ||
                         current->second->phase() != Phase::Stopped) {
                         finish(reply.ok()
-                                   ? tr("Stop %1 before renaming it").arg(name)
-                                   : tr("Cannot confirm that %1 is stopped: %2")
+                                   ? qtTrId("desktop.stop.before.renaming.it").arg(name)
+                                   : qtTrId("desktop.cannot.confirm.that.is.stopped")
                                          .arg(name, reply.text));
                         return;
                     }
@@ -544,9 +555,8 @@ void AppState::renameKit(const QString& name, const QString& new_name) {
                         settings_.setValue(QStringLiteral("kit"), new_name);
                     settings_.sync();
                     finish(settings_.status() == QSettings::NoError
-                               ? tr("Renamed %1 to %2").arg(name, new_name)
-                               : tr("Renamed %1 to %2, but the selection could "
-                                    "not be saved")
+                               ? qtTrId("desktop.renamed.to").arg(name, new_name)
+                               : qtTrId("desktop.renamed.1.to.2.but.the.selection.could.not.be.saved")
                                      .arg(name, new_name));
                 });
         });
@@ -555,7 +565,7 @@ void AppState::renameKit(const QString& name, const QString& new_name) {
 void AppState::copyText(const QString& text) {
     if (auto* clipboard = QGuiApplication::clipboard()) {
         clipboard->setText(text);
-        set_notice(tr("Copied"));
+        set_notice(qtTrId("desktop.copied"));
     }
 }
 
@@ -585,21 +595,21 @@ QString AppState::formatBytes(double bytes) const {
 QString AppState::formatRate(double bytes_per_second) const {
     const double bits = bytes_per_second * 8.0;
     const QLocale locale;
-    if (bits < 1e3) return tr("%1 bit/s").arg(locale.toString(bits, 'f', 0));
+    if (bits < 1e3) return qtTrId("desktop.bit.s").arg(locale.toString(bits, 'f', 0));
     if (bits < 1e6)
-        return tr("%1 kbit/s").arg(locale.toString(bits / 1e3, 'f', 1));
+        return qtTrId("desktop.kbit.s").arg(locale.toString(bits / 1e3, 'f', 1));
     if (bits < 1e9)
-        return tr("%1 Mbit/s").arg(locale.toString(bits / 1e6, 'f', 1));
-    return tr("%1 Gbit/s").arg(locale.toString(bits / 1e9, 'f', 2));
+        return qtTrId("desktop.mbit.s").arg(locale.toString(bits / 1e6, 'f', 1));
+    return qtTrId("desktop.gbit.s").arg(locale.toString(bits / 1e9, 'f', 2));
 }
 
 QString AppState::formatDuration(double milliseconds) const {
     const auto seconds = static_cast<qint64>(milliseconds / 1000.0);
     const qint64 hours = seconds / 3600;
     const qint64 minutes = seconds / 60 % 60;
-    if (hours > 0) return tr("%1 h %2 min").arg(hours).arg(minutes);
-    if (minutes > 0) return tr("%1 min %2 s").arg(minutes).arg(seconds % 60);
-    return tr("%1 s").arg(seconds);
+    if (hours > 0) return qtTrId("desktop.h.min").arg(hours).arg(minutes);
+    if (minutes > 0) return qtTrId("desktop.min.s").arg(minutes).arg(seconds % 60);
+    return qtTrId("desktop.s").arg(seconds);
 }
 
 }  // namespace yume::gui

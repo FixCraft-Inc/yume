@@ -12,6 +12,7 @@
 
 #include <QByteArray>
 #include <QObject>
+#include <QJsonObject>
 #include <QString>
 
 namespace yume::gui {
@@ -58,6 +59,10 @@ bool ensure_private_directory(const QString& dir, QString& error);
 // The kits under places.kits, sorted by name. Entries that are not a
 // directory holding a regular yume.json are skipped.
 std::vector<Kit> list_kits(const Places& places);
+
+// Bounded, no-follow read for the settings display. Schema validation and
+// all writes remain in yume-setup; this never exposes credentials to QML.
+std::optional<QJsonObject> read_kit_limits(const Kit& kit, QString& error);
 
 // Imports a sealed kit by running `yume --import-kit FILE --into DIR` with the
 // code on its standard input, so the one implementation in yume checks and

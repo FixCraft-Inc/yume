@@ -57,7 +57,7 @@ public:
         : tunnel_(places, kit, this), legs_(std::move(legs)) {
         limit_.setSingleShot(true);
         connect(&limit_, &QTimer::timeout, this, [this] {
-            finish_leg(false, tr("the leg did not finish within %1 seconds")
+            finish_leg(false, qtTrId("desktop.the.leg.did.not.finish.within.seconds")
                                   .arg(kLegLimitMs / 1000));
         });
         connect(&tunnel_, &Tunnel::polled, this, [this] { check(); });
@@ -123,7 +123,7 @@ private:
         }
         // stop: a kit that does not run has nothing to stop.
         if (tunnel_.phase() == Phase::Stopped) {
-            report(false, tr("the kit is not running"));
+            report(false, qtTrId("desktop.the.kit.is.not.running"));
             leg_.clear();
             if (!exercised_) {
                 QCoreApplication::exit(kHeadlessNothingExercised);

@@ -38,7 +38,7 @@ Rectangle {
                 }
                 Text {
                     textFormat: Text.PlainText
-                    text: qsTr("Desktop")
+                    text: qsTrId("desktop.desktop")
                     color: Theme.muted
                     font.pixelSize: Theme.textSmall
                 }
@@ -61,7 +61,7 @@ Rectangle {
 
         Text {
             textFormat: Text.PlainText
-            text: qsTr("KITS")
+            text: qsTrId("desktop.kits")
             color: Theme.muted
             font.pixelSize: 11
             font.weight: Font.DemiBold
@@ -73,7 +73,7 @@ Rectangle {
             textFormat: Text.PlainText
             horizontalAlignment: Text.AlignLeft
             visible: App.kits.length === 0
-            text: qsTr("None yet. Import one on the Connect page.")
+            text: qsTrId("desktop.none.yet.import.one.on.the.connect.page")
             color: Theme.muted
             font.pixelSize: Theme.textSmall
             wrapMode: Text.WordWrap
@@ -98,7 +98,7 @@ Rectangle {
                 hoverEnabled: true
                 leftPadding: 10
                 rightPadding: 10
-                Accessible.name: qsTr("Kit %1, %2").arg(modelData.name)
+                Accessible.name: qsTrId("desktop.kit").arg(modelData.name)
                                  .arg(App.stateLabel(modelData.phase, modelData.state))
                 onClicked: App.kitName = modelData.name
                 contentItem: RowLayout {
@@ -123,7 +123,7 @@ Rectangle {
                         Text {
                             textFormat: Text.PlainText
                             horizontalAlignment: Text.AlignLeft
-                            text: modelData.server || qsTr("server not readable")
+                            text: modelData.server || qsTrId("desktop.server.not.readable")
                             color: Theme.muted
                             font.pixelSize: 11
                             Layout.fillWidth: true

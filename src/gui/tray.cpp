@@ -25,7 +25,7 @@ Tray::Tray(AppState* state, QQuickWindow* window, QObject* parent)
     connect(visibility_, &QAction::triggered, this,
             [this] { toggle_window(); });
     menu_.addSeparator();
-    quit_ = menu_.addAction(tr("Quit YUME (tunnels keep running)"));
+    quit_ = menu_.addAction(qtTrId("desktop.quit.yume.tunnels.keep.running"));
     connect(quit_, &QAction::triggered, qApp, &QCoreApplication::quit);
     icon_.setContextMenu(&menu_);
     connect(&icon_, &QSystemTrayIcon::activated, this,
@@ -41,8 +41,7 @@ Tray::Tray(AppState* state, QQuickWindow* window, QObject* parent)
             told_about_tray_ = true;
             icon_.showMessage(
                 QStringLiteral("YUME"),
-                tr("YUME keeps running in the tray. Closing the window "
-                   "does not stop a tunnel."),
+                qtTrId("desktop.yume.keeps.running.in.the.tray.closing.the.window.does.not.stop.a.tunnel"),
                 QSystemTrayIcon::Information, 6000);
         }
     });
@@ -81,14 +80,14 @@ void Tray::update() {
     const QString label = AppState::state_label(phase, reported);
     const QString title =
         state_->kit_name().isEmpty()
-            ? tr("YUME: no kit")
-            : tr("YUME: %1, %2").arg(state_->kit_name(), label);
+            ? qtTrId("desktop.yume.no.kit")
+            : qtTrId("desktop.yume.2").arg(state_->kit_name(), label);
     icon_.setToolTip(title);
     header_->setText(title);
     action_->setText(state_->action_text());
     action_->setEnabled(state_->action_enabled());
-    visibility_->setText(window_->isVisible() ? tr("Hide window")
-                                              : tr("Show window"));
+    visibility_->setText(window_->isVisible() ? qtTrId("desktop.hide.window")
+                                              : qtTrId("desktop.show.window"));
 }
 
 void Tray::toggle_window() {

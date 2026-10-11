@@ -236,3 +236,44 @@ checks the shared modules and tests. It reports a skip if the separate BaseFWX
 checkout is absent; it does not claim cross-repository parity in that case.
 Update both copies together. Product-specific CLI generation and site policy
 remain in their owning repository.
+
+## UI translations
+
+`translations/catalog.json` is the canonical UI catalog shared by the desktop
+and Android consumers. Each message has a stable ID, source text, owner and
+translator notes; the maintained Russian, Japanese and Ukrainian values are
+kept beside it. The source text is separate from each translation, and
+placeholder signatures, protected technical terms and simple markup signatures
+are checked before generation. Terms such as `Ethernet`, `SOCKS5`,
+protocol-shaped values and placeholder-only labels can remain
+language-neutral; mark each such entry explicitly with `language_neutral`.
+
+A gettext/TS-first catalog was considered and rejected as the canonical source.
+Qt TS has useful context support, but making Kotlin consume TS plural and
+formatting rules would add an adapter and a second set of merge-sensitive
+metadata. The structured JSON catalog keeps IDs, ownership, notes and
+placeholder requirements in one reviewable diff, uses only the Python standard
+library, and emits deterministic Qt and Kotlin views.
+
+Run the workflow from the repository root:
+
+```sh
+python3 scripts/yume_translations.py add network.example "Example %s" \
+  --context "Network card" --owner "desktop.gui.NetworkCard" \
+  --notes "Keep %s unchanged."
+# Edit the three translations in translations/catalog.json.
+python3 scripts/yume_translations.py validate
+python3 scripts/yume_translations.py generate
+python3 tests/test_yume_translations.py
+```
+
+`generate` writes Qt TS files under `src/gui/translations/` and the desktop
+loads the matching compiled catalog for the system locale (`ru`, `ja` or
+`uk`), with the generated English catalog providing the default text.
+Android's generated
+Kotlin maps and `TranslationCatalog.kt` are produced into the Android checkout
+with `--android-root /path/to/Yume`; they must not be edited by hand. Use
+`rename OLD NEW` for an ID rename so generated outputs cannot retain an
+obsolete ID. Maintained languages require a non-empty translation and matching
+format signature. Machine-translated languages are optional and are never
+counted as maintained coverage.

@@ -172,7 +172,7 @@ class Client:
                         "security": "openssl35.ytp1-security", "crypto_backend": "openssl-3.5.7",
                         "limits": {"max_queued_bytes": 4194304, "max_epoch_bytes": 1048576,
                                    "credit_returns_per_window": 2,
-                                   "idle_epoch_rotation": False}},
+                                   "idle_epoch_rotation": False, **self.config.get("limits", {})}},
             "circuits": self.circuits(),
         }
         if connected:

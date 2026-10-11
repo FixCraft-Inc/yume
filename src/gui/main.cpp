@@ -19,6 +19,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFontDatabase>
+#include <QLocale>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
@@ -26,6 +27,7 @@
 #include <QQuickWindow>
 #include <QRegularExpression>
 #include <QSurfaceFormat>
+#include <QTranslator>
 #include <QUrl>
 #include <QtGlobal>
 
@@ -220,6 +222,21 @@ int run_window(int argc, char** argv) {
     QFontDatabase::addApplicationFont(
         QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
     QGuiApplication::setWindowIcon(mark_icon());
+
+    // ID-based lookups need an English catalog for their default text. A
+    // maintained locale is installed afterwards so it overrides that base.
+    QTranslator english_translator;
+    if (!english_translator.load(QStringLiteral(":/i18n/yume_en.qm"))) {
+        std::fprintf(stderr, "yume-gui: the English translation catalog did not load\n");
+        return 1;
+    }
+    application.installTranslator(&english_translator);
+    QTranslator locale_translator;
+    const QString locale = QLocale::system().name().section(u'_', 0, 0).toLower();
+    if (one_of(locale, {"ru", "ja", "uk"}) &&
+        locale_translator.load(QStringLiteral(":/i18n/yume_") + locale +
+                               QStringLiteral(".qm")))
+        application.installTranslator(&locale_translator);
 
     QString setup_error;
     auto places = find_places(arguments->yume, setup_error);

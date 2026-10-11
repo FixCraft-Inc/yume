@@ -15,7 +15,7 @@ RowLayout {
     property color tint: Theme.accentStrong
     spacing: 10
     Accessible.role: Accessible.Indicator
-    Accessible.name: qsTr("%1 level %2 of %3").arg(label).arg(level).arg(maximum)
+    Accessible.name: qsTrId("desktop.level.of").arg(label).arg(level).arg(maximum)
 
     Text {
         textFormat: Text.PlainText
@@ -37,7 +37,7 @@ RowLayout {
     }
     Text {
         textFormat: Text.PlainText
-        text: qsTr("%1/%2").arg(meter.level).arg(meter.maximum)
+        text: qsTrId("desktop.message").arg(meter.level).arg(meter.maximum)
         color: Theme.muted
         font.pixelSize: Theme.textSmall
     }

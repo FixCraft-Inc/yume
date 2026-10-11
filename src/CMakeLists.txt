@@ -1306,6 +1306,9 @@ if(YUME_BUILD_TESTING)
         set_tests_properties(yume_setup_installed_layout PROPERTIES
             TIMEOUT 120 LABELS "native-runtime;packaging")
     endif()
+    add_test(NAME yume_translations_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_translations.py")
     add_test(NAME yume_project_metadata_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py")

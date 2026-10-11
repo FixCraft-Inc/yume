@@ -27,13 +27,13 @@ Item {
             AppTextField {
                 id: filterField
                 Layout.preferredWidth: 320
-                placeholderText: qsTr("Filter lines")
-                Accessible.name: qsTr("Filter lines")
+                placeholderText: qsTrId("desktop.filter.lines")
+                Accessible.name: qsTrId("desktop.filter.lines")
             }
             CheckBox {
                 id: follow
                 checked: true
-                text: qsTr("Follow")
+                text: qsTrId("desktop.follow")
                 focusPolicy: Qt.StrongFocus
                 indicator: Rectangle {
                     x: follow.leftPadding
@@ -64,15 +64,15 @@ Item {
             Text {
                 textFormat: Text.PlainText
                 text: App.messagesMissed > 0
-                      ? qsTr("%1 lines, %2 earlier ones no longer kept").arg(App.messages.count).arg(App.messagesMissed)
-                      : qsTr("%1 lines").arg(App.messages.count)
+                      ? qsTrId("desktop.lines.earlier.ones.no.longer.kept").arg(App.messages.count).arg(App.messagesMissed)
+                      : qsTrId("desktop.lines").arg(App.messages.count)
                 color: Theme.muted
                 font.pixelSize: Theme.textSmall
             }
             AppButton {
                 compact: true
                 iconName: "copy"
-                text: qsTr("Copy all")
+                text: qsTrId("desktop.copy.all")
                 enabled: App.messages.count > 0
                 onClicked: App.copyText(App.messages.text())
             }
@@ -96,7 +96,7 @@ Item {
                 ScrollBar.vertical: ScrollBar {}
                 onCountChanged: if (follow.checked) positionViewAtEnd()
                 Accessible.role: Accessible.List
-                Accessible.name: qsTr("Printed lines")
+                Accessible.name: qsTrId("desktop.printed.lines")
                 delegate: Item {
                     id: line
                     required property string time
@@ -140,9 +140,9 @@ Item {
                     textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: page.running ? qsTr("No lines yet")
-                          : App.phase === "none" ? qsTr("No kit selected")
-                          : qsTr("The tunnel is not running")
+                    text: page.running ? qsTrId("desktop.no.lines.yet")
+                          : App.phase === "none" ? qsTrId("desktop.no.kit.selected")
+                          : qsTrId("desktop.the.tunnel.is.not.running")
                     color: Theme.ink
                     font.pixelSize: Theme.textHeading
                 }
@@ -150,7 +150,7 @@ Item {
                     textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
-                    text: page.running ? "" : qsTr("Lines appear here while yume runs.")
+                    text: page.running ? "" : qsTrId("desktop.lines.appear.here.while.yume.runs")
                     color: Theme.muted
                     font.pixelSize: Theme.textLabel
                     wrapMode: Text.WordWrap
@@ -162,7 +162,7 @@ Item {
             visible: !page.running && App.outputTail.length > 0
             Layout.fillWidth: true
             Layout.maximumHeight: 220
-            title: qsTr("Output of the latest start")
+            title: qsTrId("desktop.output.of.the.latest.start")
             Text {
                 text: App.outputTail
                 color: Theme.inkSoft

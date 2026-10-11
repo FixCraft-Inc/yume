@@ -63,11 +63,12 @@ public:
     // What went wrong with the latest start, stop or status request, for
     // people. Empty when nothing did.
     const QString& error() const noexcept { return error_; }
+    bool state_confirmed() const noexcept { return state_confirmed_; }
 
     // Validates the kit with yume, then starts yume detached with the kit's
     // control socket. Does nothing unless Stopped.
     void start();
-    // Asks the running yume to stop and waits until its socket is gone.
+    // Asks the running yume to stop and waits until its process has ended.
     void stop();
     // Asks for status now, and then every interval milliseconds.
     void poll(int interval_ms = kPollMs);
@@ -112,6 +113,7 @@ private:
     QElapsedTimer since_phase_;
     int interval_ms_{kPollMs};
     bool status_in_flight_{false};
+    bool state_confirmed_{false};
     // The client's process: the one this GUI started, or the one its socket
     // last answered from. 0 when neither is known.
     qint64 pid_{0};

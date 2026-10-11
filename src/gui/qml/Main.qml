@@ -15,10 +15,10 @@ ApplicationWindow {
     minimumHeight: 600
     visible: true
     color: Theme.paper
-    title: App.kitName.length > 0 ? qsTr("YUME – %1").arg(App.kitName) : "YUME"
+    title: App.kitName.length > 0 ? qsTrId("desktop.yume").arg(App.kitName) : "YUME"
 
     readonly property var pageNames: ["overview", "connect", "logs", "posture"]
-    readonly property var pageTitles: [qsTr("Overview"), qsTr("Connect"), qsTr("Logs"), qsTr("Posture")]
+    readonly property var pageTitles: [qsTrId("overview"), qsTrId("connect"), qsTrId("logs"), qsTrId("nav.posture")]
     readonly property var proposal: App.status.circuits ? App.status.circuits.proposal : null
 
     // Called by the capture mode and the proposal banner.
@@ -88,7 +88,7 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignLeft
                             // The running client names its server. A stopped
                             // kit shows the one its file names.
-                            text: App.kitName.length === 0 ? qsTr("No kit selected")
+                            text: App.kitName.length === 0 ? qsTrId("desktop.no.kit.selected")
                                   : App.status.server
                                     ? App.kitName + "  ·  " + App.status.server.host + ":" + App.status.server.port
                                     : App.kitServer.length > 0 ? App.kitName + "  ·  " + App.kitServer : App.kitName
@@ -129,7 +129,7 @@ ApplicationWindow {
                         id: setupText
                         anchors.fill: parent
                         anchors.margins: 12
-                        text: qsTr("This GUI cannot start tunnels: %1").arg(App.setupError)
+                        text: qsTrId("desktop.this.gui.cannot.start.tunnels").arg(App.setupError)
                         color: Theme.refusedStrong
                         font.pixelSize: Theme.textLabel
                         wrapMode: Text.WordWrap

@@ -15,6 +15,12 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Desktop connection settings.** Three coupled sliders use the shared
+  tuning table, with measured conditions, plain values and the session's
+  negotiated server cap. A confirmed expert editor applies one validated
+  field at a time through `yume-setup`. Applying to a running client waits
+  for process exit before restarting; stopped clients only save.
+
 - **Existing client tuning.** `yume-setup tune --config FILE` applies a
   `--preset` or one expert `--set KEY=JSON` after schema validation, with
   atomic replacement. Restart the client to apply it. The shared preset

@@ -34,12 +34,12 @@ Flickable {
         Card {
             visible: App.phase === "none"
             Layout.fillWidth: true
-            title: qsTr("No kit yet")
-            subtitle: qsTr("A kit holds one client's settings and credentials. Import a sealed kit you received, with its code.")
+            title: qsTrId("desktop.no.kit.yet")
+            subtitle: qsTrId("desktop.a.kit.holds.one.client.s.settings.and.credentials.impor")
             AppButton {
                 kind: "primary"
                 iconName: "import"
-                text: qsTr("Import a kit")
+                text: qsTrId("desktop.import.a.kit")
                 onClicked: App.page = "connect"
             }
         }
@@ -68,7 +68,7 @@ Flickable {
                         horizontalAlignment: Text.AlignLeft
                         id: proposalText
                         text: page.proposal
-                              ? qsTr("No %1 can be built. A %2 is proposed.")
+                              ? qsTrId("desktop.no.can.be.built.a.is.proposed")
                                     .arg(Labels.hopRoute(page.circuits.hops)).arg(Labels.hopRoute(page.proposal.hops))
                               : ""
                         color: Theme.ink
@@ -80,7 +80,7 @@ Flickable {
                     Text {
                         textFormat: Text.PlainText
                         horizontalAlignment: Text.AlignLeft
-                        text: qsTr("New connections wait until you accept it or a %1 works again.")
+                        text: qsTrId("desktop.new.connections.wait.until.you.accept.it.or.a.works.aga")
                               .arg(page.circuits ? Labels.hopRoute(page.circuits.hops) : "")
                         color: Theme.inkSoft
                         font.pixelSize: Theme.textSmall
@@ -91,7 +91,7 @@ Flickable {
                 AppButton {
                     objectName: "reviewRoute"
                     kind: "primary"
-                    text: qsTr("Review")
+                    text: qsTrId("desktop.review")
                     onClicked: page.reviewRoute()
                 }
             }
@@ -121,14 +121,14 @@ Flickable {
                         horizontalAlignment: Text.AlignLeft
                         text: {
                             if (!page.running) return App.phase === "stopped"
-                                ? qsTr("The tunnel is not running. Connect starts it, and it keeps running if you close this window.")
+                                ? qsTrId("desktop.the.tunnel.is.not.running.connect.starts.it.and.it.keep")
                                 : ""
                             const target = page.status.server ? page.status.server.host + ":" + page.status.server.port : ""
                             if (page.status.state === "connected")
-                                return qsTr("to %1 for %2").arg(target).arg(App.formatDuration(page.status.connected_ms || 0))
+                                return qsTrId("desktop.to.for").arg(target).arg(App.formatDuration(page.status.connected_ms || 0))
                             if (page.status.state === "waiting")
-                                return qsTr("to %1, next attempt in %2").arg(target).arg(App.formatDuration(page.status.retry_ms || 0))
-                            return qsTr("to %1").arg(target)
+                                return qsTrId("desktop.to.next.attempt.in").arg(target).arg(App.formatDuration(page.status.retry_ms || 0))
+                            return qsTrId("desktop.to").arg(target)
                         }
                         color: Theme.inkSoft
                         font.pixelSize: Theme.textBody
@@ -150,7 +150,7 @@ Flickable {
                         horizontalAlignment: Text.AlignLeft
                         visible: page.running && page.status.last_failure !== null && page.status.last_failure !== undefined
                         text: page.status.last_failure
-                              ? qsTr("Last failure: %1, %2").arg(page.status.last_failure.code).arg(page.status.last_failure.message)
+                              ? qsTrId("desktop.last.failure").arg(page.status.last_failure.code).arg(page.status.last_failure.message)
                               : ""
                         color: Theme.refusedStrong
                         font.pixelSize: Theme.textSmall
@@ -171,7 +171,7 @@ Flickable {
                             color: Theme.ink
                             font.family: Theme.displayFont
                             font.pixelSize: 22
-                            Accessible.name: qsTr("Sending %1").arg(text)
+                            Accessible.name: qsTrId("desktop.sending").arg(text)
                         }
                     }
                     RowLayout {
@@ -183,7 +183,7 @@ Flickable {
                             color: Theme.ink
                             font.family: Theme.displayFont
                             font.pixelSize: 22
-                            Accessible.name: qsTr("Receiving %1").arg(text)
+                            Accessible.name: qsTrId("desktop.receiving").arg(text)
                         }
                     }
                 }
@@ -199,7 +199,7 @@ Flickable {
                 visible: page.running && (page.status.server_identity || "").length > 0
                 Layout.fillWidth: true
                 Layout.topMargin: 4
-                label: qsTr("Server identity")
+                label: qsTrId("desktop.server.identity")
                 value: page.status.server_identity || ""
             }
         }
@@ -214,30 +214,30 @@ Flickable {
             Metric {
                 Layout.fillWidth: true
                 iconName: "up"
-                label: qsTr("Sent")
+                label: qsTrId("desktop.sent")
                 value: App.formatBytes(page.traffic.payload_bytes_sent || 0)
-                detail: qsTr("%1 on the wire").arg(App.formatBytes(page.traffic.record_bytes_sent || 0))
+                detail: qsTrId("desktop.on.the.wire").arg(App.formatBytes(page.traffic.record_bytes_sent || 0))
             }
             Metric {
                 Layout.fillWidth: true
                 iconName: "down"
-                label: qsTr("Received")
+                label: qsTrId("desktop.received")
                 value: App.formatBytes(page.traffic.payload_bytes_received || 0)
-                detail: qsTr("%1 on the wire").arg(App.formatBytes(page.traffic.record_bytes_received || 0))
+                detail: qsTrId("desktop.on.the.wire").arg(App.formatBytes(page.traffic.record_bytes_received || 0))
             }
             Metric {
                 Layout.fillWidth: true
                 iconName: "key"
-                label: qsTr("Sessions")
+                label: qsTrId("desktop.sessions")
                 value: String(page.status.sessions || 0)
-                detail: qsTr("authenticated since start")
+                detail: qsTrId("desktop.authenticated.since.start")
             }
             Metric {
                 Layout.fillWidth: true
                 iconName: "warning"
-                label: qsTr("Failed attempts")
+                label: qsTrId("desktop.failed.attempts")
                 value: String(page.status.failed_attempts || 0)
-                detail: qsTr("since the last session")
+                detail: qsTrId("desktop.since.the.last.session")
                 tint: (page.status.failed_attempts || 0) > 0 ? Theme.refusedStrong : Theme.ink
             }
         }
@@ -251,8 +251,8 @@ Flickable {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredWidth: 1
-                title: qsTr("Local access")
-                subtitle: qsTr("Point applications here. Only this computer can reach them.")
+                title: qsTrId("desktop.local.access")
+                subtitle: qsTrId("desktop.point.applications.here.only.this.computer.can.reach.th")
                 // Rows a Repeater rebuilds sit in a plain Column, not the card's
                 // layout: Qt 6.4's layouts can keep a destroyed row while a page
                 // is hidden and crash when it is shown (QTBUG-111792).
@@ -267,7 +267,7 @@ Flickable {
                         CopyRow {
                             required property var modelData
                             width: listeners.width
-                            label: qsTr("SOCKS5")
+                            label: qsTrId("desktop.socks5")
                             value: modelData
                         }
                     }
@@ -277,7 +277,7 @@ Flickable {
                         CopyRow {
                             required property var modelData
                             width: listeners.width
-                            label: qsTr("Forward")
+                            label: qsTrId("desktop.forward")
                             value: modelData
                         }
                     }
@@ -285,7 +285,7 @@ Flickable {
                 Text {
                     textFormat: Text.PlainText
                     visible: (page.status.socks5 || []).length + (page.status.forwards || []).length === 0
-                    text: qsTr("This kit opens no local listener.")
+                    text: qsTrId("desktop.this.kit.opens.no.local.listener")
                     color: Theme.muted
                     font.pixelSize: Theme.textLabel
                 }
@@ -295,10 +295,10 @@ Flickable {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredWidth: 1
-                title: page.circuits ? qsTr("Route through the cluster") : qsTr("Route")
+                title: page.circuits ? qsTrId("desktop.route.through.the.cluster") : qsTrId("desktop.route")
                 subtitle: page.circuits
-                          ? qsTr("Each hop knows only its neighbours.")
-                          : qsTr("One server carries your streams and sees their destinations.")
+                          ? qsTrId("desktop.each.hop.knows.only.its.neighbours")
+                          : qsTrId("desktop.one.server.carries.your.streams.and.sees.their.destinat")
                 RowLayout {
                     visible: !page.circuits
                     spacing: 10
@@ -315,35 +315,35 @@ Flickable {
                     columns: 2
                     columnSpacing: 16
                     rowSpacing: 4
-                    Text { textFormat: Text.PlainText; text: qsTr("In use"); color: Theme.muted; font.pixelSize: Theme.textLabel }
+                    Text { textFormat: Text.PlainText; text: qsTrId("desktop.in.use"); color: Theme.muted; font.pixelSize: Theme.textLabel }
                     Text {
                         textFormat: Text.PlainText
                         text: page.circuits
                               ? (page.circuits.current_hops === 0
-                                 ? qsTr("no route, %1 configured").arg(Labels.hops(page.circuits.hops))
-                                 : qsTr("%1 of %2 configured").arg(Labels.hops(page.circuits.current_hops)).arg(page.circuits.hops))
+                                 ? qsTrId("desktop.no.route.configured").arg(Labels.hops(page.circuits.hops))
+                                 : qsTrId("desktop.of.configured").arg(Labels.hops(page.circuits.current_hops)).arg(page.circuits.hops))
                               : ""
                         color: Theme.ink
                         font.pixelSize: Theme.textLabel
                         font.weight: Font.DemiBold
                     }
-                    Text { textFormat: Text.PlainText; text: qsTr("Shorter routes"); color: Theme.muted; font.pixelSize: Theme.textLabel }
+                    Text { textFormat: Text.PlainText; text: qsTrId("desktop.shorter.routes"); color: Theme.muted; font.pixelSize: Theme.textLabel }
                     Text {
                         textFormat: Text.PlainText
                         text: page.circuits
                               ? (page.circuits.accepted_hops > 0
-                                 ? qsTr("you accepted %1").arg(Labels.hops(page.circuits.accepted_hops))
+                                 ? qsTrId("desktop.you.accepted").arg(Labels.hops(page.circuits.accepted_hops))
                                  : page.circuits.min_hops < page.circuits.hops
-                                   ? qsTr("down to %1 approved in the kit").arg(Labels.hops(page.circuits.min_hops))
-                                   : qsTr("only with your acceptance"))
+                                   ? qsTrId("desktop.down.to.approved.in.the.kit").arg(Labels.hops(page.circuits.min_hops))
+                                   : qsTrId("desktop.only.with.your.acceptance"))
                               : ""
                         color: Theme.ink
                         font.pixelSize: Theme.textLabel
                     }
-                    Text { textFormat: Text.PlainText; text: qsTr("Plain HTTP"); color: Theme.muted; font.pixelSize: Theme.textLabel }
+                    Text { textFormat: Text.PlainText; text: qsTrId("desktop.plain.http"); color: Theme.muted; font.pixelSize: Theme.textLabel }
                     Text {
                         textFormat: Text.PlainText
-                        text: page.circuits && page.circuits.plain_http === "allow" ? qsTr("allowed") : qsTr("refused")
+                        text: page.circuits && page.circuits.plain_http === "allow" ? qsTrId("desktop.allowed") : qsTrId("desktop.refused")
                         color: Theme.ink
                         font.pixelSize: Theme.textLabel
                     }
@@ -352,7 +352,7 @@ Flickable {
                     textFormat: Text.PlainText
                     horizontalAlignment: Text.AlignLeft
                     visible: page.circuits !== null && page.circuits.stopped !== null && page.circuits.stopped !== undefined
-                    text: page.circuits && page.circuits.stopped ? qsTr("Circuits stopped: %1").arg(page.circuits.stopped) : ""
+                    text: page.circuits && page.circuits.stopped ? qsTrId("desktop.circuits.stopped").arg(page.circuits.stopped) : ""
                     color: Theme.refusedStrong
                     font.pixelSize: Theme.textLabel
                     Layout.fillWidth: true
@@ -386,7 +386,7 @@ Flickable {
                             }
                             Text {
                                 textFormat: Text.PlainText
-                                text: qsTr("%1 · %2 streams").arg(App.formatDuration(modelData.age_ms)).arg(modelData.streams)
+                                text: qsTrId("desktop.streams").arg(App.formatDuration(modelData.age_ms)).arg(modelData.streams)
                                 color: Theme.muted
                                 font.pixelSize: Theme.textSmall
                             }
@@ -400,7 +400,7 @@ Flickable {
         Card {
             visible: App.phase === "stopped" && App.error.length > 0 && App.outputTail.length > 0
             Layout.fillWidth: true
-            title: qsTr("Output of the latest start")
+            title: qsTrId("desktop.output.of.the.latest.start")
             Text {
                 textFormat: Text.PlainText
                 text: App.outputTail

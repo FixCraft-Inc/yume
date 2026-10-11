@@ -7,6 +7,15 @@
 # kit import and starts, so it links no YUME library and no YUME library
 # links Qt. It uses only Qt 6.4 interfaces, the Qt of Ubuntu 24.04.
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2 Widgets)
+find_program(YUME_LRELEASE NAMES lrelease-qt6 lrelease
+    PATHS /usr/lib/qt6/bin /usr/lib/x86_64-linux-gnu/qt6/bin
+    NO_DEFAULT_PATH)
+if(NOT YUME_LRELEASE)
+    find_program(YUME_LRELEASE NAMES lrelease-qt6 lrelease)
+endif()
+if(NOT YUME_LRELEASE)
+    message(FATAL_ERROR "Qt Linguist lrelease is required to build desktop translations")
+endif()
 
 set(CMAKE_AUTOMOC ON)
 
@@ -25,6 +34,7 @@ add_library(yume_gui_core STATIC
     presets.cpp presets.hpp
     tray.cpp tray.hpp
     tunnel.cpp tunnel.hpp
+    tuning.cpp tuning.hpp
     yume_gui_help_text.hpp)
 target_include_directories(yume_gui_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # Widgets is for the tray icon alone, which Qt offers only there.
@@ -41,7 +51,10 @@ set(_yume_gui_qml
     qml/ConnectPage.qml
     qml/LogsPage.qml
     qml/PosturePage.qml
+    qml/TuningPanel.qml
+    qml/TuningSlider.qml
     qml/RouteReviewDialog.qml
+    qml/AppComboBox.qml
     qml/AppButton.qml
     qml/AppTextField.qml
     qml/Card.qml
@@ -65,9 +78,29 @@ set(_yume_gui_presets "${PROJECT_SOURCE_DIR}/config/tuning_presets.json")
 set_source_files_properties("${_yume_gui_presets}" PROPERTIES QT_RESOURCE_ALIAS tuning_presets.json)
 qt_add_resources(yume_gui_core yume_gui_data PREFIX /yume FILES "${_yume_gui_presets}"
     OUTPUT_TARGETS _yume_gui_data_targets)
+
+set(_yume_gui_ts
+    translations/yume_en.ts
+    translations/yume_ru.ts
+    translations/yume_ja.ts
+    translations/yume_uk.ts)
+set(_yume_gui_qm)
+foreach(_ts IN LISTS _yume_gui_ts)
+    get_filename_component(_name "${_ts}" NAME_WE)
+    set(_qm "${CMAKE_CURRENT_BINARY_DIR}/${_name}.qm")
+    add_custom_command(
+        OUTPUT "${_qm}"
+        COMMAND "${YUME_LRELEASE}" -idbased "${CMAKE_CURRENT_SOURCE_DIR}/${_ts}" -qm "${_qm}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_ts}"
+        COMMENT "Compiling ${_ts}")
+    set_source_files_properties("${_qm}" PROPERTIES QT_RESOURCE_ALIAS "${_name}.qm")
+    list(APPEND _yume_gui_qm "${_qm}")
+endforeach()
+qt_add_resources(yume_gui_core yume_gui_translations PREFIX /i18n
+    FILES ${_yume_gui_qm} OUTPUT_TARGETS _yume_gui_translation_targets)
 # A static library's resources compile into object libraries of their own,
 # which get the project's warnings like any other first-party code.
-foreach(_target IN LISTS _yume_gui_resource_targets _yume_gui_asset_targets _yume_gui_data_targets)
+foreach(_target IN LISTS _yume_gui_resource_targets _yume_gui_asset_targets _yume_gui_data_targets _yume_gui_translation_targets)
     yume_apply_warnings(${_target})
 endforeach()
 # The GUI links Qt and no YUME library.

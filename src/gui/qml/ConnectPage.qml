@@ -32,12 +32,12 @@ Flickable {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredWidth: 3
-                title: qsTr("Kits")
-                subtitle: App.kitsDirectory.length > 0 ? qsTr("Kept in %1").arg(App.kitsDirectory) : ""
+                title: qsTrId("kits")
+                subtitle: App.kitsDirectory.length > 0 ? qsTrId("desktop.kept.in").arg(App.kitsDirectory) : ""
                 trailing: AppButton {
                     compact: true
                     kind: "quiet"
-                    text: qsTr("Refresh")
+                    text: qsTrId("desktop.refresh")
                     enabled: !App.renaming
                     onClicked: App.refreshKits()
                 }
@@ -45,7 +45,7 @@ Flickable {
                 Text {
                     textFormat: Text.PlainText
                     visible: App.kits.length === 0
-                    text: qsTr("No kits yet. Import the sealed kit you received.")
+                    text: qsTrId("desktop.no.kits.yet.import.the.sealed.kit.you.received")
                     color: Theme.muted
                     font.pixelSize: Theme.textLabel
                 }
@@ -96,7 +96,7 @@ Flickable {
                                     Text {
                                         textFormat: Text.PlainText
                                         horizontalAlignment: Text.AlignLeft
-                                        text: (kitRow.modelData.server || qsTr("server not readable")) + "  ·  "
+                                        text: (kitRow.modelData.server || qsTrId("desktop.server.not.readable")) + "  ·  "
                                               + App.stateLabel(kitRow.modelData.phase, kitRow.modelData.state)
                                         color: Theme.muted
                                         font.pixelSize: Theme.textSmall
@@ -107,8 +107,8 @@ Flickable {
                                 AppButton {
                                     visible: !kitRow.selected && !kitRow.removing
                                     compact: true
-                                    text: qsTr("Show")
-                                    Accessible.name: qsTr("Show %1").arg(kitRow.modelData.name)
+                                    text: qsTrId("desktop.show")
+                                    Accessible.name: qsTrId("desktop.show.2").arg(kitRow.modelData.name)
                                     onClicked: App.kitName = kitRow.modelData.name
                                 }
                                 AppButton {
@@ -116,8 +116,8 @@ Flickable {
                                     compact: true
                                     kind: "quiet"
                                     iconName: "folder"
-                                    text: qsTr("Folder")
-                                    Accessible.name: qsTr("Open the folder of %1").arg(kitRow.modelData.name)
+                                    text: qsTrId("desktop.folder")
+                                    Accessible.name: qsTrId("desktop.open.the.folder.of").arg(kitRow.modelData.name)
                                     onClicked: App.openKitFolder(kitRow.modelData.name)
                                 }
                                 AppButton {
@@ -125,8 +125,8 @@ Flickable {
                                     enabled: !App.renaming && !App.importing
                                     compact: true
                                     kind: "quiet"
-                                    text: qsTr("Rename")
-                                    Accessible.name: qsTr("Rename %1").arg(kitRow.modelData.name)
+                                    text: qsTrId("rename")
+                                    Accessible.name: qsTrId("desktop.rename").arg(kitRow.modelData.name)
                                     onClicked: renameDialog.openFor(kitRow.modelData.name)
                                 }
                                 AppButton {
@@ -135,15 +135,15 @@ Flickable {
                                     compact: true
                                     kind: "quiet"
                                     iconName: "trash"
-                                    text: qsTr("Remove")
-                                    Accessible.name: qsTr("Remove %1").arg(kitRow.modelData.name)
+                                    text: qsTrId("desktop.remove")
+                                    Accessible.name: qsTrId("desktop.remove.2").arg(kitRow.modelData.name)
                                     onClicked: page.pendingRemoval = kitRow.modelData.name
                                 }
                                 // Removal deletes the kit's credentials, so it asks once more in place.
                                 Text {
                                     textFormat: Text.PlainText
                                     visible: kitRow.removing
-                                    text: qsTr("Delete this kit and its keys?")
+                                    text: qsTrId("desktop.delete.this.kit.and.its.keys")
                                     color: Theme.refusedStrong
                                     font.pixelSize: Theme.textSmall
                                 }
@@ -151,7 +151,7 @@ Flickable {
                                     visible: kitRow.removing
                                     compact: true
                                     kind: "danger"
-                                    text: qsTr("Delete")
+                                    text: qsTrId("delete")
                                     enabled: !App.renaming
                                     onClicked: {
                                         page.pendingRemoval = ""
@@ -161,7 +161,7 @@ Flickable {
                                 AppButton {
                                     visible: kitRow.removing
                                     compact: true
-                                    text: qsTr("Keep")
+                                    text: qsTrId("desktop.keep")
                                     onClicked: page.pendingRemoval = ""
                                 }
                             }
@@ -175,8 +175,8 @@ Flickable {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
                 Layout.preferredWidth: 2
-                title: qsTr("Import a sealed kit")
-                subtitle: qsTr("A sealed kit is one file. Its code, given to you separately, opens it on this device.")
+                title: qsTrId("desktop.import.a.sealed.kit")
+                subtitle: qsTrId("desktop.a.sealed.kit.is.one.file.its.code.given.to.you.separate")
 
                 property url file
 
@@ -185,7 +185,7 @@ Flickable {
                     spacing: 8
                     AppButton {
                         iconName: "import"
-                        text: qsTr("Choose file…")
+                        text: qsTrId("desktop.choose.file")
                         onClicked: fileDialog.open()
                     }
                     Text {
@@ -193,22 +193,22 @@ Flickable {
                         horizontalAlignment: Text.AlignLeft
                         text: importCard.file.toString().length > 0
                               ? decodeURIComponent(importCard.file.toString().replace(/^file:\/\//, ""))
-                              : qsTr("No file chosen")
+                              : qsTrId("no.file.chosen")
                         color: importCard.file.toString().length > 0 ? Theme.ink : Theme.muted
                         font.pixelSize: Theme.textSmall
                         Layout.fillWidth: true
                         elide: Text.ElideMiddle
                     }
                 }
-                Text { textFormat: Text.PlainText; text: qsTr("Name"); color: Theme.muted; font.pixelSize: Theme.textSmall; Layout.topMargin: 6 }
+                Text { textFormat: Text.PlainText; text: qsTrId("name"); color: Theme.muted; font.pixelSize: Theme.textSmall; Layout.topMargin: 6 }
                 AppTextField {
                     id: nameField
                     Layout.fillWidth: true
-                    placeholderText: qsTr("for example: work")
+                    placeholderText: qsTrId("desktop.for.example.work")
                     maximumLength: 48
-                    Accessible.name: qsTr("Kit name")
+                    Accessible.name: qsTrId("desktop.kit.name")
                 }
-                Text { textFormat: Text.PlainText; text: qsTr("Code"); color: Theme.muted; font.pixelSize: Theme.textSmall; Layout.topMargin: 6 }
+                Text { textFormat: Text.PlainText; text: qsTrId("code"); color: Theme.muted; font.pixelSize: Theme.textSmall; Layout.topMargin: 6 }
                 AppTextField {
                     id: codeField
                     Layout.fillWidth: true
@@ -217,7 +217,7 @@ Flickable {
                     echoMode: TextInput.Password
                     maximumLength: 64
                     inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                    Accessible.name: qsTr("Kit code")
+                    Accessible.name: qsTrId("desktop.kit.code")
                     onAccepted: importButton.clicked()
                 }
                 RowLayout {
@@ -226,7 +226,7 @@ Flickable {
                     AppButton {
                         id: importButton
                         kind: "primary"
-                        text: App.importing ? qsTr("Importing…") : qsTr("Import")
+                        text: App.importing ? qsTrId("desktop.importing") : qsTrId("desktop.import")
                         enabled: !App.importing && !App.renaming && importCard.file.toString().length > 0
                                  && nameField.text.length > 0 && codeField.text.length > 0
                         onClicked: {
@@ -249,7 +249,7 @@ Flickable {
                 Text {
                     textFormat: Text.PlainText
                     horizontalAlignment: Text.AlignLeft
-                    text: qsTr("yume opens the kit and reads the code on its standard input. This window does not keep the code.")
+                    text: qsTrId("desktop.yume.opens.the.kit.and.reads.the.code.on.its.standard.i")
                     color: Theme.muted
                     font.pixelSize: Theme.textSmall
                     Layout.fillWidth: true
@@ -270,7 +270,7 @@ Flickable {
                 id: note
                 anchors.fill: parent
                 anchors.margins: 12
-                text: qsTr("A connected tunnel keeps running when you close this window or it quits. Open YUME again to see it or disconnect it.")
+                text: qsTrId("desktop.a.connected.tunnel.keeps.running.when.you.close.this.wi")
                 color: Theme.inkSoft
                 font.pixelSize: Theme.textSmall
                 wrapMode: Text.WordWrap
@@ -317,7 +317,7 @@ Flickable {
             spacing: 12
             Text {
                 textFormat: Text.PlainText
-                text: qsTr("Rename %1").arg(renameDialog.originalName)
+                text: qsTrId("desktop.rename").arg(renameDialog.originalName)
                 color: Theme.ink
                 font.family: Theme.displayFont
                 font.pixelSize: 24
@@ -328,13 +328,13 @@ Flickable {
                 objectName: "renameKitName"
                 Layout.fillWidth: true
                 maximumLength: 48
-                Accessible.name: qsTr("New kit name")
+                Accessible.name: qsTrId("desktop.new.kit.name")
                 onAccepted: renameDialog.submit()
             }
             Text {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
-                text: qsTr("Use 1 to 48 letters, digits, dots, dashes or underscores. Start with a letter, digit or underscore.")
+                text: qsTrId("desktop.use.1.to.48.letters.digits.dots.dashes.or.underscores.s")
                 color: renameDialog.validName ? Theme.muted : Theme.refusedStrong
                 font.pixelSize: Theme.textSmall
                 wrapMode: Text.WordWrap
@@ -343,14 +343,14 @@ Flickable {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
                 AppButton {
-                    text: qsTr("Cancel")
+                    text: qsTrId("cancel")
                     onClicked: renameDialog.close()
                 }
                 AppButton {
                     id: renameAccept
                     objectName: "renameKitAccept"
                     kind: "primary"
-                    text: qsTr("Rename")
+                    text: qsTrId("rename")
                     enabled: renameDialog.validName && renameField.text !== renameDialog.originalName
                              && !App.renaming && !App.importing
                     onClicked: renameDialog.submit()
@@ -361,7 +361,7 @@ Flickable {
 
     FileDialog {
         id: fileDialog
-        title: qsTr("Choose a sealed kit")
+        title: qsTrId("desktop.choose.a.sealed.kit")
         fileMode: FileDialog.OpenFile
         onAccepted: {
             importCard.file = selectedFile

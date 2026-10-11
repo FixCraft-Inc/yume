@@ -9,6 +9,9 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <array>
+#include <cstdlib>
+#include <limits>
 
 namespace yume::gui {
 namespace {
@@ -34,8 +37,49 @@ Presets::Presets() {
     const auto root = QJsonDocument::fromJson(file.readAll()).object();
     if (root.value(QStringLiteral("schema")).toInt() != 1) return;
     notes_ = root.value(QStringLiteral("levels")).toObject().toVariantMap();
+    measurements_ = root.value("measurements").toObject().toVariantMap();
+    fields_ = root.value("fields").toArray().toVariantList();
+    default_ = root.value("default").toString();
+    coupling_supported_ = root.value("coupling").toObject().value("rule") ==
+                          QStringLiteral("nearest-levels-v1");
     for (const auto& value : root.value(QStringLiteral("presets")).toArray())
         list_.append(value.toObject().toVariantMap());
+}
+
+QVariantMap Presets::named(const QString& id) const {
+    for (const auto& value : list_) {
+        const auto entry = value.toMap();
+        if (entry.value("id").toString() == id) return entry;
+    }
+    return {};
+}
+
+QVariantMap Presets::move(const QString& id, const QString& axis,
+                          int level) const {
+    const QStringList axes{"stealth", "security", "speed"};
+    const auto current = named(id).value("levels").toMap();
+    if (!coupling_supported_ || current.isEmpty() || !axes.contains(axis))
+        return {};
+    QVariantMap chosen;
+    std::array<int, 4> best{std::numeric_limits<int>::max(), 0, 0, 0};
+    for (const auto& value : list_) {
+        const auto entry = value.toMap();
+        const auto levels = entry.value("levels").toMap();
+        if (levels.value(axis).toInt() != level) continue;
+        int distance = 0;
+        for (const auto& other : axes)
+            if (other != axis)
+                distance += std::abs(levels.value(other).toInt() -
+                                     current.value(other).toInt());
+        const std::array<int, 4> score{
+            distance, -levels.value("stealth").toInt(),
+            -levels.value("security").toInt(), levels.value("speed").toInt()};
+        if (score < best) {
+            best = score;
+            chosen = entry;
+        }
+    }
+    return chosen;
 }
 
 QVariantMap Presets::match(const QJsonObject& limits) const {

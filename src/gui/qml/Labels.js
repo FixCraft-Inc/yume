@@ -12,10 +12,10 @@ function nodes(list) {
 }
 
 function hops(count) {
-    return count === 1 ? qsTr("1 hop") : qsTr("%1 hops").arg(count)
+    return count === 1 ? qsTrId("desktop.1.hop") : qsTrId("desktop.1.hops").arg(count)
 }
 
 // A route's length before a noun: "a 3-hop route".
 function hopRoute(count) {
-    return qsTr("%1-hop route").arg(count)
+    return qsTrId("desktop.1.hop.route").arg(count)
 }

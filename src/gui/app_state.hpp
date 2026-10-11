@@ -23,6 +23,7 @@
 #include "gui/message_model.hpp"
 #include "gui/presets.hpp"
 #include "gui/tunnel.hpp"
+#include "gui/tuning.hpp"
 
 namespace yume::gui {
 
@@ -67,6 +68,7 @@ class AppState final : public QObject {
     Q_PROPERTY(bool actionEnabled READ action_enabled NOTIFY tunnelChanged)
     Q_PROPERTY(QString markPath READ mark_path CONSTANT)
     Q_PROPERTY(bool trayActive READ tray_active NOTIFY trayChanged)
+    Q_PROPERTY(QObject* tuning READ tuning CONSTANT)
 
 public:
     // The pages, in navigation order.
@@ -129,6 +131,7 @@ public:
 
     // The selected kit's tunnel, or nullptr.
     Tunnel* tunnel() const;
+    QObject* tuning() { return &tuning_; }
 
     Q_INVOKABLE void connectKit();
     Q_INVOKABLE void stopKit();
@@ -183,6 +186,7 @@ private:
     QString setup_error_;
     QSettings settings_;
     Presets presets_;
+    Tuning tuning_{presets_, this};
     MessageModel messages_;
     std::map<QString, Tunnel*> tunnels_;
     QString kit_name_;

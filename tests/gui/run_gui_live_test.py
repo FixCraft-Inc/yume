@@ -179,6 +179,16 @@ def run(arguments: argparse.Namespace) -> None:
                 session.wait_for_port("127.0.0.1", server_port, server, time.monotonic() + 30)
                 live.import_kit(kit)
                 pid = live.connect(socks_port, target_port, sessions=1)
+                probe_environment = dict(live.environment, YUME_GUI_LIVE_YUME=str(live.yume))
+                tuning = subprocess.run([str(live.gui.with_name("yume_gui_ui_test"))],
+                                        env=probe_environment, capture_output=True, text=True,
+                                        timeout=150, check=False)
+                print(tuning.stdout)
+                if tuning.returncode:
+                    raise session.SessionFailure(f"GUI tuning probe failed: {tuning!r}")
+                pid = peer_pid(live.socket)
+                live.fetch(socks_port, target_port)
+                print("tuning verified: core refusal, save, restart, negotiated cap and payload")
                 live.killed_window(socks_port, target_port, pid)
                 if arguments.capture:
                     live.capture(arguments.capture)

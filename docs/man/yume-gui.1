@@ -125,8 +125,21 @@ ends, including after the stop warning.
 .PP
 The Posture page states the protection the running client reports: the
 YTP/1 composition, the evidence profile its outer layers follow, its
-tuning limits and the preset they match.
-It offers no switch that weakens a tunnel.
+tuning limits and the negotiated key epoch.
+Its connection settings use three discrete sliders from the shared
+tuning table, with plain values and measured conditions.
+Expert values need an explicit warning confirmation and are applied one
+field at a time.
+The GUI runs
+.B yume-setup
+.B tune
+beside the selected
+.B yume
+to validate and save.
+Apply and restart closes streams, waits for the running client to exit
+and starts it again; a stopped client only saves.
+A refused write does not restart.
+The live posture remains separate from the draft.
 A proposal of a shorter route is accepted only from its review dialog,
 for that exact proposal.
 Closing the dialog accepts nothing.

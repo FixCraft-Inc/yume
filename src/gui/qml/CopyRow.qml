@@ -40,8 +40,8 @@ RowLayout {
         kind: "quiet"
         compact: true
         iconName: "copy"
-        text: qsTr("Copy")
-        Accessible.name: qsTr("Copy %1").arg(row.label)
+        text: qsTrId("desktop.copy")
+        Accessible.name: qsTrId("accessibility.copy.value").arg(row.label)
         onClicked: App.copyText(row.value)
     }
 }

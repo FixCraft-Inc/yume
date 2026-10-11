@@ -16,6 +16,7 @@
 #include <climits>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace yume::providers::ytp1_crypto {
 namespace {
@@ -95,12 +96,12 @@ using KdfCtxPtr = std::unique_ptr<EVP_KDF_CTX, KdfCtxDeleter>;
 
 struct CryptoContext::Impl final {
 public:
-    Impl()
+    explicit Impl(const std::string& provider_name)
         : library_context_(OSSL_LIB_CTX_new()),
-          default_provider_(library_context_
-                                ? OSSL_PROVIDER_load(library_context_.get(),
-                                                     "default")
-                                : nullptr),
+          provider_(library_context_
+                        ? OSSL_PROVIDER_load(library_context_.get(),
+                                             provider_name.c_str())
+                        : nullptr),
           sha256_(library_context_
                       ? EVP_MD_fetch(library_context_.get(),
                                      kSha256Algorithm.data(),
@@ -121,7 +122,7 @@ public:
                                     kHkdfAlgorithm.data(),
                                     kOpenSslPropertyQuery.data())
                     : nullptr) {
-        if (!library_context_ || !default_provider_ || !sha256_ ||
+        if (!library_context_ || !provider_ || !sha256_ ||
             !aes_256_gcm_ || !hmac_ || !hkdf_) {
             throw std::runtime_error(
                 "required OpenSSL 3.5 provider algorithms are unavailable");
@@ -155,14 +156,16 @@ private:
     // Destruction is reverse declaration order: fetched algorithms, provider,
     // then library context.
     LibCtxPtr library_context_;
-    ProviderPtr default_provider_;
+    ProviderPtr provider_;
     MdPtr sha256_;
     CipherPtr aes_256_gcm_;
     MacPtr hmac_;
     KdfPtr hkdf_;
 };
 
-CryptoContext::CryptoContext() : impl_(std::make_unique<Impl>()) {}
+CryptoContext::CryptoContext() : CryptoContext("default") {}
+CryptoContext::CryptoContext(std::string_view provider_name)
+    : impl_(std::make_unique<Impl>(std::string(provider_name))) {}
 CryptoContext::~CryptoContext() = default;
 OSSL_LIB_CTX* CryptoContext::library_context() const noexcept {
     return impl_->library_context();

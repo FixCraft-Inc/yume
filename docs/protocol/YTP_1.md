@@ -754,13 +754,17 @@ Implemented in `yume_openssl_security_provider` and exercised by
 `yume_openssl_security_provider_test` with freshly generated real keys:
 
 - private OpenSSL context and exact Ed25519, ML-DSA-87, X25519,
-  ML-KEM-1024, SHA-256, HMAC, HKDF, and AES-256-GCM algorithm requirements;
+  ML-KEM-1024, SHA-256, HMAC, HKDF, and AES-256-GCM algorithm requirements,
+  refusing to construct over a provider that lacks them;
 - canonical unencrypted PKCS#8 private keys, canonical SubjectPublicKeyInfo
   public keys, per-identity access PSKs, duplicate-identity rejection,
   exact role factories, and bounded public peer labels;
 - exact three-flight hybrid authentication, transcript/exporter/capability
   binding, both signature components, PSK precheck, and distinct response and
   accepted key confirmations;
+- refusal of every AUTH flight with any one field removed or shortened by an
+  octet, or with either signature component stripped, and of each flight
+  replayed into a fresh session or into an established one;
 - directional roots, fresh per-record keys and nonces, exact token ordering,
   constant-time authentication comparisons, secret wiping, and cancellation;
   and

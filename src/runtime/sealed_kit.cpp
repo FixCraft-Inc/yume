@@ -659,7 +659,15 @@ Status write_directory(const Kit& kit, const std::filesystem::path& directory) {
         if (ok && rename_new(staging.c_str(), target.c_str()) == 0) {
             const Descriptor parent(::open(target.parent_path().c_str(),
                                            O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-            if (parent.get() >= 0) static_cast<void>(::fsync(parent.get()));
+            if (parent.get() < 0 || ::fsync(parent.get()) != 0) {
+                // The rename is already visible. Keep the kit, but make the
+                // caller aware that its parent directory was not confirmed
+                // durable instead of reporting a false success.
+                return Status::diagnostic(
+                    StatusCode::FailedPrecondition,
+                    "kit directory was published, but parent directory "
+                    "durability was not confirmed");
+            }
             return Status::success();
         }
         const bool exists = ok && errno == EEXIST;

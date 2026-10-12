@@ -166,6 +166,9 @@ enum class StreamReason : std::uint8_t {
 // The largest DATA payload one relay message of the direction carries.
 [[nodiscard]] constexpr std::size_t MaxDataPayload(
     Direction direction) noexcept {
+    if (direction != Direction::Forward && direction != Direction::Backward) {
+        return 0U;
+    }
     const auto& buckets =
         direction == Direction::Forward ? kForwardBuckets : kBackwardBuckets;
     return RelayCapacity(direction, buckets[2]) - kRelayHeaderBytes;

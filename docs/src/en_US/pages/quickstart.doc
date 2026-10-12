@@ -56,8 +56,12 @@ import it there with the code the seal prints:
 @code bash
 build/bin/yume --seal-kit yume-kit/client --output laptop.kit
 # on the other device, type the code when asked
-yume --import-kit laptop.kit --into ~/.config/yume
+yume --import-kit laptop.kit --into ~/.config/yume/kits/laptop
 @end
+
+The destination must be a new directory. Use the GUI-managed
+`$XDG_CONFIG_HOME/yume/kits/<name>` location if the imported kit should appear
+in `yume-gui`.
 
 Send the code by another channel than the file. The sealed file has no
 readable header and holds the client's private key, access PSK and admission

@@ -192,6 +192,12 @@ sizes and timing alone:
   way at the start of the next burst. The workload sends one burst, so the
   capture does not show this.
 
+HTTP/1.1 cover has no captured reference: the capture server refuses
+HTTP/1.1 at ALPN. An active probe that asks for the cover page over HTTP/1.1
+gets a response with no `Date` header that always closes the connection.
+The HTTP/2 cover path adds the modeled `Date` header, and an ordinary Node
+HTTP/1.1 server sends `Date` and keeps the connection open.
+
 Each needs its own change and a new capture. One campaign is one group, and
 the classifier gate needs four, so its verdict is INSUFFICIENT.
 

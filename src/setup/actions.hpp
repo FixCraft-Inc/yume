@@ -12,7 +12,15 @@
 #include <string>
 #include <utility>
 
+#include "setup/files.hpp"
+
 namespace yume::setup {
+
+class PartialCommitError final : public SetupError {
+public:
+    explicit PartialCommitError(const std::string& message)
+        : SetupError(message) {}
+};
 
 // What yume-setup does. Each action checks its inputs before it changes
 // anything and throws SetupError with an operator-facing message. Paths are

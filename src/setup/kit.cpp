@@ -317,6 +317,10 @@ fs::path add_client(const AddClientOptions& options) {
     bool new_directory = false;
     std::optional<fs::path> replacement;
     bool published = false;
+    // Once the authorization store is renamed into place, it can reference
+    // the files and kit we just published. Cleanup must not remove those
+    // committed objects when the final directory flush reports an error.
+    bool store_committed = false;
     try {
         const fs::path client = staging.path() / "client";
         make_private_directory(client);
@@ -367,9 +371,18 @@ fs::path add_client(const AddClientOptions& options) {
         fsync_directory(parent);
         rename_replace(*replacement, store_path);
         replacement.reset();
-        fsync_directory(store_directory);
+        store_committed = true;
+        try {
+            fsync_directory(store_directory);
+        } catch (const SetupError& error) {
+            throw PartialCommitError(
+                "client authorization was published, but directory "
+                "durability was not confirmed: " +
+                std::string(error.what()));
+        }
         return output;
     } catch (...) {
+        if (store_committed) throw;
         if (replacement) remove_file(*replacement);
         for (const auto& path : created) remove_file(path);
         if (new_directory) static_cast<void>(::rmdir(authorized.c_str()));

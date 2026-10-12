@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstring>
+#include <dirent.h>
 #include <utility>
 
 #include <QCoreApplication>
@@ -67,6 +69,36 @@ int open_kit_root(const QString& path) {
         current.reset(next);
     }
     return ::fcntl(current.get(), F_DUPFD_CLOEXEC, 0);
+}
+
+bool remove_directory_contents(int directory, int depth = 0) noexcept {
+    if (depth > 128) return false;
+    const int listing = ::dup(directory);
+    if (listing < 0) return false;
+    DIR* raw = ::fdopendir(listing);
+    if (raw == nullptr) {
+        ::close(listing);
+        return false;
+    }
+    bool ok = true;
+    while (const dirent* entry = ::readdir(raw)) {
+        const char* name = entry->d_name;
+        if (std::strcmp(name, ".") == 0 || std::strcmp(name, "..") == 0)
+            continue;
+        const int child = ::openat(
+            directory, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (child >= 0) {
+            const bool emptied = remove_directory_contents(child, depth + 1);
+            ::close(child);
+            if (!emptied || ::unlinkat(directory, name, AT_REMOVEDIR) != 0)
+                ok = false;
+        } else if (errno != ENOTDIR || ::unlinkat(directory, name, 0) != 0) {
+            ok = false;
+        }
+        if (!ok) break;
+    }
+    if (::closedir(raw) != 0) ok = false;
+    return ok;
 }
 
 bool unsafe_rename_paths(const QJsonValue& value, const QString& directory,
@@ -147,13 +179,13 @@ std::optional<QJsonObject> read_kit_limits(const Kit& kit, QString& error) {
     if (descriptor.get() < 0 || ::fstat(descriptor.get(), &info) != 0 ||
         !S_ISREG(info.st_mode) || info.st_uid != ::geteuid() ||
         info.st_size < 0 || info.st_size > kMaxConfigBytes) {
-        error = QStringLiteral("Cannot read this kit's settings safely");
+        error = qtTrId("desktop.cannot.read.kit.settings.safely");
         return std::nullopt;
     }
     QFile file;
     if (!file.open(descriptor.get(), QIODevice::ReadOnly,
                    QFileDevice::DontCloseHandle)) {
-        error = QStringLiteral("Cannot read this kit's settings");
+        error = qtTrId("desktop.cannot.read.kit.settings");
         return std::nullopt;
     }
     const auto bytes = file.read(kMaxConfigBytes + 1);
@@ -162,8 +194,7 @@ std::optional<QJsonObject> read_kit_limits(const Kit& kit, QString& error) {
         bytes.size() > kMaxConfigBytes || !document.isObject() ||
         (document.object().contains("limits") &&
          !document.object().value("limits").isObject())) {
-        error = QStringLiteral(
-            "Cannot display this kit's settings; check its configuration");
+        error = qtTrId("desktop.cannot.display.kit.settings");
         return std::nullopt;
     }
     return document.object().value("limits").toObject();
@@ -186,18 +217,18 @@ QString suggested_kit_name(const QString& file) {
 
 bool ensure_private_directory(const QString& dir, QString& error) {
     if (!QDir().mkpath(dir)) {
-        error = QStringLiteral("cannot create %1").arg(dir);
+        error = qtTrId("desktop.cannot.create").arg(dir);
         return false;
     }
     const QByteArray native = QFile::encodeName(dir);
     struct stat info{};
     if (::lstat(native.constData(), &info) != 0 || !S_ISDIR(info.st_mode) ||
         info.st_uid != ::geteuid()) {
-        error = QStringLiteral("%1 is not a directory of this user").arg(dir);
+        error = qtTrId("desktop.not.a.directory.of.this.user").arg(dir);
         return false;
     }
     if ((info.st_mode & 0077) != 0 && ::chmod(native.constData(), 0700) != 0) {
-        error = QStringLiteral("cannot make %1 private").arg(dir);
+        error = qtTrId("desktop.cannot.make.private").arg(dir);
         return false;
     }
     return true;
@@ -208,8 +239,7 @@ std::optional<Places> find_places(const QString& yume, QString& error) {
     const QString config =
         QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
     if (config.isEmpty() || !QDir::isAbsolutePath(config)) {
-        error = QStringLiteral(
-            "no configuration directory (XDG_CONFIG_HOME or HOME)");
+        error = qtTrId("desktop.no.configuration.directory");
         return std::nullopt;
     }
     places.kits = QDir(config).filePath(QStringLiteral("yume/kits"));
@@ -219,7 +249,7 @@ std::optional<Places> find_places(const QString& yume, QString& error) {
     const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
     if (runtime.isEmpty() || !QDir::isAbsolutePath(runtime)) {
         error =
-            QStringLiteral("XDG_RUNTIME_DIR is not set to an absolute path");
+            qtTrId("desktop.runtime.directory.not.absolute");
         return std::nullopt;
     }
     places.runtime = QDir(runtime).filePath(QStringLiteral("yume"));
@@ -228,7 +258,7 @@ std::optional<Places> find_places(const QString& yume, QString& error) {
                                  : QFileInfo(yume).absoluteFilePath();
     const QFileInfo program(places.yume);
     if (!program.isFile() || !program.isExecutable()) {
-        error = QStringLiteral("no yume program at %1").arg(places.yume);
+        error = qtTrId("desktop.no.yume.program").arg(places.yume);
         return std::nullopt;
     }
     return places;
@@ -271,7 +301,7 @@ void import_kit(QObject* context, const Places& places, const QString& file,
     }
     const QString into = QDir(places.kits).filePath(name);
     if (QFileInfo::exists(into)) {
-        fail(QStringLiteral("a kit named %1 already exists").arg(name));
+        fail(qtTrId("desktop.kit.named.already.exists").arg(name));
         return;
     }
     auto* process = new QProcess(context);
@@ -290,14 +320,14 @@ void import_kit(QObject* context, const Places& places, const QString& file,
             }
             const QString reason = last_line(output);
             done(reason.isEmpty()
-                     ? QStringLiteral("yume could not import the kit")
+                     ? qtTrId("desktop.yume.could.not.import.kit")
                      : reason);
         });
     QObject::connect(process, &QProcess::errorOccurred, context,
                      [process, done](QProcess::ProcessError error_kind) {
                          if (error_kind != QProcess::FailedToStart) return;
                          process->deleteLater();
-                         done(QStringLiteral("cannot run yume"));
+                         done(qtTrId("desktop.cannot.run.program"));
                      });
     process->start();
     // The code goes to yume's standard input, never its arguments or a file.
@@ -309,19 +339,39 @@ void import_kit(QObject* context, const Places& places, const QString& file,
 
 bool remove_kit(const Places& places, const QString& name, QString& error) {
     if (!valid_kit_name(name)) {
-        error = QStringLiteral("not a kit name");
+        error = qtTrId("desktop.not.a.kit.name");
         return false;
     }
-    const QFileInfo entry(QDir(places.kits).filePath(name));
-    if (!entry.exists() || entry.isSymLink() || !entry.isDir() ||
-        QDir(entry.absolutePath()) != QDir(places.kits)) {
-        error = QStringLiteral("%1 is not a kit directory").arg(name);
+    const FileDescriptor root(open_kit_root(places.kits));
+    struct stat root_info{};
+    if (root.get() < 0 || ::fstat(root.get(), &root_info) != 0 ||
+        root_info.st_uid != ::geteuid() || (root_info.st_mode & 0022) != 0) {
+        error = qtTrId("desktop.kits.root.unsafe");
         return false;
     }
-    if (!QDir(entry.filePath()).removeRecursively()) {
-        error = QStringLiteral("cannot remove %1").arg(entry.filePath());
+    const QByteArray encoded = QFile::encodeName(name);
+    const FileDescriptor kit(::openat(
+        root.get(), encoded.constData(),
+        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    struct stat kit_info{};
+    if (kit.get() < 0 || ::fstat(kit.get(), &kit_info) != 0 ||
+        kit_info.st_uid != ::geteuid() || (kit_info.st_mode & 0022) != 0) {
+        error = qtTrId("desktop.not.a.safe.kit.directory").arg(name);
         return false;
     }
+    struct stat current{};
+    if (::fstatat(root.get(), encoded.constData(), &current,
+                  AT_SYMLINK_NOFOLLOW) != 0 ||
+        current.st_dev != kit_info.st_dev || current.st_ino != kit_info.st_ino) {
+        error = qtTrId("desktop.kit.changed.while.checked");
+        return false;
+    }
+    if (!remove_directory_contents(kit.get()) ||
+        ::unlinkat(root.get(), encoded.constData(), AT_REMOVEDIR) != 0) {
+        error = qtTrId("desktop.cannot.remove.kit").arg(name);
+        return false;
+    }
+    static_cast<void>(::fsync(root.get()));
     return true;
 }
 
@@ -329,22 +379,18 @@ bool rename_kit(const Places& places, const QString& name,
                 const QString& new_name, QString& error) {
     error.clear();
     if (!valid_kit_name(name) || !valid_kit_name(new_name)) {
-        error = QStringLiteral(
-            "a kit name is 1 to 48 letters, digits, dots, "
-            "dashes or underscores, starting with a letter, digit or "
-            "underscore");
+        error = qtTrId("desktop.invalid.kit.name");
         return false;
     }
     if (name == new_name) {
-        error = QStringLiteral("choose a different kit name");
+        error = qtTrId("desktop.choose.a.different.kit.name");
         return false;
     }
     const FileDescriptor root(open_kit_root(places.kits));
     struct stat root_info{};
     if (root.get() < 0 || ::fstat(root.get(), &root_info) != 0 ||
         root_info.st_uid != ::geteuid() || (root_info.st_mode & 0022) != 0) {
-        error = QStringLiteral(
-            "the kits root is not a safe directory of this user");
+        error = qtTrId("desktop.kits.root.not.safe");
         return false;
     }
     const QByteArray source = QFile::encodeName(name);
@@ -355,7 +401,7 @@ bool rename_kit(const Places& places, const QString& name,
     struct stat kit_info{};
     if (kit.get() < 0 || ::fstat(kit.get(), &kit_info) != 0 ||
         kit_info.st_uid != ::geteuid() || (kit_info.st_mode & 0022) != 0) {
-        error = QStringLiteral("%1 is not a safe kit directory").arg(name);
+        error = qtTrId("desktop.not.a.safe.kit.directory").arg(name);
         return false;
     }
     const FileDescriptor config(
@@ -365,31 +411,25 @@ bool rename_kit(const Places& places, const QString& name,
     if (config.get() < 0 || ::fstat(config.get(), &config_info) != 0 ||
         !S_ISREG(config_info.st_mode) || config_info.st_uid != ::geteuid() ||
         config_info.st_size < 0 || config_info.st_size > kMaxConfigBytes) {
-        error = QStringLiteral(
-            "the kit's configuration is not a bounded regular file of this "
-            "user");
+        error = qtTrId("desktop.kit.configuration.not.bounded");
         return false;
     }
     QFile document;
     if (!document.open(config.get(), QIODevice::ReadOnly,
                        QFileDevice::DontCloseHandle)) {
-        error = QStringLiteral("cannot read the kit's configuration");
+        error = qtTrId("desktop.cannot.read.kit.configuration");
         return false;
     }
     const QByteArray bytes = document.read(kMaxConfigBytes + 1);
     const auto parsed = QJsonDocument::fromJson(bytes);
     if (document.error() != QFileDevice::NoError ||
         bytes.size() > kMaxConfigBytes || !parsed.isObject()) {
-        error = QStringLiteral(
-            "the kit's configuration cannot be checked before renaming");
+        error = qtTrId("desktop.kit.configuration.cannot.be.checked");
         return false;
     }
     const QString directory = QDir::cleanPath(QDir(places.kits).filePath(name));
     if (unsafe_rename_paths(parsed.object(), directory)) {
-        error = QStringLiteral(
-            "the configuration uses parent traversal, excessive nesting, or "
-            "an absolute path inside this kit; use relative kit paths without parent "
-            "traversal before renaming");
+        error = qtTrId("desktop.kit.configuration.unsafe.paths");
         return false;
     }
     // renameat2 is one atomic move, including the no-replacement decision.
@@ -398,8 +438,8 @@ bool rename_kit(const Places& places, const QString& name,
                   target.constData(), RENAME_NOREPLACE) != 0) {
         error =
             errno == EEXIST || errno == ENOTEMPTY
-                ? QStringLiteral("a kit named %1 already exists").arg(new_name)
-                : QStringLiteral("cannot rename %1 to %2").arg(name, new_name);
+                ? qtTrId("desktop.kit.named.already.exists").arg(new_name)
+                : qtTrId("desktop.cannot.rename.kit").arg(name, new_name);
         return false;
     }
     return true;

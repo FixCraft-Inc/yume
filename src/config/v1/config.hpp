@@ -56,6 +56,7 @@ inline constexpr std::uint32_t kMaxEpochBytes = 1U << 26;
 // records upstream. The session engine accepts the same values.
 inline constexpr std::uint32_t kDefaultCreditReturns = 2U;
 inline constexpr std::uint32_t kMaxCreditReturns = 8U;
+inline constexpr bool kDefaultIdleEpochRotation = false;
 // limits.idle_epoch_rotation, false by default: whether this side rotates a
 // key epoch that has carried records once it is 250 ms old, without waiting
 // for its next send. That saves the first send after a pause a round trip,

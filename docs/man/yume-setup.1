@@ -186,7 +186,11 @@ The client is added to the server's authorized-keys store with the kit's
 and
 .B udp
 services, and the store is replaced last.
-Nothing changes unless every step succeeds.
+A failure while flushing a directory after that replacement returns exit
+status 3.
+The store and the files it names remain visible, but directory
+durability was not confirmed.
+Validate the server tree before reloading it.
 Files added to the server tree keep the store's owner.
 A running daemon accepts the client once it reloads (SIGHUP).
 .TP

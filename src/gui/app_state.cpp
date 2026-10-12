@@ -104,10 +104,11 @@ AppState::AppState(std::optional<Places> places, QString setup_error,
     refreshKits();
     connect(&tuning_, &Tuning::changed, this, &AppState::tunnelChanged);
     const auto block_tuning = [this] {
-        tuning_.set_blocked(importing_ || renaming_);
+        tuning_.set_blocked(importing_ || renaming_ || removing_);
     };
     connect(this, &AppState::importChanged, this, block_tuning);
     connect(this, &AppState::renameChanged, this, block_tuning);
+    connect(this, &AppState::removeChanged, this, block_tuning);
     const QString saved = settings_.value(QStringLiteral("kit")).toString();
     set_kit_name(tunnels_.count(saved) ? saved
                  : tunnels_.empty()    ? QString()
@@ -162,7 +163,7 @@ bool AppState::action_stops() const {
 
 bool AppState::action_enabled() const {
     const QString now = phase();
-    return !renaming_ && !tuning_.busy() && setup_error_.isEmpty() &&
+    return !renaming_ && !removing_ && !tuning_.busy() && setup_error_.isEmpty() &&
            (now == QStringLiteral("stopped") ||
             now == QStringLiteral("running") ||
             now == QStringLiteral("starting"));
@@ -222,7 +223,7 @@ Tunnel* AppState::tunnel() const {
 }
 
 void AppState::refreshKits() {
-    if (!places_ || renaming_ || tuning_.busy()) return;
+    if (!places_ || renaming_ || removing_ || tuning_.busy()) return;
     std::map<QString, Tunnel*> next;
     for (auto& kit : list_kits(*places_)) {
         const auto found = tunnels_.find(kit.name);
@@ -410,12 +411,12 @@ bool AppState::dark() const {
 }
 
 void AppState::connectKit() {
-    if (renaming_ || tuning_.busy()) return;
+    if (renaming_ || removing_ || tuning_.busy()) return;
     if (auto* current = tunnel()) current->start();
 }
 
 void AppState::stopKit() {
-    if (tuning_.busy()) return;
+    if (removing_ || tuning_.busy()) return;
     if (auto* current = tunnel()) current->stop();
 }
 
@@ -440,7 +441,8 @@ QString AppState::suggestKitName(const QUrl& file) const {
 
 void AppState::importKit(const QUrl& file, const QString& name,
                          const QString& code) {
-    if (!places_ || importing_ || renaming_ || tuning_.busy()) return;
+    if (!places_ || importing_ || renaming_ || removing_ || tuning_.busy())
+        return;
     importing_ = true;
     import_failed_ = false;
     import_message_ = qtTrId("desktop.opening.the.kit");
@@ -462,26 +464,53 @@ void AppState::importKit(const QUrl& file, const QString& name,
 }
 
 void AppState::removeKit(const QString& name) {
-    if (renaming_ || tuning_.busy()) return;
+    if (importing_ || renaming_ || removing_ || tuning_.busy()) return;
     const auto found = tunnels_.find(name);
     if (!places_ || found == tunnels_.end()) return;
     if (found->second->phase() != Phase::Stopped) {
         set_notice(qtTrId("desktop.stop.before.removing.it").arg(name));
         return;
     }
-    QString error;
-    if (!remove_kit(*places_, name, error)) {
-        set_notice(error);
-        return;
-    }
-    set_notice(qtTrId("desktop.removed").arg(name));
-    refreshKits();
-    if (kit_name_.isEmpty() && !tunnels_.empty())
-        set_kit_name(tunnels_.begin()->first);
+    removing_ = true;
+    emit removeChanged();
+    emit tunnelChanged();
+    const auto finish = [this](const QString& message) {
+        removing_ = false;
+        emit removeChanged();
+        emit tunnelChanged();
+        set_notice(message);
+    };
+    const auto absent = [](const ControlReply& reply) {
+        return reply.outcome == ControlReply::Outcome::NotRunning &&
+               reply.peer_pid == 0;
+    };
+    control_exchange(
+        this, found->second->socket_path(), status_request(),
+        [this, name, finish, absent](const ControlReply& reply) {
+            const auto current = tunnels_.find(name);
+            if (!absent(reply) || current == tunnels_.end() ||
+                current->second->phase() != Phase::Stopped) {
+                finish(reply.ok()
+                           ? qtTrId("desktop.stop.before.removing.it").arg(name)
+                           : qtTrId("desktop.cannot.confirm.that.is.stopped")
+                                 .arg(name, reply.text));
+                return;
+            }
+            QString error;
+            if (!remove_kit(*places_, name, error)) {
+                finish(error);
+                return;
+            }
+            finish(qtTrId("desktop.removed").arg(name));
+            refreshKits();
+            if (kit_name_.isEmpty() && !tunnels_.empty())
+                set_kit_name(tunnels_.begin()->first);
+        });
 }
 
 void AppState::renameKit(const QString& name, const QString& new_name) {
-    if (!places_ || renaming_ || importing_ || tuning_.busy()) return;
+    if (!places_ || renaming_ || importing_ || removing_ || tuning_.busy())
+        return;
     const auto found = tunnels_.find(name);
     if (found == tunnels_.end()) return;
     if (!valid_kit_name(new_name) || name == new_name) {

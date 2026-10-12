@@ -1285,9 +1285,10 @@ ResourceLimits ParseLimits(const Json& limits) {
         }
     }
     const bool idle_epoch_rotation =
-        limits.contains("idle_epoch_rotation") &&
-        ReadBoolean(limits.at("idle_epoch_rotation"),
-                    "/limits/idle_epoch_rotation");
+        limits.contains("idle_epoch_rotation")
+            ? ReadBoolean(limits.at("idle_epoch_rotation"),
+                          "/limits/idle_epoch_rotation")
+            : kDefaultIdleEpochRotation;
     return ResourceLimits(max_frame_bytes, max_streams, max_queued_bytes,
                           max_pending_opens, max_rekey_jobs,
                           max_control_messages, max_packet_bytes,

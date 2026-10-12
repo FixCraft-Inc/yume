@@ -38,6 +38,7 @@
 #include "providers/system_resolver_helper.hpp"
 #include "providers/openssl_security_provider.hpp"
 #include "runtime/circuit_status.hpp"
+#include "runtime/cluster_state.hpp"
 #include "runtime/control_socket.hpp"
 #include "runtime/control_status_text.hpp"
 #include "runtime/message_log.hpp"
@@ -419,6 +420,22 @@ int validate(NativeCliRole role, const config::v1::Config& config,
     if (!credentials.ok()) {
         say(role, describe("credentials are invalid", credentials.status()));
         return exit_for(credentials.status());
+    }
+    if (credentials.value().cluster) {
+        const auto state = cluster::check_state_directory_writable(
+            credentials.value().cluster->state);
+        if (!state.ok()) {
+            say(role, describe("cluster state is not writable", state));
+            return exit_for(state);
+        }
+    }
+    if (credentials.value().circuits) {
+        const auto state = cluster::check_state_directory_writable(
+            credentials.value().circuits->state);
+        if (!state.ok()) {
+            say(role, describe("circuits state is not writable", state));
+            return exit_for(state);
+        }
     }
     const auto egress = NativeEgressPolicy::create(config.adapters(), base);
     if (!egress.ok()) {

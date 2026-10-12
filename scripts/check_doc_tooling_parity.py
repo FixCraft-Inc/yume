@@ -13,7 +13,9 @@ same, which is what this script is. A change to the tooling is made in YUME
 and copied across in the same change, and this comparison fails until it is.
 
 The BaseFWX checkout is ignored by YUME and absent from a fresh clone, so a
-missing `basefwx/` is reported as skipped rather than as a failure.
+missing `basefwx/` is reported as skipped rather than as a failure. The
+repository-specific source guide is intentionally not in this list; each
+project owns its own workflow and translation instructions.
 """
 
 from __future__ import annotations
@@ -37,7 +39,6 @@ SHARED = (
     "scripts/yume_docs.py",
     "scripts/test_yume_docs.py",
     "scripts/test_yume_doc_pipeline.py",
-    "docs/src/README.md",
     "scripts/yume_diagram_spec.py",
     "scripts/yume_diagram_ascii.py",
     "scripts/yume_diagram_svg.py",

@@ -35,8 +35,17 @@ engine::Result<std::optional<SavedState>> read_state(
 
 // Replaces the file atomically: writes path.new owner-only and flushes it,
 // renames it over path, then flushes the directory, which must exist. A
-// failure leaves any earlier file in place.
+// failure before the rename leaves any earlier file in place. If the rename
+// succeeds but the directory flush fails, the newer file remains and the
+// status reports that durability was not confirmed.
 engine::Status write_state(const std::filesystem::path& path,
                            const SavedState& state) noexcept;
+
+// Checks the directory operation that write_state needs after validation:
+// create and remove a private replacement beside the state file, then flush
+// the directory. This lets a service manager reject a read-only state path
+// before starting a daemon that would fail on its first accepted list.
+engine::Status check_state_directory_writable(
+    const std::filesystem::path& path) noexcept;
 
 }  // namespace yume::runtime::cluster

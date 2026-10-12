@@ -7,6 +7,7 @@
 #include "runtime/cluster_state.hpp"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <new>
 #include <span>
+#include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -133,6 +135,49 @@ Status write_state(const std::filesystem::path& path,
             return Status::diagnostic(
                 StatusCode::FailedPrecondition,
                 "the cluster state directory cannot be flushed");
+        }
+        return Status::success();
+    } catch (const std::bad_alloc&) {
+        return Status(StatusCode::ResourceExhausted);
+    } catch (...) {
+        return Status(StatusCode::Internal);
+    }
+}
+
+Status check_state_directory_writable(
+    const std::filesystem::path& path) noexcept {
+    try {
+        auto parent = path.parent_path();
+        if (parent.empty()) parent = ".";
+        const int directory =
+            ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (directory < 0) {
+            return Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                "the cluster state directory cannot be opened for writing");
+        }
+        const std::string probe =
+            ".yume-state-write-test-" + std::to_string(::getpid());
+        const int file = ::openat(directory, probe.c_str(),
+                                  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                                  S_IRUSR | S_IWUSR);
+        if (file < 0) {
+            const int error = errno;
+            (void)::close(directory);
+            return Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                error == EEXIST
+                    ? "the cluster state directory has a stale write probe"
+                    : "the cluster state directory is not writable");
+        }
+        const bool closed = ::close(file) == 0;
+        const bool removed = ::unlinkat(directory, probe.c_str(), 0) == 0;
+        const bool flushed = ::fsync(directory) == 0;
+        (void)::close(directory);
+        if (!closed || !removed || !flushed) {
+            return Status::diagnostic(
+                StatusCode::FailedPrecondition,
+                "the cluster state directory cannot be flushed after writing");
         }
         return Status::success();
     } catch (const std::bad_alloc&) {

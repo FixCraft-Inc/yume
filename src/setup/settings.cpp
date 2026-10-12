@@ -59,7 +59,13 @@ void tune_client(const std::filesystem::path& config,
     write_new_file(replacement, as_bytes(output));
     if (running_as_root()) give_to(replacement, owner);
     rename_replace(replacement, target);
-    fsync_directory(target.parent_path());
+    try {
+        fsync_directory(target.parent_path());
+    } catch (const SetupError& error) {
+        throw PartialCommitError(
+            "configuration was replaced, but directory durability was not "
+            "confirmed: " + std::string(error.what()));
+    }
 }
 
 }  // namespace yume::setup

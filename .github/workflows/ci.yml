@@ -26,6 +26,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout pinned BaseFWX documentation tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --no-checkout --filter=blob:none \
+            https://github.com/F1xGOD/basefwx.git basefwx
+          git -C basefwx fetch --depth=1 origin \
+            52523d71915d439d7c9fd3a5b00ad64e08c0d78f
+          git -C basefwx checkout --detach \
+            52523d71915d439d7c9fd3a5b00ad64e08c0d78f
+
       - name: Check the generated documents
         run: python3 scripts/yume_docs.py check --all-languages
 

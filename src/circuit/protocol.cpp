@@ -142,7 +142,12 @@ const std::array<std::size_t, 3>& buckets_of(Direction direction) noexcept {
     return direction == Direction::Forward ? kForwardBuckets : kBackwardBuckets;
 }
 
+bool is_known_direction(Direction direction) noexcept {
+    return direction == Direction::Forward || direction == Direction::Backward;
+}
+
 bool is_relay_capacity(Direction direction, std::size_t size) noexcept {
+    if (!is_known_direction(direction)) return false;
     const auto& buckets = buckets_of(direction);
     return std::any_of(buckets.begin(), buckets.end(),
                        [direction, size](std::size_t bucket) {
@@ -150,9 +155,8 @@ bool is_relay_capacity(Direction direction, std::size_t size) noexcept {
                        });
 }
 
-// The smallest and largest BEGIN payloads: an IPv4 destination, and a DNS
-// name of the longest canonical length.
-constexpr std::size_t kMinBeginPayload = 1U + 2U + 4U;
+// The largest BEGIN payload is a DNS destination with the longest canonical
+// name. The minimum depends on the encoded address kind.
 constexpr std::size_t kMaxBeginPayload = 1U + 2U + 1U + ytp1::kMaxDnsNameBytes;
 
 // The payload rules of each type, checked after the header. Offsets are those
@@ -168,9 +172,24 @@ Status check_payload(RelayType type,
     };
     switch (type) {
         case RelayType::Begin:
-            if (payload.size() < kMinBeginPayload ||
-                payload.size() > kMaxBeginPayload) {
+            if (payload.size() > kMaxBeginPayload || payload.size() < 3U) {
                 return {ErrorCode::InvalidLength, kLengthOffset};
+            }
+            switch (payload[0]) {
+                case static_cast<std::uint8_t>(ytp1::AddressKind::Ipv4):
+                    if (payload.size() < 1U + 2U + 4U)
+                        return {ErrorCode::InvalidLength, kLengthOffset};
+                    break;
+                case static_cast<std::uint8_t>(ytp1::AddressKind::Ipv6):
+                    if (payload.size() < 1U + 2U + 16U)
+                        return {ErrorCode::InvalidLength, kLengthOffset};
+                    break;
+                case static_cast<std::uint8_t>(ytp1::AddressKind::Dns):
+                    if (payload.size() < 1U + 2U + 1U + 1U)
+                        return {ErrorCode::InvalidLength, kLengthOffset};
+                    break;
+                default:
+                    break;
             }
             return Status::Success();
         case RelayType::Data:
@@ -425,6 +444,9 @@ Result<CreateView> DecodeCreate(std::span<const std::uint8_t> body) noexcept {
 
 Result<RelayMessageView> DecodeRelayMessage(
     Direction direction, std::span<const std::uint8_t> plaintext) noexcept {
+    if (!is_known_direction(direction)) {
+        return failure<RelayMessageView>(ErrorCode::WrongDirection, 0U);
+    }
     if (!is_relay_capacity(direction, plaintext.size())) {
         return failure<RelayMessageView>(ErrorCode::InvalidLength, 0U);
     }

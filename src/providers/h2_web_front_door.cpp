@@ -62,7 +62,7 @@ bool resources_exhausted(const Error& error) noexcept {
            is(error, errc::not_enough_memory);
 }
 
-Status listener_error(const Error& error) noexcept {
+Status listener_error(const Error& error, const Tcp::endpoint* endpoint = nullptr) noexcept {
     StatusCode code = StatusCode::Internal;
     std::string_view message = "native listener socket setup failed";
     if (is(error, errc::permission_denied) ||
@@ -80,7 +80,18 @@ Status listener_error(const Error& error) noexcept {
         code = StatusCode::InvalidArgument;
         message = "native listener address is unavailable or invalid";
     }
-    try { return Status(code, message); }
+    try {
+        std::string detail(message);
+        if (endpoint) {
+            detail += " for ";
+            detail += endpoint->address().to_string();
+            detail += ":";
+            detail += std::to_string(endpoint->port());
+        }
+        detail += ": ";
+        detail += error.message();
+        return Status(code, detail);
+    }
     catch (...) { return Status(code); }
 }
 
@@ -933,6 +944,7 @@ Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::build(
         return Result<std::shared_ptr<H2WebFrontDoor>>(Status::diagnostic(
             StatusCode::InvalidArgument,
             "admission replay lifetime is shorter than the connection deadline"));
+    const Tcp::endpoint original_endpoint = config.listen_endpoint;
     try {
         const auto carrier_status = validate_h2_duplex_carrier_limits(config.carrier_limits);
         if (!carrier_status.ok()) return Result<std::shared_ptr<H2WebFrontDoor>>(carrier_status);
@@ -953,15 +965,18 @@ Result<std::shared_ptr<H2WebFrontDoor>> H2WebFrontDoor::build(
         Error error;
         open_listening_socket(state->acceptor, state->config.listen_endpoint,
                               error);
-        if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error));
+        if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(
+            listener_error(error, &original_endpoint));
         state->endpoint = state->acceptor.local_endpoint(error);
-        if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error));
+        if (error) return Result<std::shared_ptr<H2WebFrontDoor>>(
+            listener_error(error, &original_endpoint));
         auto result = std::shared_ptr<H2WebFrontDoor>(new H2WebFrontDoor(state));
         state->start_accept();
         if (state->closing.load()) return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::Internal));
         return Result<std::shared_ptr<H2WebFrontDoor>>(std::move(result));
     } catch (const boost::system::system_error& error) {
-        return Result<std::shared_ptr<H2WebFrontDoor>>(listener_error(error.code()));
+        return Result<std::shared_ptr<H2WebFrontDoor>>(
+            listener_error(error.code(), &original_endpoint));
     } catch (const std::bad_alloc&) {
         return Result<std::shared_ptr<H2WebFrontDoor>>(Status(StatusCode::ResourceExhausted));
     } catch (...) {
@@ -1121,6 +1136,7 @@ Result<std::shared_ptr<H2WebListener>> H2WebListener::create(
         return Result<std::shared_ptr<H2WebListener>>(
             Status(StatusCode::InvalidArgument));
     context->require_context();
+    const Tcp::endpoint original_endpoint = listen_endpoint;
     try {
         auto state = std::make_shared<State>(context, std::move(dispatch),
                                              std::move(stopped));
@@ -1129,7 +1145,7 @@ Result<std::shared_ptr<H2WebListener>> H2WebListener::create(
         if (!error) state->endpoint = state->acceptor.local_endpoint(error);
         if (error)
             return Result<std::shared_ptr<H2WebListener>>(
-                listener_error(error));
+                listener_error(error, &original_endpoint));
         state->share =
             std::make_shared<H2WebListenerShare>(state->endpoint, limits);
         state->share->resume = [weak = std::weak_ptr<State>(state)] {
@@ -1143,7 +1159,7 @@ Result<std::shared_ptr<H2WebListener>> H2WebListener::create(
         return Result<std::shared_ptr<H2WebListener>>(std::move(result));
     } catch (const boost::system::system_error& error) {
         return Result<std::shared_ptr<H2WebListener>>(
-            listener_error(error.code()));
+            listener_error(error.code(), &original_endpoint));
     } catch (const std::bad_alloc&) {
         return Result<std::shared_ptr<H2WebListener>>(
             Status(StatusCode::ResourceExhausted));

@@ -134,6 +134,19 @@ void WriterContract() {
     assert(!yume::security::WriteFileExclusive0600(
         symlink_path, replacement, &write_error));
     assert(ReadAll(symlink_target) == "unchanged");
+
+    // Final-component O_NOFOLLOW does not protect an ancestor. The writer
+    // must walk every existing component by descriptor instead of reopening
+    // this path through the symlink.
+    const auto real_parent = base / "real" / "nested";
+    std::filesystem::create_directories(real_parent);
+    const auto ancestor_link = base / "ancestor-link";
+    assert(::symlink((base / "real").c_str(), ancestor_link.c_str()) == 0);
+    const auto escaped = ancestor_link / "nested" / "escaped.bin";
+    assert(!yume::security::WriteFileExclusive0600(
+        escaped, replacement, &write_error,
+        yume::security::PrivateParentPolicy::RequireExisting));
+    assert(!std::filesystem::exists(real_parent / "escaped.bin"));
 #endif
 
     std::filesystem::remove_all(base);

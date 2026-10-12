@@ -303,6 +303,19 @@ private slots:
         tuning->reload();
     }
 
+    void tuning_reports_partial_commit_after_setup_publish() {
+        auto* tuning = qobject_cast<Tuning*>(state_->tuning());
+        QVERIFY(tuning && tuning->ready());
+        tuning->choose("stealth-16");
+        qputenv("YUME_FAKE_SETUP_PARTIAL", "1");
+        tuning->apply_preset();
+        QTRY_VERIFY_WITH_TIMEOUT(!tuning->busy(), 5000);
+        qunsetenv("YUME_FAKE_SETUP_PARTIAL");
+        QVERIFY2(tuning->message().contains("directory flush was not confirmed"),
+                 qPrintable(tuning->message()));
+        QCOMPARE(tuning->limits().value("max_epoch_bytes").toInt(), 16777216);
+    }
+
     void tuning_keyboard_warning_and_restart() {
         state_->set_page("posture");
         QTest::qWait(200);
@@ -612,6 +625,35 @@ private slots:
         QCOMPARE(moved_config.readAll(), original);
     }
 
+    void kit_directory_remove_is_pinned_to_the_kits_root() {
+        if (g_rtl) QSKIP("the left-to-right run covers kit storage");
+        QTemporaryDir storage;
+        QVERIFY(storage.isValid());
+        Places places{storage.filePath(QStringLiteral("kits")), {}, {}};
+        QString error;
+        QVERIFY(ensure_private_directory(places.kits, error));
+        const QString kit = places.kits + QStringLiteral("/remove-me");
+        QVERIFY(ensure_private_directory(kit, error));
+        QVERIFY(QDir().mkpath(kit + QStringLiteral("/nested")));
+        write_json(kit + QStringLiteral("/yume.json"),
+                   {{QStringLiteral("role"), QStringLiteral("client")} });
+        QFile nested(kit + QStringLiteral("/nested/secret"));
+        QVERIFY(nested.open(QIODevice::WriteOnly));
+        QVERIFY(nested.write("private") == 7);
+        nested.close();
+        QVERIFY(remove_kit(places, QStringLiteral("remove-me"), error));
+        QVERIFY2(!QFileInfo::exists(kit), qPrintable(error));
+
+        const QString outside = storage.filePath(QStringLiteral("outside"));
+        QVERIFY(QDir().mkpath(outside));
+        const QString link = places.kits + QStringLiteral("/linked");
+        QVERIFY(::symlink(QFile::encodeName(outside).constData(),
+                          QFile::encodeName(link).constData()) == 0);
+        QVERIFY(!remove_kit(places, QStringLiteral("linked"), error));
+        QVERIFY(QFileInfo(link).isSymLink());
+        QVERIFY(QDir(outside).exists());
+    }
+
     void keyboard_kit_rename_cancels_and_keeps_selection() {
         QCOMPARE(state_->phase(), QStringLiteral("stopped"));
         state_->set_page(QStringLiteral("connect"));
@@ -791,6 +833,45 @@ private slots:
         QVERIFY(QFileInfo::exists(directory + QStringLiteral("/yume.json")));
         QVERIFY(
             local.notice().contains(QStringLiteral("Stop late-destination")));
+        client.terminate();
+        QVERIFY(client.waitForFinished(10000));
+    }
+
+    void kit_remove_rechecks_a_client_started_elsewhere() {
+        if (g_rtl) QSKIP("the left-to-right run covers control checks");
+        QString error;
+        const auto places =
+            find_places(QStringLiteral(YUME_GUI_FAKE_YUME), error);
+        QVERIFY2(places.has_value(), qPrintable(error));
+        const QString name = QStringLiteral("late-remove");
+        const QString directory = QDir(places->kits).filePath(name);
+        QVERIFY(QDir().mkpath(directory));
+        write_json(directory + QStringLiteral("/yume.json"),
+                   {{QStringLiteral("endpoint"),
+                     QJsonObject{{QStringLiteral("host"),
+                                  QStringLiteral("example.net")},
+                                 {QStringLiteral("port"), 443}}}});
+        AppState local(places, {}, QStringLiteral("light"));
+        local.set_kit_name(name);
+        QVERIFY(local.tunnel());
+        local.tunnel()->poll(60'000);
+        QTest::qWait(100);
+        QCOMPARE(local.phase(), QStringLiteral("stopped"));
+        QProcess client;
+        client.setProgram(QStringLiteral(YUME_GUI_FAKE_YUME));
+        client.setArguments({QStringLiteral("--config"),
+                             directory + QStringLiteral("/yume.json"),
+                             QStringLiteral("--control-socket"),
+                             local.tunnel()->socket_path()});
+        client.start();
+        QVERIFY(client.waitForStarted());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            QFileInfo::exists(local.tunnel()->socket_path()), 5000);
+        QCOMPARE(local.phase(), QStringLiteral("stopped"));
+        local.removeKit(name);
+        QTRY_VERIFY_WITH_TIMEOUT(!local.removing(), 5000);
+        QVERIFY(QFileInfo::exists(directory + QStringLiteral("/yume.json")));
+        QVERIFY(local.notice().contains(QStringLiteral("Stop late-remove")));
         client.terminate();
         QVERIFY(client.waitForFinished(10000));
     }

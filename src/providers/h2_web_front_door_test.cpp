@@ -1031,7 +1031,9 @@ void test_listener_os_failure_classification_and_retry() {
             const auto failed = H2WebFrontDoor::create(fixture.runtime.context(), config,
                 fixture.tls, fixture.cover, fixture.replay, kAdmissionKey);
             const int unconsumed = std::exchange(injected_bind_error, 0);
-            CHECK(unconsumed == 0 && !failed.ok() && failed.status().code() == expected);
+            CHECK(unconsumed == 0 && !failed.ok() &&
+                  failed.status().code() == expected &&
+                  failed.status().message().find("127.0.0.1:") != std::string::npos);
             auto retry = take(H2WebFrontDoor::create(fixture.runtime.context(), config,
                 fixture.tls, fixture.cover, fixture.replay, kAdmissionKey));
             CHECK(retry->local_endpoint().port() != 0U);

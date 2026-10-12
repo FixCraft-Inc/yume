@@ -30,7 +30,7 @@ Card {
 
     RowLayout {
         Layout.fillWidth: true
-        enabled: panel.editor.ready && !panel.editor.busy && !App.renaming && !App.importing
+        enabled: panel.editor.ready && !panel.editor.busy && !App.renaming && !App.removing && !App.importing
         spacing: 8
         AppComboBox {
             id: combinations

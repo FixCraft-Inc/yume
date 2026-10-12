@@ -35,6 +35,21 @@ TUNING = {entry["id"]: entry["limits"] for entry in PRESETS["presets"]}
 # Every private key a kit holds is larger, so a run under it fails while it
 # writes its first key, after its staging directory exists.
 SMALL_FILE_LIMIT = 4096
+FSYNC_SHIM_SOURCE = ROOT / "tests/fixtures/fsync_after_rename_shim.c"
+
+
+def fsync_shim_path() -> Path:
+    path = Path(tempfile.gettempdir()) / f"yume-fsync-after-rename-{os.getpid()}.so"
+    if path.exists():
+        return path
+    compiled = subprocess.run(
+        ["cc", "-shared", "-fPIC", "-o", str(path), str(FSYNC_SHIM_SOURCE), "-ldl"],
+        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=False,
+    )
+    if compiled.returncode != 0:
+        raise RuntimeError(f"fsync test shim failed to build: {compiled.stderr}")
+    return path
 
 
 def limit_file_size() -> None:
@@ -55,6 +70,7 @@ class YumeSetupTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temporary = tempfile.TemporaryDirectory()
         cls.base = Path(cls.temporary.name)
+        cls.fsync_shim = fsync_shim_path()
         cls.kit = cls.base / "kit"
         result = cls.run_tool(
             "init",
@@ -83,6 +99,24 @@ class YumeSetupTests(unittest.TestCase):
             stderr=subprocess.PIPE,
             check=False,
             preexec_fn=limit_file_size if small_files else None,
+            timeout=30,
+        )
+
+    @classmethod
+    def run_with_directory_fsync_failure(
+        cls, target: str, *arguments: str
+    ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["LD_PRELOAD"] = str(fsync_shim_path())
+        environment["YUME_FSYNC_FAILURE_TARGET"] = target
+        return subprocess.run(
+            [str(PROGRAMS["setup"]), *arguments],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
             timeout=30,
         )
 
@@ -544,12 +578,29 @@ class YumeSetupTests(unittest.TestCase):
             self.assertEqual(added.returncode, 0, added.stderr)
             limits = json.loads((base / "tablet/yume.json").read_text())["limits"]
             self.assertEqual({key: limits[key] for key in fast}, fast)
+
             refused = self.run_tool(
                 "init", "--host", "setup.example.test", "--output", str(base / "refused"),
                 "--preset", "unlimited",
             )
             self.assertEqual(refused.returncode, 2, refused.stdout)
             self.assertFalse((base / "refused").exists())
+
+    def test_default_preset_matches_parser_optional_limit_defaults(self) -> None:
+        header = (ROOT / "src/config/v1/config.hpp").read_text(encoding="utf-8")
+        epoch_shift = int(re.search(
+            r"kMinEpochBytes = 1U << (\d+)", header
+        ).group(1))
+        credit_default = int(re.search(
+            r"kDefaultCreditReturns = (\d+)U", header
+        ).group(1))
+        idle_default = re.search(
+            r"kDefaultIdleEpochRotation = (true|false)", header
+        ).group(1) == "true"
+        default = TUNING[PRESETS["default"]]
+        self.assertEqual(default["max_epoch_bytes"], 1 << epoch_shift)
+        self.assertEqual(default["credit_returns_per_window"], credit_default)
+        self.assertEqual(default["idle_epoch_rotation"], idle_default)
 
     def test_tune_presets_preserve_other_settings(self) -> None:
         original = json.loads((self.kit / "client/yume.json").read_text())
@@ -648,6 +699,46 @@ class YumeSetupTests(unittest.TestCase):
             self.assertIn("cannot write", result.stderr)
             self.assertEqual(path.read_bytes(), before)
             self.assertEqual(list(Path(temporary).iterdir()), [path])
+
+    def test_tune_reports_partial_commit_after_publish_fsync_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "yume.json"
+            path.write_bytes((self.kit / "client/yume.json").read_bytes())
+            expected = json.loads(path.read_text())
+            expected["limits"].update(TUNING["fast"])
+            result = self.run_with_directory_fsync_failure(
+                "yume.json", "tune", "--config", str(path), "--preset", "fast"
+            )
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertIn("durability was not confirmed", result.stderr)
+            self.assertEqual(json.loads(path.read_text()), expected)
+            self.assertEqual(list(Path(temporary).glob(".yume-setup-staging-*")), [])
+
+    def test_add_client_keeps_published_files_after_store_fsync_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            kit = base / "kit"
+            created = self.run_tool(
+                "init", "--host", "setup.example.test", "--output", str(kit),
+                "--client-name", "phone",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            server = kit / "server"
+            bundle = base / "tablet"
+            result = self.run_with_directory_fsync_failure(
+                "authorized-keys.json", "add-client", "--server", str(server),
+                "--host", "setup.example.test", "--output", str(bundle),
+                "--client-name", "tablet",
+            )
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertIn("durability was not confirmed", result.stderr)
+            store = json.loads(
+                (server / "credentials/authorized-keys.json").read_text()
+            )
+            entry = next(item for item in store["keys"] if item["name"] == "tablet")
+            self.assertTrue(bundle.is_dir())
+            self.assertTrue((server / "credentials" / entry["identity"]["file"]).is_file())
+            self.assertTrue((server / "credentials" / entry["access_psk"]["file"]).is_file())
 
     def test_remove_client_reverses_add_client(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1122,6 +1213,21 @@ class ClusterSetupTests(unittest.TestCase):
                                     for kind in ("admission.key", "inbound.psk", "outbound.psk")))
         # The removed node can join again.
         self.add("south")
+
+    def test_cluster_add_keeps_partial_publish_after_fsync_failure(self) -> None:
+        self.add("north")
+        result = YumeSetupTests.run_with_directory_fsync_failure(
+            "cluster.json", "cluster-add", "--cluster", str(self.operator),
+            "--server", str(self.servers["south"]), "--name", "south",
+            "--host", self.HOSTS["south"], "--address", self.ADDRESSES["south"],
+        )
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("durability was not confirmed", result.stderr)
+        state = json.loads((self.operator / "cluster.json").read_text())
+        self.assertEqual({node["name"] for node in state["nodes"]}, {"north", "south"})
+        peers = self.servers["south"] / "credentials/cluster/peers"
+        self.assertTrue((peers / "north-outbound.psk").is_file())
+        self.assertTrue((self.servers["south"] / "credentials/cluster/operator.pub.pem").is_file())
 
 
 def main() -> int:

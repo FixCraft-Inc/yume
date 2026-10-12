@@ -5,7 +5,8 @@
  */
 
 // yume-setup: kits, client bundles and cluster lists. Exit status 0 on
-// success, 1 when the action fails and 2 for a usage error.
+// success, 1 when the action fails, 2 for a usage error, and 3 when an
+// atomic replacement was published but its final directory flush failed.
 
 #include <algorithm>
 #include <array>
@@ -35,6 +36,7 @@ using namespace yume::setup;
 
 constexpr int kExitFailure = 1;
 constexpr int kExitUsage = 2;
+constexpr int kExitPartialCommit = 3;
 
 struct Action final {
     std::string_view name;
@@ -344,6 +346,9 @@ int main(int argc, char** argv) {
     } catch (const UsageError& error) {
         usage_error(error.message);
         return kExitUsage;
+    } catch (const PartialCommitError& error) {
+        std::fprintf(stderr, "yume-setup: %s\n", error.what());
+        return kExitPartialCommit;
     } catch (const std::bad_alloc&) {
         std::fputs("yume-setup: out of memory\n", stderr);
     } catch (const std::exception& error) {

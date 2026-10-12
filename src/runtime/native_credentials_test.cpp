@@ -1116,6 +1116,12 @@ void test_cluster_membership(Fixture& fixture) {
     // The serial this node saved is a floor across restarts.
     namespace saved = yume::runtime::cluster;
     const auto state_path = root / "cluster-state.json";
+    check(saved::check_state_directory_writable(state_path).ok(),
+          "the writable state directory was not accepted");
+    check(!saved::check_state_directory_writable(
+                  root / "missing" / "cluster-state.json")
+                  .ok(),
+          "a missing state directory was accepted");
     check(saved::write_state(state_path, {operator_key.id, 3U}).ok(),
           "the cluster state was not written");
     auto again = take(load(config));

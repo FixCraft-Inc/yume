@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -29,6 +30,9 @@ def main() -> int:
     else:
         return 2
     path.write_text(json.dumps(config))
+    if "YUME_FAKE_SETUP_PARTIAL" in os.environ:
+        print("directory durability was not confirmed")
+        return 3
     return 0
 
 

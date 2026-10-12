@@ -142,8 +142,9 @@ Node load_node(const keys::KeyContext& context, const fs::path& server_path) {
 // Files a cluster command creates and stores it replaces. New files are
 // created exclusively and replacements are staged beside their targets, so
 // nothing a node reads changes until commit(). Until then, rollback()
-// removes everything created. After a commit that fails part way, the nodes
-// it names may need another run.
+// removes everything created. Once a replacement is renamed, the published
+// record may reference the created files, so a later flush failure preserves
+// those files and reports a partial commit.
 class Changes final {
 public:
     Changes() = default;
@@ -188,7 +189,15 @@ public:
         for (const auto& path : created_) fsync_directory(path.parent_path());
         for (const auto& [temporary, path] : replacements_) {
             rename_replace(temporary, path);
-            fsync_directory(path.parent_path());
+            published_ = true;
+            try {
+                fsync_directory(path.parent_path());
+            } catch (const SetupError& error) {
+                throw PartialCommitError(
+                    "cluster changes were published, but directory "
+                    "durability was not confirmed: " +
+                    std::string(error.what()));
+            }
         }
         replacements_.clear();
         created_.clear();
@@ -198,17 +207,20 @@ public:
     void rollback() noexcept {
         for (const auto& [temporary, path] : replacements_)
             remove_file(temporary);
-        for (auto it = created_.rbegin(); it != created_.rend(); ++it) {
-            std::error_code ignored;
-            if (directory_at(*it) && !fs::is_symlink(*it, ignored)) {
-                static_cast<void>(::rmdir(it->c_str()));
-            } else {
-                remove_file(*it);
+        if (!published_) {
+            for (auto it = created_.rbegin(); it != created_.rend(); ++it) {
+                std::error_code ignored;
+                if (directory_at(*it) && !fs::is_symlink(*it, ignored)) {
+                    static_cast<void>(::rmdir(it->c_str()));
+                } else {
+                    remove_file(*it);
+                }
             }
         }
         replacements_.clear();
         created_.clear();
         owners_.clear();
+        published_ = false;
     }
 
 private:
@@ -220,6 +232,7 @@ private:
     std::vector<fs::path> created_;
     std::vector<std::pair<fs::path, fs::path>> replacements_;
     std::vector<std::pair<fs::path, Owner>> owners_;
+    bool published_{false};
 };
 
 struct ClusterRecord final {

@@ -60,6 +60,7 @@ private:
     bool expert_unlocked_{false};
     bool restart_{false};
     bool saved_{false};
+    bool partial_commit_{false};
     bool blocked_{false};
     Stage stage_{Stage::Idle};
     QString message_;

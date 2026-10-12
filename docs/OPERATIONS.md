@@ -34,9 +34,12 @@ yume-setup add-client --server yume-kit/server --host vpn.example.net \
 
 `add-client` writes a new bundle, the client's public key and PSK under the
 store's `authorized/` directory, and a replacement `authorized-keys.json` that
-grants the kit's standard `tcp` and `udp` services. It changes nothing unless
-every step succeeds, and files it adds to the server tree keep the store's
-owner. `--host` must be the name the server certificate was issued for.
+grants the kit's standard `tcp` and `udp` services. The store is replaced last,
+but a failure while flushing a directory after that replacement returns exit
+status 3. The store and the files it names remain visible, but directory
+durability was not confirmed. Validate the server tree before reloading it.
+Files it adds to the server tree keep the store's owner. `--host`
+must be the name the server certificate was issued for.
 `--max-sessions` and `--weight` are optional, and `init` accepts both, as well
 as `--max-egress-mbps` for the server and `--preset` for the kit's tuning
 (the [configuration reference](CONFIGURATION.md#tuning-presets) lists the
@@ -93,6 +96,11 @@ start or reload until it has a newer list. `cluster-remove --cluster operator
 --name south` takes a server out; sign and deploy afterwards. With
 `control.socket` set, `yumed --config PATH --status` shows each link.
 [Cluster 1](protocol/CLUSTER_1.md) gives the formats and limits.
+
+The generated cluster configuration uses `cluster-state.json` beside
+`yumed.json`. For a packaged server under `/etc/yume`, set its `cluster.state`
+file to `/var/lib/yume/cluster-state.json`, because the unit makes `/etc/yume`
+read-only.
 
 ## Run the daemon as a service
 

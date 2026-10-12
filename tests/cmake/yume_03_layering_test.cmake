@@ -196,13 +196,18 @@ foreach(_case IN ITEMS
         "providers/forbidden.cpp|test_support/tls_identity.hpp"
         "runtime/forbidden.cpp|test_support/allocation_failure.hpp"
         "abi/yume_c.cpp|runtime/native_endpoint.hpp"
-        "test_support/forbidden.hpp|runtime/native_endpoint.hpp")
+        "test_support/forbidden.hpp|runtime/native_endpoint.hpp"
+        "runtime/relative.hpp|../runtime/native_endpoint.hpp")
     string(REPLACE "|" ";" _parts "${_case}")
     list(GET _parts 0 _file)
     list(GET _parts 1 _include)
     string(REGEX MATCH "^[^/]+" _layer "${_file}")
     file(WRITE "${YUME_TEST_ROOT}/src/${_file}" "#include \"${_include}\"\n")
-    run_layering_check(FALSE "Layering violation: src/${_layer}/")
+    if(_include MATCHES "^\\.\\./")
+        run_layering_check(FALSE "relative include")
+    else()
+        run_layering_check(FALSE "Layering violation: src/${_layer}/")
+    endif()
     file(REMOVE "${YUME_TEST_ROOT}/src/${_file}")
 endforeach()
 

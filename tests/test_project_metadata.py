@@ -320,6 +320,8 @@ class MetadataTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("owned by yume with mode 0600", readme)
         self.assertIn("yume-doctor --config /etc/yume/yumed.json", readme)
+        self.assertIn("/var/lib/yume/cluster-state.json", readme)
+        self.assertIn("/etc/yume` read-only", readme)
 
     def test_installed_documentation_keeps_authoritative_links(self) -> None:
         for document in (

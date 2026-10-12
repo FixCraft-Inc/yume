@@ -90,8 +90,10 @@ client immediately afterwards; stop clients using the kit before renaming it
 from another window or command line.
 
 Removing a kit deletes its
-directory, keys included, after a second confirmation, and only while it is
-stopped.
+directory, keys included, after a second confirmation, and only after the GUI
+gets a fresh stopped reply from that kit's control socket. An unanswered,
+malformed or refused reply leaves the kit in place. Stop clients using the kit
+in other windows or on the command line before removing it.
 
 ## The pages
 

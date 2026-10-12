@@ -40,7 +40,7 @@ public:
                 {Outcome::TimedOut,
                  {},
                  {},
-                 QStringLiteral("the control socket did not answer in time")});
+                 qtTrId("desktop.control.socket.timed.out")});
         });
         connect(socket_, &QLocalSocket::connected, this,
                 [this] { on_connected(); });
@@ -72,7 +72,7 @@ private:
                 {Outcome::Refused,
                  {},
                  {},
-                 QStringLiteral("the control socket belongs to another user")});
+                 qtTrId("desktop.control.socket.belongs.to.another.user")});
             return;
         }
         connected_ = true;
@@ -86,7 +86,7 @@ private:
             finish({Outcome::Malformed,
                     {},
                     {},
-                    QStringLiteral("the control reply is too large")});
+                    qtTrId("desktop.control.reply.too.large")});
         }
     }
 
@@ -106,14 +106,14 @@ private:
                     {Outcome::NotRunning,
                      {},
                      {},
-                     QStringLiteral("nothing listens on the control socket")});
+                     qtTrId("desktop.control.socket.has.no.listener")});
                 return;
             case QLocalSocket::SocketAccessError:
                 finish(
                     {Outcome::Refused,
                      {},
                      {},
-                     QStringLiteral("the control socket is not accessible")});
+                     qtTrId("desktop.control.socket.inaccessible")});
                 return;
             default:
                 finish({Outcome::Refused, {}, {}, socket_->errorString()});
@@ -129,7 +129,7 @@ private:
             finish({Outcome::Refused,
                     {},
                     {},
-                    QStringLiteral("the control connection closed before peer verification")});
+                    qtTrId("desktop.control.connection.closed.before.peer.verification")});
             return;
         }
         if (reply_.isEmpty() || !reply_.endsWith('\n') ||
@@ -137,7 +137,7 @@ private:
             finish({Outcome::Malformed,
                     {},
                     {},
-                    QStringLiteral("the control reply is incomplete")});
+                    qtTrId("desktop.control.reply.incomplete")});
             return;
         }
         QJsonParseError error{};
@@ -148,7 +148,7 @@ private:
             finish({Outcome::Malformed,
                     {},
                     {},
-                    QStringLiteral("the reply is not control protocol 1")});
+                    qtTrId("desktop.control.reply.not.protocol.one")});
             return;
         }
         const auto value = document.object();
@@ -196,7 +196,7 @@ void control_exchange(QObject* context, const QString& path,
             done({Outcome::Malformed,
                   {},
                   {},
-                  QStringLiteral("the request is too long")});
+                  qtTrId("desktop.control.request.too.long")});
         });
         return;
     }

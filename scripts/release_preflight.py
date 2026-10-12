@@ -434,6 +434,44 @@ def require_no_runtime_search_path(data: bytes, description: str) -> None:
                 "patch must be embedded in the release binary")
 
 
+def require_release_hardening(data: bytes, description: str) -> None:
+    """Check the ELF properties supplied by the release CMake profile."""
+    require_elf_amd64(data, description)
+    program_offset = int.from_bytes(data[32:40], "little")
+    entry_size = int.from_bytes(data[54:56], "little")
+    entry_count = int.from_bytes(data[56:58], "little")
+    relro = False
+    dynamic_offset = None
+    dynamic_size = None
+    for index in range(entry_count):
+        offset = program_offset + index * entry_size
+        require(offset <= len(data) and entry_size <= len(data) - offset,
+                f"{description} has truncated ELF program headers")
+        kind = int.from_bytes(data[offset:offset + 4], "little")
+        if kind == 0x6474E552:  # PT_GNU_RELRO
+            relro = True
+        elif kind == 2:  # PT_DYNAMIC
+            dynamic_offset = int.from_bytes(data[offset + 8:offset + 16], "little")
+            dynamic_size = int.from_bytes(data[offset + 32:offset + 40], "little")
+    require(relro, f"{description} lacks a GNU_RELRO segment")
+    require(dynamic_offset is not None and dynamic_size is not None and
+            dynamic_size % 16 == 0 and dynamic_offset <= len(data) and
+            dynamic_size <= len(data) - dynamic_offset,
+            f"{description} has invalid ELF dynamic metadata")
+    bind_now = False
+    for item in range(dynamic_offset, dynamic_offset + dynamic_size, 16):
+        tag = int.from_bytes(data[item:item + 8], "little")
+        value = int.from_bytes(data[item + 8:item + 16], "little")
+        if tag == 24 or (tag == 30 and value & 8):  # DT_BIND_NOW / DF_BIND_NOW
+            bind_now = True
+            break
+        if tag == 0:
+            break
+    require(bind_now, f"{description} lacks BIND_NOW")
+    require(b"__stack_chk_fail" in data,
+            f"{description} lacks stack-protector references")
+
+
 def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
                     transport: dict[str, object]) -> dict[str, object]:
     require(bundle.is_file() and not bundle.is_symlink(), f"Missing release bundle: {bundle}")
@@ -465,6 +503,7 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     for name in ("yume", "yume-setup", "yume-doctor"):
         require_glibc_amd64(payloads[name], f"bundled {name}")
         require_no_runtime_search_path(payloads[name], f"bundled {name}")
+        require_release_hardening(payloads[name], f"bundled {name}")
     manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
     require(isinstance(manifest, dict), "Bundle manifest must be an object")
     require(manifest.get("schema") == 1, "Bundle manifest schema mismatch")
@@ -533,6 +572,7 @@ def validate_artifacts(directory: pathlib.Path, version: str, commit: str,
     server_bytes = server.read_bytes()
     require_glibc_amd64(server_bytes, "yumed server artifact")
     require_no_runtime_search_path(server_bytes, "yumed server artifact")
+    require_release_hardening(server_bytes, "yumed server artifact")
     server_metadata = manifest.get("standalone_server", {})
     require(isinstance(server_metadata, dict),
             "Bundle manifest standalone server metadata is missing")

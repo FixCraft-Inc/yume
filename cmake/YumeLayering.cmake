@@ -185,6 +185,11 @@ function(yume_check_03_source_layering source_dir)
             set(_allowed ${_${_layer}_may_include})
         endif()
         file(READ "${source_dir}/${_relative}" _contents)
+        if(_contents MATCHES "#[ \t]*include[ \t]*[<\"][^>\"]*\\.\\./")
+            message(FATAL_ERROR
+                "Layering violation: ${_relative} uses a relative include "
+                "with a parent component; include the owning layer by name.")
+        endif()
         string(REGEX MATCHALL "#[ \t]*include[ \t]*[<\"][A-Za-z0-9_]+/"
             _includes "${_contents}")
         foreach(_include IN LISTS _includes)

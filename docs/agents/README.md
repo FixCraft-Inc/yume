@@ -32,6 +32,10 @@ layers.
 | C ABI and endpoint backend | [ABI](../ABI.md), header, symbol map, candidate Debian symbols, C/C++ and stream integration tests |
 | Config parsers | Both roles' readers, writers, validation and startup consumers, paired rejection/rollback tests, the [configuration reference](../CONFIGURATION.md), the complete documents in `tests/fixtures/config` that `yume_config_v1_closure` probes, CLI help and manuals |
 | Server policy and cover | [Operations](../OPERATIONS.md), [YTP/1 development guide](../development/ytp1/README.md), daemon manual |
+| yume-setup, yume-doctor or generated kit layout | The setup and doctor manuals, [Operations](../OPERATIONS.md), [cluster 1](../protocol/CLUSTER_1.md), quickstarts, and the setup/doctor tests |
+| Packaging, systemd or installed paths | Debian README and unit, [packaging](../PACKAGING.md), [Operations](../OPERATIONS.md), and every path the generated configuration writes at runtime |
+| Cover or outer-carrier behavior | [Stealth](../STEALTH.md), including its remaining differences, and [transport profiles](../TRANSPORT_PROFILES.md) |
+| UI text | `translations/catalog.json`, translation validation/generation, and translation tests |
 | YTP/1 engine and providers | [Architecture](../ARCHITECTURE.md), [YTP/1](../protocol/YTP_1.md), [development guide](../development/ytp1/README.md), provider tests |
 | Product version or packaging | Version header, package metadata, README, [status](../IMPLEMENTATION_STATUS.md), [packaging](../PACKAGING.md), metadata tests |
 | Dependencies | Manifest, dependency/SBOM check, third-party notices |
@@ -56,6 +60,10 @@ in [development notes](../release/CHANGELOG.md).
 Documentation is generated from `docs/src/en_US/`: edit the source a
 generated file's banner names and run the commands in
 [the source guide](../src/README.md).
+
+Search `docs/src/en_US` and the touched source comments for every name or
+guarantee you changed. A passing drift check confirms generated output, not
+that the written behavior still agrees with the live code.
 
 [CONTRIBUTING](../../CONTRIBUTING.md#documentation-and-review) says what
 public documents hold and where task state and evidence go instead. A fresh

@@ -60,6 +60,7 @@ class AppState final : public QObject {
     Q_PROPERTY(bool dark READ dark NOTIFY themeChanged)
     Q_PROPERTY(bool importing READ importing NOTIFY importChanged)
     Q_PROPERTY(bool renaming READ renaming NOTIFY renameChanged)
+    Q_PROPERTY(bool removing READ removing NOTIFY removeChanged)
     Q_PROPERTY(QString importMessage READ import_message NOTIFY importChanged)
     Q_PROPERTY(bool importFailed READ import_failed NOTIFY importChanged)
     Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
@@ -116,6 +117,7 @@ public:
     bool dark() const;
     bool importing() const { return importing_; }
     bool renaming() const { return renaming_; }
+    bool removing() const { return removing_; }
     QString import_message() const { return import_message_; }
     bool import_failed() const { return import_failed_; }
     QString notice() const { return notice_; }
@@ -173,6 +175,7 @@ signals:
     void themeChanged();
     void importChanged();
     void renameChanged();
+    void removeChanged();
     void noticeChanged();
     void trayChanged();
 
@@ -202,6 +205,7 @@ private:
     bool messages_in_flight_{false};
     bool importing_{false};
     bool renaming_{false};
+    bool removing_{false};
     QString import_message_;
     bool import_failed_{false};
     QString notice_;

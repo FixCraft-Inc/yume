@@ -2488,6 +2488,12 @@
       <extracomment>source: Settings were refused: %1; context: Desktop tuning.cpp; owner: src/gui/tuning.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
       <translation>設定が拒否されました: %1</translation>
     </message>
+    <message id="desktop.settings.saved.but.durability.was.not.confirmed">
+      <location filename="catalog:desktop.settings.saved.but.durability.was.not.confirmed" line="1"/>
+      <source></source>
+      <extracomment>source: Settings were saved, but the directory flush was not confirmed. They will be used after the client restarts.; context: Desktop tuning.cpp; owner: src/gui/tuning.cpp; Desktop UI message; preserve technical terms and formatting.</extracomment>
+      <translation>設定は保存されましたが、ディレクトリのフラッシュを確認できませんでした。クライアントの再起動後に使用されます。</translation>
+    </message>
     <message id="desktop.shorter.route.accepted">
       <location filename="catalog:desktop.shorter.route.accepted" line="1"/>
       <source></source>
@@ -2937,6 +2943,210 @@
       <source></source>
       <extracomment>source: %1-hop route; context: Desktop GUI; owner: src/gui; Desktop runtime message; preserve technical terms and placeholder order/signature.</extracomment>
       <translation>%1 ホップの経路</translation>
+    </message>
+    <message id="desktop.control.socket.timed.out">
+      <location filename="catalog:desktop.control.socket.timed.out" line="1"/>
+      <source></source>
+      <extracomment>source: the control socket did not answer in time; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>制御ソケットの応答がタイムアウトしました</translation>
+    </message>
+    <message id="desktop.control.socket.belongs.to.another.user">
+      <location filename="catalog:desktop.control.socket.belongs.to.another.user" line="1"/>
+      <source></source>
+      <extracomment>source: the control socket belongs to another user; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>制御ソケットは別のユーザーに属しています</translation>
+    </message>
+    <message id="desktop.control.reply.too.large">
+      <location filename="catalog:desktop.control.reply.too.large" line="1"/>
+      <source></source>
+      <extracomment>source: the control reply is too large; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>Ответ управления слишком велик</translation>
+    </message>
+    <message id="desktop.control.socket.has.no.listener">
+      <location filename="catalog:desktop.control.socket.has.no.listener" line="1"/>
+      <source></source>
+      <extracomment>source: nothing listens on the control socket; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>制御ソケットを待ち受けているものがありません</translation>
+    </message>
+    <message id="desktop.control.socket.inaccessible">
+      <location filename="catalog:desktop.control.socket.inaccessible" line="1"/>
+      <source></source>
+      <extracomment>source: the control socket is not accessible; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>制御ソケットにアクセスできません</translation>
+    </message>
+    <message id="desktop.control.connection.closed.before.peer.verification">
+      <location filename="catalog:desktop.control.connection.closed.before.peer.verification" line="1"/>
+      <source></source>
+      <extracomment>source: the control connection closed before peer verification; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>ピアを検証する前に制御接続が閉じられました</translation>
+    </message>
+    <message id="desktop.control.reply.incomplete">
+      <location filename="catalog:desktop.control.reply.incomplete" line="1"/>
+      <source></source>
+      <extracomment>source: the control reply is incomplete; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>制御応答が不完全です</translation>
+    </message>
+    <message id="desktop.control.reply.not.protocol.one">
+      <location filename="catalog:desktop.control.reply.not.protocol.one" line="1"/>
+      <source></source>
+      <extracomment>source: the reply is not control protocol 1; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>応答は制御プロトコル 1 ではありません</translation>
+    </message>
+    <message id="desktop.control.request.too.long">
+      <location filename="catalog:desktop.control.request.too.long" line="1"/>
+      <source></source>
+      <extracomment>source: the request is too long; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>要求が長すぎます</translation>
+    </message>
+    <message id="desktop.cannot.read.kit.settings.safely">
+      <location filename="catalog:desktop.cannot.read.kit.settings.safely" line="1"/>
+      <source></source>
+      <extracomment>source: Cannot read this kit's settings safely; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>このキットの設定を安全に読み取れません</translation>
+    </message>
+    <message id="desktop.cannot.read.kit.settings">
+      <location filename="catalog:desktop.cannot.read.kit.settings" line="1"/>
+      <source></source>
+      <extracomment>source: Cannot read this kit's settings; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>このキットの設定を読み取れません</translation>
+    </message>
+    <message id="desktop.cannot.create">
+      <location filename="catalog:desktop.cannot.create" line="1"/>
+      <source></source>
+      <extracomment>source: cannot create %1; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 を作成できません</translation>
+    </message>
+    <message id="desktop.not.a.directory.of.this.user">
+      <location filename="catalog:desktop.not.a.directory.of.this.user" line="1"/>
+      <source></source>
+      <extracomment>source: %1 is not a directory of this user; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 はこのユーザーのディレクトリではありません</translation>
+    </message>
+    <message id="desktop.cannot.make.private">
+      <location filename="catalog:desktop.cannot.make.private" line="1"/>
+      <source></source>
+      <extracomment>source: cannot make %1 private; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 を非公開にできません</translation>
+    </message>
+    <message id="desktop.runtime.directory.not.absolute">
+      <location filename="catalog:desktop.runtime.directory.not.absolute" line="1"/>
+      <source></source>
+      <extracomment>source: XDG_RUNTIME_DIR is not set to an absolute path; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>XDG_RUNTIME_DIR не задан как абсолютный путь</translation>
+    </message>
+    <message id="desktop.no.yume.program">
+      <location filename="catalog:desktop.no.yume.program" line="1"/>
+      <source></source>
+      <extracomment>source: no yume program at %1; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 に yume プログラムがありません</translation>
+    </message>
+    <message id="desktop.yume.could.not.import.kit">
+      <location filename="catalog:desktop.yume.could.not.import.kit" line="1"/>
+      <source></source>
+      <extracomment>source: yume could not import the kit; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>yume はキットをインポートできませんでした</translation>
+    </message>
+    <message id="desktop.cannot.run.program">
+      <location filename="catalog:desktop.cannot.run.program" line="1"/>
+      <source></source>
+      <extracomment>source: cannot run yume; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>yume を実行できません</translation>
+    </message>
+    <message id="desktop.not.a.kit.name">
+      <location filename="catalog:desktop.not.a.kit.name" line="1"/>
+      <source></source>
+      <extracomment>source: not a kit name; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>キット名ではありません</translation>
+    </message>
+    <message id="desktop.not.a.kit.directory">
+      <location filename="catalog:desktop.not.a.kit.directory" line="1"/>
+      <source></source>
+      <extracomment>source: %1 is not a kit directory; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 はキットディレクトリではありません</translation>
+    </message>
+    <message id="desktop.cannot.remove.kit">
+      <location filename="catalog:desktop.cannot.remove.kit" line="1"/>
+      <source></source>
+      <extracomment>source: cannot remove %1; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 を削除できません</translation>
+    </message>
+    <message id="desktop.choose.a.different.kit.name">
+      <location filename="catalog:desktop.choose.a.different.kit.name" line="1"/>
+      <source></source>
+      <extracomment>source: choose a different kit name; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>別のキット名を選択してください</translation>
+    </message>
+    <message id="desktop.not.a.safe.kit.directory">
+      <location filename="catalog:desktop.not.a.safe.kit.directory" line="1"/>
+      <source></source>
+      <extracomment>source: %1 is not a safe kit directory; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 は安全なキットディレクトリではありません</translation>
+    </message>
+    <message id="desktop.cannot.read.kit.configuration">
+      <location filename="catalog:desktop.cannot.read.kit.configuration" line="1"/>
+      <source></source>
+      <extracomment>source: cannot read the kit's configuration; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>キットの設定を読み取れません</translation>
+    </message>
+    <message id="desktop.cannot.rename.kit">
+      <location filename="catalog:desktop.cannot.rename.kit" line="1"/>
+      <source></source>
+      <extracomment>source: cannot rename %1 to %2; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>%1 を %2 に名前変更できません</translation>
+    </message>
+    <message id="desktop.cannot.display.kit.settings">
+      <location filename="catalog:desktop.cannot.display.kit.settings" line="1"/>
+      <source></source>
+      <extracomment>source: Cannot display this kit's settings; check its configuration; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>このキットの設定を表示できません。構成を確認してください</translation>
+    </message>
+    <message id="desktop.no.configuration.directory">
+      <location filename="catalog:desktop.no.configuration.directory" line="1"/>
+      <source></source>
+      <extracomment>source: no configuration directory (XDG_CONFIG_HOME or HOME); context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>構成ディレクトリがありません (XDG_CONFIG_HOME または HOME)</translation>
+    </message>
+    <message id="desktop.invalid.kit.name">
+      <location filename="catalog:desktop.invalid.kit.name" line="1"/>
+      <source></source>
+      <extracomment>source: a kit name is 1 to 48 letters, digits, dots, dashes or underscores, starting with a letter, digit or underscore; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>キット名は1〜48文字の英数字、ドット、ハイフン、アンダースコアで、英数字またはアンダースコアで始めてください</translation>
+    </message>
+    <message id="desktop.kits.root.not.safe">
+      <location filename="catalog:desktop.kits.root.not.safe" line="1"/>
+      <source></source>
+      <extracomment>source: the kits root is not a safe directory of this user; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>キットのルートは安全なディレクトリではありません</translation>
+    </message>
+    <message id="desktop.kit.configuration.not.bounded">
+      <location filename="catalog:desktop.kit.configuration.not.bounded" line="1"/>
+      <source></source>
+      <extracomment>source: the kit's configuration is not a bounded regular file of this user; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>キットの設定はこのユーザーの有界な通常ファイルではありません</translation>
+    </message>
+    <message id="desktop.kit.configuration.cannot.be.checked">
+      <location filename="catalog:desktop.kit.configuration.cannot.be.checked" line="1"/>
+      <source></source>
+      <extracomment>source: the kit's configuration cannot be checked before renaming; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>名前変更前にキットの設定を確認できません</translation>
+    </message>
+    <message id="desktop.kit.configuration.unsafe.paths">
+      <location filename="catalog:desktop.kit.configuration.unsafe.paths" line="1"/>
+      <source></source>
+      <extracomment>source: the configuration uses parent traversal, excessive nesting, or an absolute path inside this kit; use relative kit paths without parent traversal before renaming; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
+      <translation>構成に親トラバーサル、過度な入れ子、またはキット内の絶対パスがあります。名前変更前に親トラバーサルのない相対パスを使用してください</translation>
+    </message>
+    <message id="desktop.kit.named.already.exists">
+      <location filename="catalog:desktop.kit.named.already.exists" line="1"/>
+      <source></source>
+      <extracomment>source: a kit named %1 already exists; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve Qt placeholders.</extracomment>
+      <translation>%1 という名前のキットは既に存在します</translation>
+    </message>
+    <message id="desktop.kit.changed.while.checked">
+      <location filename="catalog:desktop.kit.changed.while.checked" line="1"/>
+      <source></source>
+      <extracomment>source: the kit changed while it was being checked; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve Qt placeholders.</extracomment>
+      <translation>確認中にキットが変更されました</translation>
     </message>
   </context>
 </TS>

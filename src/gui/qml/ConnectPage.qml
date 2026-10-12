@@ -38,7 +38,7 @@ Flickable {
                     compact: true
                     kind: "quiet"
                     text: qsTrId("desktop.refresh")
-                    enabled: !App.renaming
+                    enabled: !App.renaming && !App.removing
                     onClicked: App.refreshKits()
                 }
 
@@ -122,7 +122,7 @@ Flickable {
                                 }
                                 AppButton {
                                     visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
-                                    enabled: !App.renaming && !App.importing
+                                    enabled: !App.renaming && !App.removing && !App.importing
                                     compact: true
                                     kind: "quiet"
                                     text: qsTrId("rename")
@@ -131,7 +131,7 @@ Flickable {
                                 }
                                 AppButton {
                                     visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
-                                    enabled: !App.renaming
+                                    enabled: !App.renaming && !App.removing
                                     compact: true
                                     kind: "quiet"
                                     iconName: "trash"
@@ -152,7 +152,7 @@ Flickable {
                                     compact: true
                                     kind: "danger"
                                     text: qsTrId("delete")
-                                    enabled: !App.renaming
+                                    enabled: !App.renaming && !App.removing
                                     onClicked: {
                                         page.pendingRemoval = ""
                                         App.removeKit(kitRow.modelData.name)
@@ -227,7 +227,7 @@ Flickable {
                         id: importButton
                         kind: "primary"
                         text: App.importing ? qsTrId("desktop.importing") : qsTrId("desktop.import")
-                        enabled: !App.importing && !App.renaming && importCard.file.toString().length > 0
+                        enabled: !App.importing && !App.renaming && !App.removing && importCard.file.toString().length > 0
                                  && nameField.text.length > 0 && codeField.text.length > 0
                         onClicked: {
                             App.importKit(importCard.file, nameField.text, codeField.text)
@@ -352,7 +352,7 @@ Flickable {
                     kind: "primary"
                     text: qsTrId("rename")
                     enabled: renameDialog.validName && renameField.text !== renameDialog.originalName
-                             && !App.renaming && !App.importing
+                             && !App.renaming && !App.removing && !App.importing
                     onClicked: renameDialog.submit()
                 }
             }

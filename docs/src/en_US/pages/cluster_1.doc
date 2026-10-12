@@ -149,7 +149,7 @@ object, and an exit also names the service its circuits leave through:
   "routes": {"file": "credentials/cluster/cluster-routes.json"},
   "routes_signature": {"file": "credentials/cluster/cluster-routes.sig"},
   "peers": {"file": "credentials/cluster/peers.json"},
-  "state": {"file": "/var/lib/yume/cluster-state.json"},
+  "state": {"file": "cluster-state.json"},
   "exit": {"service": "tcp"}
 }
 @end
@@ -164,14 +164,16 @@ that each file is one the daemon would open. A client configuration and the
 embedding interface refuse the section.
 
 `state` is where the server saves the highest list serial it has loaded, as
-the JSON object `{"schema":1,"cluster":ID,"serial":N}`. The server creates and
-replaces the file itself, owner-only, by writing a new file beside it and
-renaming it into place, so the file's directory must exist and the daemon
-must be able to write there. The packaged unit keeps `/etc/yume` read-only
-and gives the daemon `/var/lib/yume`. A missing file means no list was loaded
-before. The server refuses a list with a lower serial than the saved one,
-after a restart too, and a state file that names another cluster, which the
-operator removes when a server moves to another operator's cluster.
+the JSON object `{"schema":1,"cluster":ID,"serial":N}`. `yume-setup` emits the
+relative `cluster-state.json`, which resolves beside `yumed.json`. The server
+creates and replaces the file itself, owner-only, by writing a new file beside
+it and renaming it into place, so the file's directory must exist and the
+daemon must be able to write there. For the packaged unit, which keeps
+`/etc/yume` read-only and gives the daemon `/var/lib/yume`, change `state` to
+`/var/lib/yume/cluster-state.json` before deployment. A missing file means no
+list was loaded before. The server refuses a list with a lower serial than the
+saved one, after a restart too, and a state file that names another cluster,
+which the operator removes when a server moves to another operator's cluster.
 
 ## Links
 

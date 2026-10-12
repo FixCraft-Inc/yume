@@ -80,6 +80,7 @@ void TestBuckets() {
     CHECK(RelayCapacity(kForward, 16384) == 0U);
     CHECK(RelayCapacity(kForward, 1024) == 0U);
     CHECK(!IsBucket(static_cast<Direction>(0), 512));
+    CHECK(MaxDataPayload(static_cast<Direction>(3)) == 0U);
     CHECK(MaxDataPayload(kForward) == 16251U);
     CHECK(MaxDataPayload(kBackward) == 16255U);
     CHECK(BucketForPayload(kForward, 0U) == 512U);
@@ -200,6 +201,20 @@ void TestCells() {
 }
 
 void TestRelayMessages() {
+    // A one-byte canonical DNS name is a valid YTP destination and its BEGIN
+    // payload is five bytes, shorter than an IPv4 destination.
+    const std::array<std::uint8_t, 5> short_dns{
+        static_cast<std::uint8_t>(yume::ytp1::AddressKind::Dns), 0U, 53U, 1U,
+        'a'};
+    Bytes encoded(RelayCapacity(Direction::Forward, 512U));
+    CHECK(EncodeRelayMessage(Direction::Forward, RelayType::Begin, 1U,
+                             short_dns, encoded)
+              .ok());
+    const auto decoded = DecodeRelayMessage(Direction::Forward, encoded);
+    CHECK(decoded.ok());
+    CHECK(DecodeBeginPayload(short_dns).ok());
+    CHECK(DecodeRelayMessage(static_cast<Direction>(3), {}).status.code ==
+          ErrorCode::WrongDirection);
     for (const auto& key : vectors().names("relay.")) {
         if (!key.ends_with(".type")) continue;
         const auto name = key.substr(6U, key.size() - 6U - 5U);

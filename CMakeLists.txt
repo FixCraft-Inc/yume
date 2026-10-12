@@ -477,6 +477,34 @@ else()
     message(STATUS "YUME sanitizers: none")
 endif()
 
+# Release binaries carry the platform's ordinary exploit mitigations by
+# default. Keep these out of sanitizer lanes: their runtimes and diagnostics
+# are separate build products, and a sanitizer build is never distributable.
+if(_yume_sanitize STREQUAL "none" AND
+   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND UNIX)
+    add_compile_options(
+        $<$<CONFIG:Release>:-fstack-protector-strong>
+        $<$<CONFIG:RelWithDebInfo>:-fstack-protector-strong>
+        $<$<CONFIG:MinSizeRel>:-fstack-protector-strong>
+        $<$<CONFIG:Release>:-D_FORTIFY_SOURCE=3>
+        $<$<CONFIG:RelWithDebInfo>:-D_FORTIFY_SOURCE=3>
+        $<$<CONFIG:MinSizeRel>:-D_FORTIFY_SOURCE=3>
+        $<$<CONFIG:Release>:-fstack-clash-protection>
+        $<$<CONFIG:RelWithDebInfo>:-fstack-clash-protection>
+        $<$<CONFIG:MinSizeRel>:-fstack-clash-protection>)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i[3-6]86)$")
+        add_compile_options(
+            $<$<CONFIG:Release>:-fcf-protection>
+            $<$<CONFIG:RelWithDebInfo>:-fcf-protection>
+            $<$<CONFIG:MinSizeRel>:-fcf-protection>)
+    endif()
+    add_link_options(
+        $<$<CONFIG:Release>:-Wl,-z,relro,-z,now>
+        $<$<CONFIG:RelWithDebInfo>:-Wl,-z,relro,-z,now>
+        $<$<CONFIG:MinSizeRel>:-Wl,-z,relro,-z,now>)
+    message(STATUS "YUME release hardening: stack protector, fortify, clash, RELRO/BIND_NOW")
+endif()
+
 if(YUME_NATIVE_OPT)
     message(STATUS "YUME native CPU tuning: ON (host-specific binary; do not copy across different CPUs)")
 else()

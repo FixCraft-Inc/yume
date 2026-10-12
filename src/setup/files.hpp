@@ -21,7 +21,7 @@ namespace yume::setup {
 
 // A fail-closed provisioning error. Its text is for the operator and names
 // paths and settings, never secret material.
-class SetupError final : public std::runtime_error {
+class SetupError : public std::runtime_error {
 public:
     explicit SetupError(const std::string& message)
         : std::runtime_error(message) {}
@@ -86,7 +86,7 @@ void copy_private_file(const std::filesystem::path& source,
                        mode_t mode = 0600);
 
 // Whether path names a regular file or a directory, following a final
-// symlink, as Python's is_file and is_dir did. A missing path is neither.
+// symlink. A missing path is neither.
 bool file_at(const std::filesystem::path& path) noexcept;
 bool directory_at(const std::filesystem::path& path) noexcept;
 // Whether anything, a dangling symlink included, exists at path.

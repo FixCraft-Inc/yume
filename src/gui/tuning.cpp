@@ -143,8 +143,9 @@ void Tuning::advance() {
             finish(qtTrId("desktop.settings.saved.reconnect.failed")
                        .arg(tunnel_->error()));
         else if (tunnel_->phase() == Tunnel::Phase::Running)
-            finish(
-                qtTrId("desktop.settings.saved.and.client.restarted.see.the.live.posture.for.negotiated"));
+            finish(partial_commit_
+                       ? qtTrId("desktop.settings.saved.but.durability.was.not.confirmed")
+                       : qtTrId("desktop.settings.saved.and.client.restarted.see.the.live.posture.for.negotiated"));
     }
 }
 
@@ -186,7 +187,10 @@ void Tuning::save() {
                     qtTrId("desktop.saving.was.interrupted.reload.settings.to.check.the.file.the.client.was"));
                 return;
             }
-            if (code != 0) {
+            if (code == 3) {
+                saved_ = true;
+                partial_commit_ = true;
+            } else if (code != 0) {
                 finish(
                     qtTrId("desktop.settings.were.refused")
                         .arg(QString::fromUtf8(output->right(4096)).trimmed()));
@@ -194,8 +198,9 @@ void Tuning::save() {
             }
             saved_ = true;
             if (!restart_) {
-                finish(
-                    qtTrId("desktop.settings.saved.they.will.be.used.on.the.next.connection"));
+                finish(partial_commit_
+                           ? qtTrId("desktop.settings.saved.but.durability.was.not.confirmed")
+                           : qtTrId("desktop.settings.saved.they.will.be.used.on.the.next.connection"));
                 return;
             }
             stage_ = Stage::Stopping;
@@ -214,6 +219,7 @@ void Tuning::finish(const QString& message) {
     if (saved_) {
         reload();
         saved_ = false;
+        partial_commit_ = false;
     }
     message_ = message;
     if (tunnel_) tunnel_->poll();

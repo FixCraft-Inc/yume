@@ -34,12 +34,16 @@ class NativeReleasePackageTests(unittest.TestCase):
         source.write_text(
             '#include <stdio.h>\n'
             'int main(void) {\n'
+            '  volatile char stack_probe[16] = {0};\n'
+            '  if (stack_probe[0]) return 2;\n'
             '  puts(PROGRAM " 0.3.0-dev1");\n'
             '  puts("transport YTP/1, config schema 1, suite ytp1-tls13-h2");\n'
             '  return 0;\n}\n', encoding="utf-8")
         for name in ("yume", "yumed", "yume-setup", "yume-doctor"):
             subprocess.run(
-                ["cc", str(source), f'-DPROGRAM="{name}"', "-o", str(cls.root / name)],
+                ["cc", str(source), f'-DPROGRAM="{name}"',
+                 "-fstack-protector-all", "-Wl,-z,relro,-z,now",
+                 "-o", str(cls.root / name)],
                 check=True, capture_output=True, text=True, timeout=30)
         for name in ("LICENSE", "NOTICES", "QUICKSTART"):
             (cls.root / name).write_text(f"Fixture {name}\n", encoding="utf-8")

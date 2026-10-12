@@ -26,6 +26,12 @@ policy before replacing the bootstrap. Relative paths resolve beside the
 configuration file. The native cover site is served in-process; no external
 loopback HTTP backend is required.
 
+For a cluster member, change the generated `cluster.state` file to
+`/var/lib/yume/cluster-state.json` before installing the server configuration.
+The unit keeps `/etc/yume` read-only and grants the daemon write access to
+`/var/lib/yume`; validation rejects a cluster configuration whose state
+directory cannot be written and flushed.
+
 Make the credentials accessible to the locked yume account. Private files
 must be owned by yume with mode 0600, and the credentials directory should be
 mode 0700. Public keys and cover files need read access.

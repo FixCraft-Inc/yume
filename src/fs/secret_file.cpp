@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include "common/secure_erase.hpp"
 
@@ -289,48 +290,38 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
 
 #else
 
-bool RemovePartialFile(const std::filesystem::path& path,
-                       std::string* error) noexcept {
-    if (::unlink(path.c_str()) == 0) {
-        return true;
-    }
-    AppendCleanupError(
-        error, "remove partial private file", errno,
-        std::generic_category());
-    return false;
-}
-
-bool flush_parent_directory(const std::filesystem::path& path,
-                            std::string* error) {
-    const std::filesystem::path parent =
-        path.parent_path().empty() ? std::filesystem::path(".")
-                                   : path.parent_path();
-    int flags = O_RDONLY;
+FileDescriptor open_private_parent_directory(
+    const std::filesystem::path& raw_path,
+    std::string* error) {
+    const std::filesystem::path path =
+        raw_path.empty() ? std::filesystem::path(".") : raw_path;
+    int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
 #if defined(O_CLOEXEC)
     flags |= O_CLOEXEC;
 #endif
-#if defined(O_DIRECTORY)
-    flags |= O_DIRECTORY;
-#endif
-    const int descriptor = ::open(parent.c_str(), flags);
-    if (descriptor < 0) {
+    FileDescriptor current(::open(path.is_absolute() ? "/" : ".", flags));
+    if (current.get() < 0) {
         SetWriteError(error, "open private file directory", errno,
                       std::generic_category());
-        return false;
+        return FileDescriptor(-1);
     }
-    if (::fsync(descriptor) != 0) {
-        const int flush_error = errno;
-        (void)::close(descriptor);
-        SetWriteError(error, "flush private file directory", flush_error,
-                      std::generic_category());
-        return false;
+    for (const auto& part : path.relative_path()) {
+        const std::string component = part.string();
+        if (component.empty() || component == ".") continue;
+        if (component == ".." || component.find('\0') != std::string::npos) {
+            if (error) *error = "private file path contains an unsafe component";
+            return FileDescriptor(-1);
+        }
+        FileDescriptor next(::openat(current.get(), component.c_str(), flags));
+        if (next.get() < 0) {
+            SetWriteError(error,
+                          "open private file directory without following links",
+                          errno, std::generic_category());
+            return FileDescriptor(-1);
+        }
+        current = std::move(next);
     }
-    if (::close(descriptor) != 0) {
-        SetWriteError(error, "close private file directory", errno,
-                      std::generic_category());
-        return false;
-    }
-    return true;
+    return current;
 }
 
 bool ensure_private_directory_posix(const std::filesystem::path& path,
@@ -449,7 +440,8 @@ bool ensure_private_directory_posix(const std::filesystem::path& path,
 #endif
 }
 
-bool WriteNewPrivateFile(const std::filesystem::path& path,
+bool WriteNewPrivateFileAt(int parent_fd,
+                           const std::string& name,
                          std::span<const std::uint8_t> contents,
                          std::string* error) {
     int open_flags = O_WRONLY | O_CREAT | O_EXCL;
@@ -459,7 +451,8 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
 #if defined(O_NOFOLLOW)
     open_flags |= O_NOFOLLOW;
 #endif
-    const int fd = ::open(path.c_str(), open_flags, S_IRUSR | S_IWUSR);
+    const int fd = ::openat(parent_fd, name.c_str(), open_flags,
+                            S_IRUSR | S_IWUSR);
     if (fd < 0) {
         SetWriteError(
             error, "create private file", errno, std::generic_category());
@@ -475,7 +468,10 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
                 error, "close partial private file", errno,
                 std::generic_category());
         }
-        RemovePartialFile(path, error);
+        if (::unlinkat(parent_fd, name.c_str(), 0) != 0) {
+            AppendCleanupError(error, "remove partial private file", errno,
+                               std::generic_category());
+        }
         return false;
     };
 
@@ -514,11 +510,20 @@ bool WriteNewPrivateFile(const std::filesystem::path& path,
         SetWriteError(
             error, "close private file", close_error,
             std::generic_category());
-        RemovePartialFile(path, error);
+        if (::unlinkat(parent_fd, name.c_str(), 0) != 0) {
+            AppendCleanupError(error, "remove partial private file", errno,
+                               std::generic_category());
+        }
         return false;
     }
-    if (!flush_parent_directory(path, error)) {
-        RemovePartialFile(path, error);
+    if (::fsync(parent_fd) != 0) {
+        const int sync_error = errno;
+        SetWriteError(error, "flush private file directory", sync_error,
+                      std::generic_category());
+        if (::unlinkat(parent_fd, name.c_str(), 0) != 0) {
+            AppendCleanupError(error, "remove partial private file", errno,
+                               std::generic_category());
+        }
         return false;
     }
     if (error) error->clear();
@@ -586,8 +591,11 @@ bool WriteFileExclusive0600(const std::filesystem::path& path,
             return false;
         }
     }
-
-    return WriteNewPrivateFile(path, contents, error);
+    const auto parent = path.parent_path();
+    FileDescriptor parent_fd = open_private_parent_directory(parent, error);
+    if (parent_fd.get() < 0) return false;
+    return WriteNewPrivateFileAt(parent_fd.get(), path.filename().string(),
+                                 contents, error);
 }
 
 std::vector<std::uint8_t> read_private_file_strict(

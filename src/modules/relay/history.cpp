@@ -428,7 +428,25 @@ bool write_new_private_file_at(int directory_fd,
         }
         offset += static_cast<std::size_t>(count);
     }
+    if (::fsync(fd.get()) != 0) {
+        const int sync_error = errno;
+        ::unlinkat(directory_fd, name.c_str(), 0);
+        throw std::system_error(sync_error, std::generic_category(),
+                                "flush relay history key");
+    }
+    if (::fsync(directory_fd) != 0) {
+        const int sync_error = errno;
+        ::unlinkat(directory_fd, name.c_str(), 0);
+        throw std::system_error(sync_error, std::generic_category(),
+                                "flush relay history directory");
+    }
     return true;
+}
+
+void restore_history_size(int fd, off_t size) noexcept {
+    if (::ftruncate(fd, size) == 0) {
+        (void)::fsync(fd);
+    }
 }
 
 void append_private_line_at(int directory_fd,
@@ -459,6 +477,7 @@ void append_private_line_at(int directory_fd,
     }
     std::string record = line;
     record.push_back('\n');
+    const off_t original_size = info.st_size;
     std::size_t offset = 0;
     while (offset < record.size()) {
         const ssize_t count = ::write(fd.get(), record.data() + offset,
@@ -466,10 +485,23 @@ void append_private_line_at(int directory_fd,
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) {
             const int write_error = count < 0 ? errno : EIO;
+            restore_history_size(fd.get(), original_size);
             throw std::system_error(write_error, std::generic_category(),
                                     "append relay history log");
         }
         offset += static_cast<std::size_t>(count);
+    }
+    if (::fsync(fd.get()) != 0) {
+        const int sync_error = errno;
+        restore_history_size(fd.get(), original_size);
+        throw std::system_error(sync_error, std::generic_category(),
+                                "flush relay history log");
+    }
+    if (::fsync(directory_fd) != 0) {
+        const int sync_error = errno;
+        restore_history_size(fd.get(), original_size);
+        throw std::system_error(sync_error, std::generic_category(),
+                                "flush relay history directory");
     }
 }
 

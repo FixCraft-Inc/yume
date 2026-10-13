@@ -183,14 +183,16 @@ sizes and timing alone:
   way at the start of the next burst. The workload sends one burst, so the
   capture does not show this.
 
-HTTP/1.1 cover has no captured reference: the capture server refuses
-HTTP/1.1 at ALPN. An active probe that asks for the cover page over HTTP/1.1
-gets a response with no `Date` header that always closes the connection.
-The HTTP/2 cover path adds the modeled `Date` header, and an ordinary Node
-HTTP/1.1 server sends `Date` and keeps the connection open.
+The established cover reference refuses HTTP/1.1-only ALPN offers. YUME
+also requires `h2` and has no HTTP/1.1 site handler. Without ALPN, YUME
+closes before publishing a cover channel; Node completes TLS, sends a fixed
+HTTP/1.0 403 refusal and closes. These refusal paths are not byte-equivalent.
+The native H2 cover response also lacks the reference's `Date` and
+`cache-control` headers. H2 response parity remains open.
 
-Each needs its own change and a new capture. One campaign is one group, and
-the classifier gate needs four, so its verdict is INSUFFICIENT.
+Diagnostic TLS probes do not qualify Chrome parity or a classifier gate.
+The classifier gate needs four groups, so the existing one-group capture
+verdict remains INSUFFICIENT.
 
 ## Circuit sessions
 

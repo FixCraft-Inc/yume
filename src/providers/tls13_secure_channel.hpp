@@ -51,7 +51,7 @@ struct Tls13ServerConfigView final {
 };
 
 // A completed public-server TLS connection before carrier admission. This is
-// deliberately only a ByteChannel: ordinary TLS 1.2 or HTTP/1.1 cover traffic
+// deliberately only a ByteChannel: ordinary TLS 1.2/H2 cover traffic
 // must never acquire the TLS 1.3/H2 SecureChannel provider provenance.
 // Metadata is read locally from this connection's SSL object after handshake.
 // Operations and promotion follow the underlying ByteChannel's executor.
@@ -99,9 +99,9 @@ public:
                     engine::CancellationToken cancellation,
                     Completion completion) override;
 
-    // Server only. Offers ordinary TLS 1.2/1.3 and h2/HTTP/1.1; clients without
-    // ALPN retain an empty negotiated protocol for ordinary HTTP/1 handling.
-    // Existing async_wrap remains strict even on the same provider instance.
+    // Server only. Offers ordinary TLS 1.2/1.3 with H2 cover. HTTP/1.1 and
+    // clients without ALPN are refused before channel publication. Existing async_wrap
+    // remains strict even on the same provider instance.
     void async_wrap_server_cover(std::unique_ptr<engine::ByteChannel> channel,
                                  engine::CancellationToken cancellation,
                                  ServerCoverCompletion completion);

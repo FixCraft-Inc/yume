@@ -38,9 +38,10 @@ build needs neither.
 
 A few rules hold across the native graph:
 
-- The front door serves ordinary cover over TLS 1.2 or 1.3 and HTTP/1.1 or
-  HTTP/2, but promotes a connection to YTP only on TLS 1.3 with HTTP/2, once
-  per TLS connection. The cover site is loaded once from a confined root, and
+- The front door serves ordinary cover over TLS 1.2 or 1.3 with HTTP/2, and
+  refuses HTTP/1.1 and no-ALPN clients before serving HTTP. It promotes a
+  connection to YTP only on TLS 1.3 with HTTP/2, once per TLS connection. The
+  cover site is loaded once from a confined root, and
   requests never touch the file system. There is no built-in fallback site.
 - Destination policy runs after service authorization and before DNS or
   socket work. The route provider checks every resolved address again. An

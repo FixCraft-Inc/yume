@@ -129,8 +129,9 @@ The native `H2WebFrontDoor` implements this boundary with a native TCP listener
 and `AsioTcpAcceptedChannelOwner`. Its configured immutable static site loads
 through `runtime::FileRoot`, requires an index and explicit not-found file,
 and serves ordinary and rejected-admission requests from the same content.
-The public TLS connection supports TLS 1.2/1.3 and HTTP/1.1/H2; its separate
-promotion operation publishes strict TLS 1.3/H2 provenance only after admission.
+The public TLS connection supports TLS 1.2/1.3 H2 cover and refuses HTTP/1.1
+and no-ALPN clients before serving HTTP. Its separate promotion operation
+publishes strict TLS 1.3/H2 provenance only after admission.
 SNI and exporter bytes come from the accepted SSL connection.
 
 Promotion transfers the same TLS/BIO and H2 parser state after cover output

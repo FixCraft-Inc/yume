@@ -24,19 +24,6 @@
 #include <boost/asio/ip/v6_only.hpp>
 #include <boost/system/system_error.hpp>
 
-// GCC 14's optimized sanitizer build diagnoses Boost.Optional's inactive
-// scalar storage in Beast's content_length_unchecked(). Scope the workaround
-// to the dependency definitions; YUME retains its full warning policy.
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 14
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-#endif
-#include <boost/beast/http/parser.hpp>
-#include <boost/beast/http/empty_body.hpp>
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 14
-#pragma GCC diagnostic pop
-#endif
-
 #include <openssl/crypto.h>
 
 namespace yume::providers {
@@ -387,13 +374,7 @@ class H2WebFrontDoor::State::Connection final
 public:
     explicit Connection(const std::shared_ptr<State>& owner)
         : owner_(owner), context_(owner->context), timer_(context_->executor()),
-          cover_(std::make_shared<CoverSession>(owner->cover, owner->config.limits)) {
-        http_.header_limit(32U * 1024U);
-        // This static site accepts no uploads and always closes HTTP/1 after
-        // its response. Answer at the header boundary, including Expect:
-        // 100-continue, without waiting for an unsupported request body.
-        http_.skip(true);
-    }
+          cover_(std::make_shared<CoverSession>(owner->cover, owner->config.limits)) {}
     void start(AsioTcpSocket socket) noexcept {
         try {
             const auto owner = owner_.lock();
@@ -413,9 +394,13 @@ public:
                         if (!result.ok()) { self->stop(); return; }
                         auto tls = std::move(result).take_value();
                         if (self->terminal_) { tls->close(); return; }
+                        if (tls->negotiated_protocol() != "h2") {
+                            tls->close();
+                            self->stop();
+                            return;
+                        }
                         self->tls_ = std::move(tls);
-                        if (self->tls_->negotiated_protocol() == "h2")
-                            self->h2_ = std::make_unique<obfs::H2Carrier>(obfs::H2CarrierRole::Server);
+                        self->h2_ = std::make_unique<obfs::H2Carrier>(obfs::H2CarrierRole::Server);
                         self->pump();
                     } catch (...) { self->stop(); }
                 });
@@ -531,43 +516,6 @@ private:
         candidate_.reset();
     }
 
-    void process_http(std::span<const std::byte> bytes) {
-        if (http_input_.size() + bytes.size() > 128U * 1024U) { stop(); return; }
-        http_input_.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-        Error error;
-        const auto consumed = http_.put(boost::asio::buffer(http_input_), error);
-        http_input_.erase(0U, consumed);
-        if (error && error != boost::beast::http::error::need_more) { stop(); return; }
-        if (!http_.is_done()) return;
-        const auto& request = http_.get();
-        const auto response = cover_->site->respond(
-            std::string_view(request.method_string().data(), request.method_string().size()),
-            std::string_view(request.target().data(), request.target().size()));
-        const std::string_view status_line = response.status_code == 200 ? "HTTP/1.1 200 OK\r\n" :
-                                                                         "HTTP/1.1 404 Not Found\r\n";
-        constexpr std::string_view close_header = "connection: close\r\n\r\n";
-        std::size_t required = status_line.size() + close_header.size();
-        const auto add = [&](std::size_t count) {
-            if (required > cover_->limits.max_output_bytes ||
-                count > cover_->limits.max_output_bytes - required) return false;
-            required += count;
-            return true;
-        };
-        for (const auto& [name, value] : response.headers) {
-            if (!add(name.size() + value.size() + 4U)) { stop(); return; }
-        }
-        if (!add(response.body.size())) { stop(); return; }
-        std::string wire;
-        wire.reserve(required);
-        wire.append(status_line);
-        for (const auto& [name, value] : response.headers) wire += name + ": " + value + "\r\n";
-        wire.append(close_header);
-        wire.append(response.body);
-        if (wire.size() > cover_->limits.max_output_bytes) { stop(); return; }
-        output_.assign(wire.begin(), wire.end());
-        http_done_ = true;
-    }
-
     void pump() noexcept {
         if (pumping_) { repump_ = true; return; }
         pumping_ = true;
@@ -614,7 +562,6 @@ private:
             if (!timer_pending_) publish();
             return;
         }
-        if (http_done_) { stop(); return; }
         reading_ = true;
         tls_->async_read(std::min<std::size_t>(64U * 1024U, tls_->max_read_size()), cancellation_.token(),
             [self = shared_from_this()](Result<Buffer> result) noexcept {
@@ -623,8 +570,8 @@ private:
                 try {
                     if (!result.ok() || result.value().empty()) { self->stop(); return; }
                     const auto bytes = result.value().bytes();
-                    if (self->h2_) self->h2_->Feed(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
-                    else self->process_http(bytes);
+                    if (!self->h2_) { self->stop(); return; }
+                    self->h2_->Feed(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
                     self->pump();
                 } catch (...) { self->stop(); }
             });
@@ -661,12 +608,10 @@ private:
     std::optional<obfs::H2Request> candidate_;
     std::shared_ptr<Waiter> waiter_;
     std::shared_ptr<PromotionReservation> reservation_;
-    boost::beast::http::request_parser<boost::beast::http::empty_body> http_;
-    std::string http_input_;
     obfs::H2Bytes output_;
     std::size_t output_offset_{0U};
     bool terminal_{false}, admitted_{false}, promoting_{false}, timer_pending_{false};
-    bool reading_{false}, writing_{false}, http_done_{false}, pumping_{false}, repump_{false};
+    bool reading_{false}, writing_{false}, pumping_{false}, repump_{false};
 };
 
 // Asio itself retries interrupted, aborted and EPROTO accepts. Descriptor or

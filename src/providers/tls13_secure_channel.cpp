@@ -77,9 +77,6 @@ std::byte* read_scratch() noexcept {
     return scratch.get();
 }
 constexpr std::array<unsigned char, 3> kH2Alpn{2U, 'h', '2'};
-constexpr std::array<unsigned char, 12> kCoverAlpn{
-    2U, 'h', '2', 8U, 'h', 't', 't', 'p', '/', '1', '.', '1'};
-int kCoverConnectionMarker;
 
 Status copy_status(const Status& status) noexcept {
     return Status::diagnostic(status.code(), status.message());
@@ -203,15 +200,11 @@ bool install_server_identity(SSL_CTX* context,
            SSL_CTX_check_private_key(context) == 1;
 }
 
-int select_h2(SSL* ssl, const unsigned char** out, unsigned char* out_length,
+int select_h2(SSL*, const unsigned char** out, unsigned char* out_length,
               const unsigned char* offered, unsigned int offered_length,
               void*) noexcept {
-    const bool cover = SSL_get_app_data(ssl) == &kCoverConnectionMarker;
-    const std::span<const unsigned char> protocols = cover
-        ? std::span<const unsigned char>(kCoverAlpn)
-        : std::span<const unsigned char>(kH2Alpn);
     if (SSL_select_next_proto(const_cast<unsigned char**>(out), out_length,
-                              protocols.data(), protocols.size(), offered,
+                              kH2Alpn.data(), kH2Alpn.size(), offered,
                               offered_length) != OPENSSL_NPN_NEGOTIATED) {
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
@@ -893,19 +886,18 @@ private:
                 const unsigned char* selected = nullptr;
                 unsigned int selected_length = 0U;
                 SSL_get0_alpn_selected(ssl_.get(), &selected, &selected_length);
-                if ((!cover_mode_ && (selected_length != 2U || !selected ||
-                                      selected[0] != 'h' || selected[1] != '2')) ||
-                    selected_length > 255U) {
+                // The ALPN callback is not invoked when the peer omits ALPN.
+                // Reject that connection before publishing either channel type.
+                if (selected_length != 2U || !selected || selected[0] != 'h' ||
+                    selected[1] != '2') {
                     phase_ = Phase::Failed;
                     terminal_ = Status::diagnostic(
                         StatusCode::ProviderMismatch,
                         "TLS peer did not negotiate exact ALPN h2");
                     need_transport_close_ = true; return next_action_locked();
                 }
-                if (selected_length != 0U) {
-                    protocol_.assign(reinterpret_cast<const char*>(selected),
-                                     selected_length);
-                }
+                protocol_.assign(reinterpret_cast<const char*>(selected),
+                                 selected_length);
                 if (const char* name = SSL_get_servername(
                         ssl_.get(), TLSEXT_NAMETYPE_host_name)) {
                     const std::string_view received(name);
@@ -1525,8 +1517,7 @@ void Tls13SecureChannelProvider::async_wrap_impl(
     } else {
         SSL_set_accept_state(ssl.get());
         if (cover) {
-            if (SSL_set_min_proto_version(ssl.get(), TLS1_2_VERSION) != 1 ||
-                SSL_set_app_data(ssl.get(), &kCoverConnectionMarker) != 1) {
+            if (SSL_set_min_proto_version(ssl.get(), TLS1_2_VERSION) != 1) {
                 channel->close();
                 fail(Status::diagnostic(StatusCode::FailedPrecondition,
                                         "TLS cover negotiation setup failed"));

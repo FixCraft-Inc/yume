@@ -187,8 +187,11 @@ The established cover reference refuses HTTP/1.1-only ALPN offers. YUME
 also requires `h2` and has no HTTP/1.1 site handler. Without ALPN, YUME
 closes before publishing a cover channel; Node completes TLS, sends a fixed
 HTTP/1.0 403 refusal and closes. These refusal paths are not byte-equivalent.
-The native H2 cover response also lacks the reference's `Date` and
-`cache-control` headers. H2 response parity remains open.
+Native H2 cover responses now include the reference's `Date` and
+`cache-control: public, max-age=60` headers, with the static site's content
+headers kept in the reference order. Unsupported methods remain an explicit
+semantic difference: Node returns a fixed 405 response, while the configured
+native site uses its ordinary 404 representation.
 
 Diagnostic TLS probes do not qualify Chrome parity or a classifier gate.
 The classifier gate needs four groups, so the existing one-group capture

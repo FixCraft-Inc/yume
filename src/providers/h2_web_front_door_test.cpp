@@ -683,7 +683,10 @@ private:
 void check_cover(const HttpResponse& response) {
     CHECK(response.headers.at(":status") == "404");
     CHECK(response.headers.at("content-type") == "text/html");
+    CHECK(response.headers.at("cache-control") == "public, max-age=60");
     CHECK(response.headers.at("content-length") == std::to_string(kNotFound.size()));
+    const auto date = response.headers.at("date");
+    CHECK(date.size() == 29U && date.ends_with(" GMT"));
     CHECK(response.body == kNotFound);
     for (const auto& [name, value] : response.headers) {
         CHECK(name.find("yume") == std::string::npos);
@@ -708,6 +711,9 @@ void test_http_cover_and_failed_admission() {
     H2Peer h2(tls, fixture.port());
     const auto index = h2.response(h2.submit("GET", "/"));
     CHECK(index.headers.at(":status") == "200");
+    CHECK(index.headers.at("cache-control") == "public, max-age=60");
+    CHECK(index.headers.at("date").size() == 29U &&
+          index.headers.at("date").ends_with(" GMT"));
     CHECK(index.body == kIndex);
     const auto head = h2.response(h2.submit("HEAD", "/"));
     CHECK(head.headers.at(":status") == "200");

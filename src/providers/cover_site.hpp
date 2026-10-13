@@ -71,7 +71,7 @@ public:
 
 private:
     struct Representation final {
-        std::array<std::pair<std::string, std::string>, 2U> headers;
+        std::array<std::pair<std::string, std::string>, 3U> headers;
         std::string body;
     };
 

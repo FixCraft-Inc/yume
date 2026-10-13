@@ -92,6 +92,9 @@ std::chrono::steady_clock::time_point SteadyNow() noexcept {
 // profile, and this text is repeated or cut to fit it.
 constexpr std::string_view kCloseReason = "session-complete";
 
+// Generate one current IMF-fixdate per response. The reentrant UTC conversion
+// keeps the date path thread-safe; a formatting failure is exceptional and
+// is contained by the caller's existing connection-failure boundary.
 std::string NodeDateHeader() {
     const std::time_t now = std::chrono::system_clock::to_time_t(
         std::chrono::system_clock::now());
@@ -302,17 +305,34 @@ public:
         H2Headers headers{{":status", std::to_string(status)}};
         std::size_t header_bytes = headers.front().second.size() + 7;
         bool content_length_seen = false;
+        bool date_seen = false;
+        const auto append_header = [&](std::string name,
+                                       std::string value) {
+            if (name.size() > kMaxResponseHeaders ||
+                value.size() > kMaxResponseHeaders - name.size()) {
+                return false;
+            }
+            const auto bytes = name.size() + value.size();
+            if (bytes > kMaxResponseHeaders - header_bytes) return false;
+            header_bytes += bytes;
+            headers.emplace_back(std::move(name), std::move(value));
+            return true;
+        };
         for (const auto& [name, value] : input_headers) {
             if (name.empty() || name.front() == ':' || IsHopByHop(name)) continue;
-            if (header_bytes > kMaxResponseHeaders - std::min(kMaxResponseHeaders, name.size() + value.size())) {
+            if (!append_header(name, value)) {
                 return Fail("HTTP/2 response headers exceed 64 KiB");
             }
-            header_bytes += name.size() + value.size();
             if (name == "content-length") content_length_seen = true;
-            headers.emplace_back(name, value);
+            if (name == "date") date_seen = true;
         }
         if (!content_length_seen) {
-            headers.emplace_back("content-length", std::to_string(body.size()));
+            if (!append_header("content-length", std::to_string(body.size()))) {
+                return Fail("HTTP/2 response headers exceed 64 KiB");
+            }
+        }
+        if (!date_seen && !append_header("date", NodeDateHeader())) {
+            return Fail("HTTP/2 response headers exceed 64 KiB");
         }
         auto nva = MakeNva(headers);
         int rv = 0;

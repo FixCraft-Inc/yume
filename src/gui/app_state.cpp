@@ -12,6 +12,8 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
+#include <QJsonDocument>
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QLocale>
@@ -66,7 +68,8 @@ double total(const QJsonObject& status, const char* key) {
 const QStringList& AppState::pages() {
     static const QStringList names{
         QStringLiteral("overview"), QStringLiteral("connect"),
-        QStringLiteral("logs"), QStringLiteral("posture")};
+        QStringLiteral("logs"), QStringLiteral("posture"),
+        QStringLiteral("credits")};
     return names;
 }
 
@@ -181,6 +184,12 @@ void AppState::set_tray_active(bool active) {
     if (active == tray_active_) return;
     tray_active_ = active;
     emit trayChanged();
+}
+
+QVariantMap AppState::credits() const {
+    QFile file(QStringLiteral(":/yume/credits.json"));
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    return QJsonDocument::fromJson(file.readAll()).object().toVariantMap();
 }
 
 QString AppState::version() const {

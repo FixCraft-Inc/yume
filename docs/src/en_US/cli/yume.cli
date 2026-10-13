@@ -11,6 +11,7 @@ yume --config <path> [--control-socket <path>] --accept-route <id>
 yume --seal-kit <directory> --output <file>
 yume --import-kit <file> --into <directory>
 yume --version
+yume --credits
 yume --completion bash
 yume --help
 @end
@@ -21,6 +22,7 @@ yume --help
 --status
 --accept-route
 --version
+--credits
 --completion
 -h
 

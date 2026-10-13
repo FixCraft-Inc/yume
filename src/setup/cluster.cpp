@@ -144,7 +144,7 @@ Node load_node(const keys::KeyContext& context, const fs::path& server_path) {
 // nothing a node reads changes until commit(). Until then, rollback()
 // removes everything created. Once a replacement is renamed, the published
 // record may reference the created files, so a later flush failure preserves
-// those files and reports a partial commit.
+// those files, and a later rename or flush failure reports a partial commit.
 class Changes final {
 public:
     Changes() = default;
@@ -188,7 +188,15 @@ public:
         }
         for (const auto& path : created_) fsync_directory(path.parent_path());
         for (const auto& [temporary, path] : replacements_) {
-            rename_replace(temporary, path);
+            try {
+                rename_replace(temporary, path);
+            } catch (const SetupError& error) {
+                // Earlier replacements may already reference created files.
+                if (!published_) throw;
+                throw PartialCommitError(
+                    "cluster changes were partly published: " +
+                    std::string(error.what()));
+            }
             published_ = true;
             try {
                 fsync_directory(path.parent_path());

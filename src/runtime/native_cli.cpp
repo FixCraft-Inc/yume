@@ -31,6 +31,7 @@
 
 #include "common/secure_erase.hpp"
 #include "common/version.hpp"
+#include "runtime/credits.hpp"
 #include "config/v1/config.hpp"
 #include "fs/bounded_file.hpp"
 #include "providers/asio_execution_context.hpp"
@@ -73,6 +74,7 @@ struct Arguments final {
     config::v1::RunSettings run;
     bool validate{false};
     bool version{false};
+    bool credits{false};
     bool help{false};
     bool completion{false};
     bool status{false};
@@ -232,6 +234,8 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             value = std::filesystem::path(argv[++index]);
         } else if (argument == "--version") {
             arguments.version = true;
+        } else if (argument == "--credits") {
+            arguments.credits = true;
         } else if (argument == "--completion") {
             if (index + 1 >= argc || arguments.completion ||
                 std::string_view(argv[index + 1]) != "bash") {
@@ -265,7 +269,7 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
             return std::nullopt;
         }
     }
-    if (!arguments.help && !arguments.version && !arguments.completion &&
+    if (!arguments.help && !arguments.version && !arguments.credits && !arguments.completion &&
         !kit_action && !arguments.config) {
         error = "--config is required";
         return std::nullopt;
@@ -294,6 +298,18 @@ std::optional<Arguments> parse(NativeCliRole role, int argc, char** argv,
         return std::nullopt;
     }
     return arguments;
+}
+
+void print_credits(NativeCliRole role) {
+    (void)role;
+    std::fputs("YUME credits\n", stdout);
+    for (const auto& person : yume::credits::kPeople) {
+        std::printf("%s — %s — %s\n", person.name, person.role, person.contribution);
+    }
+    std::fputs("\nNative components\n", stdout);
+    for (const auto& component : yume::credits::kNativeComponents) {
+        std::printf("%s — %s — %s\n", component.name, component.license, component.use);
+    }
 }
 
 void print_version(NativeCliRole role) {
@@ -927,6 +943,10 @@ int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
         }
         if (arguments->version) {
             print_version(role);
+            return kExitStopped;
+        }
+        if (arguments->credits) {
+            print_credits(role);
             return kExitStopped;
         }
         if (arguments->completion) {

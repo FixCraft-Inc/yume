@@ -69,3 +69,23 @@ that the written behavior still agrees with the live code.
 public documents hold and where task state and evidence go instead. A fresh
 clone must contain everything a contributor needs to build and understand
 YUME. Source and executable tests decide whether a claim is true.
+
+## Shared credits
+
+`config/credits.json` owns contributors, licenses and per-consumer dependency
+lists. Its role, contribution and use fields reference stable IDs in
+`translations/catalog.json`. The desktop embeds this catalog directly;
+CLI, Android and website views are generated. Run:
+
+```bash
+python3 scripts/yume_credits.py validate
+python3 scripts/yume_credits.py generate --android-root /path/to/Yume
+python3 scripts/yume_credits.py generate --check --android-root /path/to/Yume
+python3 tests/test_yume_credits.py
+```
+
+Omit `--android-root` when the separate Android checkout is unavailable; that
+checks only native and website outputs. `--check` never writes and fails for
+missing or stale output. Android lists common native transport dependencies,
+its own application dependencies, and ML Kit only in the optional ML Kit
+build. Linux integration and desktop Qt dependencies have separate groups.

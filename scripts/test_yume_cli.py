@@ -332,11 +332,11 @@ class Tracked(unittest.TestCase):
         # src/gui/main.cpp.
         shared = {"--config", "--validate", "--status", "--version", "--completion", "--help",
                   "-h"}
-        expected = {"yume": shared | {"--connect", "--socks-address", "--socks-port",
+        expected = {"yume": shared | {"--credits", "--connect", "--socks-address", "--socks-port",
                                       "--control-socket", "--outer-carrier-evidence",
                                       "--accept-route",
                                       "--seal-kit", "--output", "--import-kit", "--into"},
-                    "yumed": shared,
+                    "yumed": shared | {"--credits"},
                     "yume-gui": {"--kit", "--page", "--theme", "--layout-direction", "--size",
                                  "--no-tray", "--yume", "--capture", "--headless",
                                  "--import-kit", "--name", "--version", "--completion",

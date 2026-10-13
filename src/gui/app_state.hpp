@@ -35,6 +35,7 @@ class AppState final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString setupError READ setup_error CONSTANT)
     Q_PROPERTY(QString version READ version CONSTANT)
+    Q_PROPERTY(QVariantMap credits READ credits CONSTANT)
     Q_PROPERTY(QString kitsDirectory READ kits_directory CONSTANT)
     Q_PROPERTY(bool rightToLeft READ right_to_left CONSTANT)
     Q_PROPERTY(QVariantList kits READ kits NOTIFY kitsChanged)
@@ -89,6 +90,7 @@ public:
 
     QString setup_error() const { return setup_error_; }
     QString version() const;
+    QVariantMap credits() const;
     QString kits_directory() const;
     bool right_to_left() const;
     QVariantList kits() const;

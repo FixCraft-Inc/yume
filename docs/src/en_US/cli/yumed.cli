@@ -8,6 +8,7 @@ namespace: yume::runtime::yumed_cli
 yumed --config <path> [--validate]
 yumed --config <path> --status
 yumed --version
+yumed --credits
 yumed --completion bash
 yumed --help
 @end
@@ -17,6 +18,7 @@ yumed --help
 --validate
 --status
 --version
+--credits
 --completion
 -h
 

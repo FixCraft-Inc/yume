@@ -215,6 +215,9 @@ and the new server gets the operator's public key and a
 .B cluster
 section in its
 .BR yumed.json .
+The cluster record is replaced last.
+A failure after the first replacement returns exit status 3 and keeps
+every file already referenced.
 .TP
 .B cluster-remove
 Take a node out of a cluster.
@@ -390,9 +393,14 @@ An option may also be written as
 .B 0
 on success,
 .B 1
-when the action fails, and
+when the action fails,
 .B 2
-for a usage error.
+for a usage error, and
+.B 3
+when files were published but the change is incomplete: a directory
+flush failed after a replacement, or a later replacement of the same
+command failed.
+Validate the affected tree before a daemon reloads it.
 A failure prints one line beginning
 .B yume-setup:
 and names no secret.

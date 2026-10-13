@@ -12,7 +12,7 @@ Rectangle {
     id: sidebar
     property var pageNames: []
     property var pageTitles: []
-    readonly property var icons: ["overview", "connect", "logs", "posture"]
+    readonly property var icons: ["overview", "connect", "logs", "posture", "credits"]
     color: Theme.paperSoft
 
     ColumnLayout {

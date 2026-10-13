@@ -319,7 +319,14 @@ cover their labels.
   refused.
 - Chat history is an encrypted, bounded log whose append is best effort and
   never fails a relay. Reading it reports protection, I/O and integrity
-  failures instead of an empty history.
+  failures instead of an empty history. A newline terminates each committed
+  record. A bounded unterminated final record is reported as truncation while
+  earlier authenticated records remain readable; the next append removes
+  only that incomplete tail under the append lock. A corrupt complete record
+  still refuses the listing. Keys, appended logs and their directories are
+  flushed before a write is considered durable; append failures attempt to
+  restore the prior log size, but a failed recovery flush cannot promise
+  crash durability.
 
 ## Failure
 

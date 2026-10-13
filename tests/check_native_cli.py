@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+
+from fault_injection import preload_for
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
@@ -55,6 +58,19 @@ class NativeCli(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stderr, "")
                     self.assertEqual(result.stdout, self.expected_help[name])
+
+    def test_credits_reports_shared_people_and_scoped_components(self) -> None:
+        for name in PROGRAMS:
+            with self.subTest(binary=name):
+                result = self.invoke(name, "--credits")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertIn("YUME credits", result.stdout)
+                self.assertIn("F1xGOD", result.stdout)
+                self.assertIn("Codex", result.stdout)
+                self.assertIn("Claude", result.stdout)
+                self.assertIn("Native components", result.stdout)
+                self.assertNotIn("BaseFWX —", result.stdout)
 
     def test_version_reports_the_native_composition(self) -> None:
         for name in PROGRAMS:
@@ -166,6 +182,34 @@ class NativeCli(unittest.TestCase):
                                str(into)], input=code, capture_output=True, text=True,
                               timeout=30, check=False)
 
+    def test_an_unconfirmed_kit_publication_is_reported_and_kept(self) -> None:
+        # The kit directory is renamed into place before its parent is
+        # flushed. A failing flush must not read as success, and the visible
+        # kit must stay (fixtures/fsync_after_rename_shim.c fails directory
+        # fsync after the matching rename).
+        with tempfile.TemporaryDirectory(prefix="yume-kit-") as temporary:
+            root = Path(temporary)
+            kit = self.kit(root)
+            sealed = root / "client.kit"
+            result = self.invoke("yume", "--seal-kit", str(kit), "--output", str(sealed))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            code = result.stdout.strip()
+            shim = root / "fsync-shim.so"
+            subprocess.run(["cc", "-shared", "-fPIC", "-o", str(shim),
+                            str(ROOT / "tests/fixtures/fsync_after_rename_shim.c"), "-ldl"],
+                           check=True, capture_output=True, timeout=60)
+            target = root / "unconfirmed-kit"
+            result = subprocess.run(
+                [str(PROGRAMS["yume"]), "--import-kit", str(sealed), "--into", str(target)],
+                input=code, capture_output=True, text=True, timeout=30, check=False,
+                env={**os.environ, "LD_PRELOAD": preload_for(
+                         PROGRAMS["yume"], shim, os.environ.get("LD_PRELOAD", "")),
+                     "YUME_FSYNC_FAILURE_TARGET": "unconfirmed-kit"},
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("durability was not confirmed", result.stderr)
+            self.assertEqual((target / "yume.json").read_bytes(), (kit / "yume.json").read_bytes())
+
     def test_a_sealed_kit_imports_with_its_code(self) -> None:
         with tempfile.TemporaryDirectory(prefix="yume-kit-") as temporary:
             root = Path(temporary)
@@ -237,7 +281,7 @@ class NativeCli(unittest.TestCase):
     def test_reference_and_unimplemented_options_are_rejected(self) -> None:
         arguments = [
             ["--diagnostic-level", "debug"], ["setup"], ["doctor"],
-            ["completion", "bash"], ["--credits"],
+            ["completion", "bash"],
             ["--server", "localhost"], ["--listen", "443"], ["--socks", "1080"],
         ]
         for name in PROGRAMS:

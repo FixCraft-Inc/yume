@@ -1114,12 +1114,6 @@
       <extracomment>source: New password required; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
       <translation>Нужен новый пароль</translation>
     </message>
-    <message id="use.at.least.6.characters">
-      <location filename="catalog:use.at.least.6.characters" line="1"/>
-      <source></source>
-      <extracomment>source: Use at least 6 characters; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Используйте не менее 6 символов</translation>
-    </message>
     <message id="passwords.do.not.match">
       <location filename="catalog:passwords.do.not.match" line="1"/>
       <source></source>
@@ -1485,30 +1479,6 @@
       <source></source>
       <extracomment>source: Author. Lead developer and designer of Yume and BaseFWX.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
       <translation>Автор. Главный разработчик и дизайнер Yume и BaseFWX.</translation>
-    </message>
-    <message id="supporting.ai.contributor">
-      <location filename="catalog:supporting.ai.contributor" line="1"/>
-      <source></source>
-      <extracomment>source: Supporting AI contributor; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Вспомогательный ИИ-участник</translation>
-    </message>
-    <message id="selected.code.reviews.refactors.and.bug.fix.contributio">
-      <location filename="catalog:selected.code.reviews.refactors.and.bug.fix.contributio" line="1"/>
-      <source></source>
-      <extracomment>source: Selected code reviews, refactors, and bug-fix contributions.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Отдельные ревью кода, рефакторинги и исправления ошибок.</translation>
-    </message>
-    <message id="primary.ai.engineering.partner">
-      <location filename="catalog:primary.ai.engineering.partner" line="1"/>
-      <source></source>
-      <extracomment>source: Primary AI engineering partner; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Основной ИИ-партнёр по разработке</translation>
-    </message>
-    <message id="architecture.implementation.security.hardening.testing">
-      <location filename="catalog:architecture.implementation.security.hardening.testing" line="1"/>
-      <source></source>
-      <extracomment>source: Architecture, implementation, security hardening, testing, and documentation across Yume, BaseFWX, desktop, and Android.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Архитектура, реализация, усиление безопасности, тестирование и документация Yume, BaseFWX, десктопа и Android.</translation>
     </message>
     <message id="open.source.components">
       <location filename="catalog:open.source.components" line="1"/>
@@ -3147,6 +3117,114 @@
       <source></source>
       <extracomment>source: the kit changed while it was being checked; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve Qt placeholders.</extracomment>
       <translation>Комплект изменился во время проверки</translation>
+    </message>
+    <message id="password.minimum.utf8.bytes">
+      <location filename="catalog:password.minimum.utf8.bytes" line="1"/>
+      <source></source>
+      <extracomment>source: Use at least 10 UTF-8 bytes; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
+      <translation>Используйте не менее 10 байт UTF-8</translation>
+    </message>
+    <message id="app.data.unlock.failed">
+      <location filename="catalog:app.data.unlock.failed" line="1"/>
+      <source></source>
+      <extracomment>source: Couldn't unlock app data. Check the password and try again.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
+      <translation>Не удалось открыть данные приложения. Проверьте пароль и повторите попытку.</translation>
+    </message>
+    <message id="ai.helpers">
+      <location filename="catalog:ai.helpers" line="1"/>
+      <source></source>
+      <extracomment>source: Helpers; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
+      <translation>Помощники</translation>
+    </message>
+    <message id="tuning.reset.preset">
+      <location filename="catalog:tuning.reset.preset" line="1"/>
+      <source></source>
+      <extracomment>source: Use the default preset; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
+      <translation>Использовать стандартный шаблон</translation>
+    </message>
+    <message id="language.downloads.unavailable">
+      <location filename="catalog:language.downloads.unavailable" line="1"/>
+      <source></source>
+      <extracomment>source: Could not list language downloads. Try again later.; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
+      <translation>Не удалось получить список языков. Повторите попытку позже.</translation>
+    </message>
+    <message id="kit.index.corrupt">
+      <location filename="catalog:kit.index.corrupt" line="1"/>
+      <source></source>
+      <extracomment>source: The kit list could not be read; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
+      <translation>Не удалось прочитать список комплектов</translation>
+    </message>
+    <message id="kit.index.recover">
+      <location filename="catalog:kit.index.recover" line="1"/>
+      <source></source>
+      <extracomment>source: Recover kit list; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
+      <translation>Восстановить список комплектов</translation>
+    </message>
+    <message id="kit.index.recover.detail">
+      <location filename="catalog:kit.index.recover.detail" line="1"/>
+      <source></source>
+      <extracomment>source: Rebuild the list from readable stored kits. Kit files stay unchanged; names and selection may need to be set again. An encrypted copy of the old list is kept.; context: Android AppStrings; owner: android.app.i18n; Recovery and settings UI; preserve meaning.</extracomment>
+      <translation>Восстановить список из читаемых сохранённых комплектов. Файлы комплектов не изменятся; имена и выбор, возможно, придётся задать снова. Зашифрованная копия старого списка сохранится.</translation>
+    </message>
+    <message id="credits.helper.contribution">
+      <location filename="catalog:credits.helper.contribution" line="1"/>
+      <source></source>
+      <extracomment>source: Code review, implementation, testing, and documentation.; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
+      <translation>Ревью кода, разработка, тестирование и документация.</translation>
+    </message>
+    <message id="credits.linux.use">
+      <location filename="catalog:credits.linux.use" line="1"/>
+      <source></source>
+      <extracomment>source: Linux managed TUN and resolver integration.; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
+      <translation>Управление TUN и интеграция DNS в Linux.</translation>
+    </message>
+    <message id="credits.qt.use">
+      <location filename="catalog:credits.qt.use" line="1"/>
+      <source></source>
+      <extracomment>source: Desktop interface.; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
+      <translation>Интерфейс настольного приложения.</translation>
+    </message>
+    <message id="credits.androidx.use">
+      <location filename="catalog:credits.androidx.use" line="1"/>
+      <source></source>
+      <extracomment>source: Android application and Material 3 interface components.; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
+      <translation>Компоненты приложения Android и интерфейса Material 3.</translation>
+    </message>
+    <message id="credits.desktop.components">
+      <location filename="catalog:credits.desktop.components" line="1"/>
+      <source></source>
+      <extracomment>source: Desktop interface components; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
+      <translation>Компоненты настольного интерфейса</translation>
+    </message>
+    <message id="credits.native.components">
+      <location filename="catalog:credits.native.components" line="1"/>
+      <source></source>
+      <extracomment>source: Native client and daemon components; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
+      <translation>Компоненты нативного клиента и службы</translation>
+    </message>
+    <message id="about.yume.source">
+      <location filename="catalog:about.yume.source" line="1"/>
+      <source></source>
+      <extracomment>source: YUME source; context: Android source provenance and locked VPN notification; owner: android.app.i18n; User-facing build identity or unlock action; preserve product names.</extracomment>
+      <translation>Исходный код YUME</translation>
+    </message>
+    <message id="about.yume.source.unverified">
+      <location filename="catalog:about.yume.source.unverified" line="1"/>
+      <source></source>
+      <extracomment>source: Unverified test build; context: Android source provenance and locked VPN notification; owner: android.app.i18n; User-facing build identity or unlock action; preserve product names.</extracomment>
+      <translation>Непроверенная тестовая сборка</translation>
+    </message>
+    <message id="about.yume.source.modified">
+      <location filename="catalog:about.yume.source.modified" line="1"/>
+      <source></source>
+      <extracomment>source: Modified source tree; context: Android source provenance and locked VPN notification; owner: android.app.i18n; User-facing build identity or unlock action; preserve product names.</extracomment>
+      <translation>Изменённые исходники</translation>
+    </message>
+    <message id="vpn.unlock.reconnect">
+      <location filename="catalog:vpn.unlock.reconnect" line="1"/>
+      <source></source>
+      <extracomment>source: Unlock Yume to reconnect the VPN; context: Android source provenance and locked VPN notification; owner: android.app.i18n; User-facing build identity or unlock action; preserve product names.</extracomment>
+      <translation>Разблокируйте Yume для повторного подключения VPN</translation>
     </message>
   </context>
 </TS>

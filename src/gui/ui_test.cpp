@@ -194,9 +194,28 @@ private slots:
                         QStringLiteral("%1: a control without a name: %2")
                             .arg(page, focused->metaObject()->className())));
             }
-            // The four page tabs and the primary action at least.
-            QVERIFY2(seen.size() >= 5, qPrintable(page));
+            // Every page tab and the primary action at least.
+            QVERIFY2(seen.size() >= AppState::pages().size() + 1, qPrintable(page));
         }
+    }
+
+    void credits_are_visible() {
+        state_->set_page("credits");
+        QTest::qWait(100);
+        QStringList rendered;
+        const auto visit = [&](const auto& self, QQuickItem* item) -> void {
+            if (!item->isVisible()) return;
+            const auto text = text_of(item);
+            if (!text.isEmpty()) rendered.append(text);
+            for (auto* child : item->childItems()) self(self, child);
+        };
+        visit(visit, window_->contentItem());
+        QVERIFY(rendered.contains("F1xGOD"));
+        QVERIFY(rendered.contains("Codex"));
+        QVERIFY(rendered.contains("Claude"));
+        QVERIFY(rendered.contains(
+            qtTrId("ai.helpers") + QStringLiteral("\n") +
+            qtTrId("credits.helper.contribution")));
     }
 
     void tuning_table_and_custom_limits() {

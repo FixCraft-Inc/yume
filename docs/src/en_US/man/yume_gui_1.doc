@@ -80,9 +80,9 @@ exact proposal. Closing the dialog accepts nothing.
 Select the kit named *name* when the window opens. With **--headless** it
 names the kit to act on.
 @opt **--page** *page*
-@cli values: overview connect logs posture
+@cli values: overview connect logs posture credits
 @cli spell: --page <page>
-@cli help: Open this page: overview, connect, logs or posture
+@cli help: Open this page: overview, connect, logs, posture or credits
 
 Open the window on *page*: **overview**, **connect**, **logs** or
 **posture**.

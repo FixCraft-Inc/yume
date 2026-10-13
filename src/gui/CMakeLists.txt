@@ -51,6 +51,7 @@ set(_yume_gui_qml
     qml/ConnectPage.qml
     qml/LogsPage.qml
     qml/PosturePage.qml
+    qml/CreditsPage.qml
     qml/TuningPanel.qml
     qml/TuningSlider.qml
     qml/RouteReviewDialog.qml
@@ -76,7 +77,9 @@ qt_add_resources(yume_gui_core yume_gui_assets PREFIX /yume BASE assets
 # same file yume-setup and yume-doctor use.
 set(_yume_gui_presets "${PROJECT_SOURCE_DIR}/config/tuning_presets.json")
 set_source_files_properties("${_yume_gui_presets}" PROPERTIES QT_RESOURCE_ALIAS tuning_presets.json)
-qt_add_resources(yume_gui_core yume_gui_data PREFIX /yume FILES "${_yume_gui_presets}"
+set(_yume_gui_credits "${PROJECT_SOURCE_DIR}/config/credits.json")
+set_source_files_properties("${_yume_gui_credits}" PROPERTIES QT_RESOURCE_ALIAS credits.json)
+qt_add_resources(yume_gui_core yume_gui_data PREFIX /yume FILES "${_yume_gui_presets}" "${_yume_gui_credits}"
     OUTPUT_TARGETS _yume_gui_data_targets)
 
 set(_yume_gui_ts

@@ -25,6 +25,13 @@ TUN privileges or DNS authorization.
 Print the product version, transport version, configuration schema, suite,
 session-security provider, crypto backend and evidence profile. This operation
 uses local information and does not read a configuration or contact a server.
+@opt **--credits**
+@cli spell: --credits
+@cli help: Print the shared YUME people and component credits
+
+Print the people who authored and assisted this build and the scoped native
+component notices. Optional module dependencies are identified by their
+consumer scope; BaseFWX is not the primary transport.
 @opt **--completion** *shell*
 @cli values: bash
 @cli spell: --completion <shell>

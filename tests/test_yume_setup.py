@@ -22,6 +22,8 @@ import sys
 import tempfile
 import unittest
 
+from fault_injection import preload_for
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS: dict[str, Path] = {}
@@ -104,11 +106,14 @@ class YumeSetupTests(unittest.TestCase):
 
     @classmethod
     def run_with_directory_fsync_failure(
-        cls, target: str, *arguments: str
+        cls, target: str, *arguments: str, rename_failure: str | None = None
     ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
-        environment["LD_PRELOAD"] = str(fsync_shim_path())
+        environment["LD_PRELOAD"] = preload_for(
+            PROGRAMS["setup"], fsync_shim_path(), environment.get("LD_PRELOAD", ""))
         environment["YUME_FSYNC_FAILURE_TARGET"] = target
+        if rename_failure is not None:
+            environment["YUME_RENAME_FAILURE_TARGET"] = rename_failure
         return subprocess.run(
             [str(PROGRAMS["setup"]), *arguments],
             cwd=ROOT,
@@ -1225,6 +1230,22 @@ class ClusterSetupTests(unittest.TestCase):
         self.assertIn("durability was not confirmed", result.stderr)
         state = json.loads((self.operator / "cluster.json").read_text())
         self.assertEqual({node["name"] for node in state["nodes"]}, {"north", "south"})
+        peers = self.servers["south"] / "credentials/cluster/peers"
+        self.assertTrue((peers / "north-outbound.psk").is_file())
+        self.assertTrue((self.servers["south"] / "credentials/cluster/operator.pub.pem").is_file())
+
+    def test_cluster_add_reports_partial_publish_after_a_later_rename_fails(self) -> None:
+        # cluster.json is replaced last, after both peers.json files and the
+        # node's configuration already reference the new secrets.
+        self.add("north")
+        result = YumeSetupTests.run_with_directory_fsync_failure(
+            "no-such-target", "cluster-add", "--cluster", str(self.operator),
+            "--server", str(self.servers["south"]), "--name", "south",
+            "--host", self.HOSTS["south"], "--address", self.ADDRESSES["south"],
+            rename_failure="cluster.json",
+        )
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("partly published", result.stderr)
         peers = self.servers["south"] / "credentials/cluster/peers"
         self.assertTrue((peers / "north-outbound.psk").is_file())
         self.assertTrue((self.servers["south"] / "credentials/cluster/operator.pub.pem").is_file())

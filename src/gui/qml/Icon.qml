@@ -22,6 +22,7 @@ Item {
         "overview": "M3 12h4l3-7 4 14 3-7h4",
         "connect": "M9 3v5 M15 3v5 M6 8h12v3a6 6 0 0 1-12 0z M12 17v4",
         "logs": "M5 6h14 M5 10h14 M5 14h10 M5 18h7",
+        "credits": "M4 5h16v14H4z M8 9h8 M8 13h5",
         "posture": "M12 3l7 3v5c0 4.6-3 8-7 10-4-2-7-5.4-7-10V6z M9 12l2 2 4-4",
         "copy": "M9 9h10v11H9z M5 15V4h10",
         "folder": "M3 7h6l2 2h10v10H3z",

@@ -22,9 +22,9 @@ Options:
   --out PATH              Output root (default: build/android-shared-abi)
   --expected-baseline SHA Required signed ancestor (default: 8f6eb67...)
   --expected-commit SHA   Compatibility alias for --expected-baseline
-  --unverified-source     Build a tree without Git metadata, such as a
-                          synchronized qualification copy. Nothing then ties
-                          the output to a signed commit, so never release it.
+  --verify-source-only    Verify the source and exit without building
+  --unverified-source     Permit unsigned, dirty or metadata-free test sources.
+                          Never release this output.
   --jobs COUNT            Parallel build jobs
 
 The output for each ABI is <out>/<abi>/libyume.so plus the public header at
@@ -45,6 +45,7 @@ VCPKG_DIR=""
 OUT_DIR="${DEFAULT_OUT_DIR}"
 API_LEVEL="${DEFAULT_API}"
 VERIFY_SOURCE=1
+VERIFY_ONLY=0
 DETECTED_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '2')"
 # Android C++ translation units are memory-heavy. A conservative default keeps
 # release builds responsive on ordinary developer machines; CI and larger
@@ -65,6 +66,7 @@ while [[ $# -gt 0 ]]; do
         --out) OUT_DIR="${2:-}"; shift 2 ;;
         --expected-baseline|--expected-commit) EXPECTED_BASELINE="${2:-}"; shift 2 ;;
         --unverified-source) VERIFY_SOURCE=0; shift ;;
+        --verify-source-only) VERIFY_ONLY=1; shift ;;
         --jobs) JOBS="${2:-}"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
@@ -75,11 +77,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
     printf 'Refusing to build Android artifacts as root.\n' >&2
     exit 1
 fi
-if [[ ! -f "${NDK_DIR}/build/cmake/android.toolchain.cmake" ]]; then
+if (( ! VERIFY_ONLY )) && [[ ! -f "${NDK_DIR}/build/cmake/android.toolchain.cmake" ]]; then
     printf 'Android NDK toolchain not found under: %s\n' "${NDK_DIR}" >&2
     exit 1
 fi
-if [[ ! -f "${VCPKG_DIR}/scripts/buildsystems/vcpkg.cmake" ]]; then
+if (( ! VERIFY_ONLY )) && [[ ! -f "${VCPKG_DIR}/scripts/buildsystems/vcpkg.cmake" ]]; then
     printf 'vcpkg toolchain not found under: %s\n' "${VCPKG_DIR}" >&2
     exit 1
 fi
@@ -101,8 +103,19 @@ if (( VERIFY_SOURCE )); then
         exit 1
     fi
     git -C "${ROOT_DIR}" verify-commit "${EXPECTED_BASELINE}" >/dev/null
+    git -C "${ROOT_DIR}" verify-commit HEAD >/dev/null
+    # Include staged, unstaged and untracked files; ignored build outputs do
+    # not change the tracked source identity.
+    if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain --untracked-files=all)" ]]; then
+        printf 'Refusing verified Android build from a dirty YUME tree. Use --unverified-source for tests only.\n' >&2
+        exit 1
+    fi
 else
     printf 'warning: building an unverified source tree. Do not release this output.\n' >&2
+fi
+
+if (( VERIFY_ONLY )); then
+    exit 0
 fi
 
 # The pinned OpenSSL source, its checksum and the patch series have one owner.

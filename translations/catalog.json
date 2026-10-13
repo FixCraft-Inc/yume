@@ -2819,21 +2819,6 @@
       }
     },
     {
-      "id": "use.at.least.6.characters",
-      "source": "Use at least 6 characters",
-      "context": "Android AppStrings",
-      "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
-      "translations": {
-        "ru": "Используйте не менее 6 символов",
-        "ja": "6文字以上を使ってください",
-        "uk": "Використовуйте щонайменше 6 символів"
-      },
-      "requirements": {
-        "placeholders": []
-      }
-    },
-    {
       "id": "passwords.do.not.match",
       "source": "Passwords do not match",
       "context": "Android AppStrings",
@@ -3745,66 +3730,6 @@
         "ru": "Автор. Главный разработчик и дизайнер Yume и BaseFWX.",
         "ja": "著者。Yume と BaseFWX の主任開発者兼デザイナー。",
         "uk": "Автор. Головний розробник і дизайнер Yume та BaseFWX."
-      },
-      "requirements": {
-        "placeholders": []
-      }
-    },
-    {
-      "id": "supporting.ai.contributor",
-      "source": "Supporting AI contributor",
-      "context": "Android AppStrings",
-      "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
-      "translations": {
-        "ru": "Вспомогательный ИИ-участник",
-        "ja": "支援AIコントリビューター",
-        "uk": "Допоміжний ШІ-учасник"
-      },
-      "requirements": {
-        "placeholders": []
-      }
-    },
-    {
-      "id": "selected.code.reviews.refactors.and.bug.fix.contributio",
-      "source": "Selected code reviews, refactors, and bug-fix contributions.",
-      "context": "Android AppStrings",
-      "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
-      "translations": {
-        "ru": "Отдельные ревью кода, рефакторинги и исправления ошибок.",
-        "ja": "一部のコードレビュー、リファクタリング、バグ修正への貢献。",
-        "uk": "Окремі ревʼю коду, рефакторинги та виправлення помилок."
-      },
-      "requirements": {
-        "placeholders": []
-      }
-    },
-    {
-      "id": "primary.ai.engineering.partner",
-      "source": "Primary AI engineering partner",
-      "context": "Android AppStrings",
-      "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
-      "translations": {
-        "ru": "Основной ИИ-партнёр по разработке",
-        "ja": "主要AIエンジニアリングパートナー",
-        "uk": "Основний ШІ-партнер з розробки"
-      },
-      "requirements": {
-        "placeholders": []
-      }
-    },
-    {
-      "id": "architecture.implementation.security.hardening.testing",
-      "source": "Architecture, implementation, security hardening, testing, and documentation across Yume, BaseFWX, desktop, and Android.",
-      "context": "Android AppStrings",
-      "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
-      "translations": {
-        "ru": "Архитектура, реализация, усиление безопасности, тестирование и документация Yume, BaseFWX, десктопа и Android.",
-        "ja": "Yume、BaseFWX、デスクトップ、Android 全体の設計、実装、セキュリティ強化、テスト、文書化。",
-        "uk": "Архітектура, реалізація, посилення безпеки, тестування й документація Yume, BaseFWX, десктопа та Android."
       },
       "requirements": {
         "placeholders": []
@@ -7767,568 +7692,839 @@
         "uk": "маршрут із %1 переходів"
       }
     },
-{
+    {
       "id": "desktop.control.socket.timed.out",
       "source": "the control socket did not answer in time",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Время ожидания ответа сокета управления истекло",
-          "ja": "制御ソケットの応答がタイムアウトしました",
-          "uk": "Час очікування відповіді сокета керування минув"
+        "ru": "Время ожидания ответа сокета управления истекло",
+        "ja": "制御ソケットの応答がタイムアウトしました",
+        "uk": "Час очікування відповіді сокета керування минув"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.socket.belongs.to.another.user",
       "source": "the control socket belongs to another user",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Сокет управления принадлежит другому пользователю",
-          "ja": "制御ソケットは別のユーザーに属しています",
-          "uk": "Сокет керування належить іншому користувачу"
+        "ru": "Сокет управления принадлежит другому пользователю",
+        "ja": "制御ソケットは別のユーザーに属しています",
+        "uk": "Сокет керування належить іншому користувачу"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.reply.too.large",
       "source": "the control reply is too large",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Ответ управления слишком велик",
-          "ja": "Ответ управления слишком велик",
-          "uk": "Відповідь керування завелика"
+        "ru": "Ответ управления слишком велик",
+        "ja": "Ответ управления слишком велик",
+        "uk": "Відповідь керування завелика"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.socket.has.no.listener",
       "source": "nothing listens on the control socket",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "На сокете управления нет слушателя",
-          "ja": "制御ソケットを待ち受けているものがありません",
-          "uk": "На сокеті керування немає слухача"
+        "ru": "На сокете управления нет слушателя",
+        "ja": "制御ソケットを待ち受けているものがありません",
+        "uk": "На сокеті керування немає слухача"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.socket.inaccessible",
       "source": "the control socket is not accessible",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Сокет управления недоступен",
-          "ja": "制御ソケットにアクセスできません",
-          "uk": "Сокет керування недоступний"
+        "ru": "Сокет управления недоступен",
+        "ja": "制御ソケットにアクセスできません",
+        "uk": "Сокет керування недоступний"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.connection.closed.before.peer.verification",
       "source": "the control connection closed before peer verification",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Соединение управления закрылось до проверки узла",
-          "ja": "ピアを検証する前に制御接続が閉じられました",
-          "uk": "З’єднання керування закрито до перевірки вузла"
+        "ru": "Соединение управления закрылось до проверки узла",
+        "ja": "ピアを検証する前に制御接続が閉じられました",
+        "uk": "З’єднання керування закрито до перевірки вузла"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.reply.incomplete",
       "source": "the control reply is incomplete",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Ответ управления неполон",
-          "ja": "制御応答が不完全です",
-          "uk": "Відповідь керування неповна"
+        "ru": "Ответ управления неполон",
+        "ja": "制御応答が不完全です",
+        "uk": "Відповідь керування неповна"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.reply.not.protocol.one",
       "source": "the reply is not control protocol 1",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Ответ не соответствует протоколу управления 1",
-          "ja": "応答は制御プロトコル 1 ではありません",
-          "uk": "Відповідь не є протоколом керування 1"
+        "ru": "Ответ не соответствует протоколу управления 1",
+        "ja": "応答は制御プロトコル 1 ではありません",
+        "uk": "Відповідь не є протоколом керування 1"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.control.request.too.long",
       "source": "the request is too long",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Запрос слишком длинный",
-          "ja": "要求が長すぎます",
-          "uk": "Запит задовгий"
+        "ru": "Запрос слишком длинный",
+        "ja": "要求が長すぎます",
+        "uk": "Запит задовгий"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.read.kit.settings.safely",
       "source": "Cannot read this kit's settings safely",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Невозможно безопасно прочитать настройки этого комплекта",
-          "ja": "このキットの設定を安全に読み取れません",
-          "uk": "Не вдалося безпечно прочитати налаштування цього комплекту"
+        "ru": "Невозможно безопасно прочитать настройки этого комплекта",
+        "ja": "このキットの設定を安全に読み取れません",
+        "uk": "Не вдалося безпечно прочитати налаштування цього комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.read.kit.settings",
       "source": "Cannot read this kit's settings",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Невозможно прочитать настройки этого комплекта",
-          "ja": "このキットの設定を読み取れません",
-          "uk": "Не вдалося прочитати налаштування цього комплекту"
+        "ru": "Невозможно прочитать настройки этого комплекта",
+        "ja": "このキットの設定を読み取れません",
+        "uk": "Не вдалося прочитати налаштування цього комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.create",
       "source": "cannot create %1",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "Не удалось создать %1",
-          "ja": "%1 を作成できません",
-          "uk": "Не вдалося створити %1"
+        "ru": "Не удалось создать %1",
+        "ja": "%1 を作成できません",
+        "uk": "Не вдалося створити %1"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.not.a.directory.of.this.user",
       "source": "%1 is not a directory of this user",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "%1 не является каталогом этого пользователя",
-          "ja": "%1 はこのユーザーのディレクトリではありません",
-          "uk": "%1 не є каталогом цього користувача"
+        "ru": "%1 не является каталогом этого пользователя",
+        "ja": "%1 はこのユーザーのディレクトリではありません",
+        "uk": "%1 не є каталогом цього користувача"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.make.private",
       "source": "cannot make %1 private",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "Не удалось защитить %1",
-          "ja": "%1 を非公開にできません",
-          "uk": "Не вдалося зробити %1 приватним"
+        "ru": "Не удалось защитить %1",
+        "ja": "%1 を非公開にできません",
+        "uk": "Не вдалося зробити %1 приватним"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.runtime.directory.not.absolute",
       "source": "XDG_RUNTIME_DIR is not set to an absolute path",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "XDG_RUNTIME_DIR не задан как абсолютный путь",
-          "ja": "XDG_RUNTIME_DIR не задан как абсолютный путь",
-          "uk": "XDG_RUNTIME_DIR не задано як абсолютний шлях"
+        "ru": "XDG_RUNTIME_DIR не задан как абсолютный путь",
+        "ja": "XDG_RUNTIME_DIR не задан как абсолютный путь",
+        "uk": "XDG_RUNTIME_DIR не задано як абсолютний шлях"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.no.yume.program",
       "source": "no yume program at %1",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "Программа yume не найдена в %1",
-          "ja": "%1 に yume プログラムがありません",
-          "uk": "Програма yume відсутня в %1"
+        "ru": "Программа yume не найдена в %1",
+        "ja": "%1 に yume プログラムがありません",
+        "uk": "Програма yume відсутня в %1"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.yume.could.not.import.kit",
       "source": "yume could not import the kit",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "yume не удалось импортировать комплект",
-          "ja": "yume はキットをインポートできませんでした",
-          "uk": "yume не вдалося імпортувати комплект"
+        "ru": "yume не удалось импортировать комплект",
+        "ja": "yume はキットをインポートできませんでした",
+        "uk": "yume не вдалося імпортувати комплект"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.run.program",
       "source": "cannot run yume",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Не удалось запустить yume",
-          "ja": "yume を実行できません",
-          "uk": "Не вдалося запустити yume"
+        "ru": "Не удалось запустить yume",
+        "ja": "yume を実行できません",
+        "uk": "Не вдалося запустити yume"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.not.a.kit.name",
       "source": "not a kit name",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Недопустимое имя комплекта",
-          "ja": "キット名ではありません",
-          "uk": "Неприпустиме ім’я комплекту"
+        "ru": "Недопустимое имя комплекта",
+        "ja": "キット名ではありません",
+        "uk": "Неприпустиме ім’я комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.not.a.kit.directory",
       "source": "%1 is not a kit directory",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "%1 не является каталогом комплекта",
-          "ja": "%1 はキットディレクトリではありません",
-          "uk": "%1 не є каталогом комплекту"
+        "ru": "%1 не является каталогом комплекта",
+        "ja": "%1 はキットディレクトリではありません",
+        "uk": "%1 не є каталогом комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.remove.kit",
       "source": "cannot remove %1",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "Не удалось удалить %1",
-          "ja": "%1 を削除できません",
-          "uk": "Не вдалося видалити %1"
+        "ru": "Не удалось удалить %1",
+        "ja": "%1 を削除できません",
+        "uk": "Не вдалося видалити %1"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.choose.a.different.kit.name",
       "source": "choose a different kit name",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Выберите другое имя комплекта",
-          "ja": "別のキット名を選択してください",
-          "uk": "Виберіть інше ім’я комплекту"
+        "ru": "Выберите другое имя комплекта",
+        "ja": "別のキット名を選択してください",
+        "uk": "Виберіть інше ім’я комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.not.a.safe.kit.directory",
       "source": "%1 is not a safe kit directory",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "%1 не является безопасным каталогом комплекта",
-          "ja": "%1 は安全なキットディレクトリではありません",
-          "uk": "%1 не є безпечним каталогом комплекту"
+        "ru": "%1 не является безопасным каталогом комплекта",
+        "ja": "%1 は安全なキットディレクトリではありません",
+        "uk": "%1 не є безпечним каталогом комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.read.kit.configuration",
       "source": "cannot read the kit's configuration",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Не удалось прочитать конфигурацию комплекта",
-          "ja": "キットの設定を読み取れません",
-          "uk": "Не вдалося прочитати конфігурацію комплекту"
+        "ru": "Не удалось прочитать конфигурацию комплекта",
+        "ja": "キットの設定を読み取れません",
+        "uk": "Не вдалося прочитати конфігурацію комплекту"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.rename.kit",
       "source": "cannot rename %1 to %2",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders and technical terms.",
       "requirements": {
-          "placeholders": [
-              "%1",
-              "%2"
-          ]
+        "placeholders": [
+          "%1",
+          "%2"
+        ]
       },
       "translations": {
-          "ru": "Не удалось переименовать %1 в %2",
-          "ja": "%1 を %2 に名前変更できません",
-          "uk": "Не вдалося перейменувати %1 на %2"
+        "ru": "Не удалось переименовать %1 в %2",
+        "ja": "%1 を %2 に名前変更できません",
+        "uk": "Не вдалося перейменувати %1 на %2"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.cannot.display.kit.settings",
       "source": "Cannot display this kit's settings; check its configuration",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Не удалось показать настройки комплекта; проверьте конфигурацию",
-          "ja": "このキットの設定を表示できません。構成を確認してください",
-          "uk": "Не вдалося показати налаштування комплекту; перевірте конфігурацію"
+        "ru": "Не удалось показать настройки комплекта; проверьте конфигурацию",
+        "ja": "このキットの設定を表示できません。構成を確認してください",
+        "uk": "Не вдалося показати налаштування комплекту; перевірте конфігурацію"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.no.configuration.directory",
       "source": "no configuration directory (XDG_CONFIG_HOME or HOME)",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Нет каталога конфигурации (XDG_CONFIG_HOME или HOME)",
-          "ja": "構成ディレクトリがありません (XDG_CONFIG_HOME または HOME)",
-          "uk": "Немає каталогу конфігурації (XDG_CONFIG_HOME або HOME)"
+        "ru": "Нет каталога конфигурации (XDG_CONFIG_HOME или HOME)",
+        "ja": "構成ディレクトリがありません (XDG_CONFIG_HOME または HOME)",
+        "uk": "Немає каталогу конфігурації (XDG_CONFIG_HOME або HOME)"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.invalid.kit.name",
       "source": "a kit name is 1 to 48 letters, digits, dots, dashes or underscores, starting with a letter, digit or underscore",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Имя комплекта должно содержать от 1 до 48 букв, цифр, точек, дефисов или подчёркиваний и начинаться с буквы, цифры или подчёркивания",
-          "ja": "キット名は1〜48文字の英数字、ドット、ハイフン、アンダースコアで、英数字またはアンダースコアで始めてください",
-          "uk": "Ім’я комплекту має містити від 1 до 48 літер, цифр, крапок, дефісів або підкреслень і починатися з літери, цифри чи підкреслення"
+        "ru": "Имя комплекта должно содержать от 1 до 48 букв, цифр, точек, дефисов или подчёркиваний и начинаться с буквы, цифры или подчёркивания",
+        "ja": "キット名は1〜48文字の英数字、ドット、ハイフン、アンダースコアで、英数字またはアンダースコアで始めてください",
+        "uk": "Ім’я комплекту має містити від 1 до 48 літер, цифр, крапок, дефісів або підкреслень і починатися з літери, цифри чи підкреслення"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.kits.root.not.safe",
       "source": "the kits root is not a safe directory of this user",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Корневой каталог комплектов небезопасен или принадлежит другому пользователю",
-          "ja": "キットのルートは安全なディレクトリではありません",
-          "uk": "Кореневий каталог комплектів не є безпечним каталогом цього користувача"
+        "ru": "Корневой каталог комплектов небезопасен или принадлежит другому пользователю",
+        "ja": "キットのルートは安全なディレクトリではありません",
+        "uk": "Кореневий каталог комплектів не є безпечним каталогом цього користувача"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.kit.configuration.not.bounded",
       "source": "the kit's configuration is not a bounded regular file of this user",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Конфигурация комплекта не является ограниченным обычным файлом этого пользователя",
-          "ja": "キットの設定はこのユーザーの有界な通常ファイルではありません",
-          "uk": "Конфігурація комплекту не є обмеженим звичайним файлом цього користувача"
+        "ru": "Конфигурация комплекта не является ограниченным обычным файлом этого пользователя",
+        "ja": "キットの設定はこのユーザーの有界な通常ファイルではありません",
+        "uk": "Конфігурація комплекту не є обмеженим звичайним файлом цього користувача"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.kit.configuration.cannot.be.checked",
       "source": "the kit's configuration cannot be checked before renaming",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Невозможно проверить конфигурацию комплекта перед переименованием",
-          "ja": "名前変更前にキットの設定を確認できません",
-          "uk": "Не вдалося перевірити конфігурацію комплекту перед перейменуванням"
+        "ru": "Невозможно проверить конфигурацию комплекта перед переименованием",
+        "ja": "名前変更前にキットの設定を確認できません",
+        "uk": "Не вдалося перевірити конфігурацію комплекту перед перейменуванням"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.kit.configuration.unsafe.paths",
       "source": "the configuration uses parent traversal, excessive nesting, or an absolute path inside this kit; use relative kit paths without parent traversal before renaming",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve technical terms.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Конфигурация содержит обход родителя, чрезмерную вложенность или абсолютный путь; перед переименованием используйте относительные пути без обхода родителя",
-          "ja": "構成に親トラバーサル、過度な入れ子、またはキット内の絶対パスがあります。名前変更前に親トラバーサルのない相対パスを使用してください",
-          "uk": "Конфігурація містить обхід батьківського каталогу, надмірну вкладеність або абсолютний шлях; перед перейменуванням використовуйте відносні шляхи без обходу"
+        "ru": "Конфигурация содержит обход родителя, чрезмерную вложенность или абсолютный путь; перед переименованием используйте относительные пути без обхода родителя",
+        "ja": "構成に親トラバーサル、過度な入れ子、またはキット内の絶対パスがあります。名前変更前に親トラバーサルのない相対パスを使用してください",
+        "uk": "Конфігурація містить обхід батьківського каталогу, надмірну вкладеність або абсолютний шлях; перед перейменуванням використовуйте відносні шляхи без обходу"
       },
       "platform": "desktop"
-  },{
+    },
+    {
       "id": "desktop.kit.named.already.exists",
       "source": "a kit named %1 already exists",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders.",
       "requirements": {
-          "placeholders": [
-              "%1"
-          ]
+        "placeholders": [
+          "%1"
+        ]
       },
       "translations": {
-          "ru": "Комплект с именем %1 уже существует",
-          "ja": "%1 という名前のキットは既に存在します",
-          "uk": "Комплект із назвою %1 вже існує"
+        "ru": "Комплект с именем %1 уже существует",
+        "ja": "%1 という名前のキットは既に存在します",
+        "uk": "Комплект із назвою %1 вже існує"
       },
       "platform": "desktop"
-  },
-{
+    },
+    {
       "id": "desktop.kit.changed.while.checked",
       "source": "the kit changed while it was being checked",
       "context": "Desktop GUI diagnostics",
       "owner": "src/gui/kit_store.cpp",
       "notes": "Desktop UI diagnostic; preserve Qt placeholders.",
       "requirements": {
-          "placeholders": []
+        "placeholders": []
       },
       "translations": {
-          "ru": "Комплект изменился во время проверки",
-          "ja": "確認中にキットが変更されました",
-          "uk": "Комплект змінився під час перевірки"
+        "ru": "Комплект изменился во время проверки",
+        "ja": "確認中にキットが変更されました",
+        "uk": "Комплект змінився під час перевірки"
       },
       "platform": "desktop"
-  }
+    },
+    {
+      "id": "password.minimum.utf8.bytes",
+      "source": "Use at least 10 UTF-8 bytes",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Preserve technical terms and formatting placeholders.",
+      "translations": {
+        "ru": "Используйте не менее 10 байт UTF-8",
+        "ja": "UTF-8で10バイト以上を使用してください",
+        "uk": "Використовуйте щонайменше 10 байтів UTF-8"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "app.data.unlock.failed",
+      "source": "Couldn't unlock app data. Check the password and try again.",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Preserve technical terms and formatting placeholders.",
+      "translations": {
+        "ru": "Не удалось открыть данные приложения. Проверьте пароль и повторите попытку.",
+        "ja": "アプリデータを開けません。パスワードを確認してもう一度お試しください。",
+        "uk": "Не вдалося відкрити дані застосунку. Перевірте пароль і повторіть спробу."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "ai.helpers",
+      "source": "Helpers",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Preserve technical terms and formatting placeholders.",
+      "translations": {
+        "ru": "Помощники",
+        "ja": "支援者",
+        "uk": "Помічники"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "tuning.reset.preset",
+      "source": "Use the default preset",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Recovery and settings UI; preserve meaning.",
+      "translations": {
+        "ru": "Использовать стандартный шаблон",
+        "ja": "既定のプリセットを使用",
+        "uk": "Використати типовий шаблон"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "language.downloads.unavailable",
+      "source": "Could not list language downloads. Try again later.",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Recovery and settings UI; preserve meaning.",
+      "translations": {
+        "ru": "Не удалось получить список языков. Повторите попытку позже.",
+        "ja": "言語のダウンロード一覧を取得できません。後でもう一度お試しください。",
+        "uk": "Не вдалося отримати список мов. Повторіть спробу пізніше."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "kit.index.corrupt",
+      "source": "The kit list could not be read",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Recovery and settings UI; preserve meaning.",
+      "translations": {
+        "ru": "Не удалось прочитать список комплектов",
+        "ja": "キット一覧を読み取れません",
+        "uk": "Не вдалося прочитати список комплектів"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "kit.index.recover",
+      "source": "Recover kit list",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Recovery and settings UI; preserve meaning.",
+      "translations": {
+        "ru": "Восстановить список комплектов",
+        "ja": "キット一覧を復元",
+        "uk": "Відновити список комплектів"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "kit.index.recover.detail",
+      "source": "Rebuild the list from readable stored kits. Kit files stay unchanged; names and selection may need to be set again. An encrypted copy of the old list is kept.",
+      "context": "Android AppStrings",
+      "owner": "android.app.i18n",
+      "notes": "Recovery and settings UI; preserve meaning.",
+      "translations": {
+        "ru": "Восстановить список из читаемых сохранённых комплектов. Файлы комплектов не изменятся; имена и выбор, возможно, придётся задать снова. Зашифрованная копия старого списка сохранится.",
+        "ja": "読み取り可能な保存済みキットから一覧を再構築します。キットファイルは変更されませんが、名前と選択は再設定が必要になる場合があります。古い一覧の暗号化コピーは保持されます。",
+        "uk": "Відновити список із доступних для читання збережених комплектів. Файли комплектів не зміняться; назви й вибір, можливо, доведеться задати знову. Зашифрована копія старого списку збережеться."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "credits.helper.contribution",
+      "source": "Code review, implementation, testing, and documentation.",
+      "context": "Shared contributor and component credits",
+      "owner": "config/credits.json",
+      "notes": "Attribution text; preserve product names and license identifiers.",
+      "translations": {
+        "ru": "Ревью кода, разработка, тестирование и документация.",
+        "ja": "コードレビュー、実装、テスト、ドキュメント。",
+        "uk": "Рев’ю коду, розробка, тестування та документація."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "credits.linux.use",
+      "source": "Linux managed TUN and resolver integration.",
+      "context": "Shared contributor and component credits",
+      "owner": "config/credits.json",
+      "notes": "Attribution text; preserve product names and license identifiers.",
+      "translations": {
+        "ru": "Управление TUN и интеграция DNS в Linux.",
+        "ja": "Linux の TUN 管理と名前解決の統合。",
+        "uk": "Керування TUN та інтеграція DNS у Linux."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "credits.qt.use",
+      "source": "Desktop interface.",
+      "context": "Shared contributor and component credits",
+      "owner": "config/credits.json",
+      "notes": "Attribution text; preserve product names and license identifiers.",
+      "translations": {
+        "ru": "Интерфейс настольного приложения.",
+        "ja": "デスクトップのインターフェース。",
+        "uk": "Інтерфейс настільного застосунку."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "credits.androidx.use",
+      "source": "Android application and Material 3 interface components.",
+      "context": "Shared contributor and component credits",
+      "owner": "config/credits.json",
+      "notes": "Attribution text; preserve product names and license identifiers.",
+      "translations": {
+        "ru": "Компоненты приложения Android и интерфейса Material 3.",
+        "ja": "Android アプリと Material 3 のインターフェース部品。",
+        "uk": "Компоненти застосунку Android та інтерфейсу Material 3."
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "credits.desktop.components",
+      "source": "Desktop interface components",
+      "context": "Shared contributor and component credits",
+      "owner": "config/credits.json",
+      "notes": "Attribution text; preserve product names and license identifiers.",
+      "translations": {
+        "ru": "Компоненты настольного интерфейса",
+        "ja": "デスクトップの構成要素",
+        "uk": "Компоненти настільного інтерфейсу"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "credits.native.components",
+      "source": "Native client and daemon components",
+      "context": "Shared contributor and component credits",
+      "owner": "config/credits.json",
+      "notes": "Attribution text; preserve product names and license identifiers.",
+      "translations": {
+        "ru": "Компоненты нативного клиента и службы",
+        "ja": "ネイティブクライアントとデーモンの構成要素",
+        "uk": "Компоненти нативного клієнта та служби"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "about.yume.source",
+      "source": "YUME source",
+      "context": "Android source provenance and locked VPN notification",
+      "owner": "android.app.i18n",
+      "notes": "User-facing build identity or unlock action; preserve product names.",
+      "translations": {
+        "ru": "Исходный код YUME",
+        "ja": "YUME のソース",
+        "uk": "Вихідний код YUME"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "about.yume.source.unverified",
+      "source": "Unverified test build",
+      "context": "Android source provenance and locked VPN notification",
+      "owner": "android.app.i18n",
+      "notes": "User-facing build identity or unlock action; preserve product names.",
+      "translations": {
+        "ru": "Непроверенная тестовая сборка",
+        "ja": "未検証のテストビルド",
+        "uk": "Неперевірена тестова збірка"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "about.yume.source.modified",
+      "source": "Modified source tree",
+      "context": "Android source provenance and locked VPN notification",
+      "owner": "android.app.i18n",
+      "notes": "User-facing build identity or unlock action; preserve product names.",
+      "translations": {
+        "ru": "Изменённые исходники",
+        "ja": "変更済みのソースツリー",
+        "uk": "Змінені вихідні файли"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    },
+    {
+      "id": "vpn.unlock.reconnect",
+      "source": "Unlock Yume to reconnect the VPN",
+      "context": "Android source provenance and locked VPN notification",
+      "owner": "android.app.i18n",
+      "notes": "User-facing build identity or unlock action; preserve product names.",
+      "translations": {
+        "ru": "Разблокируйте Yume для повторного подключения VPN",
+        "ja": "VPN に再接続するには Yume のロックを解除してください",
+        "uk": "Розблокуйте Yume для повторного підключення VPN"
+      },
+      "requirements": {
+        "placeholders": []
+      }
+    }
   ],
   "terminology": [
     "Yume",

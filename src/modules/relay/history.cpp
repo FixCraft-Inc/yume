@@ -7,6 +7,7 @@
 #include "modules/relay/history.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cctype>
 #include <cstdint>
@@ -449,6 +450,49 @@ void restore_history_size(int fd, off_t size) noexcept {
     }
 }
 
+// A newline commits a record to the log format. After a crash, only the
+// bounded, unterminated tail can be discarded; complete records are never
+// skipped on authentication failure. The caller holds the append lock.
+off_t recover_history_tail(int fd, off_t size) {
+    if (size == 0) return 0;
+    std::array<char, 4096> buffer{};
+    off_t cursor = size;
+    std::size_t scanned = 0;
+    off_t complete = 0;
+    while (cursor > 0) {
+        const auto count = static_cast<std::size_t>(
+            std::min<off_t>(cursor, static_cast<off_t>(buffer.size())));
+        const off_t start = cursor - static_cast<off_t>(count);
+        ssize_t received;
+        do {
+            received = ::pread(fd, buffer.data(), count, start);
+        } while (received < 0 && errno == EINTR);
+        if (received != static_cast<ssize_t>(count)) {
+            throw std::system_error(received < 0 ? errno : EIO,
+                                    std::generic_category(),
+                                    "read relay history tail");
+        }
+        for (std::size_t i = count; i > 0; --i) {
+            if (buffer[i - 1] == '\n') {
+                complete = start + static_cast<off_t>(i);
+                break;
+            }
+            if (++scanned > kMaxHistoryRecordBytes) {
+                throw std::runtime_error("relay history tail exceeds its size limit");
+            }
+        }
+        if (complete != 0) break;
+        cursor = start;
+    }
+    if (complete != size) {
+        if (::ftruncate(fd, complete) != 0 || ::fsync(fd) != 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "recover relay history tail");
+        }
+    }
+    return complete;
+}
+
 void append_private_line_at(int directory_fd,
                             const std::string& name,
                             const std::string& line) {
@@ -456,7 +500,7 @@ void append_private_line_at(int directory_fd,
         throw std::runtime_error("relay history record is too large");
     }
     FileDescriptor fd(::openat(directory_fd, name.c_str(),
-                               O_WRONLY | O_APPEND | O_CREAT | O_NONBLOCK |
+                               O_RDWR | O_APPEND | O_CREAT | O_NONBLOCK |
                                    close_on_exec_flag() | no_follow_flag(),
                                S_IRUSR | S_IWUSR));
     if (fd.get() < 0) {
@@ -477,7 +521,7 @@ void append_private_line_at(int directory_fd,
     }
     std::string record = line;
     record.push_back('\n');
-    const off_t original_size = info.st_size;
+    const off_t original_size = recover_history_tail(fd.get(), info.st_size);
     std::size_t offset = 0;
     while (offset < record.size()) {
         const ssize_t count = ::write(fd.get(), record.data() + offset,
@@ -705,6 +749,10 @@ HistoryListResult HistoryStore::list_chat(
                 if (line_size == 0U || line_size > kMaxHistoryRecordBytes) {
                     throw std::runtime_error(
                         "relay history contains an invalid record");
+                }
+                if (line_end == bytes.end()) {
+                    result.truncated = true;
+                    break;
                 }
                 try {
                     std::string line(

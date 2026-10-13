@@ -94,7 +94,9 @@ Enter a server directory into a cluster. The server's TLS certificate must
 name **--host**. For every node already in the cluster, a fresh PSK for each
 direction goes into both nodes' peer stores with the other node's admission
 key, and the new server gets the operator's public key and a **cluster**
-section in its **yumed.json**.
+section in its **yumed.json**. The cluster record is replaced last. A failure
+after the first replacement returns exit status 3 and keeps every file
+already referenced.
 @opt **cluster-remove**
 
 Take a node out of a cluster. Every other node forgets it, and the removed
@@ -240,8 +242,11 @@ An option may also be written as **--option=value**.
 
 ## EXIT STATUS
 
-**0** on success, **1** when the action fails, and **2** for a usage error.
-A failure prints one line beginning **yume-setup:** and names no secret.
+**0** on success, **1** when the action fails, **2** for a usage error, and
+**3** when files were published but the change is incomplete: a directory
+flush failed after a replacement, or a later replacement of the same command
+failed. Validate the affected tree before a daemon reloads it. A failure
+prints one line beginning **yume-setup:** and names no secret.
 
 ## FILES
 

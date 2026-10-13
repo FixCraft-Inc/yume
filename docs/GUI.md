@@ -226,7 +226,12 @@ Appearance selects the light (default), dark or system theme.
 
 ## Keyboard and languages
 
-Ctrl+1 to Ctrl+4 open the pages. Tab moves through every control, each with
+The Credits page lists contributors with the same concise attribution used by
+Android, the CLI and the website. Roles and descriptions use the shared UI
+catalog. Desktop interface dependencies are separate from native client and
+daemon dependencies; the GUI does not link the native libraries.
+
+Ctrl+1 to Ctrl+5 open the pages. Tab moves through every control, each with
 a name a screen reader can say. Space, Return and Enter activate the focused
 button, and Escape closes a dialog. `--layout-direction rtl` mirrors the
 whole window for right-to-left scripts, and text in any script is shaped.

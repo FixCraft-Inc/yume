@@ -584,6 +584,30 @@ int main() {
     auto peer_a = history.list_chat("peer_a");
     assert(peer_a.available && peer_a.items.size() == 1);
     assert(peer_a.items.front().text == "first secret text");
+    // A process crash may leave an incomplete final append. Earlier
+    // authenticated records remain readable, and the next append repairs
+    // only that tail. A complete corrupt record still fails closed.
+    const auto complete_log = read_all(peer_a_log);
+    {
+        std::ofstream output(peer_a_log, std::ios::app | std::ios::binary);
+        output << "torn-record";
+    }
+    peer_a = history.list_chat("peer_a");
+    assert(peer_a.available && peer_a.truncated && peer_a.items.size() == 1);
+    assert(read_all(peer_a_log) == complete_log + "torn-record");
+    history.append_chat({2, "peer_a", "Peer A", "out", "after crash"});
+    peer_a = history.list_chat("peer_a");
+    assert(peer_a.available && !peer_a.truncated && peer_a.items.size() == 2);
+    {
+        std::ofstream output(peer_a_log, std::ios::app | std::ios::binary);
+        output << "corrupt-complete-record\n";
+    }
+    peer_a = history.list_chat("peer_a");
+    assert(!peer_a.available && peer_a.items.empty());
+    {
+        std::ofstream output(peer_a_log, std::ios::trunc | std::ios::binary);
+        output << complete_log;
+    }
     auto all = history.list_chat();
     assert(all.available && all.items.size() == 2);
     assert(all.items[0].ts_ms == 1 && all.items[1].ts_ms == 2);

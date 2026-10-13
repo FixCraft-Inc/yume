@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "contributors": [
+    {
+      "name": "F1xGOD",
+      "role": "founder.ceo.fixcraft.inc",
+      "contribution": "author.lead.developer.and.designer.of.yume.and.basefwx"
+    },
+    {
+      "name": "Codex",
+      "role": "ai.helpers",
+      "contribution": "credits.helper.contribution"
+    },
+    {
+      "name": "Claude",
+      "role": "ai.helpers",
+      "contribution": "credits.helper.contribution"
+    }
+  ],
+  "components": {
+    "native": [
+      {
+        "name": "OpenSSL",
+        "license": "Apache-2.0 + YUME patch AGPL-3.0-or-later",
+        "use": "tls.1.3.and.every.cryptographic.primitive.of.the.connec"
+      },
+      {
+        "name": "Boost",
+        "license": "BSL-1.0",
+        "use": "asynchronous.networking.and.timers"
+      },
+      {
+        "name": "nghttp2",
+        "license": "MIT",
+        "use": "http.2.framing.of.the.carrier"
+      },
+      {
+        "name": "nlohmann/json",
+        "license": "MIT",
+        "use": "reading.the.configuration"
+      },
+      {
+        "name": "zlib",
+        "license": "Zlib",
+        "use": "certificate.compression.in.the.tls.handshake"
+      },
+      {
+        "name": "Zstandard",
+        "license": "BSD-3-Clause",
+        "use": "certificate.compression.in.the.tls.handshake"
+      },
+      {
+        "name": "Brotli",
+        "license": "MIT",
+        "use": "certificate.compression.in.the.tls.handshake"
+      }
+    ],
+    "android": [
+      {
+        "name": "BaseFWX",
+        "license": "LGPL-3.0-or-later",
+        "use": "wraps.this.app.s.stored.data.under.the.optional.app.dat"
+      },
+      {
+        "name": "Bouncy Castle",
+        "license": "MIT",
+        "use": "primitives.basefwx.s.java.runtime.uses"
+      },
+      {
+        "name": "Jetpack Compose",
+        "license": "Apache-2.0",
+        "use": "declarative.ui.toolkit.that.renders.every.screen.in.thi"
+      },
+      {
+        "name": "AndroidX / Material 3",
+        "license": "Apache-2.0",
+        "use": "credits.androidx.use"
+      },
+      {
+        "name": "kotlinx.coroutines",
+        "license": "Apache-2.0",
+        "use": "structured.concurrency.in.the.vpn.service"
+      }
+    ],
+    "linux": [
+      {
+        "name": "libsystemd",
+        "license": "LGPL-2.1-or-later",
+        "use": "credits.linux.use"
+      }
+    ],
+    "desktop": [
+      {
+        "name": "Qt 6",
+        "license": "LGPL-3.0-only / GPL-3.0-only / commercial",
+        "use": "credits.qt.use"
+      }
+    ],
+    "mlkit": [
+      {
+        "name": "Google ML Kit (optional)",
+        "license": "Google APIs Terms of Service",
+        "use": "on.device.translation.for.languages.without.a.maintaine"
+      }
+    ]
+  }
+}

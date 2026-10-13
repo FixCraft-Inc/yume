@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "contributors": [
+    {
+      "name": "F1xGOD",
+      "role": "Founder & CEO, FixCraft, Inc.",
+      "contribution": "Author. Lead developer and designer of Yume and BaseFWX."
+    },
+    {
+      "name": "Codex",
+      "role": "Helpers",
+      "contribution": "Code review, implementation, testing, and documentation."
+    },
+    {
+      "name": "Claude",
+      "role": "Helpers",
+      "contribution": "Code review, implementation, testing, and documentation."
+    }
+  ],
+  "components": {
+    "native": [
+      {
+        "name": "OpenSSL",
+        "license": "Apache-2.0 + YUME patch AGPL-3.0-or-later",
+        "use": "TLS 1.3 and every cryptographic primitive of the connection, with YUME's patch for the browser's handshake shape."
+      },
+      {
+        "name": "Boost",
+        "license": "BSL-1.0",
+        "use": "Asynchronous networking and timers."
+      },
+      {
+        "name": "nghttp2",
+        "license": "MIT",
+        "use": "HTTP/2 framing of the carrier."
+      },
+      {
+        "name": "nlohmann/json",
+        "license": "MIT",
+        "use": "Reading the configuration."
+      },
+      {
+        "name": "zlib",
+        "license": "Zlib",
+        "use": "Certificate compression in the TLS handshake."
+      },
+      {
+        "name": "Zstandard",
+        "license": "BSD-3-Clause",
+        "use": "Certificate compression in the TLS handshake."
+      },
+      {
+        "name": "Brotli",
+        "license": "MIT",
+        "use": "Certificate compression in the TLS handshake."
+      }
+    ],
+    "android": [
+      {
+        "name": "BaseFWX",
+        "license": "LGPL-3.0-or-later",
+        "use": "Wraps this app's stored data under the optional app-data password."
+      },
+      {
+        "name": "Bouncy Castle",
+        "license": "MIT",
+        "use": "Primitives BaseFWX's Java runtime uses."
+      },
+      {
+        "name": "Jetpack Compose",
+        "license": "Apache-2.0",
+        "use": "Declarative UI toolkit that renders every screen in this app."
+      },
+      {
+        "name": "AndroidX / Material 3",
+        "license": "Apache-2.0",
+        "use": "Android application and Material 3 interface components."
+      },
+      {
+        "name": "kotlinx.coroutines",
+        "license": "Apache-2.0",
+        "use": "Structured concurrency in the VPN service."
+      }
+    ],
+    "linux": [
+      {
+        "name": "libsystemd",
+        "license": "LGPL-2.1-or-later",
+        "use": "Linux managed TUN and resolver integration."
+      }
+    ],
+    "desktop": [
+      {
+        "name": "Qt 6",
+        "license": "LGPL-3.0-only / GPL-3.0-only / commercial",
+        "use": "Desktop interface."
+      }
+    ],
+    "mlkit": [
+      {
+        "name": "Google ML Kit (optional)",
+        "license": "Google APIs Terms of Service",
+        "use": "On-device translation for languages without a maintained translation."
+      }
+    ]
+  }
+}

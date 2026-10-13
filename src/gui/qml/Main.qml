@@ -17,8 +17,8 @@ ApplicationWindow {
     color: Theme.paper
     title: App.kitName.length > 0 ? qsTrId("desktop.yume").arg(App.kitName) : "YUME"
 
-    readonly property var pageNames: ["overview", "connect", "logs", "posture"]
-    readonly property var pageTitles: [qsTrId("overview"), qsTrId("connect"), qsTrId("logs"), qsTrId("nav.posture")]
+    readonly property var pageNames: ["overview", "connect", "logs", "posture", "credits"]
+    readonly property var pageTitles: [qsTrId("overview"), qsTrId("connect"), qsTrId("logs"), qsTrId("nav.posture"), qsTrId("credits")]
     readonly property var proposal: App.status.circuits ? App.status.circuits.proposal : null
 
     // Called by the capture mode and the proposal banner.
@@ -38,6 +38,8 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+2"; onActivated: App.page = "connect" }
     Shortcut { sequence: "Ctrl+3"; onActivated: App.page = "logs" }
     Shortcut { sequence: "Ctrl+4"; onActivated: App.page = "posture" }
+
+    Shortcut { sequence: "Ctrl+5"; onActivated: App.page = "credits" }
 
     // Controls and layouts mirror for right-to-left only through this
     // attached property, which a Window cannot carry itself.
@@ -144,6 +146,7 @@ ApplicationWindow {
                     ConnectPage {}
                     LogsPage {}
                     PosturePage {}
+                    CreditsPage {}
                 }
             }
         }

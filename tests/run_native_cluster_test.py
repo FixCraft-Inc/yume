@@ -14,6 +14,8 @@ import sys
 import tempfile
 import time
 
+from fault_injection import preload_for
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -127,6 +129,29 @@ def reload(nodes: list[Node]) -> float:
     return reloaded_at
 
 
+def unconfirmed_state_write(root: Path, node: Node, yumed: Path,
+                            environment: dict[str, str]) -> None:
+    """A start whose state directory flush fails refuses to run, and the
+    renamed state stays published (fixtures/fsync_after_rename_shim.c)."""
+    shim = root / "fsync-shim.so"
+    subprocess.run(["cc", "-shared", "-fPIC", "-o", str(shim),
+                    str(ROOT / "tests/fixtures/fsync_after_rename_shim.c"), "-ldl"],
+                   check=True, capture_output=True, timeout=60)
+    faulted = dict(environment, LD_PRELOAD=preload_for(
+                       yumed, shim, environment.get("LD_PRELOAD", "")),
+                   YUME_FSYNC_FAILURE_TARGET="cluster-state.json")
+    try:
+        result = subprocess.run([str(yumed), "--config", str(node.config)], env=faulted,
+                                capture_output=True, text=True, timeout=30, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise session.SessionFailure("yumed ran although its cluster state was not flushed") from error
+    if result.returncode == 0 or "cannot be flushed" not in result.stdout + result.stderr:
+        raise session.SessionFailure(
+            f"an unconfirmed cluster state write was not refused: {result.stderr.strip()}")
+    if saved_serial(node) != 1:
+        raise session.SessionFailure("the published cluster state was not kept")
+
+
 def run(yumed: Path, openssl: Path) -> None:
     environment = session.openssl_environment(openssl)
     program = session.setup_program(yumed)
@@ -169,6 +194,7 @@ def run(yumed: Path, openssl: Path) -> None:
                                     check=False)
             if result.returncode:
                 raise session.SessionFailure(f"{node.name} --validate: {result.stderr.strip()}")
+        unconfirmed_state_write(root, a, yumed, environment)
         try:
             for node in nodes:
                 node.start()

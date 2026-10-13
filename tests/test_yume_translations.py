@@ -18,6 +18,8 @@ def main() -> int:
     data = mod.load()
     errors = mod.validate(data)
     errors += mod.runtime_source_errors()
+    if args.android_root:
+        errors += mod.android_source_errors(data, args.android_root)
     if errors:
         raise SystemExit("translation catalog errors:\n" + "\n".join(errors))
     # Generate into a private directory and compare the checked-in desktop
@@ -46,6 +48,23 @@ def main() -> int:
             if not actual.is_file() or actual.read_bytes() != expected.read_bytes():
                 raise SystemExit(f"stale Android ID catalog: {actual}")
 
+    # English edits keep typed identities stable; a removed ID must fail validation.
+    import copy
+    changed = copy.deepcopy(data)
+    original_id = changed["messages"][0]["id"]
+    changed["messages"][0]["source"] = "An edited English message"
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        mod.generate_android(changed, out)
+        generated = (out / "TranslationCatalog.kt").read_text()
+        assert f'{mod.message_symbol(original_id)}("{original_id}", "An edited English message")' in generated
+        fake = out / "app/src/main/java/com/fixcraft/yume/i18n"
+        fake.mkdir(parents=True)
+        (fake / "AppStrings.kt").write_text("val text = t(MessageId.REMOVED_ID)")
+        assert mod.android_source_errors(data, out)
+        (fake / "AppStrings.kt").write_text('val text = t("Back")')
+        assert mod.android_source_errors(data, out)
+
     by_id = {m["id"]: m for m in data["messages"]}
     required = {"nav.back", "preparing.language", "posture.server.detail", "accessibility.copy.value", "route.hops"}
     missing = required - by_id.keys()
@@ -59,7 +78,7 @@ def main() -> int:
     ids = [m["id"] for m in data["messages"]]
     if len(ids) != len(set(ids)):
         raise SystemExit("duplicate IDs survived validation")
-    print(f"translation catalog: {len(ids)} IDs, {len(mod.catalog_languages(data))} maintained languages, generated desktop outputs match")
+    print(f"translation catalog: {len(ids)} IDs, {len(mod.catalog_languages(data))} maintained languages, generated desktop and requested Android outputs match")
     return 0
 
 if __name__ == "__main__":

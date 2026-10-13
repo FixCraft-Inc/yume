@@ -35,7 +35,6 @@
 #include "config/v1/config.hpp"
 #include "fs/bounded_file.hpp"
 #include "providers/asio_execution_context.hpp"
-#include "providers/child_process.hpp"
 #include "providers/system_resolver_helper.hpp"
 #include "providers/openssl_security_provider.hpp"
 #include "runtime/circuit_status.hpp"
@@ -43,7 +42,7 @@
 #include "runtime/control_socket.hpp"
 #include "runtime/control_status_text.hpp"
 #include "runtime/message_log.hpp"
-#include "runtime/module_launcher.hpp"
+#include "runtime/module_connector.hpp"
 #include "runtime/native_client_runtime.hpp"
 #include "runtime/native_credentials.hpp"
 #include "runtime/native_egress_policy.hpp"
@@ -64,8 +63,8 @@ using SignalSet = boost::asio::basic_signal_set<providers::AsioExecutionContext:
 constexpr int kExitStopped = 0;
 constexpr int kExitFailure = 1;
 constexpr int kExitUsage = 2;
-// These programs are their own resolver helper and module launcher, so a
-// single-file release needs nothing installed beside it.
+// These programs are their own resolver helper, so a single-file release
+// needs nothing installed beside it.
 constexpr std::string_view kSelfHelperProgram = "/proc/self/exe";
 
 struct Arguments final {
@@ -458,15 +457,15 @@ int validate(NativeCliRole role, const config::v1::Config& config,
         say(role, describe("destinations are invalid", egress.status()));
         return exit_for(egress.status());
     }
-    // The same check a module supervisor makes at start, so a service
-    // manager's validation step reports a program the daemon would refuse.
+    // The same check the daemon makes at start, so a service manager's
+    // validation step reports a module socket the daemon would refuse.
     for (const auto& adapter : config.adapters()) {
         const auto* module = std::get_if<config::v1::ModuleAdapter>(&adapter);
         if (!module) continue;
-        const auto program = providers::validate_program(module->program(), "module program");
-        if (!program.ok()) {
-            say(role, describe("module '" + module->service() + "' is invalid", program));
-            return exit_for(program);
+        const auto socket = check_module_socket(module->socket());
+        if (!socket.ok()) {
+            say(role, describe("module '" + module->service() + "' is invalid", socket));
+            return exit_for(socket);
         }
     }
     say(role, "configuration and credentials are valid");
@@ -779,7 +778,6 @@ int serve(NativeCliRole role, const config::v1::Config& config,
             if (role == NativeCliRole::Server) {
                 NativeServerRuntimeOptions server_options;
                 server_options.resolver_program = std::string(kSelfHelperProgram);
-                server_options.module_launcher = std::string(kSelfHelperProgram);
                 server_options.report = [role](std::string_view text) { say(role, text); };
                 auto runtime = NativeServerRuntime::create(context, config, base, [&](Status status) noexcept {
                     say_stopped(role, status);
@@ -921,12 +919,9 @@ int serve(NativeCliRole role, const config::v1::Config& config,
 }  // namespace
 
 int run_native_cli(NativeCliRole role, int argc, char** argv) noexcept {
-    // Name lookups and modules re-execute this program as their helpers.
+    // Name lookups re-execute this program as their helper.
     if (providers::is_system_resolver_helper(argc, argv)) {
         return providers::run_system_resolver_helper();
-    }
-    if (role == NativeCliRole::Server && is_module_launcher(argc, argv)) {
-        return run_module_launcher(argc, argv);
     }
     try {
         std::signal(SIGPIPE, SIG_IGN);

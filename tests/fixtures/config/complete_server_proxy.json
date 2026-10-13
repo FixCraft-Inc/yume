@@ -106,10 +106,7 @@
     {
       "kind": "module",
       "service": "chat.echo",
-      "program": "/usr/lib/yume/modules/yume-echo-module",
-      "arguments": [
-        "--quiet"
-      ]
+      "socket": "/run/yume-modules/chat.echo.sock"
     },
     {
       "kind": "packet",

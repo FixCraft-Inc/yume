@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-#include "runtime/module_supervisor.hpp"
+#include "runtime/module_connector.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -19,7 +19,6 @@
 #include <string>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,12 +26,15 @@
 #include <boost/asio/post.hpp>
 
 #include "test_support/allocation_failure.hpp"
+#include "test_support/socket_activated_module.hpp"
 
 namespace {
 using namespace yume::engine;
 using yume::providers::AsioExecutionContext;
-using yume::runtime::ModuleSupervisor;
-using yume::runtime::ModuleSupervisorOptions;
+using yume::runtime::check_module_socket;
+using yume::runtime::ModuleConnector;
+using yume::runtime::ModuleConnectorOptions;
+using yume::test::SocketActivatedModule;
 using Clock = std::chrono::steady_clock;
 using std::chrono::milliseconds;
 
@@ -98,31 +100,10 @@ private:
     std::deque<std::string> queued;
 };
 
-class Directory final {
-public:
-    Directory() {
-        std::string pattern = "/tmp/yume-module-test-XXXXXX";
-        check(::mkdtemp(pattern.data()) != nullptr, "mkdtemp failed");
-        path = pattern;
-    }
-    ~Directory() {
-        std::error_code ignored;
-        std::filesystem::remove_all(path, ignored);
-    }
-    std::filesystem::path script(const std::string& name, const std::string& body, mode_t mode = 0700) {
-        const auto file = path / name;
-        std::ofstream(file) << "#!/bin/sh\n" << body << "\n";
-        check(::chmod(file.c_str(), mode) == 0, "chmod failed");
-        return file;
-    }
-    std::filesystem::path path;
-};
-
+// A connector for service "chat" whose socket a SocketActivatedModule owns.
 class Harness final {
 public:
-    explicit Harness(std::string program, std::vector<std::string> arguments = {})
-        : context(require(AsioExecutionContext::create(ExecutorAffinity(9U)))),
-          adapter("chat", std::move(program), std::move(arguments)) {}
+    Harness() : context(require(AsioExecutionContext::create(ExecutorAffinity(9U)))) {}
     template <typename Action>
     auto on_context(Action action) {
         std::optional<std::invoke_result_t<Action>> result;
@@ -132,7 +113,7 @@ public:
     }
 
     ~Harness() {
-        if (supervisor) on_context([&] { supervisor->close(); return true; });
+        if (connector) on_context([&] { connector->close(); return true; });
         context->finish();
         context->run();
     }
@@ -148,15 +129,13 @@ public:
         return true;
     }
 
-    Status create_and_start(ModuleSupervisorOptions options = {}) {
-        if (options.launcher.empty()) options.launcher = YUME_TEST_MODULE_LAUNCHER;
-        options.restart_initial = milliseconds(100);
-        options.restart_max = milliseconds(400);
-        options.stop_grace = milliseconds(300);
+    Status create(ModuleConnectorOptions options = {}, std::optional<std::filesystem::path> socket = {}) {
+        const yume::config::v1::ModuleAdapter adapter("chat", socket.value_or(module.socket).string());
         return on_context([&] {
-            supervisor = require(ModuleSupervisor::create(context, adapter, options,
-                [this](std::string_view text) { reports.emplace_back(text); }));
-            return supervisor->start();
+            auto created = ModuleConnector::create(context, adapter, options);
+            if (!created.ok()) return created.status();
+            connector = std::move(created).take_value();
+            return Status::success();
         });
     }
 
@@ -173,7 +152,7 @@ public:
         auto stream = std::make_shared<FakeStream>(context->affinity());
         std::optional<Status> outcome;
         on_context([&] {
-            auto handler = supervisor->handler();
+            auto handler = connector->handler();
             auto authorized = handler->authorize(open_context());
             if (!authorized.ok()) {
                 outcome = std::move(authorized);
@@ -187,16 +166,15 @@ public:
         return stream;
     }
 
+    SocketActivatedModule module;
     std::shared_ptr<AsioExecutionContext> context;
-    yume::config::v1::ModuleAdapter adapter;
-    std::shared_ptr<ModuleSupervisor> supervisor;
-    std::vector<std::string> reports;
+    std::shared_ptr<ModuleConnector> connector;
 };
 
 void test_streams_reach_the_module_with_the_identity() {
-    Harness harness(YUME_TEST_ECHO_MODULE);
-    check(harness.create_and_start().ok(), "the echo module did not start");
-    check(harness.on_context([&] { return harness.supervisor->pid(); }) > 0, "no module process");
+    Harness harness;
+    harness.module.run(YUME_TEST_ECHO_MODULE);
+    check(harness.create().ok(), "the module socket was refused");
     Status accepted;
     auto stream = harness.open(accepted);
     check(accepted.ok(), "the module refused an OPEN");
@@ -207,119 +185,107 @@ void test_streams_reach_the_module_with_the_identity() {
     check(harness.wait_for([&] { return stream->received == greeting + "ping"; }),
           "the stream did not reach the module");
     auto refused = harness.on_context([&] {
-        return harness.supervisor->handler()->authorize(harness.open_context(true));
+        return harness.connector->handler()->authorize(harness.open_context(true));
     });
     check(refused.code() == StatusCode::InvalidArgument, "a destination reached a module");
     harness.on_context([&] { stream->close(Status(StatusCode::Closed)); return true; });
 }
 
-void test_crashed_module_restarts() {
-    Harness harness(YUME_TEST_ECHO_MODULE);
-    check(harness.create_and_start().ok(), "the echo module did not start");
-    const pid_t first = harness.on_context([&] { return harness.supervisor->pid(); });
+// The service manager restarts a module. Streams the old run held end, and
+// one opened while the module is down waits in the socket's queue for the
+// next run instead of failing.
+void test_streams_wait_across_a_restart() {
+    Harness harness;
+    harness.module.run(YUME_TEST_ECHO_MODULE);
+    check(harness.create().ok(), "the module socket was refused");
     Status accepted;
     auto stream = harness.open(accepted);
     check(accepted.ok(), "the first OPEN was refused");
-    // Once greeted, the stream belongs to this process. A connection still in
-    // the listen queue would be served by the restarted module instead.
     check(harness.wait_for([&] { return !stream->received.empty(); }),
           "the first module did not answer");
-    check(::kill(first, SIGKILL) == 0, "kill failed");
-    check(harness.wait_for([&] { return harness.supervisor->pid() != first; }),
-          "the exit was not noticed");
-    // Down until the 100 ms restart delay passes.
-    const auto down = harness.on_context([&] {
-        return harness.supervisor->handler()->authorize(harness.open_context());
-    });
-    check(down.code() == StatusCode::FailedPrecondition, "an OPEN reached a module that was down");
-    // The module's end closed: the client sees end of stream, and its next
-    // write ends the stream.
+    harness.module.process.kill_and_reap();
     check(harness.wait_for([&] { return stream->write_shut.load(); }),
           "the client was not told the module closed");
     harness.on_context([&] { stream->push("late"); return true; });
     check(harness.wait_for([&] { return stream->closed.load(); }),
           "a stream outlived its module");
-    check(harness.wait_for([&] { return harness.supervisor->pid() > 0; }), "the module did not restart");
-    auto again = harness.open(accepted);
-    check(accepted.ok(), "the restarted module refused an OPEN");
-    check(harness.wait_for([&] { return !again->received.empty(); }), "the restarted module did not answer");
-    bool reported_exit = false;
-    for (const auto& report : harness.reports) reported_exit = reported_exit || report.find("exited with signal 9") != std::string::npos;
-    check(reported_exit, "the exit was not reported");
-    harness.on_context([&] { again->close(Status(StatusCode::Closed)); return true; });
+    auto waiting = harness.open(accepted);
+    check(accepted.ok(), "an OPEN failed while the module restarted");
+    check(waiting->received.empty(), "a module that was down answered");
+    harness.module.run(YUME_TEST_ECHO_MODULE);
+    check(harness.wait_for([&] { return waiting->received == "hello " + kIdentity + "\n"; }),
+          "the restarted module did not take the queued stream");
+    harness.on_context([&] { waiting->close(Status(StatusCode::Closed)); return true; });
 }
 
-void test_stalled_module_and_forced_stop() {
-    Directory directory;
-    const auto stall = directory.script("stall", "trap '' TERM\nexec sleep 60");
-    Harness harness(stall.string());
-    check(harness.create_and_start().ok(), "the stalling module did not start");
-    const pid_t pid = harness.on_context([&] { return harness.supervisor->pid(); });
-    // Nothing accepts, but the connection waits in the listen queue, so the
-    // OPEN succeeds and the stream simply sees no answer.
+// A socket that disappears refuses OPENs, and so does a closed connector.
+void test_gone_socket_and_close_refuse() {
+    Harness harness;
+    harness.module.run(YUME_TEST_ECHO_MODULE);
+    check(harness.create().ok(), "the module socket was refused");
+    check(::unlink(harness.module.socket.c_str()) == 0, "unlink failed");
     Status accepted;
     auto stream = harness.open(accepted);
-    check(accepted.ok(), "a stalled module refused an OPEN");
-    check(stream->received.empty(), "a stalled module answered");
-    // SIGTERM is ignored only once the script has become sleep.
-    const auto command = "/proc/" + std::to_string(pid) + "/comm";
-    check(harness.wait_for([&] {
-              std::string name;
-              std::ifstream(command) >> name;
-              return name == "sleep";
-          }),
-          "the stalling module never started sleeping");
-    const auto started = Clock::now();
-    harness.on_context([&] { harness.supervisor->close(); return true; });
-    check(harness.wait_for([&] { return ::kill(pid, 0) != 0; }), "the module survived close");
-    check(Clock::now() - started >= milliseconds(250), "SIGKILL came before the grace period");
-    harness.on_context([&] { stream->close(Status(StatusCode::Closed)); return true; });
+    check(accepted.code() == StatusCode::FailedPrecondition, "an OPEN reached a removed socket");
+    check(harness.wait_for([&] { return stream->closed.load(); }), "a refused stream stayed open");
+    harness.on_context([&] { harness.connector->close(); return true; });
+    const auto closed = harness.on_context([&] {
+        return harness.connector->handler()->authorize(harness.open_context());
+    });
+    check(closed.code() == StatusCode::FailedPrecondition, "a closed connector authorized an OPEN");
 }
 
-void test_graceful_stop_removes_the_socket() {
-    Harness harness(YUME_TEST_ECHO_MODULE);
-    check(harness.create_and_start().ok(), "the echo module did not start");
-    const pid_t pid = harness.on_context([&] { return harness.supervisor->pid(); });
-    const auto directory = harness.supervisor->socket_directory();
-    struct stat info {};
-    check(::stat(directory.c_str(), &info) == 0 && (info.st_mode & 0777U) == 0700U,
-          "the socket directory is not private");
-    check(std::filesystem::exists(directory / "module.sock"), "the module socket is missing");
-    const auto started = Clock::now();
-    harness.on_context([&] { harness.supervisor->close(); return true; });
-    check(harness.wait_for([&] { return ::kill(pid, 0) != 0; }), "SIGTERM did not end the module");
-    check(Clock::now() - started < milliseconds(250), "a module that obeys SIGTERM waited for SIGKILL");
-    check(harness.wait_for([&] { return !std::filesystem::exists(directory); }),
-          "the module socket directory was left behind");
-}
-
-void test_programs_are_checked() {
-    Directory directory;
-    Harness missing((directory.path / "missing").string());
-    check(missing.create_and_start().code() == StatusCode::FailedPrecondition,
-          "a missing module program started");
-    const auto shared = directory.script("shared", "exit 0", 0720);
-    Harness writable(shared.string());
-    check(writable.create_and_start().code() == StatusCode::PermissionDenied,
-          "a group-writable module program started");
-    Harness launcher(YUME_TEST_ECHO_MODULE);
-    ModuleSupervisorOptions options;
-    options.launcher = directory.path / "no-launcher";
-    check(launcher.create_and_start(options).code() == StatusCode::FailedPrecondition,
-          "a missing launcher was accepted");
+// Only a socket that no other user can reach or replace is accepted, since
+// whoever can connect could forge the identity header and whoever can
+// replace it could read the streams. A listener of another user is refused
+// at each connection, which needs a second user and is not tested here.
+void test_sockets_are_checked() {
+    SocketActivatedModule module;
+    const auto& socket = module.socket;
+    check(check_module_socket(socket).ok(), "a private socket below /tmp was refused");
+    check(check_module_socket("relative.sock").code() == StatusCode::InvalidArgument,
+          "a relative socket path was accepted");
+    check(check_module_socket(module.directory / "missing.sock").code() == StatusCode::FailedPrecondition,
+          "a missing socket was accepted");
+    check(check_module_socket(module.directory / "missing" / "x.sock").code() ==
+              StatusCode::FailedPrecondition,
+          "a socket in a missing directory was accepted");
+    const auto file = module.directory / "file";
+    std::ofstream(file) << "x";
+    check(check_module_socket(file).code() == StatusCode::FailedPrecondition, "a regular file was accepted");
+    const auto link = module.directory / "link.sock";
+    std::filesystem::create_symlink(socket, link);
+    check(check_module_socket(link).code() == StatusCode::FailedPrecondition, "a linked socket was accepted");
+    const auto linked_directory = std::filesystem::path(module.directory.string() + "-link");
+    std::filesystem::create_directory_symlink(module.directory, linked_directory);
+    const auto through_link = check_module_socket(linked_directory / "module.sock");
+    std::filesystem::remove(linked_directory);
+    check(through_link.code() == StatusCode::PermissionDenied, "a directory link was followed");
+    check(::chmod(socket.c_str(), 0660) == 0, "chmod failed");
+    check(check_module_socket(socket).code() == StatusCode::PermissionDenied,
+          "a socket open to the group was accepted");
+    check(::chmod(socket.c_str(), 0600) == 0 && ::chmod(module.directory.c_str(), 0770) == 0,
+          "chmod failed");
+    check(check_module_socket(socket).code() == StatusCode::PermissionDenied,
+          "a group-writable directory was accepted");
+    check(::chmod(module.directory.c_str(), 0700) == 0, "chmod failed");
+    Harness harness;
+    check(harness.create({}, module.directory / "missing.sock").code() == StatusCode::FailedPrecondition,
+          "a connector was created for a missing socket");
 }
 
 // One failed allocation while a module OPEN starts still settles its
 // acceptance exactly once.
 void test_open_allocation_failure_settles_once() {
-    Harness harness(YUME_TEST_ECHO_MODULE);
-    check(harness.create_and_start().ok(), "the echo module did not start");
+    Harness harness;
+    harness.module.run(YUME_TEST_ECHO_MODULE);
+    check(harness.create().ok(), "the module socket was refused");
     bool reached_success = false;
     for (std::size_t failure = 1U; failure <= 256U && !reached_success;
          ++failure) {
         auto stream = std::make_shared<FakeStream>(harness.context->affinity());
         auto context = harness.open_context();
-        auto handler = harness.supervisor->handler();
+        auto handler = harness.connector->handler();
         unsigned completions = 0U;
         Status outcome;
         StreamHandler::AcceptanceCompletion completion = [&](Status status) {
@@ -349,11 +315,11 @@ void test_open_allocation_failure_settles_once() {
 // A module at its stream limit refuses a further OPEN once, even when copying
 // the refusal fails.
 void test_refusal_allocation_failure_settles_once() {
-    Harness harness(YUME_TEST_ECHO_MODULE);
-    ModuleSupervisorOptions options;
+    Harness harness;
+    harness.module.run(YUME_TEST_ECHO_MODULE);
+    ModuleConnectorOptions options;
     options.max_streams = 1U;
-    check(harness.create_and_start(options).ok(),
-          "the echo module did not start");
+    check(harness.create(options).ok(), "the module socket was refused");
     Status accepted;
     auto held = harness.open(accepted);
     check(accepted.ok(), "the module refused its only stream");
@@ -361,7 +327,7 @@ void test_refusal_allocation_failure_settles_once() {
     for (std::size_t failure = 1U; failure <= 64U && !reached_end; ++failure) {
         auto stream = std::make_shared<FakeStream>(harness.context->affinity());
         auto context = harness.open_context();
-        auto handler = harness.supervisor->handler();
+        auto handler = harness.connector->handler();
         unsigned completions = 0U;
         Status outcome;
         StreamHandler::AcceptanceCompletion completion = [&](Status status) {
@@ -396,16 +362,15 @@ void test_refusal_allocation_failure_settles_once() {
 int main() {
     try {
         test_streams_reach_the_module_with_the_identity();
-        test_crashed_module_restarts();
-        test_stalled_module_and_forced_stop();
-        test_graceful_stop_removes_the_socket();
-        test_programs_are_checked();
+        test_streams_wait_across_a_restart();
+        test_gone_socket_and_close_refuse();
+        test_sockets_are_checked();
         test_open_allocation_failure_settles_once();
         test_refusal_allocation_failure_settles_once();
-        std::cout << "module supervisor tests passed\n";
+        std::cout << "module connector tests passed\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {
-        std::cerr << "module supervisor test failed: " << error.what() << '\n';
+        std::cerr << "module connector test failed: " << error.what() << '\n';
         return EXIT_FAILURE;
     }
 }

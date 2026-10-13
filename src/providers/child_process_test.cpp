@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -52,14 +51,18 @@ ChildProcess spawn_shell(const std::string& script, int passed) {
     return std::move(spawned).take_value();
 }
 
-// Waits for the pidfd to report the exit, then reaps.
-int wait_status(ChildProcess& child) {
+// Waits for the pidfd to report the exit and reads how the child ended,
+// leaving the reaping to kill_and_reap.
+siginfo_t wait_exit(ChildProcess& child) {
     check(child.pidfd() >= 0, "no pidfd for the child");
     pollfd ready{child.pidfd(), POLLIN, 0};
     check(::poll(&ready, 1, 10'000) == 1, "the child did not exit in time");
-    const auto status = child.try_reap();
-    check(status.has_value() && !child.running(), "an exited child was not reaped");
-    return *status;
+    siginfo_t info{};
+    check(::waitid(P_PID, static_cast<id_t>(child.pid()), &info, WEXITED | WNOWAIT) == 0,
+          "the exit could not be read");
+    child.kill_and_reap();
+    check(!child.running() && child.pidfd() < 0, "an exited child was not reaped");
+    return info;
 }
 
 void test_exit_status_and_passed_descriptor() {
@@ -68,24 +71,22 @@ void test_exit_status_and_passed_descriptor() {
         "[ -e /proc/self/fd/3 ] && [ ! -e /proc/self/fd/4 ] && printf ready >&3 && exit 7",
         pipe.write.get());
     check(child.running() && child.pid() > 0, "the child is not running");
-    const int status = wait_status(child);
-    check(WIFEXITED(status) && WEXITSTATUS(status) == 7,
+    const auto exit = wait_exit(child);
+    check(exit.si_code == CLD_EXITED && exit.si_status == 7,
           "descriptor 3 was missing or another descriptor leaked");
     pipe.write.reset();
     std::array<char, 8> text{};
     check(::read(pipe.read.get(), text.data(), text.size()) == 5 &&
               std::string(text.data(), 5) == "ready",
           "the passed descriptor was not descriptor 3");
-    check(!child.try_reap(), "a reaped child was reaped again");
 }
 
 void test_signals_and_kill() {
     Pipe pipe;
     auto terminated = spawn_shell("exec sleep 30", pipe.write.get());
-    check(!terminated.try_reap(), "a running child was reaped");
     terminated.signal(SIGTERM);
-    const int status = wait_status(terminated);
-    check(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM, "SIGTERM did not end the child");
+    const auto exit = wait_exit(terminated);
+    check(exit.si_code == CLD_KILLED && exit.si_status == SIGTERM, "SIGTERM did not end the child");
 
     auto killed = spawn_shell("trap '' TERM; exec sleep 30", pipe.write.get());
     const auto started = std::chrono::steady_clock::now();
@@ -152,8 +153,8 @@ void test_program_validation() {
                   "a set-ID program was accepted");
     }
     ::chmod(program.c_str(), 0700);
-    const auto message = validate_program("relative", "module program").message();
-    check(message.rfind("module program", 0) == 0, "diagnostics did not name the program");
+    const auto message = validate_program("relative", "resolver helper").message();
+    check(message.rfind("resolver helper", 0) == 0, "diagnostics did not name the program");
     std::filesystem::remove_all(directory);
 }
 

@@ -91,19 +91,16 @@ struct NativeServerRuntimeOptions final {
     // The SystemResolver helper for destination names of direct adapters.
     // Empty refuses those names, while numeric destinations still work.
     std::filesystem::path resolver_program;
-    // Launches configured modules, run as yume-module. Required with a module
-    // adapter.
-    std::filesystem::path module_launcher;
-    // Module starts, exits and restarts, for the operator. Runs on the
-    // context and must not throw.
+    // Cluster link events, for the operator. Runs on the context and must
+    // not throw.
     std::function<void(std::string_view)> report;
 };
 
 // Runs one schema-1 server configuration as a standalone daemon. Every
 // configured service needs a direct_tcp, direct_udp, module or managed packet
 // adapter. Other named services need application handlers from an embedder.
-// Each module adapter runs its program under a ModuleSupervisor, which starts
-// before the listeners accept and stops with the runtime.
+// Each module adapter's socket is checked at creation, and a ModuleConnector
+// hands the module its service's streams until the runtime stops.
 // With a cluster section, the runtime keeps one outbound link to every peer
 // once the listeners accept, reconnecting with SessionKeeper's backoff. When
 // the list's not_after passes, the links close and the peers' sessions end

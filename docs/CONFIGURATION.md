@@ -133,7 +133,7 @@ handles a stream service.
 | `socks5` | client | `listen_address` (`127.0.0.1` or `::1`), `listen_port`, and optional `udp_service`, the packet service UDP ASSOCIATE opens. Without it UDP ASSOCIATE is refused |
 | `forward` | client | Either `listen_address` (`127.0.0.1` or `::1`) with `listen_port`, or `listen_path`, an absolute normalized socket path of at most 107 bytes. Optional `destination` with `host` and `port`. SOCKS5 and forward listeners may not share an address and port |
 | `packet` | both | `interface_name` (at most 15 bytes), `mtu` (576 to 65535, at most `limits.max_packet_bytes`) and `network`: `addresses`, `routes`, `local_networks`, `peer_networks` and `dns` with `servers` and `domains`, described in [managed TUN](development/ytp1/README.md#managed-linux-tun-networking) |
-| `module` | server | `program`, an absolute normalized path, and optional `arguments`, at most 32 strings of up to 1024 bytes. [Modules](MODULES.md) describes the protocol |
+| `module` | server | `socket`, the absolute normalized path of the module's listening socket, at most 107 bytes. It must belong to the daemon's user with no group or other access, in a directory only root or that user can write. [Modules](MODULES.md) describes the protocol and the systemd units |
 | `direct_tcp`, `direct_udp` | server | `destinations`, below. `direct_tcp` serves a stream service and `direct_udp` a packet service |
 
 `destinations` says where a direct adapter may connect:

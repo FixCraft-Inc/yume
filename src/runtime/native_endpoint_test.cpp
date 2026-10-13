@@ -54,6 +54,9 @@
 #include <boost/asio/local/stream_protocol.hpp>
 #define YUME_TEST_ALIGNED_ALLOCATIONS 1
 #include "test_support/allocation_failure.hpp"
+#if defined(YUME_TEST_ECHO_MODULE)
+#include "test_support/socket_activated_module.hpp"
+#endif
 
 namespace {
 thread_local bool allocation_failure_sustained = false;
@@ -2684,30 +2687,28 @@ void test_shared_credential_sweeps(const std::filesystem::path& kit) {
     CHECK(owner.exceptions.load() == 0U && publisher.exceptions.load() == 0U);
 }
 
-#if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
-// The daemon composition runs a module for a service, and a client forward
-// without a destination reaches it. The module learns the client's identity
-// from the header of its connection.
+#if defined(YUME_TEST_ECHO_MODULE)
+// The daemon composition connects a service's streams to its module's socket,
+// and a client forward without a destination reaches it. The module learns the
+// client's identity from the header of its connection.
 void test_module_through_forward(const std::filesystem::path& kit) {
     namespace v1 = yume::config::v1;
+    yume::test::SocketActivatedModule module;
+    module.run(YUME_TEST_ECHO_MODULE);
     std::string text;
     CHECK(read_text_file_bounded(kit / "server/yumed.json", v1::kMaxDocumentBytes, &text));
     auto document = nlohmann::json::parse(text);
     document["services"] = nlohmann::json::array(
         {{{"name", "echo"}, {"kind", "stream"}, {"max_concurrent_streams", 8}}});
     document["adapters"] = nlohmann::json::array(
-        {{{"kind", "module"}, {"service", "echo"}, {"program", YUME_TEST_ECHO_MODULE}}});
+        {{{"kind", "module"}, {"service", "echo"}, {"socket", module.socket.string()}}});
     CHECK(read_text_file_bounded(kit / "server/credentials/authorized-keys.json",
                                  v1::kMaxDocumentBytes, &text));
     const std::string identity = nlohmann::json::parse(text)["keys"][0]["identity"]["sha256"];
     Runner runner;
-    std::vector<std::string> reports;
     auto server = runner.sync([&] {
-        NativeServerRuntimeOptions options;
-        options.module_launcher = YUME_TEST_MODULE_LAUNCHER;
-        options.report = [&reports](std::string_view line) { reports.emplace_back(line); };
         return take(NativeServerRuntime::create(runner.context, v1::Parse(document),
-            kit / "server", [](Status) {}, std::move(options)));
+            kit / "server", [](Status) {}, NativeServerRuntimeOptions{}));
     });
     runner.sync([&] { CHECK(server->start().ok()); });
     auto handler = std::make_shared<Handler>();
@@ -2746,7 +2747,6 @@ void test_module_through_forward(const std::filesystem::path& kit) {
     });
     runner.finish_and_join();
     CHECK(runner.exceptions.load() == 0U);
-    CHECK(!reports.empty() && reports.front().find("module echo: started") == 0U);
 }
 #endif
 
@@ -3339,7 +3339,7 @@ int main(int argc, char** argv) {
         test_socks5_udp_associate(argv[1]);
         test_socks5_udp_backlog(argv[1]);
         test_forward_adapter(argv[1]);
-#if defined(YUME_TEST_MODULE_LAUNCHER) && defined(YUME_TEST_ECHO_MODULE)
+#if defined(YUME_TEST_ECHO_MODULE)
         test_module_through_forward(argv[1]);
 #endif
         test_destination_route<boost::asio::ip::tcp>(argv[1], false);

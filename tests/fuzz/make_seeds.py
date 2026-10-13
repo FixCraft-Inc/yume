@@ -119,7 +119,7 @@ def config_v1_variants(role: str, document: dict) -> dict[str, dict]:
     services = document["services"] + [
         {"name": "files.share", "kind": "stream", "max_concurrent_streams": 4}]
     module = {"kind": "module", "service": "files.share",
-              "program": "/usr/lib/yume/modules/files", "arguments": ["--serve"]}
+              "socket": "/run/yume-modules/files.share.sock"}
     narrowed = copy.deepcopy(document["adapters"])
     narrowed[0]["destinations"] = {
         "public": False, "networks": ["10.0.0.0/8", "2001:db8::/32"],

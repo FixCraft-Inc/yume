@@ -1113,8 +1113,8 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
 
         if (kind == AdapterKind::Module) {
             CheckClosedObject(adapter, pointer,
-                              {"kind", "service", "program", "arguments"},
-                              {"kind", "service", "program"});
+                              {"kind", "service", "socket"},
+                              {"kind", "service", "socket"});
             if (role != Role::Server) {
                 Fail(kind_pointer, "module adapter is server-only");
             }
@@ -1126,33 +1126,13 @@ std::vector<Adapter> ParseAdapters(const Json& adapters,
             if (!stream_handlers.insert(service).second) {
                 Fail(service_pointer, "stream service already has an adapter");
             }
-            const std::string program_pointer = JoinPointer(pointer, "program");
-            const auto& program = ReadString(adapter.at("program"), program_pointer,
-                                             kMaxFileReferenceBytes);
-            if (!IsNormalizedAbsolutePath(program)) {
-                Fail(program_pointer, "must be a normalized absolute path");
+            const std::string socket_pointer = JoinPointer(pointer, "socket");
+            const auto& socket = ReadString(adapter.at("socket"), socket_pointer,
+                                            kMaxUnixSocketPathBytes);
+            if (!IsNormalizedAbsolutePath(socket)) {
+                Fail(socket_pointer, "must be a normalized absolute path");
             }
-            std::vector<std::string> arguments;
-            if (adapter.contains("arguments")) {
-                const std::string arguments_pointer =
-                    JoinPointer(pointer, "arguments");
-                const auto& values = adapter.at("arguments");
-                if (!values.is_array() || values.size() > kMaxModuleArguments) {
-                    Fail(arguments_pointer,
-                         "must be an array of at most " +
-                             std::to_string(kMaxModuleArguments) + " strings");
-                }
-                for (std::size_t item = 0; item < values.size(); ++item) {
-                    const std::string item_pointer = IndexPointer(arguments_pointer, item);
-                    const auto& argument = ReadString(values.at(item), item_pointer,
-                                                      kMaxModuleArgumentBytes);
-                    if (argument.find('\0') != std::string::npos) {
-                        Fail(item_pointer, "must not contain NUL");
-                    }
-                    arguments.push_back(argument);
-                }
-            }
-            parsed.emplace_back(ModuleAdapter(service, program, std::move(arguments)));
+            parsed.emplace_back(ModuleAdapter(service, socket));
             continue;
         }
 
@@ -1334,6 +1314,10 @@ std::optional<ControlSettings> ParseControl(
         Fail("/control/socket", "must be a normalized absolute path");
     }
     for (const auto& adapter : adapters) {
+        if (const auto* module = std::get_if<ModuleAdapter>(&adapter);
+            module && module->socket() == path) {
+            Fail("/control/socket", "is a module's socket");
+        }
         const auto* forward = std::get_if<ForwardAdapter>(&adapter);
         if (!forward) continue;
         const auto* listener = std::get_if<UnixListener>(&forward->listener());

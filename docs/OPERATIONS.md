@@ -243,13 +243,14 @@ reports a directory with the wrong owner or mode at startup.
 
 ## Run a module
 
-A server `module` adapter runs a program for one stream service, as
-[modules](MODULES.md) describes. The program runs as the daemon's user and can
-read the daemon's credentials, so configure only programs you trust with them.
-Under the packaged service a module shares the daemon's control group and
-sandbox: the unit's memory and task limits count it, and it can write only
-where the daemon can. The daemon logs each start and exit under the service
-name, as in `module echo: exited with exit status 1, restarting in 1000 ms`.
+A server `module` adapter hands one stream service's streams to a program
+that systemd runs from the packaged `yume-module@.socket` and
+`yume-module@.service` templates, as [modules](MODULES.md) describes. Enable
+the module's socket before starting `yumed`, which refuses a missing socket.
+Each module runs as a dynamic user of its own in its own control group, so
+`yumed`'s limits do not count it, and it cannot read the daemon's
+credentials. Its messages and exits are in its own journal, as with
+`journalctl -u yume-module@echo.service`.
 
 ## Name resolution
 
@@ -298,7 +299,7 @@ policy claim that clients cannot verify remotely.
 ## Troubleshooting
 
 `--validate` checks configuration, credentials, destination policy with its
-egress lists, and module programs without opening a network connection. `yume-doctor` also checks the cover site and TLS
+egress lists, and module sockets without opening a network connection. `yume-doctor` also checks the cover site and TLS
 material. Both programs exit with `0` after a requested stop, `1` for a runtime
 failure, and `2` for a usage or configuration error.
 

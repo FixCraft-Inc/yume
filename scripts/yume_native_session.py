@@ -252,6 +252,33 @@ def stop_process(process: subprocess.Popen, name: str, timeout: float = 15.0) ->
         raise SessionFailure(f"{name} exited with {code} after SIGTERM")
 
 
+class SocketActivatedModule:
+    """Stands in for a module's socket unit: a listening socket of mode 0600
+    in a new private directory, and the module running with it as descriptor
+    3, the way systemd passes it. Use it as a context manager."""
+
+    def __init__(self, program: Path, directory: Path) -> None:
+        directory.mkdir(mode=0o700)
+        self.socket = directory / "module.sock"
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(self.socket))
+        os.chmod(self.socket, 0o600)
+        self.listener.listen(64)
+        # The shell moves the listener to descriptor 3 before the module runs.
+        self.process = subprocess.Popen(
+            ["/bin/sh", "-c", 'exec "$0" 3<&"$1"', str(program), str(self.listener.fileno())],
+            pass_fds=(self.listener.fileno(),), stdin=subprocess.DEVNULL)
+
+    def __enter__(self) -> "SocketActivatedModule":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait(timeout=5)
+        self.listener.close()
+
+
 def reject_secret_output(name: str, text: str) -> None:
     if "PRIVATE KEY" in text:
         raise SessionFailure(f"{name} output contains private key material")

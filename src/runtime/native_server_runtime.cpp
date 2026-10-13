@@ -36,7 +36,7 @@
 #ifdef __linux__
 #include "runtime/linux_tun_network.hpp"
 #endif
-#include "runtime/module_supervisor.hpp"
+#include "runtime/module_connector.hpp"
 #include "runtime/native_packet_adapter.hpp"
 
 namespace yume::runtime {
@@ -375,7 +375,7 @@ struct NativeServerRuntime::State final : std::enable_shared_from_this<State> {
     config::v1::Config config;
     std::shared_ptr<NativeEndpoint> endpoint;
     std::vector<std::pair<config::v1::PacketAdapter, std::shared_ptr<NativePacketAdapter>>> packets;
-    std::vector<std::shared_ptr<ModuleSupervisor>> modules;
+    std::vector<std::shared_ptr<ModuleConnector>> modules;
     // Each module's service, in the order of modules.
     std::vector<std::string> module_services;
     // Shared through managed-network drain, without retaining this runtime.
@@ -616,15 +616,15 @@ engine::Result<std::shared_ptr<NativeServerRuntime>> NativeServerRuntime::create
                 state->packets.emplace_back(*packet, std::move(handler));
 #endif
             } else if (const auto* module = std::get_if<config::v1::ModuleAdapter>(&adapter)) {
-                ModuleSupervisorOptions module_options;
-                module_options.launcher = runtime_options.module_launcher;
-                auto created = ModuleSupervisor::create(context, *module, std::move(module_options),
-                                                        runtime_options.report);
-                if (!created.ok()) return Created(created.status());
-                auto supervisor = std::move(created).take_value();
-                bindings.push_back({module->service(), supervisor->handler()});
+                auto created = ModuleConnector::create(context, *module);
+                if (!created.ok()) {
+                    return Created(Status::diagnostic(created.status().code(),
+                        "module '" + module->service() + "': " + created.status().message()));
+                }
+                auto connector = std::move(created).take_value();
+                bindings.push_back({module->service(), connector->handler()});
                 state->module_services.push_back(module->service());
-                state->modules.push_back(std::move(supervisor));
+                state->modules.push_back(std::move(connector));
             } else if (std::holds_alternative<config::v1::DirectTcpAdapter>(adapter) ||
                        std::holds_alternative<config::v1::DirectUdpAdapter>(adapter)) {
                 has_direct = true;
@@ -772,13 +772,6 @@ engine::Status NativeServerRuntime::start() {
     if (state->started || state->closing) return Status(StatusCode::FailedPrecondition);
     state->started = true;
     try {
-        for (const auto& module : state->modules) {
-            const auto status = module->start();
-            if (!status.ok()) {
-                state->close();
-                return status;
-            }
-        }
 #ifdef __linux__
         for (const auto& [config, adapter] : state->packets) {
             auto created = LinuxTunNetwork::create(state->context, config);

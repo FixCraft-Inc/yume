@@ -1,0 +1,43 @@
+[Unit]
+Description=YUME module %i
+Documentation=man:yumed(8)
+Documentation=file:/usr/share/doc/yume-daemon/README.Debian
+Requires=yume-module@%i.socket
+After=yume-module@%i.socket
+
+[Service]
+Type=simple
+# Install the program for service %i here, or point ExecStart elsewhere with
+# `systemctl edit yume-module@%i.service`.
+ExecStart=/usr/libexec/yume/modules/%i
+Restart=on-failure
+RestartSec=1s
+UMask=0077
+
+# A user of its own while it runs, so the module cannot read yumed's
+# credentials or reach another module's socket.
+DynamicUser=true
+StateDirectory=yume-modules/%i
+InaccessiblePaths=-/etc/yume -/var/lib/yume -/var/log/yume -/run/yume
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# No network: streams arrive on descriptor 3. A module that needs one, such
+# as a codec backend, overrides these two settings in a drop-in.
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX

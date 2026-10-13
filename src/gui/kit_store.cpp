@@ -112,13 +112,12 @@ bool unsafe_rename_paths(const QJsonValue& value, const QString& directory,
     } else if (value.isObject()) {
         const auto object = value.toObject();
         for (auto it = object.begin(); it != object.end(); ++it) {
-            // Schema 1 uses file references (including policy list files),
-            // forward listen_path and module program as filesystem paths.
-            // Labels and host names are not paths. The control socket is
-            // overridden by Tunnel's explicit --control-socket argument.
+            // A client document's filesystem paths are file references
+            // (including policy list files) and forward listen_path. Labels
+            // and host names are not paths. The control socket is overridden
+            // by Tunnel's explicit --control-socket argument.
             if (it.key() == QStringLiteral("file") ||
-                it.key() == QStringLiteral("listen_path") ||
-                it.key() == QStringLiteral("program")) {
+                it.key() == QStringLiteral("listen_path")) {
                 const QString text = it.value().toString();
                 // Native file references already forbid parent traversal.
                 // Do not relocate an invalid manually placed document.

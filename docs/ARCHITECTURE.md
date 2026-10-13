@@ -279,8 +279,7 @@ also closes.
 
 `yumed` runs `endpoint.event_loops` execution contexts, each on its own
 thread, and one `NativeEndpoint` on each. The first context owns the
-listening sockets, signals, the control socket, module supervisors and the
-resolver helper. It accepts each TCP connection before TLS and hands its
+listening sockets, signals, the control socket and the resolver helper. It accepts each TCP connection before TLS and hands its
 descriptor to the context serving the fewest sessions, whose front door
 then runs TLS, cover, admission and the session for the connection's whole
 life, so no TLS or session state moves between threads. The listener's
@@ -293,8 +292,7 @@ per-identity session registry that `max_sessions` evicts through from any
 context, the direct-route connection budgets, the egress limiter and the
 resolver helper, which takes requests posted from other contexts and posts
 each answer back. A module stream connects to its module's socket and runs
-its bridge on the session's context, while the supervisor keeps the
-process on the first. Each context publishes its status, and the control
+its bridge on the session's context. Each context publishes its status, and the control
 socket reports their sum. A configuration with a cluster or a packet
 adapter runs one context, since circuits relay cells between sessions and
 a packet adapter serves one device to one session. `yume` and the C ABI

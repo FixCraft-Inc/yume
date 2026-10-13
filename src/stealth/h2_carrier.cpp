@@ -12,7 +12,6 @@
 #include <array>
 #include <cctype>
 #include <chrono>
-#include <ctime>
 #include <cstring>
 #include <deque>
 #include <iterator>
@@ -25,6 +24,7 @@
 #include <unordered_set>
 
 #include "stealth/h2_wire_profile.hpp"
+#include "stealth/http_date.hpp"
 #include "stealth/websocket_codec.hpp"
 
 namespace yume::obfs {
@@ -92,23 +92,13 @@ std::chrono::steady_clock::time_point SteadyNow() noexcept {
 // profile, and this text is repeated or cut to fit it.
 constexpr std::string_view kCloseReason = "session-complete";
 
-// Generate one current IMF-fixdate per response. The reentrant UTC conversion
-// keeps the date path thread-safe; a formatting failure is exceptional and
-// is contained by the caller's existing connection-failure boundary.
-std::string NodeDateHeader() {
-    const std::time_t now = std::chrono::system_clock::to_time_t(
-        std::chrono::system_clock::now());
-    std::tm utc{};
-#if defined(_WIN32)
-    gmtime_s(&utc, &now);
-#else
-    gmtime_r(&now, &utc);
-#endif
-    char text[40]{};
-    if (std::strftime(text, sizeof(text), "%a, %d %b %Y %H:%M:%S GMT", &utc) == 0) {
-        throw std::runtime_error("failed to format HTTP date");
-    }
-    return text;
+// Sample wall time for each response; no shared cache or locale state. Format
+// failures propagate through the existing connection-failure boundary.
+std::string current_http_date() {
+    const auto date = format_http_date(std::chrono::floor<std::chrono::seconds>(
+        std::chrono::system_clock::now()));
+    if (!date) throw std::runtime_error("HTTP date is outside the four-digit year range");
+    return {date->data(), date->size()};
 }
 
 }  // namespace
@@ -306,8 +296,8 @@ public:
         std::size_t header_bytes = headers.front().second.size() + 7;
         bool content_length_seen = false;
         bool date_seen = false;
-        const auto append_header = [&](std::string name,
-                                       std::string value) {
+        const auto append_header = [&](std::string_view name,
+                                       std::string_view value) {
             if (name.size() > kMaxResponseHeaders ||
                 value.size() > kMaxResponseHeaders - name.size()) {
                 return false;
@@ -315,7 +305,7 @@ public:
             const auto bytes = name.size() + value.size();
             if (bytes > kMaxResponseHeaders - header_bytes) return false;
             header_bytes += bytes;
-            headers.emplace_back(std::move(name), std::move(value));
+            headers.emplace_back(name, value);
             return true;
         };
         for (const auto& [name, value] : input_headers) {
@@ -331,7 +321,7 @@ public:
                 return Fail("HTTP/2 response headers exceed 64 KiB");
             }
         }
-        if (!date_seen && !append_header("date", NodeDateHeader())) {
+        if (!date_seen && !append_header("date", current_http_date())) {
             return Fail("HTTP/2 response headers exceed 64 KiB");
         }
         auto nva = MakeNva(headers);
@@ -375,7 +365,7 @@ public:
             headers.emplace_back(name, value);
         }
         if (HeaderValue(headers, "date").empty()) {
-            headers.emplace_back("date", NodeDateHeader());
+            headers.emplace_back("date", current_http_date());
         }
         outbound_streams_.emplace(stream_id, OutboundStream{false});
         nghttp2_data_provider2 provider{};

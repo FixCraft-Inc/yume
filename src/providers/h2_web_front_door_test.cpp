@@ -326,6 +326,13 @@ private:
     std::unique_ptr<SSL, decltype(&SSL_free)> ssl_;
 };
 
+constexpr std::string_view kExpectedNoAlpnRefusal =
+    "HTTP/1.0 403 Forbidden\r\n"
+    "Content-Type: text/plain\r\n"
+    "\r\n"
+    "Missing ALPN Protocol, expected `h2` to be available.\n"
+    "If this is a HTTP request: The server was not configured with the `allowHTTP1` option or a listener for the `unknownProtocol` event.\n";
+
 struct HttpResponse final {
     std::map<std::string, std::string> headers;
     std::string body;
@@ -706,6 +713,12 @@ void test_http_cover_and_failed_admission() {
         TlsPeer refused(fixture.port(), fixture.identity.certificate,
                         version, alpn,
                         boost::asio::ip::address_v4::loopback(), true);
+    }
+    for (const auto version : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+        TlsPeer refused(fixture.port(), fixture.identity.certificate, version, "");
+        const auto bytes = refused.read();
+        CHECK(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()) ==
+              kExpectedNoAlpnRefusal);
     }
     TlsPeer tls(fixture.port(), fixture.identity.certificate);
     H2Peer h2(tls, fixture.port());

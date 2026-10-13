@@ -1001,7 +1001,7 @@ void test_server_cover_negotiation_and_promotion(int version,
                 });
         }
     };
-    const bool expected_refusal = protocol != "h2";
+    const bool expected_refusal = protocol != "h2" && !protocol.empty();
     for (std::size_t attempt = 0U; attempt < 128U; ++attempt) {
         receive_ciphertext();
         const int result = SSL_do_handshake(peer.get());

@@ -1,6 +1,7 @@
 #include "test_support/allocation_failure.hpp"
 
 #include "stealth/h2_carrier.hpp"
+#include "stealth/http_date.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -1142,6 +1143,22 @@ void DrainCutsWritesAsTakeDoes() {
     assert(client.PendingOutboundBytes() == 0U);
 }
 
+void HttpDateUsesFixedEnglishUtc() {
+    using namespace std::chrono;
+    const auto epoch = yume::obfs::format_http_date(
+        sys_seconds{sys_days{year{1970}/January/1}});
+    assert(epoch && std::string_view(epoch->data(), epoch->size()) ==
+        "Thu, 01 Jan 1970 00:00:00 GMT");
+    const auto leap = yume::obfs::format_http_date(sys_seconds{
+        sys_days{year{2024}/February/29} + 23h + 59min + 58s});
+    assert(leap && std::string_view(leap->data(), leap->size()) ==
+        "Thu, 29 Feb 2024 23:59:58 GMT");
+    assert(!yume::obfs::format_http_date(
+        sys_seconds{sys_days{year{0}/January/1}}));
+    assert(!yume::obfs::format_http_date(
+        sys_seconds{sys_days{year{10000}/January/1}}));
+}
+
 int main() {
     yume::test::before_allocate_on_any_thread.store(check_test_allocation);
 
@@ -1150,6 +1167,7 @@ int main() {
     PrefacePingFollowsReadIdleness();
     PrefacePingCanLeaveAlone();
     DrainCutsWritesAsTakeDoes();
+    HttpDateUsesFixedEnglishUtc();
     InboundContinuationIsObservedWithoutPayloadRetention();
     ObserverDoesNotChangeOpeningWire();
     ObserverCapIsFailOpenAndBounded();

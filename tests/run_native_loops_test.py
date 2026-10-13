@@ -18,6 +18,7 @@ checks below cross loops:
 from __future__ import annotations
 
 import argparse
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -86,14 +87,15 @@ def configure_client(bundle: Path, socks_port: int) -> Path:
     return path
 
 
-def add_module(kit: Path, configs: list[Path], program: Path) -> list[Path]:
-    """Serves stream service "echo" with the module, grants it to every
-    identity and gives every client a forward to it. Returns the forwards."""
+def add_module(kit: Path, configs: list[Path], module_socket: Path) -> list[Path]:
+    """Serves stream service "echo" with the module listening on
+    module_socket, grants it to every identity and gives every client a
+    forward to it. Returns the forwards."""
     service = {"name": "echo", "kind": "stream", "max_concurrent_streams": 8}
     server_path = kit / "server/yumed.json"
     server = json.loads(server_path.read_text(encoding="utf-8"))
     server["services"].append(service)
-    server["adapters"].append({"kind": "module", "service": "echo", "program": str(program)})
+    server["adapters"].append({"kind": "module", "service": "echo", "socket": str(module_socket)})
     server_path.write_text(json.dumps(server, indent=2), encoding="utf-8")
     forwards = []
     for config in configs:
@@ -121,7 +123,9 @@ def start(program: Path, config: Path, environment: dict[str, str], log: Path) -
 def run(yumed: Path, yume: Path, openssl: Path, module: Path | None) -> None:
     environment = session.openssl_environment(openssl)
     setup = session.setup_program(yume)
-    with tempfile.TemporaryDirectory(prefix="yume-native-loops-") as temporary:
+    # The module, when given, stops before its directory goes.
+    with tempfile.TemporaryDirectory(prefix="yume-native-loops-") as temporary, \
+            contextlib.ExitStack() as stack:
         root = Path(temporary)
         kit = root / "kit"
         server_port, socks_port, target_port = (session.free_port() for _ in range(3))
@@ -137,7 +141,11 @@ def run(yumed: Path, yume: Path, openssl: Path, module: Path | None) -> None:
             bundles.append(bundle)
         ports = [socks_port] + [session.free_port() for _ in range(1, CLIENTS)]
         configs = [configure_client(bundle, port) for bundle, port in zip(bundles, ports)]
-        forwards = add_module(kit, configs, module.resolve(strict=True)) if module else []
+        forwards = []
+        if module:
+            service = stack.enter_context(session.SocketActivatedModule(
+                module.resolve(strict=True), root / "module"))
+            forwards = add_module(kit, configs, service.socket)
         control_path = root / "yumed.sock"
         server_config = kit / "server/yumed.json"
         server = json.loads(server_config.read_text(encoding="utf-8"))

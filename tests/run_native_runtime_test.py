@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import socket
 import subprocess
@@ -238,8 +238,9 @@ def check_udp_associate(socks_port: int) -> None:
     print("UDP ASSOCIATE verified: datagrams both ways, destination refusal, relay closed with its TCP connection")
 
 
-def add_module(kit: Path, program: Path) -> tuple[Path, str]:
-    """Serves stream service "echo" with the module and forwards to it.
+def add_module(kit: Path, module_socket: Path) -> tuple[Path, str]:
+    """Serves stream service "echo" with the module listening on module_socket
+    and forwards to it.
 
     Returns the client's forward socket and the identity the module should see.
     """
@@ -247,7 +248,7 @@ def add_module(kit: Path, program: Path) -> tuple[Path, str]:
     server_path = kit / "server/yumed.json"
     server = json.loads(server_path.read_text(encoding="utf-8"))
     server["services"].append(service)
-    server["adapters"].append({"kind": "module", "service": "echo", "program": str(program)})
+    server["adapters"].append({"kind": "module", "service": "echo", "socket": str(module_socket)})
     server_path.write_text(json.dumps(server, indent=2), encoding="utf-8")
 
     forward = kit / "client/echo.sock"
@@ -440,24 +441,20 @@ def check_socks5_upstream(yume: Path, kit: Path, environment: dict[str, str], ro
     print("SOCKS5 upstream verified: the client reached yumed through an authenticating proxy")
 
 
-def check_module_validation(yumed: Path, kit: Path, program: Path,
-                            environment: dict[str, str], root: Path) -> None:
-    # --validate refuses a program that the daemon would refuse at start.
-    unsafe = root / "unsafe-module"
-    shutil.copyfile(program, unsafe)
-    unsafe.chmod(0o775)
-    config = json.loads((kit / "server/yumed.json").read_text(encoding="utf-8"))
-    for adapter in config["adapters"]:
-        if adapter["kind"] == "module":
-            adapter["program"] = str(unsafe)
-    variant = kit / "server/unsafe-module.json"
-    variant.write_text(json.dumps(config), encoding="utf-8")
-    result = subprocess.run([str(yumed), "--config", str(variant), "--validate"],
-                            env=environment, capture_output=True, text=True, timeout=30, check=False)
+def check_module_validation(yumed: Path, kit: Path, module_socket: Path,
+                            environment: dict[str, str]) -> None:
+    # --validate refuses a socket that the daemon would refuse at start: one
+    # that another user could connect to and forge the identity header on.
+    module_socket.chmod(0o660)
+    try:
+        result = subprocess.run([str(yumed), "--config", str(kit / "server/yumed.json"), "--validate"],
+                                env=environment, capture_output=True, text=True, timeout=30, check=False)
+    finally:
+        module_socket.chmod(0o600)
     if result.returncode != 2 or \
-            "module 'echo' is invalid: module program must be owned" not in result.stderr:
+            "module 'echo' is invalid: module socket must belong to this user" not in result.stderr:
         raise session.SessionFailure(
-            f"--validate accepted an unsafe module program: {result.returncode} {result.stderr.strip()}")
+            f"--validate accepted a shared module socket: {result.returncode} {result.stderr.strip()}")
 
 
 def check_module(forward: Path, identity: str) -> None:
@@ -663,53 +660,12 @@ def check_client_reconnects(yumed: Path, yume: Path, kit: Path, environment: dic
     print("reconnect verified: the client carried traffic again after yumed restarted")
 
 
-def process_gone(pid: int) -> bool:
-    # A dead child of init can stay a zombie briefly until it is reaped. A
-    # process that exits between opening and reading its stat file makes the
-    # read fail with ESRCH, which also means it is gone.
-    try:
-        state = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").rsplit(")", 1)[1].split()[0]
-    except (FileNotFoundError, ProcessLookupError):
-        return True
-    return state == "Z"
-
-
-def check_module_dies_with_daemon(yumed: Path, config: Path, environment: dict[str, str],
-                                  log_path: Path) -> None:
-    # SIGKILL gives yumed no chance to stop its module. The module must end anyway.
-    with log_path.open("wb") as log:
-        server = subprocess.Popen([str(yumed), "--config", str(config)], env=environment,
-                                  stdout=log, stderr=subprocess.STDOUT)
-    try:
-        deadline = time.monotonic() + 30
-        while not (started := re.search(r"module echo: started as process (\d+)\n",
-                                        log_path.read_text(encoding="utf-8"))):
-            if server.poll() is not None or time.monotonic() > deadline:
-                raise session.SessionFailure("the restarted yumed did not start its module")
-            time.sleep(0.05)
-        module = int(started.group(1))
-        server.kill()
-        server.wait(timeout=5)
-        deadline = time.monotonic() + 10
-        while not process_gone(module):
-            if time.monotonic() > deadline:
-                try:
-                    os.kill(module, 9)
-                except ProcessLookupError:
-                    pass
-                raise session.SessionFailure("the module outlived a killed yumed")
-            time.sleep(0.05)
-    finally:
-        if server.poll() is None:
-            server.kill()
-            server.wait(timeout=5)
-    session.reject_secret_output("yumed", log_path.read_text(encoding="utf-8", errors="replace"))
-
-
 def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
         module: Path | None = None) -> None:
     environment = session.openssl_environment(openssl)
-    with tempfile.TemporaryDirectory(prefix="yume-native-runtime-") as temporary:
+    # The module, when given, stops before its directory goes.
+    with tempfile.TemporaryDirectory(prefix="yume-native-runtime-") as temporary, \
+            contextlib.ExitStack() as stack:
         root = Path(temporary)
         kit = root / "kit"
         server_port, socks_port, target_port, closed_port = (session.free_port() for _ in range(4))
@@ -719,17 +675,14 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
                               connect_address="127.0.0.1", socks_port=socks_port)
         add_egress_lists(kit)
         if module is not None:
-            forward, identity = add_module(kit, module.resolve(strict=True))
-            # Module sockets live in a private directory below TMPDIR. A
-            # directory of the test's own shows that yumed removes it.
-            module_root = root / "module-tmp"
-            module_root.mkdir(mode=0o700)
-            environment = dict(environment, TMPDIR=str(module_root))
+            service = stack.enter_context(session.SocketActivatedModule(
+                module.resolve(strict=True), root / "module"))
+            forward, identity = add_module(kit, service.socket)
         validate(yumed, kit / "server/yumed.json", environment)
         validate(yume, kit / "client/yume.json", environment)
         check_egress_list_validation(yumed, kit, environment)
         if module is not None:
-            check_module_validation(yumed, kit, module.resolve(strict=True), environment, root)
+            check_module_validation(yumed, kit, service.socket, environment)
 
         target = session.serve_payload("127.0.0.1", target_port, PAYLOAD_BYTES)
         logs = {name: (root / f"{name}.log").open("wb") for name in ("yumed", "yume")}
@@ -774,7 +727,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             check_udp_associate(socks_port)
             if module is not None:
                 check_module(forward, identity)
-                print("module verified: yumed ran it with the client identity and echoed its stream")
+                print("module verified: yumed passed it the client identity and echoed its stream")
 
             session.stop_process(client, "yume")
             client = None
@@ -782,8 +735,6 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             check_control_status(yume, kit, environment, root, socks_port, target_port)
             check_socks5_upstream(yume, kit, environment, root, server_port, target_port)
             session.stop_process(server, "yumed")
-            if module is not None and any(module_root.iterdir()):
-                raise session.SessionFailure("yumed left the module socket directory behind")
         finally:
             for process in (client, server):
                 if process is not None and process.poll() is None:
@@ -804,14 +755,8 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
         if not dns_fixture:
             check_client_reconnects(yumed, yume, kit, environment, root, server_port,
                                     socks_port, target_port)
-        server_log = (root / "yumed.log").read_text(encoding="utf-8")
-        if module is not None and (server_log.count("module echo: started as process") != 1 or
-                                   "module echo: exited" in server_log):
-            raise session.SessionFailure("the module did not run once without exiting")
-        if module is not None:
-            check_module_dies_with_daemon(yumed, kit / "server/yumed.json", environment,
-                                          root / "yumed-killed.log")
-            print("module verified: it ended with a killed yumed")
+        if module is not None and service.process.poll() is not None:
+            raise session.SessionFailure("the module exited while yumed served it")
 
 
 def main() -> int:
@@ -823,7 +768,7 @@ def main() -> int:
     parser.add_argument("--dns-fixture", action="store_true",
                         help="exercise the resolver-wrapped test daemon")
     parser.add_argument("--module", type=Path,
-                        help="the echo module, served by yumed and reached through a forward")
+                        help="the echo module, which this test runs on a socket yumed connects to")
     arguments = parser.parse_args()
     try:
         run(arguments.yumed, arguments.yume, arguments.openssl, dns_fixture=arguments.dns_fixture,

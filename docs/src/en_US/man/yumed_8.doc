@@ -22,13 +22,14 @@ man-manual:  YUME Manual
 **yumed** is the native YUME Transport Protocol 1 daemon. It reads a schema-1
 server configuration, serves its configured static cover site, authenticates
 clients and carries traffic for declared services through direct TCP/UDP
-adapters, module programs or a Linux managed TUN. Each service needs a matching adapter; application-owned named
+adapters, modules or a Linux managed TUN. Each service needs a matching adapter; application-owned named
 services use the embedding interface. The daemon checks destination policy
 before routing and checks every resolved address before connecting.
 
-A module adapter's program runs as a supervised child process that receives
-its service's streams over a private UNIX socket below **TMPDIR**. The daemon
-restarts it with backoff when it exits. See **docs/MODULES.md**.
+A module adapter names the listening UNIX socket of a program that a service
+manager runs, such as the packaged **yume-module@.service**. The daemon
+connects to it once for each of its service's streams. See
+**docs/MODULES.md**.
 
 With a **cluster** section the daemon is a member of its operator's
 cluster and keeps an authenticated link to every other member it holds
@@ -102,9 +103,11 @@ the connection's TLS exporter. Failed admission remains cover traffic.
 
 ## MODULE STREAMS
 
-A configured module receives an authorized service stream through a private
-UNIX socket. It runs as the daemon's user and must be trusted with that
-user's credentials. **docs/MODULES.md** defines its header and lifecycle.
+A configured module receives an authorized service stream as a connection to
+its socket, which must belong to the daemon's user with no group or other
+access. Under the packaged units the module runs as a dynamic user of its own
+and cannot read the daemon's credentials. **docs/MODULES.md** defines its
+header and lifecycle.
 
 @diagram module_bridge
 
@@ -115,13 +118,13 @@ low-port binding capability needed for port 443. The native daemon does not
 implement automatic privilege dropping or host firewall configuration. Managed
 TUN requires **CAP_NET_ADMIN** and access to **/dev/net/tun** in its network
 namespace; configured per-link DNS also requires systemd-resolved authorization.
-Module programs run as the daemon's user without capabilities.
+The daemon never runs module programs itself.
 
 ## SIGNALS
 
 **SIGINT** and **SIGTERM** stop the daemon after its sessions close, followed
-by removal of owned TUN networking. Modules receive **SIGTERM**, then
-**SIGKILL** after five seconds.
+by removal of owned TUN networking. Modules keep running under their
+service manager.
 **SIGHUP** reloads the authorized and admin key stores and the server's
 composite and ML-KEM keys without dropping other clients. Every later session
 authenticates against them, including one on a connection accepted before

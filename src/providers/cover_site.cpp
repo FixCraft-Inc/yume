@@ -224,7 +224,9 @@ engine::Result<std::shared_ptr<const CoverSite>> CoverSite::load(
                                              Representation& output) -> Status {
             const std::size_t fixed_bytes =
                 std::string_view("content-type").size() +
-                content_type.size() + std::string_view("content-length").size();
+                content_type.size() + std::string_view("cache-control").size() +
+                std::string_view("public, max-age=60").size() +
+                std::string_view("content-length").size();
             // Every representation has at least one content-length digit.
             if (fixed_bytes >= limits.max_header_bytes) {
                 return Status(StatusCode::ResourceExhausted,
@@ -248,6 +250,7 @@ engine::Result<std::shared_ptr<const CoverSite>> CoverSite::load(
                               "cover site response limit exceeded");
             }
             output.headers = {{{"content-type", std::string(content_type)},
+                               {"cache-control", "public, max-age=60"},
                                {"content-length", std::move(length)}}};
             retained += header_bytes + output.body.size();
             return Status::success();

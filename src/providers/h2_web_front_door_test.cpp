@@ -326,6 +326,13 @@ private:
     std::unique_ptr<SSL, decltype(&SSL_free)> ssl_;
 };
 
+constexpr std::string_view kExpectedNoAlpnRefusal =
+    "HTTP/1.0 403 Forbidden\r\n"
+    "Content-Type: text/plain\r\n"
+    "\r\n"
+    "Missing ALPN Protocol, expected `h2` to be available.\n"
+    "If this is a HTTP request: The server was not configured with the `allowHTTP1` option or a listener for the `unknownProtocol` event.\n";
+
 struct HttpResponse final {
     std::map<std::string, std::string> headers;
     std::string body;
@@ -683,7 +690,10 @@ private:
 void check_cover(const HttpResponse& response) {
     CHECK(response.headers.at(":status") == "404");
     CHECK(response.headers.at("content-type") == "text/html");
+    CHECK(response.headers.at("cache-control") == "public, max-age=60");
     CHECK(response.headers.at("content-length") == std::to_string(kNotFound.size()));
+    const auto date = response.headers.at("date");
+    CHECK(date.size() == 29U && date.ends_with(" GMT"));
     CHECK(response.body == kNotFound);
     for (const auto& [name, value] : response.headers) {
         CHECK(name.find("yume") == std::string::npos);
@@ -704,10 +714,19 @@ void test_http_cover_and_failed_admission() {
                         version, alpn,
                         boost::asio::ip::address_v4::loopback(), true);
     }
+    for (const auto version : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+        TlsPeer refused(fixture.port(), fixture.identity.certificate, version, "");
+        const auto bytes = refused.read();
+        CHECK(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()) ==
+              kExpectedNoAlpnRefusal);
+    }
     TlsPeer tls(fixture.port(), fixture.identity.certificate);
     H2Peer h2(tls, fixture.port());
     const auto index = h2.response(h2.submit("GET", "/"));
     CHECK(index.headers.at(":status") == "200");
+    CHECK(index.headers.at("cache-control") == "public, max-age=60");
+    CHECK(index.headers.at("date").size() == 29U &&
+          index.headers.at("date").ends_with(" GMT"));
     CHECK(index.body == kIndex);
     const auto head = h2.response(h2.submit("HEAD", "/"));
     CHECK(head.headers.at(":status") == "200");

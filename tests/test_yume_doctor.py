@@ -816,22 +816,20 @@ class YumeDoctorTests(unittest.TestCase):
         original["services"].append(
             {"kind": "stream", "max_concurrent_streams": 16, "name": "echo"}
         )
-        base = {"kind": "module", "service": "echo", "program": "/usr/lib/yume/echo"}
+        base = {"kind": "module", "service": "echo", "socket": "/run/yume-modules/echo.sock"}
         server = copy.deepcopy(original)
-        server["adapters"].append(dict(base, arguments=["--greeting", "hi"]))
+        server["adapters"].append(base)
         server_path.write_text(json.dumps(server))
         result = self.run_doctor(server_path)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         index = len(original["adapters"])
         invalid = (
-            ({"program": "echo"}, "program", "must be a normalized absolute path"),
-            ({"program": "/usr/lib/../echo"}, "program", "must be a normalized absolute path"),
-            ({"arguments": "--greeting"}, "arguments", "must be an array of at most 32 strings"),
-            ({"arguments": ["x"] * 33}, "arguments", "must be an array of at most 32 strings"),
-            ({"arguments": ["x" * 1025]}, "arguments/0", "must be at most 1024 bytes"),
-            ({"arguments": ["a\0b"]}, "arguments/0", "must not contain NUL"),
-            ({"arguments": [1]}, "arguments/0", "must be a string"),
+            ({"socket": "echo.sock"}, "socket", "must be a normalized absolute path"),
+            ({"socket": "/run/../echo.sock"}, "socket", "must be a normalized absolute path"),
+            ({"socket": "/" + "a" * 107}, "socket", "must be at most 107 bytes"),
+            ({"socket": 1}, "socket", "must be a string"),
+            ({"program": "/usr/lib/yume/echo"}, "program", "unknown key"),
             ({"service": "tcp"}, "service", "stream service already has an adapter"),
             ({"service": "udp"}, "service", "adapter requires a stream service"),
             ({"listen_path": "/run/a.sock"}, "listen_path", "unknown key"),

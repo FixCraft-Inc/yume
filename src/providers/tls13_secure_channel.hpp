@@ -66,7 +66,8 @@ public:
         std::size_t output_size) = 0;
 
     // Transfers the same SSL/BIO/transport state exactly once, only for TLS
-    // 1.3 with ALPN h2 and no pending application or transport I/O. The caller
+    // 1.3 with ALPN h2 and no pending application or transport I/O. A cover
+    // connection with no ALPN is a bounded refusal path and cannot promote. The caller
     // owns admission and must first settle its cover operations. A successful
     // transfer leaves this handle inert; destroying it cannot close the new
     // SecureChannel. Refusal leaves cover ownership with this handle.
@@ -100,8 +101,9 @@ public:
                     Completion completion) override;
 
     // Server only. Offers ordinary TLS 1.2/1.3 with H2 cover. HTTP/1.1 and
-    // clients without ALPN are refused before channel publication. Existing async_wrap
-    // remains strict even on the same provider instance.
+    // non-H2 ALPN offers are refused before channel publication. A client
+    // without ALPN is published only to the front door's bounded refusal
+    // path; existing async_wrap remains strict on the same provider.
     void async_wrap_server_cover(std::unique_ptr<engine::ByteChannel> channel,
                                  engine::CancellationToken cancellation,
                                  ServerCoverCompletion completion);

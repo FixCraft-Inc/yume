@@ -1437,52 +1437,37 @@ void TestReservedServiceNames() {
 }
 
 void TestModuleAdapters() {
-    Json document = ServerDocument();
-    document["services"].push_back(
-        {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
-    document["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
-        {"program", "/usr/libexec/yume/yume-chat"}, {"arguments", {"--history", "7"}}});
-    const Config parsed = Parse(document);
+    const std::string socket = "/run/yume-modules/chat.sock";
+    const auto module_document = [&socket] {
+        Json document = ServerDocument();
+        document["services"].push_back(
+            {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
+        document["adapters"].push_back(
+            {{"kind", "module"}, {"service", "chat"}, {"socket", socket}});
+        return document;
+    };
+    const Config parsed = Parse(module_document());
     const auto* module = std::get_if<ModuleAdapter>(&parsed.adapters().back());
-    Check(module != nullptr && module->service() == "chat" &&
-              module->program() == "/usr/libexec/yume/yume-chat" &&
-              module->arguments() == std::vector<std::string>{"--history", "7"},
+    Check(module != nullptr && module->service() == "chat" && module->socket() == socket,
           "the module adapter was not retained");
 
-    const auto rejects = [](const std::function<void(Json&)>& change, const std::string& pointer,
-                            std::string_view detail) {
-        Json candidate = ServerDocument();
-        candidate["services"].push_back(
-            {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
-        candidate["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
-                                         {"program", "/usr/libexec/yume/yume-chat"}});
+    const auto rejects = [&module_document](const std::function<void(Json&)>& change,
+                                            const std::string& pointer, std::string_view detail) {
+        Json candidate = module_document();
         change(candidate);
         ExpectError(candidate, pointer, detail);
     };
-    Check(Parse([] {
-              Json candidate = ServerDocument();
-              candidate["services"].push_back(
-                  {{"name", "chat"}, {"kind", "stream"}, {"max_concurrent_streams", 16}});
-              candidate["adapters"].push_back({{"kind", "module"}, {"service", "chat"},
-                                               {"program", "/usr/libexec/yume/yume-chat"}});
-              return candidate;
-          }()).adapters().size() == 3,
-          "a module without arguments was refused");
-    rejects([](Json& value) { value["adapters"][2]["program"] = "yume-chat"; },
-            "/adapters/2/program", "normalized absolute path");
-    rejects([](Json& value) { value["adapters"][2]["program"] = "/usr/../bin/sh"; },
-            "/adapters/2/program", "normalized absolute path");
-    rejects([](Json& value) { value["adapters"][2]["arguments"] = Json::array({1}); },
-            "/adapters/2/arguments/0", "string");
-    rejects([](Json& value) {
-                value["adapters"][2]["arguments"] = Json::array();
-                for (int count = 0; count < 33; ++count) value["adapters"][2]["arguments"].push_back("x");
-            },
-            "/adapters/2/arguments", "at most 32");
-    rejects([](Json& value) { value["adapters"][2]["arguments"] = {std::string(1025U, 'a')}; },
-            "/adapters/2/arguments/0", "at most 1024 bytes");
-    rejects([](Json& value) { value["adapters"][2]["arguments"] = {std::string("a\0b", 3U)}; },
-            "/adapters/2/arguments/0", "NUL");
+    rejects([](Json& value) { value["adapters"][2]["socket"] = "chat.sock"; },
+            "/adapters/2/socket", "normalized absolute path");
+    rejects([](Json& value) { value["adapters"][2]["socket"] = "/run/../tmp/chat.sock"; },
+            "/adapters/2/socket", "normalized absolute path");
+    rejects([](Json& value) { value["adapters"][2]["socket"] = "/" + std::string(107U, 'a'); },
+            "/adapters/2/socket", "at most 107 bytes");
+    rejects([](Json& value) { value["adapters"][2].erase("socket"); },
+            "/adapters/2/socket", "required key");
+    // A module is no longer a program the daemon starts.
+    rejects([](Json& value) { value["adapters"][2]["program"] = "/usr/libexec/yume/yume-chat"; },
+            "/adapters/2/program", "unknown key");
     rejects([](Json& value) { value["adapters"][2]["service"] = "udp"; },
             "/adapters/2/service", "");
     rejects([](Json& value) { value["adapters"][2]["fallback"] = true; },
@@ -1494,10 +1479,11 @@ void TestModuleAdapters() {
                                              {"destinations", PublicDestinations()}});
             },
             "/adapters/3/service", "already has an adapter");
+    rejects([&socket](Json& value) { value["control"] = {{"socket", socket}}; },
+            "/control/socket", "module's socket");
 
     Json client = ClientDocument();
-    client["adapters"].push_back({{"kind", "module"}, {"service", "tcp"},
-                                  {"program", "/usr/libexec/yume/yume-chat"}});
+    client["adapters"].push_back({{"kind", "module"}, {"service", "tcp"}, {"socket", socket}});
     ExpectError(client, "/adapters/1/kind", "server-only");
 }
 

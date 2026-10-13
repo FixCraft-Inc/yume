@@ -7,7 +7,6 @@
 #pragma once
 
 #include <filesystem>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -82,9 +81,6 @@ public:
     // Readable once the child has exited. -1 where the kernel has no pidfd.
     int pidfd() const noexcept { return pidfd_; }
     void signal(int number) noexcept;
-    // Reaps the child if it has exited, without waiting, and returns its wait
-    // status. The PID and pidfd are released then.
-    std::optional<int> try_reap() noexcept;
     // Sends SIGKILL and waits for the child to exit.
     void kill_and_reap() noexcept;
 

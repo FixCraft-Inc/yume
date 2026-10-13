@@ -595,6 +595,16 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Changed
 
+- **Modules run under systemd as users of their own.** A `module` adapter
+  now names the module's listening `socket` instead of a `program` and its
+  `arguments`. `yumed` checks at startup and with `--validate` that only its
+  own user and root can reach or replace the socket, then connects once per
+  stream with the same identity header. The Debian package ships
+  `yume-module@.socket` and `yume-module@.service`, which run each module as
+  a dynamic user without network, capabilities or access to the daemon's
+  files. The in-daemon launcher, its restart backoff and the `yume-module`
+  entry are removed, so modules no longer run as the daemon's user.
+
 - **H2-only cover.** The public front door now requires ALPN `h2` over
   TLS 1.2 or 1.3. HTTP/1.1-only offers fail negotiation; connections
   without ALPN close before serving HTTP. The HTTP/1.1 site handler is

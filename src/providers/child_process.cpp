@@ -118,9 +118,8 @@ Status validate_program(const std::filesystem::path& program, std::string_view n
                           " must be owned by root or this user and not writable by others");
     if (::access(program.c_str(), X_OK) != 0)
         return diagnostic(StatusCode::PermissionDenied, name, " is not executable");
-    // Running a set-ID program, or one with file capabilities, is a privileged
-    // exec even under no_new_privs, which gains nothing yet still clears
-    // settings such as a module's parent-death signal.
+    // A set-ID program, or one with file capabilities, gains privilege on
+    // exec, which no helper needs.
     if ((status.st_mode & (S_ISUID | S_ISGID)) != 0U)
         return diagnostic(StatusCode::PermissionDenied, name, " must not be set-user-ID or set-group-ID");
 #if defined(__linux__)
@@ -193,20 +192,6 @@ void ChildProcess::signal(int number) noexcept {
     }
 #endif
     (void)::kill(pid_, number);
-}
-
-std::optional<int> ChildProcess::try_reap() noexcept {
-    if (pid_ <= 0) return std::nullopt;
-    int status = 0;
-    pid_t reaped = -1;
-    do {
-        reaped = ::waitpid(pid_, &status, WNOHANG);
-    } while (reaped < 0 && errno == EINTR);
-    if (reaped == 0) return std::nullopt;
-    // Also after ECHILD, when a host reaped the child itself.
-    const bool own = reaped == pid_;
-    release();
-    return own ? status : 0;
 }
 
 void ChildProcess::kill_and_reap() noexcept {

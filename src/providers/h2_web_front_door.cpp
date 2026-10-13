@@ -37,6 +37,18 @@ namespace errc = boost::system::errc;
 // the listener pauses this long and then accepts it.
 constexpr std::chrono::seconds kAcceptRetryDelay{1};
 
+// Node's unknown-protocol branch writes this fixed refusal immediately after
+// a successful TLS handshake. It is a bounded cover response, not an HTTP
+// parser or a site-serving path.
+constexpr std::string_view kNoAlpnRefusal =
+    "HTTP/1.0 403 Forbidden\r\n"
+    "Content-Type: text/plain\r\n"
+    "\r\n"
+    "Missing ALPN Protocol, expected `h2` to be available.\n"
+    "If this is a HTTP request: The server was not configured with the "
+    "`allowHTTP1` option or a listener for the `unknownProtocol` event.\n";
+static_assert(kNoAlpnRefusal.size() == 239U);
+
 bool is(const Error& error, errc::errc_t value) noexcept {
     return error == errc::make_error_condition(value);
 }
@@ -394,6 +406,10 @@ public:
                         if (!result.ok()) { self->stop(); return; }
                         auto tls = std::move(result).take_value();
                         if (self->terminal_) { tls->close(); return; }
+                        if (tls->negotiated_protocol().empty()) {
+                            self->send_no_alpn_refusal(std::move(tls));
+                            return;
+                        }
                         if (tls->negotiated_protocol() != "h2") {
                             tls->close();
                             self->stop();
@@ -426,6 +442,25 @@ public:
     }
 
 private:
+    void send_no_alpn_refusal(std::unique_ptr<TlsServerConnection> tls) noexcept {
+        tls_ = std::move(tls);
+        auto bytes = Buffer::copy_from(
+            std::as_bytes(std::span(kNoAlpnRefusal.data(), kNoAlpnRefusal.size())),
+            kNoAlpnRefusal.size());
+        if (!bytes.ok()) { stop(); return; }
+        writing_ = true;
+        tls_->async_write(std::move(bytes).take_value(), cancellation_.token(),
+            [self = shared_from_this()](Status status, std::size_t count) noexcept {
+                self->writing_ = false;
+                if (self->terminal_) return;
+                if (!status.ok() || count != kNoAlpnRefusal.size()) {
+                    self->stop();
+                    return;
+                }
+                self->stop();
+            });
+    }
+
     void process_h2() {
         const auto owner = owner_.lock();
         if (!owner || owner->closing.load()) { stop(); return; }

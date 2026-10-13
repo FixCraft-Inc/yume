@@ -18,4 +18,5 @@ override_dh_auto_configure:
 
 override_dh_installsystemd:
 	dh_installsystemd -p yume-daemon --name=yumed --no-enable --no-start
+	dh_installsystemd -p yume-daemon --name=yume-module@ --no-enable --no-start
 	dh_installsystemd --remaining-packages

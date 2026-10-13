@@ -105,8 +105,14 @@ void test_real_site_snapshot_and_head() {
             "configured index was not served");
     require(header(index, "content-type") == "text/html; charset=utf-8",
             "configured content type was not preserved");
+    require(header(index, "cache-control") == "public, max-age=60",
+            "configured cache policy was not preserved");
     require(header(index, "content-length") == std::to_string(index.body.size()),
             "index content length is incorrect");
+    require(index.headers.size() == 3U && index.headers[0].first == "content-type" &&
+                index.headers[1].first == "cache-control" &&
+                index.headers[2].first == "content-length",
+            "static response header order changed");
     const auto head = site->respond("HEAD", "/?v=1");
     require(head.status_code == 200 && head.body.empty() &&
                 head.headers.data() == index.headers.data(),

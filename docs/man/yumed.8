@@ -29,17 +29,17 @@ yumed \- native YTP/1 daemon with configured TCP and UDP egress
 is the native YUME Transport Protocol 1 daemon.
 It reads a schema-1 server configuration, serves its configured static
 cover site, authenticates clients and carries traffic for declared
-services through direct TCP/UDP adapters, module programs or a Linux
-managed TUN.
+services through direct TCP/UDP adapters, modules or a Linux managed
+TUN.
 Each service needs a matching adapter; application-owned named services
 use the embedding interface.
 The daemon checks destination policy before routing and checks every
 resolved address before connecting.
 .PP
-A module adapter's program runs as a supervised child process that
-receives its service's streams over a private UNIX socket below
-.BR TMPDIR .
-The daemon restarts it with backoff when it exits.
+A module adapter names the listening UNIX socket of a program that a
+service manager runs, such as the packaged
+.BR yume-module@.service .
+The daemon connects to it once for each of its service's streams.
 See
 .BR docs/MODULES.md .
 .PP
@@ -68,7 +68,7 @@ Security policy has no command-line overrides.
 .TP
 .B --validate
 Check schema, role, referenced credentials, direct-adapter destination
-policy and the daemon's module programs, then exit without opening a
+policy and the daemon's module sockets, then exit without opening a
 listener or network connection.
 This checks local inputs; it does not test connectivity or complete
 runtime startup, including loading the cover site, matching services to
@@ -234,10 +234,11 @@ YTP/1 promotion requires TLS 1.3, HTTP/2 and authenticated admission
 bound to the connection's TLS exporter.
 Failed admission remains cover traffic.
 .SH MODULE STREAMS
-A configured module receives an authorized service stream through a
-private UNIX socket.
-It runs as the daemon's user and must be trusted with that user's
-credentials.
+A configured module receives an authorized service stream as a
+connection to its socket, which must belong to the daemon's user with no
+group or other access.
+Under the packaged units the module runs as a dynamic user of its own
+and cannot read the daemon's credentials.
 .B docs/MODULES.md
 defines its header and lifecycle.
 .\" yume-diagram: module_bridge
@@ -278,18 +279,14 @@ and access to
 .B /dev/net/tun
 in its network namespace; configured per-link DNS also requires
 systemd-resolved authorization.
-Module programs run as the daemon's user without capabilities.
+The daemon never runs module programs itself.
 .SH SIGNALS
 .B SIGINT
 and
 .B SIGTERM
 stop the daemon after its sessions close, followed by removal of owned
 TUN networking.
-Modules receive
-.BR SIGTERM ,
-then
-.B SIGKILL
-after five seconds.
+Modules keep running under their service manager.
 .B SIGHUP
 reloads the authorized and admin key stores and the server's composite
 and ML-KEM keys without dropping other clients.

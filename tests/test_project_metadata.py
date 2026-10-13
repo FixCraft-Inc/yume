@@ -322,6 +322,21 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("yume-doctor --config /etc/yume/yumed.json", readme)
         self.assertIn("/var/lib/yume/cluster-state.json", readme)
         self.assertIn("/etc/yume` read-only", readme)
+        self.assertIn("--name=yume-module@ --no-enable --no-start", rules)
+        socket_unit = (ROOT / "debian/yume-daemon.yume-module@.socket").read_text(
+            encoding="utf-8")
+        for line in ("ListenStream=/run/yume-modules/%i.sock", "SocketUser=yume",
+                     "SocketMode=0600", "DirectoryMode=0755"):
+            self.assertIn(line + "\n", socket_unit)
+        module_unit = (ROOT / "debian/yume-daemon.yume-module@.service").read_text(
+            encoding="utf-8")
+        # A module never runs as the daemon's user or reaches its files.
+        for line in ("DynamicUser=true", "NoNewPrivileges=true", "CapabilityBoundingSet=",
+                     "PrivateNetwork=true", "Requires=yume-module@%i.socket"):
+            self.assertIn(line + "\n", module_unit)
+        self.assertIn("-/etc/yume ", module_unit)
+        self.assertNotIn("User=yume", module_unit)
+        self.assertIn("systemctl enable --now yume-module@echo.socket", readme)
 
     def test_installed_documentation_keeps_authoritative_links(self) -> None:
         for document in (

@@ -4,8 +4,9 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
-// A minimal YUME module. The daemon runs it with a listening UNIX socket as
-// descriptor 3 and hands it one connection per stream of its service. Each
+// A minimal YUME module. A service manager runs it with a listening UNIX
+// socket as descriptor 3, and the daemon connects once per stream of its
+// service. Each
 // connection starts with the line "yume-module 1 <identity> <service>". This
 // module greets the client by identity, then echoes every byte back until
 // the client closes its side.

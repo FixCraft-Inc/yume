@@ -207,14 +207,6 @@
       "reason": "Test observer of the limiter's bounded identity table."
     },
     {
-      "path": "src/runtime/module_supervisor.cpp",
-      "functions": [
-        "yume::runtime::ModuleSupervisor::pid() const",
-        "yume::runtime::ModuleSupervisor::socket_directory*"
-      ],
-      "reason": "Test observers of the supervised module process and its socket directory."
-    },
-    {
       "path": "src/runtime/circuit_routes.cpp",
       "functions": ["yume::runtime::circuit::RouteChooser::count(*"],
       "reason": "Test observer of how many routes pass the route rules."

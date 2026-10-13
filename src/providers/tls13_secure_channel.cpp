@@ -887,17 +887,26 @@ private:
                 unsigned int selected_length = 0U;
                 SSL_get0_alpn_selected(ssl_.get(), &selected, &selected_length);
                 // The ALPN callback is not invoked when the peer omits ALPN.
-                // Reject that connection before publishing either channel type.
-                if (selected_length != 2U || !selected || selected[0] != 'h' ||
-                    selected[1] != '2') {
+                // Cover mode may publish that completed TLS connection only
+                // so the front door can emit its bounded fixed refusal. It
+                // is never eligible for H2 or promotion; strict async_wrap
+                // remains H2-only.
+                const bool no_alpn = selected_length == 0U;
+                if ((!no_alpn && (selected_length != 2U || !selected ||
+                                  selected[0] != 'h' || selected[1] != '2')) ||
+                    (no_alpn && !cover_mode_)) {
                     phase_ = Phase::Failed;
                     terminal_ = Status::diagnostic(
                         StatusCode::ProviderMismatch,
                         "TLS peer did not negotiate exact ALPN h2");
                     need_transport_close_ = true; return next_action_locked();
                 }
-                protocol_.assign(reinterpret_cast<const char*>(selected),
-                                 selected_length);
+                if (no_alpn) {
+                    protocol_.clear();
+                } else {
+                    protocol_.assign(reinterpret_cast<const char*>(selected),
+                                     selected_length);
+                }
                 if (const char* name = SSL_get_servername(
                         ssl_.get(), TLSEXT_NAMETYPE_host_name)) {
                     const std::string_view received(name);

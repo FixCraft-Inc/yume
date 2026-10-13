@@ -35,8 +35,6 @@ inline constexpr std::size_t kMaxDestinationNetworks = 64;
 inline constexpr std::size_t kMaxDestinationLists = 16;
 // A UNIX socket path must fit sockaddr_un with its terminator.
 inline constexpr std::size_t kMaxUnixSocketPathBytes = 107;
-inline constexpr std::size_t kMaxModuleArguments = 32;
-inline constexpr std::size_t kMaxModuleArgumentBytes = 1024;
 // limits.max_queued_bytes bounds one session's queued bytes. The session
 // engine refuses a larger budget at start, and the runtime checks at compile
 // time that this bound stays within the engine's.
@@ -582,29 +580,21 @@ private:
     std::optional<ForwardDestination> destination_;
 };
 
-// A server module: a program that serves one stream service. The daemon
-// starts it, restarts it after it exits and hands it each authorized stream
-// of the service as a connection on a private UNIX socket.
+// A server module: a program that serves one stream service. A service
+// manager runs it and owns its listening UNIX socket, and the daemon connects
+// to that socket once for each authorized stream of the service.
 class ModuleAdapter final {
 public:
-    ModuleAdapter(std::string service,
-                  std::string program,
-                  std::vector<std::string> arguments)
-        : service_(std::move(service)),
-          program_(std::move(program)),
-          arguments_(std::move(arguments)) {}
+    ModuleAdapter(std::string service, std::string socket)
+        : service_(std::move(service)), socket_(std::move(socket)) {}
 
     const std::string& service() const noexcept { return service_; }
-    // An absolute path. The daemon runs it with arguments after its own name.
-    const std::string& program() const noexcept { return program_; }
-    const std::vector<std::string>& arguments() const noexcept {
-        return arguments_;
-    }
+    // The absolute path of the module's listening socket.
+    const std::string& socket() const noexcept { return socket_; }
 
 private:
     std::string service_;
-    std::string program_;
-    std::vector<std::string> arguments_;
+    std::string socket_;
 };
 
 using Adapter = std::variant<Socks5Adapter,

@@ -54,6 +54,19 @@ CAP_NET_BIND_SERVICE for TCP port 443 and repeats native validation before
 startup. It reads /etc/yume and cannot modify it. Use TCP passthrough if a
 proxy sits in front of yumed; do not terminate TLS in HTTP mode.
 
+A module serves one stream service as its own program. The package ships the
+yume-module@.socket and yume-module@.service templates, named by the service.
+For a service "echo", install the program as /usr/libexec/yume/modules/echo
+(or set ExecStart with "systemctl edit yume-module@echo.service"), give the
+server configuration a module adapter with the socket
+/run/yume-modules/echo.sock, then enable the socket before starting yumed:
+
+  systemctl enable --now yume-module@echo.socket
+
+The socket belongs to yume with mode 0600, and the module runs as a dynamic
+user of its own without network access, so it cannot read /etc/yume. yumed
+refuses a missing socket or one that another user could reach.
+
 The package remains experimental. Installed-service and distribution-specific
 qualification is required before publication; a successful build alone is
 not release qualification.

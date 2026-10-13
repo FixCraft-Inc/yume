@@ -924,17 +924,25 @@ void test_mutual_tls_outer_client_evidence() {
 // Node.
 void test_server_cover_negotiation_and_promotion(int version,
                                                  std::string_view protocol,
-                                                 bool only_aes128 = false) {
+                                                 bool only_aes128 = false,
+                                                 bool offer_http1_first = false) {
     const PemIdentity identity = make_identity();
     auto provider = take(Tls13SecureChannelProvider::create_server(
         {identity.certificate, identity.key, {}, {}}));
     auto pair = std::make_shared<PairState>();
     PairChannel raw_transport(pair, 0U, ExecutorAffinity(91U));
     std::unique_ptr<TlsServerConnection> cover;
+    std::optional<StatusCode> cover_failure;
+    unsigned int completions = 0U;
     provider->async_wrap_server_cover(
         std::make_unique<PairChannel>(pair, 1U, ExecutorAffinity(91U)), {},
         [&](Result<std::unique_ptr<TlsServerConnection>> result) {
-            cover = take(std::move(result));
+            ++completions;
+            if (result.ok()) {
+                cover = take(std::move(result));
+            } else {
+                cover_failure = result.status().code();
+            }
         });
     // The SSL_CTX must remain owned through the connection after the provider
     // handle disappears, including the eventual promoted SecureChannel.
@@ -960,6 +968,11 @@ void test_server_cover_negotiation_and_promotion(int version,
     if (!protocol.empty()) {
         std::vector<unsigned char> alpn{static_cast<unsigned char>(protocol.size())};
         alpn.insert(alpn.end(), protocol.begin(), protocol.end());
+        if (offer_http1_first) {
+            constexpr std::array<unsigned char, 9> http1{
+                8U, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+            alpn.insert(alpn.begin(), http1.begin(), http1.end());
+        }
         assert(SSL_set_alpn_protos(peer.get(), alpn.data(), alpn.size()) == 0);
     }
     BIO* const input = BIO_new(BIO_s_mem());
@@ -988,14 +1001,26 @@ void test_server_cover_negotiation_and_promotion(int version,
                 });
         }
     };
+    const bool expected_refusal = protocol != "h2";
     for (std::size_t attempt = 0U; attempt < 128U; ++attempt) {
         receive_ciphertext();
         const int result = SSL_do_handshake(peer.get());
-        assert(result == 1 || SSL_get_error(peer.get(), result) == SSL_ERROR_WANT_READ);
+        if (!expected_refusal) {
+            assert(result == 1 || SSL_get_error(peer.get(), result) == SSL_ERROR_WANT_READ);
+        }
         send_ciphertext();
-        if (cover && SSL_is_init_finished(peer.get())) break;
+        if (expected_refusal && cover_failure) break;
+        if (!expected_refusal && cover && SSL_is_init_finished(peer.get())) break;
+    }
+    if (expected_refusal) {
+        assert(completions == 1U && cover_failure && !cover);
+        assert(*cover_failure == (protocol.empty() ? StatusCode::ProviderMismatch
+                                                  : StatusCode::FailedPrecondition));
+        assert(pair->sides[1].closed);
+        return;
     }
     assert(cover && SSL_is_init_finished(peer.get()));
+    assert(completions == 1U && !cover_failure);
     assert(cover->tls_version() == version);
     assert(SSL_CIPHER_get_protocol_id(SSL_get_current_cipher(peer.get())) ==
            (version != TLS1_3_VERSION ? 0xc02bU
@@ -1011,7 +1036,7 @@ void test_server_cover_negotiation_and_promotion(int version,
     assert(!request);
     // Even eligible TLS cannot move while a cover read retains ownership.
     assert(!cover->promote().ok());
-    constexpr std::string_view get = "GET / HTTP/1.1\r\nHost: actual.example\r\n\r\n";
+    constexpr std::string_view get = "cover channel payload";
     assert(SSL_write(peer.get(), get.data(), get.size()) == static_cast<int>(get.size()));
     send_ciphertext();
     assert(request && request->ok() && text(request->value()) == get);
@@ -1030,7 +1055,7 @@ void test_server_cover_negotiation_and_promotion(int version,
         assert(promotion.status().code() == StatusCode::FailedPrecondition);
         // Refusing YTP promotion leaves an ordinary usable TLS cover channel.
         bool wrote = false;
-        cover->async_write(bytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), {},
+        cover->async_write(bytes("cover channel response"), {},
             [&](Status status, std::size_t count) { assert(status.ok() && count); wrote = true; });
         assert(wrote);
     } else {
@@ -1208,6 +1233,11 @@ int main() {
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_3_VERSION,
                                                                  "h2", true);
     yume::providers::test_server_cover_negotiation_and_promotion(TLS1_2_VERSION, "");
+    yume::providers::test_server_cover_negotiation_and_promotion(TLS1_3_VERSION, "");
+    yume::providers::test_server_cover_negotiation_and_promotion(
+        TLS1_2_VERSION, "h2", false, true);
+    yume::providers::test_server_cover_negotiation_and_promotion(
+        TLS1_3_VERSION, "h2", false, true);
     yume::providers::test_server_cover_cancellation_and_teardown();
     yume::providers::test_simultaneous_read_and_write();
     yume::providers::test_stale_thread_errors_fail_no_io();

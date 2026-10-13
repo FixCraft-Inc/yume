@@ -40,6 +40,7 @@
 #include <boost/asio/ip/v6_only.hpp>
 #include <boost/asio/post.hpp>
 #include <nghttp2/nghttp2.h>
+#include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
@@ -244,7 +245,8 @@ class TlsPeer final {
 public:
     TlsPeer(std::uint16_t port, std::span<const std::byte> certificate,
             int tls_version = TLS1_3_VERSION, std::string_view alpn = "h2",
-            boost::asio::ip::address address = boost::asio::ip::address_v4::loopback())
+            boost::asio::ip::address address = boost::asio::ip::address_v4::loopback(),
+            bool expect_handshake_failure = false)
         : socket_(io_), context_(SSL_CTX_new(TLS_client_method()), SSL_CTX_free),
           ssl_(nullptr, SSL_free) {
         CHECK(context_);
@@ -274,7 +276,17 @@ public:
         CHECK(::setsockopt(socket_.native_handle(), SOL_SOCKET, SO_SNDTIMEO,
                            &timeout, sizeof(timeout)) == 0);
         CHECK(SSL_set_fd(ssl_.get(), socket_.native_handle()) == 1);
-        CHECK(SSL_connect(ssl_.get()) == 1);
+        ERR_clear_error();
+        const int handshake = SSL_connect(ssl_.get());
+        if (expect_handshake_failure) {
+            CHECK(handshake != 1);
+            CHECK(SSL_get_error(ssl_.get(), handshake) == SSL_ERROR_SSL);
+            CHECK(ERR_GET_REASON(ERR_peek_last_error()) ==
+                  SSL_R_TLSV1_ALERT_NO_APPLICATION_PROTOCOL);
+            ERR_clear_error();
+            return;
+        }
+        CHECK(handshake == 1);
         CHECK(SSL_version(ssl_.get()) == tls_version);
     }
     void write(std::span<const std::uint8_t> value) {
@@ -682,37 +694,15 @@ void check_cover(const HttpResponse& response) {
 void test_http_cover_and_failed_admission() {
     Fixture fixture;
     auto pending_accept = fixture.accept();
+    // The cover entry refuses HTTP/1.1 clients before any HTTP request bytes
+    // are accepted. H2 remains the only cover protocol; no-ALPN refusal is
+    // covered by the TLS provider test.
     for (const auto& [version, alpn] :
          {std::pair{TLS1_3_VERSION, std::string_view("http/1.1")},
-          std::pair{TLS1_2_VERSION, std::string_view("http/1.1")},
-          std::pair{TLS1_3_VERSION, std::string_view{}}}) {
-        TlsPeer peer(fixture.port(), fixture.identity.certificate, version, alpn);
-        peer.write("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-        std::string response;
-        while (response.find(kIndex) == std::string::npos) {
-            const auto chunk = peer.read();
-            response.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
-            CHECK(response.size() < 64U * 1024U);
-        }
-        CHECK(response.starts_with("HTTP/1.1 200 "));
-        CHECK(response.substr(response.find("\r\n\r\n") + 4U) == kIndex);
-    }
-    for (const auto request : {
-             std::string_view("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n"
-                              "Connection: close\r\n\r\ndata"),
-             std::string_view("POST / HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n"
-                              "Connection: close\r\n\r\n4\r\ndata\r\n0\r\n\r\n")}) {
-        TlsPeer peer(fixture.port(), fixture.identity.certificate,
-                     TLS1_3_VERSION, "http/1.1");
-        peer.write(request);
-        std::string response;
-        while (response.find(kNotFound) == std::string::npos) {
-            const auto chunk = peer.read();
-            response.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
-            CHECK(response.size() < 64U * 1024U);
-        }
-        CHECK(response.starts_with("HTTP/1.1 404 "));
-        CHECK(response.substr(response.find("\r\n\r\n") + 4U) == kNotFound);
+          std::pair{TLS1_2_VERSION, std::string_view("http/1.1")}}) {
+        TlsPeer refused(fixture.port(), fixture.identity.certificate,
+                        version, alpn,
+                        boost::asio::ip::address_v4::loopback(), true);
     }
     TlsPeer tls(fixture.port(), fixture.identity.certificate);
     H2Peer h2(tls, fixture.port());

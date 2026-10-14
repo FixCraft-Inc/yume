@@ -117,7 +117,9 @@ asks for a new review. Closing it, Escape and no answer accept nothing, and
 Keep waiting has the focus.
 
 **Connect** lists the kits with their state, the import form and each kit's
-folder, rename action and removal confirmation.
+folder, rename action and removal confirmation. The per-kit actions are icon
+buttons whose names show on hover and keyboard focus and are what a screen
+reader says.
 
 **Logs** shows the latest lines the running `yume` printed, from the control
 socket's `messages` request, with a filter, following and copying. `yume`
@@ -139,7 +141,10 @@ two axes, breaking ties by higher stealth, higher security, lower speed and
 then table order. Custom limits remain custom until a combination is chosen
 explicitly. Reload discards the draft and reads the selected kit again.
 The panel shows data per key and flow budget in MiB, credit returns, idle
-rotation, and the selected combination's measured speed and conditions.
+rotation, and the selected combination's measured speed with its limit. The
+measurement's conditions and what each axis describes are behind the **?**
+beside it, shown on hover or keyboard focus. The table's labels, notes and
+conditions appear in the interface language through the shared catalog.
 Speed has five positions; stealth and security have four. These levels do
 not certify stealth or security, and speed comparisons depend on host TCP
 ceilings. The mandatory cryptographic composition and rotation remain fixed.
@@ -177,14 +182,17 @@ catalog. Desktop interface dependencies are separate from native client and
 daemon dependencies; the GUI does not link the native libraries.
 
 Ctrl+1 to Ctrl+5 open the pages. Tab moves through every control, each with
-a name a screen reader can say. Space, Return and Enter activate the focused
+a name a screen reader can say. A **?** holds an explanation the page leaves
+out: hover or focus shows it, and a screen reader reads it as the button's
+description. Space, Return and Enter activate the focused
 button, and Escape closes a dialog. `--layout-direction rtl` mirrors the
 whole window for right-to-left scripts, and text in any script is shaped.
 The interface ships with maintained Russian, Japanese and Ukrainian
 translations, and with any community translation in the shared catalog. It
 follows the desktop locale when the catalog has that language and uses
 English otherwise, including for what a community translation leaves out.
-The Credits page names who translated each language. The Android app uses
+The Credits page names who translated each language, under Native and
+Community headings. The Android app uses
 the same message IDs, translations and credits; its language picker lists
 Native and Community languages apart, each with its translators, and
 supports on-device machine translation for other languages.

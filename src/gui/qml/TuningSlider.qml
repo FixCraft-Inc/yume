@@ -44,8 +44,10 @@ ColumnLayout {
         Accessible.name: row.label
         Accessible.description: row.explanation
         onMoved: row.selected(Math.round(value))
-        ToolTip.visible: hovered
-        ToolTip.text: row.explanation
+        AppToolTip {
+            visible: slider.hovered && row.explanation.length > 0
+            text: row.explanation
+        }
         background: Item {
             x: slider.leftPadding
             y: slider.topPadding + slider.availableHeight / 2 - height / 2

@@ -1204,11 +1204,11 @@
       <extracomment>source: Data per key epoch; algorithms and mandatory rotation stay the same.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
       <translation>Дані на епоху ключа; алгоритми й обовʼязкова зміна ключів не змінюються.</translation>
     </message>
-    <message id="level.d.of.5">
-      <location filename="catalog:level.d.of.5" line="1"/>
+    <message id="level.d.of.d">
+      <location filename="catalog:level.d.of.d" line="1"/>
       <source></source>
-      <extracomment>source: Level %1$d of 5; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Рівень %1 із 5</translation>
+      <extracomment>source: Level %1$d of %2$d; context: Android AppStrings; owner: android.app.i18n; A tuning slider's position: %1$d is the selected level and %2$d the highest level that axis has. Preserve technical terms and formatting placeholders.</extracomment>
+      <translation>Рівень %1 із %2</translation>
     </message>
     <message id="apply.tuning">
       <location filename="catalog:apply.tuning" line="1"/>
@@ -3237,6 +3237,42 @@
       <source></source>
       <extracomment>source: Translations; context: Desktop Credits page section heading; owner: src/gui/qml/CreditsPage.qml; Heading above the community translators of each language.</extracomment>
       <translation>Переклади</translation>
+    </message>
+    <message id="desktop.more.about">
+      <location filename="catalog:desktop.more.about" line="1"/>
+      <source></source>
+      <extracomment>source: More about %1; context: Desktop HelpTip.qml; owner: src/gui/qml/HelpTip.qml; Screen-reader name of a small ? button that explains the item it sits beside; %1 is that item's label, such as Code.</extracomment>
+      <translation>Докладніше: %1</translation>
+    </message>
+    <message id="tuning.metric.tunnel.direct.throughput">
+      <location filename="catalog:tuning.metric.tunnel.direct.throughput" line="1"/>
+      <source></source>
+      <extracomment>source: tunnel / direct throughput; context: Desktop tuning measurement; owner: config/tuning_presets.json; Name of a measured ratio: the tunnel's throughput as a share of a direct connection's on the same path. Shown before the per-RTT values.</extracomment>
+      <translation>пропускна здатність тунелю / прямого зʼєднання</translation>
+    </message>
+    <message id="tuning.metric.tunnel.throughput">
+      <location filename="catalog:tuning.metric.tunnel.throughput" line="1"/>
+      <source></source>
+      <extracomment>source: tunnel throughput; context: Desktop tuning measurement; owner: config/tuning_presets.json; Name of a measured throughput through the tunnel. Shown before the per-RTT values.</extracomment>
+      <translation>пропускна здатність тунелю</translation>
+    </message>
+    <message id="tuning.level.speed">
+      <location filename="catalog:tuning.level.speed" line="1"/>
+      <source></source>
+      <extracomment>source: Five measured throughput positions: stealth, stealth-16, balanced, fast, max. Conditions differ: fast and max improve on balanced only with raised host TCP ceilings. These are choices, not a universal speed score.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Speed slider. Preset names (stealth, stealth-16, balanced, fast, max) stay in Latin script. Keep that these are choices and not a speed score.</extracomment>
+      <translation>Пʼять виміряних позицій за пропускною здатністю: stealth, stealth-16, balanced, fast, max. Умови різняться: fast і max перевершують balanced лише з підвищеними межами TCP хоста. Це варіанти вибору, а не універсальна оцінка швидкості.</translation>
+    </message>
+    <message id="tuning.level.security">
+      <location filename="catalog:tuning.level.security" line="1"/>
+      <source></source>
+      <extracomment>source: Data per directional key epoch: 4 for 1 MiB, 3 for 4 MiB, 2 for 16 MiB, 1 for 64 MiB. Algorithms and mandatory rotation do not change.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Security slider: each level and the data one key may protect in one direction.</extracomment>
+      <translation>Дані на епоху ключа в кожному напрямку: 4 — 1 МіБ, 3 — 4 МіБ, 2 — 16 МіБ, 1 — 64 МіБ. Алгоритми й обовʼязкова зміна ключів не змінюються.</translation>
+    </message>
+    <message id="tuning.level.stealth">
+      <location filename="catalog:tuning.level.stealth" line="1"/>
+      <source></source>
+      <extracomment>source: Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Stealth slider. Keep the denial: no classifier result is implied.</extracomment>
+      <translation>Лише налаштування вікон, повернень кредитів і зміни ключів під час простою: 4 зберігає типову межу 4 МіБ, два повернення кредитів і вимкнену зміну ключів під час простою. Нижчі рівні збільшують вікна або додають записи кредитів, а fast і max додають обміни для зміни ключів під час простою. Результат класифікатора не мається на увазі; зміна епохи також змінює частоту зміни ключів.</translation>
     </message>
   </context>
 </TS>

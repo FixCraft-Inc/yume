@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import YumeBackend 1.0
+import "Labels.js" as Labels
 
 Card {
     id: panel
@@ -23,9 +24,18 @@ Card {
     function measurementText() {
         if (!conditions) return qsTrId("desktop.custom.limits.have.no.measured.speed.position")
         var parts = []
-        for (var i = 0; i < measurement.values.length; ++i)
-            parts.push(conditions.rtt_ms[i] + " ms: " + measurement.values[i] + (conditions.unit === "percent" ? "%" : " " + conditions.unit))
-        return conditions.metric + " · " + parts.join(" · ")
+        for (var i = 0; i < measurement.values.length; ++i) {
+            const value = measurement.values[i]
+            parts.push(conditions.rtt_ms[i] + " ms: " + (conditions.unit === "percent" ? value + "%"
+                       : conditions.unit === "Mbit/s" ? App.formatRate(value * 1e6 / 8)
+                       : value + " " + conditions.unit))
+        }
+        return Labels.presetText(conditions.metric) + " · " + parts.join(" · ")
+    }
+    // How the numbers were measured, and what the axes describe, behind "?".
+    function measurementHelp() {
+        const axes = qsTrId("desktop.stealth.describes.windows.credits.and.idle.rotation.not")
+        return conditions ? Labels.presetText(conditions.conditions) + "\n\n" + axes : axes
     }
 
     RowLayout {
@@ -82,7 +92,7 @@ Card {
                     tint: modelData.tint
                     level: panel.hasChoice ? panel.chosen.levels[axis] : 1
                     maximum: App.presets.reduce(function(m, p) { return Math.max(m, p.levels[axis]) }, 1)
-                    explanation: App.presetNotes[axis]
+                    explanation: Labels.presetText(App.presetNotes[axis])
                     onSelected: function(level) { panel.editor.move_slider(axis, level) }
                 }
             }
@@ -99,7 +109,7 @@ Card {
                     Layout.fillWidth: true
                     Text {
                         textFormat: Text.PlainText
-                        text: modelData.label
+                        text: Labels.presetText(modelData.label)
                         color: Theme.inkSoft
                         font.pixelSize: Theme.textLabel
                         Layout.fillWidth: true
@@ -130,29 +140,44 @@ Card {
             }
         }
     }
-    Text {
-        textFormat: Text.PlainText
-        text: panel.measurementText()
-        color: Theme.ink
-        font.pixelSize: Theme.textLabel
+    // The measured position stays on the page with its limit; the method
+    // and what each axis describes are one hover or focus away. The "?"
+    // follows the text by anchors, which mirror for right-to-left, rather
+    // than by layout stretch, which Qt 6.4 shares out differently.
+    Item {
         Layout.fillWidth: true
-        wrapMode: Text.WordWrap
+        implicitHeight: Math.max(measurementText.implicitHeight, measurementHelp.implicitHeight)
+        Text {
+            id: measurementText
+            objectName: "measurementText"
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignLeft
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(implicitWidth, parent.width - measurementHelp.width - 6)
+            text: panel.measurementText()
+            color: Theme.ink
+            font.pixelSize: Theme.textLabel
+            wrapMode: Text.WordWrap
+        }
+        HelpTip {
+            id: measurementHelp
+            objectName: "measurementHelp"
+            anchors.left: measurementText.right
+            anchors.leftMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            name: qsTrId("measured.speed.conditions")
+            help: panel.measurementHelp()
+        }
     }
     Text {
         textFormat: Text.PlainText
-        text: panel.conditions ? panel.conditions.conditions + " " + panel.conditions.limitation : ""
+        text: panel.conditions ? Labels.presetText(panel.conditions.limitation) : ""
         visible: panel.conditions !== null
         color: Theme.muted
         font.pixelSize: Theme.textSmall
         Layout.fillWidth: true
-        wrapMode: Text.WordWrap
-    }
-    Text {
-        textFormat: Text.PlainText
-        text: qsTrId("desktop.stealth.describes.windows.credits.and.idle.rotation.not")
-        color: Theme.muted
-        font.pixelSize: Theme.textSmall
-        Layout.fillWidth: true
+        Layout.topMargin: -4
         wrapMode: Text.WordWrap
     }
     AppButton {
@@ -181,8 +206,7 @@ Card {
                 id: expertField
                 objectName: "expertField"
                 Layout.fillWidth: true
-                model: panel.editor.fields
-                textRole: "label"
+                model: panel.editor.fields.map(function(field) { return Labels.presetText(field.label) })
                 Accessible.name: qsTrId("desktop.expert.setting")
                 onActivated: expertValue.text = String(panel.editor.limits[panel.editor.fields[currentIndex].key])
             }

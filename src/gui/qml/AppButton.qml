@@ -7,11 +7,14 @@ import QtQuick.Controls
 
 // A button in one of three weights: primary for a page's main action,
 // secondary (outlined) and quiet (text only). Keyboard focus draws a ring.
+// An iconOnly button draws just its icon and shows its text as a tooltip,
+// which also names it to screen readers.
 Button {
     id: control
     property string kind: "secondary"
     property string iconName
     property bool compact: false
+    property bool iconOnly: false
 
     focusPolicy: Qt.StrongFocus
     hoverEnabled: true
@@ -20,14 +23,18 @@ Button {
     Keys.onReturnPressed: if (enabled) clicked()
     Keys.onEnterPressed: if (enabled) clicked()
     implicitHeight: compact ? 30 : 38
-    leftPadding: compact ? 10 : 16
-    rightPadding: compact ? 10 : 16
+    implicitWidth: iconOnly ? implicitHeight : implicitContentWidth + leftPadding + rightPadding
+    leftPadding: iconOnly ? 0 : compact ? 10 : 16
+    rightPadding: iconOnly ? 0 : compact ? 10 : 16
     font.pixelSize: compact ? Theme.textSmall : Theme.textBody
     font.weight: Font.DemiBold
 
     contentItem: Row {
         spacing: 7
+        // An icon alone sits in the middle of the button.
+        leftPadding: control.iconOnly ? (control.availableWidth - buttonIcon.size) / 2 : 0
         Icon {
+            id: buttonIcon
             visible: control.iconName.length > 0
             name: control.iconName
             size: control.compact ? 14 : 16
@@ -37,6 +44,7 @@ Button {
         Text {
             textFormat: Text.PlainText
             id: label
+            visible: !control.iconOnly
             text: control.text
             font: control.font
             anchors.verticalCenter: parent.verticalCenter
@@ -45,6 +53,11 @@ Button {
                  : control.kind === "danger" ? Theme.refusedStrong
                  : Theme.ink
         }
+    }
+
+    AppToolTip {
+        visible: control.iconOnly && (control.hovered || control.visualFocus)
+        text: control.text
     }
 
     background: Rectangle {

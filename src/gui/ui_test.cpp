@@ -213,9 +213,12 @@ private slots:
         QVERIFY(rendered.contains("F1xGOD"));
         QVERIFY(rendered.contains("Codex"));
         QVERIFY(rendered.contains("Claude"));
-        QVERIFY(rendered.contains(
-            qtTrId("ai.helpers") + QStringLiteral("\n") +
-            qtTrId("credits.helper.contribution")));
+        QVERIFY(rendered.contains(qtTrId("ai.helpers")));
+        QVERIFY(rendered.contains(qtTrId("credits.helper.contribution")));
+        // Native translations under their group, each naming its translator.
+        QVERIFY(rendered.contains(qtTrId("maintained")));
+        QVERIFY(rendered.contains(QStringLiteral("日本語")));
+        QVERIFY(rendered.contains(QStringLiteral("FixCraft Inc.")));
     }
 
     void tuning_table_and_custom_limits() {

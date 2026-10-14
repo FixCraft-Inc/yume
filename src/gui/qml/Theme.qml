@@ -23,7 +23,7 @@ QtObject {
     readonly property color rule: dark ? "#40343c" : "#e3d2dd"
     readonly property color ruleSoft: dark ? "#2a2127" : "#f4e7f0"
     readonly property color accent: dark ? "#e596d0" : "#e899d3"
-    readonly property color accentStrong: dark ? "#ffb2ee" : "#9c4088"
+    readonly property color accentStrong: dark ? "#ffb2ee" : "#a06486"
     readonly property color accentSoft: dark ? "#3e1935" : "#fad4ef"
     readonly property color button: dark ? "#e8a5d5" : "#f8bbe7"
     readonly property color buttonHover: dark ? "#ffb5eb" : "#f4a7df"

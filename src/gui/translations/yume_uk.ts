@@ -3274,5 +3274,29 @@
       <extracomment>source: Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Stealth slider. Keep the denial: no classifier result is implied.</extracomment>
       <translation>Лише налаштування вікон, повернень кредитів і зміни ключів під час простою: 4 зберігає типову межу 4 МіБ, два повернення кредитів і вимкнену зміну ключів під час простою. Нижчі рівні збільшують вікна або додають записи кредитів, а fast і max додають обміни для зміни ключів під час простою. Результат класифікатора не мається на увазі; зміна епохи також змінює частоту зміни ключів.</translation>
     </message>
+    <message id="info.more.about">
+      <location filename="catalog:info.more.about" line="1"/>
+      <source></source>
+      <extracomment>source: More about %s; context: Android info button; owner: android.app.i18n; Screen-reader name of the info button on a card. %s is the card's title.</extracomment>
+      <translation>Докладніше: %1</translation>
+    </message>
+    <message id="posture.connection.summary">
+      <location filename="catalog:posture.connection.summary" line="1"/>
+      <source></source>
+      <extracomment>source: Every connection uses the same protection. None of it can be switched off.; context: Posture card summary; owner: android.app.i18n; One visible line under 'The connection'. The full explanation is behind the info button.</extracomment>
+      <translation>Кожне зʼєднання захищене однаково. Нічого з цього не можна вимкнути.</translation>
+    </message>
+    <message id="posture.server.summary">
+      <location filename="catalog:posture.server.summary" line="1"/>
+      <source></source>
+      <extracomment>source: The server sees which addresses you reach. Use one you trust.; context: Posture card summary; owner: android.app.i18n; Trust statement, always visible. Keep 'sees' as a plain statement of what the server can see.</extracomment>
+      <translation>Сервер бачить, до яких адрес ви звертаєтеся. Користуйтеся сервером, якому довіряєте.</translation>
+    </message>
+    <message id="posture.stop.summary">
+      <location filename="catalog:posture.stop.summary" line="1"/>
+      <source></source>
+      <extracomment>source: When Yume stops, Android sends traffic outside the tunnel.; context: Posture card summary; owner: android.app.i18n; Safety statement, always visible above the button to Android's VPN settings.</extracomment>
+      <translation>Коли Yume зупинено, Android надсилає трафік повз тунель.</translation>
+    </message>
   </context>
 </TS>

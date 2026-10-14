@@ -13,7 +13,8 @@ Rectangle {
     property var pageNames: []
     property var pageTitles: []
     readonly property var icons: ["overview", "connect", "logs", "posture", "credits"]
-    color: Theme.paperSoft
+    // Near white, so the mark sits on the ground it was drawn for.
+    color: Theme.cloud
 
     ColumnLayout {
         anchors.fill: parent

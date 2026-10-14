@@ -35,17 +35,14 @@ defaults are lavender.
 
 ### Mark
 
-One shape, the outline in `src/gui/assets/icon.svg`, in two gradients that run
-from the lower edge to a deeper top:
-
-| Ground | From | To | Used by |
-| --- | --- | --- | --- |
-| Light | `oklch(79.5% 0.115 337)` | `oklch(58.5% 0.145 337)` | site light, favicon, desktop light, window, tray and menu icon |
-| Dark | `oklch(88.5% 0.09 335)` | `oklch(75% 0.124 338)` | site dark, favicon in dark browsers, desktop dark, Android launcher |
-
-The Android launcher sets the pale mark on a deep plum tile,
-`oklch(30% 0.07 337)`. Status-bar icons are the outline alone in white.
-Anywhere else, the mark takes one of the two pairs.
+`src/gui/assets/icon.svg` is the original mark: a pale gradient at about 86 %
+opacity, made to sit on white. Where it is drawn on white, use it as it is,
+as the Android launcher does on its white tile. Where a solid mark is needed,
+use the colours it shows over white, `#ffcbf3` at the lower edge to `#e59fd1`
+at the top (`--color-logo-from`, `--color-logo-to`): the site in both themes,
+the favicon, and the desktop sidebar, window and tray. The mark is not
+designed for dark grounds, so it is never recoloured or darkened for them.
+Status-bar icons are the outline alone in white.
 
 ### Diagram roles
 

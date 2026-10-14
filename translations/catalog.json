@@ -8710,6 +8710,70 @@
       },
       "platform": "desktop",
       "maintainer_review": true
+    },
+    {
+      "id": "info.more.about",
+      "source": "More about %s",
+      "context": "Android info button",
+      "owner": "android.app.i18n",
+      "notes": "Screen-reader name of the info button on a card. %s is the card's title.",
+      "requirements": {
+        "placeholders": [
+          "%s"
+        ]
+      },
+      "translations": {
+        "ru": "Подробнее: %s",
+        "ja": "%sの詳細",
+        "uk": "Докладніше: %s"
+      }
+    },
+    {
+      "id": "posture.connection.summary",
+      "source": "Every connection uses the same protection. None of it can be switched off.",
+      "context": "Posture card summary",
+      "owner": "android.app.i18n",
+      "notes": "One visible line under 'The connection'. The full explanation is behind the info button.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Каждое подключение защищено одинаково. Ничего из этого нельзя отключить.",
+        "ja": "すべての接続に同じ保護がかかります。どれも無効にはできません。",
+        "uk": "Кожне зʼєднання захищене однаково. Нічого з цього не можна вимкнути."
+      }
+    },
+    {
+      "id": "posture.server.summary",
+      "source": "The server sees which addresses you reach. Use one you trust.",
+      "context": "Posture card summary",
+      "owner": "android.app.i18n",
+      "notes": "Trust statement, always visible. Keep 'sees' as a plain statement of what the server can see.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Сервер видит, к каким адресам вы обращаетесь. Используйте сервер, которому доверяете.",
+        "ja": "サーバーはあなたの接続先アドレスを見ることができます。信頼できるサーバーを使ってください。",
+        "uk": "Сервер бачить, до яких адрес ви звертаєтеся. Користуйтеся сервером, якому довіряєте."
+      },
+      "maintainer_review": true
+    },
+    {
+      "id": "posture.stop.summary",
+      "source": "When Yume stops, Android sends traffic outside the tunnel.",
+      "context": "Posture card summary",
+      "owner": "android.app.i18n",
+      "notes": "Safety statement, always visible above the button to Android's VPN settings.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Когда Yume остановлен, Android отправляет трафик мимо туннеля.",
+        "ja": "Yume が停止すると、Android は通信をトンネルの外へ送ります。",
+        "uk": "Коли Yume зупинено, Android надсилає трафік повз тунель."
+      },
+      "maintainer_review": true
     }
   ],
   "terminology": [

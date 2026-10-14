@@ -3274,5 +3274,29 @@
       <extracomment>source: Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Stealth slider. Keep the denial: no classifier result is implied.</extracomment>
       <translation>ウィンドウ、クレジット返却、アイドル時のローテーションの設定だけを表します。4 は既定の 4 MiB の上限、2 回のクレジット返却、アイドル時のローテーション無効を維持します。低いレベルではウィンドウが大きくなるかクレジットのレコードが増え、fast と max ではアイドル時の鍵更新のやり取りが加わります。分類器の結果を示すものではありません。エポックを変えると鍵更新の頻度も変わります。</translation>
     </message>
+    <message id="info.more.about">
+      <location filename="catalog:info.more.about" line="1"/>
+      <source></source>
+      <extracomment>source: More about %s; context: Android info button; owner: android.app.i18n; Screen-reader name of the info button on a card. %s is the card's title.</extracomment>
+      <translation>%1の詳細</translation>
+    </message>
+    <message id="posture.connection.summary">
+      <location filename="catalog:posture.connection.summary" line="1"/>
+      <source></source>
+      <extracomment>source: Every connection uses the same protection. None of it can be switched off.; context: Posture card summary; owner: android.app.i18n; One visible line under 'The connection'. The full explanation is behind the info button.</extracomment>
+      <translation>すべての接続に同じ保護がかかります。どれも無効にはできません。</translation>
+    </message>
+    <message id="posture.server.summary">
+      <location filename="catalog:posture.server.summary" line="1"/>
+      <source></source>
+      <extracomment>source: The server sees which addresses you reach. Use one you trust.; context: Posture card summary; owner: android.app.i18n; Trust statement, always visible. Keep 'sees' as a plain statement of what the server can see.</extracomment>
+      <translation>サーバーはあなたの接続先アドレスを見ることができます。信頼できるサーバーを使ってください。</translation>
+    </message>
+    <message id="posture.stop.summary">
+      <location filename="catalog:posture.stop.summary" line="1"/>
+      <source></source>
+      <extracomment>source: When Yume stops, Android sends traffic outside the tunnel.; context: Posture card summary; owner: android.app.i18n; Safety statement, always visible above the button to Android's VPN settings.</extracomment>
+      <translation>Yume が停止すると、Android は通信をトンネルの外へ送ります。</translation>
+    </message>
   </context>
 </TS>

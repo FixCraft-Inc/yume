@@ -18,12 +18,12 @@ namespace {
 // The icon file is a few kilobytes, and its path is shorter still.
 constexpr qint64 kMaxIconBytes = 64 * 1024;
 
-// The gradient of the light theme's mark, as Logo.qml draws it, in the
-// icon's coordinates.
+// The mark as Logo.qml draws it, in the icon's coordinates: the colours its
+// translucent gradient shows over white, so it looks the same on any panel.
 void fill_mark(QPainter& painter, const QPainterPath& mark) {
     QLinearGradient gradient(QPointF(145.1, 251.9), QPointF(125.8, 22.0));
-    gradient.setColorAt(0.0, QColor(0xec, 0x9e, 0xd6));
-    gradient.setColorAt(1.0, QColor(0xb0, 0x56, 0x9c));
+    gradient.setColorAt(0.0, QColor(0xff, 0xcb, 0xf3));
+    gradient.setColorAt(1.0, QColor(0xe5, 0x9f, 0xd1));
     painter.fillPath(mark, gradient);
 }
 

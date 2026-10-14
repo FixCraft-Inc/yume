@@ -668,7 +668,7 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             contextlib.ExitStack() as stack:
         root = Path(temporary)
         kit = root / "kit"
-        server_port, socks_port, target_port = (session.free_port() for _ in range(3))
+        server_port, socks_port, target_port = session.free_ports(3)
         # Bound but never listening, so connections are refused for the whole
         # run and no test running beside this one can take the port.
         closed = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))

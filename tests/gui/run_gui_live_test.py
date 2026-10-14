@@ -165,7 +165,7 @@ def run(arguments: argparse.Namespace) -> None:
         live = Live(arguments.gui.resolve(strict=True), arguments.yume.resolve(strict=True),
                     arguments.yumed.resolve(strict=True), arguments.openssl, root)
         kit = root / "kit"
-        server_port, socks_port, target_port = (session.free_port() for _ in range(3))
+        server_port, socks_port, target_port = session.free_ports(3)
         session.provision_kit(kit, "localhost", server_port, live.environment,
                               arguments.setup.resolve(strict=True))
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],

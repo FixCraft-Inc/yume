@@ -779,9 +779,10 @@ Implemented as separate native providers with focused tests:
   hostname, bounds peer evidence, and exports channel binding. Its client
   applies the shared browser TLS profile and refuses negotiated TLS 1.2 or
   HTTP/1.1 before publishing a channel. Its separate server-cover entry keeps
-  ordinary TLS 1.2/1.3 H2 traffic in a ByteChannel, rejects HTTP/1.1-only
-  ALPN offers and closes no-ALPN connections before channel publication. It
-  promotes only a settled
+  ordinary TLS 1.2/1.3 H2 traffic in a ByteChannel and rejects HTTP/1.1-only
+  ALPN offers. A no-ALPN connection reaches the front door only to receive
+  the reference's fixed 239-byte refusal and close, with no H2 state, cover
+  channel or promotion. It promotes only a settled
   TLS 1.3/H2 connection to the strict SecureChannel type;
 - `yume_h2_duplex_carrier` implements client priming and exporter-bound admission
   in extended CONNECT, bounded private record framing, flow-credit ownership,

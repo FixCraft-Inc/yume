@@ -61,12 +61,12 @@ def run(probe: Path, daemon: Path, openssl: Path) -> None:
         server: subprocess.Popen | None = None
         try:
             kit = root / "kit"
-            server_port = session.free_port()
+            server_port, socks_port = session.free_ports(2)
             session.provision_kit(kit, "localhost", server_port, environment,
                                   session.setup_program(daemon))
             session.configure_kit(kit, listen_address="127.0.0.1",
                                   networks=("127.0.0.1/32", "::1/128"),
-                                  connect_address="127.0.0.1", socks_port=session.free_port())
+                                  connect_address="127.0.0.1", socks_port=socks_port)
             client_path = kit / "client/yume.json"
             client = json.loads(client_path.read_text(encoding="utf-8"))
             # The public caller owns application I/O. No local SOCKS adapter

@@ -31,6 +31,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   groups apart, each language with its translators' names. Only maintained
   languages gate releases.
 
+- **One palette and mark across the apps.** The Android app now uses the
+  plum colours of the desktop and website, including the Material surfaces
+  it used to leave lavender, and its main buttons are the same soft pink.
+  The mark takes one gradient on light grounds and another on dark ones in
+  all three places, and the favicon follows the browser's theme. The
+  Android launcher shows the mark on a plum tile, and its notifications use
+  a white outline of the mark in the status bar.
+
 - **Interface design pass.** The desktop moves explanation out of the page
   body: the import note and the tuning measurement's conditions sit behind
   **?** buttons, kit actions are named icon buttons, and the Credits page

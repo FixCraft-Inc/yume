@@ -976,11 +976,11 @@
       <extracomment>source: System theme; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
       <translation>System theme</translation>
     </message>
-    <message id="muted.built.in.colors">
-      <location filename="catalog:muted.built.in.colors" line="1"/>
+    <message id="theme.yume.plum.colors">
+      <location filename="catalog:theme.yume.plum.colors" line="1"/>
       <source></source>
-      <extracomment>source: Muted built-in colors.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Muted built-in colors.</translation>
+      <extracomment>source: YUME's plum colors, the same as on the desktop.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
+      <translation>YUME's plum colors, the same as on the desktop.</translation>
     </message>
     <message id="material.you.on.android.12">
       <location filename="catalog:material.you.on.android.12" line="1"/>

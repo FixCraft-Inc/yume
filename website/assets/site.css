@@ -215,8 +215,6 @@ code {
   width: 3rem;
   height: 3rem;
   flex: 0 0 auto;
-  color: var(--color-logo);
-  fill: currentColor;
 }
 
 .brand-name,
@@ -529,9 +527,16 @@ a.disabled {
   position: relative;
   z-index: var(--z-raised);
   width: clamp(8.5rem, 16vw, 12.5rem);
-  color: var(--color-logo);
-  fill: currentColor;
   filter: drop-shadow(var(--shadow-logo));
+}
+
+/* The mark's gradient stops take the theme's two logo colours. */
+.mark-from {
+  stop-color: var(--color-logo-from);
+}
+
+.mark-to {
+  stop-color: var(--color-logo-to);
 }
 
 .release-copy {

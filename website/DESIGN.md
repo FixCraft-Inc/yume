@@ -28,6 +28,25 @@ and carries the identity. Dark mode remains a supported reading option.
 The complete light and dark ramps live in `assets/tokens.css`. Do not add colour
 literals to `assets/site.css`.
 
+The desktop GUI (`src/gui/qml/Theme.qml`) and the Android app
+(`ui/theme/Color.kt` in its checkout) use the same axis and values. Android
+sets every Material surface role from these ramps, because Material's own
+defaults are lavender.
+
+### Mark
+
+One shape, the outline in `src/gui/assets/icon.svg`, in two gradients that run
+from the lower edge to a deeper top:
+
+| Ground | From | To | Used by |
+| --- | --- | --- | --- |
+| Light | `oklch(79.5% 0.115 337)` | `oklch(58.5% 0.145 337)` | site light, favicon, desktop light, window, tray and menu icon |
+| Dark | `oklch(88.5% 0.09 335)` | `oklch(75% 0.124 338)` | site dark, favicon in dark browsers, desktop dark, Android launcher |
+
+The Android launcher sets the pale mark on a deep plum tile,
+`oklch(30% 0.07 337)`. Status-bar icons are the outline alone in white.
+Anywhere else, the mark takes one of the two pairs.
+
 ### Diagram roles
 
 Site chrome stays on the plum axis. Inside a figure, colour carries meaning,

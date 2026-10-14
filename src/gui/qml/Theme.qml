@@ -9,6 +9,7 @@ import YumeBackend 1.0
 // The GUI's design tokens. Colours are the website's OKLCH tokens
 // (website/assets/tokens.css) converted to sRGB: neutrals on the plum axis,
 // hue 337, and the figure roles at matched lightness. Light is the default.
+// The Android app carries the same values; website/DESIGN.md lists them.
 QtObject {
     readonly property bool dark: App.dark
 

@@ -2507,15 +2507,15 @@
       }
     },
     {
-      "id": "muted.built.in.colors",
-      "source": "Muted built-in colors.",
+      "id": "theme.yume.plum.colors",
+      "source": "YUME's plum colors, the same as on the desktop.",
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
       "translations": {
-        "ru": "Приглушенные встроенные цвета.",
-        "ja": "落ち着いた組み込みカラーを使います。",
-        "uk": "Приглушені вбудовані кольори."
+        "ru": "Сливовые цвета YUME, как на компьютере.",
+        "ja": "YUME のプラム系の配色です。デスクトップ版と同じです。",
+        "uk": "Сливові кольори YUME, як на компʼютері."
       },
       "requirements": {
         "placeholders": []

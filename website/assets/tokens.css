@@ -21,7 +21,14 @@
   --color-muted: oklch(49% 0.03 337);
   --color-rule: oklch(88% 0.025 337);
   --color-rule-soft: oklch(94% 0.018 337);
-  --color-logo: oklch(78% 0.12 337);
+  /*
+   * The mark is one shape in two gradients, deeper at the top. On a light
+   * ground it runs from the accent down to a deep plum so the ring holds its
+   * edge. On a dark ground it is the pale gradient of the original icon. The
+   * desktop GUI and the Android app draw the same two variants.
+   */
+  --color-logo-from: oklch(79.5% 0.115 337);
+  --color-logo-to: oklch(58.5% 0.145 337);
   --color-accent: oklch(78% 0.12 337);
   --color-accent-strong: oklch(52% 0.15 337);
   --color-accent-soft: oklch(91% 0.055 337);
@@ -85,7 +92,8 @@
   --dark-muted: oklch(64% 0.02 337);
   --dark-rule: oklch(34% 0.022 337);
   --dark-rule-soft: oklch(26% 0.018 337);
-  --dark-logo: oklch(79% 0.13 337);
+  --dark-logo-from: oklch(88.5% 0.09 335);
+  --dark-logo-to: oklch(75% 0.124 338);
   --dark-accent: oklch(77% 0.12 337);
   --dark-accent-strong: oklch(86% 0.12 337);
   --dark-accent-soft: oklch(28% 0.07 337);
@@ -183,7 +191,8 @@
   --color-muted: var(--dark-muted);
   --color-rule: var(--dark-rule);
   --color-rule-soft: var(--dark-rule-soft);
-  --color-logo: var(--dark-logo);
+  --color-logo-from: var(--dark-logo-from);
+  --color-logo-to: var(--dark-logo-to);
   --color-accent: var(--dark-accent);
   --color-accent-strong: var(--dark-accent-strong);
   --color-accent-soft: var(--dark-accent-soft);

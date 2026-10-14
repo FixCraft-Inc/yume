@@ -84,13 +84,13 @@ AppState::AppState(std::optional<Places> places, QString setup_error,
       mark_path_(mark_path_data()) {
     theme_mode_ =
         theme.isEmpty()
-            ? settings_.value(QStringLiteral("theme"), QStringLiteral("light"))
+            ? settings_.value(QStringLiteral("theme"), QStringLiteral("system"))
                   .toString()
             : theme;
     if (theme_mode_ != QStringLiteral("light") &&
         theme_mode_ != QStringLiteral("dark") &&
         theme_mode_ != QStringLiteral("system"))
-        theme_mode_ = QStringLiteral("light");
+        theme_mode_ = QStringLiteral("system");
     messages_timer_.setInterval(kMessagesPollMs);
     connect(&messages_timer_, &QTimer::timeout, this,
             [this] { fetch_messages(); });

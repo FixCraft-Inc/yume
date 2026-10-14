@@ -172,7 +172,8 @@ windows and same-user command-line writers are not locked out; avoid concurrent
 edits. An interrupted save or failed restart reports its uncertainty and does
 not claim a connection; saved settings remain available for a later start.
 
-Appearance selects the light (default), dark or system theme.
+Appearance follows the desktop's light or dark setting by default, as the
+Android app does, and can be fixed to light or dark.
 
 ## Keyboard and languages
 

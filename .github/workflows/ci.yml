@@ -32,9 +32,9 @@ jobs:
           git clone --no-checkout --filter=blob:none \
             https://github.com/F1xGOD/basefwx.git basefwx
           git -C basefwx fetch --depth=1 origin \
-            52523d71915d439d7c9fd3a5b00ad64e08c0d78f
+            471f5fdf9f742f5ffd023b9ff7245e7d133b6978
           git -C basefwx checkout --detach \
-            52523d71915d439d7c9fd3a5b00ad64e08c0d78f
+            471f5fdf9f742f5ffd023b9ff7245e7d133b6978
 
       - name: Check the generated documents
         run: python3 scripts/yume_docs.py check --all-languages

@@ -114,6 +114,7 @@ Flickable {
                                 AppButton {
                                     visible: !kitRow.removing
                                     compact: true
+                                    iconOnly: true
                                     kind: "quiet"
                                     iconName: "folder"
                                     text: qsTrId("desktop.folder")
@@ -124,7 +125,9 @@ Flickable {
                                     visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
                                     enabled: !App.renaming && !App.removing && !App.importing
                                     compact: true
+                                    iconOnly: true
                                     kind: "quiet"
+                                    iconName: "edit"
                                     text: qsTrId("rename")
                                     Accessible.name: qsTrId("desktop.rename").arg(kitRow.modelData.name)
                                     onClicked: renameDialog.openFor(kitRow.modelData.name)
@@ -133,6 +136,7 @@ Flickable {
                                     visible: !kitRow.removing && kitRow.modelData.phase === "stopped"
                                     enabled: !App.renaming && !App.removing
                                     compact: true
+                                    iconOnly: true
                                     kind: "quiet"
                                     iconName: "trash"
                                     text: qsTrId("desktop.remove")
@@ -180,10 +184,14 @@ Flickable {
 
                 property url file
 
-                RowLayout {
+                // The chosen file sits beside the button, or under it when
+                // the card is too narrow for both.
+                Flow {
+                    id: fileRow
                     Layout.fillWidth: true
                     spacing: 8
                     AppButton {
+                        id: chooseFile
                         iconName: "import"
                         text: qsTrId("desktop.choose.file")
                         onClicked: fileDialog.open()
@@ -191,12 +199,14 @@ Flickable {
                     Text {
                         textFormat: Text.PlainText
                         horizontalAlignment: Text.AlignLeft
+                        verticalAlignment: Text.AlignVCenter
+                        width: Math.min(implicitWidth, fileRow.width)
+                        height: chooseFile.height
                         text: importCard.file.toString().length > 0
                               ? decodeURIComponent(importCard.file.toString().replace(/^file:\/\//, ""))
                               : qsTrId("no.file.chosen")
                         color: importCard.file.toString().length > 0 ? Theme.ink : Theme.muted
                         font.pixelSize: Theme.textSmall
-                        Layout.fillWidth: true
                         elide: Text.ElideMiddle
                     }
                 }
@@ -208,7 +218,15 @@ Flickable {
                     maximumLength: 48
                     Accessible.name: qsTrId("desktop.kit.name")
                 }
-                Text { textFormat: Text.PlainText; text: qsTrId("code"); color: Theme.muted; font.pixelSize: Theme.textSmall; Layout.topMargin: 6 }
+                RowLayout {
+                    Layout.topMargin: 6
+                    spacing: 4
+                    Text { textFormat: Text.PlainText; text: qsTrId("code"); color: Theme.muted; font.pixelSize: Theme.textSmall }
+                    HelpTip {
+                        name: qsTrId("desktop.more.about").arg(qsTrId("code"))
+                        help: qsTrId("desktop.yume.opens.the.kit.and.reads.the.code.on.its.standard.i")
+                    }
+                }
                 AppTextField {
                     id: codeField
                     Layout.fillWidth: true
@@ -245,16 +263,6 @@ Flickable {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                     }
-                }
-                Text {
-                    textFormat: Text.PlainText
-                    horizontalAlignment: Text.AlignLeft
-                    text: qsTrId("desktop.yume.opens.the.kit.and.reads.the.code.on.its.standard.i")
-                    color: Theme.muted
-                    font.pixelSize: Theme.textSmall
-                    Layout.fillWidth: true
-                    Layout.topMargin: 4
-                    wrapMode: Text.WordWrap
                 }
             }
         }

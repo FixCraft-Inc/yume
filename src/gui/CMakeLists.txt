@@ -57,10 +57,12 @@ set(_yume_gui_qml
     qml/RouteReviewDialog.qml
     qml/AppComboBox.qml
     qml/AppButton.qml
+    qml/AppToolTip.qml
     qml/AppTextField.qml
     qml/Card.qml
     qml/CopyRow.qml
     qml/FactRow.qml
+    qml/HelpTip.qml
     qml/Icon.qml
     qml/LevelMeter.qml
     qml/Logo.qml

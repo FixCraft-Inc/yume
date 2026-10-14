@@ -20,7 +20,9 @@ RowLayout {
         text: row.label
         color: Theme.muted
         font.pixelSize: Theme.textLabel
-        Layout.preferredWidth: 120
+        // Short labels line their values up; a longer one, as in a longer
+        // language, takes the room it needs up to a limit before it elides.
+        Layout.preferredWidth: Math.max(120, Math.min(implicitWidth, 200))
         elide: Text.ElideRight
     }
     Text {

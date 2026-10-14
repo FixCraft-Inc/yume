@@ -87,6 +87,32 @@ def check_community_languages(data: dict) -> None:
         raise SystemExit("a community language under the coverage floor was listed")
 
 
+def check_desktop_preset_texts(data: dict) -> None:
+    """The desktop maps each English text of the tuning table to the catalog
+    message with that exact source (src/gui/qml/Labels.js). An edited table
+    text or message must fail here instead of showing English or a stale
+    translation."""
+    import re
+    labels = (ROOT / "src/gui/qml/Labels.js").read_text(encoding="utf-8")
+    table = re.search(r"const presetMessages = \{(.*?)\n\}", labels, re.S)
+    if not table:
+        raise SystemExit("Labels.js has no presetMessages table")
+    mapping = dict(re.findall(r'^\s*"((?:[^"\\]|\\.)*)": "([a-z0-9.]+)",?$', table.group(1), re.M))
+    presets = json.loads((ROOT / "config/tuning_presets.json").read_text(encoding="utf-8"))
+    shown = list(presets["levels"].values()) + [field["label"] for field in presets["fields"]]
+    for measurement in presets["measurements"].values():
+        shown += [measurement["metric"], measurement["conditions"], measurement["limitation"]]
+    by_id = {m["id"]: m for m in data["messages"]}
+    errors = [f"tuning text has no presetMessages entry: {text!r}" for text in shown if text not in mapping]
+    for text, message_id in mapping.items():
+        if text not in shown:
+            errors.append(f"presetMessages entry is not in tuning_presets.json: {text!r}")
+        elif by_id.get(message_id, {}).get("source") != text:
+            errors.append(f"presetMessages maps {text!r} to {message_id}, whose source differs")
+    if errors:
+        raise SystemExit("desktop tuning texts drifted:\n" + "\n".join(errors))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--android-root", type=Path)
@@ -154,6 +180,7 @@ def main() -> int:
         raise SystemExit("count-sensitive route message must declare plural=count")
 
     check_community_languages(data)
+    check_desktop_preset_texts(data)
 
     ids = [m["id"] for m in data["messages"]]
     if len(ids) != len(set(ids)):

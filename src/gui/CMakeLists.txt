@@ -69,6 +69,7 @@ set(_yume_gui_qml
     qml/Logo.qml
     qml/Metric.qml
     qml/NavButton.qml
+    qml/RowList.qml
     qml/Sparkline.qml
     qml/StatePill.qml)
 qt_add_resources(yume_gui_core yume_gui_qml PREFIX /yume/qml BASE qml FILES ${_yume_gui_qml}

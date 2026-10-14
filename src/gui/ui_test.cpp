@@ -1029,6 +1029,57 @@ private slots:
         QCOMPARE(icon->height(), 14.0);
     }
 
+    // Rows that arrive while their card's row is hidden are laid out once it
+    // shows. The Overview's cards share a row by Layout.preferredWidth: 1. On
+    // Qt 6.4.2 a RowList that took its width only from fillWidth stayed at
+    // width 0 there, so the Local access card collapsed and its addresses
+    // did not draw.
+    void row_list_lays_out_rows_that_arrived_hidden() {
+        if (g_rtl) QSKIP("the left-to-right run covers layout sizes");
+        QQmlComponent component(&engine_);
+        component.setData(
+            "import QtQuick\nimport QtQuick.Layouts\n"
+            "ColumnLayout { id: page; width: 600; height: 300\n"
+            "  property var rows: []\n"
+            "  property bool shown: false\n"
+            "  RowLayout { visible: page.shown; Layout.fillWidth: true\n"
+            "    Card { objectName: 'card'; title: 'Local access'\n"
+            "      Layout.fillWidth: true; Layout.preferredWidth: 1\n"
+            "      RowList { id: list; objectName: 'list'; model: page.rows\n"
+            "        delegate: CopyRow { required property var modelData\n"
+            "          width: list.width; label: 'SOCKS5'; value: modelData } } } } }\n",
+            QUrl(QStringLiteral("qrc:/yume/qml/RowListProbe.qml")));
+        std::unique_ptr<QObject> root(component.create());
+        QVERIFY2(root, qPrintable(component.errorString()));
+        qobject_cast<QQuickItem*>(root.get())
+            ->setParentItem(window_->contentItem());
+        QTest::qWait(50);
+        root->setProperty("rows", QStringList{QStringLiteral("127.0.0.1:1080"),
+                                              QStringLiteral("[::1]:1080")});
+        QTest::qWait(50);
+        root->setProperty("shown", true);
+        QTest::qWait(100);
+        auto* card = root->findChild<QQuickItem*>(QStringLiteral("card"));
+        auto* list = root->findChild<QQuickItem*>(QStringLiteral("list"));
+        QVERIFY(card && list && list->isVisible());
+        QCOMPARE(list->property("count").toInt(), 2);
+        QVERIFY2(list->width() > 0 && list->height() > 0,
+                 qPrintable(QStringLiteral("the list is %1 x %2")
+                                .arg(list->width())
+                                .arg(list->height())));
+        const QRectF inside = list->mapRectToItem(
+            card, QRectF(0, 0, list->width(), list->height()));
+        QVERIFY(inside.bottom() <= card->height());
+        int rows = 0;
+        for (QQuickItem* row : list->childItems()) {
+            if (row->inherits("QQuickRepeater")) continue;
+            ++rows;
+            QCOMPARE(row->width(), list->width());
+            QVERIFY(row->y() + row->height() <= list->height());
+        }
+        QCOMPARE(rows, 2);
+    }
+
     // The mark comes from assets/icon.svg, and the parser takes only well
     // formed path text.
     void mark_is_read_from_the_icon() {

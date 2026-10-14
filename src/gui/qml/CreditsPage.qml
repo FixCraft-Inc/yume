@@ -118,21 +118,16 @@ Flickable {
                 required property var modelData
                 Layout.fillWidth: true
                 title: modelData.title
-                // Rows a Repeater builds sit in a plain Column, not the card's
-                // layout (QTBUG-111792, see ConnectPage).
-                Column {
+                RowList {
                     id: components
-                    Layout.fillWidth: true
                     spacing: 10
-                    Repeater {
-                        model: modelData.entries
-                        ListRow {
-                            required property var modelData
-                            width: components.width
-                            name: modelData.name
-                            detail: modelData.license
-                            description: qsTrId(modelData.use)
-                        }
+                    model: modelData.entries
+                    delegate: ListRow {
+                        required property var modelData
+                        width: components.width
+                        name: modelData.name
+                        detail: modelData.license
+                        description: qsTrId(modelData.use)
                     }
                 }
             }
@@ -143,37 +138,34 @@ Flickable {
             visible: page.languageGroups.length > 0
             Layout.fillWidth: true
             title: qsTrId("credits.translations")
-            Column {
+            RowList {
                 id: languages
-                Layout.fillWidth: true
                 spacing: 14
-                Repeater {
-                    model: page.languageGroups
-                    Column {
-                        id: group
-                        required property var modelData
-                        width: languages.width
-                        spacing: 8
-                        Text {
-                            textFormat: Text.PlainText
-                            text: group.modelData.title
-                            color: Theme.muted
-                            font.pixelSize: Theme.textSmall
-                            font.weight: Font.DemiBold
-                            font.capitalization: Font.AllUppercase
-                            font.letterSpacing: 0.6
-                            Accessible.role: Accessible.Heading
-                        }
-                        Repeater {
-                            model: group.modelData.entries
-                            ListRow {
-                                required property var modelData
-                                width: group.width
-                                strong: false
-                                name: modelData.name
-                                detail: modelData.coverage < 100 ? qsTrId("some.text.appears.in.english") : ""
-                                description: modelData.credits.map(credit => credit.name).join(", ")
-                            }
+                model: page.languageGroups
+                delegate: Column {
+                    id: group
+                    required property var modelData
+                    width: languages.width
+                    spacing: 8
+                    Text {
+                        textFormat: Text.PlainText
+                        text: group.modelData.title
+                        color: Theme.muted
+                        font.pixelSize: Theme.textSmall
+                        font.weight: Font.DemiBold
+                        font.capitalization: Font.AllUppercase
+                        font.letterSpacing: 0.6
+                        Accessible.role: Accessible.Heading
+                    }
+                    Repeater {
+                        model: group.modelData.entries
+                        ListRow {
+                            required property var modelData
+                            width: group.width
+                            strong: false
+                            name: modelData.name
+                            detail: modelData.coverage < 100 ? qsTrId("some.text.appears.in.english") : ""
+                            description: modelData.credits.map(credit => credit.name).join(", ")
                         }
                     }
                 }

@@ -253,38 +253,23 @@ Flickable {
                 Layout.preferredWidth: 1
                 title: qsTrId("desktop.local.access")
                 subtitle: qsTrId("desktop.point.applications.here.only.this.computer.can.reach.th")
-                // Rows a Repeater rebuilds sit in a plain Column, not the card's
-                // layout: Qt 6.4's layouts can keep a destroyed row while a page
-                // is hidden and crash when it is shown (QTBUG-111792).
-                Column {
+                RowList {
                     id: listeners
-                    Layout.fillWidth: true
-                    spacing: Theme.gapSmall
-                    visible: socksRows.count + forwardRows.count > 0
-                    Repeater {
-                        id: socksRows
-                        model: page.status.socks5 || []
-                        CopyRow {
-                            required property var modelData
-                            width: listeners.width
-                            label: qsTrId("desktop.socks5")
-                            value: modelData
-                        }
-                    }
-                    Repeater {
-                        id: forwardRows
-                        model: page.status.forwards || []
-                        CopyRow {
-                            required property var modelData
-                            width: listeners.width
-                            label: qsTrId("desktop.forward")
-                            value: modelData
-                        }
+                    model: (page.status.socks5 || []).map(address => ({
+                        label: qsTrId("desktop.socks5"), value: address
+                    })).concat((page.status.forwards || []).map(address => ({
+                        label: qsTrId("desktop.forward"), value: address
+                    })))
+                    delegate: CopyRow {
+                        required property var modelData
+                        width: listeners.width
+                        label: modelData.label
+                        value: modelData.value
                     }
                 }
                 Text {
                     textFormat: Text.PlainText
-                    visible: (page.status.socks5 || []).length + (page.status.forwards || []).length === 0
+                    visible: listeners.count === 0
                     text: qsTrId("desktop.this.kit.opens.no.local.listener")
                     color: Theme.muted
                     font.pixelSize: Theme.textLabel
@@ -358,38 +343,29 @@ Flickable {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                 }
-                // Rows a Repeater rebuilds sit in a plain Column, not the card's
-                // layout: Qt 6.4's layouts can keep a destroyed row while a page
-                // is hidden and crash when it is shown (QTBUG-111792).
-                Column {
+                RowList {
                     id: routes
-                    Layout.fillWidth: true
-                    spacing: Theme.gapSmall
-                    visible: routeRows.count > 0
-                    Repeater {
-                        id: routeRows
-                        model: page.circuits ? page.circuits.routes : []
-                        RowLayout {
-                            required property var modelData
-                            width: routes.width
-                            spacing: 10
-                            Icon { name: "route"; size: 16; color: Theme.serverStrong }
-                            Text {
-                                textFormat: Text.PlainText
-                                horizontalAlignment: Text.AlignLeft
-                                text: Labels.nodes(modelData.nodes)
-                                color: Theme.ink
-                                font.pixelSize: Theme.textLabel
-                                font.weight: Font.DemiBold
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
-                            }
-                            Text {
-                                textFormat: Text.PlainText
-                                text: qsTrId("desktop.streams").arg(App.formatDuration(modelData.age_ms)).arg(modelData.streams)
-                                color: Theme.muted
-                                font.pixelSize: Theme.textSmall
-                            }
+                    model: page.circuits ? page.circuits.routes : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        width: routes.width
+                        spacing: 10
+                        Icon { name: "route"; size: 16; color: Theme.serverStrong }
+                        Text {
+                            textFormat: Text.PlainText
+                            horizontalAlignment: Text.AlignLeft
+                            text: Labels.nodes(modelData.nodes)
+                            color: Theme.ink
+                            font.pixelSize: Theme.textLabel
+                            font.weight: Font.DemiBold
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            textFormat: Text.PlainText
+                            text: qsTrId("desktop.streams").arg(App.formatDuration(modelData.age_ms)).arg(modelData.streams)
+                            color: Theme.muted
+                            font.pixelSize: Theme.textSmall
                         }
                     }
                 }

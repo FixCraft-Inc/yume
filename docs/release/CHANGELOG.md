@@ -1241,6 +1241,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   shown again (QTBUG-111792, fixed in Qt 6.6). The rows now sit in plain
   Columns that the layouts see as one item. CI's GUI job crashed once, and
   Qt 6.4.2 crashed in 1 of 43 runs, and at once under ASan.
+- **The Overview's Local access card collapsed on Qt 6.4.** On Ubuntu
+  24.04's Qt 6.4.2 the card showed only its heading, and the SOCKS5 row drew
+  without its address, when the listeners arrived while the card's row was
+  still hidden. The hidden row kept each card at its preferred width of one
+  pixel, Qt 6.4 did not lay the list out again once the row was shown, and
+  a Column skips rows of width zero. Every Repeater list now goes through
+  one `RowList` that takes its width from its parent, which also covers the
+  circuit routes, the kit list and the Credits lists.
 - **IPv4 literals with leading zeros.** The configuration accepted
   `010.0.0.1` as an IP literal. The TCP provider could not parse it as a
   number and passed it to the system resolver, which reads `010` as octal,

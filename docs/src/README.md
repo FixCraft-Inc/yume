@@ -302,8 +302,9 @@ code, with its own name, the date it started and at least one credit:
 
 `kind` is `person` or `studio`, and `url` is optional and must be https.
 Then add the language's text under its code in each message's
-`translations`, written by a person: `policy.machine_translated` is false for
-community languages too. A message may be left out, and the app shows it in
+`translations`. AI may draft a translation, but a person who reads the
+language reviews every message before it is merged (`policy.human_review`),
+for community and maintained languages alike. A message may be left out, and the app shows it in
 English. `validate` lists each community language's coverage of the messages
 it may translate and refuses one below `policy.community_minimum_coverage`
 (80 %). Placeholders, markup, protected terms and the English-copy check apply

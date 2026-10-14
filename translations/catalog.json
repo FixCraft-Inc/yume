@@ -38,7 +38,7 @@
   "community_languages": {},
   "policy": {
     "untranslated": "error",
-    "machine_translated": false,
+    "human_review": "required",
     "community_minimum_coverage": 0.8
   },
   "messages": [

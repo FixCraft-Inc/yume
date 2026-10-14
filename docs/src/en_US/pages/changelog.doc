@@ -20,8 +20,8 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
-- **Community translations.** The shared catalog accepts human translations
-  of languages the team does not maintain, with each language's translators
+- **Community translations.** The shared catalog accepts human-reviewed
+  translations of languages the team does not maintain, with each language's translators
   or studio credited. A language is listed from 80 % coverage, falls back to
   English per message, and never translates the route-consent, expert-warning
   and trust texts marked `maintainer_review`. Every language, maintained or

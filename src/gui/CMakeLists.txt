@@ -79,14 +79,15 @@ set(_yume_gui_presets "${PROJECT_SOURCE_DIR}/config/tuning_presets.json")
 set_source_files_properties("${_yume_gui_presets}" PROPERTIES QT_RESOURCE_ALIAS tuning_presets.json)
 set(_yume_gui_credits "${PROJECT_SOURCE_DIR}/config/credits.json")
 set_source_files_properties("${_yume_gui_credits}" PROPERTIES QT_RESOURCE_ALIAS credits.json)
-qt_add_resources(yume_gui_core yume_gui_data PREFIX /yume FILES "${_yume_gui_presets}" "${_yume_gui_credits}"
+set(_yume_gui_community "${CMAKE_CURRENT_SOURCE_DIR}/translations/translation_credits.json")
+set_source_files_properties("${_yume_gui_community}" PROPERTIES QT_RESOURCE_ALIAS translation_credits.json)
+qt_add_resources(yume_gui_core yume_gui_data PREFIX /yume FILES "${_yume_gui_presets}" "${_yume_gui_credits}" "${_yume_gui_community}"
     OUTPUT_TARGETS _yume_gui_data_targets)
 
-set(_yume_gui_ts
-    translations/yume_en.ts
-    translations/yume_ru.ts
-    translations/yume_ja.ts
-    translations/yume_uk.ts)
+# One TS per catalog language, maintained and community alike. They are all
+# generated, and the generator's check refuses one without a language.
+file(GLOB _yume_gui_ts RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/translations/yume_*.ts")
 set(_yume_gui_qm)
 foreach(_ts IN LISTS _yume_gui_ts)
     get_filename_component(_name "${_ts}" NAME_WE)

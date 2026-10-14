@@ -179,13 +179,16 @@ void print_version() {
 bool install_translators(QCoreApplication& application,
                          QTranslator& english_translator,
                          QTranslator& locale_translator) {
-    // ID-based lookups need an English catalog for their default text. A
-    // maintained locale is installed afterwards so it overrides that base.
+    // ID-based lookups need an English catalog for their default text. The
+    // system language's catalog, maintained or community, is installed
+    // afterwards so it overrides that base. A community catalog lacks what
+    // it does not translate, which then stays English.
     if (!english_translator.load(QStringLiteral(":/i18n/yume_en.qm")))
         return false;
     application.installTranslator(&english_translator);
     const QString locale = QLocale::system().name().section(u'_', 0, 0).toLower();
-    if (one_of(locale, {"ru", "ja", "uk"}) &&
+    static const QRegularExpression language(QStringLiteral("^[a-z]{2,3}$"));
+    if (locale != QStringLiteral("en") && language.match(locale).hasMatch() &&
         locale_translator.load(QStringLiteral(":/i18n/yume_") + locale +
                                QStringLiteral(".qm")))
         application.installTranslator(&locale_translator);

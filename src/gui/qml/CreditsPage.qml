@@ -58,5 +58,26 @@ Flickable {
                 }
             }
         }
+        // Every translation, native then community, with who translated it.
+        Text {
+            visible: (App.credits.translations || []).length > 0
+            text: qsTrId("credits.translations")
+            textFormat: Text.PlainText
+            color: Theme.ink
+            font.pixelSize: Theme.textLabel
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+            Accessible.role: Accessible.Heading
+        }
+        Repeater {
+            model: App.credits.translations || []
+            Card {
+                required property var modelData
+                Layout.fillWidth: true
+                title: modelData.name
+                subtitle: modelData.credits.map(credit => credit.name).join(", ")
+                          + (modelData.coverage < 100 ? "\n" + qsTrId("some.text.appears.in.english") : "")
+            }
+        }
     }
 }

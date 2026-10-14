@@ -268,8 +268,8 @@ python3 tests/test_yume_translations.py
 ```
 
 `generate` writes Qt TS files under `src/gui/translations/` and the desktop
-loads the matching compiled catalog for the system locale (`ru`, `ja` or
-`uk`), with the generated English catalog providing the default text.
+loads the compiled catalog of the system language when one exists, with the
+generated English catalog providing the default text.
 Android's generated
 Kotlin maps and `TranslationCatalog.kt` are produced into the Android checkout
 with `--android-root /path/to/Yume`; they must not be edited by hand. Use
@@ -277,3 +277,48 @@ with `--android-root /path/to/Yume`; they must not be edited by hand. Use
 obsolete ID. Maintained languages require a non-empty translation and matching
 format signature. Machine-translated languages are optional and are never
 counted as maintained coverage.
+
+Every language names who translated it, because a maintained language is one
+the team accepts and trusts, not necessarily one it wrote.
+`maintained_language_details` gives each maintained language its own name and
+`credits`, in the same form as a community language's. The Android language
+picker shows maintained languages as "Native", above "Community" and
+automatic translations, each with its translators' names, and the desktop
+Credits page lists every language's translators.
+
+### Community translations
+
+A volunteer or studio can add a language that the team does not maintain.
+Give it an entry in `community_languages`, keyed by its lowercase language
+code, with its own name, the date it started and at least one credit:
+
+```json
+"community_languages": {
+  "de": {"name": "Deutsch", "since": "2026-10-13", "credits": [
+    {"name": "Example Studio", "kind": "studio", "url": "https://example.org"},
+    {"name": "A. Translator", "kind": "person"}]}
+}
+```
+
+`kind` is `person` or `studio`, and `url` is optional and must be https.
+Then add the language's text under its code in each message's
+`translations`, written by a person: `policy.machine_translated` is false for
+community languages too. A message may be left out, and the app shows it in
+English. `validate` lists each community language's coverage of the messages
+it may translate and refuses one below `policy.community_minimum_coverage`
+(80 %). Placeholders, markup, protected terms and the English-copy check apply
+as for maintained languages.
+
+Messages marked `maintainer_review` stay English in community languages, and
+`validate` refuses a community translation of one. They are the texts a user
+acts on for their safety or privacy: accepting a shorter route, the expert
+settings warning, what the server can see and the limits of a measurement. A
+wrong translation there would change what someone agrees to, so only
+maintained languages translate them.
+
+`generate` writes a TS file per community language with only the messages it
+translates, `src/gui/translations/translation_credits.json` for the desktop
+Credits page, and on Android a bundle per language plus `TranslationCredits.kt`,
+which the Settings language list reads for its groups and credit names. It removes the
+generated files of a language that left the catalog. Only maintained languages
+are release gates.

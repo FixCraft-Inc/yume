@@ -236,10 +236,13 @@ a name a screen reader can say. Space, Return and Enter activate the focused
 button, and Escape closes a dialog. `--layout-direction rtl` mirrors the
 whole window for right-to-left scripts, and text in any script is shaped.
 The interface ships with maintained Russian, Japanese and Ukrainian
-translations. It follows the desktop locale (`ru`, `ja` or `uk`) when one is
-available and uses English otherwise. The Android app uses the same message
-IDs and maintained-language entries, while its language picker also supports
-on-device machine translation for other languages.
+translations, and with any community translation in the shared catalog. It
+follows the desktop locale when the catalog has that language and uses
+English otherwise, including for what a community translation leaves out.
+The Credits page names who translated each language. The Android app uses
+the same message IDs, translations and credits; its language picker lists
+Native and Community languages apart, each with its translators, and
+supports on-device machine translation for other languages.
 
 UI messages live in the shared `translations/catalog.json`. Add or edit one
 message there, keep its stable ID, context, owner and translator note, then

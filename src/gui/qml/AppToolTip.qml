@@ -5,8 +5,8 @@
 import QtQuick
 import QtQuick.Controls
 
-// A tooltip in plain text, wrapped to a readable width, in the ink colour
-// of the theme so it stands out from the page in both themes.
+// A tooltip in plain text, wrapped to a readable width, in the inverse
+// colours of the theme so it stands out from the page in both themes.
 ToolTip {
     id: tip
     delay: 400
@@ -15,13 +15,13 @@ ToolTip {
     contentItem: Text {
         textFormat: Text.PlainText
         text: tip.text
-        color: Theme.paper
+        color: Theme.inverseInk
         font.pixelSize: Theme.textSmall
         lineHeight: 1.15
         wrapMode: Text.WordWrap
     }
     background: Rectangle {
         radius: Theme.radiusSmall
-        color: Theme.ink
+        color: Theme.inverse
     }
 }

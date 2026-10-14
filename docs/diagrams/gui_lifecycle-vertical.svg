@@ -3,76 +3,76 @@
 <desc id="dgm-gui_lifecycle-vertical-desc">The window validates and starts a detached client, then uses its owner-only UNIX socket. Closing the window leaves the tunnel running. Disconnect waits for the client to exit.</desc>
 <style>
 .dgm {
-  --dgm-plate: var(--color-paper, #fff9fd);
-  --dgm-card: var(--color-cloud, #fffcfe);
-  --dgm-ink: var(--color-ink, #392c35);
-  --dgm-muted: var(--color-muted, #6c5a67);
-  --dgm-rule: var(--color-rule, #e3d2dd);
-  --dgm-accent: var(--color-accent, #e899d3);
-  --dgm-strong: var(--color-accent-strong, #9c4088);
-  --dgm-soft: var(--color-accent-soft, #fad4ef);
-  --dgm-client: var(--color-role-client, #e899d3);
-  --dgm-client-strong: var(--color-role-client-strong, #9c4088);
-  --dgm-client-soft: var(--color-role-client-soft, #fad4ef);
-  --dgm-server: var(--color-role-server, #b5a4ea);
-  --dgm-server-strong: var(--color-role-server-strong, #674ea1);
-  --dgm-server-soft: var(--color-role-server-soft, #ebe5ff);
-  --dgm-data: var(--color-role-data, #7cb8ea);
-  --dgm-data-strong: var(--color-role-data-strong, #1b659a);
-  --dgm-data-soft: var(--color-role-data-soft, #dbeefe);
-  --dgm-disguise: var(--color-role-disguise, #f1ad71);
-  --dgm-disguise-strong: var(--color-role-disguise-strong, #985521);
-  --dgm-disguise-soft: var(--color-role-disguise-soft, #ffe8d2);
-  --dgm-keys: var(--color-role-keys, #f0ce65);
-  --dgm-keys-strong: var(--color-role-keys-strong, #7d5e07);
-  --dgm-keys-soft: var(--color-role-keys-soft, #fcf2cd);
-  --dgm-outside: var(--color-role-outside, #82c9aa);
-  --dgm-outside-strong: var(--color-role-outside-strong, #25694f);
-  --dgm-outside-soft: var(--color-role-outside-soft, #dbf4e8);
-  --dgm-refused: var(--color-role-refused, #ec928b);
-  --dgm-refused-strong: var(--color-role-refused-strong, #a73e3b);
-  --dgm-refused-soft: var(--color-role-refused-soft, #ffe3df);
-  --dgm-neutral: var(--color-role-neutral, #e3d2dd);
-  --dgm-neutral-strong: var(--color-role-neutral-strong, #6c5a67);
-  --dgm-neutral-soft: var(--color-role-neutral-soft, #f4e7f0);
+  --dgm-plate: var(--color-paper, #f7f2f5);
+  --dgm-card: var(--color-cloud, #fefcfe);
+  --dgm-ink: var(--color-ink, #2a2328);
+  --dgm-muted: var(--color-muted, #746a70);
+  --dgm-rule: var(--color-rule, #d7ced4);
+  --dgm-accent: var(--color-accent, #d59cc4);
+  --dgm-strong: var(--color-accent-strong, #945983);
+  --dgm-soft: var(--color-accent-soft, #f7d9ed);
+  --dgm-client: var(--color-role-client, #d59cc4);
+  --dgm-client-strong: var(--color-role-client-strong, #945983);
+  --dgm-client-soft: var(--color-role-client-soft, #f7d9ed);
+  --dgm-server: var(--color-role-server, #b497cb);
+  --dgm-server-strong: var(--color-role-server-strong, #705783);
+  --dgm-server-soft: var(--color-role-server-soft, #f1e4fc);
+  --dgm-data: var(--color-role-data, #7aaad4);
+  --dgm-data-strong: var(--color-role-data-strong, #3c688b);
+  --dgm-data-soft: var(--color-role-data-soft, #d7edff);
+  --dgm-disguise: var(--color-role-disguise, #c99a70);
+  --dgm-disguise-strong: var(--color-role-disguise-strong, #825934);
+  --dgm-disguise-soft: var(--color-role-disguise-soft, #fbe5d2);
+  --dgm-keys: var(--color-role-keys, #bf9f6a);
+  --dgm-keys-strong: var(--color-role-keys-strong, #7a5e2e);
+  --dgm-keys-soft: var(--color-role-keys-soft, #f6e8d0);
+  --dgm-outside: var(--color-role-outside, #73b598);
+  --dgm-outside-strong: var(--color-role-outside-strong, #347158);
+  --dgm-outside-soft: var(--color-role-outside-soft, #d5f1e4);
+  --dgm-refused: var(--color-role-refused, #d29092);
+  --dgm-refused-strong: var(--color-role-refused-strong, #895153);
+  --dgm-refused-soft: var(--color-role-refused-soft, #ffe1e1);
+  --dgm-neutral: var(--color-role-neutral, #d7ced4);
+  --dgm-neutral-strong: var(--color-role-neutral-strong, #746a70);
+  --dgm-neutral-soft: var(--color-role-neutral-soft, #e8e0e5);
 }
 
 /* Only the fallbacks change. Where the tokens exist this block resolves to
    the same values as the one above, so an explicit theme still decides. */
 @media (prefers-color-scheme: dark) {
   .dgm {
-    --dgm-plate: var(--color-paper, #10080e);
-    --dgm-card: var(--color-cloud, #21171e);
-    --dgm-ink: var(--color-ink, #f0e4ec);
-    --dgm-muted: var(--color-muted, #958891);
-    --dgm-rule: var(--color-rule, #40343c);
-    --dgm-accent: var(--color-accent, #e596d0);
-    --dgm-strong: var(--color-accent-strong, #ffb2ee);
-    --dgm-soft: var(--color-accent-soft, #3e1935);
-    --dgm-client: var(--color-role-client, #e596d0);
-    --dgm-client-strong: var(--color-role-client-strong, #ffb2ee);
-    --dgm-client-soft: var(--color-role-client-soft, #3e1935);
-    --dgm-server: var(--color-role-server, #a392d6);
-    --dgm-server-strong: var(--color-role-server-strong, #d1c4fd);
-    --dgm-server-soft: var(--color-role-server-soft, #2b243f);
-    --dgm-data: var(--color-role-data, #6da4d3);
-    --dgm-data-strong: var(--color-role-data-strong, #a8d3f9);
-    --dgm-data-soft: var(--color-role-data-soft, #12283b);
-    --dgm-disguise: var(--color-role-disguise, #dd9b5f);
-    --dgm-disguise-strong: var(--color-role-disguise-strong, #f8c696);
-    --dgm-disguise-soft: var(--color-role-disguise-soft, #3c220f);
-    --dgm-keys: var(--color-role-keys, #e0c262);
-    --dgm-keys-strong: var(--color-role-keys-strong, #f3de90);
-    --dgm-keys-soft: var(--color-role-keys-soft, #352a09);
-    --dgm-outside: var(--color-role-outside, #73b598);
-    --dgm-outside-strong: var(--color-role-outside-strong, #aadfc6);
-    --dgm-outside-soft: var(--color-role-outside-soft, #112d21);
-    --dgm-refused: var(--color-role-refused, #da827b);
-    --dgm-refused-strong: var(--color-role-refused-strong, #febab4);
-    --dgm-refused-soft: var(--color-role-refused-soft, #401d1b);
-    --dgm-neutral: var(--color-role-neutral, #40343c);
-    --dgm-neutral-strong: var(--color-role-neutral-strong, #958891);
-    --dgm-neutral-soft: var(--color-role-neutral-soft, #2a2127);
+    --dgm-plate: var(--color-paper, #171216);
+    --dgm-card: var(--color-cloud, #271f24);
+    --dgm-ink: var(--color-ink, #eae2e7);
+    --dgm-muted: var(--color-muted, #a2989f);
+    --dgm-rule: var(--color-rule, #4e444b);
+    --dgm-accent: var(--color-accent, #c691b6);
+    --dgm-strong: var(--color-accent-strong, #ecbbdd);
+    --dgm-soft: var(--color-accent-soft, #503648);
+    --dgm-client: var(--color-role-client, #c691b6);
+    --dgm-client-strong: var(--color-role-client-strong, #ecbbdd);
+    --dgm-client-soft: var(--color-role-client-soft, #503648);
+    --dgm-server: var(--color-role-server, #b299c6);
+    --dgm-server-strong: var(--color-role-server-strong, #d5bbea);
+    --dgm-server-soft: var(--color-role-server-soft, #473952);
+    --dgm-data: var(--color-role-data, #80aace);
+    --dgm-data-strong: var(--color-role-data-strong, #a2cdf2);
+    --dgm-data-soft: var(--color-role-data-soft, #2b4256);
+    --dgm-disguise: var(--color-role-disguise, #c59b77);
+    --dgm-disguise-strong: var(--color-role-disguise-strong, #e9be99);
+    --dgm-disguise-soft: var(--color-role-disguise-soft, #513a26);
+    --dgm-keys: var(--color-role-keys, #bca072);
+    --dgm-keys-strong: var(--color-role-keys-strong, #e0c394);
+    --dgm-keys-soft: var(--color-role-keys-soft, #4c3d23);
+    --dgm-outside: var(--color-role-outside, #7ab39a);
+    --dgm-outside-strong: var(--color-role-outside-strong, #9dd6bc);
+    --dgm-outside-soft: var(--color-role-outside-soft, #27473a);
+    --dgm-refused: var(--color-role-refused, #cd9394);
+    --dgm-refused-strong: var(--color-role-refused-strong, #f2b6b6);
+    --dgm-refused-soft: var(--color-role-refused-soft, #553637);
+    --dgm-neutral: var(--color-role-neutral, #4e444b);
+    --dgm-neutral-strong: var(--color-role-neutral-strong, #a2989f);
+    --dgm-neutral-soft: var(--color-role-neutral-soft, #3b3238);
   }
 }
 
@@ -476,56 +476,56 @@
   }
 }
 </style>
-<rect class="dgm-plate" fill="#fff9fd" x="0" y="0" width="410" height="644.5" rx="16"/>
+<rect class="dgm-plate" fill="#f7f2f5" x="0" y="0" width="410" height="644.5" rx="16"/>
 <g class="dgm-lifelines">
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M86.5 72L86.5 628.5"/>
-<path class="dgm-lifeline" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M323.5 72L323.5 628.5"/>
+<path class="dgm-lifeline" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M86.5 72L86.5 628.5"/>
+<path class="dgm-lifeline" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="4 6" stroke-linecap="round" d="M323.5 72L323.5 628.5"/>
 </g>
 <g class="dgm-links">
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 115L311.5 115"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 119.5L311.5 110.5L319.5 115Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="106">run with --validate</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 162.5L98.5 162.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 158L98.5 167L90.5 162.5Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="153.5">validation result</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 210L311.5 210"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 214.5L311.5 205.5L319.5 210Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="201">start detached, socket path</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 234.5L299.5 234.5L299.5 254.5L311.5 254.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 250L311.5 259L319.5 254.5Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283.5" y="248.5">listen, connect, serve socket</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 297.5L311.5 297.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 302L311.5 293L319.5 297.5Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="288.5">status and messages</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 345L98.5 345"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 340.5L98.5 349.5L90.5 345Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="336">state and printed lines</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 369.5L110.5 369.5L110.5 389.5L98.5 389.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 385L98.5 394L90.5 389.5Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="383.5">close window, client runs</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 409.5L110.5 409.5L110.5 429.5L98.5 429.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 425L98.5 434L90.5 429.5Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="423.5">reopen window, find client</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 472.5L311.5 472.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 477L311.5 468L319.5 472.5Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="463.5">Disconnect: stop</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 520L98.5 520"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 515.5L98.5 524.5L90.5 520Z"/>
-<text class="dgm-edge-label dgm-centred" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="511">acknowledge stop</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 544.5L299.5 544.5L299.5 564.5L311.5 564.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M311.5 560L311.5 569L319.5 564.5Z"/>
-<text class="dgm-edge-label dgm-end" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283.5" y="558.5">drain and exit</text>
-<path class="dgm-link dgm-link-plain" fill="none" stroke="#6c5a67" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 584.5L110.5 584.5L110.5 604.5L98.5 604.5"/>
-<path class="dgm-arrow" fill="#6c5a67" stroke="#6c5a67" stroke-width="1.5" stroke-linejoin="round" d="M98.5 600L98.5 609L90.5 604.5Z"/>
-<text class="dgm-edge-label" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="598.5">process ended: stopped</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 115L311.5 115"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M311.5 119.5L311.5 110.5L319.5 115Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="106">run with --validate</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 162.5L98.5 162.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M98.5 158L98.5 167L90.5 162.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="153.5">validation result</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 210L311.5 210"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M311.5 214.5L311.5 205.5L319.5 210Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="201">start detached, socket path</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 234.5L299.5 234.5L299.5 254.5L311.5 254.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M311.5 250L311.5 259L319.5 254.5Z"/>
+<text class="dgm-edge-label dgm-end" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283.5" y="248.5">listen, connect, serve socket</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 297.5L311.5 297.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M311.5 302L311.5 293L319.5 297.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="288.5">status and messages</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 345L98.5 345"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M98.5 340.5L98.5 349.5L90.5 345Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="336">state and printed lines</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 369.5L110.5 369.5L110.5 389.5L98.5 389.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M98.5 385L98.5 394L90.5 389.5Z"/>
+<text class="dgm-edge-label" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="383.5">close window, client runs</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 409.5L110.5 409.5L110.5 429.5L98.5 429.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M98.5 425L98.5 434L90.5 429.5Z"/>
+<text class="dgm-edge-label" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="423.5">reopen window, find client</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 472.5L311.5 472.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M311.5 477L311.5 468L319.5 472.5Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="463.5">Disconnect: stop</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 520L98.5 520"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M98.5 515.5L98.5 524.5L90.5 520Z"/>
+<text class="dgm-edge-label dgm-centred" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="middle" x="205" y="511">acknowledge stop</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M319.5 544.5L299.5 544.5L299.5 564.5L311.5 564.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M311.5 560L311.5 569L319.5 564.5Z"/>
+<text class="dgm-edge-label dgm-end" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" text-anchor="end" x="283.5" y="558.5">drain and exit</text>
+<path class="dgm-link dgm-link-plain" fill="none" stroke="#746a70" stroke-opacity="0.6" stroke-width="1.5" stroke-linecap="round" d="M90.5 584.5L110.5 584.5L110.5 604.5L98.5 604.5"/>
+<path class="dgm-arrow" fill="#746a70" stroke="#746a70" stroke-width="1.5" stroke-linejoin="round" d="M98.5 600L98.5 609L90.5 604.5Z"/>
+<text class="dgm-edge-label" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="126.5" y="598.5">process ended: stopped</text>
 </g>
-<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 115L319.5 115')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 115L319.5 115')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 162.5L90.5 162.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 162.5L90.5 162.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 210L319.5 210')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 210L319.5 210')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 234.5L299.5 234.5L299.5 254.5L319.5 254.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 234.5L299.5 234.5L299.5 254.5L319.5 254.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 297.5L319.5 297.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 297.5L319.5 297.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 345L90.5 345')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 345L90.5 345')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 369.5L110.5 369.5L110.5 389.5L90.5 389.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 369.5L110.5 369.5L110.5 389.5L90.5 389.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-7" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 409.5L110.5 409.5L110.5 429.5L90.5 429.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-7" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 409.5L110.5 409.5L110.5 429.5L90.5 429.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-8" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 472.5L319.5 472.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-8" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 472.5L319.5 472.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-9" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 520L90.5 520')"/><circle class="dgm-packet dgm-packet-core dgm-message-9" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 520L90.5 520')"/><circle class="dgm-packet dgm-packet-glow dgm-message-10" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 544.5L299.5 544.5L299.5 564.5L319.5 564.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-10" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 544.5L299.5 544.5L299.5 564.5L319.5 564.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-11" display="none" fill="#e899d3" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 584.5L110.5 584.5L110.5 604.5L90.5 604.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-11" display="none" fill="#9c4088" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 584.5L110.5 584.5L110.5 604.5L90.5 604.5')"/></g>
+<g class="dgm-packets" aria-hidden="true"><circle class="dgm-packet dgm-packet-glow dgm-message-0" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 115L319.5 115')"/><circle class="dgm-packet dgm-packet-core dgm-message-0" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 115L319.5 115')"/><circle class="dgm-packet dgm-packet-glow dgm-message-1" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 162.5L90.5 162.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-1" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 162.5L90.5 162.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-2" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 210L319.5 210')"/><circle class="dgm-packet dgm-packet-core dgm-message-2" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 210L319.5 210')"/><circle class="dgm-packet dgm-packet-glow dgm-message-3" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 234.5L299.5 234.5L299.5 254.5L319.5 254.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-3" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 234.5L299.5 234.5L299.5 254.5L319.5 254.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-4" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 297.5L319.5 297.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-4" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 297.5L319.5 297.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-5" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 345L90.5 345')"/><circle class="dgm-packet dgm-packet-core dgm-message-5" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 345L90.5 345')"/><circle class="dgm-packet dgm-packet-glow dgm-message-6" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 369.5L110.5 369.5L110.5 389.5L90.5 389.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-6" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 369.5L110.5 369.5L110.5 389.5L90.5 389.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-7" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 409.5L110.5 409.5L110.5 429.5L90.5 429.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-7" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 409.5L110.5 409.5L110.5 429.5L90.5 429.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-8" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 472.5L319.5 472.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-8" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 472.5L319.5 472.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-9" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 520L90.5 520')"/><circle class="dgm-packet dgm-packet-core dgm-message-9" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 520L90.5 520')"/><circle class="dgm-packet dgm-packet-glow dgm-message-10" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M319.5 544.5L299.5 544.5L299.5 564.5L319.5 564.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-10" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M319.5 544.5L299.5 544.5L299.5 564.5L319.5 564.5')"/><circle class="dgm-packet dgm-packet-glow dgm-message-11" display="none" fill="#d59cc4" opacity="0.3" cx="0" cy="0" r="7" style="--dgm-path:path('M90.5 584.5L110.5 584.5L110.5 604.5L90.5 604.5')"/><circle class="dgm-packet dgm-packet-core dgm-message-11" display="none" fill="#945983" cx="0" cy="0" r="3.5" style="--dgm-path:path('M90.5 584.5L110.5 584.5L110.5 604.5L90.5 604.5')"/></g>
 <g class="dgm-nodes">
-<g class="dgm-node dgm-node-app dgm-role-data" data-node="gui"><rect class="dgm-card" fill="#fffcfe" stroke="#e3d2dd" stroke-width="1.25" x="16" y="16" width="141" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#1b659a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="29" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M2.5 9.5h19"/><circle cx="5.6" cy="7" r="0.9" class="dgm-glyph-fill" fill="#1b659a" stroke="none"/><circle cx="8.4" cy="7" r="0.9" class="dgm-glyph-fill" fill="#1b659a" stroke="none"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="56" y="38">yume-gui</text>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="56" y="54">window</text>
+<g class="dgm-node dgm-node-app dgm-role-data" data-node="gui"><rect class="dgm-card" fill="#fefcfe" stroke="#d7ced4" stroke-width="1.25" x="16" y="16" width="141" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#3c688b" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="29" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M2.5 9.5h19"/><circle cx="5.6" cy="7" r="0.9" class="dgm-glyph-fill" fill="#3c688b" stroke="none"/><circle cx="8.4" cy="7" r="0.9" class="dgm-glyph-fill" fill="#3c688b" stroke="none"/></svg><text class="dgm-title" fill="#2a2328" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="56" y="38">yume-gui</text>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="56" y="54">window</text>
 </g>
-<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="client"><rect class="dgm-card" fill="#fffcfe" stroke="#e899d3" stroke-width="1.75" x="253" y="16" width="141" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#9c4088" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="266" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title" fill="#392c35" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="293" y="38">yume</text>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="293" y="54">tunnel process</text>
+<g class="dgm-node dgm-node-client dgm-role-client dgm-node-owned" data-node="client"><rect class="dgm-card" fill="#fefcfe" stroke="#d59cc4" stroke-width="1.75" x="253" y="16" width="141" height="52" rx="12"/><svg class="dgm-glyph" fill="none" stroke="#945983" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" x="266" y="24.5" width="18" height="18" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="11" rx="1.8"/><path d="M1.5 19.5h21"/></svg><text class="dgm-title" fill="#2a2328" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="13px" font-weight="600" letter-spacing="0.01em" x="293" y="38">yume</text>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="293" y="54">tunnel process</text>
 </g>
 </g>
 </svg>

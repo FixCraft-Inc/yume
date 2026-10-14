@@ -28,7 +28,7 @@ add_library(yume_gui_core STATIC
     control_client.cpp control_client.hpp
     headless.cpp headless.hpp
     kit_store.cpp kit_store.hpp
-    mark.cpp mark.hpp
+    mark.cpp mark.hpp palette.hpp
     message_model.cpp message_model.hpp
     offline_network.cpp offline_network.hpp
     presets.cpp presets.hpp
@@ -44,6 +44,7 @@ yume_apply_perf_opts(yume_gui_core)
 set(_yume_gui_qml
     qml/qmldir
     qml/Labels.js
+    qml/Palette.js
     qml/Theme.qml
     qml/Main.qml
     qml/Sidebar.qml

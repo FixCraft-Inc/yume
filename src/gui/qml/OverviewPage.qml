@@ -164,7 +164,7 @@ Flickable {
                     Layout.alignment: Qt.AlignTop
                     RowLayout {
                         spacing: 8
-                        Icon { name: "up"; size: 16; color: Theme.accentStrong }
+                        Icon { name: "up"; size: 16; color: Theme.accent }
                         Text {
                             textFormat: Text.PlainText
                             text: App.formatRate(App.sendRate)

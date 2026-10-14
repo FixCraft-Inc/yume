@@ -316,7 +316,7 @@ Flickable {
         background: Rectangle {
             radius: Theme.radius
             color: Theme.cloud
-            border.color: Theme.rule
+            border.color: Theme.ruleSoft
         }
         Overlay.modal: Rectangle { color: Qt.rgba(0.1, 0.03, 0.08, 0.45) }
         contentItem: ColumnLayout {

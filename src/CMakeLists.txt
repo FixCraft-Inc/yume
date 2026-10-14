@@ -1297,6 +1297,9 @@ if(YUME_BUILD_TESTING)
     add_test(NAME yume_credits_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_credits.py")
+    add_test(NAME yume_palette_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_palette.py")
     add_test(NAME yume_android_source_provenance_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_android_source_provenance.py")

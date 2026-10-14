@@ -16,7 +16,7 @@ Rectangle {
 
     color: Theme.cloud
     radius: Theme.radius
-    border.color: Theme.rule
+    border.color: Theme.ruleSoft
     border.width: 1
     // The space between the heading and the content, counted only when the
     // card holds visible content, so a heading-only card is no taller than it.

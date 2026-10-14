@@ -31,7 +31,7 @@ ItemDelegate {
             size: 18
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            color: control.current ? Theme.accentStrong : Theme.inkSoft
+            color: control.current ? Theme.accent : Theme.inkSoft
         }
         Text {
             textFormat: Text.PlainText
@@ -40,7 +40,7 @@ ItemDelegate {
             anchors.leftMargin: 12
             anchors.right: hint.left
             anchors.verticalCenter: parent.verticalCenter
-            color: control.current ? Theme.ink : Theme.inkSoft
+            color: control.current ? Theme.accentInk : Theme.inkSoft
             font.pixelSize: Theme.textBody
             font.weight: control.current ? Font.DemiBold : Font.Normal
             elide: Text.ElideRight
@@ -60,7 +60,7 @@ ItemDelegate {
     background: Rectangle {
         radius: Theme.radiusSmall
         color: control.current ? Theme.accentSoft
-             : control.hovered ? Theme.paperDeep : "transparent"
+             : control.hovered ? Theme.paperSoft : "transparent"
         border.width: control.visualFocus ? 2 : 0
         border.color: Theme.focus
     }

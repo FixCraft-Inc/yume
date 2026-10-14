@@ -12,7 +12,7 @@ RowLayout {
     property string value
     property string note
     property string iconName
-    property color tint: Theme.accentStrong
+    property color tint: Theme.accent
     spacing: 12
     Accessible.role: Accessible.StaticText
     Accessible.name: label + ": " + value

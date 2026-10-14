@@ -10,7 +10,7 @@ Canvas {
     id: spark
     property var samples: []
     property int capacity: 90
-    property color sentColor: Theme.accentStrong
+    property color sentColor: Theme.accent
     property color receivedColor: Theme.dataStrong
 
     onSamplesChanged: requestPaint()

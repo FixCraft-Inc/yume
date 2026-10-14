@@ -12,14 +12,15 @@ TextField {
     leftPadding: 12
     rightPadding: 12
     color: Theme.ink
-    placeholderTextColor: Qt.rgba(Theme.muted.r, Theme.muted.g, Theme.muted.b, 0.6)
-    selectionColor: Theme.accent
-    selectedTextColor: Theme.buttonInk
+    hoverEnabled: true
+    placeholderTextColor: Theme.muted
+    selectionColor: Theme.accentSoft
+    selectedTextColor: Theme.accentInk
     font.pixelSize: Theme.textBody
     background: Rectangle {
         radius: Theme.radiusSmall
         color: Theme.paper
         border.width: control.activeFocus ? 2 : 1
-        border.color: control.activeFocus ? Theme.focus : Theme.rule
+        border.color: control.activeFocus ? Theme.focus : control.hovered ? Theme.lineStrong : Theme.rule
     }
 }

@@ -12,7 +12,7 @@ RowLayout {
     property string label
     property int level: 0
     property int maximum: 4
-    property color tint: Theme.accentStrong
+    property color tint: Theme.accent
     spacing: 10
     Accessible.role: Accessible.Indicator
     Accessible.name: qsTrId("desktop.level.of").arg(label).arg(level).arg(maximum)
@@ -31,7 +31,7 @@ RowLayout {
             Rectangle {
                 width: (136 - (meter.maximum - 1) * 4) / meter.maximum
                 height: 8; radius: 4
-                color: index < meter.level ? meter.tint : Theme.ruleSoft
+                color: index < meter.level ? meter.tint : Theme.paperDeep
             }
         }
     }

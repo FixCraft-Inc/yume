@@ -25,8 +25,8 @@ Item {
             fillGradient: LinearGradient {
                 x1: 145.1; y1: 251.9
                 x2: 125.8; y2: 22.0
-                GradientStop { position: 0; color: "#ffcbf3" }
-                GradientStop { position: 1; color: "#e59fd1" }
+                GradientStop { position: 0; color: Theme.logoFrom }
+                GradientStop { position: 1; color: Theme.logoTo }
             }
             PathSvg { path: App.markPath }
         }

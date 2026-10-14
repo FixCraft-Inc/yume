@@ -5,8 +5,9 @@
 import QtQuick
 import QtQuick.Controls
 
-// A button in one of three weights: primary for a page's main action,
-// secondary (outlined) and quiet (text only). Keyboard focus draws a ring.
+// A button in one of four weights: primary for a page's main action (the
+// palette's soft button colour), secondary (outlined), quiet (text only) and
+// danger. Hover and press each step the fill. Keyboard focus draws a ring.
 // An iconOnly button draws just its icon and shows its text as a tooltip,
 // which also names it to screen readers.
 Button {
@@ -64,14 +65,18 @@ Button {
         radius: height / 2
         color: {
             if (control.kind === "primary")
-                return !control.enabled ? Theme.ruleSoft
-                     : control.down || control.hovered ? Theme.buttonHover : Theme.button
+                return !control.enabled ? Theme.paperDeep
+                     : control.down ? Theme.buttonPressed
+                     : control.hovered ? Theme.buttonHover : Theme.button
+            if (!control.enabled)
+                return "transparent"
             if (control.kind === "quiet")
-                return control.down || control.hovered ? Theme.ruleSoft : "transparent"
-            return control.down || control.hovered ? Theme.paperSoft : Theme.cloud
+                return control.down ? Theme.paperDeep : control.hovered ? Theme.paperSoft : "transparent"
+            return control.down ? Theme.paperDeep : control.hovered ? Theme.paperSoft : Theme.cloud
         }
         border.width: control.visualFocus ? 2 : (control.kind === "secondary" || control.kind === "danger" ? 1 : 0)
         border.color: control.visualFocus ? Theme.focus
                     : control.kind === "danger" ? Theme.refused : Theme.rule
+        Behavior on color { ColorAnimation { duration: 120 } }
     }
 }

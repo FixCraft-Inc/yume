@@ -3,76 +3,76 @@
 <desc id="dgm-record_layers-horizontal-desc">After authentication each YTP/1 frame is sealed, framed for the carrier and sent as WebSocket data on an HTTP/2 stream inside TLS 1.3.</desc>
 <style>
 .dgm {
-  --dgm-plate: var(--color-paper, #fff9fd);
-  --dgm-card: var(--color-cloud, #fffcfe);
-  --dgm-ink: var(--color-ink, #392c35);
-  --dgm-muted: var(--color-muted, #6c5a67);
-  --dgm-rule: var(--color-rule, #e3d2dd);
-  --dgm-accent: var(--color-accent, #e899d3);
-  --dgm-strong: var(--color-accent-strong, #9c4088);
-  --dgm-soft: var(--color-accent-soft, #fad4ef);
-  --dgm-client: var(--color-role-client, #e899d3);
-  --dgm-client-strong: var(--color-role-client-strong, #9c4088);
-  --dgm-client-soft: var(--color-role-client-soft, #fad4ef);
-  --dgm-server: var(--color-role-server, #b5a4ea);
-  --dgm-server-strong: var(--color-role-server-strong, #674ea1);
-  --dgm-server-soft: var(--color-role-server-soft, #ebe5ff);
-  --dgm-data: var(--color-role-data, #7cb8ea);
-  --dgm-data-strong: var(--color-role-data-strong, #1b659a);
-  --dgm-data-soft: var(--color-role-data-soft, #dbeefe);
-  --dgm-disguise: var(--color-role-disguise, #f1ad71);
-  --dgm-disguise-strong: var(--color-role-disguise-strong, #985521);
-  --dgm-disguise-soft: var(--color-role-disguise-soft, #ffe8d2);
-  --dgm-keys: var(--color-role-keys, #f0ce65);
-  --dgm-keys-strong: var(--color-role-keys-strong, #7d5e07);
-  --dgm-keys-soft: var(--color-role-keys-soft, #fcf2cd);
-  --dgm-outside: var(--color-role-outside, #82c9aa);
-  --dgm-outside-strong: var(--color-role-outside-strong, #25694f);
-  --dgm-outside-soft: var(--color-role-outside-soft, #dbf4e8);
-  --dgm-refused: var(--color-role-refused, #ec928b);
-  --dgm-refused-strong: var(--color-role-refused-strong, #a73e3b);
-  --dgm-refused-soft: var(--color-role-refused-soft, #ffe3df);
-  --dgm-neutral: var(--color-role-neutral, #e3d2dd);
-  --dgm-neutral-strong: var(--color-role-neutral-strong, #6c5a67);
-  --dgm-neutral-soft: var(--color-role-neutral-soft, #f4e7f0);
+  --dgm-plate: var(--color-paper, #f7f2f5);
+  --dgm-card: var(--color-cloud, #fefcfe);
+  --dgm-ink: var(--color-ink, #2a2328);
+  --dgm-muted: var(--color-muted, #746a70);
+  --dgm-rule: var(--color-rule, #d7ced4);
+  --dgm-accent: var(--color-accent, #d59cc4);
+  --dgm-strong: var(--color-accent-strong, #945983);
+  --dgm-soft: var(--color-accent-soft, #f7d9ed);
+  --dgm-client: var(--color-role-client, #d59cc4);
+  --dgm-client-strong: var(--color-role-client-strong, #945983);
+  --dgm-client-soft: var(--color-role-client-soft, #f7d9ed);
+  --dgm-server: var(--color-role-server, #b497cb);
+  --dgm-server-strong: var(--color-role-server-strong, #705783);
+  --dgm-server-soft: var(--color-role-server-soft, #f1e4fc);
+  --dgm-data: var(--color-role-data, #7aaad4);
+  --dgm-data-strong: var(--color-role-data-strong, #3c688b);
+  --dgm-data-soft: var(--color-role-data-soft, #d7edff);
+  --dgm-disguise: var(--color-role-disguise, #c99a70);
+  --dgm-disguise-strong: var(--color-role-disguise-strong, #825934);
+  --dgm-disguise-soft: var(--color-role-disguise-soft, #fbe5d2);
+  --dgm-keys: var(--color-role-keys, #bf9f6a);
+  --dgm-keys-strong: var(--color-role-keys-strong, #7a5e2e);
+  --dgm-keys-soft: var(--color-role-keys-soft, #f6e8d0);
+  --dgm-outside: var(--color-role-outside, #73b598);
+  --dgm-outside-strong: var(--color-role-outside-strong, #347158);
+  --dgm-outside-soft: var(--color-role-outside-soft, #d5f1e4);
+  --dgm-refused: var(--color-role-refused, #d29092);
+  --dgm-refused-strong: var(--color-role-refused-strong, #895153);
+  --dgm-refused-soft: var(--color-role-refused-soft, #ffe1e1);
+  --dgm-neutral: var(--color-role-neutral, #d7ced4);
+  --dgm-neutral-strong: var(--color-role-neutral-strong, #746a70);
+  --dgm-neutral-soft: var(--color-role-neutral-soft, #e8e0e5);
 }
 
 /* Only the fallbacks change. Where the tokens exist this block resolves to
    the same values as the one above, so an explicit theme still decides. */
 @media (prefers-color-scheme: dark) {
   .dgm {
-    --dgm-plate: var(--color-paper, #10080e);
-    --dgm-card: var(--color-cloud, #21171e);
-    --dgm-ink: var(--color-ink, #f0e4ec);
-    --dgm-muted: var(--color-muted, #958891);
-    --dgm-rule: var(--color-rule, #40343c);
-    --dgm-accent: var(--color-accent, #e596d0);
-    --dgm-strong: var(--color-accent-strong, #ffb2ee);
-    --dgm-soft: var(--color-accent-soft, #3e1935);
-    --dgm-client: var(--color-role-client, #e596d0);
-    --dgm-client-strong: var(--color-role-client-strong, #ffb2ee);
-    --dgm-client-soft: var(--color-role-client-soft, #3e1935);
-    --dgm-server: var(--color-role-server, #a392d6);
-    --dgm-server-strong: var(--color-role-server-strong, #d1c4fd);
-    --dgm-server-soft: var(--color-role-server-soft, #2b243f);
-    --dgm-data: var(--color-role-data, #6da4d3);
-    --dgm-data-strong: var(--color-role-data-strong, #a8d3f9);
-    --dgm-data-soft: var(--color-role-data-soft, #12283b);
-    --dgm-disguise: var(--color-role-disguise, #dd9b5f);
-    --dgm-disguise-strong: var(--color-role-disguise-strong, #f8c696);
-    --dgm-disguise-soft: var(--color-role-disguise-soft, #3c220f);
-    --dgm-keys: var(--color-role-keys, #e0c262);
-    --dgm-keys-strong: var(--color-role-keys-strong, #f3de90);
-    --dgm-keys-soft: var(--color-role-keys-soft, #352a09);
-    --dgm-outside: var(--color-role-outside, #73b598);
-    --dgm-outside-strong: var(--color-role-outside-strong, #aadfc6);
-    --dgm-outside-soft: var(--color-role-outside-soft, #112d21);
-    --dgm-refused: var(--color-role-refused, #da827b);
-    --dgm-refused-strong: var(--color-role-refused-strong, #febab4);
-    --dgm-refused-soft: var(--color-role-refused-soft, #401d1b);
-    --dgm-neutral: var(--color-role-neutral, #40343c);
-    --dgm-neutral-strong: var(--color-role-neutral-strong, #958891);
-    --dgm-neutral-soft: var(--color-role-neutral-soft, #2a2127);
+    --dgm-plate: var(--color-paper, #171216);
+    --dgm-card: var(--color-cloud, #271f24);
+    --dgm-ink: var(--color-ink, #eae2e7);
+    --dgm-muted: var(--color-muted, #a2989f);
+    --dgm-rule: var(--color-rule, #4e444b);
+    --dgm-accent: var(--color-accent, #c691b6);
+    --dgm-strong: var(--color-accent-strong, #ecbbdd);
+    --dgm-soft: var(--color-accent-soft, #503648);
+    --dgm-client: var(--color-role-client, #c691b6);
+    --dgm-client-strong: var(--color-role-client-strong, #ecbbdd);
+    --dgm-client-soft: var(--color-role-client-soft, #503648);
+    --dgm-server: var(--color-role-server, #b299c6);
+    --dgm-server-strong: var(--color-role-server-strong, #d5bbea);
+    --dgm-server-soft: var(--color-role-server-soft, #473952);
+    --dgm-data: var(--color-role-data, #80aace);
+    --dgm-data-strong: var(--color-role-data-strong, #a2cdf2);
+    --dgm-data-soft: var(--color-role-data-soft, #2b4256);
+    --dgm-disguise: var(--color-role-disguise, #c59b77);
+    --dgm-disguise-strong: var(--color-role-disguise-strong, #e9be99);
+    --dgm-disguise-soft: var(--color-role-disguise-soft, #513a26);
+    --dgm-keys: var(--color-role-keys, #bca072);
+    --dgm-keys-strong: var(--color-role-keys-strong, #e0c394);
+    --dgm-keys-soft: var(--color-role-keys-soft, #4c3d23);
+    --dgm-outside: var(--color-role-outside, #7ab39a);
+    --dgm-outside-strong: var(--color-role-outside-strong, #9dd6bc);
+    --dgm-outside-soft: var(--color-role-outside-soft, #27473a);
+    --dgm-refused: var(--color-role-refused, #cd9394);
+    --dgm-refused-strong: var(--color-role-refused-strong, #f2b6b6);
+    --dgm-refused-soft: var(--color-role-refused-soft, #553637);
+    --dgm-neutral: var(--color-role-neutral, #4e444b);
+    --dgm-neutral-strong: var(--color-role-neutral-strong, #a2989f);
+    --dgm-neutral-soft: var(--color-role-neutral-soft, #3b3238);
   }
 }
 
@@ -432,55 +432,55 @@
   }
 }
 </style>
-<rect class="dgm-plate" fill="#fff9fd" x="0" y="0" width="532" height="324" rx="16"/>
+<rect class="dgm-plate" fill="#f7f2f5" x="0" y="0" width="532" height="324" rx="16"/>
 <g class="dgm-layers">
 <g class="dgm-layer dgm-role-outside" data-node="tcp">
-<rect class="dgm-ring dgm-here-7" stroke-width="1.25" fill="#dbf4e8" stroke="#82c9aa" x="16" y="16" width="318" height="292" rx="36"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#25694f" x="30" y="36">TCP</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 32L358 32"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="36">to the server&#x27;s port</text>
+<rect class="dgm-ring dgm-here-7" stroke-width="1.25" fill="#d5f1e4" stroke="#73b598" x="16" y="16" width="318" height="292" rx="36"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#347158" x="30" y="36">TCP</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 32L358 32"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="36">to the server&#x27;s port</text>
 </g>
 <g class="dgm-layer dgm-role-disguise" data-node="tls">
-<rect class="dgm-ring dgm-here-6" stroke-width="1.25" fill="#ffe8d2" stroke="#f1ad71" x="28" y="42" width="294" height="256" rx="36"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="42" y="62">TLS 1.3</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 58L358 58"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="62">Chrome ClientHello</text>
+<rect class="dgm-ring dgm-here-6" stroke-width="1.25" fill="#fbe5d2" stroke="#c99a70" x="28" y="42" width="294" height="256" rx="36"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#825934" x="42" y="62">TLS 1.3</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 58L358 58"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="62">Chrome ClientHello</text>
 </g>
 <g class="dgm-layer dgm-role-disguise" data-node="http2">
-<rect class="dgm-ring dgm-here-5" stroke-width="1.25" fill="#ffe8d2" stroke="#f1ad71" x="40" y="68" width="270" height="220" rx="32"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="54" y="88">HTTP/2</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 84L358 84"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="88">extended CONNECT stream</text>
+<rect class="dgm-ring dgm-here-5" stroke-width="1.25" fill="#fbe5d2" stroke="#c99a70" x="40" y="68" width="270" height="220" rx="32"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#825934" x="54" y="88">HTTP/2</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 84L358 84"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="88">extended CONNECT stream</text>
 </g>
 <g class="dgm-layer dgm-role-disguise" data-node="websocket">
-<rect class="dgm-ring dgm-here-4" stroke-width="1.25" fill="#ffe8d2" stroke="#f1ad71" x="52" y="94" width="246" height="184" rx="28"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#985521" x="66" y="114">WebSocket</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 110L358 110"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="114">binary messages</text>
+<rect class="dgm-ring dgm-here-4" stroke-width="1.25" fill="#fbe5d2" stroke="#c99a70" x="52" y="94" width="246" height="184" rx="28"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#825934" x="66" y="114">WebSocket</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 110L358 110"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="114">binary messages</text>
 </g>
 <g class="dgm-layer dgm-role-neutral" data-node="envelope">
-<rect class="dgm-ring dgm-here-3" stroke-width="1.25" fill="#f4e7f0" stroke="#e3d2dd" x="64" y="120" width="222" height="148" rx="24"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="78" y="140">Carrier envelope</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 136L358 136"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="140">12-byte length header</text>
+<rect class="dgm-ring dgm-here-3" stroke-width="1.25" fill="#e8e0e5" stroke="#d7ced4" x="64" y="120" width="222" height="148" rx="24"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#746a70" x="78" y="140">Carrier envelope</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 136L358 136"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="140">12-byte length header</text>
 </g>
 <g class="dgm-layer dgm-role-keys" data-node="sealed">
-<rect class="dgm-ring dgm-here-2" stroke-width="1.25" fill="#fcf2cd" stroke="#f0ce65" x="76" y="146" width="198" height="112" rx="20"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#7d5e07" x="90" y="166">Sealed record</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 162L358 162"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="166">AES-256-GCM, one-use key</text>
+<rect class="dgm-ring dgm-here-2" stroke-width="1.25" fill="#f6e8d0" stroke="#bf9f6a" x="76" y="146" width="198" height="112" rx="20"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#7a5e2e" x="90" y="166">Sealed record</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 162L358 162"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="166">AES-256-GCM, one-use key</text>
 </g>
 <g class="dgm-layer dgm-role-neutral" data-node="frame">
-<rect class="dgm-ring dgm-here-1" stroke-width="1.25" fill="#f4e7f0" stroke="#e3d2dd" x="88" y="172" width="174" height="76" rx="16"/>
-<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#6c5a67" x="102" y="192">YTP/1 frame</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 188L358 188"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="192">type, stream, length</text>
+<rect class="dgm-ring dgm-here-1" stroke-width="1.25" fill="#e8e0e5" stroke="#d7ced4" x="88" y="172" width="174" height="76" rx="16"/>
+<text class="dgm-ring-title" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#746a70" x="102" y="192">YTP/1 frame</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 188L358 188"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="192">type, stream, length</text>
 </g>
 <g class="dgm-layer dgm-role-data" data-node="data">
-<rect class="dgm-ring dgm-here-0" stroke-width="1.25" fill="#dbeefe" stroke="#7cb8ea" x="100" y="198" width="150" height="40" rx="12"/>
-<text class="dgm-ring-title dgm-centred" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#1b659a" text-anchor="middle" x="175" y="223">Your data</text>
-<path class="dgm-leader" fill="none" stroke="#e3d2dd" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 219L358 219"/>
-<text class="dgm-sub" fill="#6c5a67" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="223">stream bytes or a packet</text>
+<rect class="dgm-ring dgm-here-0" stroke-width="1.25" fill="#d7edff" stroke="#7aaad4" x="100" y="198" width="150" height="40" rx="12"/>
+<text class="dgm-ring-title dgm-centred" font-family="&#x27;Quicksand&#x27;, &#x27;Arial Rounded MT Bold&#x27;, ui-rounded, sans-serif" font-size="12.5px" font-weight="600" letter-spacing="0.02em" fill="#3c688b" text-anchor="middle" x="175" y="223">Your data</text>
+<path class="dgm-leader" fill="none" stroke="#d7ced4" stroke-width="1.25" stroke-dasharray="1 4" stroke-linecap="round" d="M342 219L358 219"/>
+<text class="dgm-sub" fill="#746a70" font-family="&#x27;Nunito Sans&#x27;, &#x27;Avenir Next&#x27;, ui-sans-serif, sans-serif" font-size="11.5px" x="366" y="223">stream bytes or a packet</text>
 </g>
 </g>
 </svg>

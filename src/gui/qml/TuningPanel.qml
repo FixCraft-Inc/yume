@@ -81,7 +81,7 @@ Card {
             Layout.preferredWidth: 1
             enabled: panel.hasChoice && panel.editor.ready && !panel.editor.busy
             Repeater {
-                model: [{axis: "stealth", label: qsTrId("stealth"), tint: Theme.accentStrong},
+                model: [{axis: "stealth", label: qsTrId("stealth"), tint: Theme.accent},
                         {axis: "speed", label: qsTrId("speed"), tint: Theme.dataStrong},
                         {axis: "security", label: qsTrId("security"), tint: Theme.keysStrong}]
                 TuningSlider {
@@ -133,7 +133,7 @@ Card {
                                       : qsTrId("desktop.live.session.mib.per.key.the.server.s.higher.allowance"))
                         .arg(panel.epoch / 1048576)
                       : qsTrId("desktop.connect.to.learn.the.effective.key.epoch.the.server.can")
-                color: panel.capped ? Theme.accentStrong : Theme.muted
+                color: panel.capped ? Theme.accent : Theme.muted
                 font.pixelSize: Theme.textSmall
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap

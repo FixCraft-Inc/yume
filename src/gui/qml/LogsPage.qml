@@ -26,7 +26,11 @@ Item {
             spacing: 10
             AppTextField {
                 id: filterField
-                Layout.preferredWidth: 320
+                // Up to 320 px, giving way first when a longer language needs
+                // the row for its labels.
+                Layout.fillWidth: true
+                Layout.maximumWidth: 320
+                Layout.minimumWidth: 140
                 placeholderText: qsTrId("desktop.filter.lines")
                 Accessible.name: qsTrId("desktop.filter.lines")
             }
@@ -39,16 +43,16 @@ Item {
                     x: follow.leftPadding
                     y: (follow.height - height) / 2
                     width: 20; height: 20; radius: 6
-                    color: follow.checked ? Theme.button : Theme.paper
-                    border.width: follow.visualFocus ? 2 : 1
-                    border.color: follow.visualFocus ? Theme.focus : follow.checked ? Theme.accent : Theme.rule
+                    color: follow.checked ? Theme.accent : Theme.cloud
+                    border.width: follow.visualFocus ? 2 : follow.checked ? 0 : 1
+                    border.color: follow.visualFocus ? Theme.focus : Theme.lineStrong
                     Icon {
                         visible: follow.checked
                         anchors.centerIn: parent
                         name: "check"
                         size: 14
                         stroke: 2.2
-                        color: Theme.buttonInk
+                        color: Theme.accentOn
                     }
                 }
                 contentItem: Text {
@@ -83,7 +87,7 @@ Item {
             Layout.fillHeight: true
             radius: Theme.radius
             color: Theme.cloud
-            border.color: Theme.rule
+            border.color: Theme.ruleSoft
             clip: true
 
             ListView {

@@ -89,3 +89,28 @@ checks only native and website outputs. `--check` never writes and fails for
 missing or stale output. Android lists common native transport dependencies,
 its own application dependencies, and ML Kit only in the optional ML Kit
 build. Linux integration and desktop Qt dependencies have separate groups.
+
+## Shared palette
+
+`config/palette.json` owns every colour of the desktop GUI, the Android app
+and the website: separate light and dark themes, the true-black dark variant,
+the role colours of states and figures, and the contrast each theme must
+keep. Values are OKLCH on one hue, the mark's, except the mark's own two
+colours, which are exact. The desktop's `Palette.js` and `palette.hpp`, the
+colour regions of `website/assets/tokens.css`, `website/assets/yume-mark.svg`,
+and Android's `GeneratedPalette.kt`, launcher gradient and launcher tile are
+generated. The mark's shape stays in `src/gui/assets/icon.svg`. Run:
+
+```bash
+python3 scripts/yume_palette.py validate
+python3 scripts/yume_palette.py report
+python3 scripts/yume_palette.py generate --android-root /path/to/Yume
+python3 scripts/yume_palette.py generate --check --android-root /path/to/Yume
+python3 scripts/yume_diagrams.py sync
+python3 tests/test_yume_palette.py
+```
+
+`report` lists each colour with its contrast on the card colour. Change a
+colour only in the JSON, and resynchronise the diagrams, whose fallback
+colours come from `tokens.css`. A new consumer, such as an iOS app, gets a
+renderer in `scripts/yume_palette.py` rather than its own copy of the values.

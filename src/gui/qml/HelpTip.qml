@@ -32,11 +32,11 @@ AbstractButton {
         name: "help"
         size: 16
         stroke: 1.6
-        color: tip.hovered || tip.visualFocus ? Theme.accentStrong : Theme.muted
+        color: tip.hovered || tip.visualFocus ? Theme.accent : Theme.muted
     }
     background: Rectangle {
         radius: width / 2
-        color: tip.hovered ? Theme.ruleSoft : "transparent"
+        color: tip.hovered ? Theme.paperSoft : "transparent"
         border.width: tip.visualFocus ? 2 : 0
         border.color: Theme.focus
     }

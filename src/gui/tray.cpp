@@ -11,6 +11,7 @@
 
 #include "gui/app_state.hpp"
 #include "gui/mark.hpp"
+#include "gui/palette.hpp"
 
 namespace yume::gui {
 
@@ -52,13 +53,13 @@ bool Tray::available() {
     return QSystemTrayIcon::isSystemTrayAvailable();
 }
 
-// Theme.qml's state roles, mint, amber, coral and grey, saturated so a
-// 16-pixel dot reads on light and dark panels.
+// The palette's state roles, sage, apricot, rose and grey, as their
+// saturated dot tones so a 16-pixel dot reads on light and dark panels.
 QColor Tray::dot_colour(const QString& kind) {
-    if (kind == QStringLiteral("good")) return QColor(0x25, 0x69, 0x4f);
-    if (kind == QStringLiteral("busy")) return QColor(0xd9, 0x8a, 0x3d);
-    if (kind == QStringLiteral("bad")) return QColor(0xc9, 0x3f, 0x3b);
-    if (kind == QStringLiteral("rest")) return QColor(0x8a, 0x7c, 0x86);
+    if (kind == QStringLiteral("good")) return QColor(QRgb(palette::kDotGood));
+    if (kind == QStringLiteral("busy")) return QColor(QRgb(palette::kDotBusy));
+    if (kind == QStringLiteral("bad")) return QColor(QRgb(palette::kDotBad));
+    if (kind == QStringLiteral("rest")) return QColor(QRgb(palette::kDotRest));
     return {};
 }
 

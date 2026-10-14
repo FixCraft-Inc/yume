@@ -5,52 +5,74 @@
 pragma Singleton
 import QtQuick
 import YumeBackend 1.0
+import "Palette.js" as Palette
 
-// The GUI's design tokens. The colours are Material's TonalSpot scheme
-// seeded with the mark's colour as it shows over white (#e59fd1), the same
-// values the Android app uses, so buttons, selection, cards and text keep
-// the relationships of a phone's own dynamic colours. website/DESIGN.md
-// says how they were derived. The default theme follows the system.
+// The GUI's design tokens. The colours are YUME's shared palette,
+// config/palette.json, generated into Palette.js: the values the Android app
+// and the website use, with light and dark designed as separate themes.
+// website/DESIGN.md describes the palette. The default theme follows the
+// system.
 QtObject {
     readonly property bool dark: App.dark
+    readonly property var p: dark ? Palette.dark : Palette.light
 
-    readonly property color paper: dark ? "#181216" : "#fff7f9"
-    readonly property color paperSoft: dark ? "#241e22" : "#f8eaf0"
-    readonly property color paperDeep: dark ? "#2f282c" : "#f2e5ea"
-    readonly property color cloud: dark ? "#201a1e" : "#ffffff"
-    readonly property color ink: dark ? "#ecdfe5" : "#201a1e"
-    readonly property color inkSoft: dark ? "#d2c2ca" : "#4f444a"
-    readonly property color muted: dark ? "#9b8d94" : "#7e7178"
-    readonly property color rule: dark ? "#4f444a" : "#d2c2ca"
-    readonly property color ruleSoft: dark ? "#2f282c" : "#f2e5ea"
-    readonly property color accent: dark ? "#f5b2e1" : "#834c75"
-    readonly property color accentStrong: dark ? "#f5b2e1" : "#834c75"
-    readonly property color accentSoft: dark ? "#56404f" : "#f9daed"
-    readonly property color button: dark ? "#f5b2e1" : "#834c75"
-    readonly property color buttonHover: dark ? "#e8a6d5" : "#8d5a80"
-    readonly property color buttonInk: dark ? "#4e1e45" : "#ffffff"
-    readonly property color focus: accentStrong
+    // The page, the cards and sidebar on it, the wash under a hovered
+    // control, and rows or selections raised inside a card.
+    readonly property color paper: p.page
+    readonly property color cloud: p.surface
+    readonly property color paperSoft: p.hover
+    readonly property color paperDeep: p.raised
+    readonly property color ink: p.ink
+    readonly property color inkSoft: p.inkSoft
+    readonly property color muted: p.muted
+    // A field's outline, a button's border, and the hairline of a card or a
+    // divider.
+    readonly property color lineStrong: p.lineStrong
+    readonly property color rule: p.line
+    readonly property color ruleSoft: p.hairline
+    // The accent marks controls, links and the current item, on its soft
+    // container where something is selected.
+    readonly property color accent: p.accent
+    readonly property color accentOn: p.accentOn
+    readonly property color accentSoft: p.accentSoft
+    readonly property color accentInk: p.accentInk
+    // The main action: blossom with plum text in light, pink with wine in dark.
+    readonly property color button: p.button
+    readonly property color buttonHover: p.buttonHover
+    readonly property color buttonPressed: p.buttonPressed
+    readonly property color buttonInk: p.buttonInk
+    readonly property color focus: p.focus
+    readonly property color inverse: p.inverse
+    readonly property color inverseInk: p.inverseInk
+    readonly property color logoFrom: p.logoFrom
+    readonly property color logoTo: p.logoTo
 
-    // Figure and state roles: the desktop's hues harmonized toward the seed,
-    // a mid tone, a strong ink and a soft container in each theme.
-    readonly property color server: dark ? "#c39dd9" : "#c39dd9"
-    readonly property color serverStrong: dark ? "#e0b8f6" : "#725187"
-    readonly property color serverSoft: dark ? "#59396e" : "#f4daff"
-    readonly property color data: dark ? "#90abe3" : "#90abe3"
-    readonly property color dataStrong: dark ? "#abc7ff" : "#425e91"
-    readonly property color dataSoft: dark ? "#294677" : "#d7e2ff"
-    readonly property color disguise: dark ? "#e99679" : "#e99679"
-    readonly property color disguiseStrong: dark ? "#ffb59b" : "#8f4c34"
-    readonly property color disguiseSoft: dark ? "#72351f" : "#ffdbcf"
-    readonly property color keys: dark ? "#d8a158" : "#d8a158"
-    readonly property color keysStrong: dark ? "#f7bc70" : "#815512"
-    readonly property color keysSoft: dark ? "#643f00" : "#ffddb6"
-    readonly property color outside: dark ? "#6eb9aa" : "#6eb9aa"
-    readonly property color outsideStrong: dark ? "#89d4c5" : "#156a5e"
-    readonly property color outsideSoft: dark ? "#005046" : "#a5f1e1"
-    readonly property color refused: dark ? "#e794a3" : "#e794a3"
-    readonly property color refusedStrong: dark ? "#ffb2bf" : "#8e4958"
-    readonly property color refusedSoft: dark ? "#713341" : "#ffd9de"
+    // Figure and state roles: natural hues at low strength, each with a mid
+    // tone, a strong ink, a soft container and the ink on that container.
+    readonly property color server: p.serverMid
+    readonly property color serverStrong: p.serverStrong
+    readonly property color serverSoft: p.serverSoft
+    readonly property color serverInk: p.serverOnSoft
+    readonly property color data: p.dataMid
+    readonly property color dataStrong: p.dataStrong
+    readonly property color dataSoft: p.dataSoft
+    readonly property color dataInk: p.dataOnSoft
+    readonly property color disguise: p.disguiseMid
+    readonly property color disguiseStrong: p.disguiseStrong
+    readonly property color disguiseSoft: p.disguiseSoft
+    readonly property color disguiseInk: p.disguiseOnSoft
+    readonly property color keys: p.keysMid
+    readonly property color keysStrong: p.keysStrong
+    readonly property color keysSoft: p.keysSoft
+    readonly property color keysInk: p.keysOnSoft
+    readonly property color outside: p.outsideMid
+    readonly property color outsideStrong: p.outsideStrong
+    readonly property color outsideSoft: p.outsideSoft
+    readonly property color outsideInk: p.outsideOnSoft
+    readonly property color refused: p.refusedMid
+    readonly property color refusedStrong: p.refusedStrong
+    readonly property color refusedSoft: p.refusedSoft
+    readonly property color refusedInk: p.refusedOnSoft
 
     readonly property string displayFont: "Jost"
     readonly property string monoFont: "monospace"
@@ -68,8 +90,9 @@ QtObject {
     readonly property int textTitle: 28
     readonly property int textHero: 36
 
-    // The colour a connection state is shown in: mint while connected, amber
-    // while it works towards one, coral after a failure, and grey at rest.
+    // The colour a connection state is shown in: sage while connected,
+    // apricot while it works towards one, rose after a failure, and grey at
+    // rest. The strong tone is the text on the soft one.
     function stateColor(kind) {
         switch (kind) {
         case "good": return outsideStrong
@@ -83,7 +106,7 @@ QtObject {
         case "good": return outsideSoft
         case "busy": return disguiseSoft
         case "bad": return refusedSoft
-        default: return ruleSoft
+        default: return paperDeep
         }
     }
 }

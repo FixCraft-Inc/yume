@@ -26,17 +26,22 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   groups apart, each language with its translators' names. Only maintained
   languages gate releases.
 
-- **One palette and mark across the apps.** The desktop GUI and the
-  Android app share one palette: Material's TonalSpot scheme, the one
-  Android builds from a wallpaper, seeded with the mark's colour, so
-  buttons, selection, cards and text keep the same relationships as a
-  phone's own dynamic colours in both light and dark. Status colours are
-  harmonized toward it. The desktop follows the system's light or dark
-  setting by default, as Android does. The mark is the original pale icon
-  everywhere, in the colours it shows over white where it has to be solid,
-  and the Android launcher shows it on white again. Notifications use a
-  white outline of the mark in the status bar. Long Android explanations
-  sit behind an info button, and each card keeps one short visible line.
+- **One palette and mark across the apps.** `config/palette.json` is the
+  single colour source for the desktop GUI, the Android app and the
+  website, and `scripts/yume_palette.py` generates each one's colours from
+  it and checks the contrast every theme must keep. The colours are soft
+  plum and sakura on the mark's hue, with light and dark designed
+  separately: in light, warm-white cards on a faintly pink page and
+  blossom main buttons with plum text, and in dark, a plum night with a
+  soft pink accent, plus a true-black variant on Android. Status colours
+  are natural sage, apricot and rose. The desktop follows the system's
+  light or dark setting by default, as Android does. The mark keeps its
+  original shape everywhere, filled with the solid colours it shows over
+  white, and the Android launcher shows it on a warm-white tile.
+  Notifications use a white outline of the mark in the status bar. Long
+  Android explanations sit behind an info button, and each card keeps one
+  short visible line. Desktop controls were revised to match: soft button
+  states, a filled slider track, a chevron drop-down, and hairline cards.
 
 - **Interface design pass.** The desktop moves explanation out of the page
   body: the import note and the tuning measurement's conditions sit behind

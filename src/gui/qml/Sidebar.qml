@@ -134,9 +134,9 @@ Rectangle {
                 }
                 background: Rectangle {
                     radius: Theme.radiusSmall
-                    color: selected ? Theme.cloud : hovered ? Theme.paperDeep : "transparent"
-                    border.width: visualFocus ? 2 : selected ? 1 : 0
-                    border.color: visualFocus ? Theme.focus : Theme.rule
+                    color: selected ? Theme.paperDeep : hovered ? Theme.paperSoft : "transparent"
+                    border.width: visualFocus ? 2 : 0
+                    border.color: Theme.focus
                 }
             }
         }

@@ -16,7 +16,7 @@ Rectangle {
 
     color: Theme.cloud
     radius: Theme.radius
-    border.color: Theme.rule
+    border.color: Theme.ruleSoft
     implicitHeight: content.implicitHeight + 32
     implicitWidth: 180
     Accessible.role: Accessible.StaticText

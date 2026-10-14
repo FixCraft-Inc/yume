@@ -59,7 +59,7 @@ ApplicationWindow {
                 pageNames: window.pageNames
                 pageTitles: window.pageTitles
             }
-            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: Theme.rule }
+            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: Theme.ruleSoft }
 
             ColumnLayout {
                 Layout.fillWidth: true
@@ -158,7 +158,7 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 24
             radius: height / 2
-            color: Theme.ink
+            color: Theme.inverse
             implicitWidth: noticeText.implicitWidth + 36
             implicitHeight: 40
             Accessible.role: Accessible.AlertMessage
@@ -168,7 +168,7 @@ ApplicationWindow {
                 id: noticeText
                 anchors.centerIn: parent
                 text: App.notice
-                color: Theme.paper
+                color: Theme.inverseInk
                 font.pixelSize: Theme.textLabel
             }
             MouseArea { anchors.fill: parent; onClicked: App.clearNotice() }

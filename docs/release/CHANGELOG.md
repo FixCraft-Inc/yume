@@ -42,6 +42,10 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   Android explanations sit behind an info button, and each card keeps one
   short visible line. Desktop controls were revised to match: soft button
   states, a filled slider track, a chevron drop-down, and hairline cards.
+  On the website the layered "what wraps your data" figure has light,
+  evenly spaced rings whose labels clear their corners, the hero cloud is
+  built the same way in both themes, and the header no longer draws a
+  line across the section navigation.
 
 - **Interface design pass.** The desktop moves explanation out of the page
   body: the import note and the tuning measurement's conditions sit behind

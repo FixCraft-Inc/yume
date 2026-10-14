@@ -287,17 +287,23 @@
   --dgm-tone-soft: var(--dgm-neutral-soft);
 }
 
-/* A layer is a ring, filled with its role's tint and outlined in its tone.
+/* A layer is a ring on the card colour, washed with its role's tint and
+   outlined in its tone, so eight nested rings stay as light as the cards of
+   the other figures. The core, the reader's own data, takes the full tint.
    On the loop the rings light in wrapping order, innermost first, which is
    the only thing the motion in a layers figure says. */
 .dgm-ring {
   fill: var(--dgm-rest);
   stroke: var(--dgm-rest-line);
   stroke-width: 1.25;
-  --dgm-rest: var(--dgm-tone-soft);
+  --dgm-rest: color-mix(in oklab, var(--dgm-tone-soft) 40%, var(--dgm-card));
   --dgm-live: var(--dgm-tone);
   --dgm-rest-line: var(--dgm-tone);
   --dgm-live-line: var(--dgm-tone-strong);
+}
+
+.dgm-ring.dgm-core {
+  --dgm-rest: var(--dgm-tone-soft);
 }
 
 .dgm-ring-title {

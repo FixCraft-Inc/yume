@@ -174,7 +174,7 @@ of the two sizes, still with one record per 2 KiB, so either side can keep
 rotation at its own setting.
 
 <!-- yume-diagram: record_layers -->
-<img src="diagrams/record_layers-vertical.svg" alt="What wraps your data on the wire" width="378" height="432">
+<img src="diagrams/record_layers-vertical.svg" alt="What wraps your data on the wire" width="386" height="474">
 
 <details>
 <summary>What each part does</summary>

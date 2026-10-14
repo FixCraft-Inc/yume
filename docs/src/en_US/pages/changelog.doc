@@ -653,9 +653,9 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   entry are removed, so modules no longer run as the daemon's user.
 
 - **H2-only cover.** The public front door now requires ALPN `h2` over
-  TLS 1.2 or 1.3. HTTP/1.1-only offers fail negotiation; connections
-  without ALPN close before serving HTTP. The HTTP/1.1 site handler is
-  retired. YTP promotion still requires TLS 1.3 and authenticated admission.
+  TLS 1.2 or 1.3. HTTP/1.1-only offers fail negotiation. A connection
+  without ALPN gets the Node reference's fixed 239-byte 403 refusal and is
+  closed without serving the site. The HTTP/1.1 site handler is retired. YTP promotion still requires TLS 1.3 and authenticated admission.
 
 - **One switch for developer diagnostics.** `-DYUME_DEV_DIAGNOSTICS=ON`
   compiles the timing helpers and the new key-rotation benchmark probes for

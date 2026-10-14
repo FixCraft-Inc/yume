@@ -6,9 +6,40 @@
     "ja",
     "uk"
   ],
+  "maintained_language_details": {
+    "ru": {
+      "name": "Русский",
+      "credits": [
+        {
+          "name": "FixCraft Inc.",
+          "kind": "studio"
+        }
+      ]
+    },
+    "ja": {
+      "name": "日本語",
+      "credits": [
+        {
+          "name": "FixCraft Inc.",
+          "kind": "studio"
+        }
+      ]
+    },
+    "uk": {
+      "name": "Українська",
+      "credits": [
+        {
+          "name": "FixCraft Inc.",
+          "kind": "studio"
+        }
+      ]
+    }
+  },
+  "community_languages": {},
   "policy": {
     "untranslated": "error",
-    "machine_translated": false
+    "machine_translated": false,
+    "community_minimum_coverage": 0.8
   },
   "messages": [
     {
@@ -179,14 +210,14 @@
     },
     {
       "id": "maintained",
-      "source": "Maintained",
+      "source": "Native",
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
+      "notes": "Heading of the fully translated languages the YUME team accepts and trusts, beside community and automatic translations.",
       "translations": {
-        "ru": "Поддерживаемые",
-        "ja": "メンテナンス済み",
-        "uk": "Підтримувані"
+        "ru": "Нативные",
+        "ja": "ネイティブ",
+        "uk": "Рідні"
       },
       "requirements": {
         "placeholders": []
@@ -277,21 +308,6 @@
         "ru": "Авто",
         "ja": "自動",
         "uk": "Авто"
-      },
-      "requirements": {
-        "placeholders": []
-      }
-    },
-    {
-      "id": "native",
-      "source": "Native",
-      "context": "Android AppStrings",
-      "owner": "android.app.i18n",
-      "notes": "Preserve technical terms and formatting placeholders.",
-      "translations": {
-        "ru": "Нативно",
-        "ja": "ネイティブ",
-        "uk": "Рідна"
       },
       "requirements": {
         "placeholders": []
@@ -1695,6 +1711,7 @@
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
+      "maintainer_review": true,
       "translations": {
         "ru": "Этот набор ведёт трафик через несколько серверов. Приложение пока этого не поддерживает.",
         "ja": "このキットは複数のサーバーを経由しますが、このアプリはまだ対応していません。",
@@ -1980,6 +1997,7 @@
       "context": "Posture server explanation",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
+      "maintainer_review": true,
       "translations": {
         "ru": "Сервер расшифровывает ваш трафик, чтобы передать его дальше. Его владелец видит, к каким адресам вы обращаетесь, и всё, что не зашифровано само по себе, например обычный HTTP. Ничто не доказывает, что сервер не ведёт журналы, поэтому пользуйтесь тем, которому доверяете.",
         "ja": "サーバーは通信を中継するために復号します。管理者には、接続先のアドレスと、平文の HTTP のようにそれ自体が暗号化されていない内容が見えます。サーバーがログを残さないことを証明する手段はないため、信頼できるサーバーを使ってください。",
@@ -3156,6 +3174,7 @@
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
+      "maintainer_review": true,
       "translations": {
         "ru": "Экспертные значения меняют пределы ресурсов соединения. YUME отклоняет недопустимые и небезопасные значения. Меняйте по одному полю, только если понимаете протокол.",
         "ja": "エキスパート値は接続のリソース上限を変更します。無効または安全でない値は YUME が拒否します。プロトコルを理解している場合だけ、一度に 1 項目を編集してください。",
@@ -3171,6 +3190,7 @@
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
+      "maintainer_review": true,
       "translations": {
         "ru": "Я понимаю, что делаю",
         "ja": "内容を理解しました",
@@ -3201,6 +3221,7 @@
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
+      "maintainer_review": true,
       "translations": {
         "ru": "Экспертное редактирование заблокировано, пока вы не подтвердите предупреждение.",
         "ja": "警告を確認するまでエキスパート編集はロックされています。",
@@ -3366,6 +3387,7 @@
       "context": "Android AppStrings",
       "owner": "android.app.i18n",
       "notes": "Preserve technical terms and formatting placeholders.",
+      "maintainer_review": true,
       "translations": {
         "ru": "Только эмулированные пути. Это не утверждение о скорости или скрытности в реальной сети.",
         "ja": "エミュレーション経路のみ。実経路の速度やステルス性を示すものではありません。",
@@ -4427,6 +4449,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Принять этот маршрут",
         "ja": "この経路を承認",
@@ -4443,6 +4466,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Принятие действует, пока снова не заработает маршрут заданной длины или yume не остановится. До принятия новые соединения ждут.",
         "ja": "承認は設定した長さの経路が再び使えるようになるか、yumeを停止するまで有効です。承認するまで新しい接続は待機します。",
@@ -4559,6 +4583,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Обе подписи должны проверяться относительно удостоверения, которому доверяет ваш набор.",
         "ja": "両方の署名は、キットが信頼するIDに対して検証できなければなりません。",
@@ -5490,6 +5515,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Большие эпохи раскрывают больше данных при компрометации ключа эпохи. Большие бюджеты потока используют больше памяти и расширяют окна. Дополнительные возвраты кредитов добавляют управляющие записи. Ротация в простое отправляет обмены, которых браузер не отправил бы. Пользовательские настройки не гарантируют измеренную скорость или скрытность. Ротацию нельзя отключить.",
         "ja": "エポックキーが漏えいすると、エポックが大きいほど多くのデータが露出します。大きなフローバジェットはメモリを多く使い、ウィンドウを広げます。クレジット返却を増やすと制御レコードが増えます。アイドル時のローテーションはブラウザーが送らない交換を送ります。カスタム設定は速度やステルスを保証しません。ローテーションは無効化できません。",
@@ -5609,6 +5635,7 @@
           "%1"
         ]
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Новые соединения ждут, пока вы не примете это или снова не заработает %1.",
         "ja": "承認するか %1 が再び機能するまで、新しい接続は待機します。",
@@ -5743,6 +5770,7 @@
           "%2"
         ]
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Сейчас нельзя построить маршрут из %1. yume предлагает маршрут из %2 через:",
         "ja": "現在 %1 の経路を構築できません。yume は %2 の経路を次の経由先で提案します:",
@@ -5807,6 +5835,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Один сервер переносит ваши потоки и видит их назначения.",
         "ja": "1台のサーバーがストリームを運び、宛先を確認します。",
@@ -6553,6 +6582,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Скрытность описывает окна, кредиты и ротацию в простое, а не результат классификатора. Безопасность описывает данные на ключ; алгоритмы и обязательная ротация неизменны. Для уровней fast и max нужны повышенные ограничения TCP хоста.",
         "ja": "ステルスはウィンドウ、クレジット、アイドル時のローテーションを表し、分類器の結果ではありません。セキュリティはキーあたりのデータを表し、アルゴリズムと必須ローテーションは同じです。fast と max を上位にするにはホスト TCP 上限を引き上げる必要があります。",
@@ -6839,6 +6869,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Использовать короткий маршрут?",
         "ja": "短い経路を使用しますか？",
@@ -7159,6 +7190,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "только после вашего принятия",
         "ja": "承認した場合のみ",
@@ -7415,6 +7447,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "yume больше не предлагает этот маршрут. Закройте и проверьте текущее предложение.",
         "ja": "yume はこの経路を提案しなくなりました。閉じて現在の提案を確認してください。",
@@ -7544,6 +7577,7 @@
       "requirements": {
         "placeholders": []
       },
+      "maintainer_review": true,
       "translations": {
         "ru": "Предложение изменилось до принятия. Проверьте новое предложение.",
         "ja": "承認する前に提案が変更されました。新しい提案を確認してください。",
@@ -8523,6 +8557,53 @@
       },
       "requirements": {
         "placeholders": []
+      }
+    },
+    {
+      "id": "community.translations",
+      "source": "Community translations",
+      "context": "Android Settings language group heading",
+      "owner": "android.app.i18n",
+      "notes": "A group of languages translated by volunteers or studios, beside maintained and automatic ones.",
+      "requirements": {
+        "placeholders": [],
+        "character_limit": 40
+      },
+      "translations": {
+        "ru": "Переводы сообщества",
+        "ja": "コミュニティ翻訳",
+        "uk": "Переклади спільноти"
+      }
+    },
+    {
+      "id": "some.text.appears.in.english",
+      "source": "Some text appears in English.",
+      "context": "Note under a partly translated community language in the Android language picker and the desktop Credits page",
+      "owner": "shared.translation.credits",
+      "notes": "Shown when a community translation does not cover every message.",
+      "requirements": {
+        "placeholders": []
+      },
+      "translations": {
+        "ru": "Часть текста показана на английском.",
+        "ja": "一部のテキストは英語で表示されます。",
+        "uk": "Частину тексту показано англійською."
+      }
+    },
+    {
+      "id": "credits.translations",
+      "source": "Translations",
+      "context": "Desktop Credits page section heading",
+      "owner": "src/gui/qml/CreditsPage.qml",
+      "notes": "Heading above the community translators of each language.",
+      "requirements": {
+        "placeholders": [],
+        "character_limit": 40
+      },
+      "translations": {
+        "ru": "Переводы",
+        "ja": "翻訳",
+        "uk": "Переклади"
       }
     }
   ],

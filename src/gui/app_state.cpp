@@ -13,6 +13,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QGuiApplication>
 #include <QJsonObject>
@@ -189,7 +190,15 @@ void AppState::set_tray_active(bool active) {
 QVariantMap AppState::credits() const {
     QFile file(QStringLiteral(":/yume/credits.json"));
     if (!file.open(QIODevice::ReadOnly)) return {};
-    return QJsonDocument::fromJson(file.readAll()).object().toVariantMap();
+    auto credits = QJsonDocument::fromJson(file.readAll()).object().toVariantMap();
+    // Each language's translators come from the translation catalog, which
+    // owns them, through its generated listing.
+    QFile translations(QStringLiteral(":/yume/translation_credits.json"));
+    if (translations.open(QIODevice::ReadOnly))
+        credits.insert(QStringLiteral("translations"),
+                       QJsonDocument::fromJson(translations.readAll()).object().value(
+                           QStringLiteral("languages")).toArray().toVariantList());
+    return credits;
 }
 
 QString AppState::version() const {

@@ -668,7 +668,12 @@ def run(yumed: Path, yume: Path, openssl: Path, *, dns_fixture: bool = False,
             contextlib.ExitStack() as stack:
         root = Path(temporary)
         kit = root / "kit"
-        server_port, socks_port, target_port, closed_port = (session.free_port() for _ in range(4))
+        server_port, socks_port, target_port = (session.free_port() for _ in range(3))
+        # Bound but never listening, so connections are refused for the whole
+        # run and no test running beside this one can take the port.
+        closed = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+        closed.bind(("127.0.0.1", 0))
+        closed_port = closed.getsockname()[1]
         session.provision_kit(kit, "localhost", server_port, environment,
                               session.setup_program(yume))
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],

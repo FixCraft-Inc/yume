@@ -73,8 +73,8 @@
     <message id="maintained">
       <location filename="catalog:maintained" line="1"/>
       <source></source>
-      <extracomment>source: Maintained; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Підтримувані</translation>
+      <extracomment>source: Native; context: Android AppStrings; owner: android.app.i18n; Heading of the fully translated languages the YUME team accepts and trusts, beside community and automatic translations.</extracomment>
+      <translation>Рідні</translation>
     </message>
     <message id="auto.translated">
       <location filename="catalog:auto.translated" line="1"/>
@@ -111,12 +111,6 @@
       <source></source>
       <extracomment>source: Auto; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
       <translation>Авто</translation>
-    </message>
-    <message id="native">
-      <location filename="catalog:native" line="1"/>
-      <source></source>
-      <extracomment>source: Native; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Рідна</translation>
     </message>
     <message id="downloaded">
       <location filename="catalog:downloaded" line="1"/>
@@ -3225,6 +3219,24 @@
       <source></source>
       <extracomment>source: Unlock Yume to reconnect the VPN; context: Android source provenance and locked VPN notification; owner: android.app.i18n; User-facing build identity or unlock action; preserve product names.</extracomment>
       <translation>Розблокуйте Yume для повторного підключення VPN</translation>
+    </message>
+    <message id="community.translations">
+      <location filename="catalog:community.translations" line="1"/>
+      <source></source>
+      <extracomment>source: Community translations; context: Android Settings language group heading; owner: android.app.i18n; A group of languages translated by volunteers or studios, beside maintained and automatic ones.</extracomment>
+      <translation>Переклади спільноти</translation>
+    </message>
+    <message id="some.text.appears.in.english">
+      <location filename="catalog:some.text.appears.in.english" line="1"/>
+      <source></source>
+      <extracomment>source: Some text appears in English.; context: Note under a partly translated community language in the Android language picker and the desktop Credits page; owner: shared.translation.credits; Shown when a community translation does not cover every message.</extracomment>
+      <translation>Частину тексту показано англійською.</translation>
+    </message>
+    <message id="credits.translations">
+      <location filename="catalog:credits.translations" line="1"/>
+      <source></source>
+      <extracomment>source: Translations; context: Desktop Credits page section heading; owner: src/gui/qml/CreditsPage.qml; Heading above the community translators of each language.</extracomment>
+      <translation>Переклади</translation>
     </message>
   </context>
 </TS>

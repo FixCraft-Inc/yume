@@ -15,6 +15,17 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
 
 ### Added
 
+- **Community translations.** The shared catalog accepts human translations
+  of languages the team does not maintain, with each language's translators
+  or studio credited. A language is listed from 80 % coverage, falls back to
+  English per message, and never translates the route-consent, expert-warning
+  and trust texts marked `maintainer_review`. Every language, maintained or
+  community, now credits who translated it; the maintained ones credit
+  FixCraft Inc. The desktop follows the system language and lists the
+  credits on its Credits page. Android's picker shows Native and Community
+  groups apart, each language with its translators' names. Only maintained
+  languages gate releases.
+
 - **Desktop connection settings.** Three coupled sliders use the shared
   tuning table, with measured conditions, plain values and the session's
   negotiated server cap. A confirmed expert editor applies one validated

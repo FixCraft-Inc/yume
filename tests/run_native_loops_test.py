@@ -128,7 +128,8 @@ def run(yumed: Path, yume: Path, openssl: Path, module: Path | None) -> None:
             contextlib.ExitStack() as stack:
         root = Path(temporary)
         kit = root / "kit"
-        server_port, socks_port, target_port = (session.free_port() for _ in range(3))
+        server_port, *ports, target_port = session.free_ports(CLIENTS + 2)
+        socks_port = ports[0]
         session.provision_kit(kit, "localhost", server_port, environment, setup)
         session.configure_kit(kit, listen_address="127.0.0.1", networks=["127.0.0.1/32"],
                               connect_address="127.0.0.1", socks_port=socks_port)
@@ -139,7 +140,6 @@ def run(yumed: Path, yume: Path, openssl: Path, module: Path | None) -> None:
                                       "--host", "localhost", "--output", str(bundle),
                                       "--client-name", f"loops{index}"], environment)
             bundles.append(bundle)
-        ports = [socks_port] + [session.free_port() for _ in range(1, CLIENTS)]
         configs = [configure_client(bundle, port) for bundle, port in zip(bundles, ports)]
         forwards = []
         if module:

@@ -543,7 +543,7 @@ def run_inside(arguments: argparse.Namespace) -> int:
             kit = Path(temporary) / "kit"
             session.provision_kit(kit, arguments.server_name, arguments.port, environment,
                                   session.setup_program(arguments.yume))
-            socks_port, target_port = session.free_port(), session.free_port()
+            socks_port, target_port = session.free_ports(2)
             session.configure_kit(kit, listen_address=SERVER_ADDRESS, networks=["127.0.0.1/32"],
                                   connect_address=SERVER_ADDRESS, socks_port=socks_port)
             if arguments.max_queued_bytes:

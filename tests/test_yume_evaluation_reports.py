@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,10 @@ import sys
 import tempfile
 import threading
 import time
+import types
+from typing import Iterator
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.dont_write_bytecode = True
@@ -52,6 +56,50 @@ generic-segmentation-offload: off [fixed]
 generic-receive-offload: on
 large-receive-offload: off [fixed]
 """
+
+
+class ReusingPortSocket:
+    """A stand-in socket that is given the lowest port no open probe holds.
+
+    The kernel may hand a closed probe's port out again; this makes that the
+    rule, so a caller that closes each probe before taking the next one sees
+    the same port twice on every run.
+    """
+
+    bound: set[int] = set()
+
+    def __init__(self, *_arguments: object) -> None:
+        self.port: int | None = None
+
+    def __enter__(self) -> "ReusingPortSocket":
+        return self
+
+    def __exit__(self, *_details: object) -> None:
+        self.close()
+
+    def bind(self, address: tuple[str, int]) -> None:
+        if address[1] != 0:
+            raise AssertionError("only ephemeral binds are modelled")
+        self.port = next(port for port in range(40000, 40100) if port not in self.bound)
+        self.bound.add(self.port)
+
+    def getsockname(self) -> tuple[str, int]:
+        assert self.port is not None
+        return "127.0.0.1", self.port
+
+    def close(self) -> None:
+        self.bound.discard(self.port)
+        self.port = None
+
+
+@contextlib.contextmanager
+def reusing_ports() -> Iterator[None]:
+    """Gives the session helper ReusingPortSocket in place of the socket module."""
+    ReusingPortSocket.bound = set()
+    fake = types.SimpleNamespace(socket=ReusingPortSocket, AF_INET=socket.AF_INET,
+                                 SOCK_STREAM=socket.SOCK_STREAM)
+    with mock.patch.object(wan.session, "socket", fake):
+        yield
 
 
 class NdpiReportTest(unittest.TestCase):
@@ -314,6 +362,12 @@ class CircuitCableTest(unittest.TestCase):
                 time.sleep(0.1)
             self.assertEqual(status.read_text().strip(), "0")
 
+    def test_free_ports_are_distinct_even_when_closed_ports_are_reused(self) -> None:
+        with reusing_ports():
+            ports = wan.session.free_ports(5)
+            self.assertEqual(len(set(ports)), 5)
+            self.assertEqual(ReusingPortSocket.bound, set())
+
     def test_kits_point_at_the_served_entry_with_local_ports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             kits = Path(temporary)
@@ -325,7 +379,8 @@ class CircuitCableTest(unittest.TestCase):
                 (kits / path).mkdir()
                 (kits / path / "yume.json").write_text(json.dumps(config))
             served = {"address": "10.77.77.1", "ports": {"entry": 40001, "destination": 40002}}
-            configs, socks = circuit_cable.point_kits(kits, served, kits / "sockets")
+            with reusing_ports():
+                configs, socks = circuit_cable.point_kits(kits, served, kits / "sockets")
             self.assertEqual(len(set(socks.values())), 3)
             for path, location in configs.items():
                 config = json.loads(location.read_text())

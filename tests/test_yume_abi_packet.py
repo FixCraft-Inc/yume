@@ -171,12 +171,12 @@ def routed(probe: Path, daemon: Path, root: Path, environment: dict[str, str]) -
             # was taken before it bound it.
             for attempt in range(PORT_ATTEMPTS):
                 kit = root / f"route-kit-{attempt}"
-                server_port = session.free_port()
+                server_port, socks_port = session.free_ports(2)
                 session.provision_kit(kit, "localhost", server_port, environment,
                                       session.setup_program(daemon))
                 session.configure_kit(kit, listen_address="127.0.0.1",
                                       networks=("127.0.0.1/32", "::1/128"),
-                                      connect_address="127.0.0.1", socks_port=session.free_port())
+                                      connect_address="127.0.0.1", socks_port=socks_port)
                 path = kit / "client/yume.json"
                 config = json.loads(path.read_text(encoding="utf-8"))
                 config["adapters"] = []

@@ -474,7 +474,8 @@ class Cluster:
                   "--name", name, "--host", address(name), "--address", address(name),
                   *(["--exit"] if name in EXITS else []))
         setup("cluster-sign", "--cluster", str(operator), "--days", "2")
-        self.socks = {path: session.free_port() for path in ("direct", *CIRCUIT_HOPS)}
+        paths = ("direct", *CIRCUIT_HOPS)
+        self.socks = dict(zip(paths, session.free_ports(len(paths))))
         self.clients = {"direct": root / ENTRY / "client/yume.json"}
 
         def direct(config: dict) -> None:

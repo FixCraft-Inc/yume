@@ -11,6 +11,7 @@ owner. Nothing here prints or copies credential material.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.server
 import ipaddress
@@ -36,9 +37,23 @@ class SessionFailure(RuntimeError):
 
 
 def free_port(host: str = "127.0.0.1") -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind((host, 0))
-        return probe.getsockname()[1]
+    return free_ports(1, host)[0]
+
+
+def free_ports(count: int, host: str = "127.0.0.1") -> list[int]:
+    """Returns count distinct unused TCP ports.
+
+    Every probe stays bound until all are chosen: a port is free again once its
+    probe closes, so separate free_port() calls can return the same port twice.
+    The ports can still be taken by another process before the caller binds.
+    """
+    with contextlib.ExitStack() as stack:
+        ports = []
+        for _ in range(count):
+            probe = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_STREAM))
+            probe.bind((host, 0))
+            ports.append(probe.getsockname()[1])
+        return ports
 
 
 def recv_exact(connection: socket.socket, size: int) -> bytes:

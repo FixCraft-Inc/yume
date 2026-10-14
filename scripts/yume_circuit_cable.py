@@ -127,8 +127,9 @@ def point_kits(kits: Path, served: dict, sockets: Path) -> tuple[dict[str, Path]
     """Sends each kit's session to the served entry and gives it local ports."""
     configs: dict[str, Path] = {}
     socks: dict[str, int] = {}
-    for path in ("direct", *circuit.CIRCUIT_HOPS):
-        socks[path] = session.free_port()
+    paths = ("direct", *circuit.CIRCUIT_HOPS)
+    for path, port in zip(paths, session.free_ports(len(paths))):
+        socks[path] = port
 
         def local(config: dict, path: str = path) -> None:
             config["endpoint"]["connect_address"] = served["address"]

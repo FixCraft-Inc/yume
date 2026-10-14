@@ -26,10 +26,13 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   groups apart, each language with its translators' names. Only maintained
   languages gate releases.
 
-- **One palette and mark across the apps.** The Android app now uses the
-  colours of the desktop and website: a white page in light mode, a soft
-  rose accent and the same soft pink main buttons, with every Material
-  surface set instead of left lavender. The mark is the original pale icon
+- **One palette and mark across the apps.** The desktop GUI and the
+  Android app share one palette: Material's TonalSpot scheme, the one
+  Android builds from a wallpaper, seeded with the mark's colour, so
+  buttons, selection, cards and text keep the same relationships as a
+  phone's own dynamic colours in both light and dark. Status colours are
+  harmonized toward it. The desktop follows the system's light or dark
+  setting by default, as Android does. The mark is the original pale icon
   everywhere, in the colours it shows over white where it has to be solid,
   and the Android launcher shows it on white again. Notifications use a
   white outline of the mark in the status bar. Long Android explanations

@@ -6,50 +6,51 @@ pragma Singleton
 import QtQuick
 import YumeBackend 1.0
 
-// The GUI's design tokens. Colours are the website's OKLCH tokens
-// (website/assets/tokens.css) converted to sRGB: neutrals on the plum axis,
-// hue 337, and the figure roles at matched lightness. Light is the default.
-// The Android app carries the same values; website/DESIGN.md lists them.
+// The GUI's design tokens. The colours are Material's TonalSpot scheme
+// seeded with the mark's colour as it shows over white (#e59fd1), the same
+// values the Android app uses, so buttons, selection, cards and text keep
+// the relationships of a phone's own dynamic colours. website/DESIGN.md
+// says how they were derived. The default theme follows the system.
 QtObject {
     readonly property bool dark: App.dark
 
-    readonly property color paper: dark ? "#10080e" : "#fff9fd"
-    readonly property color paperSoft: dark ? "#2a1d26" : "#ffedfa"
-    readonly property color paperDeep: dark ? "#1b0b17" : "#fce0f3"
-    readonly property color cloud: dark ? "#21171e" : "#fffcfe"
-    readonly property color ink: dark ? "#f0e4ec" : "#392c35"
-    readonly property color inkSoft: dark ? "#c3b6bf" : "#503f4b"
-    readonly property color muted: dark ? "#958891" : "#6c5a67"
-    readonly property color rule: dark ? "#40343c" : "#e3d2dd"
-    readonly property color ruleSoft: dark ? "#2a2127" : "#f4e7f0"
-    readonly property color accent: dark ? "#e596d0" : "#e899d3"
-    readonly property color accentStrong: dark ? "#ffb2ee" : "#a06486"
-    readonly property color accentSoft: dark ? "#3e1935" : "#fad4ef"
-    readonly property color button: dark ? "#e8a5d5" : "#f8bbe7"
-    readonly property color buttonHover: dark ? "#ffb5eb" : "#f4a7df"
-    readonly property color buttonInk: dark ? "#1f111b" : "#392c35"
+    readonly property color paper: dark ? "#181216" : "#fff7f9"
+    readonly property color paperSoft: dark ? "#241e22" : "#f8eaf0"
+    readonly property color paperDeep: dark ? "#2f282c" : "#f2e5ea"
+    readonly property color cloud: dark ? "#201a1e" : "#ffffff"
+    readonly property color ink: dark ? "#ecdfe5" : "#201a1e"
+    readonly property color inkSoft: dark ? "#d2c2ca" : "#4f444a"
+    readonly property color muted: dark ? "#9b8d94" : "#7e7178"
+    readonly property color rule: dark ? "#4f444a" : "#d2c2ca"
+    readonly property color ruleSoft: dark ? "#2f282c" : "#f2e5ea"
+    readonly property color accent: dark ? "#f5b2e1" : "#834c75"
+    readonly property color accentStrong: dark ? "#f5b2e1" : "#834c75"
+    readonly property color accentSoft: dark ? "#56404f" : "#f9daed"
+    readonly property color button: dark ? "#f5b2e1" : "#834c75"
+    readonly property color buttonHover: dark ? "#e8a6d5" : "#8d5a80"
+    readonly property color buttonInk: dark ? "#4e1e45" : "#ffffff"
     readonly property color focus: accentStrong
 
-    // Roles: the server in iris, data in blue, the disguise in amber, keys
-    // in yellow, the outside world in mint and refusals in coral.
-    readonly property color server: dark ? "#a392d6" : "#b5a4ea"
-    readonly property color serverStrong: dark ? "#d1c4fd" : "#674ea1"
-    readonly property color serverSoft: dark ? "#2b243f" : "#ebe5ff"
-    readonly property color data: dark ? "#6da4d3" : "#7cb8ea"
-    readonly property color dataStrong: dark ? "#a8d3f9" : "#1b659a"
-    readonly property color dataSoft: dark ? "#12283b" : "#dbeefe"
-    readonly property color disguise: dark ? "#dd9b5f" : "#f1ad71"
-    readonly property color disguiseStrong: dark ? "#f8c696" : "#985521"
-    readonly property color disguiseSoft: dark ? "#3c220f" : "#ffe8d2"
-    readonly property color keys: dark ? "#e0c262" : "#f0ce65"
-    readonly property color keysStrong: dark ? "#f3de90" : "#7d5e07"
-    readonly property color keysSoft: dark ? "#352a09" : "#fcf2cd"
-    readonly property color outside: dark ? "#73b598" : "#82c9aa"
-    readonly property color outsideStrong: dark ? "#aadfc6" : "#25694f"
-    readonly property color outsideSoft: dark ? "#112d21" : "#dbf4e8"
-    readonly property color refused: dark ? "#da827b" : "#ec928b"
-    readonly property color refusedStrong: dark ? "#febab4" : "#a73e3b"
-    readonly property color refusedSoft: dark ? "#401d1b" : "#ffe3df"
+    // Figure and state roles: the desktop's hues harmonized toward the seed,
+    // a mid tone, a strong ink and a soft container in each theme.
+    readonly property color server: dark ? "#c39dd9" : "#c39dd9"
+    readonly property color serverStrong: dark ? "#e0b8f6" : "#725187"
+    readonly property color serverSoft: dark ? "#59396e" : "#f4daff"
+    readonly property color data: dark ? "#90abe3" : "#90abe3"
+    readonly property color dataStrong: dark ? "#abc7ff" : "#425e91"
+    readonly property color dataSoft: dark ? "#294677" : "#d7e2ff"
+    readonly property color disguise: dark ? "#e99679" : "#e99679"
+    readonly property color disguiseStrong: dark ? "#ffb59b" : "#8f4c34"
+    readonly property color disguiseSoft: dark ? "#72351f" : "#ffdbcf"
+    readonly property color keys: dark ? "#d8a158" : "#d8a158"
+    readonly property color keysStrong: dark ? "#f7bc70" : "#815512"
+    readonly property color keysSoft: dark ? "#643f00" : "#ffddb6"
+    readonly property color outside: dark ? "#6eb9aa" : "#6eb9aa"
+    readonly property color outsideStrong: dark ? "#89d4c5" : "#156a5e"
+    readonly property color outsideSoft: dark ? "#005046" : "#a5f1e1"
+    readonly property color refused: dark ? "#e794a3" : "#e794a3"
+    readonly property color refusedStrong: dark ? "#ffb2bf" : "#8e4958"
+    readonly property color refusedSoft: dark ? "#713341" : "#ffd9de"
 
     readonly property string displayFont: "Jost"
     readonly property string monoFont: "monospace"

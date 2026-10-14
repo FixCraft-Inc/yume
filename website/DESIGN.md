@@ -29,9 +29,13 @@ The complete light and dark ramps live in `assets/tokens.css`. Do not add colour
 literals to `assets/site.css`.
 
 The desktop GUI (`src/gui/qml/Theme.qml`) and the Android app
-(`ui/theme/Color.kt` in its checkout) use the same axis and values. Android
-sets every Material surface role from these ramps, because Material's own
-defaults are lavender.
+(`ui/theme/Color.kt` in its checkout) do not use these ramps. Both take
+Material's TonalSpot scheme, the one Android builds from a wallpaper, seeded
+with the mark's colour over white (`#e59fd1`): primary `#834C75` light and
+`#F5B2E1` dark, with every container, surface and text colour derived from
+that seed, and status colours harmonized toward it. The apps therefore match
+each other exactly, and match the site in hue but not value by value. The
+site keeps its own softer, hand-set ramps for long reading.
 
 ### Mark
 

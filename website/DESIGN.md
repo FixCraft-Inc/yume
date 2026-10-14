@@ -25,7 +25,8 @@ one ramp inverted. Every value is OKLCH on hue 338, the mark's own hue.
 - Light: a faintly pink page `oklch(96.5% 0.0065 338)` under warm-white cards
   `oklch(99.3% 0.0035 338)`, plum ink, a dusty plum accent
   `oklch(54.5% 0.095 338)` for controls and links, and blossom main buttons
-  `oklch(91.5% 0.042 338)` with plum text.
+  `oklch(88% 0.06 338)` with plum text, one step deeper than the selection
+  tint so a main action stands out from the page.
 - Dark: a plum night page `oklch(19% 0.012 338)` under lifted cards
   `oklch(25% 0.015 338)`, and a soft pink accent and button
   `oklch(84.5% 0.072 338)` with wine text. The AMOLED variant puts the same
@@ -50,6 +51,10 @@ tile, and the desktop sidebar, window and tray. Over white they look the same
 as the original, and they stay true on any other ground. The mark is never
 recoloured or darkened for dark grounds. Status-bar icons are the outline
 alone in white.
+
+The hero sets the mark on a cloud built the same way in both themes: a rim
+in the soft accent around a centre in the card colour, shaded inward with
+the same accent. Light and dark differ in value, never in construction.
 
 ### Diagram roles
 
@@ -129,7 +134,7 @@ the website's export of it. The portable core of the light theme is:
   --color-cloud: oklch(99.3% 0.0035 338);
   --color-ink: oklch(26.5% 0.014 338);
   --color-accent-strong: oklch(54.5% 0.095 338);
-  --color-button: oklch(91.5% 0.042 338);
+  --color-button: oklch(88% 0.06 338);
   --color-focus: oklch(54.5% 0.095 338);
   --font-display: "Quicksand", ui-rounded, sans-serif;
   --font-body: "Nunito Sans", ui-sans-serif, sans-serif;

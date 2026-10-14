@@ -39,9 +39,9 @@
   --color-accent-strong: oklch(54.5% 0.095 338);
   --color-accent-soft: oklch(91.5% 0.042 338);
   --color-accent-ink: oklch(37% 0.07 338);
-  --color-button: oklch(91.5% 0.042 338);
-  --color-button-hover: oklch(89% 0.05 338);
-  --color-button-pressed: oklch(86.5% 0.057 338);
+  --color-button: oklch(88% 0.06 338);
+  --color-button-hover: oklch(85.5% 0.066 338);
+  --color-button-pressed: oklch(83% 0.072 338);
   --color-button-ink: oklch(37% 0.07 338);
   --color-focus: oklch(54.5% 0.095 338);
   --color-track: oklch(80% 0.07 338);

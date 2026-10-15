@@ -7,6 +7,8 @@ client is `yume` and the server is `yumed`. Both speak YTP/1, the YUME
 Transport Protocol.
 
 The current version is `0.3.0-dev1`. It builds from source on Linux x86-64.
+An independent security review comes before the first release candidate.
+Until it is published, use YUME where your safety does not depend on it.
 
 - Website: <https://yume.fixcraft.jp>
 - Source: <https://github.com/FixCraft-Inc/yume>

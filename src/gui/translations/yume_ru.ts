@@ -728,7 +728,7 @@
       <location filename="catalog:both.sides.prove.their.identity.with.ed25519.and.ml.dsa" line="1"/>
       <source></source>
       <extracomment>source: Both sides prove their identity with Ed25519 and ML-DSA-87 keys and agree on keys with X25519 and ML-KEM-1024, inside TLS 1.3. None of this can be switched off or chosen.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Обе стороны подтверждают свою личность ключами Ed25519 и ML-DSA-87 и согласуют ключи через X25519 и ML-KEM-1024 внутри TLS 1.3. Ничего из этого нельзя отключить или выбрать.</translation>
+      <translation>Обе стороны подтверждают свою подлинность ключами Ed25519 и ML-DSA-87 и согласуют ключи через X25519 и ML-KEM-1024 внутри TLS 1.3. Ничего из этого нельзя отключить или выбрать.</translation>
     </message>
     <message id="protocol">
       <location filename="catalog:protocol" line="1"/>
@@ -1772,7 +1772,7 @@
       <location filename="catalog:desktop.both.signatures.must.verify.against.the.identity.your.k" line="1"/>
       <source></source>
       <extracomment>source: Both signatures must verify against the identity your kit trusts.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Обе подписи должны проверяться относительно удостоверения, которому доверяет ваш набор.</translation>
+      <translation>Обе подписи должны проверяться относительно идентификатора, которому доверяет ваш набор.</translation>
     </message>
     <message id="desktop.cannot.confirm.that.is.stopped">
       <location filename="catalog:desktop.cannot.confirm.that.is.stopped" line="1"/>
@@ -2414,7 +2414,7 @@
       <location filename="catalog:desktop.server.identity" line="1"/>
       <source></source>
       <extracomment>source: Server identity; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Удостоверение сервера</translation>
+      <translation>Идентификатор сервера</translation>
     </message>
     <message id="desktop.sessions">
       <location filename="catalog:desktop.sessions" line="1"/>

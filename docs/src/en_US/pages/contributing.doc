@@ -18,7 +18,10 @@ VLESS, and REALITY are comparison subjects, not implementation sources or
 compatibility targets. Keep the independent implementation and declared
 dependency boundary described in [Why YUME](docs/WHY_YUME.md).
 
-Review changes in the order stealth, security, then usable speed. A comparison
+Review changes in the order security, stealth, then usable speed. Stealth is
+part of protecting users, since a server that can be recognized can be found
+and blocked. Never weaken authentication, confidentiality or resource bounds
+for stealth or speed, and never weaken stealth for speed. A comparison
 must preserve authentication, channel binding, ratchet limits, authorization,
 and resource bounds; weakening those to improve a score changes the product
 being measured. Record an intentional behavior change and its evidence rather

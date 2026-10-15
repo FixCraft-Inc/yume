@@ -26,6 +26,14 @@ boundary for what the 0.3 foundation implements, tests, and still gates.
   groups apart, each language with its translators' names. Only maintained
   languages gate releases.
 
+- **Simplified Chinese.** Simplified Chinese (`zh-Hans`) is a maintained
+  language in both apps, with every message translated, the safety texts
+  included. A catalog language may name its script, and Chinese must, so
+  `zh-CN`, `zh-SG` and `zh-Hans` locales read it and Traditional locales
+  stay English until Traditional Chinese has its own translation. Android
+  no longer machine-translates Chinese, since its on-device translation
+  produces Simplified Chinese only.
+
 - **One palette and mark across the apps.** `config/palette.json` is the
   single colour source for the desktop GUI, the Android app and the
   website, and `scripts/yume_palette.py` generates each one's colours from

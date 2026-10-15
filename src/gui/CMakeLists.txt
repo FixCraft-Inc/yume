@@ -28,6 +28,7 @@ add_library(yume_gui_core STATIC
     control_client.cpp control_client.hpp
     headless.cpp headless.hpp
     kit_store.cpp kit_store.hpp
+    language.cpp language.hpp
     mark.cpp mark.hpp palette.hpp
     message_model.cpp message_model.hpp
     offline_network.cpp offline_network.hpp

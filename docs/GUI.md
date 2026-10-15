@@ -243,10 +243,13 @@ out: hover or focus shows it, and a screen reader reads it as the button's
 description. Space, Return and Enter activate the focused
 button, and Escape closes a dialog. `--layout-direction rtl` mirrors the
 whole window for right-to-left scripts, and text in any script is shaped.
-The interface ships with maintained Russian, Japanese and Ukrainian
-translations, and with any community translation in the shared catalog. It
-follows the desktop locale when the catalog has that language and uses
-English otherwise, including for what a community translation leaves out.
+The interface ships with maintained Russian, Japanese, Ukrainian and
+Simplified Chinese translations, and with any community translation in the
+shared catalog. It follows the desktop locale when the catalog has that
+language and uses English otherwise, including for what a community
+translation leaves out. Chinese follows the locale's script: `zh_CN`, `zh_SG`
+and `zh_Hans` read Simplified Chinese, while Traditional locales such as
+`zh_TW` and `zh_HK` stay English until the catalog has Traditional Chinese.
 The Credits page names who translated each language, under Native and
 Community headings. The Android app uses
 the same message IDs, translations and credits; its language picker lists

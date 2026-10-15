@@ -244,9 +244,11 @@ and Android consumers. Each message has a stable ID, source text, owner and
 translator notes; the maintained Russian, Japanese and Ukrainian values are
 kept beside it. The source text is separate from each translation, and
 placeholder signatures, protected technical terms and simple markup signatures
-are checked before generation. Terms such as `Ethernet`, `SOCKS5`,
-protocol-shaped values and placeholder-only labels can remain
-language-neutral; mark each such entry explicitly with `language_neutral`.
+are checked before generation. A maintained language may not contain letters
+of a script it is not written in, such as Cyrillic in Japanese. Terms such as
+`Ethernet`, `SOCKS5`, protocol-shaped values and placeholder-only labels can
+remain language-neutral; mark each such entry explicitly with
+`language_neutral`.
 
 A gettext/TS-first catalog was considered and rejected as the canonical source.
 Qt TS has useful context support, but making Kotlin consume TS plural and

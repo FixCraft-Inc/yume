@@ -75,6 +75,8 @@ QtObject {
     readonly property color refusedInk: p.refusedOnSoft
 
     readonly property string displayFont: "Jost"
+    // The product name, as the website sets it: rounded Quicksand Bold.
+    readonly property string brandFont: "Quicksand"
     readonly property string monoFont: "monospace"
 
     readonly property int radius: 16

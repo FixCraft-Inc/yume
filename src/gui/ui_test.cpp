@@ -24,6 +24,7 @@
 #include <QProcess>
 #include <QApplication>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -254,6 +255,32 @@ private slots:
             QVERIFY(!translator.translate(nullptr, "nav.back").isEmpty());
         }
         QVERIFY(simplified);
+    }
+
+    // The name beside the mark is set in the bundled Quicksand Bold, the
+    // website's brand face, so it shows the same rounded letters on a
+    // desktop that has no Quicksand of its own.
+    void wordmark_uses_the_bundled_brand_font() {
+        const int id = QFontDatabase::addApplicationFont(
+            QStringLiteral(":/yume/fonts/Quicksand-Bold.ttf"));
+        QVERIFY(id != -1);
+        QCOMPARE(QFontDatabase::applicationFontFamilies(id),
+                 QStringList{QStringLiteral("Quicksand")});
+        QQuickItem* wordmark = nullptr;
+        const auto find = [&](const auto& self, QQuickItem* item) -> void {
+            if (!wordmark && text_of(item) == QStringLiteral("YUME"))
+                wordmark = item;
+            for (auto* child : item->childItems()) self(self, child);
+        };
+        find(find, window_->contentItem());
+        QVERIFY(wordmark);
+        const QFont font = wordmark->property("font").value<QFont>();
+        QCOMPARE(font.family(), QStringLiteral("Quicksand"));
+        QCOMPARE(font.weight(), QFont::Bold);
+        // The face Qt resolves, so a missing font cannot fall back unseen.
+        const QFontInfo resolved(font);
+        QCOMPARE(resolved.family(), QStringLiteral("Quicksand"));
+        QVERIFY(resolved.bold());
     }
 
     void tuning_table_and_custom_limits() {
@@ -1285,6 +1312,8 @@ int main(int argc, char** argv) {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QFontDatabase::addApplicationFont(
         QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
+    QFontDatabase::addApplicationFont(
+        QStringLiteral(":/yume/fonts/Quicksand-Bold.ttf"));
     if (!qEnvironmentVariableIsEmpty("YUME_GUI_LIVE_YUME")) {
         LiveTuningTest test;
         return QTest::qExec(&test, argc, argv);

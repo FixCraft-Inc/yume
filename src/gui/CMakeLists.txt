@@ -76,7 +76,7 @@ set(_yume_gui_qml
 qt_add_resources(yume_gui_core yume_gui_qml PREFIX /yume/qml BASE qml FILES ${_yume_gui_qml}
     OUTPUT_TARGETS _yume_gui_resource_targets)
 qt_add_resources(yume_gui_core yume_gui_assets PREFIX /yume BASE assets
-    FILES assets/icon.svg assets/fonts/Jost-Regular.ttf
+    FILES assets/icon.svg assets/fonts/Jost-Regular.ttf assets/fonts/Quicksand-Bold.ttf
     OUTPUT_TARGETS _yume_gui_asset_targets)
 # The presets table is embedded unchanged, so the GUI names presets from the
 # same file yume-setup and yume-doctor use.

@@ -1999,8 +1999,8 @@
     <message id="desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font">
       <location filename="catalog:desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" line="1"/>
       <source></source>
-      <extracomment>source: Free software under the GNU AGPL 3.0 or later. Jost font under the SIL Open Font License 1.1.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Вільне ПЗ за GNU AGPL 3.0 або новішою версією. Шрифт Jost за SIL Open Font License 1.1.</translation>
+      <extracomment>source: Free software under the GNU AGPL 3.0 or later. Jost and Quicksand fonts under the SIL Open Font License 1.1.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
+      <translation>Вільне ПЗ за GNU AGPL 3.0 або новішою версією. Шрифти Jost і Quicksand за SIL Open Font License 1.1.</translation>
     </message>
     <message id="desktop.hide.window">
       <location filename="catalog:desktop.hide.window" line="1"/>

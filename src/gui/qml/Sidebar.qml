@@ -33,9 +33,10 @@ Rectangle {
                     textFormat: Text.PlainText
                     text: "YUME"
                     color: Theme.ink
-                    font.family: Theme.displayFont
+                    font.family: Theme.brandFont
+                    font.weight: Font.Bold
                     font.pixelSize: 24
-                    font.letterSpacing: 3
+                    font.letterSpacing: 1.3
                 }
                 Text {
                     textFormat: Text.PlainText

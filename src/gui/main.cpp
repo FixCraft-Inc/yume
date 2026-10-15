@@ -242,6 +242,8 @@ int run_window(int argc, char** argv) {
     QSurfaceFormat::setDefaultFormat(format);
     QFontDatabase::addApplicationFont(
         QStringLiteral(":/yume/fonts/Jost-Regular.ttf"));
+    QFontDatabase::addApplicationFont(
+        QStringLiteral(":/yume/fonts/Quicksand-Bold.ttf"));
     QGuiApplication::setWindowIcon(mark_icon());
 
     QTranslator english_translator;

@@ -5,10 +5,10 @@ The JSON catalog is the only hand-edited translation source. Qt TS and Kotlin
 maps are generated views; generated files carry a banner and are reproducible.
 
 Maintained languages must translate every message. Community languages, listed
-in `community_languages`, are human translations that fall back to English per
-message, are listed only above the coverage floor, and never translate a
-message flagged `maintainer_review`. Every language, maintained or community,
-names its own name and who translated it.
+in `community_languages`, are human-reviewed translations that fall back to
+English per message, are listed only above the coverage floor, and never
+translate a message flagged `maintainer_review`. Every language, maintained or
+community, names its own name and who translated it.
 """
 from __future__ import annotations
 import argparse, html, json, re, sys, tempfile

@@ -92,7 +92,7 @@
       <location filename="catalog:original" line="1"/>
       <source></source>
       <extracomment>source: Original; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>オリジナル</translation>
+      <translation>原文</translation>
     </message>
     <message id="follows.your.phone">
       <location filename="catalog:follows.your.phone" line="1"/>
@@ -104,7 +104,7 @@
       <location filename="catalog:on.device.translation" line="1"/>
       <source></source>
       <extracomment>source: On-device translation; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>端末上翻訳</translation>
+      <translation>端末内翻訳</translation>
     </message>
     <message id="auto">
       <location filename="catalog:auto" line="1"/>
@@ -146,7 +146,7 @@
       <location filename="catalog:system.default" line="1"/>
       <source></source>
       <extracomment>source: System default; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>システム既定</translation>
+      <translation>システムのデフォルト</translation>
     </message>
     <message id="getting.ready">
       <location filename="catalog:getting.ready" line="1"/>
@@ -170,7 +170,7 @@
       <location filename="catalog:couldn.t.finish.yet.try.again.with.a.stable.connection" line="1"/>
       <source></source>
       <extracomment>source: Couldn't finish %s yet. Try again with a stable connection.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>%1 の準備を完了できませんでした。安定した接続で再試行してください。</translation>
+      <translation>%1 の準備がまだ完了していません。安定した接続でもう一度お試しください。</translation>
     </message>
     <message id="removed.download">
       <location filename="catalog:removed.download" line="1"/>
@@ -194,13 +194,13 @@
       <location filename="catalog:no.server.yet" line="1"/>
       <source></source>
       <extracomment>source: No server yet; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>サーバーがありません</translation>
+      <translation>まだサーバーがありません</translation>
     </message>
     <message id="add.the.kit.your.server.s.owner.gave.you.then.connect">
       <location filename="catalog:add.the.kit.your.server.s.owner.gave.you.then.connect" line="1"/>
       <source></source>
       <extracomment>source: Add the kit your server's owner gave you, then connect.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>サーバーの管理者から受け取ったキットを追加して接続します。</translation>
+      <translation>サーバーの管理者から受け取ったキットを追加してから、接続してください。</translation>
     </message>
     <message id="add.a.kit">
       <location filename="catalog:add.a.kit" line="1"/>
@@ -218,7 +218,7 @@
       <location filename="catalog:permission.needed" line="1"/>
       <source></source>
       <extracomment>source: Permission needed; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>権限が必要</translation>
+      <translation>許可が必要</translation>
     </message>
     <message id="connecting">
       <location filename="catalog:connecting" line="1"/>
@@ -254,7 +254,7 @@
       <location filename="catalog:tap.connect" line="1"/>
       <source></source>
       <extracomment>source: Tap Connect.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>接続をタップしてください。</translation>
+      <translation>「接続」をタップしてください。</translation>
     </message>
     <message id="android.needs.your.permission.to.start.the.vpn">
       <location filename="catalog:android.needs.your.permission.to.start.the.vpn" line="1"/>
@@ -278,7 +278,7 @@
       <location filename="catalog:wi.fi.or.mobile.data.is.unavailable.yume.connects.when" line="1"/>
       <source></source>
       <extracomment>source: Wi-Fi or mobile data is unavailable. Yume connects when one returns.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Wi-Fi もモバイルデータも利用できません。回復すると Yume が接続します。</translation>
+      <translation>Wi-Fi もモバイルデータも利用できません。どちらかが回復すると Yume が接続します。</translation>
     </message>
     <message id="traffic.from.this.device.goes.through.the.server">
       <location filename="catalog:traffic.from.this.device.goes.through.the.server" line="1"/>
@@ -296,7 +296,7 @@
       <location filename="catalog:next.attempt.in.s" line="1"/>
       <source></source>
       <extracomment>source: Next attempt in %d s.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>次の試行まで %1 秒。</translation>
+      <translation>%1 秒後に再試行します。</translation>
     </message>
     <message id="closing.the.session">
       <location filename="catalog:closing.the.session" line="1"/>
@@ -470,7 +470,7 @@
       <location filename="catalog:latest.sample" line="1"/>
       <source></source>
       <extracomment>source: Latest sample; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>最新の測定</translation>
+      <translation>最新の測定値</translation>
     </message>
     <message id="traffic.seconds">
       <location filename="catalog:traffic.seconds" line="1"/>
@@ -518,7 +518,7 @@
       <location filename="catalog:a.kit.holds.one.server.s.address.and.your.keys.for.it.t" line="1"/>
       <source></source>
       <extracomment>source: A kit holds one server's address and your keys for it. The server's owner seals it into a file and tells you its code.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>キットには 1 台のサーバーのアドレスと、そのための鍵が入っています。サーバーの管理者がファイルに封印し、コードを伝えます。</translation>
+      <translation>キットには 1 台のサーバーのアドレスと、そのサーバー用の鍵が入っています。サーバーの管理者がキットをファイルに封印し、開くためのコードを伝えます。</translation>
     </message>
     <message id="no.kits.yet">
       <location filename="catalog:no.kits.yet" line="1"/>
@@ -566,7 +566,7 @@
       <location filename="catalog:delete.this.kit" line="1"/>
       <source></source>
       <extracomment>source: Delete this kit?; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>このキットを削除しますか?</translation>
+      <translation>このキットを削除しますか？</translation>
     </message>
     <message id="its.keys.are.removed.from.this.device.you.need.the.file">
       <location filename="catalog:its.keys.are.removed.from.this.device.you.need.the.file" line="1"/>
@@ -728,7 +728,7 @@
       <location filename="catalog:both.sides.prove.their.identity.with.ed25519.and.ml.dsa" line="1"/>
       <source></source>
       <extracomment>source: Both sides prove their identity with Ed25519 and ML-DSA-87 keys and agree on keys with X25519 and ML-KEM-1024, inside TLS 1.3. None of this can be switched off or chosen.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>双方が Ed25519 と ML-DSA-87 の鍵で身元を証明し、TLS 1.3 の内側で X25519 と ML-KEM-1024 により鍵を合意します。いずれも無効化や選択はできません。</translation>
+      <translation>双方が Ed25519 と ML-DSA-87 の鍵で互いを認証し、TLS 1.3 の内側で X25519 と ML-KEM-1024 による鍵合意を行います。いずれも無効にすることも、選ぶこともできません。</translation>
     </message>
     <message id="protocol">
       <location filename="catalog:protocol" line="1"/>
@@ -842,13 +842,13 @@
       <location filename="catalog:encrypted.key.in.android.keystore" line="1"/>
       <source></source>
       <extracomment>source: Encrypted, key in Android Keystore; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>暗号化済み (鍵は Android Keystore)</translation>
+      <translation>暗号化済み（鍵は Android Keystore 内）</translation>
     </message>
     <message id="encrypted.keystore.and.your.password">
       <location filename="catalog:encrypted.keystore.and.your.password" line="1"/>
       <source></source>
       <extracomment>source: Encrypted, Keystore and your password; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>暗号化済み (Keystore とパスワード)</translation>
+      <translation>暗号化済み（Keystore とパスワード）</translation>
     </message>
     <message id="backups">
       <location filename="catalog:backups" line="1"/>
@@ -890,13 +890,13 @@
       <location filename="catalog:yume.makes.its.connection.look.like.a.browser.s.no.tool" line="1"/>
       <source></source>
       <extracomment>source: YUME makes its connection look like a browser's. No tool can promise that it is never recognized or blocked.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>YUME は接続をブラウザーのものに見せます。ただし、決して識別もブロックもされないと約束できるツールはありません。</translation>
+      <translation>YUME は接続をブラウザーの通信のように見せます。ただし、識別もブロックも決してされないと約束できるツールはありません。</translation>
     </message>
     <message id="dns.servers">
       <location filename="catalog:dns.servers" line="1"/>
       <source></source>
       <extracomment>source: DNS servers; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>DNSサーバー</translation>
+      <translation>DNS サーバー</translation>
     </message>
     <message id="up.to.four.ip.addresses.separated.by.commas.lookups.go">
       <location filename="catalog:up.to.four.ip.addresses.separated.by.commas.lookups.go" line="1"/>
@@ -962,7 +962,7 @@
       <location filename="catalog:amoled.black" line="1"/>
       <source></source>
       <extracomment>source: AMOLED black; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>AMOLEDブラック</translation>
+      <translation>AMOLED ブラック</translation>
     </message>
     <message id="use.true.black.in.dark.mode">
       <location filename="catalog:use.true.black.in.dark.mode" line="1"/>
@@ -986,7 +986,7 @@
       <location filename="catalog:material.you.on.android.12" line="1"/>
       <source></source>
       <extracomment>source: Material You on Android 12+.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Android 12+ の Material You を使います。</translation>
+      <translation>Android 12 以降で Material You を使います。</translation>
     </message>
     <message id="use.android.protection.by.default.or.add.a.password.bef">
       <location filename="catalog:use.android.protection.by.default.or.add.a.password.bef" line="1"/>
@@ -1004,7 +1004,7 @@
       <location filename="catalog:android.secure" line="1"/>
       <source></source>
       <extracomment>source: Android secure; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Android 保護</translation>
+      <translation>Android の保護</translation>
     </message>
     <message id="password.required">
       <location filename="catalog:password.required" line="1"/>
@@ -1034,7 +1034,7 @@
       <location filename="catalog:unlock.app.data" line="1"/>
       <source></source>
       <extracomment>source: Unlock app data; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>アプリデータを解除</translation>
+      <translation>アプリデータのロックを解除</translation>
     </message>
     <message id="enter.the.password.to.open.yume.and.load.encrypted.data">
       <location filename="catalog:enter.the.password.to.open.yume.and.load.encrypted.data" line="1"/>
@@ -1070,7 +1070,7 @@
       <location filename="catalog:unlock" line="1"/>
       <source></source>
       <extracomment>source: Unlock; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>解除</translation>
+      <translation>ロック解除</translation>
     </message>
     <message id="yume.will.ask.for.this.password.before.the.app.opens.st">
       <location filename="catalog:yume.will.ask.for.this.password.before.the.app.opens.st" line="1"/>
@@ -1094,7 +1094,7 @@
       <location filename="catalog:enter.the.password.to.continue" line="1"/>
       <source></source>
       <extracomment>source: Enter the password to continue; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>パスワードが必要です</translation>
+      <translation>続行するにはパスワードを入力してください</translation>
     </message>
     <message id="current.password.required">
       <location filename="catalog:current.password.required" line="1"/>
@@ -1160,7 +1160,7 @@
       <location filename="catalog:choose.the.shared.yume.posture.for.the.selected.kit.cha" line="1"/>
       <source></source>
       <extracomment>source: Choose the shared YUME posture for the selected kit. Changes apply the next time you connect.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>選択したキットに共通 YUME 設定を選びます。変更は次回接続時に適用されます。</translation>
+      <translation>選択したキットで使う YUME の共通設定を選んでください。変更は次回の接続から適用されます。</translation>
     </message>
     <message id="select.a.kit.to.tune.its.connection">
       <location filename="catalog:select.a.kit.to.tune.its.connection" line="1"/>
@@ -1250,13 +1250,13 @@
       <location filename="catalog:i.know.what.i.m.doing" line="1"/>
       <source></source>
       <extracomment>source: I know what I'm doing; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>内容を理解しました</translation>
+      <translation>理解したうえで操作します</translation>
     </message>
     <message id="unlock.expert.editing">
       <location filename="catalog:unlock.expert.editing" line="1"/>
       <source></source>
       <extracomment>source: Unlock expert editing; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>エキスパート編集を解除</translation>
+      <translation>エキスパート編集のロックを解除</translation>
     </message>
     <message id="expert.editing.is.locked.until.you.acknowledge.the.warn">
       <location filename="catalog:expert.editing.is.locked.until.you.acknowledge.the.warn" line="1"/>
@@ -1280,7 +1280,7 @@
       <location filename="catalog:flow.budget" line="1"/>
       <source></source>
       <extracomment>source: Flow budget; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>フロー上限</translation>
+      <translation>フローバジェット</translation>
     </message>
     <message id="credit.returns.per.window">
       <location filename="catalog:credit.returns.per.window" line="1"/>
@@ -1430,7 +1430,7 @@
       <location filename="catalog:optimized" line="1"/>
       <source></source>
       <extracomment>source: Optimized; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>最適化中</translation>
+      <translation>最適化</translation>
     </message>
     <message id="unrestricted">
       <location filename="catalog:unrestricted" line="1"/>
@@ -1448,13 +1448,13 @@
       <location filename="catalog:unavailable.on.this.android.version" line="1"/>
       <source></source>
       <extracomment>source: Unavailable on this Android version; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>このAndroidバージョンでは利用できません。</translation>
+      <translation>この Android バージョンでは利用できません</translation>
     </message>
     <message id="recognition">
       <location filename="catalog:recognition" line="1"/>
       <source></source>
       <extracomment>source: Recognition; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>認識について</translation>
+      <translation>謝辞</translation>
     </message>
     <message id="from.f1xgod">
       <location filename="catalog:from.f1xgod" line="1"/>
@@ -1466,7 +1466,7 @@
       <location filename="catalog:founder.ceo.fixcraft.inc" line="1"/>
       <source></source>
       <extracomment>source: Founder &amp; CEO, FixCraft, Inc.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>FixCraft, Inc. 創業者兼CEO</translation>
+      <translation>FixCraft, Inc. 創業者兼 CEO</translation>
     </message>
     <message id="author.lead.developer.and.designer.of.yume.and.basefwx">
       <location filename="catalog:author.lead.developer.and.designer.of.yume.and.basefwx" line="1"/>
@@ -1478,19 +1478,19 @@
       <location filename="catalog:open.source.components" line="1"/>
       <source></source>
       <extracomment>source: Open-source components; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>オープンソース構成要素</translation>
+      <translation>オープンソースのコンポーネント</translation>
     </message>
     <message id="view.open.source.components">
       <location filename="catalog:view.open.source.components" line="1"/>
       <source></source>
       <extracomment>source: View open-source components; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>オープンソース構成要素を見る</translation>
+      <translation>オープンソースのコンポーネントを見る</translation>
     </message>
     <message id="third.party.code.yume.builds.on.with.licences">
       <location filename="catalog:third.party.code.yume.builds.on.with.licences" line="1"/>
       <source></source>
       <extracomment>source: Third-party code Yume builds on, with licences.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>Yume が依存しているサードパーティ ライブラリとライセンス。</translation>
+      <translation>Yume が利用しているサードパーティのコードとそのライセンス。</translation>
     </message>
     <message id="in.the.yume.library">
       <location filename="catalog:in.the.yume.library" line="1"/>
@@ -1514,7 +1514,7 @@
       <location filename="catalog:compiled.into.this.app.the.desktop.client.uses.differen" line="1"/>
       <source></source>
       <extracomment>source: Compiled into this app. The desktop client uses different libraries for these jobs.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>本アプリに組み込まれています。デスクトップでは別のライブラリでこれらの役割を担います。</translation>
+      <translation>本アプリに組み込まれています。デスクトップ版では別のライブラリがこれらの役割を担います。</translation>
     </message>
     <message id="tls.1.3.and.every.cryptographic.primitive.of.the.connec">
       <location filename="catalog:tls.1.3.and.every.cryptographic.primitive.of.the.connec" line="1"/>
@@ -1580,7 +1580,7 @@
       <location filename="catalog:building.on.open.source.is.one.of.the.most.empowering.e" line="1"/>
       <source></source>
       <extracomment>source: "Building on open source is one of the most empowering experiences in software development. You do not have to wait for someone else to fix an issue or add a feature — you can build the solution yourself."; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>"オープンソースの上に開発することは、ソフトウェア開発において最も力を与えてくれる体験の一つです。問題の修正や機能の追加を誰かに待つ必要はなく、自分で解決策を作ることができます。"</translation>
+      <translation>「オープンソースを土台に開発することは、ソフトウェア開発で最も力を与えてくれる体験の一つです。問題の修正や機能の追加を誰かに待つ必要はなく、自分で解決策を作ることができます。」</translation>
     </message>
     <message id="accessibility.copy.value">
       <location filename="catalog:accessibility.copy.value" line="1"/>
@@ -1598,37 +1598,37 @@
       <location filename="catalog:desktop.gbit.s" line="1"/>
       <source></source>
       <extracomment>source: %1 Gbit/s; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 Гбит/с</translation>
+      <translation>%1 Gbps</translation>
     </message>
     <message id="desktop.mbit.s">
       <location filename="catalog:desktop.mbit.s" line="1"/>
       <source></source>
       <extracomment>source: %1 Mbit/s; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 Мбит/с</translation>
+      <translation>%1 Mbps</translation>
     </message>
     <message id="desktop.bit.s">
       <location filename="catalog:desktop.bit.s" line="1"/>
       <source></source>
       <extracomment>source: %1 bit/s; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 ビット/秒</translation>
+      <translation>%1 bps</translation>
     </message>
     <message id="desktop.h.min">
       <location filename="catalog:desktop.h.min" line="1"/>
       <source></source>
       <extracomment>source: %1 h %2 min; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1時間%2分</translation>
+      <translation>%1 時間 %2 分</translation>
     </message>
     <message id="desktop.kbit.s">
       <location filename="catalog:desktop.kbit.s" line="1"/>
       <source></source>
       <extracomment>source: %1 kbit/s; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 кбит/с</translation>
+      <translation>%1 kbps</translation>
     </message>
     <message id="desktop.level.of">
       <location filename="catalog:desktop.level.of" line="1"/>
       <source></source>
       <extracomment>source: %1 level %2 of %3; context: Desktop LevelMeter.qml; owner: src/gui/qml/LevelMeter.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1: %2/%3 レベル</translation>
+      <translation>%1: %3 段階中 %2</translation>
     </message>
     <message id="desktop.lines">
       <location filename="catalog:desktop.lines" line="1"/>
@@ -1646,7 +1646,7 @@
       <location filename="catalog:desktop.min.s" line="1"/>
       <source></source>
       <extracomment>source: %1 min %2 s; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1分%2秒</translation>
+      <translation>%1 分 %2 秒</translation>
     </message>
     <message id="desktop.ms">
       <location filename="catalog:desktop.ms" line="1"/>
@@ -1658,13 +1658,13 @@
       <location filename="catalog:desktop.of.configured" line="1"/>
       <source></source>
       <extracomment>source: %1 of %2 configured; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%2 件中 %1 件を設定</translation>
+      <translation>%1（設定は %2 ホップ）</translation>
     </message>
     <message id="desktop.on.the.wire">
       <location filename="catalog:desktop.on.the.wire" line="1"/>
       <source></source>
       <extracomment>source: %1 on the wire; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>通信上の%1</translation>
+      <translation>回線上では %1</translation>
     </message>
     <message id="desktop.s">
       <location filename="catalog:desktop.s" line="1"/>
@@ -1694,31 +1694,31 @@
       <location filename="catalog:desktop.a.connected.tunnel.keeps.running.when.you.close.this.wi" line="1"/>
       <source></source>
       <extracomment>source: A connected tunnel keeps running when you close this window or it quits. Open YUME again to see it or disconnect it.; context: Desktop ConnectPage.qml; owner: src/gui/qml/ConnectPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>このウィンドウを閉じたり終了したりしても接続済みトンネルは動き続けます。YUMEを再度開いて確認または切断してください。</translation>
+      <translation>このウィンドウを閉じても、アプリを終了しても、接続済みのトンネルは動き続けます。確認や切断をするには YUME をもう一度開いてください。</translation>
     </message>
     <message id="desktop.a.hybrid.of.a.classical.and.a.post.quantum.method.the.s">
       <location filename="catalog:desktop.a.hybrid.of.a.classical.and.a.post.quantum.method.the.s" line="1"/>
       <source></source>
       <extracomment>source: A hybrid of a classical and a post-quantum method: the session key stays secret while either one holds.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>古典方式とポスト量子方式のハイブリッドです。どちらか一方が成立する限りセッションキーは秘密に保たれます。</translation>
+      <translation>古典方式とポスト量子方式のハイブリッドです。どちらか一方が安全である限り、セッション鍵は秘密に保たれます。</translation>
     </message>
     <message id="desktop.a.kit.holds.one.client.s.settings.and.credentials.impor">
       <location filename="catalog:desktop.a.kit.holds.one.client.s.settings.and.credentials.impor" line="1"/>
       <source></source>
       <extracomment>source: A kit holds one client's settings and credentials. Import a sealed kit you received, with its code.; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>キットにはクライアントの設定と認証情報が含まれます。受け取った封印済みキットをコードとともにインポートします。</translation>
+      <translation>キットには 1 つのクライアントの設定と認証情報が含まれます。受け取った封印済みキットを、そのコードと一緒にインポートしてください。</translation>
     </message>
     <message id="desktop.a.sealed.kit.is.one.file.its.code.given.to.you.separate">
       <location filename="catalog:desktop.a.sealed.kit.is.one.file.its.code.given.to.you.separate" line="1"/>
       <source></source>
       <extracomment>source: A sealed kit is one file. Its code, given to you separately, opens it on this device.; context: Desktop ConnectPage.qml; owner: src/gui/qml/ConnectPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>封印済みキットは1つのファイルです。別途受け取ったコードでこの端末上で開けます。</translation>
+      <translation>封印済みキットは 1 つのファイルです。別に受け取ったコードで、この端末上で開きます。</translation>
     </message>
     <message id="desktop.aes.256.gcm.with.one.use.message.keys">
       <location filename="catalog:desktop.aes.256.gcm.with.one.use.message.keys" line="1"/>
       <source></source>
       <extracomment>source: AES-256-GCM with one-use message keys; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>ワンタイムメッセージキーを使う AES-256-GCM</translation>
+      <translation>使い捨てのメッセージ鍵を使う AES-256-GCM</translation>
     </message>
     <message id="desktop.accept.this.route">
       <location filename="catalog:desktop.accept.this.route" line="1"/>
@@ -1730,7 +1730,7 @@
       <location filename="catalog:desktop.accepting.lasts.until.a.route.of.the.configured.length" line="1"/>
       <source></source>
       <extracomment>source: Accepting lasts until a route of the configured length works again or yume stops. Until you accept, new connections wait.; context: Desktop RouteReviewDialog.qml; owner: src/gui/qml/RouteReviewDialog.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>承認は設定した長さの経路が再び使えるようになるか、yumeを停止するまで有効です。承認するまで新しい接続は待機します。</translation>
+      <translation>承認は、設定した長さの経路が再び使えるようになるか、yume が停止するまで有効です。承認するまで新しい接続は待機します。</translation>
     </message>
     <message id="desktop.also.after.a.pause.in.traffic.that.saves.a.round.trip.l">
       <location filename="catalog:desktop.also.after.a.pause.in.traffic.that.saves.a.round.trip.l" line="1"/>
@@ -1754,19 +1754,19 @@
       <location filename="catalog:desktop.apply.one.field.at.a.time.byte.fields.use.exact.bytes.i" line="1"/>
       <source></source>
       <extracomment>source: Apply one field at a time. Byte fields use exact bytes; idle rotation uses true or false. The core checks each value before saving.; context: Desktop TuningPanel.qml; owner: src/gui/qml/TuningPanel.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>一度に1項目だけ適用してください。バイト項目は正確なバイト数、アイドル時のローテーションは true または false を使います。保存前にコアが各値を検証します。</translation>
+      <translation>一度に 1 項目だけ適用してください。バイト項目は正確なバイト数、アイドル時のローテーションは true または false で指定します。保存前にコアが各値を検証します。</translation>
     </message>
     <message id="desktop.at.most.per.key.in.each.direction">
       <location filename="catalog:desktop.at.most.per.key.in.each.direction" line="1"/>
       <source></source>
       <extracomment>source: At most %1 per key in each direction; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>各方向のキーあたり最大 %1</translation>
+      <translation>方向ごとに鍵あたり最大 %1</translation>
     </message>
     <message id="desktop.at.most.per.key.less.if.the.server.sets.less">
       <location filename="catalog:desktop.at.most.per.key.less.if.the.server.sets.less" line="1"/>
       <source></source>
       <extracomment>source: At most %1 per key, less if the server sets less; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>キーあたり最大 %1。サーバーが小さい値を設定した場合はそれ以下です</translation>
+      <translation>鍵あたり最大 %1（サーバーの設定値が小さい場合はそれ以下）</translation>
     </message>
     <message id="desktop.both.signatures.must.verify.against.the.identity.your.k">
       <location filename="catalog:desktop.both.signatures.must.verify.against.the.identity.your.k" line="1"/>
@@ -1790,7 +1790,7 @@
       <location filename="catalog:desktop.cannot.run.yume.setup.beside.the.selected.yume.program" line="1"/>
       <source></source>
       <extracomment>source: Cannot run yume-setup beside the selected yume program; context: Desktop tuning.cpp; owner: src/gui/tuning.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>選択した yume プログラムの横で yume-setup を実行できません</translation>
+      <translation>選択した yume プログラムと同じ場所にある yume-setup を実行できません</translation>
     </message>
     <message id="desktop.checking.the.client">
       <location filename="catalog:desktop.checking.the.client" line="1"/>
@@ -1802,7 +1802,7 @@
       <location filename="catalog:desktop.checking.the.kit" line="1"/>
       <source></source>
       <extracomment>source: Checking the kit; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>キットを確認</translation>
+      <translation>キットを確認中</translation>
     </message>
     <message id="desktop.checking">
       <location filename="catalog:desktop.checking" line="1"/>
@@ -1826,19 +1826,19 @@
       <location filename="catalog:desktop.circuits.stopped" line="1"/>
       <source></source>
       <extracomment>source: Circuits stopped: %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>停止した回路: %1</translation>
+      <translation>回線が停止しました: %1</translation>
     </message>
     <message id="desktop.closed">
       <location filename="catalog:desktop.closed" line="1"/>
       <source></source>
       <extracomment>source: Closed; context: Desktop app_state.cpp; owner: src/gui/app_state.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>閉じました</translation>
+      <translation>終了</translation>
     </message>
     <message id="desktop.connect.to.learn.the.effective.key.epoch.the.server.can">
       <location filename="catalog:desktop.connect.to.learn.the.effective.key.epoch.the.server.can" line="1"/>
       <source></source>
       <extracomment>source: Connect to learn the effective key epoch. The server can enforce a smaller value.; context: Desktop TuningPanel.qml; owner: src/gui/qml/TuningPanel.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>実効キーエポックを確認するには接続してください。サーバーはより小さい値を強制できます。</translation>
+      <translation>実効の鍵エポックを確認するには接続してください。サーバーはより小さい値を強制できます。</translation>
     </message>
     <message id="desktop.connect.to.see.the.posture">
       <location filename="catalog:desktop.connect.to.see.the.posture" line="1"/>
@@ -1904,7 +1904,7 @@
       <location filename="catalog:desktop.delete.this.kit.and.its.keys" line="1"/>
       <source></source>
       <extracomment>source: Delete this kit and its keys?; context: Desktop ConnectPage.qml; owner: src/gui/qml/ConnectPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>このキットとキーを削除しますか？</translation>
+      <translation>このキットと鍵を削除しますか？</translation>
     </message>
     <message id="desktop.desktop">
       <location filename="catalog:desktop.desktop" line="1"/>
@@ -1916,7 +1916,7 @@
       <location filename="catalog:desktop.each.hop.knows.only.its.neighbours" line="1"/>
       <source></source>
       <extracomment>source: Each hop knows only its neighbours.; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>各ホップは隣接する相手だけを知ります。</translation>
+      <translation>各ホップが知っているのは隣接するホップだけです。</translation>
     </message>
     <message id="desktop.ed25519.and.ml.dsa.87.signatures">
       <location filename="catalog:desktop.ed25519.and.ml.dsa.87.signatures" line="1"/>
@@ -1982,7 +1982,7 @@
       <location filename="catalog:desktop.follow" line="1"/>
       <source></source>
       <extracomment>source: Follow; context: Desktop LogsPage.qml; owner: src/gui/qml/LogsPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>追従</translation>
+      <translation>自動スクロール</translation>
     </message>
     <message id="desktop.for.changes.take.effect.on.the.next.connection.applying">
       <location filename="catalog:desktop.for.changes.take.effect.on.the.next.connection.applying" line="1"/>
@@ -2000,13 +2000,13 @@
       <location filename="catalog:desktop.free.software.under.the.gnu.agpl.3.0.or.later.jost.font" line="1"/>
       <source></source>
       <extracomment>source: Free software under the GNU AGPL 3.0 or later. Jost font under the SIL Open Font License 1.1.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>GNU AGPL 3.0 以降の自由ソフトウェアです。Jost フォントは SIL Open Font License 1.1 です。</translation>
+      <translation>GNU AGPL 3.0 以降の自由ソフトウェアです。Jost フォントは SIL Open Font License 1.1 で提供されています。</translation>
     </message>
     <message id="desktop.hide.window">
       <location filename="catalog:desktop.hide.window" line="1"/>
       <source></source>
       <extracomment>source: Hide window; context: Desktop tray.cpp; owner: src/gui/tray.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>ウィンドウを隠す</translation>
+      <translation>ウィンドウを非表示</translation>
     </message>
     <message id="desktop.idle">
       <location filename="catalog:desktop.idle" line="1"/>
@@ -2054,7 +2054,7 @@
       <location filename="catalog:desktop.it.follows.a.captured.browser.session.that.is.not.proof" line="1"/>
       <source></source>
       <extracomment>source: It follows a captured browser session. That is not proof the traffic cannot be told apart.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>キャプチャしたブラウザーセッションに従います。通信を識別できないことの証明ではありません。</translation>
+      <translation>キャプチャしたブラウザーのセッションに倣っています。ただし、通信を区別できないことの証明ではありません。</translation>
     </message>
     <message id="desktop.kits">
       <location filename="catalog:desktop.kits" line="1"/>
@@ -2066,7 +2066,7 @@
       <location filename="catalog:desktop.keep" line="1"/>
       <source></source>
       <extracomment>source: Keep; context: Desktop ConnectPage.qml; owner: src/gui/qml/ConnectPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>保持</translation>
+      <translation>残す</translation>
     </message>
     <message id="desktop.keep.waiting">
       <location filename="catalog:desktop.keep.waiting" line="1"/>
@@ -2078,7 +2078,7 @@
       <location filename="catalog:desktop.kept.in" line="1"/>
       <source></source>
       <extracomment>source: Kept in %1; context: Desktop ConnectPage.qml; owner: src/gui/qml/ConnectPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 に保持</translation>
+      <translation>保存先: %1</translation>
     </message>
     <message id="desktop.key.exchange">
       <location filename="catalog:desktop.key.exchange" line="1"/>
@@ -2090,7 +2090,7 @@
       <location filename="catalog:desktop.key.rotation" line="1"/>
       <source></source>
       <extracomment>source: Key rotation; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>キーのローテーション</translation>
+      <translation>鍵のローテーション</translation>
     </message>
     <message id="desktop.kit">
       <location filename="catalog:desktop.kit" line="1"/>
@@ -2114,7 +2114,7 @@
       <location filename="catalog:desktop.larger.epochs.expose.more.data.if.an.epoch.key.is.compr" line="1"/>
       <source></source>
       <extracomment>source: Larger epochs expose more data if an epoch key is compromised. Larger flow budgets use more memory and enlarge windows. More credit returns add control records. Idle rotation sends exchanges a browser would not send. Custom settings have no measured speed or stealth guarantee. Rotation cannot be turned off.; context: Desktop TuningPanel.qml; owner: src/gui/qml/TuningPanel.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>エポックキーが漏えいすると、エポックが大きいほど多くのデータが露出します。大きなフローバジェットはメモリを多く使い、ウィンドウを広げます。クレジット返却を増やすと制御レコードが増えます。アイドル時のローテーションはブラウザーが送らない交換を送ります。カスタム設定は速度やステルスを保証しません。ローテーションは無効化できません。</translation>
+      <translation>エポック鍵が漏えいした場合、エポックが大きいほど多くのデータが露出します。フローバジェットを大きくするとメモリ使用量が増え、ウィンドウが広がります。クレジット返却を増やすと制御レコードが増えます。アイドル時のローテーションは、ブラウザーなら送らない交換を送ります。カスタム設定には、測定に基づく速度やステルスの保証はありません。ローテーションは無効にできません。</translation>
     </message>
     <message id="desktop.last.failure">
       <location filename="catalog:desktop.last.failure" line="1"/>
@@ -2144,7 +2144,7 @@
       <location filename="catalog:desktop.live.session.mib.per.key.the.server.s.higher.allowance" line="1"/>
       <source></source>
       <extracomment>source: Live session: %1 MiB per key. The server's higher allowance is unknown.; context: Desktop TuningPanel.qml; owner: src/gui/qml/TuningPanel.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>現在のセッション: キーあたり %1 MiB。サーバーのより高い上限は不明です。</translation>
+      <translation>現在のセッション: 鍵あたり %1 MiB。サーバーのより高い上限は不明です。</translation>
     </message>
     <message id="desktop.local.access">
       <location filename="catalog:desktop.local.access" line="1"/>
@@ -2156,7 +2156,7 @@
       <location filename="catalog:desktop.new.connections.wait.until.you.accept.it.or.a.works.aga" line="1"/>
       <source></source>
       <extracomment>source: New connections wait until you accept it or a %1 works again.; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>承認するか %1 が再び機能するまで、新しい接続は待機します。</translation>
+      <translation>承認するか、%1が再び機能するまで、新しい接続は待機します。</translation>
     </message>
     <message id="desktop.new.kit.name">
       <location filename="catalog:desktop.new.kit.name" line="1"/>
@@ -2168,7 +2168,7 @@
       <location filename="catalog:desktop.no.can.be.built.a.is.proposed" line="1"/>
       <source></source>
       <extracomment>source: No %1 can be built. A %2 is proposed.; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 を構築できません。%2 を提案します。</translation>
+      <translation>%1を構築できません。%2が提案されています。</translation>
     </message>
     <message id="desktop.no.kit">
       <location filename="catalog:desktop.no.kit" line="1"/>
@@ -2204,7 +2204,7 @@
       <location filename="catalog:desktop.no.route.of.can.be.built.right.now.yume.proposes.a.rout" line="1"/>
       <source></source>
       <extracomment>source: No route of %1 can be built right now. yume proposes a route of %2 through:; context: Desktop RouteReviewDialog.qml; owner: src/gui/qml/RouteReviewDialog.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>現在 %1 の経路を構築できません。yume は %2 の経路を次の経由先で提案します:</translation>
+      <translation>現在、%1の経路は構築できません。yume は次を経由する %2の経路を提案しています：</translation>
     </message>
     <message id="desktop.none.yet.import.one.on.the.connect.page">
       <location filename="catalog:desktop.none.yet.import.one.on.the.connect.page" line="1"/>
@@ -2228,7 +2228,7 @@
       <location filename="catalog:desktop.one.server.carries.your.streams.and.sees.their.destinat" line="1"/>
       <source></source>
       <extracomment>source: One server carries your streams and sees their destinations.; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>1台のサーバーがストリームを運び、宛先を確認します。</translation>
+      <translation>1 台のサーバーがストリームを中継し、その宛先を見ることができます。</translation>
     </message>
     <message id="desktop.open.the.folder.of">
       <location filename="catalog:desktop.open.the.folder.of" line="1"/>
@@ -2264,7 +2264,7 @@
       <location filename="catalog:desktop.point.applications.here.only.this.computer.can.reach.th" line="1"/>
       <source></source>
       <extracomment>source: Point applications here. Only this computer can reach them.; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>アプリケーションをここに向けます。このコンピューターだけが到達できます。</translation>
+      <translation>アプリケーションの接続先をここに設定してください。このコンピューターからのみ接続できます。</translation>
     </message>
     <message id="desktop.printed.lines">
       <location filename="catalog:desktop.printed.lines" line="1"/>
@@ -2288,7 +2288,7 @@
       <location filename="catalog:desktop.receiving" line="1"/>
       <source></source>
       <extracomment>source: Receiving %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 を受信中</translation>
+      <translation>受信速度 %1</translation>
     </message>
     <message id="desktop.recent.throughput">
       <location filename="catalog:desktop.recent.throughput" line="1"/>
@@ -2396,19 +2396,19 @@
       <location filename="catalog:desktop.sending" line="1"/>
       <source></source>
       <extracomment>source: Sending %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 を送信中</translation>
+      <translation>送信速度 %1</translation>
     </message>
     <message id="desktop.sent">
       <location filename="catalog:desktop.sent" line="1"/>
       <source></source>
       <extracomment>source: Sent; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>送信済み</translation>
+      <translation>送信</translation>
     </message>
     <message id="desktop.server.cap.mib.per.key.in.this.session">
       <location filename="catalog:desktop.server.cap.mib.per.key.in.this.session" line="1"/>
       <source></source>
       <extracomment>source: Server cap: %1 MiB per key in this session.; context: Desktop TuningPanel.qml; owner: src/gui/qml/TuningPanel.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>このセッションのサーバー上限: キーあたり %1 MiB。</translation>
+      <translation>このセッションのサーバー上限: 鍵あたり %1 MiB。</translation>
     </message>
     <message id="desktop.server.identity">
       <location filename="catalog:desktop.server.identity" line="1"/>
@@ -2444,7 +2444,7 @@
       <location filename="catalog:desktop.settings.saved.restart.stopped" line="1"/>
       <source></source>
       <extracomment>source: Settings saved; restart stopped: %1; context: Desktop tuning.cpp; owner: src/gui/tuning.cpp; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>設定を保存しましたが、再起動は停止しました: %1</translation>
+      <translation>設定を保存しましたが、再起動は中断されました: %1</translation>
     </message>
     <message id="desktop.settings.were.refused">
       <location filename="catalog:desktop.settings.were.refused" line="1"/>
@@ -2498,7 +2498,7 @@
       <location filename="catalog:desktop.stealth.describes.windows.credits.and.idle.rotation.not" line="1"/>
       <source></source>
       <extracomment>source: Stealth describes windows, credits and idle rotation, not a classifier result. Security describes data per key; algorithms and mandatory rotation stay the same. Fast and max need raised host TCP ceilings to rank ahead.; context: Desktop TuningPanel.qml; owner: src/gui/qml/TuningPanel.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>ステルスはウィンドウ、クレジット、アイドル時のローテーションを表し、分類器の結果ではありません。セキュリティはキーあたりのデータを表し、アルゴリズムと必須ローテーションは同じです。fast と max を上位にするにはホスト TCP 上限を引き上げる必要があります。</translation>
+      <translation>ステルスはウィンドウ、クレジット、アイドル時のローテーションを表し、分類器の結果ではありません。セキュリティは鍵あたりのデータ量を表し、アルゴリズムと必須ローテーションは変わりません。fast と max が上位になるには、ホスト TCP 上限の引き上げが必要です。</translation>
     </message>
     <message id="desktop.stop.before.removing.it">
       <location filename="catalog:desktop.stop.before.removing.it" line="1"/>
@@ -2594,7 +2594,7 @@
       <location filename="catalog:desktop.use.1.to.48.letters.digits.dots.dashes.or.underscores.s" line="1"/>
       <source></source>
       <extracomment>source: Use 1 to 48 letters, digits, dots, dashes or underscores. Start with a letter, digit or underscore.; context: Desktop ConnectPage.qml; owner: src/gui/qml/ConnectPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>英字、数字、ドット、ハイフン、アンダースコアを1〜48文字で使います。英字、数字、アンダースコアで始めてください。</translation>
+      <translation>英字、数字、ドット、ハイフン、アンダースコアで 1〜48 文字にしてください。先頭は英字、数字、アンダースコアのいずれかにしてください。</translation>
     </message>
     <message id="desktop.use.a.shorter.route">
       <location filename="catalog:desktop.use.a.shorter.route" line="1"/>
@@ -2654,7 +2654,7 @@
       <location filename="catalog:desktop.authenticated.since.start" line="1"/>
       <source></source>
       <extracomment>source: authenticated since start; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>起動時から認証済み</translation>
+      <translation>起動以降に認証</translation>
     </message>
     <message id="desktop.cannot.run">
       <location filename="catalog:desktop.cannot.run" line="1"/>
@@ -2684,7 +2684,7 @@
       <location filename="catalog:desktop.down.to.approved.in.the.kit" line="1"/>
       <source></source>
       <extracomment>source: down to %1 approved in the kit; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>キットで承認された %1 まで</translation>
+      <translation>キットで承認された %1まで</translation>
     </message>
     <message id="desktop.for.example.work">
       <location filename="catalog:desktop.for.example.work" line="1"/>
@@ -2702,7 +2702,7 @@
       <location filename="catalog:desktop.no.route.configured" line="1"/>
       <source></source>
       <extracomment>source: no route, %1 configured; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>経路なし、%1 を設定</translation>
+      <translation>経路なし（設定は %1）</translation>
     </message>
     <message id="desktop.not.running.2">
       <location filename="catalog:desktop.not.running.2" line="1"/>
@@ -2768,25 +2768,25 @@
       <location filename="catalog:desktop.to" line="1"/>
       <source></source>
       <extracomment>source: to %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 へ</translation>
+      <translation>接続先: %1</translation>
     </message>
     <message id="desktop.to.for">
       <location filename="catalog:desktop.to.for" line="1"/>
       <source></source>
       <extracomment>source: to %1 for %2; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%2 のために %1 へ</translation>
+      <translation>接続先: %1 · 接続時間 %2</translation>
     </message>
     <message id="desktop.to.next.attempt.in">
       <location filename="catalog:desktop.to.next.attempt.in" line="1"/>
       <source></source>
       <extracomment>source: to %1, next attempt in %2; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 へ、次の試行まで %2</translation>
+      <translation>接続先: %1 · 次の試行まで %2</translation>
     </message>
     <message id="desktop.you.accepted">
       <location filename="catalog:desktop.you.accepted" line="1"/>
       <source></source>
       <extracomment>source: you accepted %1; context: Desktop OverviewPage.qml; owner: src/gui/qml/OverviewPage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>%1 を承認しました</translation>
+      <translation>%1を承認済み</translation>
     </message>
     <message id="desktop.yume.closed.its.control.socket.but.has.not.ended">
       <location filename="catalog:desktop.yume.closed.its.control.socket.but.has.not.ended" line="1"/>
@@ -2858,7 +2858,7 @@
       <location filename="catalog:desktop.choose.a.different.name.of.1.to.48.letters.digits.dots.dashes.or.undersc" line="1"/>
       <source></source>
       <extracomment>source: Choose a different name of 1 to 48 letters, digits, dots, dashes or underscores, starting with a letter, digit or underscore; context: Desktop GUI; owner: src/gui; Desktop runtime message; preserve technical terms and placeholder order/signature.</extracomment>
-      <translation>英字、数字、ドット、ハイフン、アンダースコアで始まる1〜48文字の別名を選択してください</translation>
+      <translation>英字、数字、ドット、ハイフン、アンダースコアからなる 1〜48 文字の別の名前を選んでください。先頭は英字、数字、アンダースコアのいずれかです</translation>
     </message>
     <message id="desktop.renamed.1.to.2.but.the.selection.could.not.be.saved">
       <location filename="catalog:desktop.renamed.1.to.2.but.the.selection.could.not.be.saved" line="1"/>
@@ -2924,7 +2924,7 @@
       <location filename="catalog:desktop.control.reply.too.large" line="1"/>
       <source></source>
       <extracomment>source: the control reply is too large; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>Ответ управления слишком велик</translation>
+      <translation>制御応答が大きすぎます</translation>
     </message>
     <message id="desktop.control.socket.has.no.listener">
       <location filename="catalog:desktop.control.socket.has.no.listener" line="1"/>
@@ -2996,7 +2996,7 @@
       <location filename="catalog:desktop.runtime.directory.not.absolute" line="1"/>
       <source></source>
       <extracomment>source: XDG_RUNTIME_DIR is not set to an absolute path; context: Desktop GUI diagnostics; owner: src/gui; Desktop UI diagnostic; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>XDG_RUNTIME_DIR не задан как абсолютный путь</translation>
+      <translation>XDG_RUNTIME_DIR が絶対パスに設定されていません</translation>
     </message>
     <message id="desktop.no.yume.program">
       <location filename="catalog:desktop.no.yume.program" line="1"/>
@@ -3068,25 +3068,25 @@
       <location filename="catalog:desktop.no.configuration.directory" line="1"/>
       <source></source>
       <extracomment>source: no configuration directory (XDG_CONFIG_HOME or HOME); context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>構成ディレクトリがありません (XDG_CONFIG_HOME または HOME)</translation>
+      <translation>構成ディレクトリがありません（XDG_CONFIG_HOME または HOME）</translation>
     </message>
     <message id="desktop.invalid.kit.name">
       <location filename="catalog:desktop.invalid.kit.name" line="1"/>
       <source></source>
       <extracomment>source: a kit name is 1 to 48 letters, digits, dots, dashes or underscores, starting with a letter, digit or underscore; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>キット名は1〜48文字の英数字、ドット、ハイフン、アンダースコアで、英数字またはアンダースコアで始めてください</translation>
+      <translation>キット名は英数字、ドット、ハイフン、アンダースコアからなる 1〜48 文字で、先頭は英数字またはアンダースコアです</translation>
     </message>
     <message id="desktop.kits.root.not.safe">
       <location filename="catalog:desktop.kits.root.not.safe" line="1"/>
       <source></source>
       <extracomment>source: the kits root is not a safe directory of this user; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>キットのルートは安全なディレクトリではありません</translation>
+      <translation>キットのルートは、このユーザーの安全なディレクトリではありません</translation>
     </message>
     <message id="desktop.kit.configuration.not.bounded">
       <location filename="catalog:desktop.kit.configuration.not.bounded" line="1"/>
       <source></source>
       <extracomment>source: the kit's configuration is not a bounded regular file of this user; context: Desktop GUI diagnostics; owner: src/gui/kit_store.cpp; Desktop UI diagnostic; preserve technical terms.</extracomment>
-      <translation>キットの設定はこのユーザーの有界な通常ファイルではありません</translation>
+      <translation>キットの設定は、このユーザーが所有するサイズ上限内の通常ファイルではありません</translation>
     </message>
     <message id="desktop.kit.configuration.cannot.be.checked">
       <location filename="catalog:desktop.kit.configuration.cannot.be.checked" line="1"/>
@@ -3116,19 +3116,19 @@
       <location filename="catalog:password.minimum.utf8.bytes" line="1"/>
       <source></source>
       <extracomment>source: Use at least 10 UTF-8 bytes; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>UTF-8で10バイト以上を使用してください</translation>
+      <translation>UTF-8 で 10 バイト以上にしてください</translation>
     </message>
     <message id="app.data.unlock.failed">
       <location filename="catalog:app.data.unlock.failed" line="1"/>
       <source></source>
       <extracomment>source: Couldn't unlock app data. Check the password and try again.; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>アプリデータを開けません。パスワードを確認してもう一度お試しください。</translation>
+      <translation>アプリデータのロックを解除できませんでした。パスワードを確認して、もう一度お試しください。</translation>
     </message>
     <message id="ai.helpers">
       <location filename="catalog:ai.helpers" line="1"/>
       <source></source>
       <extracomment>source: Helpers; context: Android AppStrings; owner: android.app.i18n; Preserve technical terms and formatting placeholders.</extracomment>
-      <translation>支援者</translation>
+      <translation>協力</translation>
     </message>
     <message id="tuning.reset.preset">
       <location filename="catalog:tuning.reset.preset" line="1"/>
@@ -3188,13 +3188,13 @@
       <location filename="catalog:credits.desktop.components" line="1"/>
       <source></source>
       <extracomment>source: Desktop interface components; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
-      <translation>デスクトップの構成要素</translation>
+      <translation>デスクトップのコンポーネント</translation>
     </message>
     <message id="credits.native.components">
       <location filename="catalog:credits.native.components" line="1"/>
       <source></source>
       <extracomment>source: Native client and daemon components; context: Shared contributor and component credits; owner: config/credits.json; Attribution text; preserve product names and license identifiers.</extracomment>
-      <translation>ネイティブクライアントとデーモンの構成要素</translation>
+      <translation>ネイティブクライアントとデーモンのコンポーネント</translation>
     </message>
     <message id="about.yume.source">
       <location filename="catalog:about.yume.source" line="1"/>
@@ -3272,7 +3272,7 @@
       <location filename="catalog:tuning.level.stealth" line="1"/>
       <source></source>
       <extracomment>source: Window, credit-return and idle-rotation settings only: 4 keeps the default 4 MiB budget, two credit returns and idle rotation off. Lower levels enlarge windows or add credit records, and fast and max add idle rekey exchanges. No classifier result is implied; changing the epoch also changes rekey frequency.; context: Desktop tuning slider explanation; owner: config/tuning_presets.json; Tooltip of the Stealth slider. Keep the denial: no classifier result is implied.</extracomment>
-      <translation>ウィンドウ、クレジット返却、アイドル時のローテーションの設定だけを表します。4 は既定の 4 MiB の上限、2 回のクレジット返却、アイドル時のローテーション無効を維持します。低いレベルではウィンドウが大きくなるかクレジットのレコードが増え、fast と max ではアイドル時の鍵更新のやり取りが加わります。分類器の結果を示すものではありません。エポックを変えると鍵更新の頻度も変わります。</translation>
+      <translation>ウィンドウ、クレジット返却、アイドル時のローテーションの設定だけを表します。4 は既定の 4 MiB のフローバジェット、2 回のクレジット返却、アイドル時のローテーション無効を維持します。低いレベルではウィンドウが大きくなるかクレジットのレコードが増え、fast と max ではアイドル時の鍵更新のやり取りが加わります。分類器の結果を示すものではありません。エポックを変えると鍵更新の頻度も変わります。</translation>
     </message>
     <message id="info.more.about">
       <location filename="catalog:info.more.about" line="1"/>
@@ -3290,7 +3290,7 @@
       <location filename="catalog:posture.server.summary" line="1"/>
       <source></source>
       <extracomment>source: The server sees which addresses you reach. Use one you trust.; context: Posture card summary; owner: android.app.i18n; Trust statement, always visible. Keep 'sees' as a plain statement of what the server can see.</extracomment>
-      <translation>サーバーはあなたの接続先アドレスを見ることができます。信頼できるサーバーを使ってください。</translation>
+      <translation>サーバーには接続先のアドレスが見えます。信頼できるサーバーを使ってください。</translation>
     </message>
     <message id="posture.stop.summary">
       <location filename="catalog:posture.stop.summary" line="1"/>

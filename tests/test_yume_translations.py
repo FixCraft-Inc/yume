@@ -87,6 +87,18 @@ def check_community_languages(data: dict) -> None:
         raise SystemExit("a community language under the coverage floor was listed")
 
 
+def check_language_scripts(data: dict) -> None:
+    """A maintained language contains no letter of a script it is not written
+    in. Text pasted from the wrong language keeps its placeholders, so only
+    this check refuses it."""
+    import copy
+    for lang, text in (("ja", "%1 Мбит/с"), ("ru", "%1 メガビット"), ("uk", "%1 兆")):
+        candidate = copy.deepcopy(data)
+        [m for m in candidate["messages"] if m["id"] == "desktop.mbit.s"][0]["translations"][lang] = text
+        if not any(f"{lang} contains the" in error for error in mod.validate(candidate)):
+            raise SystemExit(f"{lang} text in another language's script was accepted: {text!r}")
+
+
 def check_desktop_preset_texts(data: dict) -> None:
     """The desktop maps each English text of the tuning table to the catalog
     message with that exact source (src/gui/qml/Labels.js). An edited table
@@ -180,6 +192,7 @@ def main() -> int:
         raise SystemExit("count-sensitive route message must declare plural=count")
 
     check_community_languages(data)
+    check_language_scripts(data)
     check_desktop_preset_texts(data)
 
     ids = [m["id"] for m in data["messages"]]

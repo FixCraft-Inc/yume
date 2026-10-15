@@ -36,6 +36,18 @@
           "kind": "studio"
         }
       ]
+    },
+    {
+      "tag": "zh-Hans",
+      "name": "简体中文",
+      "group": "maintained",
+      "coverage": 100,
+      "credits": [
+        {
+          "name": "FixCraft Inc.",
+          "kind": "studio"
+        }
+      ]
     }
   ]
 }

@@ -36,6 +36,7 @@
 #include "gui/capture.hpp"
 #include "gui/headless.hpp"
 #include "gui/kit_store.hpp"
+#include "gui/language.hpp"
 #include "gui/mark.hpp"
 #include "gui/offline_network.hpp"
 #include "gui/tray.hpp"
@@ -186,10 +187,11 @@ bool install_translators(QCoreApplication& application,
     if (!english_translator.load(QStringLiteral(":/i18n/yume_en.qm")))
         return false;
     application.installTranslator(&english_translator);
-    const QString locale = QLocale::system().name().section(u'_', 0, 0).toLower();
-    static const QRegularExpression language(QStringLiteral("^[a-z]{2,3}$"));
-    if (locale != QStringLiteral("en") && language.match(locale).hasMatch() &&
-        locale_translator.load(QStringLiteral(":/i18n/yume_") + locale +
+    const QString language = catalog_language(QLocale::system());
+    static const QRegularExpression tag(
+        QStringLiteral("^[a-z]{2,3}(-[A-Z][a-z]{3})?$"));
+    if (language != QStringLiteral("en") && tag.match(language).hasMatch() &&
+        locale_translator.load(QStringLiteral(":/i18n/yume_") + language +
                                QStringLiteral(".qm")))
         application.installTranslator(&locale_translator);
     return true;

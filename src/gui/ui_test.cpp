@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include <QDir>
 #include <QFile>
@@ -24,6 +25,7 @@
 #include <QApplication>
 #include <QFontDatabase>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalServer>
@@ -43,6 +45,7 @@
 
 #include "gui/app_state.hpp"
 #include "gui/kit_store.hpp"
+#include "gui/language.hpp"
 #include "gui/mark.hpp"
 #include "gui/offline_network.hpp"
 #include "gui/tray.hpp"
@@ -218,7 +221,39 @@ private slots:
         // Native translations under their group, each naming its translator.
         QVERIFY(rendered.contains(qtTrId("maintained")));
         QVERIFY(rendered.contains(QStringLiteral("日本語")));
+        QVERIFY(rendered.contains(QStringLiteral("简体中文")));
         QVERIFY(rendered.contains(QStringLiteral("FixCraft Inc.")));
+    }
+
+    // The system locale picks its catalog by language, and Chinese by
+    // script, and every language the Credits page lists has its catalog
+    // compiled under that tag.
+    void system_locale_selects_its_catalog() {
+        const std::pair<const char*, const char*> cases[] = {
+            {"zh_CN", "zh-Hans"}, {"zh_SG", "zh-Hans"}, {"zh_Hans", "zh-Hans"},
+            {"zh", "zh-Hans"},    {"zh_TW", "zh-Hant"}, {"zh_HK", "zh-Hant"},
+            {"zh_MO", "zh-Hant"}, {"ja_JP", "ja"},      {"ru_RU", "ru"},
+            {"uk_UA", "uk"},      {"en_US", "en"},      {"C", ""}};
+        for (const auto& [name, tag] : cases)
+            QCOMPARE(catalog_language(QLocale(QString::fromLatin1(name))),
+                     QString::fromLatin1(tag));
+        QFile listing(QStringLiteral(":/yume/translation_credits.json"));
+        QVERIFY(listing.open(QIODevice::ReadOnly));
+        const auto languages = QJsonDocument::fromJson(listing.readAll())
+                                   .object()["languages"]
+                                   .toArray();
+        QVERIFY(!languages.isEmpty());
+        bool simplified = false;
+        for (const auto& entry : languages) {
+            const QString tag = entry.toObject()["tag"].toString();
+            simplified = simplified || tag == QStringLiteral("zh-Hans");
+            QTranslator translator;
+            QVERIFY2(translator.load(QStringLiteral(":/i18n/yume_") + tag +
+                                     QStringLiteral(".qm")),
+                     qPrintable(tag));
+            QVERIFY(!translator.translate(nullptr, "nav.back").isEmpty());
+        }
+        QVERIFY(simplified);
     }
 
     void tuning_table_and_custom_limits() {

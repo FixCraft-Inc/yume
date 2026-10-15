@@ -241,8 +241,8 @@ remain in their owning repository.
 
 `translations/catalog.json` is the canonical UI catalog shared by the desktop
 and Android consumers. Each message has a stable ID, source text, owner and
-translator notes; the maintained Russian, Japanese and Ukrainian values are
-kept beside it. The source text is separate from each translation, and
+translator notes; the maintained Russian, Japanese, Ukrainian and Simplified
+Chinese values are kept beside it. The source text is separate from each translation, and
 placeholder signatures, protected technical terms and simple markup signatures
 are checked before generation. A maintained language may not contain letters
 of a script it is not written in, such as Cyrillic in Japanese. Terms such as
@@ -272,6 +272,14 @@ python3 tests/test_yume_translations.py
 `generate` writes Qt TS files under `src/gui/translations/` and the desktop
 loads the compiled catalog of the system language when one exists, with the
 generated English catalog providing the default text.
+
+A language tag is a lowercase two- or three-letter code, with a script
+subtag where one language is written in more than one script, and never a
+region. Chinese must name its script, `zh-Hans` or `zh-Hant`, because one
+catalog cannot serve readers of both. Both apps map `zh-CN` and `zh-SG` to
+`zh-Hans` and `zh-TW`, `zh-HK` and `zh-MO` to `zh-Hant`. A tagged language's
+generated files keep the tag (`yume_zh-Hans.ts`) or join its parts
+(`LanguageZhHans.kt`).
 Android's generated
 Kotlin maps and `TranslationCatalog.kt` are produced into the Android checkout
 with `--android-root /path/to/Yume`; they must not be edited by hand. Use
@@ -291,8 +299,8 @@ Credits page lists every language's translators.
 ### Community translations
 
 A volunteer or studio can add a language that the team does not maintain.
-Give it an entry in `community_languages`, keyed by its lowercase language
-code, with its own name, the date it started and at least one credit:
+Give it an entry in `community_languages`, keyed by its language tag, with
+its own name, the date it started and at least one credit:
 
 ```json
 "community_languages": {
@@ -308,7 +316,7 @@ Then add the language's text under its code in each message's
 before it is merged (`policy.review`). A person who reads the language
 reviews community languages. For a maintained language with no such reader
 on the team, the maintainer may accept an AI review instead, as for Japanese
-today. A message may be left out, and the app shows it in English. `validate` lists each community language's coverage of the messages
+and Simplified Chinese today. A message may be left out, and the app shows it in English. `validate` lists each community language's coverage of the messages
 it may translate and refuses one below `policy.community_minimum_coverage`
 (80 %). Placeholders, markup, protected terms and the English-copy check apply
 as for maintained languages.

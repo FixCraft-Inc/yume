@@ -60,7 +60,7 @@ def check_community_languages(data: dict) -> None:
         if (desktop["de"]["coverage"] != percent or desktop["de"]["group"] != "community"
                 or desktop["de"]["credits"][0]["kind"] != "studio"):
             raise SystemExit("desktop community listing differs from the catalog")
-        if [desktop[tag]["group"] for tag in mod.catalog_languages(partial)] != ["maintained"] * 3:
+        if [desktop[tag]["group"] for tag in mod.catalog_languages(partial)] != ["maintained"] * len(mod.catalog_languages(partial)):
             raise SystemExit("maintained languages are missing from the desktop credits")
         if '"ru" to listOf(TranslationCredit("FixCraft Inc.", TranslationCredit.Kind.Studio, null))' not in listing:
             raise SystemExit("maintained credits are missing from the Android listing")
@@ -78,13 +78,54 @@ def check_community_languages(data: dict) -> None:
     refused(lambda d: d["messages"][0]["translations"].update(xx="x"), "neither a maintained nor a community language")
     refused(lambda d: d["community_languages"]["de"]["credits"][0].update(url="http://example.org"), "an https URL")
     refused(lambda d: d["community_languages"]["de"].update(credits=[]), "at least one translator")
-    refused(lambda d: d["community_languages"].update(ru=d["community_languages"]["de"]), "neither English nor maintained")
+    refused(lambda d: d["community_languages"].update(ru=d["community_languages"]["de"]), "already a maintained language")
+    refused(lambda d: d["community_languages"].update(en=d["community_languages"].pop("de")), "and not English")
     refused(lambda d: d["maintained_language_details"]["ru"].update(credits=[]), "at least one translator")
     refused(lambda d: d["maintained_language_details"].pop("uk"), "cover exactly the maintained languages")
     refused(lambda d: [m for m in d["messages"] if m["id"] == "route.hops"][0]["translations"].update(de="Hops"), "placeholders")
+    check_language_tags(data)
     low = with_community(data, 0.5)
     if not any("below the 80% floor" in error for error in mod.validate(low)):
         raise SystemExit("a community language under the coverage floor was listed")
+
+
+def check_language_tags(data: dict) -> None:
+    """A tag is a language code with an optional script subtag and no region,
+    and Chinese names its script, since one catalog cannot serve readers of
+    both. A script-tagged language generates under its own names."""
+    import copy
+    if "zh-Hans" not in mod.catalog_languages(data):
+        raise SystemExit("Simplified Chinese is not a maintained language")
+    for tag in ("zh", "zh-CN", "zh-hans", "zh-Hans-CN", "zh-Latn", "ZH", "deu-"):
+        candidate = with_community(data)
+        candidate["community_languages"][tag] = candidate["community_languages"].pop("de")
+        for m in candidate["messages"]:
+            if "de" in m["translations"]: m["translations"][tag] = m["translations"].pop("de")
+        if not any(f"community_languages.{tag}:" in error for error in mod.validate(candidate)):
+            raise SystemExit(f"community language tag {tag!r} was accepted")
+    candidate = copy.deepcopy(data)
+    candidate["maintained_languages"] = [("zh" if t == "zh-Hans" else t) for t in candidate["maintained_languages"]]
+    candidate["maintained_language_details"]["zh"] = candidate["maintained_language_details"].pop("zh-Hans")
+    for m in candidate["messages"]:
+        m["translations"]["zh"] = m["translations"].pop("zh-Hans")
+    if not any("zh must name its script" in error for error in mod.validate(candidate)):
+        raise SystemExit("a maintained Chinese language without a script was accepted")
+    traditional = with_community(data)
+    traditional["community_languages"] = {"zh-Hant": traditional["community_languages"].pop("de")}
+    for m in traditional["messages"]:
+        if "de" in m["translations"]: m["translations"]["zh-Hant"] = m["translations"].pop("de")
+    if errors := mod.validate(traditional):
+        raise SystemExit("a Traditional Chinese community language was refused:\n" + "\n".join(errors[:5]))
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        mod.generate_qt(traditional, out / "qt")
+        mod.generate_android(traditional, out / "android")
+        if '<TS version="2.1" language="zh_Hans">' not in (out / "qt/yume_zh-Hans.ts").read_text():
+            raise SystemExit("the zh-Hans TS file does not name its language the Qt way")
+        if "internal object LanguageZhHans : LanguageBundle" not in (out / "android/translations/LanguageZhHans.kt").read_text():
+            raise SystemExit("the zh-Hans Kotlin bundle is not named LanguageZhHans")
+        if '"zh-Hant" to LanguageZhHant,' not in (out / "android/TranslationCredits.kt").read_text():
+            raise SystemExit("a script-tagged community bundle is not listed")
 
 
 def check_language_scripts(data: dict) -> None:
@@ -92,7 +133,8 @@ def check_language_scripts(data: dict) -> None:
     in. Text pasted from the wrong language keeps its placeholders, so only
     this check refuses it."""
     import copy
-    for lang, text in (("ja", "%1 Мбит/с"), ("ru", "%1 メガビット"), ("uk", "%1 兆")):
+    for lang, text in (("ja", "%1 Мбит/с"), ("ru", "%1 メガビット"), ("uk", "%1 兆"),
+                       ("zh-Hans", "%1 メガビット/秒"), ("zh-Hans", "%1 Мбит/с")):
         candidate = copy.deepcopy(data)
         [m for m in candidate["messages"] if m["id"] == "desktop.mbit.s"][0]["translations"][lang] = text
         if not any(f"{lang} contains the" in error for error in mod.validate(candidate)):
@@ -155,7 +197,7 @@ def main() -> int:
             out = Path(tmp)
             mod.generate_android(data, out)
             for lang in mod.catalog_languages(data):
-                expected = out / "translations" / f"Language{lang.title()}.kt"
+                expected = out / "translations" / f"Language{mod.language_symbol(lang)}.kt"
                 actual = args.android_root / "app/src/main/java/com/fixcraft/yume/i18n/translations" / expected.name
                 if not actual.is_file() or actual.read_bytes() != expected.read_bytes():
                     raise SystemExit(f"stale generated Android catalog: {actual}")

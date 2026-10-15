@@ -1772,7 +1772,7 @@
       <location filename="catalog:desktop.both.signatures.must.verify.against.the.identity.your.k" line="1"/>
       <source></source>
       <extracomment>source: Both signatures must verify against the identity your kit trusts.; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>両方の署名は、キットが信頼するIDに対して検証できなければなりません。</translation>
+      <translation>両方の署名は、キットが信頼する識別子に対して検証できなければなりません。</translation>
     </message>
     <message id="desktop.cannot.confirm.that.is.stopped">
       <location filename="catalog:desktop.cannot.confirm.that.is.stopped" line="1"/>
@@ -2414,7 +2414,7 @@
       <location filename="catalog:desktop.server.identity" line="1"/>
       <source></source>
       <extracomment>source: Server identity; context: Desktop PosturePage.qml; owner: src/gui/qml/PosturePage.qml; Desktop UI message; preserve Qt placeholders and technical terms.</extracomment>
-      <translation>サーバーID</translation>
+      <translation>サーバーの識別子</translation>
     </message>
     <message id="desktop.sessions">
       <location filename="catalog:desktop.sessions" line="1"/>

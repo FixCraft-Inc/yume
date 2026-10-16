@@ -303,6 +303,26 @@ void test_status_text() {
             section.at("proposal").at("hops") == 1 &&
             !section.at("proposal").contains("latency_ms"),
         "the circuits fields are wrong");
+    // Each length gives up something different, named by a code a client
+    // can translate and by the English text it shows for an unknown code.
+    check(section.at("proposal").at("cost") == "entry_sees_all" &&
+              section.at("proposal").at("gives_up") ==
+                  yume::runtime::shorter_route_cost_text(
+                      yume::runtime::ShorterRouteCost::EntrySeesAll),
+          "a one-hop proposal named the wrong cost");
+    circuits.proposal->hops = 2U;
+    circuits.proposal->nodes = {"north", "east"};
+    const auto two = Json::parse(yume::runtime::client_status_reply(
+                                     connected_status(now), view(), now,
+                                     circuits))
+                         .at("circuits")
+                         .at("proposal");
+    check(two.at("cost") == "entry_exit_adjacent" &&
+              two.at("gives_up") ==
+                  yume::runtime::shorter_route_cost_text(
+                      yume::runtime::ShorterRouteCost::EntryExitAdjacent) &&
+              two.at("gives_up") != section.at("proposal").at("gives_up"),
+          "a two-hop proposal named the wrong cost");
     check(Json::parse(yume::runtime::client_status_reply(connected_status(now),
                                                          view(), now))
               .at("circuits")

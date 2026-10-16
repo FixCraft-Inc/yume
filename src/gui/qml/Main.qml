@@ -175,5 +175,5 @@ ApplicationWindow {
         }
     }
 
-    RouteReviewDialog { id: routeReview }
+    RouteReviewDialog { id: routeReview; objectName: "routeReview" }
 }

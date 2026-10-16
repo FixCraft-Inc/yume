@@ -165,7 +165,9 @@ approved in the kit, the plain HTTP rule and each circuit by node name.
 **Route consent.** When no route of the configured length can be built,
 `yume` proposes a shorter one and connections wait. The Overview shows the
 proposal, and Review opens a dialog with its hop count, nodes, latency when
-measured and what the shorter route gives up, in `yume`'s own words. Accept
+measured and what the shorter route gives up. That text follows the
+proposal's `cost`, in the interface language for each cost this build
+knows, and is `yume`'s own English for one it does not. Accept
 sends `accept-route` with the id of that exact proposal. If `yume` proposes
 something else while the dialog is open, the dialog refuses to accept and
 asks for a new review. Closing it, Escape and no answer accept nothing, and

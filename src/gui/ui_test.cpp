@@ -557,6 +557,68 @@ private slots:
                                   15000);
     }
 
+    // The review states what a shorter route gives up in the interface
+    // language, by the cost code yume sends, and shows yume's own English
+    // for a code this build does not know or a proposal without one.
+    void route_cost_is_shown_in_the_interface_language() {
+        if (g_rtl) QSKIP("the left-to-right run covers route consent");
+        QObject* dialog = engine_.rootObjects().first()->findChild<QObject*>(
+            QStringLiteral("routeReview"));
+        QVERIFY(dialog);
+        QObject* cost = dialog->findChild<QObject*>(QStringLiteral("routeCost"));
+        QVERIFY(cost);
+        const QString english =
+            QStringLiteral("English text from a newer yume.");
+        const auto shown = [&](const char* code) {
+            QVariantMap proposal{
+                {QStringLiteral("id"), QStringLiteral("0011223344556677")},
+                {QStringLiteral("hops"), 2},
+                {QStringLiteral("nodes"),
+                 QStringList{QStringLiteral("north"), QStringLiteral("east")}},
+                {QStringLiteral("gives_up"), english}};
+            if (code)
+                proposal.insert(QStringLiteral("cost"),
+                                QString::fromLatin1(code));
+            dialog->setProperty("reviewed", QVariant::fromValue(nullptr));
+            dialog->setProperty("reviewed", proposal);
+            return cost->property("text").toString();
+        };
+        const std::pair<const char*, const char*> costs[] = {
+            {"entry_sees_all", "desktop.route.cost.entry.sees.all"},
+            {"entry_exit_adjacent", "desktop.route.cost.entry.exit.adjacent"}};
+        QStringList sources;
+        for (const auto& [code, id] : costs) {
+            const QString source = qtTrId(id);
+            QVERIFY2(source != QLatin1String(id) && source != english,
+                     code);
+            QCOMPARE(shown(code), source);
+            sources.append(source);
+        }
+        QVERIFY(sources[0] != sources[1]);
+        QCOMPARE(shown("entry_sees_more"), english);
+        // A code that names an Object property is still unknown.
+        QCOMPARE(shown("constructor"), english);
+        QCOMPARE(shown(nullptr), english);
+        for (const char* tag : {"ru", "uk", "ja", "zh-Hans"}) {
+            QTranslator translator;
+            QVERIFY2(translator.load(QStringLiteral(":/i18n/yume_") +
+                                     QLatin1String(tag) +
+                                     QStringLiteral(".qm")),
+                     tag);
+            QVERIFY(QCoreApplication::installTranslator(&translator));
+            for (std::size_t index = 0; index < std::size(costs); ++index) {
+                const auto& [code, id] = costs[index];
+                const QString translated = translator.translate(nullptr, id);
+                QVERIFY2(!translated.isEmpty() && translated != sources[index],
+                         qPrintable(QStringLiteral("%1 %2").arg(tag, code)));
+                QCOMPARE(shown(code), translated);
+            }
+            QCOMPARE(shown("entry_sees_more"), english);
+            QVERIFY(QCoreApplication::removeTranslator(&translator));
+        }
+        dialog->setProperty("reviewed", QVariant::fromValue(nullptr));
+    }
+
     void kit_directory_rename_preserves_files_and_rejects_unsafe_targets() {
         if (g_rtl) QSKIP("the left-to-right run covers kit storage");
         QTemporaryDir storage;

@@ -592,11 +592,13 @@ std::string client_status_reply(
         }
         Json proposal = nullptr;
         if (const auto& offered = circuits->proposal) {
+            const auto cost = shorter_route_cost(offered->hops);
             proposal = {{"id", offered->id},
                         {"hops", offered->hops},
                         {"nodes", offered->nodes},
                         {"serial", offered->serial},
-                        {"gives_up", shorter_route_cost(offered->hops)}};
+                        {"cost", shorter_route_cost_code(cost)},
+                        {"gives_up", shorter_route_cost_text(cost)}};
             if (offered->latency)
                 proposal["latency_ms"] = offered->latency->count();
         }
